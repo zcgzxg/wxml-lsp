@@ -1,12 +1,16 @@
 # WXML LSP：需求与实施计划
 
-更新日期：2026-11-14。
+更新日期：2026-11-15。
 
-本文记录本次会话中已确认的需求、方案评审结果、实验依据和后续计划。项目用于个人在 Zed 中开发微信小程序，当前只创建本文档，不包含代码、扩展或构建配置。
+架构决策于 2026-11-15 整理至 [ADR 索引](docs/adr/README.md)，包含模块边界、类型检查与源码映射、文档同步及并行交付方案。架构边界以有效 ADR 为准；`accepted` 不表示功能已实现，实际进度与证据仍见本文。
+
+本文记录已确认的需求、方案评审结果、实验依据和后续计划。项目用于个人在 Zed 中开发微信小程序；当前已有 Rust workspace、文本坐标模块和 CLI 脚手架，语言服务功能和 Zed 扩展仍待实现。
+
+文档入口：[文档索引](docs/README.md) · [WXML 语言功能基线](docs/reference/wxml-language-feature-baseline.md) · [证据索引](docs/evidence/README.md) · [来源与许可证记录](docs/reference/provenance.md)。
 
 ## 1. 项目目标
 
-以 `wx-minapp/minapp-vscode` 的核心语言功能为参考，开发独立维护、自用的 Zed WXML 扩展，并增加可靠的模板类型支持。
+以本项目的[WXML 语言功能基线](docs/reference/wxml-language-feature-baseline.md)为通用语言能力参考，开发独立维护、自用的 Zed WXML 扩展，并增加可靠的模板类型支持。
 
 最重要的需求是：WXML 引用的数据能够追踪到所属页面或组件的实际类型；鼠标悬停时显示字段类型及说明；出现类型错误时，在 WXML 中准确标记对应位置。
 
@@ -40,11 +44,9 @@ export interface User {
 
 ### 2.1 用户明确要求
 
-- 项目创建在 `~/code/rust` 下；当前阶段只保存一份需求与计划文档。
 - 目标编辑器为 Zed，目标场景为微信小程序 WXML 开发。
 - 可以独立维护和安装自用扩展，不以公开发布为前提。
 - 不把市场审核、与现有扩展功能重叠、向上游提交 PR 作为实施前提。
-- 评审现有迁移结论，并探索比逐行重写原插件更合适的方案。
 - 使用 Rust 承担扩展或语言服务的主要实现；完整 TypeScript 类型能力可以通过复用类型引擎获得。
 - WXML 数据引用必须能够展示类型和说明，并标记类型错误。
 
@@ -91,9 +93,9 @@ export interface User {
 - 对缺少类型信息的 `any`、裸 `Object` 等保持诚实：不能凭空生成字段说明或声称严格校验通过。
 - 模板运行时转换、可空访问等规则需要形成明确的诊断策略，避免照搬 TS 规则产生误报。
 
-### 3.3 原插件核心语言功能
+### 3.3 通用 WXML 语言功能
 
-以下是需要保留或逐步补齐的功能参考；先完成模板类型闭环，再按实际使用价值实施。
+以下为需要保留或逐步补齐的功能摘要；完整行为、数据来源和验收要求见[WXML 语言功能基线](docs/reference/wxml-language-feature-baseline.md)。先完成模板类型闭环，再按实际使用价值实施。
 
 - 标签名、属性名、属性值、事件及 `wx:` 指令补全。
 - 根据组件与已有属性筛选候选项，例如 `picker` 的不同 `mode`。
@@ -106,7 +108,7 @@ export interface User {
 - WXML 格式化；实施前先确定保真规则和测试样本。
 - 配置、文件依赖、缓存及更新处理。
 
-原插件使用了四套语言配置和多个格式化后端；这些历史兼容项不自动成为本项目必须完整复刻的要求。
+历史调研对象使用了多套语言配置和多个格式化后端；这些兼容项不自动成为本项目必须完整复刻的要求。
 
 ## 4. 方案评审结论
 
@@ -119,7 +121,7 @@ export interface User {
 
 ### 4.2 修正的判断
 
-- 不再建议把向 `BlockLune/zed-wxml` 提 PR 作为主路线；可以独立维护自己的扩展。
+- 不再建议把向现有 Zed WXML 扩展提交 PR 作为主路线；可以独立维护自己的扩展。
 - 不再用 Vue/Pug、Emmet、创建组件、自定义颜色等无关能力衡量功能损失。
 - 不把“移植原插件约几千行代码”当作核心工作量依据。
 - 撤回此前“覆盖约 80%”“几周完成”等粗略估算；完整类型需求需要依据真实验收结果重新评估。
@@ -130,9 +132,9 @@ export interface User {
 
 | 方案 | 可复用价值 | 结论 |
 | --- | --- | --- |
-| 逐段把 minapp-vscode 翻译成 Rust | 补全规则、数据结构、部分路径和样式处理经验 | 无法直接解决新增类型需求，不作为整体架构起点 |
-| 直接使用 PuffinStudio/wechat-wxml-lsp | WXML 解析、基础 LSP、部分作用域处理 | 简化的类型模型无法满足准确类型、文档和精确诊断需求 |
-| 适配官方 glass-easel-analyzer | 模板检查视图、位置映射、组件资料与类型集成经验 | 值得复用，但不能只启动其 Rust 二进制就认为类型能力齐备 |
+| 逐段翻译历史插件实现 | 补全规则、数据结构、部分路径和样式处理经验 | 无法直接解决新增类型需求，不作为整体架构起点 |
+| 直接使用已核验的 Rust WXML LSP | WXML 解析、基础 LSP、部分作用域处理；见[核验记录](docs/evidence/2026-11-15-existing-wxml-lsp-audit.md) | 简化的类型模型无法满足准确类型、文档和精确诊断需求 |
+| 适配官方模板分析器 | 模板检查视图、位置映射、组件资料与类型集成经验；见[核验记录](docs/evidence/2026-11-15-official-template-analyzer-audit.md) | 值得复用，但不能只启动其 Rust 二进制就认为类型能力齐备 |
 | Rust 模板服务 + 完整 TypeScript 后端 | 类型引擎成熟，Rust 专注模板和编辑器集成 | 当前推荐路线 |
 
 ## 5. 推荐架构与待验证决策
@@ -183,8 +185,8 @@ Rust WXML Language Server
 - WXML、生成文本、LSP 三者之间统一管理字节与 UTF-16 映射。
 - WXSS/SCSS 索引可评估 `raffia`；具体依赖版本在实施时核实。
 - WXML 格式化后置；必须保留文本空白、表达式与 `<wxs>` 的语义，解析失败时不修改文件。
-- 原插件的旧组件元数据可以作为参考，实际采用的数据应核实来源、版本与许可证。
-- LSP 框架、crate 划分、grammar 固定版本均待实现时决定，不作为已完成事项。
+- 历史调研中的组件元数据只能作为线索；实际采用的数据必须在本项目登记来源、版本与许可证，并在复用前重新核验（见[来源与许可证记录](docs/reference/provenance.md)）。
+- crate 职责和依赖边界见 [ADR-0001](docs/adr/0001-layered-language-service-architecture.md)；LSP 框架、grammar 固定版本和具体 API 在实施接入时核实，不作为已完成事项。
 
 ### 5.5 当前工程结构
 
@@ -198,11 +200,11 @@ crates/
 └── wxml-lsp                  # LSP 传输、文档状态与请求路由（二进制）
 ```
 
-依赖方向自上而下单向：`wxml-lsp` → `wxml-types`/`wxml-project`/`wxml-syntax` → `wxml-text`，禁止横向或反向依赖。`wxml-syntax`、`wxml-project`、`wxml-types` 目前只有职责说明，待对应阶段落地实现。
+目标依赖按 [ADR-0001](docs/adr/0001-layered-language-service-architecture.md) 统一：`wxml-lsp` 依赖各功能层，`wxml-types` 允许依赖 `wxml-syntax`，各层按需依赖 `wxml-text`；`wxml-project` 独立于 syntax/types，项目事实由 LSP 适配为 types 输入。禁止反向依赖和 `types → project`。这取代原文“禁止所有横向依赖”的表述；依赖声明在首次使用时接入。`wxml-syntax`、`wxml-project`、`wxml-types` 目前只有职责说明，待对应阶段落地实现。
 
 ## 6. 已有验证与证据边界
 
-以下是会话中的调研及隔离实验记录。实验产物位于 `/tmp/opencode`，仅供当前机器追溯，不是项目依赖，也未复制进本项目；临时目录内容可能被清理。
+以下是隔离实验的结论摘要。完整环境、方法、限制和最小原始数据见[证据索引](docs/evidence/README.md)；实验在仓库外运行，临时目录不再作为证据来源，也不能把实验结论描述为已实现功能。
 
 ### 6.1 TypeScript Language Service 机制实验
 
@@ -210,36 +212,21 @@ crates/
 
 两组实验共 22 项断言通过，覆盖跨文件类型和 JSDoc、字段错误、可空与条件窄化、循环元素、组件属性、JS JSDoc、未保存类型修改，以及包含中文和 emoji 的 WXML 位置映射。
 
-限制：WXML 映射实验只覆盖受限表达式样本，不是完整模板转换器；未覆盖完整项目、所有组件写法、完整 Behavior 合并或 Zed 端到端行为。实验期间没有修改用户业务项目。
-
-实验工作目录：`/tmp/opencode/wxml-type-review-H1Jrkz`。不能把该目录描述为已经实现的可复用完整 PoC。
+限制：WXML 映射实验只覆盖受限表达式样本，不是完整模板转换器；未覆盖完整项目、所有组件写法、完整 Behavior 合并或 Zed 端到端行为。实验期间没有修改用户业务项目。原始探针未保留，记录等级为 E0；详见[实验记录](docs/evidence/2026-11-15-typescript-language-service.md)。
 
 ### 6.2 现有 Rust WXML LSP 核验
 
-核验对象：`PuffinStudio/wechat-wxml-lsp`，提交 `84425dad66de0991e0cdf24e9c86842dc8209cdd`。
+核验对象：现有 Rust WXML 语言服务 0.1.9，提交 `84425dad66de0991e0cdf24e9c86842dc8209cdd`。
 
-实际运行 33 个独立场景、66 次 hover 请求；相关仓库的 112 项测试通过。发现的缺口包括字段说明缺失、跨文件和联合类型支持不足、条件窄化不完整、属性绑定缺少类型兼容性检查，以及部分诊断位置与未保存修改处理错误。
+实际运行 33 个独立场景、66 次 hover 请求；该版本的 112 项自带测试通过。发现的缺口包括字段说明缺失、跨文件和联合类型支持不足、条件窄化不完整、属性绑定缺少类型兼容性检查，以及部分诊断位置与未保存修改处理错误。
 
-因此可以借鉴其基础设施，不能把现有类型分析层当作本项目的准确类型来源。仓库原测试通过，不代表通过本项目需求验收。
+因此可以借鉴其基础设施，不能把现有类型分析层当作本项目的准确类型来源。自带测试通过，不代表通过本项目需求验收。完整结果和限制见[核验记录](docs/evidence/2026-11-15-existing-wxml-lsp-audit.md)，原始数据见[证据数据](docs/evidence/data/existing-wxml-lsp-audit/)。
 
-本机证据：
-
-- `/tmp/opencode/wxml-lsp-audit-v1Kffl/probe-summary.jsonl`
-- `/tmp/opencode/wxml-lsp-audit-v1Kffl/results.json`
-- `/tmp/opencode/wxml-lsp-audit-v1Kffl/tests.log`
-- `/tmp/opencode/wxml-lsp-audit-v1Kffl/probe.py`
-
-### 6.3 官方 glass-easel-analyzer 核验
+### 6.3 官方模板分析器核验
 
 源码和保存的实验结果表明，类型能力涉及客户端侧 TypeScript 集成，不能只连接其 Rust LSP 就认为能力完整。
 
-使用小程序 backend 配置的测试中，导出组件样本可以获得字段类型、说明和错误；裸 `Component(...)` / `Page(...)` 样本退化为 `any`。未保存的导入类型更新还存在需要 WXML 刷新才生效的问题。这些是所测配置和样本的结果，不代表所有版本与写法都具有完全相同的行为。
-
-本机证据：
-
-- `/tmp/opencode/glass-easel-audit.5ovPYW/probe/result.json`
-- `/tmp/opencode/glass-easel-audit.5ovPYW/probe/wasm-result.json`
-- `/tmp/opencode/glass-easel-audit.5ovPYW/probe/handshake-results.json`
+使用小程序 backend 配置的测试中，导出组件样本可以获得字段类型、说明和错误；裸 `Component(...)` / `Page(...)` 样本退化为 `any`。未保存的导入类型更新还存在需要 WXML 刷新才生效的问题。这些是所测配置和样本的结果，不代表所有版本与写法都具有完全相同的行为。完整结果、握手要求和限制见[核验记录](docs/evidence/2026-11-15-official-template-analyzer-audit.md)，原始数据见[证据数据](docs/evidence/data/official-template-analyzer-audit/)。
 
 ### 6.4 TypeScript 原生语言服务实验
 
@@ -247,13 +234,7 @@ crates/
 
 虚拟 `file://` 文档可解析同目录导入；测试中的自定义 URI scheme 无法正确解析相对模块。显式 `files` 配置下，虚拟文件还出现未归入预期配置项目的情况。
 
-限制：这只验证普通虚拟 TS 文件，不等于已验证完整的小程序检查视图、所有 `tsconfig` 行为或 Zed 集成。
-
-本机证据：
-
-- `/tmp/opencode/wxml-ts7-research-1h6wculc/probe-stable-results.json`
-- `/tmp/opencode/wxml-ts7-research-1h6wculc/probe-results.json`
-- `/tmp/opencode/wxml-ts7-research-1h6wculc/probe.py`
+限制：这只验证普通虚拟 TS 文件，不等于已验证完整的小程序检查视图、所有 `tsconfig` 行为或 Zed 集成。完整结果、复跑方式和限制见[实验记录](docs/evidence/2026-11-15-native-typescript-service.md)，原始数据见[证据数据](docs/evidence/data/native-typescript-service/)。
 
 ## 7. 实施计划
 
@@ -336,25 +317,14 @@ crates/
 - [ ] 与已有 JS/TS 服务并存，不重复发布无关脚本诊断。
 - [ ] 文档明确区分已支持、降级与待实现情况。
 
-## 9. 参考项目与资料索引
+## 9. 需求与来源索引
 
-下列为会话中讨论的来源标识，具体依赖的提交、版本和许可证在实现时重新确认。
+本项目需求不依赖外部项目或文件。通用 WXML 语言功能的需求已整理为[WXML 语言功能基线](docs/reference/wxml-language-feature-baseline.md)；实验结论、方法和最小数据见[证据索引](docs/evidence/README.md)。
 
-| 来源 | 用途 |
-| --- | --- |
-| `wx-minapp/minapp-vscode` | 原功能参考、补全规则、路径和样式处理经验 |
-| `BlockLune/zed-wxml` | Zed WXML 语言配置和查询参考 |
-| `BlockLune/tree-sitter-wxml` | WXML grammar 候选 |
-| `PuffinStudio/wechat-wxml-lsp` | 现有 Rust LSP 的解析、作用域和协议经验 |
-| `wechat-miniprogram/glass-easel-analyzer` | 官方模板分析和 TypeScript 集成参考 |
-| `wechat-miniprogram/glass-easel-analyzer-miniprogram` | 微信小程序 backend 配置与组件资料 |
-| `wechat-miniprogram/api-typings` | Page / Component 类型上下文 |
-| `MiniProgramLab/miniapp` | 功能和边界设计参考，未据此认定其已满足本项目需求 |
-| `microsoft/TypeScript` | Compiler / Language Service API、原生后端后续进展 |
-| Zed 官方开发文档 | Dev Extension、语言与 LSP 注册、多服务配置 |
+调研对象的版本、提交和许可证集中记录在[来源与许可证记录](docs/reference/provenance.md)。该记录仅用于归属、合规和复查，不作为需求来源；外部仓库或临时目录不能作为本项目验收的依据。
 
 ## 10. 当前状态
 
-- 已完成：会话需求整理、候选路线评审、部分隔离实验记录、本需求与计划文档，以及多 crate 的 Rust workspace 脚手架和基础文本坐标模块。
+- 已完成：会话需求整理、候选路线评审、部分隔离实验记录、本需求与计划文档、本地功能基线与证据记录，以及多 crate 的 Rust workspace 脚手架和基础文本坐标模块。
 - 未完成：WXML 解析、项目模型、类型分析、LSP 功能、Zed 扩展、端到端验证和可用产品。
-- 后续工作的优先级：先证明模板类型体验，再扩充原插件的常用功能。
+- 后续工作的优先级：先证明模板类型体验，再扩充通用 WXML 常用功能。

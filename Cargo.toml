@@ -9,10 +9,10 @@ rust-version = "1.85"
 publish = false
 
 [workspace.dependencies]
-# Internal crates form a strict layer stack:
+# Target internal layering (docs/adr/0001-layered-language-service-architecture.md):
 #
-#   wxml-lsp  ->  wxml-types, wxml-project, wxml-syntax
-#   wxml-types    ->  wxml-project, wxml-syntax
+#   wxml-lsp      ->  wxml-types, wxml-project, wxml-syntax, wxml-text
+#   wxml-types    ->  wxml-syntax, wxml-text
 #   wxml-project  ->  wxml-text
 #   wxml-syntax   ->  wxml-text
 #   wxml-text     ->  (none)

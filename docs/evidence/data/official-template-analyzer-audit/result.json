@@ -1,0 +1,113 @@
+{
+  "typescript": "5.9.3",
+  "backend": "miniprogram-config",
+  "server": {
+    "name": "<analyzer>"
+  },
+  "tracked": [
+    "component-bare",
+    "component-export",
+    "page-bare",
+    "page-export"
+  ],
+  "configErrors": [],
+  "cases": [
+    {
+      "name": "page-export",
+      "hover": "(property) User.Name: string",
+      "rustHover": null,
+      "raw": {
+        "display": "(property) User.Name: string",
+        "documentation": "用户姓名：用于展示。"
+      },
+      "diagnostics": [
+        {
+          "code": 2339,
+          "message": "Property 'Missing' does not exist on type 'User'.",
+          "start": {
+            "line": 0,
+            "character": 30
+          },
+          "end": {
+            "line": 0,
+            "character": 37
+          }
+        },
+        {
+          "code": 2339,
+          "message": "Property 'toUpperCase' does not exist on type 'number'.",
+          "start": {
+            "line": 0,
+            "character": 53
+          },
+          "end": {
+            "line": 0,
+            "character": 64
+          }
+        }
+      ]
+    },
+    {
+      "name": "page-bare",
+      "hover": "any",
+      "rustHover": null,
+      "raw": {
+        "display": "any",
+        "documentation": ""
+      },
+      "diagnostics": []
+    },
+    {
+      "name": "component-export",
+      "hover": "(property) User.Name: string",
+      "rustHover": null,
+      "raw": {
+        "display": "(property) User.Name: string",
+        "documentation": "用户姓名：用于展示。"
+      },
+      "diagnostics": [
+        {
+          "code": 2339,
+          "message": "Property 'Missing' does not exist on type 'User'.",
+          "start": {
+            "line": 0,
+            "character": 30
+          },
+          "end": {
+            "line": 0,
+            "character": 37
+          }
+        },
+        {
+          "code": 2339,
+          "message": "Property 'toUpperCase' does not exist on type 'number'.",
+          "start": {
+            "line": 0,
+            "character": 53
+          },
+          "end": {
+            "line": 0,
+            "character": 64
+          }
+        }
+      ]
+    },
+    {
+      "name": "component-bare",
+      "hover": "any",
+      "rustHover": null,
+      "raw": {
+        "display": "any",
+        "documentation": ""
+      },
+      "diagnostics": []
+    },
+    {
+      "name": "page-emptyjson",
+      "hover": null,
+      "rustHover": null,
+      "raw": null,
+      "diagnostics": []
+    }
+  ]
+}

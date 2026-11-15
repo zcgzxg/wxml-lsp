@@ -3,7 +3,7 @@
 - 上游：https://github.com/affaan-m/ecc
 - 版本：v2.2.3（commit `d2ef268`）
 - 许可证：MIT
-- 安装范围：仅当前项目 `/home/zxg/code/rust/wxml-lsp`，不修改全局 `~/.config/opencode`
+- 安装范围：仅当前项目，不修改全局 `~/.config/opencode`
 - 语言范围：只保留 Rust 相关内容；Go、Java、Kotlin、C/C++、C#、F#、PHP、Python、Ruby、Swift、Dart、ArkTS/HarmonyOS、Perl、JavaScript/TypeScript 及其 Web 工具链不安装
 
 ## 目录结构
@@ -106,7 +106,7 @@ Rust：`rust-patterns`、`rust-testing`
 在项目根目录启动 OpenCode 即可自动加载：
 
 ```bash
-cd /home/zxg/code/rust/wxml-lsp
+cd <项目根目录>
 opencode
 ```
 
@@ -132,16 +132,16 @@ cd /path/to/ECC
 npm install --ignore-scripts --no-audit --no-fund
 npm run build:opencode
 
-OPENCODE_CONFIG_DIR=/tmp/opencode/ecc-stage \
+OPENCODE_CONFIG_DIR="${TMPDIR:-/tmp}/ecc-stage" \
   node scripts/install-apply.js --target opencode --profile opencode --no-hooks
 ```
 
-然后对比 `/tmp/opencode/ecc-stage` 与本目录，只同步 Rust 和语言无关资产；同步后重新运行下方的验证命令。
+然后对比 `${TMPDIR:-/tmp}/ecc-stage` 与本目录，只同步 Rust 和语言无关资产；同步后重新运行下方的验证命令。
 
 ## 验证
 
 ```bash
-cd /home/zxg/code/rust/wxml-lsp
+cd <项目根目录>
 opencode debug config    # 应列出 .opencode/opencode.json
 opencode debug agents    # 应包含 rust-reviewer、rust-build-resolver、rust-tdd-guide、rust-security-reviewer
 ```
@@ -153,5 +153,5 @@ opencode debug agents    # 应包含 rust-reviewer、rust-build-resolver、rust-
 删除本目录即可，不影响全局 OpenCode 配置：
 
 ```bash
-rm -rf /home/zxg/code/rust/wxml-lsp/.opencode
+rm -rf .opencode
 ```

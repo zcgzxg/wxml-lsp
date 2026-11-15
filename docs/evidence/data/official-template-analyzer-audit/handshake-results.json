@@ -1,0 +1,20 @@
+[
+  {
+    "test": "missing-workDoneToken",
+    "exit": 1,
+    "stderr": "missing field `workDoneToken`",
+    "stdout": ""
+  },
+  {
+    "test": "no-declaration-linkSupport",
+    "exit": 1,
+    "stderr": "unsupported client",
+    "stdout": ""
+  },
+  {
+    "test": "standard-workspaceFolders-only",
+    "exit": 1,
+    "stderr": "missing field `workspaceFolders`",
+    "stdout": ""
+  }
+]

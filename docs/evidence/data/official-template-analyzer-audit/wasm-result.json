@@ -1,0 +1,33 @@
+{
+  "pureNodeWasm": {
+    "hover": "(property) User.Name: string",
+    "diagnostics": [
+      {
+        "code": 2339,
+        "message": "Property 'Missing' does not exist on type 'User'.",
+        "start": {
+          "line": 0,
+          "character": 30
+        },
+        "end": {
+          "line": 0,
+          "character": 37
+        }
+      },
+      {
+        "code": 2339,
+        "message": "Property 'toUpperCase' does not exist on type 'number'.",
+        "start": {
+          "line": 0,
+          "character": 53
+        },
+        "end": {
+          "line": 0,
+          "character": 64
+        }
+      }
+    ]
+  },
+  "unsavedImportedTsOnly": "(property) User.Name: string",
+  "afterWxmlRefresh": "(property) User.Name: number"
+}

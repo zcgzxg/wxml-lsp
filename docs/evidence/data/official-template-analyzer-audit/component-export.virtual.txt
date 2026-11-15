@@ -1,0 +1,27 @@
+import type { ComponentProperties as _GlobalComponentProperties_ } from '<probe-root>/probe/generated-miniprogram-config.d.ts'
+import type component from './component-export'
+
+type _Component_<P, W, M> = { propertyValues: P, dataWithProperties: W, methods: M }
+type _ComponentFieldTypes_<T> = (T & Record<string, unknown>)['_$fieldTypes']
+type UnknownElement = { _$fieldTypes: null, [k: string]: any }
+
+type _Properties_<T> = _ComponentFieldTypes_<T> extends _Component_<infer P, any, any>
+? P
+: { [k: string]: any }
+
+declare const data: _ComponentFieldTypes_<typeof component> extends _Component_<any, infer W, any>
+? W
+: { [k: string]: any }
+
+declare const methods: _ComponentFieldTypes_<typeof component> extends _Component_<any, any, infer M>
+? M
+: { [k: string]: any }
+
+declare const tags: _GlobalComponentProperties_ & {
+[other: string]: any }
+export default {}
+
+type _ForIndex_<T> = T extends any[] ? number : T extends { [key: string]: any } ? string : any;
+type _ForItem_<T> = T extends (infer T)[] ? T : T extends { [key: string]: infer V } ? V : any;
+type _ForKey_<T, N extends string> = N extends "*this" ? _ForItem_<T> : _ForItem_<T> extends { [k: string]: any } ? _ForItem_<T>[N] : unknown;
+{const _tag_=tags['view'];(data.user?.Name)+" "+(data.user?.Missing)+" "+(data.user?.Age?.toUpperCase?.());}

@@ -1,0 +1,1841 @@
+[
+  {
+    "name": "local_docs",
+    "ts": "interface User { /** Display name from interface */ Name: string; Age?: number; } Page({data:{user:{} as User}})",
+    "wxml": "<view>{{ user.Name }} {{user.Age}} {{user.Nmae}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Nmae'",
+        "range": {
+          "end": {
+            "character": 48,
+            "line": 0
+          },
+          "start": {
+            "character": 35,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.Name: string\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  Age: number;\n  Name: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 18,
+              "line": 0
+            },
+            "start": {
+              "character": 14,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.Age",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.Age: number\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  Age: number;\n  Name: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 32,
+              "line": 0
+            },
+            "start": {
+              "character": 29,
+              "line": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "literal_docs",
+    "ts": "Page({data:{user:{/** Display name inline */ Name: 'Ada'}}})",
+    "wxml": "<view>{{user.Name}}</view>",
+    "diagnostics": [],
+    "hover": [
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.Name: string\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  Name: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 0
+            },
+            "start": {
+              "character": 13,
+              "line": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "relative_interface",
+    "ts": "import type { User } from './model'; Page({data:{user:{} as User}})",
+    "wxml": "<view>{{user.Name}} {{user.Age}} {{user.Nmae}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Nmae'",
+        "range": {
+          "end": {
+            "character": 46,
+            "line": 0
+          },
+          "start": {
+            "character": 33,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.Name: string\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  Age: number;\n  Name: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 0
+            },
+            "start": {
+              "character": 13,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.Age",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.Age: number\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  Age: number;\n  Name: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 30,
+              "line": 0
+            },
+            "start": {
+              "character": 27,
+              "line": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "relative_alias",
+    "ts": "import { User as Person } from './model'; Page({data:{user:{} as Person}})",
+    "wxml": "<view>{{user.Name}}</view>",
+    "diagnostics": [],
+    "hover": [
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.Name: string\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  Age: number;\n  Name: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 0
+            },
+            "start": {
+              "character": 13,
+              "line": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "namespace_import",
+    "ts": "import * as M from './model'; Page({data:{user:{} as M.User}})",
+    "wxml": "<view>{{user}} {{user.Name}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Name'",
+        "range": {
+          "end": {
+            "character": 28,
+            "line": 0
+          },
+          "start": {
+            "character": 15,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser: unknown\n```"
+          },
+          "range": {
+            "end": {
+              "character": 12,
+              "line": 0
+            },
+            "start": {
+              "character": 8,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "path_alias",
+    "ts": "import type { User } from '@/model'; Page({data:{user:{} as User}})",
+    "wxml": "<view>{{user}} {{user.Name}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Name'",
+        "range": {
+          "end": {
+            "character": 28,
+            "line": 0
+          },
+          "start": {
+            "character": 15,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser: User\n```"
+          },
+          "range": {
+            "end": {
+              "character": 12,
+              "line": 0
+            },
+            "start": {
+              "character": 8,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "transitive_interface",
+    "ts": "import type { User } from './model'; Page({data:{user:{} as User}})",
+    "wxml": "<view>{{user.profile}} {{user.profile.Name}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.profile.Name'",
+        "range": {
+          "end": {
+            "character": 44,
+            "line": 0
+          },
+          "start": {
+            "character": 23,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user.profile",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.profile: Profile\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  profile: Profile;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 20,
+              "line": 0
+            },
+            "start": {
+              "character": 13,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.profile.Name",
+          14
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "reexport_interface",
+    "ts": "import type { User } from './barrel'; Page({data:{user:{} as User}})",
+    "wxml": "<view>{{user}} {{user.Name}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Name'",
+        "range": {
+          "end": {
+            "character": 28,
+            "line": 0
+          },
+          "start": {
+            "character": 15,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser: User\n```"
+          },
+          "range": {
+            "end": {
+              "character": 12,
+              "line": 0
+            },
+            "start": {
+              "character": 8,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "forward_nested",
+    "ts": "interface User { profile: Profile; } interface Profile { Name: string; } Page({data:{user:{} as User}})",
+    "wxml": "<view>{{user.profile}} {{user.profile.Name}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.profile.Name'",
+        "range": {
+          "end": {
+            "character": 44,
+            "line": 0
+          },
+          "start": {
+            "character": 23,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user.profile",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.profile: {}\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  profile: {};\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 20,
+              "line": 0
+            },
+            "start": {
+              "character": 13,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.profile.Name",
+          14
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "backward_nested",
+    "ts": "interface Profile { /** Nested name docs */ Name: string; } interface User { profile: Profile; } Page({data:{user:{} as User}})",
+    "wxml": "<view>{{user.profile.Name}}</view>",
+    "diagnostics": [],
+    "hover": [
+      {
+        "query": [
+          "user.profile.Name",
+          14
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.profile.Name: string\n```\n\n**Parent context**\n\n```typescript\nuser.profile: {\n  Name: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 25,
+              "line": 0
+            },
+            "start": {
+              "character": 21,
+              "line": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "inline_type",
+    "ts": "interface User { profile: { /** Nested name docs */ Name: string }; } Page({data:{user:{} as User}})",
+    "wxml": "<view>{{user.profile}} {{user.profile.Name}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.profile.Name'",
+        "range": {
+          "end": {
+            "character": 44,
+            "line": 0
+          },
+          "start": {
+            "character": 23,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user.profile",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.profile: unknown\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  profile: unknown;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 20,
+              "line": 0
+            },
+            "start": {
+              "character": 13,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.profile.Name",
+          14
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "const_annotation",
+    "ts": "interface User { Name: string; Age?: number; } const user: User = {Name:'Ada'}; Page({data:{user}})",
+    "wxml": "<view>{{user}} {{user.Age}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Age'",
+        "range": {
+          "end": {
+            "character": 27,
+            "line": 0
+          },
+          "start": {
+            "character": 15,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser: {\n  Name: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 12,
+              "line": 0
+            },
+            "start": {
+              "character": 8,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.Age",
+          6
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "import_then_const",
+    "ts": "import { User } from './model'; const user = {} as User; Page({data:{user}})",
+    "wxml": "<view>{{user}} {{user.Name}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Name'",
+        "range": {
+          "end": {
+            "character": 28,
+            "line": 0
+          },
+          "start": {
+            "character": 15,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser: User\n```"
+          },
+          "range": {
+            "end": {
+              "character": 12,
+              "line": 0
+            },
+            "start": {
+              "character": 8,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "extends_and_alias",
+    "ts": "interface Base { Name: string; } interface User extends Base { Age: number; } type Alias = { Name: string }; Page({data:{user:{} as User, alias:{} as Alias}})",
+    "wxml": "<view>{{user.Name}} {{user.Age}} {{alias.Name}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'alias.Name'",
+        "range": {
+          "end": {
+            "character": 47,
+            "line": 0
+          },
+          "start": {
+            "character": 33,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      },
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Name'",
+        "range": {
+          "end": {
+            "character": 19,
+            "line": 0
+          },
+          "start": {
+            "character": 6,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": null
+      },
+      {
+        "query": [
+          "user.Age",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.Age: number\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  Age: number;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 30,
+              "line": 0
+            },
+            "start": {
+              "character": 27,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "alias.Name",
+          7
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "union_null",
+    "ts": "interface User { Name: string; } Page({data:{user:null as User | null, state: 'a' as 'a' | 'b', nil: null}})",
+    "wxml": "<view>{{user}} {{user.Name}} {{state}} {{nil.Name}}</view><view wx:if=\"{{user}}\">{{user.Name}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Name'",
+        "range": {
+          "end": {
+            "character": 94,
+            "line": 0
+          },
+          "start": {
+            "character": 81,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      },
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'nil.Name'",
+        "range": {
+          "end": {
+            "character": 51,
+            "line": 0
+          },
+          "start": {
+            "character": 39,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      },
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Name'",
+        "range": {
+          "end": {
+            "character": 28,
+            "line": 0
+          },
+          "start": {
+            "character": 15,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser: unknown\n```"
+          },
+          "range": {
+            "end": {
+              "character": 12,
+              "line": 0
+            },
+            "start": {
+              "character": 8,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": null
+      },
+      {
+        "query": [
+          "state"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nstate: unknown\n```"
+          },
+          "range": {
+            "end": {
+              "character": 36,
+              "line": 0
+            },
+            "start": {
+              "character": 31,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.Name",
+          6,
+          1
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "union_field",
+    "ts": "interface User { Name: string | number; Nick?: string; } Page({data:{user:{} as User}})",
+    "wxml": "<view>{{user.Name}} {{user.Nick}}</view>",
+    "diagnostics": [],
+    "hover": [
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.Name: unknown\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  Name: unknown;\n  Nick: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 0
+            },
+            "start": {
+              "character": 13,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.Nick",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.Nick: string\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  Name: unknown;\n  Nick: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 31,
+              "line": 0
+            },
+            "start": {
+              "character": 27,
+              "line": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "component",
+    "ts": "Component({properties:{title:String,count:{type:Number,value:0},user:{type:Object,value:{Name:'Ada'}}},data:{enabled:true}})",
+    "wxml": "<view>{{title}} {{count}} {{user.Name}} {{enabled}}</view>",
+    "diagnostics": [],
+    "hover": [
+      {
+        "query": [
+          "title"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\ntitle: string\n```"
+          },
+          "range": {
+            "end": {
+              "character": 13,
+              "line": 0
+            },
+            "start": {
+              "character": 8,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "count"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\ncount: number\n```"
+          },
+          "range": {
+            "end": {
+              "character": 23,
+              "line": 0
+            },
+            "start": {
+              "character": 18,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.Name: string\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  Name: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 37,
+              "line": 0
+            },
+            "start": {
+              "character": 33,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "enabled"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nenabled: boolean\n```"
+          },
+          "range": {
+            "end": {
+              "character": 49,
+              "line": 0
+            },
+            "start": {
+              "character": 42,
+              "line": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "component_optional_types",
+    "ts": "Component({properties:{value:{type:String,optionalTypes:[Number],value:'x'}}})",
+    "wxml": "<view>{{value}}</view>",
+    "diagnostics": [],
+    "hover": [
+      {
+        "query": [
+          "value"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nvalue: string\n```"
+          },
+          "range": {
+            "end": {
+              "character": 13,
+              "line": 0
+            },
+            "start": {
+              "character": 8,
+              "line": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "page_generic",
+    "ts": "interface Data { user: {Name:string} } Page<Data, {}>({data:{user:null}})",
+    "wxml": "<view>{{user}} {{user.Name}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Name'",
+        "range": {
+          "end": {
+            "character": 28,
+            "line": 0
+          },
+          "start": {
+            "character": 15,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser: unknown\n```"
+          },
+          "range": {
+            "end": {
+              "character": 12,
+              "line": 0
+            },
+            "start": {
+              "character": 8,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "loop_scope",
+    "ts": "Page({data:{groups:[{Name:'group',children:[{Name:7}]}]}})",
+    "wxml": "<view wx:for=\"{{groups}}\" wx:key=\"Name\">{{item.Name}} {{index}}<view wx:for=\"{{item.children}}\" wx:key=\"Name\">{{item.Name}}</view>{{item.Name}}</view><view>{{item.Name}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'item.Name'",
+        "range": {
+          "end": {
+            "character": 169,
+            "line": 0
+          },
+          "start": {
+            "character": 156,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "item.Name",
+          6,
+          0
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nitem.Name: string\n```\n\n**Parent context**\n\n```typescript\nitem: {\n  Name: string;\n  children: Array<{\n  Name: number;\n}>;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 51,
+              "line": 0
+            },
+            "start": {
+              "character": 47,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "item.children",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nitem.children: Array<{\n  Name: number;\n}>\n```\n\n**Parent context**\n\n```typescript\nitem: {\n  Name: string;\n  children: Array<{\n  Name: number;\n}>;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 92,
+              "line": 0
+            },
+            "start": {
+              "character": 84,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "item.Name",
+          6,
+          1
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nitem.Name: number\n```\n\n**Parent context**\n\n```typescript\nitem: {\n  Name: number;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 121,
+              "line": 0
+            },
+            "start": {
+              "character": 117,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "item.Name",
+          6,
+          2
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nitem.Name: string\n```\n\n**Parent context**\n\n```typescript\nitem: {\n  Name: string;\n  children: Array<{\n  Name: number;\n}>;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 141,
+              "line": 0
+            },
+            "start": {
+              "character": 137,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "item.Name",
+          6,
+          3
+        ],
+        "result": null
+      },
+      {
+        "query": [
+          "index"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nindex: number\n```"
+          },
+          "range": {
+            "end": {
+              "character": 61,
+              "line": 0
+            },
+            "start": {
+              "character": 56,
+              "line": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "loop_alias",
+    "ts": "Page({data:{users:[{Name:'Ada'}]}})",
+    "wxml": "<view wx:for=\"{{users}}\" wx:for-item=\"u\" wx:for-index=\"i\" wx:key=\"Name\">{{u.Name}} {{i}} {{u.Nmae}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'u.Nmae'",
+        "range": {
+          "end": {
+            "character": 99,
+            "line": 0
+          },
+          "start": {
+            "character": 89,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "u.Name",
+          3
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nu.Name: string\n```\n\n**Parent context**\n\n```typescript\nu: {\n  Name: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 80,
+              "line": 0
+            },
+            "start": {
+              "character": 76,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "{{i}}",
+          2
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\ni: number\n```"
+          },
+          "range": {
+            "end": {
+              "character": 86,
+              "line": 0
+            },
+            "start": {
+              "character": 85,
+              "line": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "loop_heterogeneous",
+    "ts": "Page({data:{users:[{Name:'Ada'},{Name:1}]}})",
+    "wxml": "<view wx:for=\"{{users}}\" wx:key=\"Name\">{{item}} {{item.Name}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'item.Name'",
+        "range": {
+          "end": {
+            "character": 61,
+            "line": 0
+          },
+          "start": {
+            "character": 48,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "{{item}}",
+          2
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nitem: unknown\n```"
+          },
+          "range": {
+            "end": {
+              "character": 45,
+              "line": 0
+            },
+            "start": {
+              "character": 41,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "item.Name",
+          6
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "attributes",
+    "ts": "Page({data:{obj:{Name:'Ada'},text:'not number',num:42}})",
+    "wxml": "<slider value=\"{{text}}\"/><view hidden=\"{{obj}}\"/><my-card count=\"{{text}}\"/><my-card count=\"{{obj}}\"/>",
+    "diagnostics": [],
+    "hover": [
+      {
+        "query": [
+          "text"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\ntext: string\n```"
+          },
+          "range": {
+            "end": {
+              "character": 21,
+              "line": 0
+            },
+            "start": {
+              "character": 17,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "obj"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nobj: {\n  Name: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 45,
+              "line": 0
+            },
+            "start": {
+              "character": 42,
+              "line": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "expression_checks",
+    "ts": "Page({data:{user:{Name:'Ada'},n:1}})",
+    "wxml": "<view>{{user.Name * 2}}</view><view>{{n + missing}}</view><view>{{!missing}}</view><view>{{user['Nmae']}}</view><view>{{user.Name.Nmae}}</view><view>{{123}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable '123'",
+        "range": {
+          "end": {
+            "character": 156,
+            "line": 0
+          },
+          "start": {
+            "character": 149,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      },
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Name.Nmae'",
+        "range": {
+          "end": {
+            "character": 136,
+            "line": 0
+          },
+          "start": {
+            "character": 118,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.Name: string\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  Name: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 0
+            },
+            "start": {
+              "character": 13,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "missing"
+        ],
+        "result": null
+      },
+      {
+        "query": [
+          "user.Name.Nmae",
+          12
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "unicode_range",
+    "ts": "Page({data:{user:{Name:'Ada'}}})",
+    "wxml": "<view>中文😀{{ user.Nmae }}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Nmae'",
+        "range": {
+          "end": {
+            "character": 31,
+            "line": 0
+          },
+          "start": {
+            "character": 16,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": []
+  },
+  {
+    "name": "unsaved_ts",
+    "ts": "Page({data:{user:{Name:'Ada'}}})",
+    "wxml": "<view>{{user.Name}}</view>",
+    "diagnostics": [],
+    "hover": [
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.Name: string\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  Name: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 17,
+              "line": 0
+            },
+            "start": {
+              "character": 13,
+              "line": 0
+            }
+          }
+        }
+      }
+    ],
+    "hover_after_unsaved_ts_open": {
+      "contents": {
+        "kind": "markdown",
+        "value": "```typescript\nuser.Name: string\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  Name: string;\n}\n```"
+      },
+      "range": {
+        "end": {
+          "character": 17,
+          "line": 0
+        },
+        "start": {
+          "character": 13,
+          "line": 0
+        }
+      }
+    }
+  },
+  {
+    "name": "import_const",
+    "ts": "import { users } from './model'; Page({data:{users}})",
+    "wxml": "<view wx:for=\"{{users}}\" wx:key=\"Name\">{{item.Name}}</view>",
+    "diagnostics": [],
+    "hover": [
+      {
+        "query": [
+          "item.Name",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nitem.Name: string\n```\n\n**Parent context**\n\n```typescript\nitem: {\n  Name: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 50,
+              "line": 0
+            },
+            "start": {
+              "character": 46,
+              "line": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "data_const_object",
+    "ts": "const initial = {user:{Name:'Ada'}}; Page({data:initial})",
+    "wxml": "<view>{{user.Name}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Name'",
+        "range": {
+          "end": {
+            "character": 19,
+            "line": 0
+          },
+          "start": {
+            "character": 6,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "data_spread",
+    "ts": "const initial = {user:{Name:'Ada'}}; Page({data:{...initial}})",
+    "wxml": "<view>{{user.Name}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Name'",
+        "range": {
+          "end": {
+            "character": 19,
+            "line": 0
+          },
+          "start": {
+            "character": 6,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "discriminated_union",
+    "ts": "interface State { kind: 'a' | 'b'; payload: string | number; } Page({data:{state:{} as State}})",
+    "wxml": "<view wx:if=\"{{state.kind === 'a'}}\">{{state.payload}}</view><view wx:else>{{state.payload}}</view>",
+    "diagnostics": [],
+    "hover": [
+      {
+        "query": [
+          "state.payload",
+          8,
+          0
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nstate.payload: unknown\n```\n\n**Parent context**\n\n```typescript\nstate: {\n  kind: unknown;\n  payload: unknown;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 52,
+              "line": 0
+            },
+            "start": {
+              "character": 45,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "state.payload",
+          8,
+          1
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nstate.payload: unknown\n```\n\n**Parent context**\n\n```typescript\nstate: {\n  kind: unknown;\n  payload: unknown;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 90,
+              "line": 0
+            },
+            "start": {
+              "character": 83,
+              "line": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "component_generic_assertion",
+    "ts": "interface User { Name:string; } Component({properties:{user:{type:Object as WechatMiniprogram.PropType<User>}}})",
+    "wxml": "<view>{{user}} {{user.Name}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'user.Name'",
+        "range": {
+          "end": {
+            "character": 28,
+            "line": 0
+          },
+          "start": {
+            "character": 15,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "user"
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser: unknown\n```"
+          },
+          "range": {
+            "end": {
+              "character": 12,
+              "line": 0
+            },
+            "start": {
+              "character": 8,
+              "line": 0
+            }
+          }
+        }
+      },
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": null
+      }
+    ]
+  },
+  {
+    "name": "unicode_hover",
+    "ts": "Page({data:{user:{Name:'Ada'}}})",
+    "wxml": "<view>中文😀{{ user.Name }}</view>",
+    "diagnostics": [],
+    "hover": [
+      {
+        "query": [
+          "user.Name",
+          6
+        ],
+        "result": {
+          "contents": {
+            "kind": "markdown",
+            "value": "```typescript\nuser.Name: string\n```\n\n**Parent context**\n\n```typescript\nuser: {\n  Name: string;\n}\n```"
+          },
+          "range": {
+            "end": {
+              "character": 22,
+              "line": 0
+            },
+            "start": {
+              "character": 18,
+              "line": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "name": "true_discriminated_union",
+    "ts": "interface A { kind: 'a'; Name: string; } interface B { kind: 'b'; Count: number; } Page({data:{state:{} as A | B}})",
+    "wxml": "<view wx:if=\"{{state.kind === 'a'}}\">{{state.Name}}</view><view wx:else>{{state.Count}}</view>",
+    "diagnostics": [
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'state.Count'",
+        "range": {
+          "end": {
+            "character": 87,
+            "line": 0
+          },
+          "start": {
+            "character": 72,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      },
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'state.Name'",
+        "range": {
+          "end": {
+            "character": 51,
+            "line": 0
+          },
+          "start": {
+            "character": 37,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      },
+      {
+        "code": "undefined-variable",
+        "message": "Undefined variable 'state.kind'",
+        "range": {
+          "end": {
+            "character": 35,
+            "line": 0
+          },
+          "start": {
+            "character": 13,
+            "line": 0
+          }
+        },
+        "severity": 1,
+        "source": "wxml-diagnostics"
+      }
+    ],
+    "hover": [
+      {
+        "query": [
+          "state.Name",
+          7
+        ],
+        "result": null
+      },
+      {
+        "query": [
+          "state.Count",
+          7
+        ],
+        "result": null
+      }
+    ]
+  }
+]
