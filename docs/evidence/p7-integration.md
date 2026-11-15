@@ -1,7 +1,8 @@
 # P7 真实集成证据
 
-日期：2026-11-15。范围：`crates/wxml-lsp/**`（P7-1..P7-4）。未修改 P3/P5/P6、根
-Cargo/lock、CI、fixtures、`.opencode` 或 ADR。
+日期：2026-11-15（G1 补充于 2026-11-16）。范围：`crates/wxml-lsp/**`（P7-1..P7-4）。
+未修改 P3/P5/P6、根 Cargo/lock、CI、fixtures、`.opencode` 或 ADR。
+证据等级：E1（关键命令和结果摘录见第 6 节；完整运行日志未逐条入库）。
 
 ## 1. 实现
 

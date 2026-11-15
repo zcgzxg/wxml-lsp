@@ -2,3 +2,5 @@
 tests/fixtures/**/*.wxml text eol=lf
 # Keep the CRLF fixture byte-exact; AC-003 asserts CRLF behaviour.
 tests/fixtures/**/*-crlf.wxml -text
+# The CRLF script sample is asserted byte-exact by the type-bridge scenarios.
+backends/typescript/samples/crlf-script/index.ts -text

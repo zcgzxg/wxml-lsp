@@ -2,13 +2,14 @@
 
 日期：2026-11-16。基线提交：`a6c7eef`。范围：`editors/zed/**`、本记录和
 `docs/evidence/README.md` 索引。未修改根 `Cargo.toml`/`Cargo.lock`、CI、
-`.opencode`、ADR、fixtures、其他 crates/backends；未 commit。
+`.opencode`、ADR、fixtures、其他 crates/backends。实现已随 `36aad34` 提交；
+本记录与本地安装状态随后续文档提交更新。
 证据等级：E1（关键命令输出摘录见第 8 节；查询验证器为仓库外临时程序，
 未入库）。
 
 ## 1. 结论摘要
 
-- 已建立可审阅的 Zed 扩展骨架：`extension.toml`、独立 Rust crate、WXML 语言
+- 已建立可审阅的本地 Zed 扩展：`extension.toml`、独立 Rust crate、WXML 语言
   配置和四类 tree-sitter 查询、README。
 - 语言服务器只接受显式 `WXML_LSP_BIN` 绝对路径；不探测 worktree、不查
   `PATH`、不执行项目脚本、不做 shell 拼接。未设置或无效时直接报错，不回退。
@@ -20,8 +21,16 @@
 - 已在本机完成 host 侧 `fmt`/`check`/`clippy`/`test`、`wasm32-wasip2`
   debug/release 构建，并验证 `extension.toml`、语言 `config.toml` 可解析，
   四份查询可在 `tree-sitter-wxml` 真实语法树上编译并命中样本。
-- **未**在 Zed 内安装/运行 dev extension，**未**做 `wxml-lsp`
-  initialize/didOpen/诊断/悬停/定义端到端运行。本记录不声称任何 G0/G2 通过。
+- **未**完成标准 UI Dev Extension 安装。早期隔离 smoke 曾用临时 HTML grammar
+  触发注册；最终隔离测试已加载真实 `tree-sitter-wxml` grammar（wasi-sdk 34
+  编译，约 23,806 B），扩展 id 改为 `wxml-lsp` 后不再被 Marketplace 的
+  `wxml` 扩展覆盖。隔离 Zed 已注册 WXML、启动真实 `wxml-lsp --stdio` 并显示
+  `user.nmae` 诊断；第二次启动日志稳定，无卸载/重启。
+- 本机主 Zed 用户数据目录也已放入手工 dev symlink/index
+  （`extensions/installed/wxml-lsp -> <repo>/editors/zed`，`index.json` 中
+  `dev=true`），但当前 Zed 进程尚未重载。标准 UI 安装、主 Zed 内
+  hover/definition 可视化、真实 grammar 高亮观感仍未确认。G0/G2 仅部分通过，
+  本记录不声称完整通过。
 
 ## 2. 环境
 
@@ -60,6 +69,10 @@ editors/zed/
 表；`name`/`grammar`/`path_suffixes` 等字段位于
 `languages/wxml/config.toml`。`[language_servers.wxml-lsp]` 不写 `name`，
 因为 Zed 1.28.1 的 manifest 结构没有这个字段，会被忽略。
+
+当前 `extension.toml` 的扩展 `id` 为 `wxml-lsp`、显示名为 `WXML LSP`，用于
+避免与 Marketplace 上已有的 `wxml` 扩展（仅 grammar，可能自动更新覆盖本地
+dev 扩展）冲突；该命名不影响本记录的验证结果。
 
 ## 4. 二进制解析（HIGH-1/HIGH-2 + 平台感知校验）
 
@@ -115,6 +128,8 @@ editors/zed/
 | manifest 字段 | Zed `v1.28.1` 的 `ExtensionManifest`/`GrammarManifestEntry` | `id`/`name`/`version`/`schema_version` 必需；`grammar.rev` 可写，`commit` 是别名；`languages` 自动发现 |
 | TOML 解析 | Python 3 `tomllib` 读取三份 TOML | 全部通过 |
 | grammar 可获取 | `git clone --depth 1`，`git rev-parse HEAD` | HEAD 与写入的 rev 一致；含 `src/parser.c`（ABI 15）、`src/scanner.c`、`src/node-types.json` |
+| 真实 grammar 构建 | wasi-sdk 34 `clang --target=wasm32-wasip1 -Os -fPIC -shared` | 通过；`editors/zed/grammars/wxml.wasm` 约 23,806 B（gitignored） |
+| 扩展 id/name | `editors/zed/extension.toml` | `id = "wxml-lsp"`、`name = "WXML LSP"`；避免 Marketplace 的 `wxml` 扩展自动更新覆盖本地 dev 扩展 |
 | 查询语法/节点名 | `tree-sitter 0.25.8` 加载 grammar，样本解析后 `Query::new` | 四份查询全部通过；样本命中：highlights 77、brackets 27、indents 11、injections 5 |
 | 路径 helper 单测 | `cargo test --locked` | 22 passed；按 `Os::Windows`/`Os::Linux`/`Os::Mac` 参数化，覆盖盘符、UNC、POSIX、`/C:/...` 的 Windows 拒绝与 POSIX 接受、混合分隔符、尾部分隔符、空格、相对路径、`..`、空值、无 `WXML_LSP_BIN`、无效路径不回退、`which` 异常返回 |
 | 格式 | `cargo fmt --all -- --check` | 通过 |
@@ -128,24 +143,46 @@ editors/zed/
 
 | 项 | 原因/状态 |
 | --- | --- |
-| Zed dev extension 安装 | 未通过 GUI 执行 `zed: install dev extension`；**2026-11-16 做过隔离用户目录的手动 smoke**：把 `extension.wasm`、语言配置和一个临时 grammar 放入 `--user-data-dir` 的 installed 目录，详见 §6.1。标准 Dev Extension 安装仍未完成 |
-| Zed 内语法高亮/括号/缩进/注入 | 临时 grammar 只用于让语言注册成功，查询未按真实 WXML 语法验证；高亮/括号/缩进观感未验收 |
-| grammar 的 Zed/wasi-sdk 构建 | 未在 Zed 内触发真实 `tree-sitter-wxml` 编译；只验证了 grammar 仓库、ABI 和查询 |
-| `wxml-lsp` initialize | **已由 Zed 1.28.1 启动**：日志显示 `starting language server process ... args: ["--stdio"]`，工作目录为测试项目根；未逐项核对 `initializationOptions`/`workspace/configuration` |
-| 诊断、悬停、定义 | 诊断已在隔离 smoke 中显示（`user.nmae` 精确下划线）；悬停/定义未完成可视化确认，依赖 G1 端到端测试 |
+| Zed dev extension 安装 | 标准 UI `zed: install dev extension` 未执行；隔离用户目录已用真实 grammar 完成 smoke；主 Zed 已放入手工 dev symlink/index（未重载），详见 §6.1/§6.2。标准安装仍未完成 |
+| Zed 内语法高亮/括号/缩进/注入 | 早期 smoke 用临时 HTML grammar；最终隔离测试已加载真实 `tree-sitter-wxml` grammar，但主 Zed 高亮/括号/缩进观感仍未验收 |
+| grammar 的 Zed/wasi-sdk 构建 | 已用 wasi-sdk 34 在 host 侧编译真实 grammar（约 23,806 B）；未在 Zed 内触发自动 grammar 构建 |
+| `wxml-lsp` initialize | **已由 Zed 1.28.1 启动**：日志显示 `starting language server process ... args: ["--stdio"]`，工作目录为测试项目页面目录（`.../pages/index`）；未逐项核对 `initializationOptions`/`workspace/configuration` |
+| 诊断、悬停、定义 | 诊断已在隔离 smoke 中显示（`user.nmae` 精确下划线）；主 Zed 重载后的悬停/定义仍未可视化确认，LSP 层由 G1 覆盖 |
 | Spike S1 运行时复测 | 本节结论来自 Zed 1.28.1 的 buffer 注册行为，本次未做运行时抓包复测 |
 | 多 worktree/远程项目 | 未测 |
 | Windows/macOS 实机 | 未测；Windows 路径只用字符串单测覆盖 |
 
 ### 6.1 隔离 smoke（非标准安装）
 
-目的：只确认 Zed 能加载扩展 wasm、注册 WXML 并启动真实语言服务器，不把它当作标准 Dev Extension 验收。
+目的：确认 Zed 能加载扩展 wasm、注册 WXML 并启动真实语言服务器；不把它当作标准 UI Dev Extension 验收。
 
-- 使用 `zed 1.28.1 --user-data-dir /tmp/opencode/zed-user`，项目 `/tmp/opencode/zed-project`（`page-basic` 样本）；`WXML_LSP_BIN=target/release/wxml-lsp`，Node 后端指向本仓库 `backends/typescript/dist/server.js`。
-- 由于未走 GUI Dev Extension 安装，手动把 release `zed_wxml.wasm`、`languages/wxml/` 和 `grammars/wxml.wasm` 放入隔离数据目录。`tree-sitter-wxml` 未在 Zed 内编译；临时 grammar 使用已安装 HTML grammar 并仅把导出名替换为 `tree_sitter_wxml`，**只能证明注册/启动链路，不证明 WXML 语法**。
-- 结果：Zed 状态栏显示 `WXML`；日志出现 `starting language server process. binary path: .../target/release/wxml-lsp, working directory: /tmp/opencode/zed-project, args: ["--stdio"]`；`user.nmae` 行出现诊断下划线，状态栏显示 1 条诊断。
-- 未确认：悬停内容、定义跳转、真实 grammar 高亮、标准 `zed: install dev extension` 流程。KDE 的 EIS 合成输入权限弹窗阻断了自动化鼠标/键盘，未继续强行操作。
+- 早期 smoke 曾把已安装 HTML grammar 改名为 `tree_sitter_wxml`，只证明注册/启动链路，不证明 WXML 语法。
+- 最终隔离测试使用 wasi-sdk 34 编译的真实 `BlockLune/tree-sitter-wxml` rev `1cc1761…` grammar，产物为 `editors/zed/grammars/wxml.wasm`，约 23,806 B（gitignored）。在 grammar checkout 中执行：
+
+  ```bash
+  $WASI_SDK_PATH/bin/clang --target=wasm32-wasip1 -Os -fPIC -shared \
+    -I src src/parser.c src/scanner.c \
+    -Wl,--export=tree_sitter_wxml -Wl,--allow-undefined \
+    -o <repo>/editors/zed/grammars/wxml.wasm
+  ```
+
+- 使用 `zed 1.28.1 --user-data-dir /tmp/opencode/zed-user`，项目 `/tmp/opencode/zed-project`（`page-basic` 样本）；`WXML_LSP_BIN=<repo>/target/release/wxml-lsp`（绝对路径），Node 后端指向本仓库 `backends/typescript/dist/server.js`。
+- 扩展 id 改为 `wxml-lsp` 后，不再被 Marketplace 的 `wxml` 扩展覆盖。
+- 结果：Zed 状态栏显示 `WXML`；第二次启动日志稳定为 `starting language server process. binary path: <repo>/target/release/wxml-lsp, working directory: .../pages/index, args: ["--stdio"]`，无卸载/重启；`user.nmae` 行出现诊断下划线，状态栏显示 1 条诊断。
+- 未确认：悬停内容、定义跳转、真实 grammar 高亮观感、标准 `zed: install dev extension` 流程。KDE 的 EIS 合成输入权限弹窗阻断了自动化鼠标/键盘，未继续强行操作。
 - 结论：**语言服务器启动与诊断链路已在 Zed 内实际跑通**；G0/G2 仍只算部分通过。
+
+### 6.2 主 Zed 手工 dev 安装状态（2026-11-16）
+
+- `~/.local/share/zed/extensions/installed/wxml-lsp` 是指向
+  `<repo>/editors/zed` 的 dev symlink；`index.json` 含 `wxml-lsp`
+  （`dev=true`）和 WXML 语言条目。
+- `~/.bashrc` 已导出 `WXML_LSP_BIN`、`WXML_TYPE_BACKEND`、`WXML_BACKEND_DIR`
+  的绝对路径。
+- 当前 Zed 进程尚未重载，重启后才会加载该 dev 安装。
+- 这不是标准 UI `zed: install dev extension` 流程；标准流程仍未确认。
+- 仍待确认：主 Zed 重启后的 hover/definition 可视化、真实 grammar 高亮观感、
+  诊断刷新和服务重启恢复。
 
 ## 7. Spike S1 结论与复测清单
 
@@ -229,7 +266,8 @@ grammar 路径依赖执行；未把验证器或依赖复制进仓库。
 
 - 影响：编辑器侧采用“显式绝对路径、无自动回退”的接入方式，牺牲少量便利性，
   换取“不可信项目不能触发项目内二进制执行”的边界；`wxml-lsp` 的命令行契约
-  只需保持 `--stdio`。
+  只需保持 `--stdio`。扩展 id 使用 `wxml-lsp`，避免 Marketplace 的 `wxml`
+  扩展自动更新覆盖本地 dev 安装。
 - 数据位置：实现和最小配置在 `editors/zed/`；关键命令输出摘录在本记录第 8 节；
   查询验证使用仓库外临时程序，不作为长期证据来源。
 
@@ -238,12 +276,16 @@ grammar 路径依赖执行；未把验证器或依赖复制进仓库。
 - `Worktree::which` 对绝对路径的支持依赖 Zed 实现细节；已在 1.28.1 源码中核对，
   但未来版本可能变化。失败时会给出清晰错误，用户可检查 `WXML_LSP_BIN`。
 - grammar 为小型第三方仓库，长期维护和 ABI 升级不在本仓库控制内；rev 已固定，
-  升级需重新跑查询验证。
-- 未做 Zed 内运行验证，语言服务器生命周期、日志可见性和查询实际渲染仍需
-  手工验收。
+  升级需重新跑查询验证。真实 grammar 已用 wasi-sdk 34 编译并在隔离测试加载，
+  Zed 自动构建和渲染仍需确认。
+- 隔离 smoke 已看到服务器启动和诊断链路；主 Zed 已有手工 dev symlink/index，
+  但尚未重载。标准 UI 安装、语言服务器生命周期/重启、日志长期可见性、真实
+  grammar 高亮和悬停/定义渲染仍需手工验收。
 - 平台判断依赖 `zed::current_platform()`；host 单测显式传入 `Os`，但 Windows/
   macOS 实机行为仍未验证。
-- TypeScript 后端未在本任务中构建；无 `WXML_TYPE_BACKEND` 时服务降级为语法
-  能力，不能据此判断类型功能。
+- P8 代码门禁不要求构建 TypeScript 后端；本地安装已构建
+  `backends/typescript/dist/server.js` 供 Zed 使用，但这不属于 P8 门禁证据。
+  无 `WXML_TYPE_BACKEND` 时服务降级为语法能力，不能据此判断类型功能。
 - S1 运行时行为尚未抓包复测；Zed 升级后应重新确认。
-- 本记录不构成 G0/G2 证据，也不替代 P7 的 `wxml-lsp` 集成证据。
+- 本记录只构成 G0/G2 的部分证据（扩展加载、语言注册、服务器启动和诊断链路），
+  不构成完整 G0/G2 验收，也不替代 P7 的 `wxml-lsp` 集成证据。

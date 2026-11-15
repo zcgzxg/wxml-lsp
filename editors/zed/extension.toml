@@ -1,5 +1,5 @@
-id = "wxml"
-name = "WXML"
+id = "wxml-lsp"
+name = "WXML LSP"
 version = "0.0.1"
 schema_version = 1
 authors = ["wxml-lsp contributors"]
