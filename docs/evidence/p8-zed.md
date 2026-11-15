@@ -28,9 +28,10 @@
   `user.nmae` 诊断；第二次启动日志稳定，无卸载/重启。
 - 本机主 Zed 用户数据目录也已放入手工 dev symlink/index
   （`extensions/installed/wxml-lsp -> <repo>/editors/zed`，`index.json` 中
-  `dev=true`），但当前 Zed 进程尚未重载。标准 UI 安装、主 Zed 内
-  hover/definition 可视化、真实 grammar 高亮观感仍未确认。G0/G2 仅部分通过，
-  本记录不声称完整通过。
+  `dev=true`）。主 Zed 已重启加载扩展；在 `tests/fixtures/page-basic`
+  工作区打开页面后，Zed 启动了 `wxml-lsp --stdio` 和 Node 后端，
+  `user.nmae` 显示红色诊断，WXML 语法着色可见。标准 UI 安装、hover/definition
+  内容仍未经人工确认。G0/G2 仅部分通过，本记录不声称完整通过。
 
 ## 2. 环境
 
@@ -143,8 +144,8 @@ dev 扩展）冲突；该命名不影响本记录的验证结果。
 
 | 项 | 原因/状态 |
 | --- | --- |
-| Zed dev extension 安装 | 标准 UI `zed: install dev extension` 未执行；隔离用户目录已用真实 grammar 完成 smoke；主 Zed 已放入手工 dev symlink/index（未重载），详见 §6.1/§6.2。标准安装仍未完成 |
-| Zed 内语法高亮/括号/缩进/注入 | 早期 smoke 用临时 HTML grammar；最终隔离测试已加载真实 `tree-sitter-wxml` grammar，但主 Zed 高亮/括号/缩进观感仍未验收 |
+| Zed dev extension 安装 | 标准 UI `zed: install dev extension` 未执行；隔离用户目录已用真实 grammar 完成 smoke；主 Zed 已放入手工 dev symlink/index 并重启加载，启动真实 LSP/Node，详见 §6.1/§6.2。标准安装仍未完成 |
+| Zed 内语法高亮/括号/缩进/注入 | 早期 smoke 用临时 HTML grammar；最终隔离测试已加载真实 `tree-sitter-wxml` grammar。主 Zed 中 WXML 语法着色可见，括号/缩进/注入观感仍未逐项验收 |
 | grammar 的 Zed/wasi-sdk 构建 | 已用 wasi-sdk 34 在 host 侧编译真实 grammar（约 23,806 B）；未在 Zed 内触发自动 grammar 构建 |
 | `wxml-lsp` initialize | **已由 Zed 1.28.1 启动**：日志显示 `starting language server process ... args: ["--stdio"]`，工作目录为测试项目页面目录（`.../pages/index`）；未逐项核对 `initializationOptions`/`workspace/configuration` |
 | 诊断、悬停、定义 | 诊断已在隔离 smoke 中显示（`user.nmae` 精确下划线）；主 Zed 重载后的悬停/定义仍未可视化确认，LSP 层由 G1 覆盖 |
@@ -179,10 +180,13 @@ dev 扩展）冲突；该命名不影响本记录的验证结果。
   （`dev=true`）和 WXML 语言条目。
 - `~/.bashrc` 已导出 `WXML_LSP_BIN`、`WXML_TYPE_BACKEND`、`WXML_BACKEND_DIR`
   的绝对路径。
-- 当前 Zed 进程尚未重载，重启后才会加载该 dev 安装。
+- 主 Zed 已于 2026-11-16 05:35 重启；Zed 日志显示扩展加载、`wxml-lsp`
+  以 `--stdio` 启动；打开 `tests/fixtures/page-basic` 后还启动了
+  `node -- backends/typescript/dist/server.js`。
+- 主 Zed 中 `user.nmae` 显示红色诊断下划线和文件树错误标记，WXML 语法着色可见。
 - 这不是标准 UI `zed: install dev extension` 流程；标准流程仍未确认。
-- 仍待确认：主 Zed 重启后的 hover/definition 可视化、真实 grammar 高亮观感、
-  诊断刷新和服务重启恢复。
+- 仍待确认：hover/definition 内容、真实 grammar 查询观感、诊断刷新和服务
+  重启恢复。
 
 ## 7. Spike S1 结论与复测清单
 
@@ -279,8 +283,9 @@ grammar 路径依赖执行；未把验证器或依赖复制进仓库。
   升级需重新跑查询验证。真实 grammar 已用 wasi-sdk 34 编译并在隔离测试加载，
   Zed 自动构建和渲染仍需确认。
 - 隔离 smoke 已看到服务器启动和诊断链路；主 Zed 已有手工 dev symlink/index，
-  但尚未重载。标准 UI 安装、语言服务器生命周期/重启、日志长期可见性、真实
-  grammar 高亮和悬停/定义渲染仍需手工验收。
+  并已重启加载，启动真实 LSP/Node 且显示诊断。标准 UI 安装、语言服务器
+  生命周期/重启、日志长期可见性、真实 grammar 查询观感和悬停/定义内容
+  仍需手工验收。
 - 平台判断依赖 `zed::current_platform()`；host 单测显式传入 `Os`，但 Windows/
   macOS 实机行为仍未验证。
 - P8 代码门禁不要求构建 TypeScript 后端；本地安装已构建

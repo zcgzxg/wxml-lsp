@@ -264,12 +264,15 @@ the standard UI install:
 
 A manual dev symlink/index is present in the main Zed user-data directory
 (`~/.local/share/zed/extensions/installed/wxml-lsp -> <repo>/editors/zed`,
-`dev = true`), but the running Zed process has not been restarted.
+`dev = true`). The main Zed process was restarted on 2026-11-16; it loaded the
+extension, started `wxml-lsp --stdio`, and spawned the Node backend for
+`tests/fixtures/page-basic`. The `user.nmae` typo shows a red diagnostic and the
+file tree shows an error badge; WXML syntax colours are visible.
 
-Not confirmed: standard `zed: install dev extension`, main-Zed hover/definition
-rendering after restart, real grammar highlighting, Windows/macOS hosts,
-multi-worktree/remote projects, and long-running server lifecycle. KDE's EIS
-permission dialog blocked automated mouse/keyboard input.
+Not confirmed: standard `zed: install dev extension`, hover/definition contents,
+real grammar query quality, Windows/macOS hosts, multi-worktree/remote projects,
+and long-running server lifecycle. KDE's EIS permission dialog blocked automated
+mouse/keyboard input.
 
 ## Verification
 

@@ -67,7 +67,7 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test real_node -- --ignored
 
 `WXML_LSP_BIN` 缺失或无效时，扩展返回错误且不会启动 LSP，也没有 worktree 或 `PATH` 回退。
 
-本机主 Zed 用户数据目录还放入过手工 dev symlink/index（`extensions/installed/wxml-lsp -> editors/zed`）作为等价安装；当前 Zed 进程尚未重载，且这不等于标准 UI 安装。
+本机主 Zed 用户数据目录还放入过手工 dev symlink/index（`extensions/installed/wxml-lsp -> editors/zed`）作为等价安装；主 Zed 已重启并实际加载扩展，打开 `tests/fixtures/page-basic` 后启动了 `wxml-lsp --stdio` 与 Node 后端，`user.nmae` 显示红色诊断。这不等于标准 UI 安装。
 
 环境变量约束（由 `wxml-lsp --help` 与扩展转发逻辑共同决定）：
 
@@ -85,7 +85,7 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test real_node -- --ignored
 ### 0.4 已知限制
 
 - Wave 4 尚未完成：完整 `wx:for` 元素类型、条件窄化、多视图/项目别名、反向编辑等对应 AC-005/006/008/012；含 locals 的片段当前为 `Partial`，元素类型按 `any` 处理。
-- Zed 扩展已完成代码评审、host 测试、wasm 构建和真实 `tree-sitter-wxml` grammar 构建（wasi-sdk 34，约 23,806 B）；早期隔离 smoke 用临时 HTML grammar，最终隔离测试已加载真实 grammar、注册 WXML、启动真实 LSP、显示 `user.nmae` 诊断。本机主 Zed 用户数据目录已放入手工 dev symlink/index，但进程尚未重载。**标准 UI `zed: install dev extension` 安装、主 Zed 内 hover/definition 可视化、真实 grammar 高亮观感尚未确认**；未做 Windows/macOS 实机验证。
+- Zed 扩展已完成代码评审、host 测试、wasm 构建和真实 `tree-sitter-wxml` grammar 构建（wasi-sdk 34，约 23,806 B）；早期隔离 smoke 用临时 HTML grammar，最终隔离测试已加载真实 grammar、注册 WXML、启动真实 LSP、显示 `user.nmae` 诊断。本机主 Zed 已通过手工 dev symlink/index 重启加载扩展，在 `tests/fixtures/page-basic` 中启动 `wxml-lsp --stdio` 与 Node 后端，并显示 `user.nmae` 红色诊断。**标准 UI `zed: install dev extension` 安装、hover/definition 内容与真实 grammar 查询观感尚未确认**；未做 Windows/macOS 实机验证。
 - G0/G2 仅部分通过；G1 真实 Node 端到端通过（5 + 1 个显式门禁测试）。KDE EIS 权限弹窗阻断了自动化鼠标/键盘验证。
 - 未发布：扩展 id 为 `wxml-lsp`、名称 `WXML LSP`（避免与 Marketplace 上仅 grammar 的 `wxml` 扩展冲突）；没有 marketplace 发布、服务器自动下载或安装流水线。
 - Zed 只把 WXML buffer 交给 `wxml-lsp`；未保存的 JS/TS 修改不会实时反映到 WXML，保存后的下一次分析才会读取磁盘内容。
@@ -383,7 +383,7 @@ docs/                         # 参考、ADR、证据
 
 产出：可本地安装、可评审的最小验证版及实际测试记录。
 
-状态（2026-11-16）：扩展代码、host 测试、wasm 构建和真实 grammar 构建完成；隔离用户目录 smoke 已加载真实 grammar、启动真实 `wxml-lsp` 并显示 `user.nmae` 诊断；主 Zed 已放入手工 dev symlink/index 但尚未重载。标准 UI 安装、hover/definition 可视化、未保存 JS 同步和并存行为仍未验收，因此上述项不勾选。
+状态（2026-11-16）：扩展代码、host 测试、wasm 构建和真实 grammar 构建完成；隔离用户目录 smoke 已加载真实 grammar、启动真实 `wxml-lsp` 并显示 `user.nmae` 诊断；主 Zed 已放入手工 dev symlink/index 并重启加载，`page-basic` 窗口中启动了 `wxml-lsp` 与 Node 后端，`user.nmae` 显示红色诊断和语法着色。标准 UI 安装、hover/definition 内容、未保存 JS 同步和并存行为仍未验收，因此上述项不勾选。
 
 ### 阶段 4：完整模板作用域与项目类型
 
@@ -450,6 +450,6 @@ docs/                         # 参考、ADR、证据
 
 - 已完成：C0/C1 契约；`wxml-text`、`wxml-syntax`（容错 lexer/parser、表达式 Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、app 发现、tsconfig、sources）、`wxml-types`（类型契约、模板语义、`wx:for` 作用域/事件/不支持形式）、`wxml-lsp`（JSON-RPC、真实 Project/FileId、Node 后端、hover/diagnostics/definition、版本屏障/缓存/超时/重启）、Node 类型桥与后端、P8 Zed 扩展；G1 真实 Node 端到端 5 + 1 个显式门禁测试。
 - 验证：workspace `625 passed / 6 ignored / 26 suites`；`editors/zed` `22 passed`；wasm debug `7,633,946 B`、release `238,792 B`；真实 grammar 约 `23,806 B`（gitignored）。
-- 部分完成：Zed 扩展代码、wasm 构建和真实 `tree-sitter-wxml` grammar 构建通过；隔离 smoke 注册 WXML、启动真实 LSP 并显示精确诊断；主 Zed 已放入手工 dev symlink/index 但尚未重载。标准 UI `zed: install dev extension`、主 Zed 内 hover/definition 可视化、真实 grammar 高亮观感、Windows/macOS 实机、G0/G2 完整验收仍未完成。
+- 部分完成：Zed 扩展代码、wasm 构建和真实 `tree-sitter-wxml` grammar 构建通过；隔离 smoke 注册 WXML、启动真实 LSP 并显示精确诊断；主 Zed 已通过手工 dev symlink/index 重启加载，`page-basic` 窗口启动 `wxml-lsp` 与 Node 后端，显示 `user.nmae` 红色诊断和语法着色。标准 UI `zed: install dev extension`、hover/definition 内容、真实 grammar 查询观感、Windows/macOS 实机、G0/G2 完整验收仍未完成。
 - 未完成：完整 `wx:for` 元素类型、条件窄化、多视图/项目别名、补全/反向编辑等 Wave 4+ 能力（AC-005/006/008/012）；未保存 JS/TS 实时同步；发布/自动下载流水线。
 - 后续工作的优先级：先在 Zed 中完成标准安装与日常观感验收，再补 Wave 4 类型能力。
