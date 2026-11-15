@@ -1,6 +1,6 @@
 # 证据索引与记录规则
 
-更新日期：2026-11-15。
+更新日期：2026-11-16。
 
 本目录保存支撑设计判断的最小证据。结论、环境、方法、限制和原始数据都在仓库内，不把本机临时目录或外部仓库当作唯一证据来源。
 
@@ -22,6 +22,8 @@
 | 2026-11-15 | [现有 Rust WXML LSP 核验](2026-11-15-existing-wxml-lsp-audit.md) | 0.1.9 | E2 | 基础场景可用，跨文件、联合类型、说明和未保存同步不足 |
 | 2026-11-15 | [官方模板分析器核验](2026-11-15-official-template-analyzer-audit.md) | 1.0.0 | E1 | 导出式组件效果完整；裸写法退化为 `any`；未保存导入类型需刷新 |
 | 2026-11-15 | [TypeScript 原生语言服务实验](2026-11-15-native-typescript-service.md) | 7.0.2 / 7.1 开发版 | E2 | 虚拟 `file://` 文件可用；自定义 scheme 与显式 `files` 归属存在问题 |
+| 2026-11-15 | [类型桥候选验证与 C1 建议](type-bridge-c1.md) | TypeScript 6.0.3 / miniprogram-api-typings 5.3.1 | E2 | 33 场景 × 2 候选：A 26 supported / 3 Partial / 3 Unsupported / 1 Unavailable（208 tests）；B 在闭包、模块组件与 `this` 类型上失败；选项透传、多注册、替换与定义坐标已冻结为 C1 契约 |
+| 2026-11-16 | [P8 Zed 扩展骨架](p8-zed.md) | Zed 1.28.1 / zed_extension_api 0.7.0 | E1 | 显式 `WXML_LSP_BIN` 绝对路径、无 worktree/PATH 回退；host 单测 22 项；平台感知路径校验；wasm debug 7,633,946 B / release 238,792 B；未在 Zed 内运行 |
 
 ## 3. 维护规则
 
@@ -42,9 +44,12 @@ docs/evidence/
 ├── 2026-11-15-existing-wxml-lsp-audit.md
 ├── 2026-11-15-official-template-analyzer-audit.md
 ├── 2026-11-15-native-typescript-service.md
+├── type-bridge-c1.md
+├── p8-zed.md
 └── data/
     ├── typescript-language-service/
     ├── existing-wxml-lsp-audit/
     ├── official-template-analyzer-audit/
-    └── native-typescript-service/
+    ├── native-typescript-service/
+    └── type-bridge-c1/
 ```

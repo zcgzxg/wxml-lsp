@@ -1,0 +1,16 @@
+{
+  "queries": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "bind:tap=\"onCardTap\"",
+      "target": "onCardTap",
+      "expect": { "file": "pages/index/index.ts", "target": "onCardTap" }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "bindtap=\"missingHandler\"",
+      "target": "missingHandler",
+      "expect": null
+    }
+  ]
+}

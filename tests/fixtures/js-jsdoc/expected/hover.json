@@ -1,0 +1,22 @@
+{
+  "queries": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "{{ greeting }}",
+      "target": "greeting",
+      "expect": { "type": "string", "typeKind": "string", "documentation": "问候语" }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "{{ user.name }}",
+      "target": "user.name",
+      "expect": { "type": "string", "typeKind": "string", "documentation": "用户显示名称" }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "{{ user.age }}",
+      "target": "user.age",
+      "expect": { "type": "number", "typeKind": "number", "documentation": "用户年龄" }
+    }
+  ]
+}

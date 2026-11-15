@@ -1,0 +1,19 @@
+<view class="groups">
+  <view wx:for="{{ groups }}" wx:for-item="item" wx:for-index="itemIndex">
+    <text>外层索引：{{ itemIndex }}</text>
+    <text>外层组名：{{ item.name }}</text>
+    <text>外层标题：{{ item.title }}</text>
+    <view wx:for="{{ item.members }}">
+      <text>内层索引：{{ index }}</text>
+      <text>内层成员：{{ item.name }}</text>
+    </view>
+    <text>退出内层后标题：{{ item.title }}</text>
+  </view>
+  <text>循环外访问：{{ item }}</text>
+</view>
+<view class="maps">
+  <view wx:for="{{ groupMap }}">
+    <text>对象键：{{ index }}</text>
+    <text>对象值标题：{{ item.title }}</text>
+  </view>
+</view>

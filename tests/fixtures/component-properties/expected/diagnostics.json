@@ -1,0 +1,18 @@
+{
+  "diagnostics": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "title=\"{{ cardObject }}\"",
+      "target": "cardObject",
+      "severity": "error",
+      "messageContains": "assignable"
+    },
+    {
+      "file": "components/card/card.wxml",
+      "marker": "{{ subtitle }}",
+      "target": "subtitle",
+      "severity": "error",
+      "messageContains": "subtitle"
+    }
+  ]
+}

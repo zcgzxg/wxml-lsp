@@ -1,0 +1,20 @@
+id = "wxml"
+name = "WXML"
+version = "0.0.1"
+schema_version = 1
+authors = ["wxml-lsp contributors"]
+description = "WXML (WeiXin Markup Language) support backed by a locally built wxml-lsp binary."
+
+# Language metadata (name, grammar, path_suffixes, comments, brackets) lives in
+# languages/wxml/config.toml. Zed discovers the languages/ directory; the
+# extension manifest itself only lists grammars and language servers.
+
+[grammars.wxml]
+repository = "https://github.com/BlockLune/tree-sitter-wxml"
+rev = "1cc1761c8c11cacab5516dbe64e20ee689aa4428"
+
+[language_servers.wxml-lsp]
+languages = ["WXML"]
+
+[language_servers.wxml-lsp.language_ids]
+"WXML" = "wxml"

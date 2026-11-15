@@ -1,0 +1,4 @@
+<view class="页面">
+  <text>你好，世界 😀 {{ user.name }} 用户名</text>
+  <text>错误字段：{{ user.nmae }}</text>
+</view>

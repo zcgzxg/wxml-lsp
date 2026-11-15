@@ -1,0 +1,4 @@
+# Normal fixtures stay LF even on Windows checkouts.
+tests/fixtures/**/*.wxml text eol=lf
+# Keep the CRLF fixture byte-exact; AC-003 asserts CRLF behaviour.
+tests/fixtures/**/*-crlf.wxml -text

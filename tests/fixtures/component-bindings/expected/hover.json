@@ -1,0 +1,16 @@
+{
+  "queries": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "title=\"{{ pageTitle }}\"",
+      "target": "pageTitle",
+      "expect": { "type": "string", "typeKind": "string", "documentation": "页面标题" }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "count=\"{{ total }}\"",
+      "target": "total",
+      "expect": { "type": "number", "typeKind": "number", "documentation": "卡片总数" }
+    }
+  ]
+}

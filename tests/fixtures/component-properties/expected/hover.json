@@ -1,0 +1,32 @@
+{
+  "queries": [
+    {
+      "file": "components/card/card.wxml",
+      "marker": "{{ title }}",
+      "target": "title",
+      "expect": {
+        "type": "string | number",
+        "typeKind": "union",
+        "documentation": "标题，支持字符串或数字"
+      }
+    },
+    {
+      "file": "components/card/card.wxml",
+      "marker": "{{ disabled }}",
+      "target": "disabled",
+      "expect": { "type": "boolean", "typeKind": "boolean", "documentation": "是否禁用" }
+    },
+    {
+      "file": "components/card/card.wxml",
+      "marker": "{{ state }}",
+      "target": "state",
+      "expect": { "type": "string", "typeKind": "string", "documentation": "内部状态" }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "title=\"{{ cardCount }}\"",
+      "target": "cardCount",
+      "expect": { "type": "number", "typeKind": "number", "documentation": "卡片数量" }
+    }
+  ]
+}

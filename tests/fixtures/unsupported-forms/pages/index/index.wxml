@@ -1,0 +1,10 @@
+<import src="../../templates/item.wxml" />
+<include src="../../templates/footer.wxml" />
+
+<wxs module="utils">
+  module.exports = { format: function (value) { return String(value); } };
+</wxs>
+
+<view class="list" wx:for="{{ list }}" wx:key="id">
+  <text class="dynamic" bindtap="{{ handlerName }}">{{ m.foo }}</text>
+</view>

@@ -1,0 +1,46 @@
+{
+  "queries": [
+    {
+      "file": "components/card/card.wxml",
+      "marker": "卡片标题：{{ title }}",
+      "target": "title",
+      "expect": { "type": "string", "typeKind": "string", "documentation": "卡片标题" }
+    },
+    {
+      "file": "components/badge/badge.wxml",
+      "marker": "徽标数字：{{ title }}",
+      "target": "title",
+      "expect": { "type": "number", "typeKind": "number", "documentation": "徽标数字" }
+    },
+    {
+      "file": "components/card/card.wxml",
+      "marker": "卡片用户：{{ user.name }}",
+      "target": "user.name",
+      "expect": { "type": "string", "typeKind": "string", "documentation": "用户显示名称" }
+    },
+    {
+      "file": "pages/a/a.wxml",
+      "marker": "title=\"{{ aTitle }}\"",
+      "target": "aTitle",
+      "expect": { "type": "string", "typeKind": "string", "documentation": "A 页面标题" }
+    },
+    {
+      "file": "pages/a/a.wxml",
+      "marker": "title=\"{{ aBadge }}\"",
+      "target": "aBadge",
+      "expect": { "type": "number", "typeKind": "number", "documentation": "A 页面徽标数" }
+    },
+    {
+      "file": "pages/b/b.wxml",
+      "marker": "title=\"{{ bTitle }}\"",
+      "target": "bTitle",
+      "expect": { "type": "string", "typeKind": "string", "documentation": "B 页面标题" }
+    },
+    {
+      "file": "pages/b/b.wxml",
+      "marker": "title=\"{{ bBadge }}\"",
+      "target": "bBadge",
+      "expect": { "type": "number", "typeKind": "number", "documentation": "B 页面徽标数" }
+    }
+  ]
+}

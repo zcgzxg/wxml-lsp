@@ -7,6 +7,10 @@ publish.workspace = true
 description = "WXML lexing, parsing and template expression syntax"
 
 [dependencies]
+wxml-text = { path = "../wxml-text" }
+
+[dev-dependencies]
+proptest = { workspace = true }
 
 [lints]
 workspace = true

@@ -1,0 +1,6 @@
+{
+  "pages": ["pages/a/a", "pages/b/b"],
+  "window": {
+    "navigationBarTitleText": "多视图样本"
+  }
+}

@@ -1,0 +1,705 @@
+/**
+ * Request/response model for the C1 type bridge (Rust -> Node).
+ *
+ * The harness builds a request exactly like the LSP coordinator would: an
+ * explicit file snapshot, the effective compiler options resolved by the project
+ * layer, the fragments to mount, and the policy. Node must not read project
+ * sources from disk and must not invent compiler options.
+ */
+
+import path from "node:path";
+import ts from "typescript";
+import { describeExpression, identifierOffset, isBindingIdentifier } from "./expression.ts";
+import type { CapabilityStates, InsertionRecord, JsCheckMode, MountRecord } from "./types.ts";
+
+export const PROTOCOL_VERSION = 1;
+
+export const DEFAULT_LIMITS: RequestLimits = {
+  maxFiles: 512,
+  maxTotalBytes: 8 * 1024 * 1024,
+  maxFragments: 2048,
+};
+
+export interface RequestLimits {
+  maxFiles: number;
+  maxTotalBytes: number;
+  maxFragments: number;
+}
+
+export type FileKind = "ts" | "js" | "jsx" | "tsx" | "d.ts";
+
+export interface RequestFile {
+  fileId: string;
+  /** Project-relative path with `/` separators. */
+  path: string;
+  kind: FileKind;
+  text: string;
+  sourceRevision: number;
+}
+
+export interface RequestFragment {
+  fragmentId: string;
+  /** Expression text as written in WXML, for example `user.name`. */
+  exprText: string;
+  /**
+   * Optional hover/diagnostic target token (a whole identifier in `exprText`).
+   * Defaults to the first identifier of the expression.
+   */
+  target?: string;
+  /**
+   * Template scope bindings (for example `wx:for` item/index names). The root
+   * identifier of the expression is mounted without a `__wxml_root.` prefix
+   * when it appears here; expression text is never rewritten.
+   */
+  locals?: string[];
+  /** Byte range of `exprText` in the WXML document. */
+  wxmlRange: { start: number; end: number };
+  fragmentRevision: number;
+  /** Which registration owns the root. */
+  root: "page" | "component";
+}
+
+export type TargetName = "ES2020" | "ES2022" | "ESNext";
+export type ModuleKindName = "ESNext" | "CommonJS" | "Preserve";
+export type ModuleResolutionName = "bundler" | "node16" | "nodenext" | "node10";
+export type JsxName = "preserve" | "react" | "react-jsx" | "react-jsxdev" | "react-native";
+export type ModuleDetectionName = "auto" | "legacy" | "force";
+
+/**
+ * Effective compiler options resolved by the project layer (P3).
+ *
+ * This is intentionally close to `ts.CompilerOptions`: type-affecting switches
+ * such as `strictNullChecks`, `noImplicitThis` and `noUncheckedIndexedAccess`
+ * must travel verbatim, otherwise the derived view would silently check under
+ * different rules than the project (false negatives and false positives).
+ *
+ * Node converts the named enums and copies every other field unchanged. Unknown
+ * keys are rejected instead of being dropped silently.
+ */
+export interface RequestCompilerOptions {
+  strict?: boolean;
+  strictNullChecks?: boolean;
+  strictFunctionTypes?: boolean;
+  strictBindCallApply?: boolean;
+  strictPropertyInitialization?: boolean;
+  noImplicitAny?: boolean;
+  noImplicitThis?: boolean;
+  noUncheckedIndexedAccess?: boolean;
+  exactOptionalPropertyTypes?: boolean;
+  strictBuiltinIteratorReturn?: boolean;
+  useUnknownInCatchVariables?: boolean;
+  allowJs?: boolean;
+  checkJs?: boolean;
+  esModuleInterop?: boolean;
+  allowSyntheticDefaultImports?: boolean;
+  resolveJsonModule?: boolean;
+  isolatedModules?: boolean;
+  verbatimModuleSyntax?: boolean;
+  forceConsistentCasingInFileNames?: boolean;
+  skipLibCheck?: boolean;
+  target?: TargetName;
+  module?: ModuleKindName;
+  moduleResolution?: ModuleResolutionName;
+  jsx?: JsxName;
+  moduleDetection?: ModuleDetectionName;
+  lib?: string[];
+  baseUrl?: string;
+  paths?: Record<string, string[]>;
+  types?: string[];
+  typeRoots?: string[];
+  rootDir?: string;
+}
+
+/** Keys that the request may carry; anything else is rejected. */
+export const REQUEST_COMPILER_OPTION_KEYS: ReadonlySet<string> = new Set([
+  "strict",
+  "strictNullChecks",
+  "strictFunctionTypes",
+  "strictBindCallApply",
+  "strictPropertyInitialization",
+  "noImplicitAny",
+  "noImplicitThis",
+  "noUncheckedIndexedAccess",
+  "exactOptionalPropertyTypes",
+  "strictBuiltinIteratorReturn",
+  "useUnknownInCatchVariables",
+  "allowJs",
+  "checkJs",
+  "esModuleInterop",
+  "allowSyntheticDefaultImports",
+  "resolveJsonModule",
+  "isolatedModules",
+  "verbatimModuleSyntax",
+  "forceConsistentCasingInFileNames",
+  "skipLibCheck",
+  "target",
+  "module",
+  "moduleResolution",
+  "jsx",
+  "moduleDetection",
+  "lib",
+  "baseUrl",
+  "paths",
+  "types",
+  "typeRoots",
+  "rootDir",
+]);
+
+export interface AnalyzeRequest {
+  protocolVersion: number;
+  requestId: string;
+  analysisStamp: {
+    snapshotId: number;
+    projectRevision: number;
+    viewRevision: number;
+    backendEpoch: number;
+  };
+  view: {
+    viewId: string;
+    owner: { kind: "page" | "component"; fileId: string };
+  };
+  project: {
+    /** Absolute project root known to the LSP coordinator. */
+    projectRoot: string;
+    compilerOptions: RequestCompilerOptions;
+    typings: { package: string; version: string };
+  };
+  scriptFileId: string;
+  files: RequestFile[];
+  /** Fragments mounted by Node; this is an input, not the response list. */
+  fragments: RequestFragment[];
+  policy: {
+    jsCheck: JsCheckMode;
+    /** C1.1 only supports the declaration overlay; `off` is rejected explicitly. */
+    propertiesOverlay: "declaration";
+  };
+  /** Request-declared bounds; missing fields fall back to `DEFAULT_LIMITS`. */
+  limits?: Partial<RequestLimits>;
+}
+
+export interface RegistrationInfo {
+  kind: "page" | "component";
+  count: number;
+  topLevel: boolean | null;
+}
+
+/** Response envelope. The harness fills the query results in `ScenarioRun`. */
+export interface AnalyzeResponse {
+  protocolVersion: number;
+  requestId: string;
+  jsCheckApplied: JsCheckMode;
+  registration: RegistrationInfo;
+  states: CapabilityStates;
+  insertions: InsertionRecord[];
+  mounts: MountRecord[];
+  /** Per-fragment results; assembled by the adapter from the query layer. */
+  fragments: Array<{
+    fragmentId: string;
+    hover?: {
+      typeText: string;
+      typeOnly: string;
+      quality: "known" | "any" | "unknown" | "missing";
+      documentation: string;
+      documentationSource: "quickinfo" | "symbol" | "copied" | "none";
+    };
+    diagnostics: Array<{
+      code: number;
+      /** WXML byte range (the only published coordinate). */
+      range?: { start: number; end: number };
+      message: string;
+      attribution: "source" | "trimmed-synthetic" | "unattributable";
+    }>;
+    definition?: {
+      kind: "script" | "generated" | "external" | "dropped";
+      fileId?: string;
+      /** Byte range in the target source file. */
+      range?: { start: number; end: number };
+      reason?: string;
+    };
+  }>;
+  moduleKind: { before: "script" | "module" | "unknown"; after: "script" | "module" | "unknown" };
+  suppressed: { count: number; details: Array<{ code: number; message: string }> };
+}
+
+export type RequestErrorCode =
+  | "too-many-files"
+  | "too-many-bytes"
+  | "too-many-fragments"
+  | "bad-limit"
+  | "bad-option"
+  | "bad-protocol"
+  | "bad-params"
+  | "bad-fragment"
+  | "unsupported-option";
+
+/**
+ * Server-side ceiling. The request declares its own limits, but Node must use
+ * `min(request, ceiling)` so a caller cannot widen the bound.
+ */
+export const SERVER_LIMITS: RequestLimits = {
+  maxFiles: 1024,
+  maxTotalBytes: 16 * 1024 * 1024,
+  maxFragments: 4096,
+};
+
+const TARGET_NAMES = new Set<string>(["ES2020", "ES2022", "ESNext"]);
+const MODULE_NAMES = new Set<string>(["ESNext", "CommonJS", "Preserve"]);
+const RESOLUTION_NAMES = new Set<string>(["bundler", "node16", "nodenext", "node10"]);
+const JSX_NAMES = new Set<string>(["preserve", "react", "react-jsx", "react-jsxdev", "react-native"]);
+const MODULE_DETECTION_NAMES = new Set<string>(["auto", "legacy", "force"]);
+
+export class RequestError extends Error {
+  readonly code: RequestErrorCode;
+
+  constructor(code: RequestErrorCode, message: string) {
+    super(message);
+    this.name = "RequestError";
+    this.code = code;
+  }
+}
+
+export function totalBytes(files: RequestFile[], fragments: RequestFragment[] = []): number {
+  const fileBytes = files.reduce((sum, file) => sum + Buffer.byteLength(file.text, "utf8"), 0);
+  const fragmentBytes = fragments.reduce(
+    (sum, fragment) =>
+      sum +
+      (fragment && typeof fragment === "object" && typeof fragment.exprText === "string"
+        ? Buffer.byteLength(fragment.exprText, "utf8")
+        : 0),
+    0,
+  );
+  return fileBytes + fragmentBytes;
+}
+
+/** Enforce input bounds before any parsing or language-service work. */
+export function validateRequest(request: AnalyzeRequest): void {
+  if (typeof request !== "object" || request === null) {
+    throw new RequestError("bad-params", "request must be an object");
+  }
+  if (!request.project || typeof request.project !== "object" || !request.project.compilerOptions) {
+    throw new RequestError("bad-params", "request.project.compilerOptions is required");
+  }
+  if (typeof request.project.projectRoot !== "string" || request.project.projectRoot.length === 0) {
+    throw new RequestError("bad-params", "request.project.projectRoot is required");
+  }
+  if (!Array.isArray(request.files)) {
+    throw new RequestError("bad-params", "request.files must be an array");
+  }
+  if (!Array.isArray(request.fragments)) {
+    throw new RequestError("bad-params", "request.fragments must be an array");
+  }
+  if (!request.view || typeof request.view !== "object" || !request.view.owner) {
+    throw new RequestError("bad-params", "request.view.owner is required");
+  }
+  if (typeof request.scriptFileId !== "string" || request.scriptFileId.length === 0) {
+    throw new RequestError("bad-params", "request.scriptFileId is required");
+  }
+  if (request.policy && request.policy.jsCheck !== undefined) {
+    const allowed = new Set(["inherit", "pragma", "off"]);
+    if (!allowed.has(request.policy.jsCheck)) {
+      throw new RequestError("bad-option", `unknown jsCheck policy: ${String(request.policy.jsCheck)}`);
+    }
+  } else {
+    throw new RequestError("bad-params", "request.policy.jsCheck is required");
+  }
+  if (typeof request.requestId !== "string" || request.requestId.length === 0) {
+    throw new RequestError("bad-params", "requestId is required");
+  }
+  validateStamp(request.analysisStamp);
+  if (request.view.owner.kind !== "page" && request.view.owner.kind !== "component") {
+    throw new RequestError("bad-params", `view.owner.kind must be page or component: ${String(request.view.owner.kind)}`);
+  }
+  if (typeof request.view.viewId !== "string" || request.view.viewId.length === 0) {
+    throw new RequestError("bad-params", "view.viewId is required");
+  }
+  if (typeof request.view.owner.fileId !== "string" || request.view.owner.fileId.length === 0) {
+    throw new RequestError("bad-params", "view.owner.fileId is required");
+  }
+  if (request.view.owner.fileId !== request.scriptFileId) {
+    throw new RequestError("bad-params", "view.owner.fileId must equal scriptFileId");
+  }
+  validateFiles(request.files);
+  if (request.project.typings?.package !== "miniprogram-api-typings") {
+    throw new RequestError("bad-option", "project.typings.package must be miniprogram-api-typings");
+  }
+  if (request.project.typings.version !== "5.3.1") {
+    throw new RequestError(
+      "bad-option",
+      `project.typings.version ${String(request.project.typings.version)} is not supported (expected 5.3.1)`,
+    );
+  }
+  if (request.policy.propertiesOverlay !== "declaration") {
+    throw new RequestError(
+      "unsupported-option",
+      `policy.propertiesOverlay ${String(request.policy.propertiesOverlay)} is not supported`,
+    );
+  }
+  if (request.protocolVersion !== PROTOCOL_VERSION) {
+    throw new RequestError(
+      "bad-protocol",
+      `protocolVersion ${request.protocolVersion} is not supported (expected ${PROTOCOL_VERSION})`,
+    );
+  }
+  // Missing fields fall back to the defaults; present fields are validated one by
+  // one, and the effective bound is the stricter of request and server ceiling.
+  const requested = request.limits ?? DEFAULT_LIMITS;
+  const effective = effectiveLimits(requested);
+  for (const name of ["maxFiles", "maxTotalBytes", "maxFragments"] as const) {
+    const value = requested[name];
+    if (value !== undefined && (!Number.isFinite(value) || value <= 0 || !Number.isInteger(value))) {
+      throw new RequestError("bad-limit", `limit ${name} must be a positive integer`);
+    }
+  }
+  if (request.files.length > effective.maxFiles) {
+    throw new RequestError("too-many-files", `request has ${request.files.length} files, limit ${effective.maxFiles}`);
+  }
+  const bytes = totalBytes(request.files, request.fragments);
+  if (bytes > effective.maxTotalBytes) {
+    throw new RequestError("too-many-bytes", `request has ${bytes} bytes, limit ${effective.maxTotalBytes}`);
+  }
+  if (request.fragments.length > effective.maxFragments) {
+    throw new RequestError(
+      "too-many-fragments",
+      `request has ${request.fragments.length} fragments, limit ${effective.maxFragments}`,
+    );
+  }
+  validateCompilerOptions(request.project.compilerOptions);
+  validateFragments(request.fragments);
+}
+
+/** Validate the C1.1 fragment inputs (shape, ids, target, locals). */
+export function validateFragments(fragments: RequestFragment[]): void {
+  const ids = new Set<string>();
+  for (const fragment of fragments) {
+    if (typeof fragment !== "object" || fragment === null) {
+      throw new RequestError("bad-fragment", "fragments[] entries must be objects");
+    }
+    const id = fragment.fragmentId;
+    if (typeof id !== "string" || id.length === 0) {
+      throw new RequestError("bad-fragment", "fragmentId must be a non-empty string");
+    }
+    if (ids.has(id)) {
+      throw new RequestError("bad-fragment", `request repeats fragmentId ${id}; ids must be unique`);
+    }
+    ids.add(id);
+    if (typeof fragment.exprText !== "string" || fragment.exprText.length === 0) {
+      throw new RequestError("bad-fragment", `fragment ${id} has an empty exprText`);
+    }
+    if (fragment.root !== "page" && fragment.root !== "component") {
+      throw new RequestError("bad-fragment", `fragment ${id} has an unknown root kind: ${String(fragment.root)}`);
+    }
+    const range = fragment.wxmlRange;
+    if (
+      !range ||
+      !Number.isInteger(range.start) ||
+      !Number.isInteger(range.end) ||
+      range.start < 0 ||
+      range.end < range.start
+    ) {
+      throw new RequestError("bad-fragment", `fragment ${id} has an invalid wxmlRange`);
+    }
+    if (range.end - range.start !== Buffer.byteLength(fragment.exprText, "utf8")) {
+      throw new RequestError(
+        "bad-fragment",
+        `fragment ${id}: wxmlRange length ${range.end - range.start} does not match exprText bytes ` +
+          `${Buffer.byteLength(fragment.exprText, "utf8")}`,
+      );
+    }
+    if (fragment.target !== undefined) {
+      if (typeof fragment.target !== "string" || fragment.target.length === 0) {
+        throw new RequestError("bad-fragment", `fragment ${id} has an empty target`);
+      }
+      if (identifierOffset(fragment.exprText, fragment.target) < 0) {
+        throw new RequestError(
+          "bad-fragment",
+          `fragment ${id}: target ${fragment.target} is not a whole identifier in ${describeExpression(fragment.exprText)}`,
+        );
+      }
+    }
+    if (fragment.locals !== undefined) {
+      if (!Array.isArray(fragment.locals)) {
+        throw new RequestError("bad-fragment", `fragment ${id}: locals must be an array`);
+      }
+      const seen = new Set<string>();
+      for (const local of fragment.locals) {
+        if (typeof local !== "string" || local.length === 0) {
+          throw new RequestError("bad-fragment", `fragment ${id}: locals must be non-empty strings`);
+        }
+        if (!isBindingIdentifier(local)) {
+          throw new RequestError("bad-fragment", `fragment ${id}: local ${local} is not a valid binding name`);
+        }
+        if (seen.has(local)) {
+          throw new RequestError("bad-fragment", `fragment ${id}: duplicate local ${local}`);
+        }
+        seen.add(local);
+      }
+    }
+  }
+}
+
+/** Stricter of the request-declared and the server-side limit. */
+export function effectiveLimits(requested: Partial<RequestLimits> | undefined): RequestLimits {
+  const limits = requested ?? {};
+  return {
+    maxFiles: Math.min(limits.maxFiles ?? DEFAULT_LIMITS.maxFiles, SERVER_LIMITS.maxFiles),
+    maxTotalBytes: Math.min(limits.maxTotalBytes ?? DEFAULT_LIMITS.maxTotalBytes, SERVER_LIMITS.maxTotalBytes),
+    maxFragments: Math.min(limits.maxFragments ?? DEFAULT_LIMITS.maxFragments, SERVER_LIMITS.maxFragments),
+  };
+}
+
+/**
+ * Reject options the bridge does not model.
+ *
+ * Silently dropping an option would check the template under different rules
+ * than the project, producing false negatives or false positives.
+ */
+export function validateCompilerOptions(options: RequestCompilerOptions): void {
+  if (typeof options !== "object" || options === null || Array.isArray(options)) {
+    throw new RequestError("bad-params", "request.project.compilerOptions must be an object");
+  }
+  for (const key of Object.keys(options)) {
+    if (!REQUEST_COMPILER_OPTION_KEYS.has(key)) {
+      throw new RequestError("unsupported-option", `compiler option is not supported by C1: ${key}`);
+    }
+  }
+  const enumChecks: Array<[keyof RequestCompilerOptions, Set<string>]> = [
+    ["target", TARGET_NAMES],
+    ["module", MODULE_NAMES],
+    ["moduleResolution", RESOLUTION_NAMES],
+    ["jsx", JSX_NAMES],
+    ["moduleDetection", MODULE_DETECTION_NAMES],
+  ];
+  for (const [key, allowed] of enumChecks) {
+    const value = options[key];
+    if (value !== undefined && (typeof value !== "string" || !allowed.has(value))) {
+      throw new RequestError("bad-option", `compiler option ${String(key)} has an unknown value: ${String(value)}`);
+    }
+  }
+  for (const key of BOOLEAN_COMPILER_OPTIONS) {
+    const value = options[key as keyof RequestCompilerOptions];
+    if (value !== undefined && typeof value !== "boolean") {
+      throw new RequestError("bad-params", `compiler option ${key} must be a boolean`);
+    }
+  }
+  for (const key of STRING_ARRAY_COMPILER_OPTIONS) {
+    const value = options[key];
+    if (value === undefined) continue;
+    if (!Array.isArray(value) || value.some((entry) => typeof entry !== "string")) {
+      throw new RequestError("bad-params", `compiler option ${key} must be a string array`);
+    }
+  }
+  for (const key of ["baseUrl", "rootDir"] as const) {
+    const value = options[key];
+    if (value !== undefined && typeof value !== "string") {
+      throw new RequestError("bad-params", `compiler option ${key} must be a string`);
+    }
+  }
+  if (options.paths !== undefined) {
+    const paths: unknown = options.paths;
+    if (typeof paths !== "object" || paths === null || Array.isArray(paths)) {
+      throw new RequestError("bad-params", "compiler option paths must be an object of string arrays");
+    }
+    for (const [pattern, targets] of Object.entries(paths)) {
+      if (!Array.isArray(targets) || targets.some((entry) => typeof entry !== "string")) {
+        throw new RequestError("bad-params", `compiler option paths[${pattern}] must be a string array`);
+      }
+    }
+  }
+}
+
+const BOOLEAN_COMPILER_OPTIONS = [
+  "strict",
+  "strictNullChecks",
+  "strictFunctionTypes",
+  "strictBindCallApply",
+  "strictPropertyInitialization",
+  "noImplicitAny",
+  "noImplicitThis",
+  "noUncheckedIndexedAccess",
+  "exactOptionalPropertyTypes",
+  "strictBuiltinIteratorReturn",
+  "useUnknownInCatchVariables",
+  "allowJs",
+  "checkJs",
+  "esModuleInterop",
+  "allowSyntheticDefaultImports",
+  "resolveJsonModule",
+  "isolatedModules",
+  "verbatimModuleSyntax",
+  "forceConsistentCasingInFileNames",
+  "skipLibCheck",
+] as const;
+
+const STRING_ARRAY_COMPILER_OPTIONS = ["lib", "types", "typeRoots"] as const;
+
+const TARGETS: Record<TargetName, ts.ScriptTarget> = {
+  ES2020: ts.ScriptTarget.ES2020,
+  ES2022: ts.ScriptTarget.ES2022,
+  ESNext: ts.ScriptTarget.ESNext,
+};
+
+const MODULES: Record<ModuleKindName, ts.ModuleKind> = {
+  ESNext: ts.ModuleKind.ESNext,
+  CommonJS: ts.ModuleKind.CommonJS,
+  Preserve: ts.ModuleKind.Preserve,
+};
+
+const RESOLUTIONS: Record<ModuleResolutionName, ts.ModuleResolutionKind> = {
+  bundler: ts.ModuleResolutionKind.Bundler,
+  node16: ts.ModuleResolutionKind.Node16,
+  nodenext: ts.ModuleResolutionKind.NodeNext,
+  node10: ts.ModuleResolutionKind.Node10,
+};
+
+const JSX: Record<JsxName, ts.JsxEmit> = {
+  preserve: ts.JsxEmit.Preserve,
+  react: ts.JsxEmit.React,
+  "react-jsx": ts.JsxEmit.ReactJSX,
+  "react-jsxdev": ts.JsxEmit.ReactJSXDev,
+  "react-native": ts.JsxEmit.ReactNative,
+};
+
+const MODULE_DETECTION: Record<ModuleDetectionName, ts.ModuleDetectionKind> = {
+  auto: ts.ModuleDetectionKind.Auto,
+  legacy: ts.ModuleDetectionKind.Legacy,
+  force: ts.ModuleDetectionKind.Force,
+};
+
+/** Convert the request options into TypeScript compiler options. */
+export function toCompilerOptions(options: RequestCompilerOptions): ts.CompilerOptions {
+  const converted: ts.CompilerOptions = {
+    noEmit: true,
+    ...(options.strict !== undefined ? { strict: options.strict } : {}),
+    ...(options.strictNullChecks !== undefined ? { strictNullChecks: options.strictNullChecks } : {}),
+    ...(options.strictFunctionTypes !== undefined ? { strictFunctionTypes: options.strictFunctionTypes } : {}),
+    ...(options.strictBindCallApply !== undefined ? { strictBindCallApply: options.strictBindCallApply } : {}),
+    ...(options.strictPropertyInitialization !== undefined
+      ? { strictPropertyInitialization: options.strictPropertyInitialization }
+      : {}),
+    ...(options.noImplicitAny !== undefined ? { noImplicitAny: options.noImplicitAny } : {}),
+    ...(options.noImplicitThis !== undefined ? { noImplicitThis: options.noImplicitThis } : {}),
+    ...(options.noUncheckedIndexedAccess !== undefined
+      ? { noUncheckedIndexedAccess: options.noUncheckedIndexedAccess }
+      : {}),
+    ...(options.exactOptionalPropertyTypes !== undefined
+      ? { exactOptionalPropertyTypes: options.exactOptionalPropertyTypes }
+      : {}),
+    ...(options.strictBuiltinIteratorReturn !== undefined
+      ? { strictBuiltinIteratorReturn: options.strictBuiltinIteratorReturn }
+      : {}),
+    ...(options.useUnknownInCatchVariables !== undefined
+      ? { useUnknownInCatchVariables: options.useUnknownInCatchVariables }
+      : {}),
+    ...(options.allowJs !== undefined ? { allowJs: options.allowJs } : {}),
+    ...(options.checkJs !== undefined ? { checkJs: options.checkJs } : {}),
+    ...(options.esModuleInterop !== undefined ? { esModuleInterop: options.esModuleInterop } : {}),
+    ...(options.allowSyntheticDefaultImports !== undefined
+      ? { allowSyntheticDefaultImports: options.allowSyntheticDefaultImports }
+      : {}),
+    ...(options.resolveJsonModule !== undefined ? { resolveJsonModule: options.resolveJsonModule } : {}),
+    ...(options.isolatedModules !== undefined ? { isolatedModules: options.isolatedModules } : {}),
+    ...(options.verbatimModuleSyntax !== undefined ? { verbatimModuleSyntax: options.verbatimModuleSyntax } : {}),
+    ...(options.forceConsistentCasingInFileNames !== undefined
+      ? { forceConsistentCasingInFileNames: options.forceConsistentCasingInFileNames }
+      : {}),
+    ...(options.skipLibCheck !== undefined ? { skipLibCheck: options.skipLibCheck } : {}),
+    ...(options.target ? { target: TARGETS[options.target] } : {}),
+    ...(options.module ? { module: MODULES[options.module] } : {}),
+    ...(options.moduleResolution ? { moduleResolution: RESOLUTIONS[options.moduleResolution] } : {}),
+    ...(options.jsx ? { jsx: JSX[options.jsx] } : {}),
+    ...(options.moduleDetection ? { moduleDetection: MODULE_DETECTION[options.moduleDetection] } : {}),
+    ...(options.lib ? { lib: options.lib } : {}),
+    ...(options.types ? { types: options.types } : {}),
+    ...(options.typeRoots ? { typeRoots: options.typeRoots } : {}),
+    ...(options.rootDir ? { rootDir: options.rootDir } : {}),
+    ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
+    ...(options.paths ? { paths: options.paths } : {}),
+  };
+  return converted;
+}
+
+/**
+ * Stable digest of the effective options, for logs and cache keys.
+ *
+ * `baseUrl` is made relative to `projectRoot` first so the digest does not
+ * change when the same project is checked out at a different absolute path.
+ */
+export function optionsDigest(options: RequestCompilerOptions, projectRoot?: string): string {
+  const normalized: Record<string, unknown> = { ...options };
+  if (projectRoot && options.baseUrl) {
+    const relative = path.relative(projectRoot, options.baseUrl);
+    normalized.baseUrl = relative.split(path.sep).join("/") || ".";
+  }
+  const shape = JSON.stringify(normalized, Object.keys(normalized).sort());
+  let hash = 2166136261;
+  for (let index = 0; index < shape.length; index += 1) {
+    hash ^= shape.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a:${(hash >>> 0).toString(16)}`;
+}
+
+export function fileKindOf(fileName: string): FileKind {
+  if (fileName.endsWith(".d.ts")) return "d.ts";
+  if (fileName.endsWith(".tsx")) return "tsx";
+  if (fileName.endsWith(".jsx")) return "jsx";
+  if (fileName.endsWith(".js")) return "js";
+  return "ts";
+}
+
+const FILE_KINDS = new Set(["ts", "js", "jsx", "tsx", "d.ts"]);
+
+/** Project-relative, `/`-separated, no `.`/`..`, no absolute path or NUL. */
+export function isCanonicalProjectPath(value: string): boolean {
+  if (typeof value !== "string" || value.length === 0) return false;
+  if (value.includes("\0") || value.includes("\\")) return false;
+  if (value.startsWith("/") || /^[A-Za-z]:/.test(value)) return false;
+  const parts = value.split("/");
+  return parts.length > 0 && parts.every((part) => part.length > 0 && part !== "." && part !== "..");
+}
+
+function validateStamp(stamp: AnalyzeRequest["analysisStamp"] | undefined): void {
+  if (!stamp || typeof stamp !== "object") {
+    throw new RequestError("bad-params", "analysisStamp is required");
+  }
+  for (const key of ["snapshotId", "projectRevision", "viewRevision", "backendEpoch"] as const) {
+    const value = stamp[key];
+    if (!Number.isInteger(value) || value < 0) {
+      throw new RequestError("bad-params", `analysisStamp.${key} must be a non-negative integer`);
+    }
+  }
+}
+
+function validateFiles(files: RequestFile[]): void {
+  const ids = new Set<string>();
+  for (const file of files) {
+    if (typeof file !== "object" || file === null) {
+      throw new RequestError("bad-params", "files[] entries must be objects");
+    }
+    if (typeof file.fileId !== "string" || file.fileId.length === 0) {
+      throw new RequestError("bad-params", "files[].fileId is required");
+    }
+    if (ids.has(file.fileId)) {
+      throw new RequestError("bad-params", `duplicate fileId ${file.fileId}`);
+    }
+    ids.add(file.fileId);
+    if (typeof file.path !== "string" || !isCanonicalProjectPath(file.path)) {
+      throw new RequestError("bad-params", `files[].path is not project-relative: ${String(file.path)}`);
+    }
+    if (file.fileId !== file.path) {
+      throw new RequestError("bad-params", `files[].fileId must match path: ${file.fileId} != ${file.path}`);
+    }
+    if (!FILE_KINDS.has(file.kind)) {
+      throw new RequestError("bad-params", `files[].kind is unknown: ${String(file.kind)}`);
+    }
+    if (fileKindOf(file.path) !== file.kind) {
+      throw new RequestError("bad-params", `files[].kind does not match its extension: ${file.path}`);
+    }
+    if (typeof file.text !== "string") {
+      throw new RequestError("bad-params", `files[].text must be a string: ${file.path}`);
+    }
+    if (!Number.isInteger(file.sourceRevision) || file.sourceRevision < 1) {
+      throw new RequestError("bad-params", `files[].sourceRevision must be a positive integer: ${file.path}`);
+    }
+  }
+}

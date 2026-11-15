@@ -1,0 +1,6 @@
+<view class="page">
+  <text>{{ greeting }}</text>
+  <text>{{ user.name }}</text>
+  <text>{{ user.age }}</text>
+  <text>{{ user.nmae }}</text>
+</view>

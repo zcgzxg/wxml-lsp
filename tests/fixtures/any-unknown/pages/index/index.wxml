@@ -1,0 +1,7 @@
+<view class="page">
+  <text>{{ label }}</text>
+  <text>{{ payload }}</text>
+  <text>{{ payload.anything }}</text>
+  <text>{{ external }}</text>
+  <text>{{ external.anything }}</text>
+</view>

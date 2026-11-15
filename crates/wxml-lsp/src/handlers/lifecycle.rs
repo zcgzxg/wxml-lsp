@@ -1,0 +1,212 @@
+//! Lifecycle methods and method dispatch.
+
+use std::sync::atomic::Ordering;
+
+use serde_json::{Value, json};
+use wxml_types::CapabilityStatus;
+
+use super::{log_safe_method, status_label};
+use crate::jsonrpc::{self, Outgoing, RequestKey};
+use crate::server::{Lifecycle, Server, log};
+
+/// Reads `rootUri`, falling back to the first workspace folder.
+fn requested_root(params: Option<&Value>) -> Option<&str> {
+    let object = params?.as_object()?;
+    if let Some(uri) = object.get("rootUri").and_then(Value::as_str) {
+        return Some(uri);
+    }
+    object
+        .get("workspaceFolders")?
+        .as_array()?
+        .first()?
+        .get("uri")?
+        .as_str()
+}
+
+/// Builds the `InitializeResult`.
+fn initialize_result(server: &Server) -> Value {
+    json!({
+        "capabilities": {
+            "positionEncoding": "utf-16",
+            "textDocumentSync": {
+                "openClose": true,
+                // 2 = incremental; full changes are also accepted.
+                "change": 2,
+            },
+            "hoverProvider": server.capabilities.hover.is_supported(),
+            "definitionProvider": server.capabilities.definition.is_supported(),
+        },
+        "serverInfo": {
+            "name": "wxml-lsp",
+            "version": crate::version(),
+        },
+    })
+}
+
+/// One-line description of a status for stderr logs.
+fn describe_status(status: &CapabilityStatus) -> String {
+    status.reason().map_or_else(
+        || status_label(status).to_owned(),
+        |reason| {
+            format!(
+                "{} ({})",
+                status_label(status),
+                super::log_safe_text(reason, 200)
+            )
+        },
+    )
+}
+
+impl Server {
+    /// Handles one request.
+    pub(crate) fn on_request(
+        &mut self,
+        id: Value,
+        method: &str,
+        params: Option<Value>,
+    ) -> Vec<Outgoing> {
+        match self.lifecycle {
+            Lifecycle::Uninitialized if method != "initialize" => {
+                // The protocol asks for `InvalidRequest` on an early
+                // `shutdown` and `ServerNotInitialized` for other methods.
+                let code = if method == "shutdown" {
+                    jsonrpc::error_codes::INVALID_REQUEST
+                } else {
+                    jsonrpc::error_codes::SERVER_NOT_INITIALIZED
+                };
+                return vec![Outgoing::failure(id, code, "server is not initialized")];
+            }
+            Lifecycle::ShuttingDown => {
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::INVALID_REQUEST,
+                    "server is shutting down",
+                )];
+            }
+            Lifecycle::Uninitialized | Lifecycle::Running => {}
+        }
+
+        match method {
+            "initialize" => self.initialize(id, params.as_ref()),
+            "shutdown" => self.shutdown(id),
+            "textDocument/hover" => self.hover(id, params),
+            "textDocument/definition" => self.definition(id, params),
+            other => {
+                log(format_args!(
+                    "unknown request method `{}`",
+                    log_safe_method(other)
+                ));
+                vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::METHOD_NOT_FOUND,
+                    "method not found",
+                )]
+            }
+        }
+    }
+
+    /// Handles one notification.
+    pub(crate) fn on_notification(&mut self, method: &str, params: Option<Value>) -> Vec<Outgoing> {
+        if method == "exit" {
+            self.stop = true;
+            self.clean_shutdown = self.lifecycle == Lifecycle::ShuttingDown;
+            return Vec::new();
+        }
+        match self.lifecycle {
+            Lifecycle::Uninitialized => {
+                log(format_args!(
+                    "ignoring notification `{}` before initialize",
+                    log_safe_method(method)
+                ));
+                return Vec::new();
+            }
+            Lifecycle::ShuttingDown => {
+                log(format_args!(
+                    "ignoring notification `{}` after shutdown",
+                    log_safe_method(method)
+                ));
+                return Vec::new();
+            }
+            Lifecycle::Running => {}
+        }
+
+        match method {
+            "initialized" => Vec::new(),
+            "textDocument/didOpen" => self.did_open(params),
+            "textDocument/didChange" => self.did_change(params),
+            "textDocument/didClose" => self.did_close(params),
+            "$/cancelRequest" => {
+                self.cancel_request(params.as_ref());
+                Vec::new()
+            }
+            other => {
+                log(format_args!(
+                    "ignoring unknown notification `{}`",
+                    log_safe_method(other)
+                ));
+                Vec::new()
+            }
+        }
+    }
+
+    /// Answers `initialize` once and opens the requested root.
+    fn initialize(&mut self, id: Value, params: Option<&Value>) -> Vec<Outgoing> {
+        if self.lifecycle != Lifecycle::Uninitialized {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::INVALID_REQUEST,
+                "server is already initialized",
+            )];
+        }
+        let root = requested_root(params);
+        match self.host.open_root(root) {
+            Ok(()) => {
+                if root.is_some() {
+                    let project_id = self.host.project_id();
+                    let revision = self.host.project_revision();
+                    self.workspace.set_project(project_id, revision);
+                }
+            }
+            Err(error) => log(format_args!("project root could not be opened: {error}")),
+        }
+        self.lifecycle = Lifecycle::Running;
+        let result = initialize_result(self);
+        log(format_args!(
+            "initialized with hover {}, diagnostics {}, definition {}",
+            describe_status(&self.capabilities.hover),
+            describe_status(&self.capabilities.diagnostics),
+            describe_status(&self.capabilities.definition),
+        ));
+        vec![Outgoing::success(id, result)]
+    }
+
+    /// Answers `shutdown` and stops accepting new requests.
+    fn shutdown(&mut self, id: Value) -> Vec<Outgoing> {
+        self.lifecycle = Lifecycle::ShuttingDown;
+        self.clean_shutdown = true;
+        vec![Outgoing::success(id, Value::Null)]
+    }
+
+    /// Sets the cancel flag of one in-flight request.
+    fn cancel_request(&self, params: Option<&Value>) {
+        let Some(params) = params else {
+            log(format_args!("ignoring $/cancelRequest without parameters"));
+            return;
+        };
+        let Some(id) = params.as_object().and_then(|object| object.get("id")) else {
+            log(format_args!("ignoring $/cancelRequest without an id"));
+            return;
+        };
+        let Some(key) = RequestKey::from_id(id) else {
+            log(format_args!("ignoring $/cancelRequest with an invalid id"));
+            return;
+        };
+        match self.inflight.get(&key) {
+            Some(inflight) => {
+                inflight.cancel.store(true, Ordering::SeqCst);
+                log(format_args!("cancelling request"));
+            }
+            None => log(format_args!("ignoring cancellation of an unknown request")),
+        }
+    }
+}

@@ -1,0 +1,11 @@
+{
+  "diagnostics": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "{{ external.anything }}",
+      "target": "external",
+      "severity": "error",
+      "messageContains": "unknown"
+    }
+  ]
+}

@@ -1,0 +1,84 @@
+{
+  "queries": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "外层索引：{{ itemIndex }}",
+      "target": "itemIndex",
+      "expect": {
+        "type": "number",
+        "typeKind": "number",
+        "documentation": ""
+      }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "外层组名：{{ item.name }}",
+      "target": "item.name",
+      "expect": {
+        "type": "string",
+        "typeKind": "string",
+        "documentation": "组名"
+      }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "外层标题：{{ item.title }}",
+      "target": "item.title",
+      "expect": {
+        "type": "string",
+        "typeKind": "string",
+        "documentation": "组标题"
+      }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "内层索引：{{ index }}",
+      "target": "index",
+      "expect": {
+        "type": "number",
+        "typeKind": "number",
+        "documentation": ""
+      }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "内层成员：{{ item.name }}",
+      "target": "item.name",
+      "expect": {
+        "type": "string",
+        "typeKind": "string",
+        "documentation": "成员名称"
+      }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "退出内层后标题：{{ item.title }}",
+      "target": "item.title",
+      "expect": {
+        "type": "string",
+        "typeKind": "string",
+        "documentation": "组标题"
+      }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "对象键：{{ index }}",
+      "target": "index",
+      "expect": {
+        "type": "string",
+        "typeKind": "string",
+        "documentation": ""
+      }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "对象值标题：{{ item.title }}",
+      "target": "item.title",
+      "expect": {
+        "type": "string",
+        "typeKind": "string",
+        "documentation": "组标题"
+      }
+    }
+  ]
+}

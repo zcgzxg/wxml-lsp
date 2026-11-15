@@ -19,13 +19,13 @@ fn document(lines: usize) -> String {
 fn bench_build(c: &mut Criterion) {
     let text = document(2_000);
     c.bench_function("line_index/build", |b| {
-        b.iter(|| LineIndex::new(black_box(&text)));
+        b.iter(|| LineIndex::new(black_box(text.as_str())));
     });
 }
 
 fn bench_position(c: &mut Criterion) {
     let text = document(2_000);
-    let index = LineIndex::new(&text);
+    let index = LineIndex::new(text.as_str());
     let offsets: Vec<usize> = (0..=text.len())
         .step_by(97)
         .filter(|&offset| text.is_char_boundary(offset))
@@ -33,7 +33,7 @@ fn bench_position(c: &mut Criterion) {
     c.bench_function("line_index/position", |b| {
         b.iter(|| {
             for &offset in &offsets {
-                black_box(index.position(black_box(&text), black_box(offset)));
+                black_box(index.position(black_box(offset)));
             }
         });
     });
@@ -41,12 +41,12 @@ fn bench_position(c: &mut Criterion) {
 
 fn bench_offset(c: &mut Criterion) {
     let text = document(2_000);
-    let index = LineIndex::new(&text);
+    let index = LineIndex::new(text.as_str());
     let positions: Vec<Position> = (0..2_000).map(|line| Position::new(line, 10)).collect();
     c.bench_function("line_index/offset", |b| {
         b.iter(|| {
             for &position in &positions {
-                black_box(index.offset(black_box(&text), black_box(position)));
+                black_box(index.offset(black_box(position)));
             }
         });
     });

@@ -1,0 +1,24 @@
+name = "WXML"
+grammar = "wxml"
+path_suffixes = ["wxml"]
+
+# WXML has no line-comment syntax. Keeping this list empty makes Zed use the
+# block comment below for `editor::ToggleComments`.
+line_comments = []
+block_comment = { start = "<!--", prefix = " ", end = "-->", tab_size = 0 }
+
+autoclose_before = ">})"
+auto_indent_using_last_non_empty_line = true
+auto_indent_on_paste = true
+tab_size = 2
+hard_tabs = false
+word_characters = ["-", ":", "_"]
+
+brackets = [
+    { start = "{{", end = "}}", close = true, newline = false, not_in = ["comment", "string"] },
+    { start = "{", end = "}", close = true, newline = true, not_in = ["comment", "string"] },
+    { start = "[", end = "]", close = true, newline = true, not_in = ["comment", "string"] },
+    { start = "(", end = ")", close = true, newline = true, not_in = ["comment", "string"] },
+    { start = "\"", end = "\"", close = true, newline = false, not_in = ["comment", "string"] },
+    { start = "'", end = "'", close = true, newline = false, not_in = ["comment", "string"] },
+]

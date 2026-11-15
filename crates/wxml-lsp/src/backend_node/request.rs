@@ -1,0 +1,396 @@
+//! Builds C1.1 `AnalyzeRequest` JSON from a prepared view.
+
+use std::collections::BTreeMap;
+
+use serde_json::{Value, json};
+use wxml_text::SourceRange;
+use wxml_types::{CheckFragment, RequestContext};
+
+use super::config::NodeBackendConfig;
+use super::protocol::{PROTOCOL_VERSION, ProtocolError};
+use crate::project_host::PreparedView;
+
+/// Where one fragment's target token lives in the WXML source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct FragmentInfo {
+    /// Request fragment id.
+    pub fragment_id: String,
+    /// Chosen target identifier, when one could be found.
+    pub target: Option<String>,
+    /// Byte range of the target token in the WXML source.
+    pub target_range: Option<SourceRange>,
+    /// Template bindings (C1.1 `locals`).
+    pub locals: Vec<String>,
+}
+
+/// A serialized C1 request plus the metadata needed to map the response.
+#[derive(Clone, Debug)]
+pub(crate) struct BuiltRequest {
+    /// One NDJSON line.
+    pub line: String,
+    /// C1 request id, echoed by Node.
+    pub request_id: String,
+    /// Per-fragment target metadata.
+    pub fragments: BTreeMap<String, FragmentInfo>,
+}
+
+/// Builds the request for one view.
+///
+/// Returns `Ok(None)` when the view has no usable owner/script or no
+/// identifier target; the caller should not start Node in that case.
+pub(crate) fn build(
+    view: &PreparedView,
+    context: &RequestContext,
+    config: &NodeBackendConfig,
+    request_id: String,
+) -> Result<Option<BuiltRequest>, ProtocolError> {
+    let Some(target) = view.target.as_ref() else {
+        return Ok(None);
+    };
+    let script_path = target.script_file.path();
+    if !view
+        .files
+        .iter()
+        .any(|file| file.path.as_str() == script_path)
+    {
+        return Ok(None);
+    }
+
+    let mut fragments = Vec::with_capacity(view.fragments.len());
+    let mut infos = BTreeMap::new();
+    for fragment in view.fragments.iter() {
+        let (selected, target_range) = fragment_target(fragment);
+        infos.insert(
+            fragment.fragment_id.clone(),
+            FragmentInfo {
+                fragment_id: fragment.fragment_id.clone(),
+                target: selected.clone(),
+                target_range,
+                locals: fragment.locals.clone(),
+            },
+        );
+        let mut value = json!({
+            "fragmentId": fragment.fragment_id,
+            "exprText": fragment.expr_text,
+            "locals": fragment.locals,
+            "wxmlRange": {
+                "start": fragment.wxml_range.start(),
+                "end": fragment.wxml_range.end(),
+            },
+            "fragmentRevision": fragment.fragment_revision,
+            "root": fragment.root.as_str(),
+        });
+        if let Some(selected) = selected {
+            if let Some(object) = value.as_object_mut() {
+                object.insert("target".to_owned(), Value::String(selected));
+            }
+        }
+        fragments.push(value);
+    }
+
+    let files: Vec<Value> = view
+        .files
+        .iter()
+        .map(|file| {
+            json!({
+                "fileId": file.file.path(),
+                "path": file.path.as_str(),
+                "kind": file.kind,
+                "text": file.text.as_ref(),
+                "sourceRevision": file.source_revision,
+            })
+        })
+        .collect();
+
+    let params = json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "requestId": request_id,
+        "analysisStamp": {
+            "snapshotId": context.source().snapshot().get(),
+            "projectRevision": context.project_revision().get(),
+            "viewRevision": context.view_revision().get(),
+            "backendEpoch": context.backend_epoch().get(),
+        },
+        "view": {
+            "viewId": view.view_id,
+            "owner": {
+                "kind": target.owner.as_str(),
+                "fileId": target.script_file.path(),
+            },
+        },
+        "project": {
+            "projectRoot": view.project_root.to_string_lossy(),
+            "compilerOptions": Value::Object(view.compiler_options.clone()),
+            "typings": {
+                "package": config.typings.package,
+                "version": config.typings.version,
+            },
+        },
+        "scriptFileId": target.script_file.path(),
+        "files": files,
+        "fragments": fragments,
+        "policy": {
+            "jsCheck": config.js_check.as_str(),
+            "propertiesOverlay": "declaration",
+        },
+        "limits": {
+            "maxFiles": config.limits.max_files,
+            "maxTotalBytes": config.limits.max_total_bytes,
+            "maxFragments": config.limits.max_fragments,
+        },
+    });
+    let line = super::protocol::request_line(&request_id, "analyze", Some(&params))
+        .map_err(|_| ProtocolError::Json)?;
+    Ok(Some(BuiltRequest {
+        line,
+        request_id,
+        fragments: infos,
+    }))
+}
+
+/// Selects the P6 target or the default right-value identifier.
+fn fragment_target(fragment: &CheckFragment) -> (Option<String>, Option<SourceRange>) {
+    let ranges = identifier_ranges(&fragment.expr_text);
+    let chosen = fragment
+        .target
+        .as_ref()
+        .and_then(|target| {
+            ranges
+                .iter()
+                .find(|(_, _, text)| *text == target.as_str())
+                .map(|(start, end, text)| (*start, *end, (*text).to_owned()))
+        })
+        .or_else(|| {
+            ranges
+                .iter()
+                .rev()
+                .find(|(_, _, text)| !is_keyword(text))
+                .map(|(start, end, text)| (*start, *end, (*text).to_owned()))
+        });
+    let Some((start, end, target)) = chosen else {
+        return (None, None);
+    };
+    let start = u32::try_from(start).ok();
+    let end = u32::try_from(end).ok();
+    let target_range = start
+        .zip(end)
+        .and_then(|(start, end)| SourceRange::from_bounds(start, end).ok())
+        .and_then(|range| {
+            let wxml = fragment.wxml_range;
+            let offset = wxml.start();
+            let start = offset.checked_add(range.start())?;
+            let end = offset.checked_add(range.end())?;
+            SourceRange::from_bounds(start, end).ok()
+        });
+    (Some(target), target_range)
+}
+
+/// Returns identifier tokens `(start, end, text)` outside strings/comments.
+fn identifier_ranges(expr: &str) -> Vec<(usize, usize, &str)> {
+    let bytes = expr.as_bytes();
+    let mut ranges = Vec::new();
+    let mut index = 0_usize;
+    while index < bytes.len() {
+        let byte = bytes[index];
+        if byte == b'\'' || byte == b'"' {
+            index += 1;
+            while index < bytes.len() {
+                if bytes[index] == b'\\' {
+                    index = index.saturating_add(2);
+                    continue;
+                }
+                if bytes[index] == byte {
+                    index += 1;
+                    break;
+                }
+                index += 1;
+            }
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
+            index += 2;
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            continue;
+        }
+        if byte == b'/' && bytes.get(index + 1) == Some(&b'*') {
+            index += 2;
+            while index + 1 < bytes.len() {
+                if bytes[index] == b'*' && bytes[index + 1] == b'/' {
+                    index += 2;
+                    break;
+                }
+                index += 1;
+            }
+            continue;
+        }
+        if is_identifier_start(byte) {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && is_identifier_continue(bytes[index]) {
+                index += 1;
+            }
+            if let Some(text) = expr.get(start..index) {
+                ranges.push((start, index, text));
+            }
+            continue;
+        }
+        index += 1;
+    }
+    ranges
+}
+
+const fn is_identifier_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$'
+}
+
+const fn is_identifier_continue(byte: u8) -> bool {
+    is_identifier_start(byte) || byte.is_ascii_digit()
+}
+
+fn is_keyword(text: &str) -> bool {
+    matches!(
+        text,
+        "true" | "false" | "null" | "undefined" | "this" | "new" | "typeof" | "void"
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use wxml_types::{
+        BackendEpoch, BackendId, CheckFragment, FileId, ProjectId, ProjectRevision, RootKind,
+        SnapshotId, SourceRevision, SourceSnapshot, ViewRevision,
+    };
+
+    use super::*;
+    use crate::project_host::{PreparedFile, ViewTarget};
+
+    fn fragment(expr: &str, start: u32) -> CheckFragment {
+        CheckFragment {
+            fragment_id: "f0".to_owned(),
+            expr_text: expr.to_owned(),
+            target: None,
+            locals: Vec::new(),
+            wxml_range: SourceRange::from_bounds(
+                start,
+                start + u32::try_from(expr.len()).expect("len"),
+            )
+            .expect("range"),
+            fragment_revision: 1,
+            root: RootKind::Page,
+        }
+    }
+
+    fn view(fragment: CheckFragment) -> PreparedView {
+        let project = ProjectId::new("proj-test");
+        let script = FileId::new(project, "pages/index/index.ts").expect("script");
+        PreparedView {
+            view_id: "pages/index/index.wxml:1".to_owned(),
+            target: Some(ViewTarget {
+                wxml: wxml_project::ProjectPath::new("pages/index/index.wxml").expect("path"),
+                owner: RootKind::Page,
+                script: wxml_project::ProjectPath::new("pages/index/index.ts").expect("script"),
+                script_file: script.clone(),
+                view_revision: ViewRevision::new(1),
+            }),
+            files: Arc::from(vec![PreparedFile {
+                file: script,
+                path: wxml_project::ProjectPath::new("pages/index/index.ts").expect("script"),
+                kind: "ts",
+                text: Arc::from("Page({ data: {} });"),
+                source_revision: 1,
+            }]),
+            compiler_options: serde_json::Map::new(),
+            fragments: Arc::from(vec![fragment]),
+            project_root: PathBuf::from("/tmp/project"),
+            syntax_diagnostics: Vec::new(),
+            status_hint: None,
+        }
+    }
+
+    fn context() -> RequestContext {
+        let project = ProjectId::new("proj-test");
+        let file = FileId::new(project.clone(), "pages/index/index.wxml").expect("wxml");
+        RequestContext::new(
+            ProjectRevision::new(project, 1),
+            ViewRevision::new(1),
+            BackendEpoch::new(BackendId::new("node"), 1),
+            Arc::new(SourceSnapshot::new(
+                file,
+                SourceRevision::new(1),
+                SnapshotId::new(1),
+                "{{ user.name }}",
+            )),
+        )
+        .expect("context")
+    }
+
+    #[test]
+    fn defaults_to_the_last_identifier() {
+        for (expr, expected) in [
+            ("user.name", "name"),
+            ("!title", "title"),
+            ("(title)", "title"),
+            ("title + user.name", "name"),
+            ("user.nmae", "nmae"),
+            ("true", "true"),
+        ] {
+            let ranges = identifier_ranges(expr);
+            let chosen = ranges
+                .iter()
+                .rev()
+                .find(|(_, _, text)| !is_keyword(text))
+                .map(|(_, _, text)| *text);
+            assert_eq!(
+                chosen,
+                if expected == "true" {
+                    None
+                } else {
+                    Some(expected)
+                },
+                "{expr}"
+            );
+        }
+    }
+
+    #[test]
+    fn ignores_identifiers_in_strings_and_comments() {
+        let ranges = identifier_ranges(
+            r#""ignore.me" + // comment.name
+            user.name /* other.nope */"#,
+        );
+        let texts: Vec<&str> = ranges.iter().map(|(_, _, text)| *text).collect();
+        assert_eq!(texts, vec!["user", "name"]);
+    }
+
+    #[test]
+    fn maps_the_target_back_to_wxml_bytes() {
+        let view = view(fragment("user.name", 10));
+        let request = build(
+            &view,
+            &context(),
+            &NodeBackendConfig::default(),
+            "req".to_owned(),
+        )
+        .expect("request")
+        .expect("some");
+        let info = request.fragments.get("f0").expect("info");
+        assert_eq!(info.target.as_deref(), Some("name"));
+        let range = info.target_range.expect("range");
+        assert_eq!(range.start(), 15);
+        assert_eq!(range.end(), 19);
+        let value: Value = serde_json::from_str(&request.line).expect("json");
+        assert_eq!(value["method"], "analyze");
+        let params = &value["params"];
+        assert_eq!(params["protocolVersion"], 1);
+        assert_eq!(params["view"]["owner"]["kind"], "page");
+        assert_eq!(params["files"][0]["fileId"], "pages/index/index.ts");
+        assert_eq!(params["fragments"][0]["wxmlRange"]["start"], 10);
+        assert_eq!(params["fragments"][0]["target"], "name");
+        assert_eq!(params["policy"]["propertiesOverlay"], "declaration");
+    }
+}

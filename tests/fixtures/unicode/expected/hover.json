@@ -1,0 +1,18 @@
+{
+  "queries": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "{{ user.name }}",
+      "target": "user.name",
+      "position": { "line": 1, "character": 20 },
+      "expect": { "type": "string", "typeKind": "string", "documentation": "用户显示名称" }
+    },
+    {
+      "file": "pages/index/index-crlf.wxml",
+      "marker": "{{ user.name }}",
+      "target": "user.name",
+      "position": { "line": 1, "character": 20 },
+      "expect": { "type": "string", "typeKind": "string", "documentation": "用户显示名称" }
+    }
+  ]
+}

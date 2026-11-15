@@ -1,0 +1,15 @@
+[package]
+name = "zed-wxml"
+version = "0.0.1"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+zed_extension_api = "0.7.0"
+
+# Keep this crate out of the repository root workspace. Zed builds extensions
+# as standalone WebAssembly components.
+[workspace]

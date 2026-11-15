@@ -1,0 +1,392 @@
+{
+  "version": 2,
+  "cases": [
+    {
+      "id": "page-basic",
+      "kind": "fixture",
+      "acs": [
+        "AC-001",
+        "AC-002"
+      ],
+      "root": "page-basic",
+      "positive": [
+        "{{ title }}",
+        "{{ user.name }}"
+      ],
+      "negative": [
+        "{{ user.nmae }}"
+      ],
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json"
+      }
+    },
+    {
+      "id": "page-basic-clean",
+      "kind": "fixture",
+      "acs": [
+        "AC-002"
+      ],
+      "root": "page-basic-clean",
+      "positive": [
+        "{{ title }}",
+        "{{ user.name }}"
+      ],
+      "negative": [],
+      "expectClean": true,
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json"
+      }
+    },
+    {
+      "id": "component-basic",
+      "kind": "fixture",
+      "acs": [
+        "AC-001",
+        "AC-013"
+      ],
+      "root": "component-basic",
+      "positive": [
+        "{{ title }}",
+        "{{ user.name }}"
+      ],
+      "negative": [
+        "{{ subtitle }}",
+        "{{ user.nmae }}"
+      ],
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json"
+      }
+    },
+    {
+      "id": "cross-file-type",
+      "kind": "fixture",
+      "acs": [
+        "AC-001"
+      ],
+      "root": "cross-file-type",
+      "positive": [
+        "{{ title }}",
+        "{{ user.name }}",
+        "{{ user.age }}"
+      ],
+      "negative": [
+        "{{ user.nmae }}"
+      ],
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json"
+      }
+    },
+    {
+      "id": "unicode",
+      "kind": "fixture",
+      "acs": [
+        "AC-003"
+      ],
+      "root": "unicode",
+      "positive": [
+        "{{ user.name }}",
+        "{{ user.name }}"
+      ],
+      "negative": [
+        "{{ user.nmae }}",
+        "{{ user.nmae }}"
+      ],
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json"
+      },
+      "requirePositions": true
+    },
+    {
+      "id": "loop-scope",
+      "kind": "fixture",
+      "acs": [
+        "AC-005"
+      ],
+      "root": "loop-scope",
+      "positive": [
+        "外层索引：{{ itemIndex }}",
+        "外层组名：{{ item.name }}",
+        "外层标题：{{ item.title }}",
+        "内层索引：{{ index }}",
+        "内层成员：{{ item.name }}",
+        "退出内层后标题：{{ item.title }}",
+        "对象键：{{ index }}",
+        "对象值标题：{{ item.title }}"
+      ],
+      "negative": [
+        "循环外访问：{{ item }}"
+      ],
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json"
+      }
+    },
+    {
+      "id": "conditional-union",
+      "kind": "fixture",
+      "acs": [
+        "AC-006"
+      ],
+      "root": "conditional-union",
+      "positive": [
+        "就绪用户：{{ state.user.name }}",
+        "错误码：{{ state.code }}",
+        "守卫内：{{ maybeUser.name }}"
+      ],
+      "negative": [
+        "非法年龄：{{ state.user.age }}",
+        "守卫外：{{ maybeUser.name }}"
+      ],
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json"
+      }
+    },
+    {
+      "id": "js-jsdoc",
+      "kind": "fixture",
+      "acs": [
+        "AC-007"
+      ],
+      "root": "js-jsdoc",
+      "positive": [
+        "{{ greeting }}",
+        "{{ user.name }}",
+        "{{ user.age }}"
+      ],
+      "negative": [
+        "{{ user.nmae }}"
+      ],
+      "coverage": {
+        "noJsDiagnostics": "asserted-by-runner"
+      },
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json"
+      }
+    },
+    {
+      "id": "alias-project",
+      "kind": "fixture",
+      "acs": [
+        "AC-008"
+      ],
+      "root": "alias-project",
+      "positive": [
+        "{{ user.name }}"
+      ],
+      "negative": [
+        "{{ user.nmae }}"
+      ],
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json"
+      }
+    },
+    {
+      "id": "any-unknown",
+      "kind": "fixture",
+      "acs": [
+        "AC-011"
+      ],
+      "root": "any-unknown",
+      "positive": [
+        "{{ label }}",
+        "{{ payload }}",
+        "{{ payload.anything }}",
+        "{{ external }}"
+      ],
+      "negative": [
+        "{{ external.anything }}"
+      ],
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json"
+      }
+    },
+    {
+      "id": "component-bindings",
+      "kind": "fixture",
+      "acs": [
+        "AC-012"
+      ],
+      "root": "component-bindings",
+      "positive": [
+        "title=\"{{ pageTitle }}\"",
+        "count=\"{{ total }}\""
+      ],
+      "negative": [
+        "title=\"{{ total }}\"",
+        "bindtap=\"missingHandler\""
+      ],
+      "coverage": {
+        "definition": "covered",
+        "edits": "deferred-to-C1"
+      },
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json",
+        "definition": "expected/definition.json"
+      }
+    },
+    {
+      "id": "component-properties",
+      "kind": "fixture",
+      "acs": [
+        "AC-013"
+      ],
+      "root": "component-properties",
+      "positive": [
+        "{{ title }}",
+        "{{ disabled }}",
+        "{{ state }}",
+        "title=\"{{ cardCount }}\""
+      ],
+      "negative": [
+        "title=\"{{ cardObject }}\"",
+        "{{ subtitle }}"
+      ],
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json"
+      }
+    },
+    {
+      "id": "multi-view",
+      "kind": "fixture",
+      "acs": [
+        "AC-008",
+        "AC-010"
+      ],
+      "root": "multi-view",
+      "positive": [
+        "卡片标题：{{ title }}",
+        "徽标数字：{{ title }}",
+        "卡片用户：{{ user.name }}",
+        "title=\"{{ aTitle }}\"",
+        "title=\"{{ aBadge }}\"",
+        "title=\"{{ bTitle }}\"",
+        "title=\"{{ bBadge }}\""
+      ],
+      "negative": [
+        "卡片错误：{{ user.nmae }}"
+      ],
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json"
+      }
+    },
+    {
+      "id": "unsupported-forms",
+      "kind": "fixture",
+      "acs": [
+        "AC-011"
+      ],
+      "root": "unsupported-forms",
+      "positive": [
+        "{{ m.foo }}",
+        "bindtap=\"{{ handlerName }}\""
+      ],
+      "negative": [],
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json"
+      }
+    },
+    {
+      "id": "interface-root",
+      "kind": "fixture",
+      "acs": [
+        "AC-011"
+      ],
+      "root": "interface-root",
+      "positive": [
+        "{{ user.name }}"
+      ],
+      "negative": [],
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json"
+      }
+    },
+    {
+      "id": "unsaved-overlay",
+      "kind": "runtime",
+      "acs": [
+        "AC-004"
+      ],
+      "scenario": "在 Zed 中打开 index.wxml 与 index.ts，修改 data.user.name 的类型或 JSDoc 但不保存，再到模板悬停 user.name。服务必须仅凭内存覆盖层重新分析并返回新的类型与说明，不要求保存文件或重新加载模板，也不得回退到磁盘旧内容。",
+      "steps": [
+        {
+          "action": "didOpen index.wxml and index.ts",
+          "expect": "initial hover returns the declared type and documentation"
+        },
+        {
+          "action": "didChange index.ts without saving the JSDoc of data.user.name",
+          "expect": "hover user.name returns the updated documentation without saving"
+        },
+        {
+          "action": "didChange the referenced type without saving",
+          "expect": "hover follows the new type without saving or reloading the template"
+        }
+      ]
+    },
+    {
+      "id": "stale-request",
+      "kind": "runtime",
+      "acs": [
+        "AC-009"
+      ],
+      "scenario": "触发一次 hover 后立刻继续编辑，使旧请求在依赖新快照后才返回；随后模拟类型后端超时并退出。旧结果和旧 ACK 不得发布，能力状态应显示不可用；后端以新的 BackendEpoch 重启并重放快照后，查询恢复且版本号递增。",
+      "steps": [
+        {
+          "action": "issue hover for snapshot 1 and delay the response",
+          "expect": "the request stays pending"
+        },
+        {
+          "action": "didChange the template to snapshot 2",
+          "expect": "snapshot 2 is scheduled and published"
+        },
+        {
+          "action": "deliver the delayed snapshot 1 result",
+          "expect": "the stale result is dropped and never published"
+        },
+        {
+          "action": "terminate the backend",
+          "expect": "capabilities report unavailable instead of a clean result"
+        },
+        {
+          "action": "restart the backend with a new epoch and replay the snapshot",
+          "expect": "hover recovers and the reported epoch is incremented"
+        }
+      ]
+    },
+    {
+      "id": "zed-multi-doc",
+      "kind": "runtime",
+      "acs": [
+        "AC-010"
+      ],
+      "scenario": "在 Zed 中同时打开 index.wxml、index.ts 与 types.ts，并保持原有 JS/TS 主服务开启。未保存事件必须进入 WXML 服务的正确实例，types.ts 的类型与 JSDoc 修改立即反映到模板；主服务继续工作，且不重复发布无关脚本诊断。",
+      "steps": [
+        {
+          "action": "open index.wxml, index.ts and types.ts in Zed with the main TypeScript service running",
+          "expect": "the WXML service receives all three documents in the same instance"
+        },
+        {
+          "action": "didChange types.ts without saving",
+          "expect": "the template diagnostic and hover update without saving"
+        },
+        {
+          "action": "query the main TypeScript service",
+          "expect": "the main service still works and no duplicate script diagnostics are published"
+        }
+      ]
+    }
+  ]
+}

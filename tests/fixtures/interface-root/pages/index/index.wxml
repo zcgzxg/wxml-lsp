@@ -1,0 +1,3 @@
+<view class="page">
+  <text class="name">{{ user.name }}</text>
+</view>

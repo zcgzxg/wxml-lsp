@@ -10,6 +10,9 @@
 | --- | --- | --- | --- |
 | 需求与状态 | [项目 README](../README.md) | 项目目标、范围、T1–T9 类型需求、实施计划、当前进度和第一阶段验收 | 架构取舍的完整论证 |
 | 功能基线 | [WXML 语言功能基线](reference/wxml-language-feature-baseline.md) | 通用 WXML 语言功能的默认行为、数据来源和验收要求 | 当前是否已实现 |
+| 基础契约 | [C0 基础契约](reference/contracts.md) | 坐标单位、文件与版本身份、能力状态、后端接口、mock 行为和共享样本 schema | 类型桥与协议的具体实现 |
+| 诊断策略 | [模板类型诊断策略](reference/type-diagnostics.md) | 严格空值、运行时转换、属性绑定、`any`/`unknown` 和未支持形式的降级规则 | 当前实现进度或测试证据 |
+| 验收样本 | [共享验收样本](../tests/fixtures/README.md) | AC-001..AC-013 的正例、反例、runtime 场景、schema v2 与校验入口 | 类型分析实现 |
 | 架构决策 | [ADR 索引](adr/README.md) | 模块边界、类型检查与映射、文档同步、交付闸门等长期决策 | 日常进度 |
 | 证据 | [证据索引](evidence/README.md) | 实验环境、方法、结果、限制和最小原始数据 | 把实验结论当作已实现功能 |
 | 来源与许可证 | [来源记录](reference/provenance.md) | 外部调研对象的版本、提交、许可证和归属 | 功能需求 |
@@ -22,9 +25,10 @@
 1. 阅读[项目 README](../README.md)，确认目标、范围和当前状态。
 2. 阅读本索引，了解文档归属。
 3. 需要理解架构时，按 0001 → 0005 阅读 [ADR](adr/README.md)。
-4. 需要实现通用 WXML 功能时，阅读[功能基线](reference/wxml-language-feature-baseline.md)。
-5. 需要引用实验依据时，阅读对应[证据记录](evidence/README.md)，同时检查其限制。
-6. 需要复用外部代码或数据时，先查[来源记录](reference/provenance.md)，再复核许可证。
+4. 实现或评审跨模块接口时，阅读 [C0 基础契约](reference/contracts.md) 与[模板类型诊断策略](reference/type-diagnostics.md)。
+5. 需要实现通用 WXML 功能时，阅读[功能基线](reference/wxml-language-feature-baseline.md)。
+6. 需要引用实验依据时，阅读对应[证据记录](evidence/README.md)，同时检查其限制。
+7. 需要复用外部代码或数据时，先查[来源记录](reference/provenance.md)，再复核许可证。
 
 ## 3. 权威顺序
 
@@ -56,6 +60,8 @@ docs/
 ├── README.md                      # 本索引
 ├── reference/
 │   ├── wxml-language-feature-baseline.md
+│   ├── contracts.md
+│   ├── type-diagnostics.md
 │   └── provenance.md
 ├── evidence/
 │   ├── README.md

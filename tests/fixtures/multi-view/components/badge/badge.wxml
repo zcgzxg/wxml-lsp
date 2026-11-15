@@ -1,0 +1,3 @@
+<view class="badge">
+  <text>徽标数字：{{ title }}</text>
+</view>

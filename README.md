@@ -4,7 +4,7 @@
 
 架构决策于 2026-11-15 整理至 [ADR 索引](docs/adr/README.md)，包含模块边界、类型检查与源码映射、文档同步及并行交付方案。架构边界以有效 ADR 为准；`accepted` 不表示功能已实现，实际进度与证据仍见本文。
 
-本文记录已确认的需求、方案评审结果、实验依据和后续计划。项目用于个人在 Zed 中开发微信小程序；当前已有 Rust workspace、文本坐标模块和 CLI 脚手架，语言服务功能和 Zed 扩展仍待实现。
+本文记录已确认的需求、方案评审结果、实验依据和后续计划。项目用于个人在 Zed 中开发微信小程序；当前已完成 Rust workspace、WXML 语法/项目模型、C0/C1 契约、类型桥（候选 A）、Node 类型后端、模板语义、LSP、Zed 扩展代码及真实 Node 端到端验收；剩余主要是完整 `wx:for`/条件窄化/项目类型等 Wave 4 能力与 Zed 安装后的观感验证。
 
 文档入口：[文档索引](docs/README.md) · [WXML 语言功能基线](docs/reference/wxml-language-feature-baseline.md) · [证据索引](docs/evidence/README.md) · [来源与许可证记录](docs/reference/provenance.md)。
 
@@ -216,11 +216,12 @@ crates/
 ├── wxml-text                 # UTF-8 字节偏移 ↔ LSP UTF-16 位置、行索引
 ├── wxml-syntax               # WXML 词法/语法、Mustache 表达式、源码映射
 ├── wxml-project              # 项目、页面/组件、usingComponents、tsconfig
-├── wxml-types                # 内存检查视图、类型后端抽象
+├── wxml-types                # C0 契约、请求上下文、后端接口与 mock
+├── wxml-fixtures             # 共享验收样本的结构校验器
 └── wxml-lsp                  # LSP 传输、文档状态与请求路由（二进制）
 ```
 
-目标依赖按 [ADR-0001](docs/adr/0001-layered-language-service-architecture.md) 统一：`wxml-lsp` 依赖各功能层，`wxml-types` 允许依赖 `wxml-syntax`，各层按需依赖 `wxml-text`；`wxml-project` 独立于 syntax/types，项目事实由 LSP 适配为 types 输入。禁止反向依赖和 `types → project`。这取代原文“禁止所有横向依赖”的表述；依赖声明在首次使用时接入。`wxml-syntax`、`wxml-project`、`wxml-types` 目前只有职责说明，待对应阶段落地实现。
+目标依赖按 [ADR-0001](docs/adr/0001-layered-language-service-architecture.md) 统一：`wxml-lsp` 依赖各功能层，`wxml-types` 允许依赖 `wxml-syntax`，各层按需依赖 `wxml-text`；`wxml-project` 独立于 syntax/types，项目事实由 LSP 适配为 types 输入。禁止反向依赖和 `types → project`。这取代原文“禁止所有横向依赖”的表述；依赖声明在首次使用时接入。`wxml-syntax`、`wxml-project` 仍只有职责说明；`wxml-types` 已落地 C0 契约、请求上下文、后端接口与 mock，真实类型桥和 Node 后端尚未实现；`wxml-fixtures` 只校验共享样本结构。
 
 ## 6. 已有验证与证据边界
 
@@ -258,17 +259,19 @@ crates/
 
 ## 7. 实施计划
 
-当前已完成多 crate 的 Rust workspace 脚手架、clippy/test/bench 配置和基础文本坐标模块。下列功能实现任务均未开始；尚未创建 Zed 扩展文件或安装到 Zed。
+当前已完成多 crate 的 Rust workspace、C0/C1 契约、WXML 语法与项目模型、类型桥（候选 A）、Node 类型后端、模板语义、LSP 和 Zed 扩展代码；Zed 扩展已通过独立评审，但尚未在标准 Dev Extension 流程中安装验证。
 
 ### 阶段 1：固定样本和验收规则
 
-- [ ] 选择具有代表性的 Page、Component、`data`/`properties`、跨文件类型引用和 JS JSDoc 样本。
-- [ ] 覆盖 `data`、`properties`、跨文件类型、路径别名、联合类型、循环与条件。
-- [ ] 明确字段说明优先级，以及缺失类型信息时的展示方式。
-- [ ] 明确严格空值、模板运行时转换及绑定属性兼容性的诊断策略。
-- [ ] 建立可重复运行的正例与反例，避免只检查“能返回 hover”。
+- [x] 选择具有代表性的 Page、Component、`data`/`properties`、跨文件类型引用和 JS JSDoc 样本。
+- [x] 覆盖 `data`、`properties`、跨文件类型、路径别名、联合类型、循环与条件。
+- [x] 明确字段说明优先级，以及缺失类型信息时的展示方式。
+- [x] 明确严格空值、模板运行时转换及绑定属性兼容性的诊断策略。
+- [x] 建立可重复运行的正例与反例，避免只检查“能返回 hover”。
 
 产出：需求到测试样本的对应关系，以及第一版诊断策略。
+
+状态：C0 已冻结，Wave 1 进行中；样本与契约不是用户功能，类型分析 runner 尚未实现。
 
 ### 阶段 2：最小类型闭环
 
@@ -345,6 +348,7 @@ crates/
 
 ## 10. 当前状态
 
-- 已完成：会话需求整理、候选路线评审、部分隔离实验记录、本需求与计划文档、本地功能基线与证据记录，以及多 crate 的 Rust workspace 脚手架和基础文本坐标模块。
-- 未完成：WXML 解析、项目模型、类型分析、LSP 功能、Zed 扩展、端到端验证和可用产品。
-- 后续工作的优先级：先证明模板类型体验，再扩充通用 WXML 常用功能。
+- 已完成：C0/C1 契约；`wxml-text`、`wxml-syntax`（容错 lexer/parser、表达式 Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、app 发现、tsconfig、sources）、`wxml-types`（类型契约、模板语义、`wx:for` 作用域/事件/不支持形式）、`wxml-lsp`（JSON-RPC、真实 Project/FileId、Node 后端、hover/diagnostics/definition、版本屏障/缓存/超时/重启）、Node 类型桥与后端、P8 Zed 扩展；G1 真实 Node 端到端 5 tests。
+- 部分完成：Zed 扩展代码与 wasm 构建通过（22 tests），隔离用户目录手动安装后 Zed 注册 WXML 并启动真实 LSP、显示精确诊断；真实 grammar/标准 Dev Extension 安装与 hover 观感尚未完成。
+- 未完成：完整 `wx:for` 元素类型、条件窄化、多视图归属、补全/反向编辑、增量解析/缓存等 Wave 4+ 能力；Windows/macOS 实机验证；正式提交。
+- 后续工作的优先级：先在 Zed 中完成标准安装与日常观感验收，再补 Wave 4 类型能力。

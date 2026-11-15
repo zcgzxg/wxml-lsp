@@ -7,6 +7,13 @@ publish.workspace = true
 description = "Template type analysis and pluggable TypeScript backends for WXML"
 
 [dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+wxml-syntax = { path = "../wxml-syntax" }
+wxml-text = { path = "../wxml-text" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

@@ -1,0 +1,18 @@
+{
+  "diagnostics": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "非法年龄：{{ state.user.age }}",
+      "target": "age",
+      "severity": "error",
+      "messageContains": "age"
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "守卫外：{{ maybeUser.name }}",
+      "target": "maybeUser",
+      "severity": "error",
+      "messageContains": "null"
+    }
+  ]
+}

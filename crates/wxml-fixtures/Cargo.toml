@@ -1,0 +1,14 @@
+[package]
+name = "wxml-fixtures"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish = false
+description = "Validation of the shared WXML acceptance fixtures"
+
+[dev-dependencies]
+serde_json.workspace = true
+wxml-text = { path = "../wxml-text" }
+
+[lints]
+workspace = true

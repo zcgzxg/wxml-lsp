@@ -1,0 +1,16 @@
+{
+  "queries": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "{{ user.name }}",
+      "target": "user.name",
+      "expect": {
+        "type": "unknown",
+        "typeKind": "unknown",
+        "documentation": "",
+        "status": "unknown",
+        "quality": "unknown"
+      }
+    }
+  ]
+}

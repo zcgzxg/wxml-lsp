@@ -1,0 +1,4 @@
+<view class="page">
+  <card title="{{ cardCount }}" disabled="{{ false }}" />
+  <card title="{{ cardObject }}" />
+</view>

@@ -1,0 +1,4 @@
+<view class="page">
+  <card title="{{ aTitle }}" />
+  <badge title="{{ aBadge }}" />
+</view>

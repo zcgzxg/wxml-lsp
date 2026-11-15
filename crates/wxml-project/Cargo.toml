@@ -7,6 +7,10 @@ publish.workspace = true
 description = "Mini Program project discovery, pages, components and file overlays"
 
 [dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+wxml-text = { path = "../wxml-text" }
 
 [lints]
 workspace = true

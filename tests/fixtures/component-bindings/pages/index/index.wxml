@@ -1,0 +1,4 @@
+<view class="page">
+  <card title="{{ pageTitle }}" count="{{ total }}" bind:tap="onCardTap" />
+  <card title="{{ total }}" bindtap="missingHandler" />
+</view>

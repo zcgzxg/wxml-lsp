@@ -1,0 +1,6 @@
+{
+  "pages": ["pages/index/index"],
+  "window": {
+    "navigationBarTitleText": "WXML 类型样本"
+  }
+}

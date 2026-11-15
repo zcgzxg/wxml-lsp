@@ -7,6 +7,13 @@ publish.workspace = true
 description = "Language server for WeChat Mini Program WXML templates"
 
 [dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+wxml-project = { path = "../wxml-project" }
+wxml-syntax = { path = "../wxml-syntax" }
+wxml-text = { path = "../wxml-text" }
+wxml-types = { path = "../wxml-types" }
 
 [lints]
 workspace = true

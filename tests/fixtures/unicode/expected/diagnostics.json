@@ -1,0 +1,18 @@
+{
+  "diagnostics": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "{{ user.nmae }}",
+      "target": "nmae",
+      "severity": "error",
+      "messageContains": "nmae"
+    },
+    {
+      "file": "pages/index/index-crlf.wxml",
+      "marker": "{{ user.nmae }}",
+      "target": "nmae",
+      "severity": "error",
+      "messageContains": "nmae"
+    }
+  ]
+}

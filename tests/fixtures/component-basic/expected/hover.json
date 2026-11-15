@@ -1,0 +1,16 @@
+{
+  "queries": [
+    {
+      "file": "components/card/card.wxml",
+      "marker": "{{ title }}",
+      "target": "title",
+      "expect": { "type": "string", "typeKind": "string", "documentation": "外部传入的标题" }
+    },
+    {
+      "file": "components/card/card.wxml",
+      "marker": "{{ user.name }}",
+      "target": "user.name",
+      "expect": { "type": "string", "typeKind": "string", "documentation": "用户显示名称" }
+    }
+  ]
+}

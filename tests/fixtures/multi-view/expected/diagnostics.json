@@ -1,0 +1,11 @@
+{
+  "diagnostics": [
+    {
+      "file": "components/card/card.wxml",
+      "marker": "卡片错误：{{ user.nmae }}",
+      "target": "nmae",
+      "severity": "error",
+      "messageContains": "nmae"
+    }
+  ]
+}

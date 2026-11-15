@@ -1,0 +1,4 @@
+<view class="card" bind:tap="onTap">
+  <text>{{ title }}</text>
+  <text>{{ count }}</text>
+</view>

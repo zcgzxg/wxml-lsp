@@ -1,0 +1,5 @@
+<view class="card">
+  <text>卡片标题：{{ title }}</text>
+  <text>卡片用户：{{ user.name }}</text>
+  <text>卡片错误：{{ user.nmae }}</text>
+</view>

@@ -1,0 +1,16 @@
+<view class="page">
+  <view wx:if="{{ state.kind === 'loading' }}">
+    <text>加载中</text>
+  </view>
+  <view wx:elif="{{ state.kind === 'ready' }}">
+    <text>就绪用户：{{ state.user.name }}</text>
+    <text>非法年龄：{{ state.user.age }}</text>
+  </view>
+  <view wx:else>
+    <text>错误码：{{ state.code }}</text>
+  </view>
+  <view wx:if="{{ maybeUser }}">
+    <text>守卫内：{{ maybeUser.name }}</text>
+  </view>
+  <text>守卫外：{{ maybeUser.name }}</text>
+</view>

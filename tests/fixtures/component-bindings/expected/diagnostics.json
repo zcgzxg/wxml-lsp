@@ -1,0 +1,18 @@
+{
+  "diagnostics": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "title=\"{{ total }}\"",
+      "target": "total",
+      "severity": "error",
+      "messageContains": "number"
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "bindtap=\"missingHandler\"",
+      "target": "missingHandler",
+      "severity": "error",
+      "messageContains": "missingHandler"
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  "queries": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "就绪用户：{{ state.user.name }}",
+      "target": "state.user.name",
+      "expect": { "type": "string", "typeKind": "string", "documentation": "用户显示名称" }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "错误码：{{ state.code }}",
+      "target": "state.code",
+      "expect": { "type": "number", "typeKind": "number", "documentation": "错误码" }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "守卫内：{{ maybeUser.name }}",
+      "target": "maybeUser.name",
+      "expect": { "type": "string", "typeKind": "string", "documentation": "用户显示名称" }
+    }
+  ]
+}

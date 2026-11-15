@@ -1,0 +1,6 @@
+<view class="card">
+  <text>{{ title }}</text>
+  <text>{{ disabled }}</text>
+  <text>{{ state }}</text>
+  <text>{{ subtitle }}</text>
+</view>

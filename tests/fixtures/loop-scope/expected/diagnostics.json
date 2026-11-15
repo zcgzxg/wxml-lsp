@@ -1,0 +1,11 @@
+{
+  "diagnostics": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "循环外访问：{{ item }}",
+      "target": "item",
+      "severity": "error",
+      "messageContains": "item"
+    }
+  ]
+}

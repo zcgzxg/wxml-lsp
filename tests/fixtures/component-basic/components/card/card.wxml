@@ -1,0 +1,6 @@
+<view class="card" bindtap="onTap">
+  <text>{{ title }}</text>
+  <text>{{ user.name }}</text>
+  <text>{{ subtitle }}</text>
+  <text>{{ user.nmae }}</text>
+</view>

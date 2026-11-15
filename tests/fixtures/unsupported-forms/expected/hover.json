@@ -1,0 +1,28 @@
+{
+  "queries": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "{{ m.foo }}",
+      "target": "m.foo",
+      "expect": {
+        "type": "unknown",
+        "typeKind": "unknown",
+        "documentation": "",
+        "status": "unsupported",
+        "quality": "unknown"
+      }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "bindtap=\"{{ handlerName }}\"",
+      "target": "handlerName",
+      "expect": {
+        "type": "unknown",
+        "typeKind": "unknown",
+        "documentation": "",
+        "status": "unsupported",
+        "quality": "unknown"
+      }
+    }
+  ]
+}
