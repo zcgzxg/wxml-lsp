@@ -1,0 +1,240 @@
+//! Mapping between UTF-8 byte offsets and UTF-16 line/column positions.
+//!
+//! The Language Server Protocol reports positions as a zero-based line plus a
+//! column measured in UTF-16 code units, while Rust strings are indexed by
+//! UTF-8 bytes. [`LineIndex`] bridges the two and is the only place that
+//! conversion should happen.
+
+/// A zero-based line and UTF-16 column, mirroring the LSP `Position`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct Position {
+    /// Zero-based line number.
+    pub line: u32,
+    /// Zero-based column, measured in UTF-16 code units.
+    pub character: u32,
+}
+
+impl Position {
+    /// Creates a position from a line and a UTF-16 column.
+    #[must_use]
+    pub const fn new(line: u32, character: u32) -> Self {
+        Self { line, character }
+    }
+}
+
+/// Byte offsets of every line start in a document.
+///
+/// Build one index per document revision, then reuse it for every position
+/// query. Lines are separated by `\n`; a trailing `\r` belongs to the line
+/// ending and is not counted in columns.
+#[derive(Clone, Debug)]
+pub struct LineIndex {
+    text_len: usize,
+    line_starts: Vec<usize>,
+}
+
+impl LineIndex {
+    /// Builds an index for `text`.
+    #[must_use]
+    pub fn new(text: &str) -> Self {
+        let mut line_starts = Vec::with_capacity(text.len() / 32 + 1);
+        line_starts.push(0);
+        line_starts.extend(text.match_indices('\n').map(|(offset, _)| offset + 1));
+        Self {
+            text_len: text.len(),
+            line_starts,
+        }
+    }
+
+    /// Returns the number of lines.
+    ///
+    /// A trailing newline starts a final, empty line.
+    #[must_use]
+    pub fn line_count(&self) -> usize {
+        self.line_starts.len()
+    }
+
+    /// Converts a byte offset into a [`Position`].
+    ///
+    /// Returns `None` when `offset` is out of bounds or not on a UTF-8
+    /// character boundary.
+    #[must_use]
+    pub fn position(&self, text: &str, offset: usize) -> Option<Position> {
+        if offset > self.text_len || !text.is_char_boundary(offset) {
+            return None;
+        }
+        let line = self.line_index(offset);
+        let line_start = self.line_starts[line];
+        let line = u32::try_from(line).ok()?;
+        let character = u32::try_from(text[line_start..offset].encode_utf16().count()).ok()?;
+        Some(Position { line, character })
+    }
+
+    /// Converts a [`Position`] into a byte offset.
+    ///
+    /// Returns `None` when the line or column does not exist, including a
+    /// column that would split a surrogate pair.
+    #[must_use]
+    pub fn offset(&self, text: &str, position: Position) -> Option<usize> {
+        let line = usize::try_from(position.line).ok()?;
+        let line_start = *self.line_starts.get(line)?;
+        let line_end = self
+            .line_starts
+            .get(line + 1)
+            .copied()
+            .unwrap_or(self.text_len);
+        let content_end = line_content_end(text, line_start, line_end);
+        let mut column = 0_u32;
+        for (relative, character) in text[line_start..content_end].char_indices() {
+            if column == position.character {
+                return Some(line_start + relative);
+            }
+            column += u32::try_from(character.len_utf16()).ok()?;
+            if column > position.character {
+                return None;
+            }
+        }
+        (column == position.character).then_some(content_end)
+    }
+
+    /// Returns the index of the line containing `offset`.
+    fn line_index(&self, offset: usize) -> usize {
+        self.line_starts.partition_point(|&start| start <= offset) - 1
+    }
+}
+
+/// Returns the end of the line content, excluding a trailing `\r\n` or `\n`.
+fn line_content_end(text: &str, line_start: usize, line_end: usize) -> usize {
+    let bytes = text.as_bytes();
+    let mut end = line_end;
+    if end > line_start && bytes.get(end - 1) == Some(&b'\n') {
+        end -= 1;
+        if end > line_start && bytes.get(end - 1) == Some(&b'\r') {
+            end -= 1;
+        }
+    }
+    end
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn pos(line: u32, character: u32) -> Position {
+        Position::new(line, character)
+    }
+
+    fn arbitrary_text() -> impl Strategy<Value = String> {
+        prop::collection::vec(prop::char::any(), 0..=40)
+            .prop_map(|chars| chars.into_iter().collect())
+    }
+
+    #[test]
+    fn indexes_empty_text_as_a_single_line() {
+        let index = LineIndex::new("");
+        assert_eq!(index.line_count(), 1);
+        assert_eq!(index.position("", 0), Some(pos(0, 0)));
+        assert_eq!(index.offset("", pos(0, 0)), Some(0));
+        assert_eq!(index.offset("", pos(0, 1)), None);
+    }
+
+    #[test]
+    fn converts_ascii_offsets() {
+        let text = "hello\nworld\n";
+        let index = LineIndex::new(text);
+        assert_eq!(index.line_count(), 3);
+        assert_eq!(index.position(text, 0), Some(pos(0, 0)));
+        assert_eq!(index.position(text, 5), Some(pos(0, 5)));
+        assert_eq!(index.position(text, 6), Some(pos(1, 0)));
+        assert_eq!(index.position(text, 11), Some(pos(1, 5)));
+        assert_eq!(index.position(text, 12), Some(pos(2, 0)));
+        assert_eq!(index.offset(text, pos(1, 3)), Some(9));
+        assert_eq!(index.offset(text, pos(2, 0)), Some(12));
+    }
+
+    #[test]
+    fn counts_utf16_units_for_cjk_and_emoji() {
+        let text = "中文😀a\n";
+        let index = LineIndex::new(text);
+        // "中文" = 2 units, "😀" = 2 units, "a" = 1 unit.
+        assert_eq!(index.position(text, "中文".len()), Some(pos(0, 2)));
+        assert_eq!(index.position(text, "中文😀".len()), Some(pos(0, 4)));
+        assert_eq!(index.position(text, text.len() - 1), Some(pos(0, 5)));
+        assert_eq!(index.offset(text, pos(0, 2)), Some(6));
+        assert_eq!(index.offset(text, pos(0, 4)), Some(10));
+        assert_eq!(index.offset(text, pos(0, 5)), Some(11));
+    }
+
+    #[test]
+    fn rejects_positions_inside_a_surrogate_pair() {
+        let text = "😀";
+        let index = LineIndex::new(text);
+        assert_eq!(index.offset(text, pos(0, 1)), None);
+        assert_eq!(index.offset(text, pos(0, 2)), Some(4));
+    }
+
+    #[test]
+    fn rejects_out_of_bounds_input() {
+        let text = "a\nb";
+        let index = LineIndex::new(text);
+        assert_eq!(index.position(text, text.len() + 1), None);
+        assert_eq!(index.position(text, 2), Some(pos(1, 0)));
+        assert_eq!(index.offset(text, pos(2, 0)), None);
+        assert_eq!(index.offset(text, pos(0, 2)), None);
+        assert_eq!(index.offset(text, pos(u32::MAX, 0)), None);
+    }
+
+    #[test]
+    fn excludes_crlf_line_endings_from_columns() {
+        let text = "ab\r\ncd\r\n";
+        let index = LineIndex::new(text);
+        assert_eq!(index.position(text, 2), Some(pos(0, 2)));
+        assert_eq!(index.offset(text, pos(0, 2)), Some(2));
+        assert_eq!(index.offset(text, pos(0, 3)), None);
+        assert_eq!(index.offset(text, pos(1, 2)), Some(6));
+    }
+
+    #[test]
+    fn reports_the_line_of_every_offset() {
+        let text = "a\nbc\n\nd";
+        let index = LineIndex::new(text);
+        assert_eq!(index.line_count(), 4);
+        for (offset, expected) in [
+            (0, pos(0, 0)),
+            (2, pos(1, 0)),
+            (5, pos(2, 0)),
+            (6, pos(3, 0)),
+        ] {
+            assert_eq!(index.position(text, offset), Some(expected));
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn offsets_round_trip_through_positions(
+            text in arbitrary_text(),
+            offset in 0usize..400,
+        ) {
+            let index = LineIndex::new(&text);
+            if offset <= text.len() && text.is_char_boundary(offset) {
+                let position = index.position(&text, offset).expect("valid offset");
+                let back = index.offset(&text, position).expect("valid position");
+                prop_assert_eq!(index.position(&text, back), Some(position));
+            }
+        }
+
+        #[test]
+        fn positions_round_trip_through_offsets(
+            text in arbitrary_text(),
+            line in 0u32..20,
+            character in 0u32..40,
+        ) {
+            let index = LineIndex::new(&text);
+            let position = Position::new(line, character);
+            if let Some(offset) = index.offset(&text, position) {
+                prop_assert_eq!(index.position(&text, offset), Some(position));
+            }
+        }
+    }
+}

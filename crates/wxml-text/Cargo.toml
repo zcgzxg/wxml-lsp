@@ -1,0 +1,20 @@
+[package]
+name = "wxml-text"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "UTF-8/UTF-16 text coordinates and line indexing for WXML tooling"
+
+[dependencies]
+
+[dev-dependencies]
+criterion = { workspace = true }
+proptest = { workspace = true }
+
+[[bench]]
+name = "line_index"
+harness = false
+
+[lints]
+workspace = true

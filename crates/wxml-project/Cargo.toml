@@ -1,0 +1,12 @@
+[package]
+name = "wxml-project"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Mini Program project discovery, pages, components and file overlays"
+
+[dependencies]
+
+[lints]
+workspace = true

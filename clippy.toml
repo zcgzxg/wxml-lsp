@@ -1,0 +1,20 @@
+msrv = "1.85"
+too-many-arguments-threshold = 7
+cognitive-complexity-threshold = 20
+type-complexity-threshold = 250
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+doc-valid-idents = [
+    "WXML",
+    "WXSS",
+    "TypeScript",
+    "JavaScript",
+    "tsconfig",
+    "usingComponents",
+    "wx:for",
+    "wx:if",
+    "miniprogram",
+    "..",
+]
