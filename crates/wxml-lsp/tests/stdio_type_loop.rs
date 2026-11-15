@@ -501,6 +501,33 @@ fn ac001_page_data_and_jsdoc_hover() {
         "hover range must point at `name`: {name}"
     );
 
+    // The whole mustache expression, not only the target token, answers hover.
+    let user_position = lsp_position(wxml, "user");
+    let user = session.hover(&uri, user_position);
+    assert!(
+        hover_value(&user).contains("string"),
+        "hover over the expression root must use the target type: {user}"
+    );
+    assert_eq!(
+        user["result"]["range"]["start"],
+        json!({"line": name_position.0, "character": name_position.1}),
+        "the reported range must stay on the target token: {user}"
+    );
+
+    let name_len = u32::try_from("user.name".len()).expect("expression fits in u32");
+    let expression_end = (user_position.0, user_position.1 + name_len);
+    let end = session.hover(&uri, expression_end);
+    assert!(
+        hover_value(&end).contains("string"),
+        "the expression end is a valid hover point: {end}"
+    );
+
+    let outside = session.hover(&uri, (0, 0));
+    assert!(
+        outside["result"].is_null(),
+        "plain markup outside a mustache must not produce an unknown tooltip: {outside}"
+    );
+
     let title_position = lsp_position(wxml, "title");
     let title = session.hover(&uri, title_position);
     let title_value = hover_value(&title);

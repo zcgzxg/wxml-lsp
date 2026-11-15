@@ -19,6 +19,8 @@ pub(crate) struct FragmentInfo {
     pub target: Option<String>,
     /// Byte range of the target token in the WXML source.
     pub target_range: Option<SourceRange>,
+    /// Byte range of the whole mustache expression in the WXML source.
+    pub expr_range: SourceRange,
     /// Template bindings (C1.1 `locals`).
     pub locals: Vec<String>,
 }
@@ -66,6 +68,7 @@ pub(crate) fn build(
                 fragment_id: fragment.fragment_id.clone(),
                 target: selected.clone(),
                 target_range,
+                expr_range: fragment.wxml_range,
                 locals: fragment.locals.clone(),
             },
         );

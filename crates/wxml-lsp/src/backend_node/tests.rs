@@ -342,7 +342,7 @@ fn a_second_revision_requests_a_new_analysis() {
 }
 
 #[test]
-fn hover_only_answers_inside_the_target_token() {
+fn hover_answers_anywhere_inside_the_expression() {
     let shared = Shared::default();
     let backend = backend(&shared, StubHost::new(view(Vec::new())));
     let context = context();
@@ -359,8 +359,30 @@ fn hover_only_answers_inside_the_target_token() {
         Some((8, 12))
     );
 
+    // `user` is inside the expression but outside the target token `name`.
+    let expression = backend
+        .hover(HoverRequest {
+            context: context.clone(),
+            offset: 5,
+        })
+        .expect("hover expression");
+    assert_eq!(expression.quality, TypeQuality::Known);
+    assert_eq!(
+        expression.range.map(|range| (range.start(), range.end())),
+        Some((8, 12))
+    );
+
+    // The end of the expression is a valid point (right edge of the text).
+    let end = backend
+        .hover(HoverRequest {
+            context: context.clone(),
+            offset: 12,
+        })
+        .expect("hover end");
+    assert_eq!(end.quality, TypeQuality::Known);
+
     let outside = backend
-        .hover(HoverRequest { context, offset: 5 })
+        .hover(HoverRequest { context, offset: 0 })
         .expect("hover outside");
     assert!(outside.contents.is_empty());
     assert_eq!(outside.range, None);

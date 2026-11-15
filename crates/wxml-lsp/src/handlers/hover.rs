@@ -79,8 +79,21 @@ fn decorated_contents(result: &HoverResult) -> String {
     text
 }
 
+/// True when the backend found no expression at the requested point.
+///
+/// Returning an empty markdown block here would make every ordinary WXML
+/// position show a misleading "type quality: unknown" tooltip.
+fn is_empty_hover(result: &HoverResult) -> bool {
+    result.contents.is_empty()
+        && result.range.is_none()
+        && matches!(result.quality, TypeQuality::Unknown)
+}
+
 /// Maps a backend hover to the LSP result shape.
 fn hover_value(server: &Server, stamp: &AnalysisStamp, result: &HoverResult) -> Option<Value> {
+    if is_empty_hover(result) {
+        return None;
+    }
     let document = server.workspace.get_by_file(&stamp.file)?;
     let mut value = json!({
         "contents": {
@@ -460,6 +473,30 @@ mod tests {
         assert!(text.contains("type quality: any"), "{text}");
         assert!(text.starts_with("[check status:"), "{text}");
         assert!(!text.contains('*'), "{text}");
+    }
+
+    #[test]
+    fn empty_hover_without_a_range_is_not_rendered() {
+        let empty = HoverResult {
+            contents: String::new(),
+            markup: MarkupKind::Markdown,
+            range: None,
+            status: CapabilityStatus::Supported,
+            quality: TypeQuality::Unknown,
+        };
+        assert!(is_empty_hover(&empty));
+
+        let with_text = HoverResult {
+            contents: "unknown".to_owned(),
+            ..empty.clone()
+        };
+        assert!(!is_empty_hover(&with_text));
+
+        let with_range = HoverResult {
+            range: Some(SourceRange::from_bounds(0, 1).expect("range")),
+            ..empty
+        };
+        assert!(!is_empty_hover(&with_range));
     }
 
     #[test]

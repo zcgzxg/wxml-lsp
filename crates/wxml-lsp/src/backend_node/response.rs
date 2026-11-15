@@ -7,7 +7,7 @@ use std::marker::PhantomData;
 use serde::de::{self, DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use wxml_project::ProjectPath;
-use wxml_text::TextRange;
+use wxml_text::{SourceRange, TextRange};
 use wxml_types::{
     CapabilityStatus, DefinitionResult, Diagnostic, DiagnosticSeverity, DiagnosticsResult,
     HoverResult, MarkupKind, SourceLocation, SourceSnapshot, TypeQuality,
@@ -441,8 +441,8 @@ pub(crate) struct WireRange {
 }
 
 impl WireRange {
-    fn source_range(self) -> Option<wxml_text::SourceRange> {
-        wxml_text::SourceRange::from_bounds(self.start, self.end).ok()
+    fn source_range(self) -> Option<SourceRange> {
+        SourceRange::from_bounds(self.start, self.end).ok()
     }
 }
 
@@ -556,6 +556,15 @@ fn validate(
     Ok(response)
 }
 
+/// Whether a point request at `offset` belongs to `range`.
+///
+/// The end is inclusive so hovering at the right edge of an identifier still
+/// resolves; editors commonly report that position when the pointer is on the
+/// final glyph.
+const fn point_in_range(range: SourceRange, offset: u32) -> bool {
+    range.start() <= offset && offset <= range.end()
+}
+
 /// Maps a hover response.
 pub(crate) fn hover(
     response: &AnalyzeResponse,
@@ -575,7 +584,7 @@ pub(crate) fn hover(
         let Some(range) = info.target_range else {
             continue;
         };
-        if !range.contains(offset) {
+        if !point_in_range(info.expr_range, offset) {
             continue;
         }
         found = Some((fragment, range));
@@ -699,10 +708,7 @@ pub(crate) fn definition(
         let Some(info) = request_fragments.get(&fragment.fragment_id) else {
             continue;
         };
-        let Some(target_range) = info.target_range else {
-            continue;
-        };
-        if !target_range.contains(offset) {
+        if info.target_range.is_none() || !point_in_range(info.expr_range, offset) {
             continue;
         }
         let Some(definition) = fragment.definition.as_ref() else {
