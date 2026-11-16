@@ -72,7 +72,8 @@ fn parse_part(part: Option<&str>, input: &str) -> Result<u64> {
 /// Returns whether a version has a pre-release suffix after the numeric core.
 #[must_use]
 pub fn is_prerelease(version: &str) -> bool {
-    version
+    let before_build = version.split_once('+').map_or(version, |(core, _)| core);
+    before_build
         .split_once('-')
         .is_some_and(|(_, suffix)| !suffix.is_empty())
 }
@@ -172,6 +173,7 @@ mod tests {
         assert!(compare_versions("2.0.0-rc.2", "2.0.0-rc.10").is_lt());
         assert!(is_prerelease("2.0.0-rc.1"));
         assert!(!is_prerelease("2.0.0"));
+        assert!(!is_prerelease("2.0.0+build-1"));
     }
 
     #[test]

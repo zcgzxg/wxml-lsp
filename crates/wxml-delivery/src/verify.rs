@@ -10,7 +10,6 @@ use crate::manifest::{
     ExpectedManifest, MAX_MANIFEST_BYTES, Manifest, format_sha256sums, parse_sha256sums,
     read_limited, read_manifest, sha256_file,
 };
-use crate::paths::validate_sha256;
 use crate::semver::Semver;
 
 /// Verified runtime versions.
@@ -97,15 +96,6 @@ pub fn verify_tree(root: &Path, expected: ExpectedManifest<'_>) -> Result<Manife
     }
 
     Ok(manifest)
-}
-
-/// Verifies a package directory without extracting it.
-///
-/// # Errors
-///
-/// See [`verify_tree`].
-pub fn verify_package_dir(root: &Path, expected: ExpectedManifest<'_>) -> Result<Manifest> {
-    verify_tree(root, expected)
 }
 
 /// Writes the checksum file for a completed package tree.
@@ -399,21 +389,13 @@ pub fn verify_archive(
     scratch: &Path,
     expected: ExpectedManifest<'_>,
 ) -> Result<Manifest> {
-    let tree = scratch.join("tree");
-    crate::archive::extract_tar_gz(archive, &tree)?;
-    let result = verify_tree(&tree, expected);
+    let result = (|| {
+        let tree = scratch.join("tree");
+        crate::archive::extract_tar_gz(archive, &tree)?;
+        verify_tree(&tree, expected)
+    })();
     let _ = std::fs::remove_dir_all(scratch);
     result
-}
-
-/// Validates a SHA-256 string and returns it.
-///
-/// # Errors
-///
-/// Returns an error for malformed digests.
-pub fn checked_sha256(value: &str) -> Result<&str> {
-    validate_sha256(value)?;
-    Ok(value)
 }
 
 #[cfg(test)]

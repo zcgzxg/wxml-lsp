@@ -11,7 +11,9 @@ use wxml_delivery::manifest::{ExpectedManifest, now_rfc3339, set_mode};
 use wxml_delivery::paths::{host_platform, shell_quote};
 use wxml_delivery::semver::compare_versions;
 use wxml_delivery::source::Source;
-use wxml_delivery::verify::{binary_version, check_backend, check_binary, check_node};
+use wxml_delivery::verify::{
+    binary_version, check_backend, check_binary, check_node, verify_install,
+};
 
 const USAGE: &str = "\
 Usage: wxml-lsp-install <COMMAND> [OPTIONS]
@@ -194,7 +196,11 @@ impl Options {
                     }
                     options.help = true;
                 }
-                _ => unreachable!("allowed options are exhaustive"),
+                _ => {
+                    return Err(DeliveryError::InvalidArgument(format!(
+                        "unhandled option `--{name}`"
+                    )));
+                }
             }
         }
         Ok(options)
@@ -281,7 +287,7 @@ fn upgrade(options: &Options) -> Result<()> {
     let version = acquired.manifest.package_version.clone();
     if let Some(current) = current {
         if compare_versions(&version, &current).is_lt() {
-            let _ = std::fs::remove_dir_all(&acquired.tree);
+            cleanup_staging(&root, &acquired.tree);
             return Err(DeliveryError::InvalidArgument(format!(
                 "refusing to downgrade from {current} to {version}; use `rollback --to {version}` explicitly"
             )));
@@ -314,10 +320,25 @@ fn rollback(options: &Options) -> Result<()> {
         cleanup_staging(&root, &acquired.tree);
         result?;
     }
-    root.verify_installed(&target)?;
+    let manifest = root.verify_installed(&target)?;
+    let target_dir = root.versions_dir().join(&target);
+    check_binary(&target_dir, &manifest)?;
+    check_backend(&target_dir, &manifest)?;
+    let previous = root.current_version()?;
     root.switch(&target)?;
     let binary = root.current_binary()?;
-    let version = binary_version(&binary)?;
+    let version = match binary_version(&binary) {
+        Ok(version) => version,
+        Err(error) => {
+            if let Some(previous) = previous {
+                let _ = root.switch(&previous);
+                return Err(DeliveryError::Runtime(format!(
+                    "{error}; rolled back to {previous}"
+                )));
+            }
+            return Err(error);
+        }
+    };
     println!("rolled back to {target}");
     println!("binary: {}", binary.display());
     println!("reported version: {version}");
@@ -338,7 +359,7 @@ fn versions(options: &Options) -> Result<()> {
             "download is disabled; pass --enable-download to contact the source".to_owned(),
         ));
     }
-    let index = source.read_index()?;
+    let index = wxml_delivery::acquire::read_versions(&source, options.offline)?;
     let platform = host_platform()?;
     let mut available: Vec<_> = index
         .releases
@@ -424,12 +445,13 @@ fn verify(options: &Options) -> Result<()> {
     // tampered `bin/wxml-lsp` must never run just because the user asked to
     // verify it.
     let manifest = root.verify_installed(&version)?;
-    let binary = check_binary(&directory, &manifest)?;
-    check_backend(&directory, &manifest)?;
-    let node = check_node(&manifest.node.minimum_version)?;
+    let report = verify_install(&directory, &manifest)?;
     println!("verified {version}");
-    println!("binary version: {binary}");
-    println!("node: {node} (minimum {})", manifest.node.minimum_version);
+    println!("binary version: {}", report.binary_version);
+    println!(
+        "node: {} (minimum {})",
+        report.node_version, manifest.node.minimum_version
+    );
     println!("protocol: {}", manifest.protocol_version);
     Ok(())
 }

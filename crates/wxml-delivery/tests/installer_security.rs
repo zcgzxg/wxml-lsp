@@ -10,14 +10,18 @@
 mod support;
 
 use std::fs;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use serde_json::Value;
 use support::{
     FixtureServer, TempDir, assert_failure, assert_success, host_platform, installer, pack, run,
     stdout,
 };
+use tar::{Builder, EntryType, Header};
 
 fn mutate_index(output: &Path, mutate: impl FnOnce(&mut Value)) {
     let path = output.join("index.json");
@@ -61,6 +65,129 @@ fn release_archive(output: &Path) -> PathBuf {
     let index: Value =
         serde_json::from_slice(&fs::read(output.join("index.json")).unwrap()).unwrap();
     output.join(index["releases"][0]["archive"].as_str().unwrap())
+}
+
+#[test]
+fn verify_package_rejects_malformed_pax_without_panicking() {
+    let base = TempDir::new("sec-pax-bundle");
+    let output = base.path().join("release");
+    fs::create_dir(&output).unwrap();
+    let archive = output.join("a.tar.gz");
+    let file = fs::File::create(&archive).unwrap();
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+    let mut header = Header::new_gnu();
+    header.set_entry_type(EntryType::XHeader);
+    header.set_size(4);
+    header.set_mode(0o644);
+    header.set_mtime(0);
+    header.set_path("pax").unwrap();
+    header.set_cksum();
+    builder.append(&header, Cursor::new(b"3 \xc3\xa9")).unwrap();
+    builder.finish().unwrap();
+    let encoder = builder.into_inner().unwrap();
+    encoder.finish().unwrap();
+    let size = fs::metadata(&archive).unwrap().len();
+    assert!(size < 128, "fixture should stay tiny: {size}");
+    let release = wxml_delivery::manifest::Release {
+        version: "0.1.0".to_owned(),
+        platform: host_platform(),
+        protocol_version: 2,
+        node_minimum_version: "24.0.0".to_owned(),
+        archive: "a.tar.gz".to_owned(),
+        sha256: wxml_delivery::manifest::sha256_file(&archive).unwrap(),
+        size,
+    };
+    let index = wxml_delivery::manifest::Index {
+        schema_version: 1,
+        package: "wxml-lsp".to_owned(),
+        releases: vec![release],
+    };
+    fs::write(output.join("index.json"), index.to_json().unwrap()).unwrap();
+    let mut command = installer();
+    command.args([
+        "verify-package",
+        "--from-dir",
+        output.to_str().unwrap(),
+        "--version",
+        "0.1.0",
+        "--offline",
+    ]);
+    let result = run(&mut command);
+    assert!(!result.status.success());
+    let combined = format!("{}{}", stdout(&result), support::stderr(&result));
+    assert!(!combined.contains("panicked"), "{combined}");
+    assert!(
+        combined.to_lowercase().contains("pax") || combined.to_lowercase().contains("unsafe"),
+        "{combined}"
+    );
+}
+
+#[test]
+fn verify_package_rejects_leading_space_size_before_huge_extension() {
+    let base = TempDir::new("sec-leading-space");
+    let output = base.path().join("release");
+    fs::create_dir(&output).unwrap();
+    let archive = output.join("a.tar.gz");
+    let file = fs::File::create(&archive).unwrap();
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+    let mut first = Header::new_gnu();
+    first.set_path("a").unwrap();
+    first.set_mode(0o644);
+    first.set_mtime(0);
+    first.as_old_mut().size.copy_from_slice(b" 00000000012");
+    first.set_cksum();
+    builder.append(&first, Cursor::new([0_u8; 10])).unwrap();
+    let mut longname = Header::new_gnu();
+    longname.set_entry_type(EntryType::GNULongName);
+    longname.set_path("longname").unwrap();
+    longname.set_mode(0o644);
+    longname.set_mtime(0);
+    longname.set_size(1024 * 1024 * 1024);
+    longname.set_cksum();
+    builder
+        .append(&longname, Cursor::new(Vec::<u8>::new()))
+        .unwrap();
+    builder.finish().unwrap();
+    let encoder = builder.into_inner().unwrap();
+    encoder.finish().unwrap();
+    let size = fs::metadata(&archive).unwrap().len();
+    let release = wxml_delivery::manifest::Release {
+        version: "0.1.0".to_owned(),
+        platform: host_platform(),
+        protocol_version: 2,
+        node_minimum_version: "24.0.0".to_owned(),
+        archive: "a.tar.gz".to_owned(),
+        sha256: wxml_delivery::manifest::sha256_file(&archive).unwrap(),
+        size,
+    };
+    let index = wxml_delivery::manifest::Index {
+        schema_version: 1,
+        package: "wxml-lsp".to_owned(),
+        releases: vec![release],
+    };
+    fs::write(output.join("index.json"), index.to_json().unwrap()).unwrap();
+    let started = std::time::Instant::now();
+    let mut command = installer();
+    command.args([
+        "verify-package",
+        "--from-dir",
+        output.to_str().unwrap(),
+        "--version",
+        "0.1.0",
+        "--offline",
+    ]);
+    let result = run(&mut command);
+    assert!(!result.status.success());
+    let combined = format!("{}{}", stdout(&result), support::stderr(&result));
+    assert!(!combined.contains("panicked"), "{combined}");
+    assert!(
+        combined.to_lowercase().contains("size limit")
+            || combined.to_lowercase().contains("extension"),
+        "{combined}"
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
 }
 
 #[test]

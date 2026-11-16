@@ -18,6 +18,8 @@ use support::{
     FixtureServer, TempDir, assert_failure, assert_success, installer, pack, pack_broken_binary,
     pack_with_extra, run, stderr, stdout,
 };
+use wxml_delivery::manifest::{Manifest, atomic_write, sha256_file};
+use wxml_delivery::verify::checksums_for_tree;
 
 fn install(root: &Path, source: &str, version: &str, extra: &[&str]) -> Output {
     let mut command = installer();
@@ -48,6 +50,16 @@ fn active_version(root: &Path) -> String {
         .and_then(|component| component.as_os_str().to_str())
         .expect("version")
         .to_owned()
+}
+
+fn assert_tmp_empty(root: &Path) {
+    let tmp = root.join("tmp");
+    if tmp.exists() {
+        assert!(
+            fs::read_dir(&tmp).unwrap().next().is_none(),
+            "staging files were left in tmp/"
+        );
+    }
 }
 
 fn cache_archives(root: &Path) -> Vec<PathBuf> {
@@ -408,6 +420,75 @@ fn read_only_commands_do_not_create_or_chmod_the_root() {
     assert!(!root.join(".lock").exists());
 }
 
+fn rewrite_installed_binary(root: &Path, version: &str, bytes: &[u8]) {
+    let directory = root.join("versions").join(version);
+    let binary = directory.join("bin/wxml-lsp");
+    fs::write(&binary, bytes).unwrap();
+    wxml_delivery::manifest::set_mode(&binary, 0o755).unwrap();
+    let mut manifest: Manifest =
+        serde_json::from_slice(&fs::read(directory.join("manifest.json")).unwrap()).unwrap();
+    let digest = sha256_file(&binary).unwrap();
+    let size = fs::metadata(&binary).unwrap().len();
+    let file = manifest
+        .files
+        .iter_mut()
+        .find(|file| file.path == "bin/wxml-lsp")
+        .unwrap();
+    file.sha256.clone_from(&digest);
+    file.size = size;
+    let artifact = manifest
+        .binaries
+        .iter_mut()
+        .find(|artifact| artifact.name == "wxml-lsp")
+        .unwrap();
+    artifact.sha256 = digest;
+    atomic_write(
+        &directory.join("manifest.json"),
+        &manifest.to_json().unwrap(),
+        0o644,
+    )
+    .unwrap();
+    let checksums = checksums_for_tree(&directory, &manifest).unwrap();
+    atomic_write(&directory.join("SHA256SUMS"), &checksums, 0o644).unwrap();
+}
+
+#[test]
+fn rollback_validates_the_target_before_switching_current() {
+    let base = TempDir::new("flow-rollback-check");
+    let output = base.path().join("release");
+    pack(&output, "0.1.0");
+    pack(&output, "0.2.0");
+    let server = FixtureServer::directory(&output);
+    let root = base.path().join("root");
+    assert_success(&install(&root, &server.url(), "0.1.0", &[]));
+    let mut second = installer();
+    second.args([
+        "install",
+        "--root",
+        root.to_str().expect("root"),
+        "--source",
+        &server.url(),
+        "--enable-download",
+        "--version",
+        "0.2.0",
+    ]);
+    assert_success(&run(&mut second));
+    assert_eq!(active_version(&root), "0.2.0");
+    rewrite_installed_binary(&root, "0.1.0", b"#!/bin/sh\nprintf 'wxml-lsp 9.9.9\\n'\n");
+    let mut rollback = installer();
+    rollback.args([
+        "rollback",
+        "--root",
+        root.to_str().expect("root"),
+        "--to",
+        "0.1.0",
+    ]);
+    let result = run(&mut rollback);
+    assert_failure(&result, "reports");
+    assert_eq!(active_version(&root), "0.2.0");
+    assert_tmp_empty(&root);
+}
+
 #[test]
 fn verify_does_not_execute_a_tampered_binary() {
     let base = TempDir::new("flow-verify-order");
@@ -432,6 +513,7 @@ fn verify_does_not_execute_a_tampered_binary() {
     let result = run(&mut verify);
     assert!(!result.status.success());
     assert!(!marker.exists(), "verify executed a tampered binary");
+    assert_tmp_empty(&root);
 }
 
 #[test]
@@ -459,6 +541,7 @@ fn failed_runtime_check_keeps_the_previous_active_version() {
     assert_failure(&result, "reports");
     assert_eq!(active_version(&root), "0.1.0");
     assert!(!root.join("versions/0.3.0").exists());
+    assert_tmp_empty(&root);
     assert_success(&current(&root));
 }
 
@@ -486,6 +569,7 @@ fn upgrade_refuses_downgrades_and_same_version_rebuilds() {
     let result = run(&mut upgrade);
     assert_failure(&result, "downgrade");
     assert_eq!(active_version(&root), "0.2.0");
+    assert_tmp_empty(&root);
 
     let mut install = installer();
     install.args([
@@ -502,6 +586,7 @@ fn upgrade_refuses_downgrades_and_same_version_rebuilds() {
     assert_failure(&result, "different contents");
     assert_eq!(active_version(&root), "0.2.0");
     assert!(!root.join("current/bin/extra.txt").exists());
+    assert_tmp_empty(&root);
 }
 
 #[test]

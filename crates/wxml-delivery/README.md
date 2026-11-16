@@ -11,8 +11,8 @@
 ## 构建
 
 ```bash
-CARGO_TARGET_DIR=/home/zxg/.cache/wxml-targets/full-local-delivery \
-WXML_BUILD_CACHE=/home/zxg/.cache/wxml-targets/full-local-delivery/build-cache \
+CARGO_TARGET_DIR="$HOME/.cache/wxml-targets/full-local-delivery" \
+WXML_BUILD_CACHE="$HOME/.cache/wxml-targets/full-local-delivery/build-cache" \
   scripts/build-release.sh --output /tmp/opencode/final-release
 ```
 
@@ -86,7 +86,7 @@ wxml-lsp-install verify-package --from-dir /path/to/release --version 0.1.0 --of
 - `upgrade` 默认拒绝降级；降级必须显式 `rollback --to`。同版本但内容不同不会静默保留旧字节，会报 “already installed with different contents”。
 - `rollback` 优先验证已安装版本；未安装时可从显式本地源或已验证缓存安装指定版本。
 - `list/current/verify/env` 是只读命令：不会创建 root，不会 chmod 已有目录；不存在时返回“未安装”类错误。
-- `verify` 先完整校验 manifest、SHA-256 和文件集合，再执行包内 `--version`；被篡改的二进制不会被执行。
+- `verify` 先完整校验 manifest、SHA-256 和文件集合，再执行包内 `--version`；**哈希不一致**的篡改会在执行前被拒绝。若攻击者能重写整棵 `versions/<v>`（二进制 + manifest + SHA256SUMS），哈希仍自洽，只有发布者签名才能识别；这是下文明确的残留风险。
 - 路径含空格无需额外转义；所有路径参数走 argv，不经过 shell。`env` 输出使用 shell quoting。
 
 ## 缓存与离线

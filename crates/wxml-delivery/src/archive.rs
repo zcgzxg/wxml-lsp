@@ -168,6 +168,11 @@ fn prescan_tar(mut reader: impl Read) -> Result<()> {
         }
         let kind = header[156];
         let raw_size = parse_tar_size(&header[124..136])?;
+        if kind == b'S' {
+            return Err(DeliveryError::UnsafeArchive(
+                "GNU sparse tar entries are not accepted".to_owned(),
+            ));
+        }
         let is_extension = matches!(kind, b'L' | b'K' | b'x' | b'g');
         if is_extension && raw_size > MAX_EXTENSION_BYTES {
             return Err(DeliveryError::SizeLimit(format!(
@@ -280,55 +285,58 @@ fn parse_tar_size(field: &[u8]) -> Result<u64> {
             "base-256 tar size fields are not accepted".to_owned(),
         ));
     }
-    let text = field
+    let end = field
         .iter()
-        .copied()
-        .take_while(|byte| *byte != 0 && *byte != b' ')
-        .collect::<Vec<_>>();
-    if text.is_empty() {
-        return Ok(0);
-    }
-    let text = std::str::from_utf8(&text)
+        .position(|byte| *byte == 0)
+        .unwrap_or(field.len());
+    let text = std::str::from_utf8(&field[..end])
         .map_err(|_| DeliveryError::UnsafeArchive("tar size field is not ASCII".to_owned()))?;
+    // tar-rs truncates at NUL and trims whitespace before parsing octal.
+    // Mirror that behavior so the pre-scan and tar-rs agree on the next
+    // header offset. An empty field is invalid rather than silently zero.
+    let text = text.trim();
+    if text.is_empty() || !text.bytes().all(|byte| (b'0'..=b'7').contains(&byte)) {
+        return Err(DeliveryError::UnsafeArchive(
+            "tar size field is not canonical octal".to_owned(),
+        ));
+    }
     u64::from_str_radix(text, 8)
         .map_err(|_| DeliveryError::UnsafeArchive("tar size field is malformed".to_owned()))
 }
 
 fn parse_pax_size(content: &[u8]) -> Result<Option<u64>> {
-    let text = std::str::from_utf8(content)
-        .map_err(|_| DeliveryError::UnsafeArchive("PAX header is not UTF-8".to_owned()))?;
-    let mut rest = text;
+    let mut rest = content;
     while !rest.is_empty() {
-        let mut split = rest.splitn(2, ' ');
-        let Some(length_text) = split.next() else {
-            break;
-        };
-        let Some(record) = split.next() else {
-            return Err(DeliveryError::UnsafeArchive(
-                "PAX record has no payload".to_owned(),
-            ));
-        };
+        let space = rest
+            .iter()
+            .position(|byte| *byte == b' ')
+            .ok_or_else(|| DeliveryError::UnsafeArchive("PAX record has no length".to_owned()))?;
+        let length_text = std::str::from_utf8(&rest[..space])
+            .map_err(|_| DeliveryError::UnsafeArchive("PAX length is not ASCII".to_owned()))?;
         let length = length_text
             .parse::<usize>()
             .map_err(|_| DeliveryError::UnsafeArchive("PAX length is malformed".to_owned()))?;
-        if length == 0 || length > rest.len() || length_text.len() + 1 > length {
+        if length == 0 || length > rest.len() || length <= space + 1 {
             return Err(DeliveryError::UnsafeArchive(
                 "PAX record length is inconsistent".to_owned(),
             ));
         }
-        let end = length;
-        let record_without_length = &rest[length_text.len() + 1..end];
-        let record_without_length = record_without_length
-            .strip_suffix('\n')
-            .ok_or_else(|| DeliveryError::UnsafeArchive("PAX record has no newline".to_owned()))?;
-        if let Some(value) = record_without_length.strip_prefix("size=") {
+        let record = &rest[..length];
+        if record.last() != Some(&b'\n') {
+            return Err(DeliveryError::UnsafeArchive(
+                "PAX record has no newline".to_owned(),
+            ));
+        }
+        let payload = &record[space + 1..record.len() - 1];
+        if let Some(value) = payload.strip_prefix(b"size=") {
+            let value = std::str::from_utf8(value)
+                .map_err(|_| DeliveryError::UnsafeArchive("PAX size is not ASCII".to_owned()))?;
             let size = value.parse::<u64>().map_err(|_| {
                 DeliveryError::UnsafeArchive("PAX size value is malformed".to_owned())
             })?;
             return Ok(Some(size));
         }
-        rest = &rest[end..];
-        let _ = record;
+        rest = &rest[length..];
     }
     Ok(None)
 }
@@ -701,14 +709,13 @@ mod tests {
         build_raw_archive_with_size(path, name, 0);
     }
 
-    fn raw_header(name: &str, size: u64, typeflag: u8) -> [u8; 512] {
+    fn raw_header_with_size_field(name: &str, size_field: &[u8; 12], typeflag: u8) -> [u8; 512] {
         let mut block = [0_u8; 512];
         block[..name.len()].copy_from_slice(name.as_bytes());
         block[100..108].copy_from_slice(b"0000644\0");
         block[108..116].copy_from_slice(b"0000000\0");
         block[116..124].copy_from_slice(b"0000000\0");
-        let size_field = format!("{size:011o}\0");
-        block[124..136].copy_from_slice(size_field.as_bytes());
+        block[124..136].copy_from_slice(size_field);
         block[136..148].copy_from_slice(b"00000000000\0");
         block[148..156].fill(b' ');
         block[156] = typeflag;
@@ -718,6 +725,13 @@ mod tests {
         let checksum = format!("{sum:06o}\0 ");
         block[148..156].copy_from_slice(checksum.as_bytes());
         block
+    }
+
+    fn raw_header(name: &str, size: u64, typeflag: u8) -> [u8; 512] {
+        let size_field = format!("{size:011o}\0");
+        let mut field = [0_u8; 12];
+        field.copy_from_slice(size_field.as_bytes());
+        raw_header_with_size_field(name, &field, typeflag)
     }
 
     fn build_raw_archive_with_size(path: &Path, name: &str, size: u64) {
@@ -738,6 +752,42 @@ mod tests {
             }
             length = record.len();
         }
+    }
+
+    #[test]
+    fn parses_leading_space_tar_size_like_tar_rs() {
+        assert_eq!(parse_tar_size(b" 00000000012\0").unwrap(), 10);
+        assert!(parse_tar_size(b"           \0").is_err());
+    }
+
+    #[test]
+    fn rejects_pax_record_that_splits_a_utf8_character() {
+        let content = b"3 \xc3\xa9";
+        assert!(parse_pax_size(content).is_err());
+    }
+
+    #[test]
+    fn leading_space_size_cannot_hide_a_huge_extension_header() {
+        let base = scratch("leading-space-size");
+        std::fs::create_dir_all(&base).unwrap();
+        let archive = base.join("a.tar.gz");
+        let file = File::create(&archive).unwrap();
+        let mut encoder = GzEncoder::new(file, Compression::default());
+        let leading = b" 00000000012";
+        encoder
+            .write_all(&raw_header_with_size_field("a", leading, b'0'))
+            .unwrap();
+        encoder.write_all(&[0_u8; 512]).unwrap();
+        encoder
+            .write_all(&raw_header("longname", 1024 * 1024 * 1024, b'L'))
+            .unwrap();
+        encoder.write_all(&[0_u8; 1024]).unwrap();
+        encoder.finish().unwrap();
+        let started = std::time::Instant::now();
+        let error = extract_tar_gz(&archive, &base.join("out")).unwrap_err();
+        assert!(matches!(error, DeliveryError::SizeLimit(_)), "{error:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

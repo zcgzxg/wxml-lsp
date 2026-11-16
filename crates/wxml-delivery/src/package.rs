@@ -347,7 +347,13 @@ fn relative_text(root: &Path, path: &Path) -> Result<String> {
     let relative = path
         .strip_prefix(root)
         .map_err(|_| DeliveryError::InvalidPackage("input path escaped its root".to_owned()))?;
-    Ok(relative.to_string_lossy().replace('\\', "/"))
+    let text = relative.to_string_lossy();
+    if text.contains('\\') {
+        return Err(DeliveryError::UnsafeArchive(
+            "input path contains a backslash on a Unix filesystem".to_owned(),
+        ));
+    }
+    Ok(text.into_owned())
 }
 
 fn normalized_mode(metadata: &std::fs::Metadata, relative: &str) -> Result<String> {

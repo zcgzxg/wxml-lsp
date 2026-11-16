@@ -286,19 +286,3 @@ pub fn read_versions(source: &Source, offline: bool) -> Result<Index> {
     }
     source.read_index()
 }
-
-/// Removes a cached entry only if it is under the cache root.
-///
-/// # Errors
-///
-/// Returns an error for unsafe metadata or I/O failures.
-pub fn discard(root: &InstallRoot, entry: &CacheEntry) -> Result<()> {
-    let cache_root = root.cache_dir();
-    let directory = cache_root.join(entry.directory_name());
-    if !directory.starts_with(&cache_root) {
-        return Err(DeliveryError::InstallState(
-            "cache path escaped the cache root".to_owned(),
-        ));
-    }
-    cache::remove(&cache_root, entry)
-}

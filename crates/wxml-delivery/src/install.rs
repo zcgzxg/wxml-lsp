@@ -63,6 +63,11 @@ impl InstallRoot {
                 "install root is not a directory".to_owned(),
             ));
         }
+        if canonical == Path::new("/") {
+            return Err(DeliveryError::InvalidArgument(
+                "refusing to use the filesystem root as an install root".to_owned(),
+            ));
+        }
         if is_forbidden_root(&canonical) {
             return Err(DeliveryError::InvalidArgument(
                 "refusing to use HOME or XDG_DATA_HOME itself as an install root".to_owned(),
@@ -312,12 +317,15 @@ impl InstallRoot {
         if destination.exists() {
             if let Ok(existing) = self.verify_installed(version) {
                 if same_payload(&existing, &manifest) {
+                    check_binary(&destination, &existing)?;
+                    check_backend(&destination, &existing)?;
                     let _ = std::fs::remove_dir_all(&canonical_tree);
                     self.switch(version)?;
                     return Ok(InstallOutcome::AlreadyInstalled);
                 }
                 return Err(DeliveryError::InstallState(format!(
-                    "version {version} is already installed with different contents;                      remove that version or rebuild with a new version number"
+                    "version {version} is already installed with different contents; \
+                     remove that version or rebuild with a new version number"
                 )));
             }
             let broken = self.new_temp_dir("broken")?;
@@ -477,18 +485,6 @@ fn invalid_binary(reason: &str) -> DeliveryError {
     DeliveryError::InstallState(format!("{BINARY_ENV} is set but invalid: {reason}"))
 }
 
-/// Returns the binary path that takes precedence, or the active install.
-///
-/// # Errors
-///
-/// Returns an error for an invalid `WXML_LSP_BIN` or when nothing is installed.
-pub fn effective_binary(root: &InstallRoot) -> Result<PathBuf> {
-    if let Some(path) = explicit_binary()? {
-        return Ok(path);
-    }
-    root.current_binary()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,6 +527,11 @@ mod tests {
         set_mode(&binary, 0o644).unwrap();
         assert!(validate_explicit_binary(&absolute).is_err());
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rejects_canonical_aliases_of_the_filesystem_root() {
+        assert!(InstallRoot::create(Path::new("/tmp/..")).is_err());
     }
 
     #[test]
