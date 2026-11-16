@@ -1126,3 +1126,318 @@ fn watched_kind_maps_lsp_type_numbers() {
     assert_eq!(WatchedChangeKind::from_lsp(0), None);
     assert_eq!(WatchedChangeKind::from_lsp(4), None);
 }
+
+// ---------------------------------------------------------------------------
+// Explicit multi-app isolation and dependency invalidation (package P)
+// ---------------------------------------------------------------------------
+
+fn explicit_two_app_host(project: &TempProject) -> ProjectState {
+    for app in ["a", "b"] {
+        project.write(
+            &format!("{app}/app.json"),
+            r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+        );
+        project.write(
+            &format!("{app}/pages/index/index.wxml"),
+            "<view>{{ user.name }}</view>",
+        );
+        project.write(
+            &format!("{app}/pages/index/index.ts"),
+            &format!(
+                "Page({{ data: {{ user: {{ name: 'DISK_{}' }} }} }});",
+                app.to_uppercase()
+            ),
+        );
+        project.write(
+            &format!("{app}/tsconfig.json"),
+            &format!(r#"{{"compilerOptions":{{"strict":{}}}}}"#, app == "a"),
+        );
+    }
+    let host = ProjectState::new();
+    host.open_root_with_options(
+        Some(&project.root_uri()),
+        &InitializationOptions::parse(&json!({
+            "apps": [{"root": "a"}, {"root": "b"}]
+        }))
+        .expect("options"),
+    )
+    .expect("configured apps");
+    host
+}
+
+#[test]
+fn explicit_apps_isolate_same_relative_paths_and_overlays() {
+    let project = TempProject::new();
+    let host = explicit_two_app_host(&project);
+
+    let path_a = host
+        .path_for_uri(&project.uri("a/pages/index/index.wxml"))
+        .expect("a path");
+    let file_a = host.file_id(&path_a).expect("a file");
+    let view_a = host.view_for_file(&file_a).expect("a view");
+    let path_b = host
+        .path_for_uri(&project.uri("b/pages/index/index.wxml"))
+        .expect("b path");
+    let file_b = host.file_id(&path_b).expect("b file");
+    let view_b = host.view_for_file(&file_b).expect("b view");
+
+    assert_eq!(path_a, path_b);
+    assert_ne!(file_a, file_b);
+    assert_ne!(file_a.project(), file_b.project());
+    assert_ne!(view_a.view_revision, view_b.view_revision);
+    assert_eq!(
+        host.uri_for(&file_a).as_deref(),
+        Some(project.uri("a/pages/index/index.wxml").as_str())
+    );
+    assert_eq!(
+        host.uri_for(&file_b).as_deref(),
+        Some(project.uri("b/pages/index/index.wxml").as_str())
+    );
+
+    let snapshot_a = snapshot(&host, path_a.as_str(), "<view>{{ user.name }}</view>");
+    let snapshot_a = Arc::new(SourceSnapshot::new(
+        file_a.clone(),
+        snapshot_a.revision(),
+        snapshot_a.snapshot(),
+        snapshot_a.text(),
+    ));
+    let snapshot_b = Arc::new(SourceSnapshot::new(
+        file_b,
+        SourceRevision::new(1),
+        SnapshotId::new(2),
+        "<view>{{ user.name }}</view>",
+    ));
+    let analysis_a = host.analysis(&snapshot_a).expect("a analysis");
+    let analysis_b = host.analysis(&snapshot_b).expect("b analysis");
+    assert_eq!(analysis_a.project_root, project.root.join("a"));
+    assert_eq!(analysis_b.project_root, project.root.join("b"));
+    assert_eq!(analysis_a.compiler_options["strict"], json!(true));
+    assert_eq!(analysis_b.compiler_options["strict"], json!(false));
+
+    let update = host
+        .open_document(opened(
+            &project.uri("a/pages/index/index.ts"),
+            "Page({ data: { user: { name: 'ZED_A_OVERLAY' } } });",
+        ))
+        .expect("a overlay");
+    assert_eq!(
+        update.dirty_views,
+        vec![project_path("pages/index/index.wxml")]
+    );
+    assert_eq!(
+        update
+            .project_revision
+            .as_ref()
+            .map(wxml_types::ProjectRevision::project),
+        Some(file_a.project())
+    );
+    let analysis_a = host.analysis(&snapshot_a).expect("a analysis with overlay");
+    assert!(
+        analysis_a
+            .files
+            .iter()
+            .any(|file| file.text.contains("ZED_A_OVERLAY"))
+    );
+    let analysis_b = host
+        .analysis(&snapshot_b)
+        .expect("b analysis after a overlay");
+    assert!(
+        analysis_b
+            .files
+            .iter()
+            .filter(|file| file.path.as_str() == "pages/index/index.ts")
+            .all(|file| !file.text.contains("ZED_A_OVERLAY"))
+    );
+
+    // Background analysis of A must not steal foreground routing from B.
+    host.path_for_uri(&project.uri("b/pages/index/index.wxml"))
+        .expect("activate b");
+    let active = host.project_id();
+    let analysis_a = host.analysis(&snapshot_a).expect("background a");
+    assert_eq!(host.project_id(), active);
+    assert_eq!(analysis_a.project_root, project.root.join("a"));
+}
+
+#[test]
+fn watched_changes_only_refresh_dependent_views() {
+    let project = TempProject::new();
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index","pages/other/other"],"usingComponents":{}}"#,
+    );
+    for page in ["index", "other"] {
+        project.write(
+            &format!("pages/{page}/{page}.wxml"),
+            "<view>{{ title }}</view>",
+        );
+        project.write(
+            &format!("pages/{page}/{page}.ts"),
+            "Page({ data: { title: 'x' } });",
+        );
+    }
+    project.write(
+        "pages/index/index.json",
+        r#"{"usingComponents":{"card":"../../components/card/card"}}"#,
+    );
+    project.write("components/card/card.wxml", "<view>{{ label }}</view>");
+    project.write(
+        "components/card/card.ts",
+        "Component({ properties: { label: String } });",
+    );
+    project.write("utils/helper.ts", "export const helper = 1;\n");
+    project.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+    let host = host_with(&project);
+
+    let update = host
+        .watched_files_changed(&[watched(
+            &project.uri("components/card/card.ts"),
+            WatchedChangeKind::Changed,
+        )])
+        .expect("component script change");
+    assert_eq!(
+        update.dirty_views,
+        vec![
+            project_path("components/card/card.wxml"),
+            project_path("pages/index/index.wxml")
+        ]
+    );
+
+    let update = host
+        .watched_files_changed(&[watched(
+            &project.uri("pages/index/index.json"),
+            WatchedChangeKind::Changed,
+        )])
+        .expect("page json change");
+    assert_eq!(
+        update.dirty_views,
+        vec![project_path("pages/index/index.wxml")]
+    );
+
+    let update = host
+        .watched_files_changed(&[watched(
+            &project.uri("pages/other/other.wxml"),
+            WatchedChangeKind::Changed,
+        )])
+        .expect("template change");
+    assert_eq!(
+        update.dirty_views,
+        vec![project_path("pages/other/other.wxml")]
+    );
+
+    let update = host
+        .watched_files_changed(&[watched(
+            &project.uri("utils/helper.ts"),
+            WatchedChangeKind::Changed,
+        )])
+        .expect("unknown script change");
+    assert_eq!(update.dirty_views.len(), 3);
+
+    let update = host
+        .watched_files_changed(&[watched(
+            &project.uri("tsconfig.json"),
+            WatchedChangeKind::Changed,
+        )])
+        .expect("tsconfig change");
+    assert_eq!(update.dirty_views.len(), 3);
+}
+
+#[test]
+fn json_overlay_removing_a_page_clears_the_old_view() {
+    let project = TempProject::new();
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index","pages/other/other"],"usingComponents":{}}"#,
+    );
+    for page in ["index", "other"] {
+        project.write(
+            &format!("pages/{page}/{page}.wxml"),
+            "<view>{{ title }}</view>",
+        );
+        project.write(
+            &format!("pages/{page}/{page}.ts"),
+            "Page({ data: { title: 'x' } });",
+        );
+    }
+    let host = host_with(&project);
+    let index = project_path("pages/index/index.wxml");
+    let other = project_path("pages/other/other.wxml");
+
+    let update = host
+        .open_document(opened(
+            &project.uri("app.json"),
+            r#"{"pages":["pages/other/other"]}"#,
+        ))
+        .expect("app.json overlay removing index");
+    assert!(
+        update.dirty_views.contains(&index),
+        "removed view must be refreshed to clear diagnostics: {:?}",
+        update.dirty_views
+    );
+    assert!(host.view_for(&index).is_err());
+    assert!(host.view_for(&other).is_ok());
+
+    let update = host
+        .close_document(&project.uri("app.json"))
+        .expect("close app.json overlay");
+    assert!(
+        update.dirty_views.contains(&index),
+        "recreated view must be refreshed: {:?}",
+        update.dirty_views
+    );
+    assert!(host.view_for(&index).is_ok());
+}
+
+#[test]
+fn default_options_load_only_the_workspace_root() {
+    let project = TempProject::new();
+    project.write("apps/nested/app.json", r#"{"pages":["pages/index/index"]}"#);
+    project.write("apps/nested/pages/index/index.wxml", "{{ title }}");
+    project.write(
+        "apps/nested/pages/index/index.ts",
+        "Page({ data: { title: 1 } });",
+    );
+    let host = ProjectState::new();
+    host.open_root_with_options(Some(&project.root_uri()), &InitializationOptions::default())
+        .expect("default workspace root");
+    assert_eq!(host.root(), Some(project.root.clone()));
+    let path = host
+        .path_for_uri(&project.uri("apps/nested/pages/index/index.wxml"))
+        .expect("workspace-relative path");
+    assert_eq!(path.as_str(), "apps/nested/pages/index/index.wxml");
+    assert!(
+        host.view_for(&path).is_err(),
+        "nested app.json must not be auto-discovered"
+    );
+}
+
+#[test]
+fn reopening_the_workspace_produces_stable_project_ids() {
+    let project = TempProject::new();
+    for app in ["a", "b"] {
+        project.write(&format!("{app}/app.json"), r#"{"pages":[]}"#);
+    }
+    let options = InitializationOptions::parse(&json!({
+        "apps": [{"root": "a"}, {"root": "b"}]
+    }))
+    .expect("options");
+    let collect = || {
+        let host = ProjectState::new();
+        host.open_root_with_options(Some(&project.root_uri()), &options)
+            .expect("open");
+        ["a", "b"]
+            .into_iter()
+            .map(|app| {
+                host.path_for_uri(&project.uri(&format!("{app}/app.json")))
+                    .expect("route app");
+                host.project_id()
+            })
+            .collect::<Vec<_>>()
+    };
+    let first = collect();
+    let second = collect();
+    assert_eq!(
+        first, second,
+        "project identity must be stable across LSP restarts"
+    );
+    assert_ne!(first[0], first[1]);
+}

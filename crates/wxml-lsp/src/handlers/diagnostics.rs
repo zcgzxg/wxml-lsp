@@ -226,18 +226,17 @@ impl Server {
         self.workspace.set_project_revision(revision);
         let mut uris = Vec::new();
         for path in &update.dirty_views {
+            let Ok(file) = self.host.file_id_in(revision.project(), path) else {
+                continue;
+            };
             let Some(uri) = self
                 .workspace
-                .documents()
-                .find(|document| {
-                    document.file().project() == revision.project()
-                        && document.file().path() == path.as_str()
-                })
+                .get_by_file(&file)
                 .map(|document| document.uri().to_owned())
             else {
                 continue;
             };
-            if let Ok(target) = self.host.view_for(path) {
+            if let Ok(target) = self.host.view_for_file(&file) {
                 self.workspace.set_view_revision(&uri, target.view_revision);
             }
             uris.push(uri);

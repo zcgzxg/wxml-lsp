@@ -683,20 +683,14 @@ fn did_save_reschedules_wxml_diagnostics() {
     session.drain_requests();
 
     // Zed sends `didSave` without `text` by default.
+    let since = session.client.received.len();
     session.save(&script, None);
     let line = session.next_request(Duration::from_secs(10));
     assert!(line.contains("ZED_SAVE"), "{line}");
 
-    let diagnostics = session
-        .client
-        .notification("textDocument/publishDiagnostics");
-    assert_eq!(diagnostics["params"]["uri"], json!(wxml));
-    assert!(
-        diagnostics["params"]["diagnostics"][0]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("ZED_SAVE")),
-        "{diagnostics}"
-    );
+    // Earlier disk diagnostics may still be queued; wait for the refreshed
+    // result rather than assuming it is the next notification.
+    session.diagnostics_after(since, &wxml, "ZED_SAVE");
 
     session.finish();
 }

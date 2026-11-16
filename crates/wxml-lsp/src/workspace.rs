@@ -303,6 +303,7 @@ impl Workspace {
     }
 
     /// Iterates open documents.
+    #[allow(dead_code)] // retained for sibling handler packages during integration
     pub(crate) fn documents(&self) -> impl Iterator<Item = &Document> {
         self.documents.values()
     }
