@@ -1564,6 +1564,343 @@ fn quality(value: &str) -> TypeQuality {
     }
 }
 
+/* ------------------------------------------------------------------ symbols */
+
+/// Maps one `symbols` response from the Node backend.
+///
+/// Every token is validated against the request's own file snapshot: an
+/// unknown file, an inverted or out-of-bounds range, or a path segment that
+/// does not match its exact token makes the answer incomplete instead of
+/// publishing a guessed location.
+#[allow(clippy::too_many_lines)] // one linear, bounded protocol mapper
+pub(crate) fn symbols(
+    value: &serde_json::Value,
+    view: &PreparedView,
+    _request: &wxml_types::SymbolRequest,
+    expected_request: &str,
+) -> Result<wxml_types::SymbolResult, ProtocolError> {
+    let object = value.as_object().ok_or(ProtocolError::Shape)?;
+    if object
+        .get("protocolVersion")
+        .and_then(serde_json::Value::as_u64)
+        != Some(PROTOCOL_VERSION)
+    {
+        return Err(ProtocolError::Version);
+    }
+    if object.get("requestId").and_then(serde_json::Value::as_str) != Some(expected_request) {
+        return Err(ProtocolError::IdMismatch);
+    }
+    let mut complete = object
+        .get("complete")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false);
+    let mut reasons: Vec<String> = Vec::new();
+    macro_rules! note {
+        ($reason:expr) => {{
+            let reason: &str = $reason;
+            if !reasons.iter().any(|existing| existing == reason) {
+                reasons.push(reason.to_owned());
+            }
+            complete = false;
+        }};
+    }
+    let status = symbol_status(object.get("state"));
+    let mut result = wxml_types::SymbolResult {
+        status: status.clone(),
+        complete: false,
+        reason: object
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .map(|reason| crate::handlers::log_safe_text(reason, 512)),
+        declaration: None,
+        references: Vec::new(),
+        occurrences: Vec::new(),
+        insertion: None,
+        fields: Vec::new(),
+    };
+    if !status.is_supported() && !matches!(status, CapabilityStatus::Partial { .. }) {
+        result.complete = false;
+        return Ok(result);
+    }
+    if let Some(value) = object.get("declaration").filter(|value| !value.is_null()) {
+        match symbol_token(view, value) {
+            Ok(token) => result.declaration = Some(token),
+            Err(reason) => note!(&reason),
+        }
+    }
+
+    if let Some(references) = object
+        .get("references")
+        .and_then(serde_json::Value::as_array)
+    {
+        if references.len() > wxml_types::MAX_SYMBOL_ENTRIES {
+            note!("reference list exceeded the limit");
+        }
+        for reference in references.iter().take(wxml_types::MAX_SYMBOL_ENTRIES) {
+            let token = match symbol_token(view, reference) {
+                Ok(token) => token,
+                Err(reason) => {
+                    note!(&reason);
+                    continue;
+                }
+            };
+            let role = match reference.get("role").and_then(serde_json::Value::as_str) {
+                Some("declaration") => wxml_types::SymbolReferenceRole::Declaration,
+                Some("write") => wxml_types::SymbolReferenceRole::Write,
+                Some("read") => wxml_types::SymbolReferenceRole::Read,
+                _ => {
+                    note!("a reference role is unknown");
+                    continue;
+                }
+            };
+            result
+                .references
+                .push(wxml_types::SymbolReference { token, role });
+        }
+    }
+
+    if let Some(occurrences) = object
+        .get("occurrences")
+        .and_then(serde_json::Value::as_array)
+    {
+        if occurrences.len() > wxml_types::MAX_SYMBOL_ENTRIES {
+            note!("occurrence list exceeded the limit");
+        }
+        for occurrence in occurrences.iter().take(wxml_types::MAX_SYMBOL_ENTRIES) {
+            let token = match symbol_token(view, occurrence) {
+                Ok(token) => token,
+                Err(reason) => {
+                    note!(&reason);
+                    continue;
+                }
+            };
+            let Some(kind) = occurrence.get("kind").and_then(serde_json::Value::as_str) else {
+                note!("an occurrence kind is missing");
+                continue;
+            };
+            let kind = match kind {
+                "setDataKey" => wxml_types::SymbolOccurrenceKind::SetDataKey,
+                "observerPath" => wxml_types::SymbolOccurrenceKind::ObserverPath,
+                _ => {
+                    note!("an occurrence kind is unknown");
+                    continue;
+                }
+            };
+            let Some(path) = occurrence.get("path").and_then(serde_json::Value::as_array) else {
+                note!("an occurrence path is missing");
+                continue;
+            };
+            if path.is_empty() || path.len() > wxml_types::MAX_SYMBOL_PATH {
+                note!("an occurrence path is out of bounds");
+                continue;
+            }
+            let mut segments = Vec::with_capacity(path.len());
+            let mut valid = true;
+            for segment in path {
+                let Some(segment) = segment.as_str() else {
+                    valid = false;
+                    break;
+                };
+                if segment.is_empty() || segment.len() > wxml_types::MAX_SYMBOL_NAME_BYTES {
+                    valid = false;
+                    break;
+                }
+                segments.push(segment.to_owned());
+            }
+            if !valid {
+                note!("an occurrence path segment is invalid");
+                continue;
+            }
+            let Some(segment) = occurrence
+                .get("segment")
+                .and_then(serde_json::Value::as_u64)
+                .and_then(|value| usize::try_from(value).ok())
+            else {
+                note!("an occurrence segment index is missing");
+                continue;
+            };
+            let Some(text) = symbol_token_text(view, &token) else {
+                note!("an occurrence token text is unavailable");
+                continue;
+            };
+            if segment >= segments.len() || text != segments[segment] {
+                note!("an occurrence segment does not match its token");
+                continue;
+            }
+            result.occurrences.push(wxml_types::SymbolOccurrence {
+                token,
+                kind,
+                path: segments,
+                segment,
+            });
+        }
+    }
+
+    if let Some(insertion) = object
+        .get("insertion")
+        .filter(|value| !value.is_null())
+        .and_then(serde_json::Value::as_object)
+    {
+        let file = insertion.get("fileId").and_then(serde_json::Value::as_str);
+        let offset = insertion.get("offset").and_then(serde_json::Value::as_u64);
+        let text = insertion.get("text").and_then(serde_json::Value::as_str);
+        if let (Some(file), Some(offset), Some(text)) = (file, offset, text) {
+            let prepared = view.files.iter().find(|entry| entry.path.as_str() == file);
+            let valid = prepared.is_some_and(|entry| {
+                usize::try_from(offset).is_ok_and(|offset| {
+                    offset <= entry.text.len()
+                        && entry.text.is_char_boundary(offset)
+                        && !text.is_empty()
+                        && text.len() <= 16 * 1024
+                        && !text.contains('\0')
+                })
+            });
+            if valid {
+                if let Some(prepared) = prepared {
+                    result.insertion = Some(wxml_types::HandlerInsertion {
+                        file: prepared.file.clone(),
+                        offset: u32::try_from(offset).unwrap_or(u32::MAX),
+                        text: text.to_owned(),
+                    });
+                }
+            } else {
+                note!("the handler insertion point is invalid");
+            }
+        } else {
+            note!("the handler insertion point is incomplete");
+        }
+    }
+
+    if let Some(fields) = object.get("fields").and_then(serde_json::Value::as_array) {
+        if fields.len() > wxml_types::MAX_SYMBOL_ENTRIES {
+            note!("field list exceeded the limit");
+        }
+        for field in fields.iter().take(wxml_types::MAX_SYMBOL_ENTRIES) {
+            let Some(name) = field.get("name").and_then(serde_json::Value::as_str) else {
+                note!("a field has no name");
+                continue;
+            };
+            if name.is_empty() || name.len() > wxml_types::MAX_SYMBOL_NAME_BYTES {
+                note!("a field name is out of bounds");
+                continue;
+            }
+            let declaration = field
+                .get("declaration")
+                .filter(|value| !value.is_null())
+                .and_then(|value| match symbol_token(view, value) {
+                    Ok(token) => Some(token),
+                    Err(reason) => {
+                        note!(&reason);
+                        None
+                    }
+                });
+            let quoted = field
+                .get("quoted")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            result.fields.push(wxml_types::SymbolField {
+                name: name.to_owned(),
+                declaration,
+                quoted,
+            });
+        }
+    }
+
+    if !complete {
+        if let Some(reason) = result.reason.take() {
+            note!(&reason);
+        }
+    }
+    result.complete = complete;
+    if !complete {
+        result.status = CapabilityStatus::Partial {
+            reason: reasons
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "script symbol coverage is incomplete".to_owned()),
+        };
+        result.reason = Some(reasons.join("; "));
+    }
+    Ok(result)
+}
+
+fn symbol_status(value: Option<&serde_json::Value>) -> CapabilityStatus {
+    let status = value
+        .and_then(|value| value.get("status"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("unknown");
+    let reason = value
+        .and_then(|value| value.get("reason"))
+        .and_then(serde_json::Value::as_str)
+        .map(|reason| crate::handlers::log_safe_text(reason, 512));
+    match status {
+        "supported" => CapabilityStatus::Supported,
+        "partial" => CapabilityStatus::Partial {
+            reason: reason.unwrap_or_else(|| "partial script symbol coverage".to_owned()),
+        },
+        "unsupported" => CapabilityStatus::Unsupported {
+            reason: reason.unwrap_or_else(|| "script symbols are unsupported".to_owned()),
+        },
+        "disabled" => CapabilityStatus::Disabled {
+            reason: reason.unwrap_or_else(|| "script symbols are disabled".to_owned()),
+        },
+        "unavailable" => CapabilityStatus::Unavailable {
+            reason: reason.unwrap_or_else(|| "script symbol backend is unavailable".to_owned()),
+        },
+        _ => CapabilityStatus::Unknown { reason },
+    }
+}
+
+fn symbol_token(
+    view: &PreparedView,
+    value: &serde_json::Value,
+) -> Result<wxml_types::SymbolToken, String> {
+    let Some(file) = value.get("fileId").and_then(serde_json::Value::as_str) else {
+        return Err("symbol token has no file".to_owned());
+    };
+    let prepared = view
+        .files
+        .iter()
+        .find(|entry| entry.path.as_str() == file)
+        .ok_or_else(|| "symbol token points outside the snapshot".to_owned())?;
+    let start = value
+        .get("start")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| "symbol token start is invalid".to_owned())?;
+    let end = value
+        .get("end")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok())
+        .ok_or_else(|| "symbol token end is invalid".to_owned())?;
+    let text = prepared.text.as_ref();
+    let inside = usize::try_from(start)
+        .ok()
+        .zip(usize::try_from(end).ok())
+        .is_some_and(|(start, end)| {
+            start <= end
+                && end <= text.len()
+                && text.is_char_boundary(start)
+                && text.is_char_boundary(end)
+        });
+    if !inside {
+        return Err("symbol token range is invalid".to_owned());
+    }
+    let range = SourceRange::from_bounds(start, end)
+        .map_err(|_| "symbol token range is inverted".to_owned())?;
+    Ok(wxml_types::SymbolToken {
+        file: prepared.file.clone(),
+        range,
+    })
+}
+
+fn symbol_token_text(view: &PreparedView, token: &wxml_types::SymbolToken) -> Option<String> {
+    let prepared = view.files.iter().find(|entry| entry.file == token.file)?;
+    let start = usize::try_from(token.range.start()).ok()?;
+    let end = usize::try_from(token.range.end()).ok()?;
+    prepared.text.get(start..end).map(str::to_owned)
+}
+
 #[cfg(test)]
 #[allow(clippy::assert_is_empty)]
 mod tests {

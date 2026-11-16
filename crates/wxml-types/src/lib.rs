@@ -24,6 +24,7 @@ pub mod context;
 pub mod contract;
 pub mod mock;
 pub mod status;
+pub mod symbols;
 pub mod template;
 pub mod template_semantics;
 pub mod wxs;
@@ -46,6 +47,11 @@ pub use contract::{
 };
 pub use mock::{BackendCall, MockBackend};
 pub use status::CapabilityStatus;
+pub use symbols::{
+    HandlerInsertion, MAX_SYMBOL_ENTRIES, MAX_SYMBOL_NAME_BYTES, MAX_SYMBOL_PATH, SymbolError,
+    SymbolField, SymbolOccurrence, SymbolOccurrenceKind, SymbolQuery, SymbolReference,
+    SymbolReferenceRole, SymbolRequest, SymbolResult, SymbolToken,
+};
 pub use template::{
     MAX_BINDINGS, MAX_COMPONENTS, MAX_FRAGMENTS, MAX_GUARD_CHAINS, MAX_GUARD_CONDITIONS,
     TemplateAnalyzer, analyze_template,

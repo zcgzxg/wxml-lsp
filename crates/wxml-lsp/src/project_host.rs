@@ -292,6 +292,32 @@ pub struct PreparedFile {
     pub source_revision: u64,
 }
 
+/// Maximum project WXML files returned for one semantic query.
+const MAX_VIEW_TEMPLATES: usize = 512;
+
+/// Maximum estimated bytes of project WXML text returned for one query.
+const MAX_VIEW_TEMPLATE_BYTES: usize = 8 * 1024 * 1024;
+
+/// One WXML file of the project, with its effective text.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectViewTemplate {
+    /// Project-bound file identity.
+    pub file: FileId,
+    /// Overlay-first text.
+    pub text: Arc<str>,
+}
+
+/// Bounded project-wide WXML list used by references and workspace symbols.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProjectViewTemplates {
+    /// Discovered page/component templates, sorted by path.
+    pub templates: Vec<ProjectViewTemplate>,
+    /// `false` when a count/byte budget or unreadable file hid templates.
+    pub complete: bool,
+    /// Short path-free reason for an incomplete list.
+    pub reason: Option<&'static str>,
+}
+
 /// Maximum static event handlers forwarded to a type backend for one view.
 ///
 /// Mirrors the C1 event budget: a large template must not turn into an
@@ -422,6 +448,26 @@ pub trait ProjectHost: Send + Sync {
     /// This is used to convert byte ranges in definition targets to LSP
     /// positions without opening the target document.
     fn file_text(&self, file: &FileId) -> Option<Arc<str>>;
+    /// Returns every discovered WXML template of the project that owns
+    /// `file`, in path order.
+    ///
+    /// Hosts without a project return `None`. The result is bounded and says
+    /// whether it is complete; callers must not present an incomplete list as
+    /// a complete reference set.
+    fn view_templates(&self, _file: &FileId) -> Option<ProjectViewTemplates> {
+        None
+    }
+
+    /// Returns whether `file` is an existing, writable project file that is
+    /// safe to edit.
+    ///
+    /// A host rejects package/build directories, declaration files, paths that
+    /// escape the project through a symlink and files that are not inside the
+    /// project root. Open buffers are validated separately by the workspace.
+    fn writable_target(&self, _file: &FileId) -> bool {
+        false
+    }
+
     /// Returns the custom components registered for one WXML template.
     ///
     /// Local page/component `usingComponents` shadow global ones. A host with
@@ -1219,6 +1265,88 @@ impl ProjectHost for ProjectState {
         let slot = state.projects.get(file.project())?;
         let path = ProjectPath::new(file.path()).ok()?;
         slot.project.read(&path).ok().map(Arc::from)
+    }
+
+    fn view_templates(&self, file: &FileId) -> Option<ProjectViewTemplates> {
+        let paths: Vec<ProjectPath> = {
+            let state = self.read();
+            let slot = state.projects.get(file.project())?;
+            slot.views
+                .keys()
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("wxml"))
+                })
+                .cloned()
+                .collect()
+        };
+        let mut templates = Vec::new();
+        let mut bytes = 0usize;
+        let mut complete = true;
+        for path in paths {
+            if templates.len() >= MAX_VIEW_TEMPLATES {
+                complete = false;
+                break;
+            }
+            let Ok(target) = FileId::new(file.project().clone(), path.as_str()) else {
+                complete = false;
+                continue;
+            };
+            let Some(text) = self.file_text(&target) else {
+                complete = false;
+                continue;
+            };
+            bytes = bytes.saturating_add(text.len());
+            if bytes > MAX_VIEW_TEMPLATE_BYTES {
+                complete = false;
+                break;
+            }
+            templates.push(ProjectViewTemplate { file: target, text });
+        }
+        templates.sort_by(|left, right| left.file.cmp(&right.file));
+        Some(ProjectViewTemplates {
+            templates,
+            complete,
+            reason: if complete {
+                None
+            } else {
+                Some("the project WXML list is incomplete")
+            },
+        })
+    }
+
+    fn writable_target(&self, file: &FileId) -> bool {
+        let state = self.read();
+        let Some(slot) = state.projects.get(file.project()) else {
+            return false;
+        };
+        let Ok(path) = ProjectPath::new(file.path()) else {
+            return false;
+        };
+        let lower = path.as_str().to_ascii_lowercase();
+        if lower.ends_with(".d.ts") || lower.ends_with(".d.mts") || lower.ends_with(".d.cts") {
+            return false;
+        }
+        if path.as_str().split('/').any(|component| {
+            wxml_project::sources::EXCLUDED_DIRECTORIES
+                .iter()
+                .any(|excluded| component.eq_ignore_ascii_case(excluded))
+        }) {
+            return false;
+        }
+        let absolute = slot.app.project_root.join(path.as_str());
+        if std::fs::symlink_metadata(&absolute)
+            .map_or(true, |metadata| metadata.file_type().is_symlink())
+        {
+            return false;
+        }
+        let Ok(root) = std::fs::canonicalize(&slot.app.project_root) else {
+            return false;
+        };
+        let Ok(canonical) = std::fs::canonicalize(&absolute) else {
+            return false;
+        };
+        canonical.starts_with(root)
     }
 
     fn view_components(&self, wxml: &ProjectPath) -> Vec<ViewComponent> {

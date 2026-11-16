@@ -621,3 +621,100 @@ fn non_owner_script_overlay_propagates_and_survives_a_node_restart() {
         "the restarted backend must see the replayed overlay: {after_restart:?}"
     );
 }
+
+#[test]
+#[ignore = "requires Node 24 and a built P5 dist/server.js; set WXML_TEST_NODE=1"]
+fn real_node_symbols_smoke() {
+    use wxml_types::{SymbolQuery, SymbolRequest};
+
+    assert!(
+        std::env::var("WXML_TEST_NODE").as_deref() == Ok("1"),
+        "set WXML_TEST_NODE=1 to run the real Node smoke test"
+    );
+    let (server, backend_dir) = real_node_backend_paths();
+    let project = TempProject::new("wxml-symbols-real-node");
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    let text = "{{ user.name }}";
+    project.write("pages/index/index.wxml", text);
+    project.write(
+        "pages/index/index.ts",
+        "Page({\n  data: { user: { name: 'Ada' } },\n  onLoad() {\n    const n = this.data.user.name;\n    this.setData({ \"user.name\": n });\n  },\n  onTap() {},\n});",
+    );
+    project.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+
+    let host = Arc::new(ProjectState::new());
+    host.open_root(Some(&project.root_uri()))
+        .expect("open project");
+    let path = wxml_project::ProjectPath::new("pages/index/index.wxml").expect("path");
+    let file = host.file_id(&path).expect("file");
+    let snapshot = Arc::new(SourceSnapshot::new(
+        file,
+        SourceRevision::new(1),
+        SnapshotId::new(1),
+        text,
+    ));
+    let target = host.view_for(&path).expect("view");
+    let context = RequestContext::new(
+        ProjectRevision::new(host.project_id(), 1),
+        target.view_revision,
+        BackendEpoch::new(BackendId::new("node"), 1),
+        snapshot,
+    )
+    .expect("context");
+    let config = NodeBackendConfig {
+        server: Some(server),
+        backend_dir: Some(backend_dir),
+        timeout: std::time::Duration::from_secs(20),
+        ..NodeBackendConfig::default()
+    };
+    let backend = NodeBackend::new(config, host);
+    let data = backend
+        .symbols(SymbolRequest {
+            context: context.clone(),
+            subject: target.script_file.clone(),
+            query: SymbolQuery::DataPath {
+                path: vec!["user".to_owned(), "name".to_owned()],
+            },
+        })
+        .expect("data symbols");
+    assert!(data.complete, "{data:?}");
+    assert!(data.declaration.is_some(), "{data:?}");
+    assert!(
+        data.references
+            .iter()
+            .any(|reference| matches!(reference.role, wxml_types::SymbolReferenceRole::Read)),
+        "{data:?}"
+    );
+    assert!(
+        data.occurrences
+            .iter()
+            .any(|occurrence| occurrence.kind == wxml_types::SymbolOccurrenceKind::SetDataKey),
+        "{data:?}"
+    );
+    let handler = backend
+        .symbols(SymbolRequest {
+            context: context.clone(),
+            subject: target.script_file.clone(),
+            query: SymbolQuery::EventHandler {
+                name: "onTap".to_owned(),
+            },
+        })
+        .expect("event symbols");
+    assert!(handler.complete, "{handler:?}");
+    assert!(handler.declaration.is_some(), "{handler:?}");
+
+    let missing = backend
+        .symbols(SymbolRequest {
+            context,
+            subject: target.script_file,
+            query: SymbolQuery::EventHandler {
+                name: "onSave".to_owned(),
+            },
+        })
+        .expect("missing event symbols");
+    assert!(missing.complete, "{missing:?}");
+    assert!(missing.insertion.is_some(), "{missing:?}");
+}

@@ -29,6 +29,21 @@ pub struct InitializationOptions {
     /// Alias for [`Self::wxml`] accepted for compatibility with early builds.
     #[serde(default)]
     pub style: Option<Value>,
+    /// Optional switches for semantic tools.
+    #[serde(default)]
+    pub semantic_tools: Option<SemanticToolsOptions>,
+}
+
+/// Client-configurable switches for the semantic tool handlers.
+#[derive(Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SemanticToolsOptions {
+    /// `false` disables inlay hints; omitted keeps them enabled.
+    #[serde(default)]
+    pub inlay_hints: Option<bool>,
+    /// `false` disables code lens; omitted keeps them enabled.
+    #[serde(default)]
+    pub code_lens: Option<bool>,
 }
 
 /// One Mini Program, with no filesystem-based root inference.

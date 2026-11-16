@@ -69,6 +69,16 @@ pub(crate) fn hover_target(params: &Value) -> Option<(&str, Position)> {
     Some((uri, position))
 }
 
+/// Reads the document URI and a UTF-16 selection range.
+pub(crate) fn range_target(params: &Value) -> Option<(&str, (Position, Position))> {
+    let document = text_document(params)?;
+    let uri = string(document, "uri")?;
+    let range = params.as_object()?.get("range")?.as_object()?;
+    let start = position(range.get("start")?)?;
+    let end = position(range.get("end")?)?;
+    Some((uri, (start, end)))
+}
+
 /// Reads a zero-based UTF-16 position.
 pub(crate) fn position(value: &Value) -> Option<Position> {
     let object = value.as_object()?;

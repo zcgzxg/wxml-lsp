@@ -26,10 +26,12 @@ use wxml_types::{
     Backend, BackendCapabilities, BackendEpoch, BackendError, BackendId, CapabilityStatus,
     CompletionItem, CompletionRequest, CompletionResult, DefinitionRequest, DefinitionResult,
     DiagnosticsRequest, DiagnosticsResult, FileId, HoverRequest, HoverResult, MarkupKind,
-    ProjectRevision, RequestContext, SourceRevision, TypeQuality, ViewRevision,
+    ProjectRevision, RequestContext, SourceRevision, SymbolRequest, SymbolResult, TypeQuality,
+    ViewRevision,
 };
 
 use crate::project_host::{PreparedView, ProjectHost};
+use protocol::ProtocolError;
 use request::{EventInfo, FragmentInfo};
 use response::AnalyzeResponse;
 
@@ -614,6 +616,115 @@ impl Backend for NodeBackend {
                 Ok(degraded(CapabilityStatus::Unknown {
                     reason: Some(format!("completion protocol error: {error}")),
                 }))
+            }
+        }
+    }
+
+    #[allow(clippy::significant_drop_tightening, clippy::too_many_lines)] // state lock spans transport I/O; one linear query
+    fn symbols(&self, request: SymbolRequest) -> Result<SymbolResult, BackendError> {
+        let view = match self.host.analysis(request.context.source()) {
+            Ok(view) => Arc::new(view),
+            Err(error) => {
+                crate::server::log(format_args!("symbol view unavailable: {error}"));
+                return Ok(SymbolResult::unsupported(
+                    "no project view for this document",
+                ));
+            }
+        };
+        if view.target.is_none() {
+            return Ok(SymbolResult::unsupported(
+                "template has no page or component script",
+            ));
+        }
+        if !view.files.iter().any(|file| file.file == request.subject) {
+            return Ok(SymbolResult::unsupported(
+                "the symbol's script is not part of the project snapshot",
+            ));
+        }
+        let cooldown_until = *self
+            .cooldown_until
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if cooldown_until.is_some_and(|until| Instant::now() < until) {
+            return Ok(SymbolResult::unsupported(
+                "type backend is cooling down after repeated failures",
+            ));
+        }
+
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.next_request = state.next_request.saturating_add(1);
+        let request_id = format!(
+            "{}:symbols:{}:{}",
+            view.view_id,
+            self.epoch.load(Ordering::SeqCst),
+            state.next_request
+        );
+        let line = match request::build_symbols(
+            &view,
+            &request.context,
+            &self.config,
+            &request_id,
+            &request.subject,
+            &request.query,
+        ) {
+            Ok(Some(line)) => line,
+            Ok(None) => {
+                return Ok(SymbolResult::unsupported(
+                    "the symbol's script is not part of the project snapshot",
+                ));
+            }
+            Err(error) => {
+                self.invalidate(&mut state);
+                return Err(BackendError::Protocol(format!(
+                    "symbol request protocol error: {error}"
+                )));
+            }
+        };
+        if state.transport.is_none() {
+            match (self.factory)() {
+                Ok(transport) => state.transport = Some(transport),
+                Err(error) => {
+                    self.invalidate(&mut state);
+                    return Err(map_transport_error(&error));
+                }
+            }
+        }
+        let Some(transport) = state.transport.as_ref() else {
+            return Err(BackendError::Unavailable(
+                "node transport is not running".to_owned(),
+            ));
+        };
+        let response = match transport.request(&line, self.config.timeout) {
+            Ok(response) => response,
+            Err(error) => {
+                self.invalidate(&mut state);
+                return Err(map_transport_error(&error));
+            }
+        };
+        let value = match protocol::parse_response(&response, &request_id) {
+            Ok(value) => value,
+            Err(ProtocolError::Node { code: -32601, .. }) => {
+                return Ok(SymbolResult::unsupported(
+                    "the node backend does not implement script symbol queries",
+                ));
+            }
+            Err(error) => {
+                self.invalidate(&mut state);
+                return Err(BackendError::Protocol(error.to_string()));
+            }
+        };
+        match response::symbols(&value, &view, &request, &request_id) {
+            Ok(result) => {
+                self.failures.store(0, Ordering::SeqCst);
+                *self
+                    .cooldown_until
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = None;
+                Ok(result)
+            }
+            Err(error) => {
+                self.invalidate(&mut state);
+                Err(BackendError::Protocol(error.to_string()))
             }
         }
     }

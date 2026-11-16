@@ -16,9 +16,12 @@ import {
   RequestError,
   validateCompleteRequest,
   validateRequest,
+  validateSymbolsRequest,
   type AnalyzeRequest,
   type CompleteRequest,
+  type SymbolsRequest,
 } from "./protocol.ts";
+import { symbols } from "./symbols.ts";
 import { BACKEND_VERSION } from "./version.ts";
 
 /**
@@ -186,6 +189,38 @@ export function serve(options: ServerOptions): Promise<void> {
               writeError(id, -32602, "Invalid params", { code: error.code, message: error.message });
             } else {
               log(`complete failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+              writeError(id, -32603, "Internal error");
+            }
+          }
+          return;
+        }
+        case "symbols": {
+          const params = request.params as SymbolsRequest | undefined;
+          if (typeof params !== "object" || params === null) {
+            if (hasId) writeError(id, -32602, "Invalid params", { code: "bad-params" });
+            return;
+          }
+          try {
+            validateSymbolsRequest(params);
+          } catch (error) {
+            if (!hasId) return;
+            if (error instanceof RequestError) {
+              writeError(id, -32602, "Invalid params", { code: error.code, message: error.message });
+            } else if (error instanceof TypeError) {
+              writeError(id, -32602, "Invalid params", { code: "bad-params" });
+            } else {
+              writeError(id, -32603, "Internal error");
+            }
+            return;
+          }
+          try {
+            respond(symbols(params, { backendDir: options.backendDir }));
+          } catch (error) {
+            if (!hasId) return;
+            if (error instanceof RequestError) {
+              writeError(id, -32602, "Invalid params", { code: error.code, message: error.message });
+            } else {
+              log(`symbols failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
               writeError(id, -32603, "Internal error");
             }
           }

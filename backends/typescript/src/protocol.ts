@@ -1224,7 +1224,7 @@ function validateStamp(stamp: AnalyzeRequest["analysisStamp"] | undefined): void
   }
 }
 
-function validateFiles(files: RequestFile[]): void {
+export function validateFiles(files: RequestFile[]): void {
   const ids = new Set<string>();
   for (const file of files) {
     if (typeof file !== "object" || file === null) {
@@ -1254,6 +1254,159 @@ function validateFiles(files: RequestFile[]): void {
     }
     if (!Number.isInteger(file.sourceRevision) || file.sourceRevision < 1) {
       throw new RequestError("bad-params", `files[].sourceRevision must be a positive integer: ${file.path}`);
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ symbols */
+
+/** Script symbol query kinds answered by the optional `symbols` method. */
+export type SymbolQueryKind = "dataRoots" | "dataPath" | "eventHandler";
+
+export interface SymbolsRequest {
+  protocolVersion: number;
+  requestId: string;
+  project: {
+    projectRoot: string;
+    compilerOptions: RequestCompilerOptions;
+    typings: { package: string; version: string };
+  };
+  files: RequestFile[];
+  limits?: Partial<RequestLimits>;
+  /** Script file the query is about; must be one of `files[]`. */
+  subjectFileId: string;
+  /** Registration root that owns the script symbol. */
+  root: "page" | "component";
+  query:
+    | { kind: "dataRoots" }
+    | { kind: "dataPath"; path: string[] }
+    | { kind: "eventHandler"; name: string };
+}
+
+export interface SymbolWireToken {
+  fileId: string;
+  start: number;
+  end: number;
+}
+
+export interface SymbolWireReference extends SymbolWireToken {
+  role: "declaration" | "read" | "write";
+}
+
+export interface SymbolWireOccurrence extends SymbolWireToken {
+  kind: "setDataKey" | "observerPath";
+  path: string[];
+  segment: number;
+}
+
+export interface SymbolsResponse {
+  protocolVersion: number;
+  requestId: string;
+  state: EventState;
+  complete: boolean;
+  reason?: string;
+  declaration?: SymbolWireToken;
+  references: SymbolWireReference[];
+  occurrences: SymbolWireOccurrence[];
+  insertion?: { fileId: string; offset: number; text: string };
+  fields: Array<{ name: string; declaration?: SymbolWireToken; quoted: boolean }>;
+}
+
+export const SYMBOL_QUERY_KINDS: ReadonlySet<SymbolQueryKind> = new Set<SymbolQueryKind>([
+  "dataRoots",
+  "dataPath",
+  "eventHandler",
+]);
+
+const MAX_SYMBOL_PATH = 16;
+const MAX_SYMBOL_NAME = 256;
+
+/**
+ * Validate a `symbols` request.
+ *
+ * Mirrors the shared snapshot checks of `analyze` for the fields that can
+ * influence a script symbol answer. The query is deliberately small: no WXML
+ * fragments are accepted, so a symbol answer can never silently depend on
+ * stale template text.
+ */
+export function validateSymbolsRequest(request: SymbolsRequest): void {
+  if (typeof request !== "object" || request === null) {
+    throw new RequestError("bad-params", "request must be an object");
+  }
+  if (typeof request.requestId !== "string" || request.requestId.length === 0) {
+    throw new RequestError("bad-params", "requestId is required");
+  }
+  if (request.protocolVersion !== PROTOCOL_VERSION) {
+    throw new RequestError(
+      "bad-protocol",
+      `protocolVersion ${String(request.protocolVersion)} is not supported (expected ${PROTOCOL_VERSION})`,
+    );
+  }
+  if (!request.project || typeof request.project !== "object" || !request.project.compilerOptions) {
+    throw new RequestError("bad-params", "request.project.compilerOptions is required");
+  }
+  if (typeof request.project.projectRoot !== "string" || request.project.projectRoot.length === 0) {
+    throw new RequestError("bad-params", "request.project.projectRoot is required");
+  }
+  if (request.project.typings?.package !== "miniprogram-api-typings") {
+    throw new RequestError("bad-option", "project.typings.package must be miniprogram-api-typings");
+  }
+  if (request.project.typings.version !== "5.3.1") {
+    throw new RequestError(
+      "bad-option",
+      `project.typings.version ${String(request.project.typings.version)} is not supported (expected 5.3.1)`,
+    );
+  }
+  if (!Array.isArray(request.files)) {
+    throw new RequestError("bad-params", "request.files must be an array");
+  }
+  const requested = request.limits ?? DEFAULT_LIMITS;
+  const effective = effectiveLimits(requested);
+  validateFiles(request.files);
+  if (request.files.length > effective.maxFiles) {
+    throw new RequestError("too-many-files", `request has ${request.files.length} files, limit ${effective.maxFiles}`);
+  }
+  const bytes = request.files.reduce((sum, file) => sum + Buffer.byteLength(file.text, "utf8"), 0);
+  if (bytes > effective.maxTotalBytes) {
+    throw new RequestError("too-many-bytes", `request has ${bytes} bytes, limit ${effective.maxTotalBytes}`);
+  }
+  validateCompilerOptions(request.project.compilerOptions);
+  if (typeof request.subjectFileId !== "string" || !isCanonicalProjectPath(request.subjectFileId)) {
+    throw new RequestError("bad-params", "subjectFileId must be a project-relative path");
+  }
+  if (request.root !== "page" && request.root !== "component") {
+    throw new RequestError("bad-params", "root must be page or component");
+  }
+  if (!request.files.some((file) => file.fileId === request.subjectFileId)) {
+    throw new RequestError("bad-params", "subjectFileId must name one of files[]");
+  }
+  const query = request.query;
+  if (!query || typeof query !== "object" || typeof query.kind !== "string" || !SYMBOL_QUERY_KINDS.has(query.kind)) {
+    throw new RequestError("bad-params", `unknown symbol query: ${String((query as { kind?: unknown } | null)?.kind)}`);
+  }
+  if (query.kind === "dataPath") {
+    if (!Array.isArray(query.path) || query.path.length === 0 || query.path.length > MAX_SYMBOL_PATH) {
+      throw new RequestError("bad-params", `dataPath.path must have 1..${MAX_SYMBOL_PATH} segments`);
+    }
+    for (const segment of query.path) {
+      if (
+        typeof segment !== "string" ||
+        segment.length === 0 ||
+        Buffer.byteLength(segment, "utf8") > MAX_SYMBOL_NAME ||
+        /[\s.[\]'"`]/.test(segment)
+      ) {
+        throw new RequestError("bad-params", "dataPath.path contains an invalid segment");
+      }
+    }
+  }
+  if (query.kind === "eventHandler") {
+    if (
+      typeof query.name !== "string" ||
+      query.name.length === 0 ||
+      Buffer.byteLength(query.name, "utf8") > MAX_SYMBOL_NAME ||
+      !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(query.name)
+    ) {
+      throw new RequestError("bad-params", "eventHandler.name must be a static identifier");
     }
   }
 }

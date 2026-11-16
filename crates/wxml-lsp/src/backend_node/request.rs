@@ -571,6 +571,74 @@ pub(crate) fn build_completion(
     super::protocol::request_line(request_id, "complete", Some(&params)).map(Some)
 }
 
+/// Builds a protocol `symbols` request line.
+///
+/// The view supplies the same file snapshot used by `analyze`; the subject
+/// file must be one of those files so a symbol query can never resolve a path
+/// outside the current project snapshot. `Ok(None)` means the view has no
+/// usable owner or the subject is not part of it.
+pub(crate) fn build_symbols(
+    view: &PreparedView,
+    context: &RequestContext,
+    config: &NodeBackendConfig,
+    request_id: &str,
+    subject: &wxml_types::FileId,
+    query: &wxml_types::SymbolQuery,
+) -> Result<Option<String>, ProtocolError> {
+    let Some(target) = view.target.as_ref() else {
+        return Ok(None);
+    };
+    if !view.files.iter().any(|file| file.file == *subject) {
+        return Ok(None);
+    }
+    let files: Vec<Value> = view
+        .files
+        .iter()
+        .map(|file| {
+            json!({
+                "fileId": file.file.path(),
+                "path": file.path.as_str(),
+                "kind": file.kind,
+                "text": file.text.as_ref(),
+                "sourceRevision": file.source_revision,
+            })
+        })
+        .collect();
+    let query = match query {
+        wxml_types::SymbolQuery::DataRoots => json!({"kind": "dataRoots"}),
+        wxml_types::SymbolQuery::DataPath { path } => {
+            json!({"kind": "dataPath", "path": path})
+        }
+        wxml_types::SymbolQuery::EventHandler { name } => {
+            json!({"kind": "eventHandler", "name": name})
+        }
+        _ => return Ok(None),
+    };
+    let params = json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "requestId": request_id,
+        "project": {
+            "projectRoot": view.project_root.to_string_lossy(),
+            "compilerOptions": Value::Object(view.compiler_options.clone()),
+            "typings": {
+                "package": config.typings.package,
+                "version": config.typings.version,
+            },
+        },
+        "files": files,
+        "subjectFileId": subject.path(),
+        "root": target.owner.as_str(),
+        "query": query,
+        "limits": {
+            "maxFiles": config.limits.max_files,
+            "maxTotalBytes": config.limits.max_total_bytes,
+            "maxFragments": config.limits.max_fragments,
+        },
+    });
+    let _ = context;
+    super::protocol::request_line(request_id, "symbols", Some(&params)).map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
