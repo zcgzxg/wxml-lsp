@@ -383,6 +383,9 @@ impl Server {
         if let Some(outgoing) = self.static_hover(&id, params.as_ref()) {
             return outgoing;
         }
+        if let Some(response) = self.local_hover_response(&id, params.as_ref()) {
+            return response;
+        }
         if !self.capabilities.hover.is_supported() {
             log(format_args!(
                 "hover backend is unavailable; returning a static-only empty result"
@@ -396,6 +399,9 @@ impl Server {
     pub(crate) fn definition(&mut self, id: Value, params: Option<Value>) -> Vec<Outgoing> {
         if let Some(outgoing) = self.static_definition(&id, params.as_ref()) {
             return outgoing;
+        }
+        if let Some(response) = self.local_definition_response(&id, params.as_ref()) {
+            return response;
         }
         if !self.capabilities.definition.is_supported() {
             log(format_args!(

@@ -449,6 +449,7 @@ fn diagnostics_keep_syntax_and_drop_unattributable_or_invalid_ranges() {
         range: SourceRange::from_bounds(0, 1).expect("range"),
         severity: DiagnosticSeverity::Error,
         message: "syntax".to_owned(),
+        code: None,
     });
     let backend = backend_with(&shared, StubHost::new(prepared), |line| {
         let mut value: Value = serde_json::from_str(&respond(line)).expect("response");
@@ -505,6 +506,7 @@ fn node_failure_keeps_syntax_and_advances_the_epoch() {
         range: SourceRange::from_bounds(0, 1).expect("range"),
         severity: DiagnosticSeverity::Error,
         message: "syntax".to_owned(),
+        code: None,
     });
     let attempts = Arc::new(AtomicUsize::new(0));
     let responder_attempts = Arc::clone(&attempts);
@@ -696,6 +698,7 @@ fn disabled_diagnostics_drop_type_diagnostics_but_keep_syntax() {
         range: SourceRange::from_bounds(0, 1).expect("range"),
         severity: DiagnosticSeverity::Error,
         message: "syntax".to_owned(),
+        code: None,
     });
     let backend = backend_with(&shared, StubHost::new(prepared), |line| {
         let mut value: Value = serde_json::from_str(&respond(line)).expect("response");

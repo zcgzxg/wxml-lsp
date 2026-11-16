@@ -135,6 +135,321 @@ pub struct DataRoot {
     pub text: String,
 }
 
+/// Registration constructor found in a page/component script.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum RegistrationKind {
+    /// A `Page({...})` call.
+    Page,
+    /// A `Component({...})` call.
+    Component,
+    /// Both or an ambiguous registration.
+    Unknown,
+}
+
+/// Static hints extracted from a page/component script.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ScriptStyleHints {
+    /// Constructor call found outside comments/strings.
+    pub registration: Option<RegistrationKind>,
+    /// `Component({options:{styleIsolation:"..."}})` value.
+    pub style_isolation: Option<String>,
+    /// `Component({options:{addGlobalClass:true}})` value.
+    pub add_global_class: Option<bool>,
+    /// `false` when the relevant call/options object is malformed or dynamic.
+    pub complete: bool,
+}
+
+impl Default for ScriptStyleHints {
+    fn default() -> Self {
+        Self {
+            registration: None,
+            style_isolation: None,
+            add_global_class: None,
+            complete: true,
+        }
+    }
+}
+
+impl ScriptStyleHints {
+    /// Creates an unproven hint set.
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self {
+            registration: Some(RegistrationKind::Unknown),
+            style_isolation: None,
+            add_global_class: None,
+            complete: false,
+        }
+    }
+}
+
+/// Extracts page/component registration and `Component` option hints.
+///
+/// The scanner skips comments, strings and template literals, and only accepts
+/// literal `styleIsolation`/`addGlobalClass` values. Anything dynamic or
+/// malformed leaves [`ScriptStyleHints::complete`] false.
+#[must_use]
+pub fn registration_style_hints(text: &str) -> ScriptStyleHints {
+    let bytes = text.as_bytes();
+    let page = find_call(bytes, b"Page");
+    let component = find_call(bytes, b"Component");
+    let page_present = page.is_some() || contains_identifier(bytes, 0, bytes.len(), b"Page");
+    let component_present =
+        component.is_some() || contains_identifier(bytes, 0, bytes.len(), b"Component");
+    let registration = match (page_present, component_present) {
+        (true, false) => Some(RegistrationKind::Page),
+        (false, true) => Some(RegistrationKind::Component),
+        (true, true) | (false, false) => None,
+    };
+    let mut hints = ScriptStyleHints {
+        registration,
+        ..ScriptStyleHints::default()
+    };
+    if page_present && component_present {
+        hints.complete = false;
+    }
+    let Some((open, close)) = component else {
+        if component_present {
+            hints.complete = false;
+        }
+        return hints;
+    };
+    let Some((options_open, options_close)) = find_options_object(bytes, open, close) else {
+        if contains_options_identifier(bytes, open, close) {
+            hints.complete = false;
+        }
+        return hints;
+    };
+    if options_open >= options_close {
+        hints.complete = false;
+        return hints;
+    }
+    let Some((style, add)) = parse_component_options(bytes, options_open, options_close) else {
+        hints.complete = false;
+        return hints;
+    };
+    hints.style_isolation = style;
+    hints.add_global_class = add;
+    hints
+}
+
+/// Finds an identifier call and returns the byte range inside its parentheses.
+fn find_call(bytes: &[u8], name: &[u8]) -> Option<(usize, usize)> {
+    let mut index = 0_usize;
+    while index < bytes.len() {
+        if let Some(next) = skip_lexeme(bytes, index, 0) {
+            index = next;
+            continue;
+        }
+        if is_identifier_start(bytes[index]) {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && is_identifier_continue(bytes[index]) {
+                index += 1;
+            }
+            if &bytes[start..index] != name {
+                continue;
+            }
+            let mut cursor = index;
+            while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+                cursor += 1;
+            }
+            if bytes.get(cursor) != Some(&b'(') {
+                continue;
+            }
+            let close = matching_delimiter(bytes, cursor, b'(', b')')?;
+            return Some((cursor + 1, close));
+        }
+        index += 1;
+    }
+    None
+}
+
+/// Finds a top-level `options: { ... }` property in a call body.
+fn find_options_object(bytes: &[u8], open: usize, close: usize) -> Option<(usize, usize)> {
+    let mut index = open;
+    let mut depth = 0_usize;
+    while index < close {
+        if let Some(next) = skip_lexeme(bytes, index, 0) {
+            index = next;
+            continue;
+        }
+        match bytes[index] {
+            b'(' | b'[' | b'{' => {
+                depth = depth.saturating_add(1);
+                index += 1;
+            }
+            b')' | b']' | b'}' => {
+                depth = depth.saturating_sub(1);
+                index += 1;
+            }
+            byte if is_identifier_start(byte) && depth == 1 => {
+                let start = index;
+                index += 1;
+                while index < close && is_identifier_continue(bytes[index]) {
+                    index += 1;
+                }
+                if &bytes[start..index] != b"options" {
+                    continue;
+                }
+                let mut cursor = index;
+                while cursor < close && bytes[cursor].is_ascii_whitespace() {
+                    cursor += 1;
+                }
+                if bytes.get(cursor) != Some(&b':') {
+                    continue;
+                }
+                cursor += 1;
+                while cursor < close && bytes[cursor].is_ascii_whitespace() {
+                    cursor += 1;
+                }
+                if bytes.get(cursor) != Some(&b'{') {
+                    return None;
+                }
+                let end = matching_delimiter(bytes, cursor, b'{', b'}')?;
+                if end > close {
+                    return None;
+                }
+                return Some((cursor + 1, end));
+            }
+            _ => index += 1,
+        }
+    }
+    None
+}
+
+/// Returns whether an identifier occurs outside strings/comments.
+fn contains_identifier(bytes: &[u8], open: usize, close: usize, name: &[u8]) -> bool {
+    let mut index = open;
+    while index < close {
+        if let Some(next) = skip_lexeme(bytes, index, 0) {
+            index = next;
+            continue;
+        }
+        if is_identifier_start(bytes[index]) {
+            let start = index;
+            index += 1;
+            while index < close && is_identifier_continue(bytes[index]) {
+                index += 1;
+            }
+            if &bytes[start..index] == name {
+                return true;
+            }
+        } else {
+            index += 1;
+        }
+    }
+    false
+}
+
+/// Returns whether an `options` identifier occurs outside strings/comments.
+fn contains_options_identifier(bytes: &[u8], open: usize, close: usize) -> bool {
+    contains_identifier(bytes, open, close, b"options")
+}
+
+/// Parses literal `styleIsolation`/`addGlobalClass` keys from an options body.
+fn parse_component_options(
+    bytes: &[u8],
+    open: usize,
+    close: usize,
+) -> Option<(Option<String>, Option<bool>)> {
+    let mut style = None;
+    let mut add = None;
+    let mut index = open;
+    let mut depth = 0_usize;
+    while index < close {
+        if let Some(next) = skip_lexeme(bytes, index, 0) {
+            index = next;
+            continue;
+        }
+        match bytes[index] {
+            b'{' | b'(' | b'[' => {
+                depth = depth.saturating_add(1);
+                index += 1;
+            }
+            b'}' | b')' | b']' => {
+                depth = depth.saturating_sub(1);
+                index += 1;
+            }
+            byte if depth == 0 && is_identifier_start(byte) => {
+                let key_start = index;
+                index += 1;
+                while index < close && is_identifier_continue(bytes[index]) {
+                    index += 1;
+                }
+                let key = &bytes[key_start..index];
+                let mut cursor = index;
+                while cursor < close && bytes[cursor].is_ascii_whitespace() {
+                    cursor += 1;
+                }
+                if bytes.get(cursor) != Some(&b':') {
+                    continue;
+                }
+                cursor += 1;
+                while cursor < close && bytes[cursor].is_ascii_whitespace() {
+                    cursor += 1;
+                }
+                match key {
+                    b"styleIsolation" => {
+                        let quote = *bytes.get(cursor)?;
+                        if quote != b'\'' && quote != b'"' {
+                            return None;
+                        }
+                        let end = skip_lexeme(bytes, cursor, 0)?;
+                        if end > close {
+                            return None;
+                        }
+                        let value = std::str::from_utf8(bytes.get(cursor + 1..end - 1)?).ok()?;
+                        style = Some(value.to_owned());
+                        index = end;
+                    }
+                    b"addGlobalClass" => {
+                        if bytes.get(cursor..cursor + 4) == Some(b"true") {
+                            add = Some(true);
+                            index = cursor + 4;
+                        } else if bytes.get(cursor..cursor + 5) == Some(b"false") {
+                            add = Some(false);
+                            index = cursor + 5;
+                        } else {
+                            return None;
+                        }
+                    }
+                    _ => {
+                        index = cursor;
+                    }
+                }
+            }
+            _ => index += 1,
+        }
+    }
+    Some((style, add))
+}
+
+/// Returns the byte after the matching closing delimiter.
+fn matching_delimiter(bytes: &[u8], open: usize, left: u8, right: u8) -> Option<usize> {
+    let mut depth = 0_usize;
+    let mut index = open;
+    while index < bytes.len() {
+        if let Some(next) = skip_lexeme(bytes, index, 0) {
+            index = next;
+            continue;
+        }
+        match bytes[index] {
+            byte if byte == left => depth += 1,
+            byte if byte == right => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index + 1);
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
 /// Extracts `Page({ data })` and `Component({ data, properties })` roots.
 ///
 /// The scanner understands line/block comments, single-, double- and
@@ -1259,5 +1574,31 @@ mod tests {
             "quoted-key"
         );
         assert_eq!(property.documentation.as_deref(), Some("文档"));
+    }
+}
+
+#[cfg(test)]
+mod registration_tests {
+    use super::*;
+
+    #[test]
+    fn extracts_component_options() {
+        let hints = registration_style_hints(
+            "Component({ options: { addGlobalClass: true, styleIsolation: 'shared' } })",
+        );
+        assert_eq!(hints.registration, Some(RegistrationKind::Component));
+        assert_eq!(hints.add_global_class, Some(true));
+        assert_eq!(hints.style_isolation.as_deref(), Some("shared"));
+        assert!(hints.complete);
+
+        let hints = registration_style_hints("Page({ data: {} })");
+        assert_eq!(hints.registration, Some(RegistrationKind::Page));
+        assert_eq!(hints.add_global_class, None);
+        assert!(hints.complete);
+
+        let hints = registration_style_hints("Component({ options: { addGlobalClass: true");
+        assert_eq!(hints.registration, Some(RegistrationKind::Component));
+        assert!(!hints.complete);
+        assert_eq!(hints.add_global_class, None);
     }
 }

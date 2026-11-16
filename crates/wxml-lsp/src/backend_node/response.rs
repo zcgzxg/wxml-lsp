@@ -1106,6 +1106,7 @@ pub(crate) fn diagnostics(
                     range: validated,
                     severity: DiagnosticSeverity::Error,
                     message: diagnostic.message.clone(),
+                    code: None,
                 });
             }
         }
@@ -1136,6 +1137,7 @@ pub(crate) fn diagnostics(
                 range: validated,
                 severity: event_severity(diagnostic.severity.as_deref()),
                 message: diagnostic.message.clone(),
+                code: None,
             });
         }
     }
@@ -1240,6 +1242,7 @@ fn apply_event_results(
             range,
             severity: event_severity(diagnostic.severity.as_deref()),
             message: diagnostic.message.clone(),
+            code: None,
         });
     }
     if response.events_truncated {

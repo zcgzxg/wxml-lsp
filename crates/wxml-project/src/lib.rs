@@ -13,6 +13,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -20,8 +21,10 @@ pub mod config;
 pub mod discovery;
 pub mod files;
 pub mod overlay;
+pub mod resources;
 pub mod script;
 pub mod sources;
+pub mod styles;
 
 pub use config::{ConfigError, TsConfig, load_ts_config};
 pub use discovery::{
@@ -32,12 +35,72 @@ pub use files::{
     FileError, FileKey, PathError, ProjectPath, UriError, read_file, root_path_from_uri,
 };
 pub use overlay::{Overlay, OverlayError};
+pub use resources::{ResourceCandidate, ResourceCandidates, ResourceKind, ResourceResolution};
 pub use script::{
-    ComponentProperty, ComponentPropertyFacts, DataRoot, DataRootKind, ScriptResolution,
-    extract_component_properties, extract_component_property_facts, extract_data_roots,
-    resolve_script,
+    ComponentProperty, ComponentPropertyFacts, DataRoot, DataRootKind, RegistrationKind,
+    ScriptResolution, ScriptStyleHints, extract_component_properties,
+    extract_component_property_facts, extract_data_roots, registration_style_hints, resolve_script,
 };
 pub use sources::{SourceFile, SourceIssue, SourceIssueKind, SourceKind, SourceLimits, SourceSet};
+pub use styles::{
+    ClassDefinition, ClassToken, StyleConfig, StyleDiagnosticsPolicy, StyleFileInfo, StyleFileKind,
+    StyleImport, StyleImportKind, StyleIndex, StyleIsolation, StyleIssue, StyleIssueKind,
+    StyleLimits, StyleScope, StyleSheet, StyleViewFacts,
+};
+
+/// A copy of the host paths and overlay needed for lock-free style/resource
+/// work.
+///
+/// The overlay is an `Arc` shared with the project; a mutation in the project
+/// clones it on write, so a snapshot always observes one consistent overlay.
+#[derive(Clone, Debug)]
+pub struct ProjectSnapshot {
+    pub(crate) root: PathBuf,
+    pub(crate) source_root: Option<ProjectPath>,
+    pub(crate) overlay: Arc<Overlay>,
+}
+
+impl ProjectSnapshot {
+    /// Returns the canonical project root. Internal host path; never publish.
+    #[must_use]
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Returns the directory containing `app.json`, relative to the root.
+    #[must_use]
+    pub const fn source_root(&self) -> Option<&ProjectPath> {
+        self.source_root.as_ref()
+    }
+
+    /// Returns whether `path` belongs to this project's source tree.
+    #[must_use]
+    pub fn contains_source(&self, path: &ProjectPath) -> bool {
+        self.source_root.as_ref().is_none_or(|root| {
+            path == root
+                || path
+                    .as_str()
+                    .strip_prefix(root.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
+    }
+
+    /// Reads effective text: snapshot overlay first, then disk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileError`] for symlink escapes, invalid UTF-8, or read
+    /// failures other than a missing file.
+    pub fn read_optional(&self, path: &ProjectPath) -> Result<Option<String>, FileError> {
+        self.overlay.read_text(&self.root, path)
+    }
+
+    /// Returns whether an unsaved buffer exists for `path`.
+    #[must_use]
+    pub fn has_overlay(&self, path: &ProjectPath) -> bool {
+        self.overlay.contains(path)
+    }
+}
 
 /// Why a project could not be opened.
 #[derive(Debug, Error)]
@@ -75,7 +138,7 @@ pub struct Project {
     /// the project root, which keeps the common case free of a path prefix.
     source_root: Option<ProjectPath>,
     tsconfig_path: ProjectPath,
-    overlay: Overlay,
+    overlay: Arc<Overlay>,
     discovery: Discovery,
     tsconfig: Option<TsConfig>,
 }
@@ -144,7 +207,7 @@ impl Project {
         }
         let source_root = app_json.parent();
         let tsconfig_path = ProjectPath::new("tsconfig.json")?;
-        let overlay = Overlay::new();
+        let overlay = Arc::new(Overlay::new());
         let discovery = discover(&canonical, &overlay, &app_json);
         let mut project = Self {
             root: canonical,
@@ -278,8 +341,28 @@ impl Project {
 
     /// Returns the overlay.
     #[must_use]
-    pub const fn overlay(&self) -> &Overlay {
+    pub fn overlay(&self) -> &Overlay {
         &self.overlay
+    }
+
+    /// Captures the project root, source root and overlay Arc for work that
+    /// must run outside the host lock.
+    #[must_use]
+    pub fn snapshot(&self) -> ProjectSnapshot {
+        ProjectSnapshot {
+            root: self.root.clone(),
+            source_root: self.source_root.clone(),
+            overlay: Arc::clone(&self.overlay),
+        }
+    }
+
+    /// Returns whether this project owns a WXML path.
+    ///
+    /// With a nested app root, only paths below the `app.json` directory are
+    /// owned. A root-level app owns every project path.
+    #[must_use]
+    pub fn owns_wxml(&self, path: &ProjectPath) -> bool {
+        self.contains_source(path)
     }
 
     /// Sets overlay text with a monotonic revision.
@@ -295,12 +378,12 @@ impl Project {
         text: impl Into<String>,
         revision: u64,
     ) -> Result<(), OverlayError> {
-        self.overlay.set(path, text, revision)
+        Arc::make_mut(&mut self.overlay).set(path, text, revision)
     }
 
     /// Removes an overlay entry, falling back to disk contents.
     pub fn remove_overlay(&mut self, path: &ProjectPath) -> bool {
-        self.overlay.remove(path)
+        Arc::make_mut(&mut self.overlay).remove(path)
     }
 
     /// Reads effective text: overlay first, then disk.

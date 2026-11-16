@@ -463,7 +463,7 @@ fn is_excluded_dir(name: &str) -> bool {
 }
 
 /// Returns whether any path component is an excluded directory.
-fn has_excluded_component(path: &ProjectPath) -> bool {
+pub(crate) fn has_excluded_component(path: &ProjectPath) -> bool {
     path.as_str().split('/').any(is_excluded_dir)
 }
 

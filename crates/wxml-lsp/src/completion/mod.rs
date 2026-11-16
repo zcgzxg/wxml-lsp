@@ -208,6 +208,13 @@ impl Server {
         let Some(detected) = detect(text, offset) else {
             return vec![Outgoing::success(id, empty_list())];
         };
+        if let Some(value) = self.class_completion_value(uri, document, text, offset, &detected) {
+            return vec![Outgoing::success(id, value)];
+        }
+        if let Some(value) = self.resource_completion_value(uri, document, text, offset, &detected)
+        {
+            return vec![Outgoing::success(id, value)];
+        }
 
         match expression::route(&detected) {
             Route::Static => {

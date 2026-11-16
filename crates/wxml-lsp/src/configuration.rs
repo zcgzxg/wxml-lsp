@@ -20,6 +20,15 @@ pub struct InitializationOptions {
     /// Optional switch for all snippets.
     #[serde(default)]
     pub snippets_enabled: Option<bool>,
+    /// Style/resource settings consumed by the project host object.
+    ///
+    /// The values are validated by the style layer so one invalid entry does
+    /// not reject otherwise valid application roots.
+    #[serde(default)]
+    pub wxml: Option<Value>,
+    /// Alias for [`Self::wxml`] accepted for compatibility with early builds.
+    #[serde(default)]
+    pub style: Option<Value>,
 }
 
 /// One Mini Program, with no filesystem-based root inference.

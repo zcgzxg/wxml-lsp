@@ -16,14 +16,15 @@
 // the project cannot be swapped between a check and its use.
 #![allow(clippy::significant_drop_tightening)]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 use thiserror::Error;
 use wxml_project::{
-    ComponentPropertyFacts, ComponentTargetKind, Page, Project, ProjectPath, SourceFile,
-    SourceKind, SourceLimits, UriError,
+    ComponentPropertyFacts, ComponentTargetKind, Page, Project, ProjectPath, ProjectSnapshot,
+    ResourceCandidates, ResourceResolution, SourceFile, SourceKind, SourceLimits, StyleConfig,
+    StyleDiagnosticsPolicy, StyleIndex, StyleIsolation, StyleScope, StyleViewFacts, UriError,
 };
 use wxml_syntax::{ParseErrorKind, ParseResult};
 use wxml_types::{
@@ -174,6 +175,7 @@ pub enum HostError {
 
 /// How a URI is routed by the LSP server.
 #[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum DocumentRoute {
     /// A WXML template in the project.
     Wxml(ProjectPath),
@@ -181,6 +183,8 @@ pub enum DocumentRoute {
     Script(ProjectPath),
     /// A project JSON file (`app.json`, page/component JSON).
     Json(ProjectPath),
+    /// A WXSS/SCSS/CSS style file.
+    Style(ProjectPath),
     /// Not a project document (no project, outside the root, unknown extension).
     Unknown,
 }
@@ -226,8 +230,11 @@ pub struct ChangeDocument {
 /// What changed after a document/overlay update.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct HostUpdate {
-    /// Views that must be re-checked.
+    /// Views whose type analysis must be re-checked.
     pub dirty_views: Vec<ProjectPath>,
+    /// Views whose local style/resource diagnostics must be refreshed without
+    /// starting a type-backend request.
+    pub style_views: Vec<ProjectPath>,
     /// New project revision, when the update changed project state.
     pub project_revision: Option<ProjectRevision>,
 }
@@ -286,6 +293,18 @@ pub struct PreparedFile {
 /// unbounded request or diagnostics list. Truncation is reported as a
 /// [`CapabilityStatus::Partial`] hint.
 pub const MAX_PREPARED_EVENTS: usize = 1024;
+
+/// Maximum style fact entries kept per project.
+const MAX_STYLE_VIEW_CACHE: usize = 256;
+
+/// Maximum estimated class-reference bytes kept per project.
+const MAX_STYLE_FACT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Maximum class references kept per project.
+const MAX_STYLE_FACT_CLASSES: usize = 200_000;
+
+/// Maximum project style caches retained in one host.
+const MAX_STYLE_PROJECTS: usize = 4;
 
 /// Everything a type backend needs for one WXML snapshot.
 #[derive(Clone, Debug)]
@@ -428,6 +447,69 @@ pub trait ProjectHost: Send + Sync {
         self.component_properties(&path, tag)
     }
 
+    /// Returns the style class facts that apply to one WXML view.
+    ///
+    /// Hosts without a project return `None`; callers then keep their previous
+    /// static behavior instead of inventing an empty style index.
+    fn style_facts(&self, _wxml: &ProjectPath) -> Option<Arc<StyleViewFacts>> {
+        None
+    }
+
+    /// Project-bound variant of [`Self::style_facts`].
+    ///
+    /// Paths are relative to their app root, so two apps can contain the same
+    /// relative view path. Callers holding a URI must use this method to keep
+    /// style lookup in the file's own project.
+    fn style_facts_for(&self, file: &FileId) -> Option<Arc<StyleViewFacts>> {
+        ProjectPath::new(file.path())
+            .ok()
+            .and_then(|path| self.style_facts(&path))
+    }
+
+    /// Resolves one local resource value for a WXML view.
+    fn resource_resolution(
+        &self,
+        _wxml: &ProjectPath,
+        _specifier: &str,
+    ) -> Option<ResourceResolution> {
+        None
+    }
+
+    /// Project-bound variant of [`Self::resource_resolution`].
+    fn resource_resolution_for(
+        &self,
+        file: &FileId,
+        specifier: &str,
+    ) -> Option<ResourceResolution> {
+        ProjectPath::new(file.path())
+            .ok()
+            .and_then(|path| self.resource_resolution(&path, specifier))
+    }
+
+    /// Lists one directory for resource completion.
+    fn resource_candidates(
+        &self,
+        _wxml: &ProjectPath,
+        _prefix: &str,
+    ) -> Option<ResourceCandidates> {
+        None
+    }
+
+    /// Project-bound variant of [`Self::resource_candidates`].
+    fn resource_candidates_for(&self, file: &FileId, prefix: &str) -> Option<ResourceCandidates> {
+        ProjectPath::new(file.path())
+            .ok()
+            .and_then(|path| self.resource_candidates(&path, prefix))
+    }
+
+    /// Applies style/resource settings from initialization options.
+    fn configure_styles(&self, _config: StyleConfig, _diagnostics: StyleDiagnosticsPolicy) {}
+
+    /// Returns local class/resource diagnostics without a type backend.
+    fn style_diagnostics(&self, _snapshot: &SourceSnapshot) -> Vec<Diagnostic> {
+        Vec::new()
+    }
+
     /// Prepares the analysis inputs for a WXML snapshot.
     fn analysis(&self, snapshot: &SourceSnapshot) -> Result<PreparedView, HostError>;
 }
@@ -560,6 +642,169 @@ struct State {
     next_view_revision: u64,
     next_overlay_revision: u64,
     next_file_version: u64,
+    /// Increments whenever discovery replaces the view table; style facts
+    /// from the previous discovery are invalid.
+    style_epoch: u64,
+}
+
+/// Settings shared by every project style cache.
+#[derive(Clone, Debug, Default)]
+struct StyleSettings {
+    config: StyleConfig,
+    diagnostics: StyleDiagnosticsPolicy,
+}
+
+/// Parsed style sheets and class facts for one project identity.
+#[derive(Debug, Default)]
+struct ProjectStyleCache {
+    epoch: u64,
+    index: StyleIndex,
+    facts: BTreeMap<ProjectPath, Arc<StyleViewFacts>>,
+    order: VecDeque<ProjectPath>,
+    fact_classes: usize,
+    fact_bytes: usize,
+}
+
+impl ProjectStyleCache {
+    /// Drops every class-fact entry but keeps parsed sheets.
+    fn clear_facts(&mut self) {
+        self.facts.clear();
+        self.order.clear();
+        self.fact_classes = 0;
+        self.fact_bytes = 0;
+    }
+
+    /// Inserts one view's facts within the cache budgets.
+    fn insert(&mut self, view: ProjectPath, facts: Arc<StyleViewFacts>) {
+        if let Some(previous) = self.facts.remove(&view) {
+            self.fact_classes = self.fact_classes.saturating_sub(previous.classes.len());
+            self.fact_bytes = self.fact_bytes.saturating_sub(previous.estimated_bytes());
+            self.order.retain(|entry| entry != &view);
+        }
+        let classes = facts.classes.len();
+        let bytes = facts.estimated_bytes();
+        if classes > MAX_STYLE_FACT_CLASSES || bytes > MAX_STYLE_FACT_BYTES {
+            return;
+        }
+        while self.order.len() >= MAX_STYLE_VIEW_CACHE
+            || self.fact_classes.saturating_add(classes) > MAX_STYLE_FACT_CLASSES
+            || self.fact_bytes.saturating_add(bytes) > MAX_STYLE_FACT_BYTES
+        {
+            let Some(evicted) = self.order.pop_front() else {
+                break;
+            };
+            if let Some(old) = self.facts.remove(&evicted) {
+                self.fact_classes = self.fact_classes.saturating_sub(old.classes.len());
+                self.fact_bytes = self.fact_bytes.saturating_sub(old.estimated_bytes());
+            }
+        }
+        self.fact_classes = self.fact_classes.saturating_add(classes);
+        self.fact_bytes = self.fact_bytes.saturating_add(bytes);
+        self.order.push_back(view.clone());
+        self.facts.insert(view, facts);
+    }
+}
+
+/// Per-project style caches plus the language-server settings.
+#[derive(Debug, Default)]
+struct StyleStore {
+    settings: StyleSettings,
+    projects: BTreeMap<ProjectId, ProjectStyleCache>,
+    order: VecDeque<ProjectId>,
+}
+
+impl StyleStore {
+    /// Replaces settings and drops every project cache.
+    fn configure(&mut self, config: StyleConfig, diagnostics: StyleDiagnosticsPolicy) {
+        self.settings = StyleSettings {
+            config,
+            diagnostics,
+        };
+        self.projects.clear();
+        self.order.clear();
+    }
+
+    /// Returns the current diagnostic settings.
+    const fn diagnostics(&self) -> StyleDiagnosticsPolicy {
+        self.settings.diagnostics
+    }
+
+    /// Drops every project cache.
+    fn clear_all(&mut self) {
+        self.projects.clear();
+        self.order.clear();
+    }
+
+    /// Drops one project's cache.
+    /// Invalidates one changed style file and every class-fact view.
+    fn invalidate_path(&mut self, project_id: &ProjectId, path: &ProjectPath) {
+        if let Some(cache) = self.projects.get_mut(project_id) {
+            cache.index.invalidate(path);
+            cache.clear_facts();
+        }
+    }
+
+    /// Drops class facts after discovery/configuration changed.
+    fn clear_facts(&mut self, project_id: &ProjectId) {
+        if let Some(cache) = self.projects.get_mut(project_id) {
+            cache.clear_facts();
+        }
+    }
+
+    /// Returns one project's cache, creating it within the project budget.
+    fn project_mut(&mut self, project_id: &ProjectId) -> &mut ProjectStyleCache {
+        if !self.projects.contains_key(project_id) {
+            while self.projects.len() >= MAX_STYLE_PROJECTS {
+                let Some(evicted) = self.order.pop_front() else {
+                    break;
+                };
+                self.projects.remove(&evicted);
+            }
+            self.order.push_back(project_id.clone());
+            self.projects
+                .insert(project_id.clone(), ProjectStyleCache::default());
+        } else if self.order.back() != Some(project_id) {
+            self.order.retain(|entry| entry != project_id);
+            self.order.push_back(project_id.clone());
+        }
+        self.projects.entry(project_id.clone()).or_default()
+    }
+
+    /// Returns facts for one view, building them outside the project lock.
+    fn facts(
+        &mut self,
+        project_id: &ProjectId,
+        snapshot: &ProjectSnapshot,
+        view: &ProjectPath,
+        scope: StyleScope,
+        isolation: StyleIsolation,
+        epoch: u64,
+    ) -> Arc<StyleViewFacts> {
+        let config = self.settings.config.clone();
+        let cache = self.project_mut(project_id);
+        if cache.epoch != epoch {
+            // Discovery changed the view table; parsed style sheets remain
+            // valid, only view-specific facts need rebuilding.
+            cache.epoch = epoch;
+            cache.clear_facts();
+        }
+        if let Some(facts) = cache.facts.get(view) {
+            let facts = Arc::clone(facts);
+            cache.order.retain(|entry| entry != view);
+            cache.order.push_back(view.clone());
+            return facts;
+        }
+        let facts = Arc::new(cache.index.view_facts_for(
+            snapshot,
+            view,
+            scope,
+            isolation,
+            &config,
+            Some(project_id.as_str()),
+        ));
+        cache.insert(view.clone(), Arc::clone(&facts));
+        facts
+    }
 }
 
 /// Project state and analysis inputs for one workspace root.
@@ -571,6 +816,7 @@ struct State {
 #[derive(Debug)]
 pub struct ProjectState {
     state: RwLock<State>,
+    styles: Mutex<StyleStore>,
 }
 
 impl Default for ProjectState {
@@ -584,6 +830,7 @@ impl ProjectState {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            styles: Mutex::new(StyleStore::default()),
             state: RwLock::new(State {
                 app_roots: Vec::new(),
                 projects: BTreeMap::new(),
@@ -594,6 +841,7 @@ impl ProjectState {
                 next_view_revision: 1,
                 next_overlay_revision: 1,
                 next_file_version: 1,
+                style_epoch: 1,
             }),
         }
     }
@@ -606,6 +854,99 @@ impl ProjectState {
     /// Locks the state for writing, recovering poisoned data.
     fn write(&self) -> std::sync::RwLockWriteGuard<'_, State> {
         self.state.write().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Locks the independent style cache.
+    fn styles(&self) -> MutexGuard<'_, StyleStore> {
+        self.styles.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Captures project identity, scope and an overlay snapshot under a short
+    /// read lock. Style parsing happens after this returns.
+    fn style_context(
+        &self,
+        wxml: &ProjectPath,
+    ) -> Option<(ProjectSnapshot, ProjectId, StyleScope, StyleIsolation, u64)> {
+        let state = self.read();
+        let active = state
+            .active_project
+            .as_ref()
+            .and_then(|id| state.projects.get(id).map(|slot| (id, slot)))
+            .filter(|(_, slot)| slot.project.owns_wxml(wxml));
+        let (project_id, slot) = active
+            .or_else(|| {
+                state
+                    .projects
+                    .iter()
+                    .find(|(_, slot)| slot.views.contains_key(wxml))
+            })
+            .or_else(|| {
+                state
+                    .projects
+                    .iter()
+                    .find(|(_, slot)| slot.project.owns_wxml(wxml))
+            })?;
+        Some((
+            slot.project.snapshot(),
+            project_id.clone(),
+            slot.project.style_scope(wxml),
+            slot.project.style_isolation(wxml),
+            state.style_epoch,
+        ))
+    }
+
+    /// Captures one explicitly identified project's style context.
+    fn style_context_in(
+        &self,
+        project: &ProjectId,
+        wxml: &ProjectPath,
+    ) -> Option<(ProjectSnapshot, ProjectId, StyleScope, StyleIsolation, u64)> {
+        let state = self.read();
+        let slot = state.projects.get(project)?;
+        if !slot.project.owns_wxml(wxml) {
+            return None;
+        }
+        Some((
+            slot.project.snapshot(),
+            project.clone(),
+            slot.project.style_scope(wxml),
+            slot.project.style_isolation(wxml),
+            state.style_epoch,
+        ))
+    }
+
+    /// Builds style facts through one identified project.
+    fn style_facts_in(
+        &self,
+        project: &ProjectId,
+        wxml: &ProjectPath,
+    ) -> Option<Arc<StyleViewFacts>> {
+        let (snapshot, project_id, scope, isolation, epoch) =
+            self.style_context_in(project, wxml)?;
+        let facts = self
+            .styles()
+            .facts(&project_id, &snapshot, wxml, scope, isolation, epoch);
+        // External `~class` / `^class` references live in the open template,
+        // not in the style chain. Keep the cached index complete but return a
+        // partial view to consumers that must not claim rename/reference
+        // completeness.
+        let file = FileId::new(project_id, wxml.as_str()).ok();
+        let external = file.and_then(|file| {
+            self.read()
+                .snapshots
+                .get(&file)
+                .map(|snapshot| crate::styles::has_external_class_reference(snapshot.text()))
+        });
+        if external == Some(true) && facts.complete {
+            let mut partial = (*facts).clone();
+            partial.complete = false;
+            partial.reason = Some(
+                "template uses external ~class/^class references; caller styles are unknown"
+                    .to_owned(),
+            );
+            return Some(Arc::new(partial));
+        }
+        Some(facts)
     }
 
     /// Opens a project root and rebuilds the view table.
@@ -642,6 +983,8 @@ impl ProjectState {
         let root = std::fs::canonicalize(root).map_err(|_| HostError::ProjectOpen)?;
         let roots = options.resolve(&root)?;
         state.app_roots.clone_from(&roots);
+        state.style_epoch = state.style_epoch.saturating_add(1);
+        self.styles().clear_all();
         if roots.len() == 1 {
             let root = roots.into_iter().next().ok_or(HostError::ProjectOpen)?;
             ensure_loaded(&mut state, &root, true)?;
@@ -764,6 +1107,7 @@ impl ProjectHost for ProjectState {
                 DocumentRoute::Script(path)
             }
             Some("json") => DocumentRoute::Json(path),
+            Some("wxss" | "scss" | "css") => DocumentRoute::Style(path),
             _ => DocumentRoute::Unknown,
         }
     }
@@ -849,6 +1193,140 @@ impl ProjectHost for ProjectState {
         };
         let state = self.read();
         view_components_in_slot(&state, file.project(), &path)
+    }
+
+    fn style_facts(&self, wxml: &ProjectPath) -> Option<Arc<StyleViewFacts>> {
+        let (_, project_id, _, _, _) = self.style_context(wxml)?;
+        self.style_facts_in(&project_id, wxml)
+    }
+
+    fn style_facts_for(&self, file: &FileId) -> Option<Arc<StyleViewFacts>> {
+        let path = ProjectPath::new(file.path()).ok()?;
+        self.style_facts_in(file.project(), &path)
+    }
+
+    fn resource_resolution(
+        &self,
+        wxml: &ProjectPath,
+        specifier: &str,
+    ) -> Option<ResourceResolution> {
+        let (snapshot, _, _, _, _) = self.style_context(wxml)?;
+        Some(snapshot.resolve_resource(wxml, specifier))
+    }
+
+    fn resource_resolution_for(
+        &self,
+        file: &FileId,
+        specifier: &str,
+    ) -> Option<ResourceResolution> {
+        let path = ProjectPath::new(file.path()).ok()?;
+        let (snapshot, _, _, _, _) = self.style_context_in(file.project(), &path)?;
+        Some(snapshot.resolve_resource(&path, specifier))
+    }
+
+    fn resource_candidates(&self, wxml: &ProjectPath, prefix: &str) -> Option<ResourceCandidates> {
+        let (snapshot, _, _, _, _) = self.style_context(wxml)?;
+        Some(snapshot.resource_candidates(wxml, prefix))
+    }
+
+    fn resource_candidates_for(&self, file: &FileId, prefix: &str) -> Option<ResourceCandidates> {
+        let path = ProjectPath::new(file.path()).ok()?;
+        let (snapshot, _, _, _, _) = self.style_context_in(file.project(), &path)?;
+        Some(snapshot.resource_candidates(&path, prefix))
+    }
+
+    fn configure_styles(&self, config: StyleConfig, diagnostics: StyleDiagnosticsPolicy) {
+        self.styles().configure(config, diagnostics);
+    }
+
+    fn style_diagnostics(&self, snapshot: &SourceSnapshot) -> Vec<Diagnostic> {
+        let policy = self.styles().diagnostics();
+        if !policy.resources && !policy.classes {
+            return Vec::new();
+        }
+        let Ok(path) = ProjectPath::new(snapshot.file().path()) else {
+            return Vec::new();
+        };
+        let Some((project, _, _, _, _)) = self.style_context_in(snapshot.file().project(), &path)
+        else {
+            return Vec::new();
+        };
+        let facts = if policy.classes {
+            self.style_facts_for(snapshot.file())
+        } else {
+            None
+        };
+        let mut diagnostics = Vec::new();
+        if let (true, Some(facts)) = (policy.classes, facts.as_ref()) {
+            if facts.complete && !crate::styles::has_external_class_reference(snapshot.text()) {
+                let defined: std::collections::BTreeSet<&str> = facts
+                    .classes
+                    .iter()
+                    .map(wxml_project::ClassDefinition::name)
+                    .collect();
+                for class in crate::styles::class_tokens(snapshot.text()) {
+                    if defined.contains(class.name.as_str()) {
+                        continue;
+                    }
+                    let Ok(text_range) =
+                        wxml_text::TextRange::new(class.token.start(), class.token.end())
+                    else {
+                        continue;
+                    };
+                    let Some(range) = snapshot.source_range(text_range) else {
+                        continue;
+                    };
+                    diagnostics.push(Diagnostic {
+                        range,
+                        severity: DiagnosticSeverity::Warning,
+                        message: format!(
+                            "class `{}` is not defined in the indexed styles",
+                            class.name
+                        ),
+                        code: Some("style.unknown-class".to_owned()),
+                    });
+                }
+            }
+        }
+        if policy.resources {
+            let mut resolved = 0_usize;
+            for site in crate::styles::resource_sites(
+                snapshot.text(),
+                crate::styles::MAX_WXML_RESOURCE_SITES,
+            ) {
+                if resolved >= crate::styles::MAX_RESOURCE_RESOLUTIONS {
+                    break;
+                }
+                resolved = resolved.saturating_add(1);
+                if !crate::styles::looks_like_path(&site.text) {
+                    continue;
+                }
+                if matches!(
+                    project.resolve_resource(&path, &site.text),
+                    ResourceResolution::Missing
+                ) {
+                    let Ok(text_range) =
+                        wxml_text::TextRange::new(site.value.start(), site.value.end())
+                    else {
+                        continue;
+                    };
+                    let Some(range) = snapshot.source_range(text_range) else {
+                        continue;
+                    };
+                    diagnostics.push(Diagnostic {
+                        range,
+                        severity: DiagnosticSeverity::Warning,
+                        message: format!(
+                            "local {} target `{}` does not exist",
+                            site.kind.label(),
+                            crate::handlers::code_text(&site.text, 120)
+                        ),
+                        code: Some("style.missing-resource".to_owned()),
+                    });
+                }
+            }
+        }
+        diagnostics
     }
 
     fn component_properties(
@@ -1065,17 +1543,22 @@ impl ProjectState {
         state
             .overlays
             .insert(uri.to_owned(), (text.to_owned(), revision));
-        let (accepted, is_json) = {
+        let (accepted, is_json, is_style) = {
             let slot = state.projects.get(&project).ok_or(HostError::NoProject)?;
             (
                 slot.project.accepts_overlay(&path),
                 slot.project.accepts_json_overlay(&path),
+                slot.project.accepts_style_overlay(&path),
             )
         };
-        if !accepted {
+        if !accepted && !is_style {
             return Ok(HostUpdate::default());
         }
-        let before = dirty_for_source(&state, &project, &path);
+        let before = if is_style {
+            Vec::new()
+        } else {
+            dirty_for_source(&state, &project, &path)
+        };
         {
             let slot = state
                 .projects
@@ -1097,11 +1580,27 @@ impl ProjectState {
         if is_json {
             rebuild_slot_views(&mut state, &project);
             dirty.extend(dirty_for_source(&state, &project, &path));
+            self.styles().clear_facts(&project);
+        } else if is_style {
+            self.styles().invalidate_path(&project, &path);
+        }
+        let style_views = if is_style || is_json {
+            all_slot_views(&state, &project)
+        } else {
+            Vec::new()
+        };
+        if is_style {
+            return Ok(HostUpdate {
+                dirty_views: Vec::new(),
+                style_views,
+                project_revision: None,
+            });
         }
         let dirty = mark_views_dirty(&mut state, &project, dirty);
         let project_revision = bump_slot_revision(&mut state, &project);
         Ok(HostUpdate {
             dirty_views: dirty,
+            style_views,
             project_revision: Some(project_revision),
         })
     }
@@ -1112,17 +1611,22 @@ impl ProjectState {
         let (project, path) = route_project(&mut state, uri)?;
         mark_shared_config_stale(&mut state, &project, &path);
         state.overlays.remove(uri);
-        let (accepted, is_json) = {
+        let (accepted, is_json, is_style) = {
             let slot = state.projects.get(&project).ok_or(HostError::NoProject)?;
             (
                 slot.project.accepts_overlay(&path),
                 slot.project.accepts_json_overlay(&path),
+                slot.project.accepts_style_overlay(&path),
             )
         };
-        if !accepted {
+        if !accepted && !is_style {
             return Ok(HostUpdate::default());
         }
-        let before = dirty_for_source(&state, &project, &path);
+        let before = if is_style {
+            Vec::new()
+        } else {
+            dirty_for_source(&state, &project, &path)
+        };
         {
             let slot = state
                 .projects
@@ -1140,13 +1644,29 @@ impl ProjectState {
         if is_json {
             rebuild_slot_views(&mut state, &project);
             dirty.extend(dirty_for_source(&state, &project, &path));
+            self.styles().clear_facts(&project);
+        } else if is_style {
+            self.styles().invalidate_path(&project, &path);
         } else {
             let _ = refresh_component_script_facts(&mut state, &project, &path);
+        }
+        let style_views = if is_style || is_json {
+            all_slot_views(&state, &project)
+        } else {
+            Vec::new()
+        };
+        if is_style {
+            return Ok(HostUpdate {
+                dirty_views: Vec::new(),
+                style_views,
+                project_revision: None,
+            });
         }
         let dirty = mark_views_dirty(&mut state, &project, dirty);
         let project_revision = bump_slot_revision(&mut state, &project);
         Ok(HostUpdate {
             dirty_views: dirty,
+            style_views,
             project_revision: Some(project_revision),
         })
     }
@@ -1159,18 +1679,28 @@ impl ProjectState {
         let mut state = self.write();
         let (project, path) = route_project(&mut state, uri)?;
         mark_shared_config_stale(&mut state, &project, &path);
-        let (accepted, is_json, is_project_json) = {
+        let (accepted, is_json, is_project_json, is_style) = {
             let slot = state.projects.get(&project).ok_or(HostError::NoProject)?;
             (
                 slot.project.accepts_overlay(&path),
                 slot.project.accepts_json_overlay(&path),
                 slot.project.is_project_json(&path),
+                slot.project.accepts_style_overlay(&path),
             )
         };
-        if !accepted && !is_project_json {
+        if !accepted && !is_project_json && !is_style {
             return Ok(HostUpdate::default());
         }
         bump_file_version(&mut state, &project, &path);
+        if is_style {
+            self.styles().invalidate_path(&project, &path);
+            let style_views = all_slot_views(&state, &project);
+            return Ok(HostUpdate {
+                dirty_views: Vec::new(),
+                style_views,
+                project_revision: None,
+            });
+        }
         if is_json || is_project_json {
             let before = dirty_for_source(&state, &project, &path);
             {
@@ -1181,12 +1711,15 @@ impl ProjectState {
                 slot.project.rediscover();
             }
             rebuild_slot_views(&mut state, &project);
+            self.styles().clear_facts(&project);
+            let style_views = all_slot_views(&state, &project);
             let mut dirty = before;
             dirty.extend(dirty_for_source(&state, &project, &path));
             let dirty = mark_views_dirty(&mut state, &project, dirty);
             let project_revision = bump_slot_revision(&mut state, &project);
             return Ok(HostUpdate {
                 dirty_views: dirty,
+                style_views,
                 project_revision: Some(project_revision),
             });
         }
@@ -1209,6 +1742,7 @@ impl ProjectState {
         let project_revision = bump_slot_revision(&mut state, &project);
         Ok(HostUpdate {
             dirty_views: dirty,
+            style_views: Vec::new(),
             project_revision: Some(project_revision),
         })
     }
@@ -1231,6 +1765,8 @@ impl ProjectState {
         let mut json_paths = Vec::new();
         let mut script_paths = Vec::new();
         let mut wxml_paths = Vec::new();
+        let mut style_paths = Vec::new();
+        let mut resource_paths = Vec::new();
         let mut ignored = 0_usize;
         for change in changes {
             let Ok(path) =
@@ -1242,6 +1778,7 @@ impl ProjectState {
             let is_json = slot.project.accepts_json_overlay(&path);
             let is_project_json = !is_json && slot.project.is_project_json(&path);
             let is_script = slot.project.accepts_script_overlay(&path);
+            let is_style = slot.project.accepts_style_overlay(&path);
             let is_wxml = path
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("wxml"));
@@ -1251,11 +1788,20 @@ impl ProjectState {
                 script_paths.push((path, change.kind, change.uri.clone()));
             } else if is_wxml {
                 wxml_paths.push((path, change.kind, change.uri.clone()));
+            } else if is_style {
+                style_paths.push((path, change.kind, change.uri.clone()));
+            } else if is_watch_resource(&path) {
+                resource_paths.push((path, change.kind, change.uri.clone()));
             } else {
                 ignored = ignored.saturating_add(1);
             }
         }
-        if json_paths.is_empty() && script_paths.is_empty() && wxml_paths.is_empty() {
+        if json_paths.is_empty()
+            && script_paths.is_empty()
+            && wxml_paths.is_empty()
+            && style_paths.is_empty()
+            && resource_paths.is_empty()
+        {
             if ignored > 0 {
                 crate::server::log(format_args!(
                     "ignoring {ignored} watched file change(s) that do not affect analysis"
@@ -1318,11 +1864,17 @@ impl ProjectState {
         for (path, _, _) in &script_paths {
             let _ = refresh_component_script_facts(&mut state, &project, path);
         }
+        if !style_paths.is_empty() || !resource_paths.is_empty() {
+            for (path, _, _) in style_paths.iter().chain(resource_paths.iter()) {
+                self.styles().invalidate_path(&project, path);
+            }
+        }
         if !json_paths.is_empty() || full_refresh {
             if let Some(slot) = state.projects.get_mut(&project) {
                 slot.project.rediscover();
             }
             rebuild_slot_views(&mut state, &project);
+            self.styles().clear_facts(&project);
             if full_refresh {
                 dirty.extend(all_slot_views(&state, &project));
             } else {
@@ -1342,6 +1894,11 @@ impl ProjectState {
         {
             bump_file_version(&mut state, &project, path);
         }
+        let style_views = if style_paths.is_empty() && resource_paths.is_empty() {
+            Vec::new()
+        } else {
+            all_slot_views(&state, &project)
+        };
         let dirty = mark_views_dirty(&mut state, &project, dirty);
         if ignored > 0 {
             crate::server::log(format_args!(
@@ -1349,11 +1906,19 @@ impl ProjectState {
             ));
         }
         if dirty.is_empty() {
-            return Ok(HostUpdate::default());
+            if style_views.is_empty() {
+                return Ok(HostUpdate::default());
+            }
+            return Ok(HostUpdate {
+                dirty_views: Vec::new(),
+                style_views,
+                project_revision: None,
+            });
         }
         let project_revision = bump_slot_revision(&mut state, &project);
         Ok(HostUpdate {
             dirty_views: dirty,
+            style_views,
             project_revision: Some(project_revision),
         })
     }
@@ -1361,6 +1926,44 @@ impl ProjectState {
 
 const fn map_uri_error(_error: UriError) -> HostError {
     HostError::InvalidUri
+}
+
+/// Returns whether a watched path can be a local template resource.
+fn is_watch_resource(path: &ProjectPath) -> bool {
+    path.extension().is_some_and(|extension| {
+        matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "svg"
+                | "webp"
+                | "bmp"
+                | "ico"
+                | "avif"
+                | "heic"
+                | "heif"
+                | "mp4"
+                | "mov"
+                | "m4v"
+                | "webm"
+                | "avi"
+                | "mkv"
+                | "mp3"
+                | "wav"
+                | "aac"
+                | "m4a"
+                | "ogg"
+                | "flac"
+                | "wma"
+                | "wxs"
+                | "ttf"
+                | "otf"
+                | "woff"
+                | "woff2"
+        )
+    })
 }
 
 /// Marks other apps sharing a changed tsconfig project root for reload.
@@ -1945,6 +2548,7 @@ fn build_prepared(
                     severity: DiagnosticSeverity::Warning,
                     message: "template fragment limit reached; not all expressions were checked"
                         .to_owned(),
+                    code: None,
                 },
             );
         }
@@ -1965,6 +2569,7 @@ fn build_prepared(
                 range: feature.range(),
                 severity,
                 message: feature.reason().to_owned(),
+                code: None,
             },
         );
     }
@@ -2223,6 +2828,7 @@ pub(crate) fn syntax_diagnostics(
                     DiagnosticSeverity::Error
                 },
                 message: error.message.to_owned(),
+                code: None,
             });
         }
     }
@@ -2237,6 +2843,7 @@ pub(crate) fn syntax_diagnostics(
                 severity: DiagnosticSeverity::Warning,
                 message: "parsing stopped at a resource limit; diagnostics are incomplete"
                     .to_owned(),
+                code: None,
             });
         }
     }
@@ -3052,6 +3659,253 @@ mod tests {
             panic!("expected a partial hint, got {:?}", view.status_hint);
         };
         assert!(reason.contains("event binding limit"), "{reason}");
+    }
+
+    fn fake_facts(view: &str, classes: usize) -> Arc<StyleViewFacts> {
+        use wxml_project::{ClassDefinition, ClassToken, StyleIsolation, StyleScope};
+        let token = Arc::new(ClassToken {
+            name: "c".to_owned(),
+            range: wxml_text::SourceRange::from_bounds(0, 1).expect("range"),
+            selector: ".c".to_owned(),
+            comment: None,
+            rename_safe: true,
+        });
+        let file = Arc::new(ProjectPath::new("a.wxss").expect("path"));
+        Arc::new(StyleViewFacts {
+            view: ProjectPath::new(view).expect("view"),
+            project_id: Some("test".to_owned()),
+            scope: StyleScope::Page,
+            isolation: StyleIsolation::PageShared,
+            files: Vec::new(),
+            classes: (0..classes)
+                .map(|order| ClassDefinition {
+                    token: Arc::clone(&token),
+                    file: Arc::clone(&file),
+                    scope: StyleScope::Page,
+                    imported: false,
+                    order: u32::try_from(order).unwrap_or(u32::MAX),
+                })
+                .collect(),
+            issues: Vec::new(),
+            complete: true,
+            reason: None,
+        })
+    }
+
+    #[test]
+    fn style_fact_cache_is_bounded_and_rejects_oversized_entries() {
+        let mut cache = ProjectStyleCache::default();
+        for index in 0..(MAX_STYLE_VIEW_CACHE + 10) {
+            let view = format!("pages/p{index}/index.wxml");
+            cache.insert(
+                ProjectPath::new(view).expect("view"),
+                fake_facts(&format!("pages/p{index}/index.wxml"), 1),
+            );
+        }
+        assert_eq!(cache.order.len(), MAX_STYLE_VIEW_CACHE);
+        assert_eq!(cache.facts.len(), MAX_STYLE_VIEW_CACHE);
+        assert!(cache.fact_classes <= MAX_STYLE_FACT_CLASSES);
+
+        let oversized = ProjectPath::new("pages/big/index.wxml").expect("view");
+        cache.insert(
+            oversized.clone(),
+            fake_facts("pages/big/index.wxml", 200_001),
+        );
+        assert!(!cache.facts.contains_key(&oversized));
+        assert!(cache.fact_classes <= MAX_STYLE_FACT_CLASSES);
+    }
+
+    #[test]
+    fn local_resource_diagnostics_are_bounded() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-style-diag-budget-{stamp}"));
+        std::fs::create_dir_all(root.join("pages/index")).expect("dirs");
+        std::fs::write(root.join("app.json"), r#"{"pages":["pages/index/index"]}"#)
+            .expect("app json");
+        std::fs::write(root.join("pages/index/index.wxml"), "<view/>").expect("wxml");
+        std::fs::write(root.join("pages/index/index.ts"), "Page({})").expect("script");
+        std::fs::write(root.join("pages/index/index.wxss"), ".a {}").expect("style");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open");
+        let path = ProjectPath::new("pages/index/index.wxml").expect("path");
+        let file = host.file_id(&path).expect("file");
+        let text = "<image src=\"missing.png\"/>".repeat(2_200);
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(99),
+            text,
+        ));
+        let diagnostics = host.style_diagnostics(&snapshot);
+        assert_eq!(diagnostics.len(), 2048);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn script_changes_keep_style_facts_but_style_changes_invalidate_them() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-style-cache-{stamp}"));
+        std::fs::create_dir_all(root.join("pages/index")).expect("dirs");
+        std::fs::write(root.join("app.json"), r#"{"pages":["pages/index/index"]}"#)
+            .expect("app json");
+        std::fs::write(root.join("pages/index/index.wxml"), "<view class=\"a\"/>").expect("wxml");
+        std::fs::write(root.join("pages/index/index.ts"), "Page({})").expect("script");
+        std::fs::write(root.join("pages/index/index.wxss"), ".a { color: red; }\n").expect("style");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open");
+        let path = ProjectPath::new("pages/index/index.wxml").expect("path");
+        let first = host.style_facts(&path).expect("facts");
+        let script_uri = format!("file://{}/pages/index/index.ts", root.display());
+        host.open_document(OpenDocument {
+            uri: script_uri,
+            text: "Page({ data: { x: 1 } })".to_owned(),
+            version: Some(1),
+        })
+        .expect("script overlay");
+        let second = host.style_facts(&path).expect("facts");
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "script edits must not rebuild styles"
+        );
+
+        let style_uri = format!("file://{}/pages/index/index.wxss", root.display());
+        host.open_document(OpenDocument {
+            uri: style_uri,
+            text: ".b { color: blue; }".to_owned(),
+            version: Some(1),
+        })
+        .expect("style overlay");
+        let third = host.style_facts(&path).expect("facts");
+        assert!(
+            !Arc::ptr_eq(&second, &third),
+            "style edits must rebuild facts"
+        );
+        assert!(third.primary("b").is_some());
+        assert!(third.primary("a").is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_class_references_make_open_template_facts_partial() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-style-external-{stamp}"));
+        std::fs::create_dir_all(root.join("pages/index")).expect("dirs");
+        std::fs::write(root.join("app.json"), r#"{"pages":["pages/index/index"]}"#)
+            .expect("app json");
+        std::fs::write(root.join("pages/index/index.wxml"), "<view class=\"a\"/>").expect("wxml");
+        std::fs::write(root.join("pages/index/index.ts"), "Page({})").expect("script");
+        std::fs::write(root.join("pages/index/index.wxss"), ".a { color: red; }\n").expect("style");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open");
+        let path = ProjectPath::new("pages/index/index.wxml").expect("path");
+        assert!(host.style_facts(&path).expect("facts").complete);
+
+        let file = host.file_id(&path).expect("view file");
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file.clone(),
+            SourceRevision::new(1),
+            SnapshotId::new(7),
+            "<view class=\"~external a\"/>".to_owned(),
+        ));
+        host.set_wxml_snapshot(file, snapshot);
+        let facts = host.style_facts(&path).expect("external facts");
+        assert!(!facts.complete);
+        assert!(facts.reason.is_some());
+        assert!(facts.primary("a").is_some());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn style_facts_are_isolated_by_project_identity() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-style-project-isolation-{stamp}"));
+        std::fs::create_dir_all(&root).expect("workspace");
+        std::fs::write(root.join("tsconfig.json"), r#"{"compilerOptions":{}}"#).expect("tsconfig");
+        for app in ["a", "b"] {
+            let dir = root.join(app);
+            std::fs::create_dir_all(dir.join("pages/index")).expect("app dir");
+            std::fs::write(dir.join("app.json"), r#"{"pages":["pages/index/index"]}"#)
+                .expect("app json");
+            std::fs::write(dir.join("pages/index/index.ts"), "Page({})").expect("script");
+            std::fs::write(
+                dir.join("pages/index/index.wxml"),
+                r#"<view class="page"/>"#,
+            )
+            .expect("wxml");
+            std::fs::write(
+                dir.join("pages/index/index.wxss"),
+                format!(".{app}-page {{ color: red; }}\n"),
+            )
+            .expect("page style");
+            std::fs::write(
+                dir.join("app.wxss"),
+                format!(".{app}-global {{ color: blue; }}\n"),
+            )
+            .expect("app style");
+        }
+        let host = ProjectState::new();
+        host.open_root_with_options(
+            Some(&format!("file://{}", root.display())),
+            &InitializationOptions::parse(&serde_json::json!({
+                "apps": [{"root": "a"}, {"root": "b"}]
+            }))
+            .expect("options"),
+        )
+        .expect("open workspace");
+        let a_uri = format!("file://{}/a/pages/index/index.wxml", root.display());
+        let b_uri = format!("file://{}/b/pages/index/index.wxml", root.display());
+        host.path_for_uri(&a_uri).expect("load a");
+        let a_file = host.resolve_file(&a_uri).expect("a file");
+        let facts_a = host.style_facts_for(&a_file).expect("a facts");
+        assert!(facts_a.primary("a-page").is_some());
+        assert!(facts_a.primary("b-page").is_none());
+        assert_eq!(
+            facts_a.project_id.as_deref(),
+            Some(host.project_id().as_str())
+        );
+
+        host.path_for_uri(&b_uri).expect("load b");
+        let b_file = host.resolve_file(&b_uri).expect("b file");
+        assert_ne!(a_file.project(), b_file.project());
+        assert_eq!(a_file.path(), b_file.path());
+        let facts_a = host
+            .style_facts_for(&a_file)
+            .expect("a file keeps its owning project styles");
+        assert!(facts_a.primary("a-page").is_some());
+        assert!(facts_a.primary("b-page").is_none());
+        assert_ne!(
+            facts_a.project_id.as_deref(),
+            Some(host.project_id().as_str()),
+            "a path must not use b's project identity"
+        );
+        let facts_b = host.style_facts_for(&b_file).expect("b facts");
+        assert!(facts_b.primary("b-page").is_some());
+        assert!(facts_b.primary("a-page").is_none());
+
+        host.path_for_uri(&a_uri).expect("reload a");
+        let facts_a = host.style_facts_for(&a_file).expect("a facts again");
+        assert!(facts_a.primary("a-page").is_some());
+        assert!(facts_a.primary("b-page").is_none());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

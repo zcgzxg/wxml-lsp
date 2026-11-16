@@ -733,7 +733,7 @@ fn watched_script_change_dirties_exactly_its_views() {
 }
 
 #[test]
-fn watched_other_files_and_outside_roots_are_ignored() {
+fn watched_style_files_invalidate_views_but_other_files_are_ignored() {
     let project = fixture();
     project.write("pages/index/index.wxss", "view { color: red; }");
     project.write("package.json", r#"{"name":"fixture"}"#);
@@ -749,8 +749,31 @@ fn watched_other_files_and_outside_roots_are_ignored() {
             watched(&project.uri("package.json"), WatchedChangeKind::Changed),
             watched("file:///etc/passwd", WatchedChangeKind::Changed),
         ])
-        .expect("watched ignored files");
+        .expect("watched style and ignored files");
+    assert!(update.project_revision.is_none());
+    assert!(
+        update.dirty_views.is_empty(),
+        "style changes must not start type jobs"
+    );
+    assert!(
+        update
+            .style_views
+            .iter()
+            .any(|path| path.as_str() == "pages/index/index.wxml"),
+        "{update:?}"
+    );
+    assert_eq!(host.project_revision(), before_revision);
 
+    let project = fixture();
+    project.write("package.json", r#"{"name":"fixture"}"#);
+    let host = host_with(&project);
+    let before_revision = host.project_revision();
+    let update = host
+        .watched_files_changed(&[
+            watched(&project.uri("package.json"), WatchedChangeKind::Changed),
+            watched("file:///etc/passwd", WatchedChangeKind::Changed),
+        ])
+        .expect("watched ignored files");
     assert_eq!(update, HostUpdate::default());
     assert_eq!(host.project_revision(), before_revision);
 }

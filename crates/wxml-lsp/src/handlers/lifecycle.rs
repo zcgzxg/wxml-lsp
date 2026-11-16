@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use serde_json::{Value, json};
+use wxml_project::{ProjectPath, StyleConfig, StyleDiagnosticsPolicy};
 use wxml_types::{CapabilityStatus, ProjectId, SourceSnapshot};
 
 use super::{log_safe_method, log_safe_text, status_label, template_document};
@@ -84,12 +85,74 @@ fn initialize_result(server: &Server) -> Value {
             "foldingRangeProvider": true,
             "selectionRangeProvider": true,
             "documentSymbolProvider": true,
+            // Local file links for proven resource attributes; resolution is
+            // synchronous and never fetches a remote URL.
+            "documentLinkProvider": {
+                "resolveProvider": false,
+            },
         },
         "serverInfo": {
             "name": "wxml-lsp",
             "version": crate::version(),
         },
     })
+}
+
+/// Reads optional `wxml` style settings from initialization options.
+///
+/// The namespaced form is preferred:
+/// `{"wxml":{"globalStyles":["styles/theme.scss"],
+/// "styleDiagnostics":{"resources":true,"classes":false}}}`. Top-level keys
+/// are accepted for early clients, but unknown keys are ignored.
+fn style_initialization_options(params: Option<&Value>) -> (StyleConfig, StyleDiagnosticsPolicy) {
+    let mut policy = StyleDiagnosticsPolicy::default();
+    let mut config = StyleConfig::default();
+    let Some(options) = params
+        .and_then(|params| params.get("initializationOptions"))
+        .and_then(Value::as_object)
+    else {
+        return (config, policy);
+    };
+    let options = options
+        .get("wxml")
+        .and_then(Value::as_object)
+        .or_else(|| options.get("style").and_then(Value::as_object))
+        .unwrap_or(options);
+    if let Some(paths) = options.get("globalStyles").and_then(Value::as_array) {
+        for path in paths.iter().take(64) {
+            let Some(path) = path.as_str() else {
+                config
+                    .invalid_global_styles
+                    .push("<non-string globalStyles entry>".to_owned());
+                continue;
+            };
+            if path.len() > 1024 {
+                config
+                    .invalid_global_styles
+                    .push(path.chars().take(256).collect());
+                continue;
+            }
+            match ProjectPath::new(path) {
+                Ok(path) => config.global_styles.push(path),
+                Err(_) => config
+                    .invalid_global_styles
+                    .push(path.chars().take(256).collect()),
+            }
+        }
+    }
+    let diagnostics = options
+        .get("styleDiagnostics")
+        .or_else(|| options.get("diagnostics"))
+        .and_then(Value::as_object);
+    if let Some(diagnostics) = diagnostics {
+        if let Some(resources) = diagnostics.get("resources").and_then(Value::as_bool) {
+            policy.resources = resources;
+        }
+        if let Some(classes) = diagnostics.get("classes").and_then(Value::as_bool) {
+            policy.classes = classes;
+        }
+    }
+    (config, policy)
 }
 
 /// One-line description of a status for stderr logs.
@@ -141,6 +204,7 @@ impl Server {
             "textDocument/foldingRange" => self.folding_range(id, params),
             "textDocument/selectionRange" => self.selection_range(id, params),
             "textDocument/documentSymbol" => self.document_symbol(id, params),
+            "textDocument/documentLink" => self.document_link(id, params),
             other => {
                 log(format_args!(
                     "unknown request method `{}`",
@@ -276,6 +340,8 @@ impl Server {
             }
             Err(error) => log(format_args!("project root could not be opened: {error}")),
         }
+        let (style_config, style_diagnostics) = style_initialization_options(params);
+        self.host.configure_styles(style_config, style_diagnostics);
         self.lifecycle = Lifecycle::Running;
         let result = initialize_result(self);
         log(format_args!(
@@ -321,12 +387,14 @@ impl Server {
                 self.save_wxml(uri, &path);
                 self.schedule_diagnostics(uri)
             }
-            DocumentRoute::Script(_) | DocumentRoute::Json(_) => {
+            DocumentRoute::Script(_) | DocumentRoute::Json(_) | DocumentRoute::Style(_) => {
                 match self.host.save_document(uri) {
                     Ok(update) => self.apply_host_update(&update),
-                    Err(error) => log(format_args!("overlay save failed: {error}")),
+                    Err(error) => {
+                        log(format_args!("overlay save failed: {error}"));
+                        Vec::new()
+                    }
                 }
-                Vec::new()
             }
             DocumentRoute::Unknown => {
                 // Synthetic documents keep their text in the LSP workspace;
@@ -389,6 +457,7 @@ impl Server {
                 total - kept
             ));
         }
+        let mut outgoing = Vec::new();
         for (project, changes) in groups {
             if let Some(project) = project {
                 if let Err(error) = self.host.activate_project(&project) {
@@ -397,11 +466,11 @@ impl Server {
                 }
             }
             match self.host.watched_files_changed(&changes) {
-                Ok(update) => self.apply_host_update(&update),
+                Ok(update) => outgoing.extend(self.apply_host_update(&update)),
                 Err(error) => log(format_args!("watched file change failed: {error}")),
             }
         }
-        Vec::new()
+        outgoing
     }
 
     /// Registers dynamic watched-file events when a real project is open.
@@ -430,7 +499,7 @@ impl Server {
     }
 
     /// Refreshes the stored WXML snapshot for a saved template.
-    fn save_wxml(&mut self, uri: &str, path: &wxml_project::ProjectPath) {
+    fn save_wxml(&mut self, uri: &str, path: &ProjectPath) {
         let open = self.workspace.get(uri).map(|document| {
             (
                 document.file().clone(),
@@ -492,7 +561,7 @@ const WATCH_REGISTRATION_ID: &str = "wxml-lsp-watch";
 const WATCH_KIND_ALL: u8 = 7;
 
 /// Glob patterns registered for `workspace/didChangeWatchedFiles`.
-const WATCH_GLOBS: [&str; 11] = [
+const WATCH_GLOBS: [&str; 30] = [
     "**/*.wxml",
     "**/*.json",
     "**/*.ts",
@@ -504,6 +573,25 @@ const WATCH_GLOBS: [&str; 11] = [
     "**/*.mjs",
     "**/*.cjs",
     "**/*.wxss",
+    "**/*.scss",
+    "**/*.css",
+    "**/*.wxs",
+    "**/*.png",
+    "**/*.jpg",
+    "**/*.jpeg",
+    "**/*.gif",
+    "**/*.svg",
+    "**/*.webp",
+    "**/*.bmp",
+    "**/*.ico",
+    "**/*.mp4",
+    "**/*.mov",
+    "**/*.webm",
+    "**/*.mp3",
+    "**/*.wav",
+    "**/*.m4a",
+    "**/*.ogg",
+    "**/*.ttf",
 ];
 
 /// Largest number of `didChangeWatchedFiles` entries processed per call.
@@ -553,8 +641,43 @@ fn watched_changes(params: &Value) -> Vec<WatchedFileChange> {
 mod tests {
     use serde_json::json;
 
-    use super::{MAX_WATCHED_CHANGES, saved_uri, watched_changes};
+    use super::{MAX_WATCHED_CHANGES, saved_uri, style_initialization_options, watched_changes};
     use crate::project_host::WatchedChangeKind;
+
+    #[test]
+    fn parses_style_initialization_options() {
+        let (config, policy) = style_initialization_options(Some(&json!({
+            "initializationOptions": {
+                "style": {
+                    "globalStyles": ["styles/theme.scss"],
+                    "diagnostics": {"resources": false, "classes": true}
+                }
+            }
+        })));
+        assert_eq!(
+            config
+                .global_styles
+                .iter()
+                .map(wxml_project::ProjectPath::as_str)
+                .collect::<Vec<_>>(),
+            vec!["styles/theme.scss"]
+        );
+        assert!(!policy.resources);
+        assert!(policy.classes);
+
+        let (invalid, _) = style_initialization_options(Some(&json!({
+            "initializationOptions": {"style": {"globalStyles": ["/abs/theme.scss", 3]}}
+        })));
+        assert_eq!(invalid.global_styles, Vec::new());
+        assert_eq!(
+            invalid.invalid_global_styles,
+            vec!["/abs/theme.scss", "<non-string globalStyles entry>"]
+        );
+
+        let (_, defaults) = style_initialization_options(None);
+        assert!(defaults.resources);
+        assert!(!defaults.classes);
+    }
 
     #[test]
     fn reads_saved_uri_only_from_a_text_document() {

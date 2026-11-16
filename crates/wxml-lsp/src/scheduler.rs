@@ -397,6 +397,7 @@ mod tests {
                         range: SourceRange::from_bounds(1, 2).expect("range"),
                         severity: DiagnosticSeverity::Error,
                         message: "bad".to_owned(),
+                        code: None,
                     }],
                     status: CapabilityStatus::Supported,
                 })

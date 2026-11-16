@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
+use wxml_project::ProjectPath;
 use wxml_types::{BackendEpoch, BackendError, CapabilityStatus, Diagnostic, ViewRevision};
 
 use super::{
@@ -13,7 +14,7 @@ use super::{
 use crate::jsonrpc::Outgoing;
 use crate::project_host::{ChangeDocument, DocumentRoute, HostUpdate, OpenDocument};
 use crate::scheduler::{Job, JobKind, Outcome, WorkDone};
-use crate::server::{Server, log};
+use crate::server::{CachedDiagnostics, Server, log};
 use crate::workspace::Document;
 
 /// Method name used for pushed diagnostics.
@@ -22,12 +23,18 @@ const PUBLISH: &str = "textDocument/publishDiagnostics";
 /// Converts one backend diagnostic, returning `None` for an invalid range.
 fn diagnostic_value(document: &Document, diagnostic: &Diagnostic) -> Option<Value> {
     let range = source_range_value(document, diagnostic.range)?;
-    Some(json!({
+    let mut value = json!({
         "range": range,
         "severity": severity(diagnostic.severity),
         "source": "wxml-lsp",
         "message": sanitized_message(&diagnostic.message),
-    }))
+    });
+    if let Some(code) = diagnostic.code.as_ref() {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("code".to_owned(), Value::String(sanitized_reason(code)));
+        }
+    }
+    Some(value)
 }
 
 /// Builds the zero-width warning that reports a degraded check.
@@ -104,6 +111,37 @@ const fn failure_message(error: &BackendError) -> &'static str {
     }
 }
 
+/// Builds the publish payload from backend and local diagnostics.
+fn publish_value(
+    document: &Document,
+    backend: &[Diagnostic],
+    local: &[Diagnostic],
+    status: Option<&CapabilityStatus>,
+    failure: bool,
+) -> Value {
+    let mut diagnostics = Vec::new();
+    for diagnostic in backend.iter().chain(local.iter()) {
+        match diagnostic_value(document, diagnostic) {
+            Some(value) => diagnostics.push(value),
+            None => log(format_args!(
+                "skipping diagnostic with an invalid source range"
+            )),
+        }
+    }
+    match status {
+        Some(status) if !status.is_supported() => {
+            diagnostics.push(status_diagnostic(status));
+        }
+        None if failure => diagnostics.push(failure_diagnostic()),
+        _ => {}
+    }
+    json!({
+        "uri": document.uri(),
+        "version": document.client_version().get(),
+        "diagnostics": diagnostics,
+    })
+}
+
 impl Server {
     /// Handles `textDocument/didOpen`.
     pub(crate) fn did_open(&mut self, params: Option<Value>) -> Vec<Outgoing> {
@@ -131,9 +169,8 @@ impl Server {
             .set_project(self.host.project_id(), self.host.project_revision());
         match route {
             DocumentRoute::Wxml(path) => self.open_wxml(uri, &path, text, version),
-            DocumentRoute::Script(_) | DocumentRoute::Json(_) => {
-                self.open_overlay(uri, text, version);
-                Vec::new()
+            DocumentRoute::Script(_) | DocumentRoute::Json(_) | DocumentRoute::Style(_) => {
+                self.open_overlay(uri, text, version)
             }
             DocumentRoute::Unknown => {
                 if let Err(error) = self.workspace.open(uri, text, version) {
@@ -158,7 +195,7 @@ impl Server {
     fn open_wxml(
         &mut self,
         uri: &str,
-        path: &wxml_project::ProjectPath,
+        path: &ProjectPath,
         text: String,
         version: Option<u64>,
     ) -> Vec<Outgoing> {
@@ -192,10 +229,12 @@ impl Server {
         self.schedule_diagnostics(uri)
     }
 
-    /// Stores a script/JSON overlay and schedules affected open views.
-    fn open_overlay(&mut self, uri: &str, text: String, version: Option<u64>) {
+    /// Stores a script, JSON or style overlay and schedules affected open views.
+    fn open_overlay(&mut self, uri: &str, text: String, version: Option<u64>) -> Vec<Outgoing> {
         let path = match self.host.route(uri) {
-            DocumentRoute::Script(path) | DocumentRoute::Json(path) => Some(path),
+            DocumentRoute::Script(path)
+            | DocumentRoute::Json(path)
+            | DocumentRoute::Style(path) => Some(path),
             _ => None,
         };
         if let Some(path) = path {
@@ -214,36 +253,53 @@ impl Server {
             version,
         }) {
             Ok(update) => self.apply_host_update(&update),
-            Err(error) => log(format_args!("overlay open failed: {error}")),
+            Err(error) => {
+                log(format_args!("overlay open failed: {error}"));
+                Vec::new()
+            }
         }
     }
 
     /// Revisions and dirty views after a script/JSON overlay update.
-    pub(crate) fn apply_host_update(&mut self, update: &HostUpdate) {
-        let Some(revision) = &update.project_revision else {
-            return;
-        };
-        self.workspace.set_project_revision(revision);
+    pub(crate) fn apply_host_update(&mut self, update: &HostUpdate) -> Vec<Outgoing> {
+        if let Some(revision) = &update.project_revision {
+            self.workspace.set_project_revision(revision);
+        }
         let mut uris = Vec::new();
-        for path in &update.dirty_views {
-            let Ok(file) = self.host.file_id_in(revision.project(), path) else {
-                continue;
-            };
-            let Some(uri) = self
-                .workspace
-                .get_by_file(&file)
-                .map(|document| document.uri().to_owned())
-            else {
-                continue;
-            };
-            if let Ok(target) = self.host.view_for_file(&file) {
-                self.workspace.set_view_revision(&uri, target.view_revision);
+        if let Some(revision) = &update.project_revision {
+            for path in &update.dirty_views {
+                let Ok(file) = self.host.file_id_in(revision.project(), path) else {
+                    continue;
+                };
+                let Some(uri) = self
+                    .workspace
+                    .get_by_file(&file)
+                    .map(|document| document.uri().to_owned())
+                else {
+                    continue;
+                };
+                if let Ok(target) = self.host.view_for_file(&file) {
+                    self.workspace.set_view_revision(&uri, target.view_revision);
+                }
+                uris.push(uri);
             }
-            uris.push(uri);
         }
         for uri in uris {
             let _ = self.schedule_diagnostics(&uri);
         }
+        let style_paths: std::collections::HashSet<&str> =
+            update.style_views.iter().map(ProjectPath::as_str).collect();
+        let style_uris: Vec<String> = self
+            .workspace
+            .documents()
+            .filter(|document| style_paths.contains(document.file().path()))
+            .map(|document| document.uri().to_owned())
+            .collect();
+        let mut outgoing = Vec::new();
+        for uri in style_uris {
+            outgoing.extend(self.refresh_style_diagnostics(&uri));
+        }
+        outgoing
     }
 
     /// Handles `textDocument/didChange`.
@@ -286,7 +342,7 @@ impl Server {
                     }
                     self.schedule_diagnostics(uri)
                 }
-                DocumentRoute::Script(_) | DocumentRoute::Json(_) => {
+                DocumentRoute::Script(_) | DocumentRoute::Json(_) | DocumentRoute::Style(_) => {
                     let text = self
                         .workspace
                         .get(uri)
@@ -297,7 +353,7 @@ impl Server {
                             text,
                             version,
                         }) {
-                            Ok(update) => self.apply_host_update(&update),
+                            Ok(update) => return self.apply_host_update(&update),
                             Err(error) => log(format_args!("overlay change failed: {error}")),
                         }
                     }
@@ -348,29 +404,33 @@ impl Server {
         if let Some(cancel) = self.diagnostics_cancel.remove(uri) {
             cancel.store(true, Ordering::SeqCst);
         }
+        self.backend_diagnostics.remove(uri);
         self.cancel_document_requests(uri);
-        match route {
+        let mut outgoing = match route {
             DocumentRoute::Wxml(_) => {
                 if let Some(file) = file {
                     self.host.remove_wxml_snapshot(&file);
                 }
+                Vec::new()
             }
-            DocumentRoute::Script(_) | DocumentRoute::Json(_) => {
+            DocumentRoute::Script(_) | DocumentRoute::Json(_) | DocumentRoute::Style(_) => {
                 match self.host.close_document(uri) {
                     Ok(update) => self.apply_host_update(&update),
-                    Err(error) => log(format_args!("overlay close failed: {error}")),
+                    Err(error) => {
+                        log(format_args!("overlay close failed: {error}"));
+                        Vec::new()
+                    }
                 }
             }
-            DocumentRoute::Unknown => {}
-        }
+            DocumentRoute::Unknown => Vec::new(),
+        };
         if was_template {
-            vec![Outgoing::notification(
+            outgoing.push(Outgoing::notification(
                 PUBLISH,
                 json!({"uri": uri, "diagnostics": []}),
-            )]
-        } else {
-            Vec::new()
+            ));
         }
+        outgoing
     }
 
     /// Queues a diagnostics job for the current revision of `uri`.
@@ -480,46 +540,101 @@ impl Server {
         let Some(document) = self.workspace.get_by_file(&done.stamp.file) else {
             return Vec::new();
         };
-        let mut diagnostics = Vec::new();
-        let status = match done.outcome {
+        let local = self.host.style_diagnostics(document.snapshot());
+        let (backend, status, failure) = match done.outcome {
             Ok(Outcome::Diagnostics(result)) => {
-                for diagnostic in &result.diagnostics {
-                    match diagnostic_value(document, diagnostic) {
-                        Some(value) => diagnostics.push(value),
-                        None => log(format_args!(
-                            "skipping diagnostic with an invalid source range"
-                        )),
-                    }
-                }
-                Some(result.status)
+                self.backend_diagnostics.insert(
+                    document.uri().to_owned(),
+                    CachedDiagnostics {
+                        stamp: done.stamp.clone(),
+                        diagnostics: result.diagnostics.clone(),
+                        status: result.status.clone(),
+                    },
+                );
+                (result.diagnostics, Some(result.status), false)
             }
             Ok(_) => {
                 log(format_args!(
                     "diagnostics job returned the wrong result kind"
                 ));
-                None
+                let status = CapabilityStatus::Unavailable {
+                    reason: "see the server log".to_owned(),
+                };
+                self.backend_diagnostics.insert(
+                    document.uri().to_owned(),
+                    CachedDiagnostics {
+                        stamp: done.stamp.clone(),
+                        diagnostics: Vec::new(),
+                        status: status.clone(),
+                    },
+                );
+                (Vec::new(), Some(status), false)
             }
             Err(error) => {
                 log(format_args!(
                     "diagnostics failed: {}",
                     failure_message(&error)
                 ));
-                None
+                let status = CapabilityStatus::Unavailable {
+                    reason: "see the server log".to_owned(),
+                };
+                self.backend_diagnostics.insert(
+                    document.uri().to_owned(),
+                    CachedDiagnostics {
+                        stamp: done.stamp.clone(),
+                        diagnostics: Vec::new(),
+                        status: status.clone(),
+                    },
+                );
+                (Vec::new(), Some(status), false)
             }
         };
-        match status {
-            Some(status) if !status.is_supported() => {
-                diagnostics.push(status_diagnostic(&status));
+        let mut params = publish_value(document, &backend, &local, status.as_ref(), failure);
+        let mode = super::mode_diagnostics::diagnostics(document);
+        if !mode.is_empty() {
+            if let Some(diagnostics) = params.get_mut("diagnostics").and_then(Value::as_array_mut) {
+                diagnostics.extend(mode);
             }
-            Some(_) => {}
-            None => diagnostics.push(failure_diagnostic()),
         }
-        diagnostics.extend(super::mode_diagnostics::diagnostics(document));
-        let params = json!({
-            "uri": document.uri(),
-            "version": document.client_version().get(),
-            "diagnostics": diagnostics,
-        });
+        vec![Outgoing::notification(PUBLISH, params)]
+    }
+
+    /// Re-publishes cached backend diagnostics plus fresh local style
+    /// diagnostics after a style/config change.
+    pub(crate) fn refresh_style_diagnostics(&self, uri: &str) -> Vec<Outgoing> {
+        let Some(document) = self.workspace.get(uri) else {
+            return Vec::new();
+        };
+        let local = self.host.style_diagnostics(document.snapshot());
+        let cached = self
+            .backend_diagnostics
+            .get(uri)
+            .filter(|cached| self.workspace.is_current(&cached.stamp))
+            .cloned();
+        if cached.is_none() && local.is_empty() {
+            return Vec::new();
+        }
+        let mode = super::mode_diagnostics::diagnostics(document);
+        if cached.is_none() && local.is_empty() && mode.is_empty() {
+            return Vec::new();
+        }
+        let mut params = cached.map_or_else(
+            || publish_value(document, &[], &local, None, false),
+            |cached| {
+                publish_value(
+                    document,
+                    &cached.diagnostics,
+                    &local,
+                    Some(&cached.status),
+                    false,
+                )
+            },
+        );
+        if !mode.is_empty() {
+            if let Some(diagnostics) = params.get_mut("diagnostics").and_then(Value::as_array_mut) {
+                diagnostics.extend(mode);
+            }
+        }
         vec![Outgoing::notification(PUBLISH, params)]
     }
 }

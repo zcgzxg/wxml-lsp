@@ -6,6 +6,7 @@
 //! usable while the user edits it.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -14,7 +15,7 @@ use thiserror::Error;
 
 use crate::files::{self, MAX_MESSAGE_BYTES, ProjectPath, truncate_message, truncate_owned};
 use crate::overlay::Overlay;
-use crate::script::{self, ComponentPropertyFacts, DataRoot, DataRootKind};
+use crate::script::{self, ComponentPropertyFacts, DataRoot, DataRootKind, ScriptStyleHints};
 
 /// Maximum component-reference depth followed through `usingComponents`.
 pub const MAX_COMPONENT_DEPTH: usize = 16;
@@ -60,6 +61,11 @@ pub const MAX_DISCOVERY_JSON_BYTES: usize = 32 * 1024 * 1024;
 /// once exhausted, further scripts are skipped and one `Truncated` issue is
 /// recorded.
 pub const MAX_COMPONENT_SCRIPT_BYTES: usize = 32 * 1024 * 1024;
+
+/// Maximum page-script bytes read by one discovery run for registration and
+/// style-isolation hints. Each page reads at most
+/// `MAX_REGISTRATION_SCRIPT_BYTES`; this project-wide budget bounds the total.
+pub const MAX_PAGE_SCRIPT_HINT_BYTES: usize = 32 * 1024 * 1024;
 
 /// Top-level `app.json` facts.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -126,6 +132,10 @@ pub struct PageConfig {
     pub global: Arc<BTreeMap<String, UsingComponent>>,
     /// Page/component-local `usingComponents`; these shadow global entries.
     pub local: BTreeMap<String, UsingComponent>,
+    /// Raw `styleIsolation` value from page/component JSON.
+    pub style_isolation: Option<String>,
+    /// Raw `addGlobalClass` flag from component JSON.
+    pub add_global_class: Option<bool>,
 }
 
 impl PageConfig {
@@ -160,6 +170,8 @@ pub struct Page {
     pub json: Option<ProjectPath>,
     /// Global plus page-local component configuration.
     pub config: PageConfig,
+    /// Static registration/options hints from the page script.
+    pub script_hints: ScriptStyleHints,
 }
 
 /// One discovered custom component.
@@ -179,6 +191,12 @@ pub struct Component {
     pub property_facts: ComponentPropertyFacts,
     /// Global plus component-local `usingComponents`.
     pub config: PageConfig,
+    /// Raw `styleIsolation` value from component JSON.
+    pub style_isolation: Option<String>,
+    /// Raw `addGlobalClass` flag from component JSON.
+    pub add_global_class: Option<bool>,
+    /// Static registration/options hints from the component script.
+    pub script_hints: ScriptStyleHints,
 }
 
 /// Severity-free category of one discovery issue.
@@ -430,6 +448,8 @@ fn parse_page_config_in(
         value: PageConfig {
             global: Arc::new(BTreeMap::new()),
             local: using_components,
+            style_isolation: raw.style_isolation,
+            add_global_class: raw.add_global_class,
         },
         issues,
     })
@@ -447,6 +467,7 @@ struct PageContext<'a> {
     source: &'a ProjectPath,
     global_components: &'a Arc<BTreeMap<String, UsingComponent>>,
     budget: &'a mut JsonBudget,
+    registration_budget: &'a mut RegistrationScriptBudget,
 }
 
 /// Issue sink that enforces the project-wide issue cap at the push site.
@@ -600,6 +621,38 @@ impl ComponentScriptBudget {
     }
 }
 
+/// Per-discovery byte budget for page scripts read for registration hints.
+struct RegistrationScriptBudget {
+    remaining: usize,
+    truncated: bool,
+}
+
+impl RegistrationScriptBudget {
+    /// Creates a fresh page-registration budget.
+    const fn new() -> Self {
+        Self {
+            remaining: MAX_PAGE_SCRIPT_HINT_BYTES,
+            truncated: false,
+        }
+    }
+
+    /// Returns whether more script bytes fit in the budget.
+    const fn has_capacity(&self) -> bool {
+        !self.truncated && self.remaining > 0
+    }
+
+    /// Charges script bytes; returns `false` when the budget is exhausted.
+    const fn charge(&mut self, bytes: usize) -> bool {
+        if self.truncated || bytes > self.remaining {
+            self.remaining = 0;
+            self.truncated = true;
+            return false;
+        }
+        self.remaining -= bytes;
+        true
+    }
+}
+
 /// Discovers pages and components from `app_json`.
 ///
 /// `root` must be an absolute, canonical project root. Overlay text wins over
@@ -681,6 +734,7 @@ fn load_app(
 /// Discovery with explicit page/component limits, used by tests and future
 /// incremental analysis. The public entry point uses [`MAX_PAGES`] and
 /// [`MAX_COMPONENTS`].
+#[allow(clippy::too_many_lines)] // discovery pipeline is intentionally linear
 fn discover_with_limits(
     root: &Path,
     overlay: &Overlay,
@@ -711,12 +765,14 @@ fn discover_with_limits(
     let pages_truncated = routes.len() > max_pages;
     routes.truncate(max_pages);
 
+    let mut registration_budget = RegistrationScriptBudget::new();
     let mut context = PageContext {
         root,
         overlay,
         source: app_json,
         global_components: &global_components,
         budget: &mut budget,
+        registration_budget: &mut registration_budget,
     };
     let mut local_budget = MAX_TOTAL_LOCAL_COMPONENTS;
     let mut local_truncated = false;
@@ -743,6 +799,13 @@ fn discover_with_limits(
             app_json,
             DiscoveryIssueKind::Truncated,
             format!("pages truncated to {max_pages} entries"),
+        ));
+    }
+    if context.registration_budget.truncated {
+        issues.push(issue(
+            app_json,
+            DiscoveryIssueKind::Truncated,
+            format!("page registration scripts truncated to {MAX_PAGE_SCRIPT_HINT_BYTES} bytes"),
         ));
     }
     if local_truncated {
@@ -813,6 +876,10 @@ struct RawSubPackage {
 struct RawPageConfig {
     #[serde(default)]
     using_components: BTreeMap<String, String>,
+    #[serde(default)]
+    style_isolation: Option<String>,
+    #[serde(default)]
+    add_global_class: Option<bool>,
 }
 
 /// Parses JSON, stripping an optional byte-order mark.
@@ -1048,7 +1115,7 @@ fn build_page(
         ));
     }
 
-    let (json, local) = load_page_local(
+    let (json, local, style_isolation, add_global_class) = load_page_local(
         context,
         &base,
         reported_missing,
@@ -1059,7 +1126,16 @@ fn build_page(
     let config = PageConfig {
         global: Arc::clone(context.global_components),
         local,
+        style_isolation,
+        add_global_class,
     };
+    let script_hints = load_page_script_hints(
+        root,
+        overlay,
+        script.script.as_ref(),
+        issues,
+        context.registration_budget,
+    );
 
     Some(Page {
         route: route.to_owned(),
@@ -1067,6 +1143,7 @@ fn build_page(
         script: script.script,
         json,
         config,
+        script_hints,
     })
 }
 
@@ -1081,20 +1158,27 @@ fn load_page_local(
     issues: &mut Issues,
     local_budget: &mut usize,
     local_truncated: &mut bool,
-) -> (Option<ProjectPath>, BTreeMap<String, UsingComponent>) {
+) -> (
+    Option<ProjectPath>,
+    BTreeMap<String, UsingComponent>,
+    Option<String>,
+    Option<bool>,
+) {
     let root = context.root;
     let overlay = context.overlay;
     let Ok(candidate) = base.with_appended_extension("json") else {
-        return (None, BTreeMap::new());
+        return (None, BTreeMap::new(), None, None);
     };
     if *local_budget == 0 {
         let json = exists(root, overlay, &candidate).then_some(candidate);
         if json.is_some() {
-            // The file may contain local components we deliberately do not
-            // parse; report a single project-level truncation marker.
+            // The file may contain local components or isolation settings we
+            // deliberately do not parse; report a single project-level marker
+            // and keep the style chain partial.
             *local_truncated = true;
+            return (json, BTreeMap::new(), Some("unknown".to_owned()), None);
         }
-        return (json, BTreeMap::new());
+        return (json, BTreeMap::new(), None, None);
     }
     let attempt = if context.budget.exhausted() {
         None
@@ -1104,7 +1188,8 @@ fn load_page_local(
     if !charge_json_attempt(context.budget, attempt) {
         context.budget.report(issues, &candidate);
         let json = exists(root, overlay, &candidate).then_some(candidate);
-        return (json, BTreeMap::new());
+        let isolation = json.as_ref().map(|_| "unknown".to_owned());
+        return (json, BTreeMap::new(), isolation, None);
     }
     match overlay.read_text(root, &candidate) {
         Ok(Some(text)) => {
@@ -1112,53 +1197,25 @@ fn load_page_local(
                 let extra = text.len() - attempt.unwrap_or(0);
                 if !context.budget.consume(extra) {
                     context.budget.report(issues, &candidate);
-                    return (Some(candidate), BTreeMap::new());
+                    return (
+                        Some(candidate),
+                        BTreeMap::new(),
+                        Some("unknown".to_owned()),
+                        None,
+                    );
                 }
             }
-            match parse_page_config_in(&candidate, &text, context.source.parent().as_ref()) {
-                Ok(mut parsed) => {
-                    resolve_built_packages(
-                        root,
-                        overlay,
-                        context.source.parent().as_ref(),
-                        &mut parsed.value.local,
-                    );
-                    issues.extend(parsed.issues);
-                    let mut local = parsed.value.local;
-                    let page_cap_hit = local.len() > MAX_PAGE_LOCAL_COMPONENTS;
-                    if page_cap_hit {
-                        local = local.into_iter().take(MAX_PAGE_LOCAL_COMPONENTS).collect();
-                    }
-                    let keep = local.len().min(*local_budget);
-                    if keep < local.len() {
-                        local = local.into_iter().take(keep).collect();
-                        *local_truncated = true;
-                    }
-                    *local_budget -= keep;
-                    if page_cap_hit {
-                        *local_truncated = true;
-                    }
-                    report_missing_components(
-                        root,
-                        overlay,
-                        &candidate,
-                        &local,
-                        reported_missing,
-                        issues,
-                    );
-                    (Some(candidate), local)
-                }
-                Err(error) => {
-                    issues.push(issue(
-                        &candidate,
-                        DiscoveryIssueKind::InvalidConfig,
-                        error.to_string(),
-                    ));
-                    (Some(candidate), BTreeMap::new())
-                }
-            }
+            finish_page_local(
+                candidate,
+                &text,
+                context,
+                reported_missing,
+                issues,
+                local_budget,
+                local_truncated,
+            )
         }
-        Ok(None) => (None, BTreeMap::new()),
+        Ok(None) => (None, BTreeMap::new(), None, None),
         Err(error) => {
             context.budget.truncated = true;
             context.budget.report(issues, &candidate);
@@ -1167,7 +1224,73 @@ fn load_page_local(
                 DiscoveryIssueKind::UnreadableFile,
                 error.to_string(),
             ));
-            (Some(candidate), BTreeMap::new())
+            (
+                Some(candidate),
+                BTreeMap::new(),
+                Some("unknown".to_owned()),
+                None,
+            )
+        }
+    }
+}
+
+/// Applies one successfully read page config within the component budgets.
+fn finish_page_local(
+    candidate: ProjectPath,
+    text: &str,
+    context: &PageContext<'_>,
+    reported_missing: &mut BTreeSet<ProjectPath>,
+    issues: &mut Issues,
+    local_budget: &mut usize,
+    local_truncated: &mut bool,
+) -> (
+    Option<ProjectPath>,
+    BTreeMap<String, UsingComponent>,
+    Option<String>,
+    Option<bool>,
+) {
+    let root = context.root;
+    let overlay = context.overlay;
+    match parse_page_config_in(&candidate, text, context.source.parent().as_ref()) {
+        Ok(mut parsed) => {
+            resolve_built_packages(
+                root,
+                overlay,
+                context.source.parent().as_ref(),
+                &mut parsed.value.local,
+            );
+            issues.extend(parsed.issues);
+            let style_isolation = parsed.value.style_isolation;
+            let add_global_class = parsed.value.add_global_class;
+            let mut local = parsed.value.local;
+            let page_cap_hit = local.len() > MAX_PAGE_LOCAL_COMPONENTS;
+            if page_cap_hit {
+                local = local.into_iter().take(MAX_PAGE_LOCAL_COMPONENTS).collect();
+            }
+            let keep = local.len().min(*local_budget);
+            if keep < local.len() {
+                local = local.into_iter().take(keep).collect();
+                *local_truncated = true;
+            }
+            *local_budget -= keep;
+            if page_cap_hit {
+                *local_truncated = true;
+            }
+            report_missing_components(root, overlay, &candidate, &local, reported_missing, issues);
+            (Some(candidate), local, style_isolation, add_global_class)
+        }
+        Err(error) => {
+            issues.push(issue(
+                &candidate,
+                DiscoveryIssueKind::InvalidConfig,
+                error.to_string(),
+            ));
+            (
+                Some(candidate),
+                BTreeMap::new(),
+                Some("unknown".to_owned()),
+                None,
+            )
         }
     }
 }
@@ -1305,9 +1428,9 @@ fn visit_component(
         ));
     }
 
-    let (json, local) =
+    let (json, local, style_isolation, add_global_class) =
         load_component_json(context, base, depth, pending, reported_missing, issues);
-    let properties =
+    let (properties, script_hints) =
         component_properties(root, overlay, script.script.as_ref(), issues, script_budget);
     let property_facts = script::extract_component_property_facts(&properties);
 
@@ -1321,7 +1444,12 @@ fn visit_component(
         config: PageConfig {
             global: Arc::clone(context.global_components),
             local,
+            style_isolation: style_isolation.clone(),
+            add_global_class,
         },
+        style_isolation,
+        add_global_class,
+        script_hints,
     })
 }
 
@@ -1336,11 +1464,16 @@ fn load_component_json(
     pending: &mut PendingComponents,
     reported_missing: &mut BTreeSet<ProjectPath>,
     issues: &mut Issues,
-) -> (Option<ProjectPath>, BTreeMap<String, UsingComponent>) {
+) -> (
+    Option<ProjectPath>,
+    BTreeMap<String, UsingComponent>,
+    Option<String>,
+    Option<bool>,
+) {
     let root = context.root;
     let overlay = context.overlay;
     let Ok(candidate) = base.with_appended_extension("json") else {
-        return (None, BTreeMap::new());
+        return (None, BTreeMap::new(), None, None);
     };
     let attempt = if context.budget.exhausted() {
         None
@@ -1352,6 +1485,8 @@ fn load_component_json(
         return (
             exists(root, overlay, &candidate).then_some(candidate),
             BTreeMap::new(),
+            None,
+            None,
         );
     }
     match overlay.read_text(root, &candidate) {
@@ -1360,9 +1495,16 @@ fn load_component_json(
                 let extra = text.len() - attempt.unwrap_or(0);
                 if !context.budget.consume(extra) {
                     context.budget.report(issues, &candidate);
-                    return (Some(candidate), BTreeMap::new());
+                    return (
+                        Some(candidate),
+                        BTreeMap::new(),
+                        Some("unknown".to_owned()),
+                        None,
+                    );
                 }
             }
+            let mut parsed_style = (None, None);
+            let mut parsed_local = BTreeMap::new();
             match parse_page_config_in(&candidate, &text, context.source.parent().as_ref()) {
                 Ok(mut parsed) => {
                     resolve_built_packages(
@@ -1370,6 +1512,10 @@ fn load_component_json(
                         overlay,
                         context.source.parent().as_ref(),
                         &mut parsed.value.local,
+                    );
+                    parsed_style = (
+                        parsed.value.style_isolation.clone(),
+                        parsed.value.add_global_class,
                     );
                     issues.extend(parsed.issues);
                     report_missing_components(
@@ -1381,7 +1527,7 @@ fn load_component_json(
                         issues,
                     );
                     pending.push_from(&parsed.value.local, depth + 1);
-                    (Some(candidate), parsed.value.local)
+                    parsed_local = parsed.value.local;
                 }
                 Err(error) => {
                     issues.push(issue(
@@ -1389,11 +1535,16 @@ fn load_component_json(
                         DiscoveryIssueKind::InvalidConfig,
                         error.to_string(),
                     ));
-                    (Some(candidate), BTreeMap::new())
                 }
             }
+            (
+                Some(candidate),
+                parsed_local,
+                parsed_style.0,
+                parsed_style.1,
+            )
         }
-        Ok(None) => (None, BTreeMap::new()),
+        Ok(None) => (None, BTreeMap::new(), None, None),
         Err(error) => {
             context.budget.truncated = true;
             context.budget.report(issues, &candidate);
@@ -1402,9 +1553,75 @@ fn load_component_json(
                 DiscoveryIssueKind::UnreadableFile,
                 error.to_string(),
             ));
-            (Some(candidate), BTreeMap::new())
+            (Some(candidate), BTreeMap::new(), None, None)
         }
     }
+}
+
+/// Maximum bytes read from a page script for registration/isolation hints.
+const MAX_REGISTRATION_SCRIPT_BYTES: usize = 64 * 1024;
+
+/// Reads a bounded page-script prefix and extracts registration hints.
+fn load_page_script_hints(
+    root: &Path,
+    overlay: &Overlay,
+    script: Option<&ProjectPath>,
+    issues: &mut Issues,
+    budget: &mut RegistrationScriptBudget,
+) -> ScriptStyleHints {
+    let Some(script) = script else {
+        return ScriptStyleHints::default();
+    };
+    if let Some(text) = overlay.text(script) {
+        let prefix = prefix_text(text, MAX_REGISTRATION_SCRIPT_BYTES);
+        if !budget.charge(prefix.len()) {
+            return ScriptStyleHints::unknown();
+        }
+        return script::registration_style_hints(prefix);
+    }
+    if !budget.has_capacity() {
+        return ScriptStyleHints::unknown();
+    }
+    let Ok(file) = std::fs::File::open(root.join(script.as_str())) else {
+        issues.push(issue(
+            script,
+            DiscoveryIssueKind::UnreadableFile,
+            "page script could not be read for registration hints".to_owned(),
+        ));
+        return ScriptStyleHints::unknown();
+    };
+    let mut bytes = Vec::new();
+    if file
+        .take(u64::try_from(MAX_REGISTRATION_SCRIPT_BYTES).unwrap_or(u64::MAX))
+        .read_to_end(&mut bytes)
+        .is_err()
+    {
+        issues.push(issue(
+            script,
+            DiscoveryIssueKind::UnreadableFile,
+            "page script could not be read for registration hints".to_owned(),
+        ));
+        return ScriptStyleHints::unknown();
+    }
+    if !budget.charge(bytes.len()) {
+        return ScriptStyleHints::unknown();
+    }
+    std::str::from_utf8(&bytes).map_or_else(
+        |_| ScriptStyleHints::unknown(),
+        script::registration_style_hints,
+    )
+}
+
+/// Truncates text to a byte limit on a UTF-8 boundary.
+fn prefix_text(text: &str, limit: usize) -> &str {
+    if text.len() <= limit {
+        return text;
+    }
+    let mut end = limit;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 /// Extracts `properties` roots from a component script.
@@ -1421,18 +1638,18 @@ fn component_properties(
     script_path: Option<&ProjectPath>,
     issues: &mut Issues,
     script_budget: &mut ComponentScriptBudget,
-) -> Vec<DataRoot> {
+) -> (Vec<DataRoot>, ScriptStyleHints) {
     let Some(script_path) = script_path else {
-        return Vec::new();
+        return (Vec::new(), ScriptStyleHints::default());
     };
     if !script_budget.has_capacity() {
         script_budget.truncated = true;
-        return Vec::new();
+        return (Vec::new(), ScriptStyleHints::unknown());
     }
     let attempt = path_attempt_size(root, overlay, script_path);
     if let Some(size) = attempt {
         if !script_budget.charge(size) {
-            return Vec::new();
+            return (Vec::new(), ScriptStyleHints::unknown());
         }
     }
     match overlay.read_text(root, script_path) {
@@ -1440,15 +1657,17 @@ fn component_properties(
             if text.len() > attempt.unwrap_or(0) {
                 let extra = text.len() - attempt.unwrap_or(0);
                 if !script_budget.charge(extra) {
-                    return Vec::new();
+                    return (Vec::new(), ScriptStyleHints::unknown());
                 }
             }
-            script::extract_data_roots(script_path, &text)
+            let hints = script::registration_style_hints(&text);
+            let properties = script::extract_data_roots(script_path, &text)
                 .into_iter()
                 .filter(|root| root.kind == DataRootKind::ComponentProperties)
-                .collect()
+                .collect();
+            (properties, hints)
         }
-        Ok(None) => Vec::new(),
+        Ok(None) => (Vec::new(), ScriptStyleHints::default()),
         Err(error) => {
             // A failed read still consumed an attempt; make the truncation
             // state explicit so "budget untouched" cannot hide the failure.
@@ -1458,7 +1677,7 @@ fn component_properties(
                 DiscoveryIssueKind::UnreadableFile,
                 error.to_string(),
             ));
-            Vec::new()
+            (Vec::new(), ScriptStyleHints::unknown())
         }
     }
 }

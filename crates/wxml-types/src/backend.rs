@@ -115,6 +115,11 @@ pub struct Diagnostic {
     pub severity: DiagnosticSeverity,
     /// Human-readable explanation.
     pub message: String,
+    /// Stable machine-readable code published as the LSP diagnostic code.
+    ///
+    /// `None` keeps the previous message-only shape. Local style/resource
+    /// diagnostics use stable codes such as `style.missing-resource`.
+    pub code: Option<String>,
 }
 
 /// Severity of a [`Diagnostic`], mirroring the four LSP levels.
@@ -496,6 +501,7 @@ mod tests {
             range: range(10, 14),
             severity: DiagnosticSeverity::Error,
             message: "Property 'nmae' does not exist".to_owned(),
+            code: None,
         };
         assert_eq!(diagnostic.range.start(), 10);
         assert_eq!(diagnostic.range.end(), 14);
@@ -703,6 +709,7 @@ mod tests {
             range: source,
             severity: DiagnosticSeverity::Warning,
             message: "demo".to_owned(),
+            code: None,
         };
         assert_eq!(diagnostic.range.range(), text);
     }
