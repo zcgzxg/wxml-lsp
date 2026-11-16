@@ -439,6 +439,7 @@ completion、diagnostics 已在 Zed 中逐项执行并核对内容。验收中�
 | 用户数据 | `<tmp>/zed-standard/data`（隔离） |
 | HOME / XDG_CONFIG_HOME | `<tmp>/zed-standard/home`（隔离，避免用户 `.bashrc` 覆盖路径） |
 | 项目副本 | `<tmp>/zed-standard/proj`（`page-basic-clean` 副本） |
+| 事件样本 | `<tmp>/zed-standard/events-proj`（`events-basic` 副本） |
 | 语言服务器 | release `wxml-lsp --stdio` |
 | 类型后端 | `backends/typescript/dist/server.js`，Node 24 |
 | 真实项目 A | `jielong-team-doc/miniprogram/miniprogram`（TS，`Component` 注册页面） |
@@ -483,6 +484,21 @@ Zed 继承主桌面的 Wayland 连接。命令面板的目录选择使用仓库�
 补全即时。截图：`hover-title.png`、`hover-user-name3.png`、
 `definition-title.png`、`completion-tag.png`、`comp-attr.png`、
 `comp-event.png`、`comp-member2.png`、`diag-hover-nmae2.png`。
+
+#### 13.3.1 事件处理函数 hover 与跳转（补充）
+
+在 `events-basic` 项目副本中实际执行：
+
+| 操作 | 实际结果 |
+| --- | --- |
+| hover 事件处理函数 `onShorthandTap` | 显示方法签名 `onShorthandTap()` |
+| Ctrl+点击 `onShorthandTap` | 打开 `pages/index/index.ts`，落在第 8 行方法定义，面包屑 `pages/index/index.ts > onShorthandTap()` |
+| hover 标签 `<button>` | 无结果；标签 hover 尚未实现 |
+| hover 属性 `bindtap` | 无结果；属性 hover 尚未实现 |
+
+截图：`event-handler-hover.png`、`event-handler-definition.png`、
+`tag-hover-none.png`、`attribute-hover-none.png`。标签/属性 hover 的缺口已在
+README 的 F-08 未完成项中记录，不在本轮验收中伪造结果。
 
 ### 13.4 真实 TS 项目：Component 注册页面的修复
 

@@ -16,6 +16,10 @@ llvmpipe，无窗口管理器；隔离 user-data-dir；release `wxml-lsp` + 真�
 | `comp-event.png` | 事件属性补全：`<view bindt` 返回 `bindtap`/`bindtouchend` 等 |
 | `comp-member2.png` | Mustache 成员补全：`{{ user.` 返回 `name` |
 | `diag-hover-nmae2.png` | 干净 fixture 改为 `user.nmae` 后，hover 显示成员不存在诊断和 `type quality: missing` |
+| `event-handler-hover.png` | `events-basic`：事件处理函数 `onShorthandTap` hover 显示 `onShorthandTap()` |
+| `event-handler-definition.png` | `events-basic`：Ctrl+click `onShorthandTap` 跳到 `index.ts` 的方法定义 |
+| `tag-hover-none.png` | `events-basic`：光标在 `<button>` 标签上执行 hover，无结果（标签 hover 未实现） |
+| `attribute-hover-none.png` | `events-basic`：光标在 `bindtap` 属性上执行 hover，无结果（属性 hover 未实现） |
 | `real2-hover-src-inner.png` | 真实 TS 项目：`src` hover 显示 `(property) src: string` |
 | `real2-def-src.png` | 真实 TS 项目：`src` definition 跳到 `index.ts` 的 `data.src` |
 | `real2-completion-tag2.png` | 真实 TS 项目：`<vi` 标签补全 |
