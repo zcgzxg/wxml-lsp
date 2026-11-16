@@ -48,6 +48,7 @@ pub(crate) mod jsonrpc;
 pub mod project_host;
 pub(crate) mod scheduler;
 pub(crate) mod server;
+pub(crate) mod styles;
 pub(crate) mod workspace;
 
 pub use server::{ServerError, ServerOutcome, run_stdio, run_stdio_with_host, run_with_host};

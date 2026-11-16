@@ -1,0 +1,669 @@
+#![allow(clippy::assert_is_empty, clippy::expect_used, clippy::unwrap_used)]
+
+//! Project-level style index and local resource resolution tests.
+
+use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use wxml_project::{
+    Project, ProjectPath, ResourceKind, ResourceResolution, StyleConfig, StyleDiagnosticsPolicy,
+    StyleIndex, StyleIssueKind, StyleLimits, StyleScope,
+};
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+
+struct TempProject {
+    root: PathBuf,
+}
+
+impl TempProject {
+    fn new() -> Self {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
+        let root = base.join(format!("wxml-styles-{stamp}-{id}"));
+        std::fs::create_dir_all(&root).expect("create temp project");
+        Self { root }
+    }
+
+    fn write(&self, path: &str, text: &str) {
+        let target = self.root.join(path);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).expect("create parent");
+        }
+        std::fs::write(target, text).expect("write fixture");
+    }
+}
+
+impl Drop for TempProject {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+fn fixture() -> TempProject {
+    let project = TempProject::new();
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{"card":"/components/card/card"}}"#,
+    );
+    project.write(
+        "app.wxss",
+        "/* app global */\n@import \"styles/theme.scss\";\n.app-global { color: black; }\n",
+    );
+    project.write(
+        "styles/theme.scss",
+        "/* theme */\n.theme { color: blue; }\n.card { color: green; }\n",
+    );
+    project.write(
+        "styles/extra.wxss",
+        "/* configured */\n.configured { color: gray; }\n",
+    );
+    project.write("pages/index/index.wxml", "<view class=\"page\">x</view>");
+    project.write("pages/index/index.ts", "Page({ data: { title: 'ok' } });");
+    project.write(
+        "pages/index/index.wxss",
+        r#"
+@import "../../shared/card";
+.page { color: red; }
+.card {
+  &-header { color: blue; }
+  &.active { color: green; }
+  .title { color: black; }
+}
+"#,
+    );
+    project.write(
+        "shared/card.scss",
+        ".shared { color: red; }\n/* shared card */\n.card { color: orange; }\n",
+    );
+    project.write("components/card/card.wxml", "<view class=\"comp\">x</view>");
+    project.write("components/card/card.ts", "Component({})");
+    project.write("components/card/card.json", "{}");
+    project.write("components/card/card.wxss", ".comp { color: red; }\n");
+    project
+}
+
+fn open(project: &TempProject) -> Project {
+    Project::open(&project.root).expect("open project")
+}
+
+fn path(raw: &str) -> ProjectPath {
+    ProjectPath::new(raw).expect("valid project path")
+}
+
+fn facts(
+    project: &Project,
+    index: &mut StyleIndex,
+    view: &str,
+    config: &StyleConfig,
+) -> wxml_project::StyleViewFacts {
+    index.view_facts(project, &path(view), config)
+}
+
+#[test]
+fn page_component_app_and_configured_classes_are_scoped() {
+    let project = fixture();
+    let project = open(&project);
+    let config = StyleConfig::with_global_styles([path("styles/extra.wxss")]);
+    let mut index = StyleIndex::new();
+    let page = facts(&project, &mut index, "pages/index/index.wxml", &config);
+    assert!(page.complete, "{:?}", page.issues);
+    let names = page.class_names();
+    for expected in [
+        "page",
+        "shared",
+        "card",
+        "card-header",
+        "active",
+        "title",
+        "app-global",
+        "theme",
+        "configured",
+    ] {
+        assert!(names.contains(&expected), "missing {expected}: {names:?}");
+    }
+    assert_eq!(page.primary("page").expect("page").scope, StyleScope::Page);
+    assert_eq!(
+        page.primary("app-global").expect("global").scope,
+        StyleScope::AppGlobal
+    );
+    assert_eq!(
+        page.primary("configured").expect("configured").scope,
+        StyleScope::ConfiguredGlobal
+    );
+    let card_definitions = page.definitions("card");
+    assert_eq!(card_definitions.len(), 3, "{card_definitions:?}");
+    assert_eq!(
+        card_definitions[0].file.as_str(),
+        "pages/index/index.wxss",
+        "the page's own rule follows the import in the cascade"
+    );
+    assert!(card_definitions.iter().any(|class| {
+        class.file.as_str() == "shared/card.scss" && class.comment.as_deref() == Some("shared card")
+    }));
+    assert!(
+        card_definitions
+            .iter()
+            .any(|class| class.file.as_str() == "styles/theme.scss")
+    );
+
+    let component = facts(&project, &mut index, "components/card/card.wxml", &config);
+    let component_names = component.class_names();
+    assert!(component_names.contains(&"comp"));
+    assert!(component_names.contains(&"app-global"));
+    assert!(!component_names.contains(&"page"), "{component_names:?}");
+    assert_eq!(
+        component.primary("comp").expect("comp").scope,
+        StyleScope::Component
+    );
+
+    let page_file = path("pages/index/index.wxss");
+    let page_classes: Vec<_> = page
+        .classes_in_file(&page_file)
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(
+        page_classes,
+        vec!["page", "card", "card-header", "active", "title"]
+    );
+}
+
+#[test]
+fn nested_and_ampersand_selectors_are_expanded() {
+    let project = fixture();
+    let project = open(&project);
+    let mut index = StyleIndex::new();
+    let page = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert_eq!(
+        page.primary("card-header").expect("header").selector,
+        ".card-header"
+    );
+    assert_eq!(
+        page.primary("active").expect("active").selector,
+        ".card.active"
+    );
+    assert_eq!(
+        page.primary("title").expect("title").selector,
+        ".card .title"
+    );
+}
+
+#[test]
+fn cycles_remote_and_escaping_imports_are_bounded() {
+    let project = TempProject::new();
+    project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
+    project.write("pages/index/index.wxml", "<view/>");
+    project.write("pages/index/index.ts", "Page({})");
+    project.write(
+        "pages/index/index.wxss",
+        "@import \"../../shared/a.scss\";\n.page { }\n",
+    );
+    project.write("shared/a.scss", "@import \"b.scss\";\n.a { }\n");
+    project.write("shared/b.scss", "@import \"a.scss\";\n.b { }\n");
+    project.write("pages/remote/index.wxml", "<view/>");
+    project.write("pages/remote/index.ts", "Page({})");
+    project.write(
+        "pages/remote/index.wxss",
+        "@import \"https://example.com/x.css\";\n.remote { }\n",
+    );
+    project.write("outside.scss", ".outside { }");
+    project.write("pages/escape/index.wxml", "<view/>");
+    project.write("pages/escape/index.ts", "Page({})");
+    project.write(
+        "pages/escape/index.wxss",
+        "@import \"../../../outside.scss\";\n.escape { }\n",
+    );
+    // Discovery lists the extra pages only when app.json mentions them.
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index","pages/remote/index","pages/escape/index"]}"#,
+    );
+    let project = open(&project);
+    let mut index = StyleIndex::new();
+
+    let cycle = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert!(!cycle.complete);
+    assert!(
+        cycle
+            .issues
+            .iter()
+            .any(|issue| issue.kind == StyleIssueKind::CyclicImport),
+        "{:?}",
+        cycle.issues
+    );
+    assert!(cycle.primary("a").is_some());
+    assert!(cycle.primary("b").is_some());
+
+    let remote = facts(
+        &project,
+        &mut index,
+        "pages/remote/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert!(!remote.complete);
+    assert!(
+        remote
+            .issues
+            .iter()
+            .any(|issue| issue.kind == StyleIssueKind::RemoteImport),
+        "{:?}",
+        remote.issues
+    );
+    assert!(remote.primary("remote").is_some());
+
+    let escape = facts(
+        &project,
+        &mut index,
+        "pages/escape/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert!(!escape.complete);
+    assert!(escape.primary("outside").is_none());
+    assert!(escape.primary("escape").is_some());
+    assert!(
+        escape
+            .issues
+            .iter()
+            .any(|issue| issue.kind == StyleIssueKind::EscapesRoot),
+        "{:?}",
+        escape.issues
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_style_files_do_not_escape_the_root() {
+    use std::os::unix::fs::symlink;
+
+    let project = TempProject::new();
+    let outside = TempProject::new();
+    project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
+    project.write("pages/index/index.wxml", "<view/>");
+    project.write("pages/index/index.ts", "Page({})");
+    project.write(
+        "pages/index/index.wxss",
+        "@import \"../../shared/link.scss\";\n.page { }\n",
+    );
+    outside.write("secret.scss", ".secret { color: red; }\n");
+    std::fs::create_dir_all(project.root.join("shared")).expect("shared");
+    symlink(
+        outside.root.join("secret.scss"),
+        project.root.join("shared/link.scss"),
+    )
+    .expect("symlink");
+    let project = open(&project);
+    let mut index = StyleIndex::new();
+    let facts = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert!(!facts.complete);
+    assert!(facts.primary("secret").is_none());
+    assert!(facts.primary("page").is_some());
+}
+
+#[test]
+fn budgets_limit_file_size_and_file_count() {
+    let project = TempProject::new();
+    project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
+    project.write("pages/index/index.wxml", "<view/>");
+    project.write("pages/index/index.ts", "Page({})");
+    project.write(
+        "pages/index/index.wxss",
+        "@import \"../../shared/big.scss\";\n.page { }\n",
+    );
+    let mut big = String::from(".big { }\n");
+    big.push_str(&"x".repeat(128));
+    project.write("shared/big.scss", &big);
+    let project = open(&project);
+
+    let mut index = StyleIndex::with_limits(StyleLimits {
+        max_file_bytes: 32,
+        ..StyleLimits::default()
+    });
+    let limited = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert!(!limited.complete);
+    assert!(limited.primary("big").is_none());
+    assert!(
+        limited
+            .issues
+            .iter()
+            .any(|issue| issue.kind == StyleIssueKind::TooLarge),
+        "{:?}",
+        limited.issues
+    );
+
+    let mut index = StyleIndex::with_limits(StyleLimits {
+        max_files: 1,
+        ..StyleLimits::default()
+    });
+    let limited = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert!(!limited.complete);
+    assert_eq!(limited.files.len(), 1);
+    assert!(
+        limited
+            .issues
+            .iter()
+            .any(|issue| issue.kind == StyleIssueKind::Truncated),
+        "{:?}",
+        limited.issues
+    );
+}
+
+#[test]
+fn overlays_and_invalidation_refresh_class_facts() {
+    let project = fixture();
+    let mut project = open(&project);
+    let path = path("pages/index/index.wxss");
+    let mut index = StyleIndex::new();
+    let before = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert!(before.primary("page").is_some());
+
+    project
+        .set_overlay(&path, ".overlay { color: red; }\n", 1)
+        .expect("overlay");
+    index.invalidate(&path);
+    let after = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert!(after.primary("overlay").is_some());
+    assert!(after.primary("page").is_none());
+
+    assert!(project.remove_overlay(&path));
+    index.invalidate_all();
+    let restored = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert!(restored.primary("page").is_some());
+    assert!(restored.primary("overlay").is_none());
+}
+
+#[test]
+fn style_diagnostics_default_off_and_require_a_complete_index() {
+    let project = fixture();
+    let project = open(&project);
+    let mut index = StyleIndex::new();
+    let facts = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    let used = vec![
+        "missing".to_owned(),
+        "page".to_owned(),
+        "{{dynamic}}".to_owned(),
+    ];
+    assert!(
+        StyleDiagnosticsPolicy::default()
+            .undefined_classes(&facts, &used)
+            .is_empty()
+    );
+    assert_eq!(
+        StyleDiagnosticsPolicy::enabled().undefined_classes(&facts, &used),
+        vec!["missing".to_owned()]
+    );
+
+    let mut partial = facts;
+    partial.complete = false;
+    assert!(
+        StyleDiagnosticsPolicy::enabled()
+            .undefined_classes(&partial, &used)
+            .is_empty()
+    );
+}
+
+struct ResourceFixture {
+    _project: TempProject,
+    _outside: TempProject,
+    project: Project,
+}
+
+fn resource_fixture() -> ResourceFixture {
+    let project = TempProject::new();
+    let outside = TempProject::new();
+    project.write("src/app.json", r#"{"pages":["pages/index/index"]}"#);
+    project.write(
+        "src/pages/index/index.wxml",
+        "<image src=\"../../images/logo.png\" />",
+    );
+    project.write("src/pages/index/index.ts", "Page({})");
+    project.write("src/images/logo.png", "png");
+    project.write("src/images/my icon.png", "png");
+    project.write("src/images/icons/a.png", "png");
+    project.write("src/data/a.json", "{}");
+    project.write("outside/secret.png", "secret");
+    std::fs::create_dir_all(project.root.join("outside")).expect("outside");
+    outside.write("secret.png", "secret");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink(
+            outside.root.join("secret.png"),
+            project.root.join("src/images/link.png"),
+        )
+        .expect("symlink file");
+        symlink(&outside.root, project.root.join("src/images/outside-dir")).expect("symlink dir");
+    }
+    let project_path = ProjectPath::new("src/app.json").expect("app path");
+    let open = Project::open_with_app_json(&project.root, project_path).expect("open nested app");
+    ResourceFixture {
+        _project: project,
+        _outside: outside,
+        project: open,
+    }
+}
+
+#[test]
+fn resources_resolve_relative_root_relative_and_file_uris() {
+    let fixture = resource_fixture();
+    let project = &fixture.project;
+    let wxml = path("src/pages/index/index.wxml");
+    let relative = project.resolve_resource(&wxml, "../../images/logo.png");
+    assert_eq!(
+        relative,
+        ResourceResolution::File(path("src/images/logo.png"))
+    );
+    assert_eq!(
+        project.resolve_resource(&wxml, "/images/logo.png"),
+        ResourceResolution::File(path("src/images/logo.png"))
+    );
+    assert_eq!(
+        project.resolve_resource(&wxml, "../../images"),
+        ResourceResolution::Directory(path("src/images"))
+    );
+    assert_eq!(
+        project.resolve_resource(&wxml, "../../images/missing.png"),
+        ResourceResolution::Missing
+    );
+    assert_eq!(
+        project.resolve_resource(&wxml, "../../../outside/secret.png"),
+        ResourceResolution::OutsideRoot
+    );
+    for remote in [
+        "https://example.com/a.png",
+        "http://example.com/a.png",
+        "//cdn.example.com/a.png",
+        "data:image/png;base64,AAAA",
+        "wxfile://tmp/a.png",
+        "cloud://env/a.png",
+    ] {
+        assert_eq!(
+            project.resolve_resource(&wxml, remote),
+            ResourceResolution::Remote,
+            "{remote}"
+        );
+    }
+    assert_eq!(
+        project.resolve_resource(&wxml, "{{image}}"),
+        ResourceResolution::Dynamic
+    );
+    assert_eq!(
+        project.resolve_resource(&wxml, ""),
+        ResourceResolution::Invalid
+    );
+
+    let spaced = path("src/images/my icon.png");
+    let uri = project.uri_for(&spaced).expect("uri");
+    assert!(uri.contains("%20"), "{uri}");
+    assert_eq!(
+        project.resolve_resource(&wxml, &uri),
+        ResourceResolution::File(spaced)
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn resource_symlinks_that_leave_the_root_are_not_targets() {
+    let fixture = resource_fixture();
+    let project = &fixture.project;
+    let wxml = path("src/pages/index/index.wxml");
+    assert_eq!(
+        project.resolve_resource(&wxml, "../../images/link.png"),
+        ResourceResolution::OutsideRoot
+    );
+}
+
+#[test]
+fn resource_completion_lists_one_directory_and_preserves_prefixes() {
+    let fixture = resource_fixture();
+    let project = &fixture.project;
+    let wxml = path("src/pages/index/index.wxml");
+
+    let images = project.resource_candidates(&wxml, "../../images/");
+    assert!(!images.truncated);
+    let labels: Vec<_> = images
+        .items
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect();
+    assert!(labels.contains(&"logo.png"), "{labels:?}");
+    assert!(labels.contains(&"icons/"), "{labels:?}");
+    assert!(labels.contains(&"my icon.png"), "{labels:?}");
+    assert!(
+        !labels.contains(&"link.png"),
+        "symlink escape must be omitted"
+    );
+    assert_eq!(images.items[0].kind, ResourceKind::Directory);
+    assert_eq!(images.items[0].insert, "../../images/icons/");
+
+    let filtered = project.resource_candidates(&wxml, "../../images/lo");
+    assert_eq!(filtered.items.len(), 1);
+    assert_eq!(filtered.items[0].insert, "../../images/logo.png");
+
+    let root_relative = project.resource_candidates(&wxml, "/images/lo");
+    assert_eq!(root_relative.items.len(), 1);
+    assert_eq!(root_relative.items[0].insert, "/images/logo.png");
+
+    assert!(
+        project
+            .resource_candidates(&wxml, "../../../outside/")
+            .items
+            .is_empty()
+    );
+    assert!(
+        project
+            .resource_candidates(&wxml, "https://")
+            .items
+            .is_empty()
+    );
+    assert!(
+        project
+            .resource_candidates(&wxml, "{{dir}}/")
+            .items
+            .is_empty()
+    );
+}
+
+#[test]
+fn resource_diagnostics_skip_remote_dynamic_and_directories() {
+    let fixture = resource_fixture();
+    let project = &fixture.project;
+    let wxml = path("src/pages/index/index.wxml");
+    let used = vec![
+        "../../images/logo.png".to_owned(),
+        "../../images/missing.png".to_owned(),
+        "https://example.com/a.png".to_owned(),
+        "{{dynamic}}".to_owned(),
+        "../../images".to_owned(),
+    ];
+    assert!(
+        StyleDiagnosticsPolicy::default()
+            .missing_resources(project, &wxml, &used)
+            .is_empty()
+    );
+    assert_eq!(
+        StyleDiagnosticsPolicy::enabled().missing_resources(project, &wxml, &used),
+        vec!["../../images/missing.png".to_owned()]
+    );
+}
+
+#[test]
+fn scss_imports_prefer_scss_partials_over_wxss_siblings() {
+    let project = TempProject::new();
+    project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
+    project.write("pages/index/index.wxml", "<view/>");
+    project.write("pages/index/index.ts", "Page({})");
+    project.write(
+        "pages/index/index.scss",
+        "@import \"../../shared/theme\";\n.local { }\n",
+    );
+    project.write("shared/theme.wxss", ".from-wxss { }\n");
+    project.write("shared/_theme.scss", ".from-scss { }\n");
+    let project = open(&project);
+    let mut index = StyleIndex::new();
+    let facts = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert!(facts.primary("from-scss").is_some(), "{:?}", facts.classes);
+    assert!(facts.primary("from-wxss").is_none(), "{:?}", facts.classes);
+    assert_eq!(
+        facts
+            .primary("from-scss")
+            .expect("scss class")
+            .file
+            .as_str(),
+        "shared/_theme.scss"
+    );
+}

@@ -39,12 +39,19 @@ fn initialize_result(server: &Server) -> Value {
                 // instead of asking the client to resend its text.
                 "save": { "includeText": false },
             },
-            "hoverProvider": server.capabilities.hover.is_supported(),
-            "definitionProvider": server.capabilities.definition.is_supported(),
+            "hoverProvider": server.capabilities.hover.is_supported()
+                || server.host.is_project_open(),
+            "definitionProvider": server.capabilities.definition.is_supported()
+                || server.host.is_project_open(),
             // Static template completion is always available; the flag only
             // covers Node-backed expression/event queries.
             "completionProvider": {
                 "triggerCharacters": ["<", " ", ":", "\"", "'", ".", "{", "="],
+                "resolveProvider": false,
+            },
+            // Local file links for proven resource attributes; resolution is
+            // synchronous and never fetches a remote URL.
+            "documentLinkProvider": {
                 "resolveProvider": false,
             },
         },
@@ -98,6 +105,7 @@ impl Server {
             "textDocument/hover" => self.hover(id, params),
             "textDocument/definition" => self.definition(id, params),
             "textDocument/completion" => self.completion(id, params),
+            "textDocument/documentLink" => self.document_link(id, params),
             other => {
                 log(format_args!(
                     "unknown request method `{}`",
@@ -230,7 +238,7 @@ impl Server {
                 self.save_wxml(uri, &path);
                 self.schedule_diagnostics(uri)
             }
-            DocumentRoute::Script(_) | DocumentRoute::Json(_) => {
+            DocumentRoute::Script(_) | DocumentRoute::Json(_) | DocumentRoute::Style(_) => {
                 match self.host.save_document(uri) {
                     Ok(update) => self.apply_host_update(&update),
                     Err(error) => log(format_args!("overlay save failed: {error}")),
@@ -393,7 +401,7 @@ const WATCH_REGISTRATION_ID: &str = "wxml-lsp-watch";
 const WATCH_KIND_ALL: u8 = 7;
 
 /// Glob patterns registered for `workspace/didChangeWatchedFiles`.
-const WATCH_GLOBS: [&str; 11] = [
+const WATCH_GLOBS: [&str; 13] = [
     "**/*.wxml",
     "**/*.json",
     "**/*.ts",
@@ -405,6 +413,8 @@ const WATCH_GLOBS: [&str; 11] = [
     "**/*.mjs",
     "**/*.cjs",
     "**/*.wxss",
+    "**/*.scss",
+    "**/*.css",
 ];
 
 /// Largest number of `didChangeWatchedFiles` entries processed per call.

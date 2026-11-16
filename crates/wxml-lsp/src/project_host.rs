@@ -22,7 +22,8 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use thiserror::Error;
 use wxml_project::{
-    ComponentTargetKind, Page, Project, ProjectPath, SourceFile, SourceKind, SourceLimits, UriError,
+    ComponentTargetKind, Page, Project, ProjectPath, ResourceCandidates, ResourceResolution,
+    SourceFile, SourceKind, SourceLimits, StyleConfig, StyleIndex, StyleViewFacts, UriError,
 };
 use wxml_syntax::{ParseErrorKind, ParseResult};
 use wxml_types::{
@@ -119,6 +120,8 @@ pub enum DocumentRoute {
     Script(ProjectPath),
     /// A project JSON file (`app.json`, page/component JSON).
     Json(ProjectPath),
+    /// A WXSS/SCSS/CSS style file.
+    Style(ProjectPath),
     /// Not a project document (no project, outside the root, unknown extension).
     Unknown,
 }
@@ -225,6 +228,9 @@ pub struct PreparedFile {
 /// [`CapabilityStatus::Partial`] hint.
 pub const MAX_PREPARED_EVENTS: usize = 1024;
 
+/// Maximum class-fact caches kept for open views.
+const MAX_STYLE_VIEW_CACHE: usize = 256;
+
 /// Everything a type backend needs for one WXML snapshot.
 #[derive(Clone, Debug)]
 pub struct PreparedView {
@@ -308,6 +314,32 @@ pub trait ProjectHost: Send + Sync {
     /// completion then simply omits custom component tags.
     fn view_components(&self, _wxml: &ProjectPath) -> Vec<ViewComponent> {
         Vec::new()
+    }
+
+    /// Returns the style class facts that apply to one WXML view.
+    ///
+    /// Hosts without a project return `None`; callers then keep their previous
+    /// static behavior instead of inventing an empty style index.
+    fn style_facts(&self, _wxml: &ProjectPath) -> Option<Arc<StyleViewFacts>> {
+        None
+    }
+
+    /// Resolves one local resource value for a WXML view.
+    fn resource_resolution(
+        &self,
+        _wxml: &ProjectPath,
+        _specifier: &str,
+    ) -> Option<ResourceResolution> {
+        None
+    }
+
+    /// Lists one directory for resource completion.
+    fn resource_candidates(
+        &self,
+        _wxml: &ProjectPath,
+        _prefix: &str,
+    ) -> Option<ResourceCandidates> {
+        None
     }
 
     /// Prepares the analysis inputs for a WXML snapshot.
@@ -420,6 +452,12 @@ struct State {
     overlays: BTreeMap<String, String>,
     next_view_revision: u64,
     next_overlay_revision: u64,
+    /// Lazily parsed style sheets for the active app root.
+    style_index: Option<StyleIndex>,
+    /// Class facts cached per view for the current project revision.
+    style_cache: BTreeMap<ProjectPath, Arc<StyleViewFacts>>,
+    /// Explicit global style configuration for the active app root.
+    style_config: StyleConfig,
 }
 
 /// A project root plus overlays, WXML snapshots and discovered views.
@@ -452,6 +490,9 @@ impl ProjectState {
                 overlays: BTreeMap::new(),
                 next_view_revision: 1,
                 next_overlay_revision: 1,
+                style_index: None,
+                style_cache: BTreeMap::new(),
+                style_config: StyleConfig::default(),
             }),
         }
     }
@@ -478,6 +519,9 @@ impl ProjectState {
         state.views.clear();
         state.snapshots.clear();
         state.overlays.clear();
+        state.style_index = None;
+        state.style_cache.clear();
+        state.style_config = StyleConfig::default();
         state.project_id = ProjectId::new(SYNTHETIC_PROJECT);
         state.project_revision = ProjectRevision::new(ProjectId::new(SYNTHETIC_PROJECT), 1);
         state.project_revision_seq = 1;
@@ -556,6 +600,7 @@ impl ProjectHost for ProjectState {
                 DocumentRoute::Script(path)
             }
             Some("json") => DocumentRoute::Json(path),
+            Some("wxss" | "scss" | "css") => DocumentRoute::Style(path),
             _ => DocumentRoute::Unknown,
         }
     }
@@ -664,6 +709,46 @@ impl ProjectHost for ProjectState {
             .collect();
         components.sort_by(|left, right| left.name.cmp(&right.name));
         components
+    }
+
+    fn style_facts(&self, wxml: &ProjectPath) -> Option<Arc<StyleViewFacts>> {
+        let mut state = self.write();
+        state.project.as_ref()?;
+        if let Some(facts) = state.style_cache.get(wxml) {
+            return Some(Arc::clone(facts));
+        }
+        let config = state.style_config.clone();
+        let facts = {
+            let State {
+                project,
+                style_index,
+                ..
+            } = &mut *state;
+            let project = project.as_ref()?;
+            let index = style_index.get_or_insert_with(StyleIndex::new);
+            Arc::new(index.view_facts(project, wxml, &config))
+        };
+        if state.style_cache.len() >= MAX_STYLE_VIEW_CACHE {
+            state.style_cache.clear();
+        }
+        state.style_cache.insert(wxml.clone(), Arc::clone(&facts));
+        Some(facts)
+    }
+
+    fn resource_resolution(
+        &self,
+        wxml: &ProjectPath,
+        specifier: &str,
+    ) -> Option<ResourceResolution> {
+        let state = self.read();
+        let project = state.project.as_ref()?;
+        Some(project.resolve_resource(wxml, specifier))
+    }
+
+    fn resource_candidates(&self, wxml: &ProjectPath, prefix: &str) -> Option<ResourceCandidates> {
+        let state = self.read();
+        let project = state.project.as_ref()?;
+        Some(project.resource_candidates(wxml, prefix))
     }
 
     #[allow(clippy::too_many_lines)] // one linear P7-1 pipeline
@@ -904,12 +989,13 @@ impl ProjectState {
             let project = state.project.as_ref().ok_or(HostError::NoProject)?;
             project.path_from_uri(uri).map_err(map_uri_error)?
         };
-        let is_json = {
+        let (is_json, is_style) = {
             let project = state.project.as_ref().ok_or(HostError::NoProject)?;
-            if !project.accepts_overlay(&path) {
+            let is_style = project.accepts_style_overlay(&path);
+            if !project.accepts_overlay(&path) && !is_style {
                 return Ok(HostUpdate::default());
             }
-            project.accepts_json_overlay(&path)
+            (project.accepts_json_overlay(&path), is_style)
         };
         let revision = state.next_overlay_revision.saturating_add(1);
         state.next_overlay_revision = revision;
@@ -927,8 +1013,12 @@ impl ProjectState {
         if is_json {
             rebuild_views(&mut state)?;
         }
-        let mut dirty = dirty_after(&state, &path, is_json);
-        if !is_json && dirty.is_empty() {
+        let mut dirty = if is_style {
+            state.views.keys().cloned().collect()
+        } else {
+            dirty_after(&state, &path, is_json)
+        };
+        if !is_json && !is_style && dirty.is_empty() {
             // The script owns no view, but every project source feeds the type
             // backend, so an imported module can change any view's results.
             // Re-analyze all views instead of leaving diagnostics stale.
@@ -950,12 +1040,13 @@ impl ProjectState {
             let project = state.project.as_ref().ok_or(HostError::NoProject)?;
             project.path_from_uri(uri).map_err(map_uri_error)?
         };
-        let is_json = {
+        let (is_json, is_style) = {
             let project = state.project.as_ref().ok_or(HostError::NoProject)?;
-            if !project.accepts_overlay(&path) {
+            let is_style = project.accepts_style_overlay(&path);
+            if !project.accepts_overlay(&path) && !is_style {
                 return Ok(HostUpdate::default());
             }
-            project.accepts_json_overlay(&path)
+            (project.accepts_json_overlay(&path), is_style)
         };
         {
             let project = state.project.as_mut().ok_or(HostError::NoProject)?;
@@ -967,8 +1058,12 @@ impl ProjectState {
         if is_json {
             rebuild_views(&mut state)?;
         }
-        let mut dirty = dirty_after(&state, &path, is_json);
-        if !is_json && dirty.is_empty() {
+        let mut dirty = if is_style {
+            state.views.keys().cloned().collect()
+        } else {
+            dirty_after(&state, &path, is_json)
+        };
+        if !is_json && !is_style && dirty.is_empty() {
             dirty = state.views.keys().cloned().collect();
         }
         let revision = bump_project_revision(&mut state);
@@ -989,15 +1084,18 @@ impl ProjectState {
             let project = state.project.as_ref().ok_or(HostError::NoProject)?;
             project.path_from_uri(uri).map_err(map_uri_error)?
         };
-        let is_json = {
+        let (is_json, is_style) = {
             let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+            let is_style = project.accepts_style_overlay(&path);
             if project.accepts_overlay(&path) {
-                project.accepts_json_overlay(&path)
+                (project.accepts_json_overlay(&path), is_style)
             } else if project.is_project_json(&path) {
                 // A JSON file that discovery has not seen yet (for example a
                 // page config created after startup) still affects
                 // discovery when saved.
-                true
+                (true, is_style)
+            } else if is_style {
+                (false, true)
             } else {
                 return Ok(HostUpdate::default());
             }
@@ -1006,6 +1104,14 @@ impl ProjectState {
             let project = state.project.as_mut().ok_or(HostError::NoProject)?;
             project.rediscover();
             rebuild_views(&mut state)?;
+            let dirty = state.views.keys().cloned().collect();
+            let revision = bump_project_revision(&mut state);
+            return Ok(HostUpdate {
+                dirty_views: dirty,
+                project_revision: Some(revision),
+            });
+        }
+        if is_style {
             let dirty = state.views.keys().cloned().collect();
             let revision = bump_project_revision(&mut state);
             return Ok(HostUpdate {
@@ -1031,6 +1137,7 @@ impl ProjectState {
     /// Discovery runs at most once per notification and the project revision
     /// advances at most once. Paths outside the root, excluded scripts and
     /// irrelevant extensions are ignored.
+    #[allow(clippy::too_many_lines)] // one linear change classification pass
     fn watched_changes(&self, changes: &[WatchedFileChange]) -> Result<HostUpdate, HostError> {
         let mut state = self.write();
         if state.project.is_none() {
@@ -1038,6 +1145,7 @@ impl ProjectState {
         }
         let mut json_changes: Vec<ProjectPath> = Vec::new();
         let mut script_changes: Vec<(ProjectPath, WatchedChangeKind)> = Vec::new();
+        let mut style_changes: Vec<ProjectPath> = Vec::new();
         let mut wxml_need_rediscovery = false;
         let mut ignored = 0_usize;
         for change in changes {
@@ -1050,7 +1158,7 @@ impl ProjectState {
                 ignored = ignored.saturating_add(1);
                 continue;
             };
-            let (is_json, is_script, is_discovery_json) = {
+            let (is_json, is_script, is_discovery_json, is_style) = {
                 let project = state.project.as_ref().ok_or(HostError::NoProject)?;
                 let is_json = project.accepts_json_overlay(&path);
                 let is_script = project.accepts_script_overlay(&path);
@@ -1058,12 +1166,15 @@ impl ProjectState {
                     is_json,
                     is_script,
                     !is_json && project.is_project_json(&path),
+                    Project::is_style_path(&path),
                 )
             };
             if is_json || is_discovery_json {
                 json_changes.push(path);
             } else if is_script {
                 script_changes.push((path, change.kind));
+            } else if is_style {
+                style_changes.push(path);
             } else if path
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("wxml"))
@@ -1080,7 +1191,11 @@ impl ProjectState {
                 ignored = ignored.saturating_add(1);
             }
         }
-        if json_changes.is_empty() && script_changes.is_empty() && !wxml_need_rediscovery {
+        if json_changes.is_empty()
+            && script_changes.is_empty()
+            && style_changes.is_empty()
+            && !wxml_need_rediscovery
+        {
             if ignored > 0 {
                 crate::server::log(format_args!(
                     "ignoring {ignored} watched file change(s) that do not affect analysis"
@@ -1105,6 +1220,9 @@ impl ProjectState {
             for (path, _) in &script_changes {
                 project.remove_overlay(path);
             }
+            for path in &style_changes {
+                project.remove_overlay(path);
+            }
             if rediscover {
                 project.rediscover();
             }
@@ -1114,7 +1232,7 @@ impl ProjectState {
         }
 
         let mut dirty = Vec::new();
-        if rediscover {
+        if rediscover || !style_changes.is_empty() {
             dirty.extend(state.views.keys().cloned());
         } else {
             for (path, _) in &script_changes {
@@ -1298,13 +1416,16 @@ fn load_project(state: &mut State, candidate: &AppRoot) -> Result<(), HostError>
     let mut project =
         Project::open_with_app_json(&candidate.project_root, candidate.app_json.clone())
             .map_err(|_| HostError::ProjectOpen)?;
+    state.style_index = None;
+    state.style_cache.clear();
+    state.style_config = StyleConfig::default();
     let project_id = project_id_for(&candidate.app_dir);
     let mut rediscover = false;
     for (uri, text) in &state.overlays {
         let Ok(path) = project.path_from_uri(uri) else {
             continue;
         };
-        if !project.accepts_overlay(&path) {
+        if !project.accepts_overlay(&path) && !project.accepts_style_overlay(&path) {
             continue;
         }
         let revision = state.next_overlay_revision.saturating_add(1);
@@ -1531,6 +1652,8 @@ fn dirty_scripts(state: &State, script: &ProjectPath) -> Vec<ProjectPath> {
 }
 
 fn bump_project_revision(state: &mut State) -> ProjectRevision {
+    state.style_index = None;
+    state.style_cache.clear();
     state.project_revision_seq = state.project_revision_seq.saturating_add(1);
     state.project_revision =
         ProjectRevision::new(state.project_id.clone(), state.project_revision_seq);

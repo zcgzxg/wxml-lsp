@@ -20,8 +20,10 @@ pub mod config;
 pub mod discovery;
 pub mod files;
 pub mod overlay;
+pub mod resources;
 pub mod script;
 pub mod sources;
+pub mod styles;
 
 pub use config::{ConfigError, TsConfig, load_ts_config};
 pub use discovery::{
@@ -32,8 +34,14 @@ pub use files::{
     FileError, FileKey, PathError, ProjectPath, UriError, read_file, root_path_from_uri,
 };
 pub use overlay::{Overlay, OverlayError};
+pub use resources::{ResourceCandidate, ResourceCandidates, ResourceKind, ResourceResolution};
 pub use script::{DataRoot, DataRootKind, ScriptResolution, extract_data_roots, resolve_script};
 pub use sources::{SourceFile, SourceIssue, SourceIssueKind, SourceKind, SourceLimits, SourceSet};
+pub use styles::{
+    ClassDefinition, ClassToken, StyleConfig, StyleDiagnosticsPolicy, StyleFileInfo, StyleFileKind,
+    StyleImport, StyleImportKind, StyleIndex, StyleIssue, StyleIssueKind, StyleLimits, StyleScope,
+    StyleSheet, StyleViewFacts,
+};
 
 /// Why a project could not be opened.
 #[derive(Debug, Error)]
@@ -74,6 +82,8 @@ pub struct Project {
     overlay: Overlay,
     discovery: Discovery,
     tsconfig: Option<TsConfig>,
+    /// Explicit extra global style files; `app.wxss` is always included.
+    style_config: StyleConfig,
 }
 
 #[allow(clippy::missing_fields_in_debug)]
@@ -150,6 +160,7 @@ impl Project {
             overlay,
             discovery,
             tsconfig: None,
+            style_config: StyleConfig::default(),
         };
         project.reload_tsconfig();
         Ok(project)
@@ -276,6 +287,20 @@ impl Project {
     #[must_use]
     pub const fn overlay(&self) -> &Overlay {
         &self.overlay
+    }
+
+    /// Returns the explicit extra global style configuration.
+    #[must_use]
+    pub const fn style_config(&self) -> &StyleConfig {
+        &self.style_config
+    }
+
+    /// Replaces the explicit extra global style configuration.
+    ///
+    /// `app.wxss`/`app.scss` are still included automatically; this only adds
+    /// files the project explicitly configured.
+    pub fn set_style_config(&mut self, config: StyleConfig) {
+        self.style_config = config;
     }
 
     /// Sets overlay text with a monotonic revision.

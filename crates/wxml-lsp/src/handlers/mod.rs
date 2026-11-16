@@ -7,6 +7,7 @@
 pub(crate) mod diagnostics;
 pub(crate) mod hover;
 pub(crate) mod lifecycle;
+pub(crate) mod styles;
 
 use serde_json::{Map, Value};
 use wxml_text::{Position, SourceRange};
@@ -23,7 +24,8 @@ pub(crate) fn template_document(server: &crate::server::Server, uri: &str) -> bo
     match server.host.route(uri) {
         crate::project_host::DocumentRoute::Wxml(_) => true,
         crate::project_host::DocumentRoute::Script(_)
-        | crate::project_host::DocumentRoute::Json(_) => false,
+        | crate::project_host::DocumentRoute::Json(_)
+        | crate::project_host::DocumentRoute::Style(_) => false,
         crate::project_host::DocumentRoute::Unknown => {
             server.synthetic_templates.contains(uri)
                 || uri

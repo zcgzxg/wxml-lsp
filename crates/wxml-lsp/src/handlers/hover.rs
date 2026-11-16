@@ -241,7 +241,15 @@ const fn submit_message(error: SubmitError) -> &'static str {
 impl Server {
     /// Handles `textDocument/hover`.
     pub(crate) fn hover(&mut self, id: Value, params: Option<Value>) -> Vec<Outgoing> {
+        if let Some(response) = self.local_hover_response(&id, params.as_ref()) {
+            return response;
+        }
         if !self.capabilities.hover.is_supported() {
+            if self.host.is_project_open() {
+                // Local class hover is still available; the backend only
+                // contributes expression/member hovers.
+                return vec![Outgoing::success(id, Value::Null)];
+            }
             return vec![Outgoing::failure(
                 id,
                 jsonrpc::error_codes::METHOD_NOT_FOUND,
@@ -253,7 +261,14 @@ impl Server {
 
     /// Handles `textDocument/definition`.
     pub(crate) fn definition(&mut self, id: Value, params: Option<Value>) -> Vec<Outgoing> {
+        if let Some(response) = self.local_definition_response(&id, params.as_ref()) {
+            return response;
+        }
         if !self.capabilities.definition.is_supported() {
+            if self.host.is_project_open() {
+                // Local class/resource definitions remain available.
+                return vec![Outgoing::success(id, Value::Array(Vec::new()))];
+            }
             return vec![Outgoing::failure(
                 id,
                 jsonrpc::error_codes::METHOD_NOT_FOUND,

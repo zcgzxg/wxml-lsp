@@ -131,7 +131,7 @@ impl Server {
             .set_project(self.host.project_id(), self.host.project_revision());
         match route {
             DocumentRoute::Wxml(path) => self.open_wxml(uri, &path, text, version),
-            DocumentRoute::Script(_) | DocumentRoute::Json(_) => {
+            DocumentRoute::Script(_) | DocumentRoute::Json(_) | DocumentRoute::Style(_) => {
                 self.open_overlay(uri, text, version);
                 Vec::new()
             }
@@ -192,10 +192,12 @@ impl Server {
         self.schedule_diagnostics(uri)
     }
 
-    /// Stores a script/JSON overlay and schedules affected open views.
+    /// Stores a script, JSON or style overlay and schedules affected open views.
     fn open_overlay(&mut self, uri: &str, text: String, version: Option<u64>) {
         let path = match self.host.route(uri) {
-            DocumentRoute::Script(path) | DocumentRoute::Json(path) => Some(path),
+            DocumentRoute::Script(path)
+            | DocumentRoute::Json(path)
+            | DocumentRoute::Style(path) => Some(path),
             _ => None,
         };
         if let Some(path) = path {
@@ -282,7 +284,7 @@ impl Server {
                     }
                     self.schedule_diagnostics(uri)
                 }
-                DocumentRoute::Script(_) | DocumentRoute::Json(_) => {
+                DocumentRoute::Script(_) | DocumentRoute::Json(_) | DocumentRoute::Style(_) => {
                     let text = self
                         .workspace
                         .get(uri)
@@ -351,7 +353,7 @@ impl Server {
                     self.host.remove_wxml_snapshot(&file);
                 }
             }
-            DocumentRoute::Script(_) | DocumentRoute::Json(_) => {
+            DocumentRoute::Script(_) | DocumentRoute::Json(_) | DocumentRoute::Style(_) => {
                 match self.host.close_document(uri) {
                     Ok(update) => self.apply_host_update(&update),
                     Err(error) => log(format_args!("overlay close failed: {error}")),

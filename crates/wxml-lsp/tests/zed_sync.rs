@@ -431,6 +431,8 @@ fn initialized_registers_watched_files_for_a_project() {
             "**/*.mjs",
             "**/*.cjs",
             "**/*.wxss",
+            "**/*.scss",
+            "**/*.css",
         ]
     );
     assert!(watchers.iter().all(|watcher| watcher["kind"] == json!(7)));

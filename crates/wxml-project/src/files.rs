@@ -707,6 +707,30 @@ pub fn is_file(root: &Path, path: &ProjectPath) -> bool {
         .is_ok_and(|canonical| path_within(root, &canonical) && canonical.is_file())
 }
 
+/// Returns whether `path` names a directory inside `root`.
+///
+/// Symlinks are resolved; a target outside `root` counts as missing.
+#[must_use]
+pub fn is_dir(root: &Path, path: &ProjectPath) -> bool {
+    std::fs::canonicalize(absolute_path(root, path))
+        .is_ok_and(|canonical| path_within(root, &canonical) && canonical.is_dir())
+}
+
+/// Returns whether `path` resolves outside `root`.
+///
+/// Used for resource checks: a symlink pointing outside the project must not
+/// become a clickable target even though the lexical path looks local. An
+/// absent path is not an escape, but an absent path below a symlinked parent
+/// that leaves the root is.
+#[must_use]
+pub(crate) fn escapes_root(root: &Path, path: &ProjectPath) -> bool {
+    let absolute = absolute_path(root, path);
+    std::fs::canonicalize(&absolute).map_or_else(
+        |_| parent_escapes_root(root, &absolute),
+        |canonical| !path_within(root, &canonical),
+    )
+}
+
 /// Joins a project root and a project path for file-system access.
 ///
 /// The result is absolute when `root` is absolute. Do not publish it to
