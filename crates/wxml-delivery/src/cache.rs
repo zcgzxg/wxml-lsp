@@ -434,6 +434,22 @@ mod tests {
     }
 
     #[test]
+    fn list_entries_skips_malformed_and_linked_metadata() {
+        let base = scratch("malformed");
+        let cache = base.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("not-a-directory"), b"x").unwrap();
+        let malformed = cache.join("malformed");
+        std::fs::create_dir_all(&malformed).unwrap();
+        std::fs::write(malformed.join("entry.json"), b"{").unwrap();
+        let linked = cache.join("linked");
+        std::fs::create_dir_all(&linked).unwrap();
+        std::os::unix::fs::symlink("/etc/passwd", linked.join("entry.json")).unwrap();
+        assert_eq!(list_entries(&cache, "linux-x86_64").unwrap().len(), 0);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn rejects_unverified_entries() {
         let mut entry = entries().remove(0);
         entry.verified = false;

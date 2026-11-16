@@ -350,6 +350,78 @@ mod tests {
     }
 
     #[test]
+    fn remote_loopback_source_reads_index_and_archive() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let archive = b"archive".to_vec();
+        let release = Release {
+            version: "0.1.0".to_owned(),
+            platform: "linux-x86_64".to_owned(),
+            protocol_version: 2,
+            node_minimum_version: "24.0.0".to_owned(),
+            archive: "archive.tar.gz".to_owned(),
+            sha256: crate::manifest::sha256_bytes(&archive),
+            size: archive.len() as u64,
+        };
+        let index = serde_json::to_vec_pretty(&Index {
+            schema_version: 1,
+            package: "wxml-lsp".to_owned(),
+            releases: vec![release.clone()],
+        })
+        .unwrap();
+        let server = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = stream.read(&mut buffer).unwrap();
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                let text = String::from_utf8_lossy(&request);
+                let path = text
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                let body = if path.ends_with("index.json") {
+                    index.clone()
+                } else {
+                    archive.clone()
+                };
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(header.as_bytes()).unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+        let source = Source::remote(&format!("http://{address}/")).unwrap();
+        let loaded = source.read_index().unwrap();
+        assert_eq!(loaded.releases[0].version, "0.1.0");
+        let base = std::env::var_os("WXML_TEST_TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let destination = base.join(format!(
+            "wxml-remote-source-{}-{}.tar.gz",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_nanos())
+        ));
+        source.fetch_archive(&release, &destination).unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), b"archive");
+        let _ = std::fs::remove_file(&destination);
+        server.join().unwrap();
+    }
+
+    #[test]
     fn local_source_reads_index_and_copies_archive() {
         let base = std::env::var_os("WXML_TEST_TMPDIR")
             .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
