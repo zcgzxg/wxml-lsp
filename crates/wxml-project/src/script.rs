@@ -25,8 +25,8 @@ pub fn resolve_script<F>(base: &ProjectPath, mut exists: F) -> ScriptResolution
 where
     F: FnMut(&ProjectPath) -> bool,
 {
-    let ts = base.with_extension(SCRIPT_EXTENSIONS[0]).ok();
-    let js = base.with_extension(SCRIPT_EXTENSIONS[1]).ok();
+    let ts = base.with_appended_extension(SCRIPT_EXTENSIONS[0]).ok();
+    let js = base.with_appended_extension(SCRIPT_EXTENSIONS[1]).ok();
     let ts_exists = ts.as_ref().is_some_and(&mut exists);
     let js_exists = js.as_ref().is_some_and(&mut exists);
     let script = if ts_exists {

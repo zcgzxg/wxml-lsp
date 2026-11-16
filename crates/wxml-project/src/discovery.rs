@@ -943,7 +943,7 @@ fn resolve_built_packages(
         else {
             continue;
         };
-        let Ok(wxml) = candidate.with_extension("wxml") else {
+        let Ok(wxml) = candidate.with_appended_extension("wxml") else {
             continue;
         };
         if exists(root, overlay, &wxml) {
@@ -1008,7 +1008,7 @@ fn build_page(
             return None;
         }
     };
-    let wxml = match base.with_extension("wxml") {
+    let wxml = match base.with_appended_extension("wxml") {
         Ok(wxml) => wxml,
         Err(error) => {
             issues.push(issue(
@@ -1084,7 +1084,7 @@ fn load_page_local(
 ) -> (Option<ProjectPath>, BTreeMap<String, UsingComponent>) {
     let root = context.root;
     let overlay = context.overlay;
-    let Ok(candidate) = base.with_extension("json") else {
+    let Ok(candidate) = base.with_appended_extension("json") else {
         return (None, BTreeMap::new());
     };
     if *local_budget == 0 {
@@ -1185,7 +1185,7 @@ fn report_missing_components(
         let Some(base) = &component.component else {
             continue;
         };
-        let Ok(wxml) = base.with_extension("wxml") else {
+        let Ok(wxml) = base.with_appended_extension("wxml") else {
             continue;
         };
         if exists(root, overlay, &wxml) || !reported.insert(base.clone()) {
@@ -1286,7 +1286,7 @@ fn visit_component(
         ));
         return None;
     }
-    let wxml = base.with_extension("wxml").ok()?;
+    let wxml = base.with_appended_extension("wxml").ok()?;
     if !exists(root, overlay, &wxml) {
         return None;
     }
@@ -1339,7 +1339,7 @@ fn load_component_json(
 ) -> (Option<ProjectPath>, BTreeMap<String, UsingComponent>) {
     let root = context.root;
     let overlay = context.overlay;
-    let Ok(candidate) = base.with_extension("json") else {
+    let Ok(candidate) = base.with_appended_extension("json") else {
         return (None, BTreeMap::new());
     };
     let attempt = if context.budget.exhausted() {
@@ -1786,6 +1786,54 @@ mod tests {
         assert_eq!(
             b.config.get("a").and_then(|entry| entry.component.as_ref()),
             Some(&path("components/a/a"))
+        );
+    }
+
+    #[test]
+    fn resolves_dotted_component_bases_and_stays_case_sensitive() {
+        let temp = TempDir::new("dotted-components");
+        temp.write(
+            "app.json",
+            r#"{"pages": ["pages/index/index"], "usingComponents": {
+                "dotted": "demo-ui/v1.2/card.v2",
+                "wrong-case": "Demo-UI/v1.2/card.v2",
+                "local-dotted": "/components/local.v2"
+            }}"#,
+        );
+        temp.write("pages/index/index.wxml", "<view/>");
+        temp.write("miniprogram_npm/demo-ui/v1.2/card.v2.wxml", "<view/>");
+        temp.write(
+            "miniprogram_npm/demo-ui/v1.2/card.v2.ts",
+            "Component({ properties: { npmDot: { type: String } } });",
+        );
+        temp.write("components/local.v2.wxml", "<view/>");
+        temp.write(
+            "components/local.v2.ts",
+            "Component({ properties: { localDot: { type: Number } } });",
+        );
+
+        let discovery = discover(&temp.root(), &Overlay::new(), &path("app.json"));
+        let config = &discovery.pages[0].config;
+        let dotted = config.get("dotted").expect("dotted package");
+        assert_eq!(
+            dotted.component,
+            Some(path("miniprogram_npm/demo-ui/v1.2/card.v2"))
+        );
+        let local = config.get("local-dotted").expect("dotted local");
+        assert_eq!(local.component, Some(path("components/local.v2")));
+        let wrong_case = config.get("wrong-case").expect("case-mismatch entry");
+        assert_eq!(wrong_case.component, None);
+        assert!(
+            discovery
+                .components
+                .iter()
+                .any(|component| component.id.as_str() == "miniprogram_npm/demo-ui/v1.2/card.v2")
+        );
+        assert!(
+            discovery
+                .components
+                .iter()
+                .any(|component| component.id.as_str() == "components/local.v2")
         );
     }
 

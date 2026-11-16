@@ -1,0 +1,2 @@
+*.ts text eol=crlf whitespace=cr-at-eol
+*.wxml text eol=crlf whitespace=cr-at-eol

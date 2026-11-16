@@ -18,6 +18,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
+mod common;
+
+use common::TempProject;
+
 const BIN: &str = env!("CARGO_BIN_EXE_wxml-lsp");
 const TIMEOUT: Duration = Duration::from_secs(10);
 
@@ -159,6 +163,27 @@ impl Client {
                 "textDocument": {"uri": uri, "version": self.version},
                 "contentChanges": [{"text": text}],
             }),
+        );
+    }
+
+    fn save(&mut self, uri: &str) {
+        self.notify(
+            "textDocument/didSave",
+            json!({"textDocument": {"uri": uri}}),
+        );
+    }
+
+    fn close(&mut self, uri: &str) {
+        self.notify(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": uri}}),
+        );
+    }
+
+    fn watched_modified(&mut self, uri: &str) {
+        self.notify(
+            "workspace/didChangeWatchedFiles",
+            json!({"changes": [{"uri": uri, "type": 2}]}),
         );
     }
 
@@ -710,6 +735,104 @@ fn component_property_definition_handles_crlf_scripts() {
         json!({"line": 3, "character": 4}),
         "{definition}"
     );
+
+    client.shutdown();
+    assert!(client.finish().success());
+}
+
+#[test]
+fn component_facts_survive_save_close_and_watched_disk_changes() {
+    let project = TempProject::new("wxml-component-save-close");
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{"card":"/components/card/card"}}"#,
+    );
+    project.write(
+        "pages/index/index.json",
+        r#"{"usingComponents":{"card":"../../components/card/card"}}"#,
+    );
+    project.write("pages/index/index.ts", "Page({});");
+    project.write("pages/index/index.wxml", "<card />");
+    project.write("components/card/card.json", r#"{"component":true}"#);
+    project.write("components/card/card.wxml", "<view/>");
+    project.write(
+        "components/card/card.ts",
+        "Component({ properties: { oldProp: { type: String } } });",
+    );
+
+    let root = project.root();
+    let page_uri = project.uri("pages/index/index.wxml");
+    let script_uri = project.uri("components/card/card.ts");
+    let mut client = Client::start();
+    client.initialize(root);
+    client.open(&page_uri, "<view />");
+    client.open(
+        &script_uri,
+        "Component({ properties: { oldProp: { type: String } } });",
+    );
+    client.change(
+        &script_uri,
+        "Component({\n  properties: {\n    /** saved property */\n    newProp: { type: Number },\n  },\n});",
+    );
+    client.save(&script_uri);
+    project.write(
+        "components/card/card.ts",
+        "Component({\n  properties: {\n    /** saved property */\n    newProp: { type: Number },\n  },\n});",
+    );
+    client.close(&script_uri);
+
+    let text = "<card ";
+    let items = client.at("textDocument/completion", &page_uri, text, text.len());
+    let visible = labels(&items);
+    assert!(visible.contains(&"newProp".to_owned()), "{visible:?}");
+    assert!(!visible.contains(&"oldProp".to_owned()), "{visible:?}");
+
+    let text = "<card newProp=\"1\" />";
+    let offset = text.find("newProp").expect("new property") + 2;
+    let hover = client.at("textDocument/hover", &page_uri, text, offset);
+    let hover = hover_text(&hover);
+    assert!(hover.contains("number"), "{hover}");
+    assert!(hover.contains("saved property"), "{hover}");
+    let definition = client.at("textDocument/definition", &page_uri, text, offset);
+    assert!(
+        definition_uri(&definition).is_some_and(|uri| uri.ends_with("components/card/card.ts")),
+        "{definition}"
+    );
+    assert_eq!(
+        definition[0]["range"]["start"],
+        json!({"line": 3, "character": 4}),
+        "{definition}"
+    );
+
+    let text = "<card oldProp=\"1\" />";
+    let offset = text.find("oldProp").expect("old property") + 2;
+    let definition = client.at("textDocument/definition", &page_uri, text, offset);
+    assert_eq!(
+        definition,
+        Value::Null,
+        "old property must not point at a stale line"
+    );
+
+    project.write(
+        "components/card/card.ts",
+        "Component({\n  properties: {\n    /** watched property */\n    watchedProp: { type: Boolean },\n  },\n});",
+    );
+    client.watched_modified(&script_uri);
+    let text = "<card watchedProp=\"true\" />";
+    let offset = text.find("watchedProp").expect("watched property") + 2;
+    let hover = client.at("textDocument/hover", &page_uri, text, offset);
+    let hover = hover_text(&hover);
+    assert!(hover.contains("boolean"), "{hover}");
+    assert!(hover.contains("watched property"), "{hover}");
+    let definition = client.at("textDocument/definition", &page_uri, text, offset);
+    assert!(
+        definition_uri(&definition).is_some_and(|uri| uri.ends_with("components/card/card.ts")),
+        "{definition}"
+    );
+    let text = "<card newProp=\"1\" />";
+    let offset = text.find("newProp").expect("stale property") + 2;
+    let definition = client.at("textDocument/definition", &page_uri, text, offset);
+    assert_eq!(definition, Value::Null, "replaced property must not define");
 
     client.shutdown();
     assert!(client.finish().success());

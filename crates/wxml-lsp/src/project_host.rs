@@ -1114,6 +1114,8 @@ impl ProjectState {
         state.property_cache.clear();
         if is_json {
             rebuild_views(&mut state)?;
+        } else {
+            let _ = refresh_component_script_facts(&mut state, &path);
         }
         let mut dirty = dirty_after(&state, &path, is_json);
         if !is_json && dirty.is_empty() {
@@ -1162,7 +1164,13 @@ impl ProjectState {
                 project_revision: Some(revision),
             });
         }
+        let refreshed = refresh_component_script_facts(&mut state, &path);
         let dirty = dirty_script_views(&state, &path);
+        if refreshed {
+            crate::server::log(format_args!(
+                "refreshed component property facts for a saved script"
+            ));
+        }
         if dirty.is_empty() {
             // The saved script does not own a discovered view, so nothing
             // observable changed.
@@ -1259,6 +1267,9 @@ impl ProjectState {
             }
         }
         state.property_cache.clear();
+        for (path, _) in &script_changes {
+            let _ = refresh_component_script_facts(&mut state, path);
+        }
         if rediscover {
             rebuild_views(&mut state)?;
         }
@@ -1693,6 +1704,18 @@ fn resolve_components(
         .collect()
 }
 
+/// Refreshes discovered property facts for one component script.
+fn refresh_component_script_facts(state: &mut State, script: &ProjectPath) -> bool {
+    let refreshed = state
+        .project
+        .as_mut()
+        .is_some_and(|project| project.refresh_component_properties(script));
+    if refreshed {
+        state.property_cache.remove(script);
+    }
+    refreshed
+}
+
 fn dirty_scripts(state: &State, script: &ProjectPath) -> Vec<ProjectPath> {
     state
         .views
@@ -1724,7 +1747,7 @@ fn affected_component_views(state: &State, script: &ProjectPath) -> Vec<ProjectP
     let mut users_by_base: BTreeMap<ProjectPath, BTreeSet<ProjectPath>> = BTreeMap::new();
     for (wxml, view) in &state.views {
         for base in view.components.values() {
-            if let Ok(component_wxml) = base.with_extension("wxml") {
+            if let Ok(component_wxml) = base.with_appended_extension("wxml") {
                 base_by_wxml.insert(component_wxml, base.clone());
             }
             users_by_base
@@ -2689,6 +2712,98 @@ mod tests {
             panic!("expected a partial hint, got {:?}", view.status_hint);
         };
         assert!(reason.contains("event binding limit"), "{reason}");
+    }
+
+    #[test]
+    fn component_facts_refresh_after_save_close_and_watched_changes() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-component-refresh-{stamp}"));
+        std::fs::create_dir_all(root.join("components/card")).expect("component dir");
+        std::fs::create_dir_all(root.join("pages/index")).expect("page dir");
+        std::fs::write(
+            root.join("app.json"),
+            r#"{"pages":["pages/index/index"],"usingComponents":{"card":"/components/card/card"}}"#,
+        )
+        .expect("app");
+        std::fs::write(root.join("pages/index/index.wxml"), "<card />").expect("page");
+        std::fs::write(root.join("pages/index/index.ts"), "Page({});").expect("page script");
+        std::fs::write(root.join("components/card/card.wxml"), "<view/>").expect("card wxml");
+        std::fs::write(
+            root.join("components/card/card.ts"),
+            "Component({ properties: { oldProp: { type: String } } });",
+        )
+        .expect("card script");
+        let state = ProjectState::new();
+        state
+            .open_root(Some(&format!("file://{}", root.display())))
+            .expect("open");
+        let page = ProjectPath::new("pages/index/index.wxml").expect("page path");
+        let script = ProjectPath::new("components/card/card.ts").expect("script path");
+        let script_uri = format!("file://{}/{}", root.display(), script.as_str());
+
+        state
+            .open_document(OpenDocument {
+                uri: script_uri.clone(),
+                text: "Component({ properties: { newProp: { type: Number } } });".to_owned(),
+                version: Some(2),
+            })
+            .expect("overlay");
+        let facts = state
+            .component_properties(&page, "card")
+            .expect("overlay facts");
+        assert_eq!(facts.properties[0].name, "newProp");
+
+        state.save_document(&script_uri).expect("save");
+        std::fs::write(
+            root.join("components/card/card.ts"),
+            "Component({ properties: { newProp: { type: Number } } });",
+        )
+        .expect("save disk");
+        state.close_document(&script_uri).expect("close");
+        let facts = state
+            .component_properties(&page, "card")
+            .expect("saved facts");
+        assert_eq!(facts.properties[0].name, "newProp");
+        assert_eq!(facts.properties[0].script, script);
+
+        std::fs::write(
+            root.join("components/card/card.ts"),
+            "Component({ properties: { watchedProp: { type: Boolean } } });",
+        )
+        .expect("watched disk");
+        let update = state
+            .watched_files_changed(&[WatchedFileChange {
+                uri: script_uri.clone(),
+                kind: WatchedChangeKind::Changed,
+            }])
+            .expect("watched");
+        assert!(
+            update
+                .dirty_views
+                .contains(&ProjectPath::new("pages/index/index.wxml").expect("page")),
+            "watched component script must dirty callers: {:?}",
+            update.dirty_views
+        );
+        let facts = state
+            .component_properties(&page, "card")
+            .expect("watched facts");
+        assert_eq!(facts.properties[0].name, "watchedProp");
+
+        std::fs::remove_file(root.join("components/card/card.ts")).expect("delete script");
+        state
+            .watched_files_changed(&[WatchedFileChange {
+                uri: script_uri,
+                kind: WatchedChangeKind::Deleted,
+            }])
+            .expect("deleted");
+        let facts = state.component_properties(&page, "card");
+        assert!(facts.is_none_or(|facts| facts.properties.is_empty()));
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
