@@ -35,6 +35,12 @@ fn initialize_result(server: &Server) -> Value {
             },
             "hoverProvider": server.capabilities.hover.is_supported(),
             "definitionProvider": server.capabilities.definition.is_supported(),
+            // Static template completion is always available; the flag only
+            // covers Node-backed expression/event queries.
+            "completionProvider": {
+                "triggerCharacters": ["<", " ", ":", "\"", "'", ".", "{", "="],
+                "resolveProvider": false,
+            },
         },
         "serverInfo": {
             "name": "wxml-lsp",
@@ -85,6 +91,7 @@ impl Server {
             "shutdown" => self.shutdown(id),
             "textDocument/hover" => self.hover(id, params),
             "textDocument/definition" => self.definition(id, params),
+            "textDocument/completion" => self.completion(id, params),
             other => {
                 log(format_args!(
                     "unknown request method `{}`",
@@ -170,10 +177,11 @@ impl Server {
         self.lifecycle = Lifecycle::Running;
         let result = initialize_result(self);
         log(format_args!(
-            "initialized with hover {}, diagnostics {}, definition {}",
+            "initialized with hover {}, diagnostics {}, definition {}, completion {}",
             describe_status(&self.capabilities.hover),
             describe_status(&self.capabilities.diagnostics),
             describe_status(&self.capabilities.definition),
+            describe_status(&self.capabilities.completion),
         ));
         vec![Outgoing::success(id, result)]
     }

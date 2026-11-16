@@ -10,7 +10,15 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyze } from "./analysis.ts";
-import { PROTOCOL_VERSION, RequestError, validateRequest, type AnalyzeRequest } from "./protocol.ts";
+import { complete } from "./completion.ts";
+import {
+  PROTOCOL_VERSION,
+  RequestError,
+  validateCompleteRequest,
+  validateRequest,
+  type AnalyzeRequest,
+  type CompleteRequest,
+} from "./protocol.ts";
 import { BACKEND_VERSION } from "./version.ts";
 
 /**
@@ -146,6 +154,38 @@ export function serve(options: ServerOptions): Promise<void> {
               writeError(id, -32602, "Invalid params", { code: error.code, message: error.message });
             } else {
               log(`analyze failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
+              writeError(id, -32603, "Internal error");
+            }
+          }
+          return;
+        }
+        case "complete": {
+          const params = request.params as CompleteRequest | undefined;
+          if (typeof params !== "object" || params === null) {
+            if (hasId) writeError(id, -32602, "Invalid params", { code: "bad-params" });
+            return;
+          }
+          try {
+            validateCompleteRequest(params);
+          } catch (error) {
+            if (!hasId) return;
+            if (error instanceof RequestError) {
+              writeError(id, -32602, "Invalid params", { code: error.code, message: error.message });
+            } else if (error instanceof TypeError) {
+              writeError(id, -32602, "Invalid params", { code: "bad-params" });
+            } else {
+              writeError(id, -32603, "Internal error");
+            }
+            return;
+          }
+          try {
+            respond(complete(params, { backendDir: options.backendDir }));
+          } catch (error) {
+            if (!hasId) return;
+            if (error instanceof RequestError) {
+              writeError(id, -32602, "Invalid params", { code: error.code, message: error.message });
+            } else {
+              log(`complete failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);
               writeError(id, -32603, "Internal error");
             }
           }

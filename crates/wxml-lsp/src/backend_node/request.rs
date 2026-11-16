@@ -5,7 +5,8 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 use wxml_text::SourceRange;
 use wxml_types::{
-    CheckFragment, ComponentAttribute, ComponentUsage, GuardChain, LocalBinding, RequestContext,
+    CheckFragment, CompletionKind, ComponentAttribute, ComponentUsage, GuardChain, LocalBinding,
+    RequestContext,
 };
 
 use super::config::NodeBackendConfig;
@@ -374,6 +375,150 @@ fn is_keyword(text: &str) -> bool {
         text,
         "true" | "false" | "null" | "undefined" | "this" | "new" | "typeof" | "void"
     )
+}
+
+/// Returns the `{{ ...` expression start and the text up to `offset`.
+fn expression_prefix(text: &str, offset: u32) -> (u32, String) {
+    const MAX_EXPRESSION_BYTES: usize = 4_096;
+    let end = usize::try_from(offset)
+        .unwrap_or(text.len())
+        .min(text.len());
+    let head = text.get(..end).unwrap_or_default();
+    let mut start = head.rfind("{{").map_or(end, |index| index + 2);
+    // Only the tail of a very long, unclosed expression can affect member
+    // completion; keep the request bounded and start on a char boundary.
+    if end.saturating_sub(start) > MAX_EXPRESSION_BYTES {
+        let mut clipped = end - MAX_EXPRESSION_BYTES;
+        while clipped < end && !text.is_char_boundary(clipped) {
+            clipped += 1;
+        }
+        start = clipped;
+    }
+    let expression = head.get(start..).unwrap_or_default();
+    if expression.is_empty() {
+        // Protocol v2 rejects empty `exprText`; one space trims to an empty
+        // expression in Node and keeps the range self-consistent.
+        (u32::try_from(start).unwrap_or(offset), " ".to_owned())
+    } else {
+        (
+            u32::try_from(start).unwrap_or(offset),
+            expression.to_owned(),
+        )
+    }
+}
+
+/// Builds a protocol v2 `complete` request line.
+///
+/// The expression prefix is taken from the snapshot rather than the analyzer
+/// fragment, because a fragment may omit a trailing `.` and an empty mustache
+/// has no fragment at all. Node then synthesizes a parseable expression.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_completion(
+    view: &PreparedView,
+    context: &RequestContext,
+    config: &NodeBackendConfig,
+    request_id: &str,
+    offset: u32,
+    kind: CompletionKind,
+    prefix: &str,
+) -> Result<Option<String>, ProtocolError> {
+    let Some(target) = view.target.as_ref() else {
+        return Ok(None);
+    };
+    let script_path = target.script_file.path();
+    if !view
+        .files
+        .iter()
+        .any(|file| file.path.as_str() == script_path)
+    {
+        return Ok(None);
+    }
+
+    let template = context.source().text();
+    let (expression_start, expr_text) = expression_prefix(template, offset);
+    let analyzer_fragment = view.fragments.iter().find(|fragment| {
+        fragment.wxml_range.start() <= offset && offset <= fragment.wxml_range.end()
+    });
+    let bindings = analyzer_fragment.map_or_else(Vec::new, |fragment| fragment.bindings.clone());
+    let guards = analyzer_fragment.map_or_else(Vec::new, |fragment| fragment.guards.clone());
+    let locals = effective_locals(&bindings);
+    let fragment_revision = analyzer_fragment.map_or(1, |fragment| fragment.fragment_revision);
+    let range_end = expression_start
+        .checked_add(u32::try_from(expr_text.len()).unwrap_or(0))
+        .unwrap_or(offset);
+    // Event-handler completion never mounts a fragment; keep the request
+    // minimal so template text is not sent for a pure script query.
+    let fragments: Vec<Value> = if matches!(kind, CompletionKind::ExpressionMember) {
+        vec![json!({
+            "fragmentId": "complete-0",
+            "exprText": expr_text,
+            "locals": locals,
+            "bindings": bindings.iter().map(local_binding_value).collect::<Vec<Value>>(),
+            "guards": guards.iter().map(guard_chain_value).collect::<Vec<Value>>(),
+            "wxmlRange": {"start": expression_start, "end": range_end},
+            "fragmentRevision": fragment_revision,
+            "root": target.owner.as_str(),
+        })]
+    } else {
+        Vec::new()
+    };
+    let files: Vec<Value> = view
+        .files
+        .iter()
+        .map(|file| {
+            json!({
+                "fileId": file.file.path(),
+                "path": file.path.as_str(),
+                "kind": file.kind,
+                "text": file.text.as_ref(),
+                "sourceRevision": file.source_revision,
+            })
+        })
+        .collect();
+
+    let params = json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "requestId": request_id,
+        "analysisStamp": {
+            "snapshotId": context.source().snapshot().get(),
+            "projectRevision": context.project_revision().get(),
+            "viewRevision": context.view_revision().get(),
+            "backendEpoch": context.backend_epoch().get(),
+        },
+        "view": {
+            "viewId": view.view_id,
+            "owner": {
+                "kind": target.owner.as_str(),
+                "fileId": target.script_file.path(),
+            },
+        },
+        "project": {
+            "projectRoot": view.project_root.to_string_lossy(),
+            "compilerOptions": Value::Object(view.compiler_options.clone()),
+            "typings": {
+                "package": config.typings.package,
+                "version": config.typings.version,
+            },
+        },
+        "scriptFileId": target.script_file.path(),
+        "files": files,
+        "fragments": fragments,
+        "components": Vec::<Value>::new(),
+        "events": Vec::<Value>::new(),
+        "policy": {
+            "jsCheck": config.js_check.as_str(),
+            "propertiesOverlay": "declaration",
+        },
+        "limits": {
+            "maxFiles": config.limits.max_files,
+            "maxTotalBytes": config.limits.max_total_bytes,
+            "maxFragments": config.limits.max_fragments,
+        },
+        "offset": offset,
+        "kind": kind.as_str(),
+        "prefix": prefix,
+    });
+    super::protocol::request_line(request_id, "complete", Some(&params)).map(Some)
 }
 
 #[cfg(test)]

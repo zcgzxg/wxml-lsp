@@ -14,7 +14,13 @@
 import path from "node:path";
 import ts from "typescript";
 import { describeExpression, identifierOffset, isBindingIdentifier } from "./expression.ts";
-import type { CapabilityStates, InsertionRecord, JsCheckMode, MountRecord } from "./types.ts";
+import type {
+  CapabilityState,
+  CapabilityStates,
+  InsertionRecord,
+  JsCheckMode,
+  MountRecord,
+} from "./types.ts";
 
 export const PROTOCOL_VERSION = 2;
 
@@ -267,6 +273,71 @@ export interface AnalyzeRequest {
   };
   /** Request-declared bounds; missing fields fall back to `DEFAULT_LIMITS`. */
   limits?: Partial<RequestLimits>;
+}
+
+/** Completion kinds that the Node backend answers (static completion is in Rust). */
+export type CompletionRequestKind = "expressionMember" | "eventHandler";
+
+/** `complete` request: AnalyzeRequest plus query point. */
+export interface CompleteRequest extends AnalyzeRequest {
+  /** UTF-8 byte offset in the WXML document. */
+  offset: number;
+  kind: CompletionRequestKind;
+  /** Identifier/value prefix immediately before `offset` (debug + filtering). */
+  prefix: string;
+}
+
+export interface CompleteItem {
+  label: string;
+  kind: "tag" | "attribute" | "value" | "property" | "method" | "event" | "keyword";
+  detail?: string;
+  documentation?: string;
+  insertText: string;
+  /** WXML byte range replaced by the edit; must be a precise token range. */
+  replace: { start: number; end: number };
+  sortText?: string;
+}
+
+export interface CompleteResponse {
+  protocolVersion: number;
+  requestId: string;
+  state: CapabilityState;
+  truncated: boolean;
+  items: CompleteItem[];
+}
+
+export const COMPLETION_KINDS: ReadonlySet<CompletionRequestKind> = new Set<CompletionRequestKind>([
+  "expressionMember",
+  "eventHandler",
+]);
+
+/** Upper bound for the debug-only prefix (UTF-16 code units). */
+export const MAX_COMPLETION_PREFIX = 256;
+
+/**
+ * Validate a `complete` request.
+ *
+ * Runs the shared `analyze` shape checks first, then the query point. The WXML
+ * document is not part of `files[]`, so `offset` is not range-checked here; an
+ * out-of-range point simply yields an empty list later.
+ */
+export function validateCompleteRequest(request: CompleteRequest): void {
+  validateRequest(request as AnalyzeRequest);
+  if (typeof request !== "object" || request === null) {
+    throw new RequestError("bad-params", "request must be an object");
+  }
+  if (!Number.isInteger(request.offset) || request.offset < 0) {
+    throw new RequestError("bad-params", "offset must be a non-negative integer");
+  }
+  if (typeof request.kind !== "string" || !COMPLETION_KINDS.has(request.kind)) {
+    throw new RequestError("bad-params", `unknown completion kind: ${String(request.kind)}`);
+  }
+  if (typeof request.prefix !== "string") {
+    throw new RequestError("bad-params", "prefix must be a string");
+  }
+  if (request.prefix.length > MAX_COMPLETION_PREFIX) {
+    throw new RequestError("bad-limit", `prefix has ${request.prefix.length} characters, limit ${MAX_COMPLETION_PREFIX}`);
+  }
 }
 
 export interface RegistrationInfo {

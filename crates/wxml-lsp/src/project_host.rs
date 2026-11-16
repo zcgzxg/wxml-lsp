@@ -74,6 +74,17 @@ const SUPPORTED_COMPILER_OPTIONS: [&str; 31] = [
     "rootDir",
 ];
 
+/// One custom component registered by the current view's `usingComponents`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ViewComponent {
+    /// Tag name used in the template (for example `my-card`).
+    pub name: String,
+    /// Raw `usingComponents` specifier.
+    pub specifier: String,
+    /// Resolved component WXML path, when discovery could resolve it.
+    pub component: Option<ProjectPath>,
+}
+
 /// Why a host operation could not be completed.
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
 pub enum HostError {
@@ -231,6 +242,15 @@ pub trait ProjectHost: Send + Sync {
     /// This is used to convert byte ranges in definition targets to LSP
     /// positions without opening the target document.
     fn file_text(&self, file: &FileId) -> Option<Arc<str>>;
+    /// Returns the custom components registered for one WXML template.
+    ///
+    /// Local page/component `usingComponents` shadow global ones. A host with
+    /// no project (or an unknown template) returns an empty list; static
+    /// completion then simply omits custom component tags.
+    fn view_components(&self, _wxml: &ProjectPath) -> Vec<ViewComponent> {
+        Vec::new()
+    }
+
     /// Prepares the analysis inputs for a WXML snapshot.
     fn analysis(&self, snapshot: &SourceSnapshot) -> Result<PreparedView, HostError>;
 }
@@ -544,6 +564,34 @@ impl ProjectHost for ProjectState {
         let project = state.project.as_ref()?;
         let path = ProjectPath::new(file.path()).ok()?;
         project.read(&path).ok().map(Arc::from)
+    }
+
+    fn view_components(&self, wxml: &ProjectPath) -> Vec<ViewComponent> {
+        let state = self.read();
+        let Some(project) = state.project.as_ref() else {
+            return Vec::new();
+        };
+        // Discovery records `usingComponents` for pages; component JSON is
+        // parsed for properties only, so a component's own WXML has no static
+        // component list yet.
+        let Some(config) = project
+            .pages()
+            .iter()
+            .find(|page| page.wxml == *wxml)
+            .map(|page| &page.config)
+        else {
+            return Vec::new();
+        };
+        let mut components: Vec<ViewComponent> = config
+            .iter()
+            .map(|(name, usage)| ViewComponent {
+                name: name.clone(),
+                specifier: usage.specifier.clone(),
+                component: usage.component.clone(),
+            })
+            .collect();
+        components.sort_by(|left, right| left.name.cmp(&right.name));
+        components
     }
 
     #[allow(clippy::too_many_lines)] // one linear P7-1 pipeline
@@ -1237,6 +1285,21 @@ fn filter_compiler_options(
 mod tests {
     use super::*;
     use wxml_types::{SnapshotId, SourceRevision};
+
+    #[test]
+    fn using_components_are_exposed_for_a_page() {
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/completion-components");
+        let state = ProjectState::new();
+        state
+            .open_root(Some(&format!("file://{}", root.display())))
+            .expect("open fixture");
+        let path = ProjectPath::new("index.wxml").expect("path");
+        let components = state.view_components(&path);
+        let names: Vec<_> = components.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, vec!["local-badge", "my-card"]);
+        assert!(components.iter().any(|entry| entry.component.is_some()));
+    }
 
     #[test]
     fn project_id_does_not_contain_the_root_path() {

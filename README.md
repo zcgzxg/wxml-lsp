@@ -14,7 +14,7 @@
 
 | 组件 | 位置 | 当前内容 |
 | --- | --- | --- |
-| Rust workspace | `crates/` | `wxml-text`（UTF-8 字节 ↔ UTF-16 位置、行索引）、`wxml-syntax`（容错 lexer/parser、Mustache Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、app 发现、tsconfig、sources）、`wxml-types`（C0 契约、模板语义、`wx:for` 作用域、后端接口与 mock）、`wxml-lsp`（JSON-RPC、ProjectHost、Node 后端、hover/diagnostics/definition、版本屏障/缓存/超时/重启）、`wxml-fixtures`（schema v2 校验） |
+| Rust workspace | `crates/` | `wxml-text`（UTF-8 字节 ↔ UTF-16 位置、行索引）、`wxml-syntax`（容错 lexer/parser、Mustache Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、app 发现、tsconfig、sources）、`wxml-types`（C0 契约、模板语义、`wx:for` 作用域、后端接口与 mock）、`wxml-lsp`（JSON-RPC、ProjectHost、Node 后端、hover/diagnostics/definition、静态与后端补全、版本屏障/缓存/超时/重启）、`wxml-fixtures`（schema v2 校验） |
 | Node 类型后端 | `backends/typescript/` | C1.1 类型桥；固定 `typescript@6.0.3`、`miniprogram-api-typings@5.3.1`；要求 Node >= 24；内存原位 shadow，不写业务文件 |
 | Zed 扩展 | `editors/zed/` | 本地 Dev Extension，id `wxml-lsp`、名称 `WXML LSP`（避免与 Marketplace 上仅 grammar 的 `wxml` 扩展冲突）；WXML 语言配置、tree-sitter 查询、`wasm32-wasip2`；真实 grammar 已用 wasi-sdk 34 构建（约 23,806 B）；从 `WXML_LSP_BIN` 绝对路径启动 `wxml-lsp --stdio` |
 | 样本与证据 | `tests/fixtures/`、`docs/evidence/` | AC-001..AC-013 样本与 schema 校验；类型桥、P7/P8 与 G1 证据记录 |
@@ -211,6 +211,18 @@ Component({
 - 配置、文件依赖、缓存及更新处理。
 
 历史调研对象使用了多套语言配置和多个格式化后端；这些兼容项不自动成为本项目必须完整复刻的要求。
+
+### 3.4 补全（Wave 5）
+
+补全分两条路径，目录与边界以[功能基线 §3.8](docs/reference/wxml-language-feature-baseline.md#38-补全目录现状wave-5)为准：
+
+- **静态、同步（不启动 Node）**：`<` 后的标签（基础组件 + 当前页面 `usingComponents`）；`</` 后仅当前未闭合元素栈内的标签；开始标签内的属性名（标签属性 + `id`/`class`/`style`/`hidden` + `wx:` 指令 + 常用事件绑定）；引号内枚举属性值（如 `button type`、`picker mode`、`input type`、`image mode`、`navigator open-type`）；事件属性名（`bindtap`、`catchtap`、`bind:tap`、`capture-bind:tap`、`mut-bind:tap` 等）。
+- **依赖类型后端**：`{{ user.na }}` 的表达式成员补全复用 C1 虚拟文件布局与 TypeScript `getCompletionsAtPosition`；`bindtap="on"` 枚举 Page 顶层方法与 Component `methods`。后端不可用、超时或不支持时静默降级为**空列表**，不报协议错误。
+- **替换范围**：仅替换已输入 token——标签名/属性名替换 token，引号内的值只替换值前缀（引号保留），未加引号的值插入带引号的字面量；不做整行替换。
+- **不产生补全**：纯文本、HTML 注释、`<wxs>` 元素体、Mustache 字符串字面量内。
+- **能力声明**：`completionProvider` 无条件声明，`resolveProvider: false`，触发字符 `<`、空格、`:`、`"`、`'`、`.`、`{`、`=`；`isIncomplete: false`，单次最多 256 项；参数非法返回 `-32602`。
+
+自定义组件目前只在页面 WXML 中列出（页面 `usingComponents` 与 `app.json` 合并，本地同名优先）；组件自身 WXML 中的自定义组件、组件属性名尚未参与补全。目录是受限子集，不宣称完整小程序覆盖。
 
 ## 4. 方案评审结论
 
