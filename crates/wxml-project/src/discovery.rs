@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use crate::files::{self, MAX_MESSAGE_BYTES, ProjectPath, truncate_message, truncate_owned};
 use crate::overlay::Overlay;
-use crate::script::{self, DataRoot, DataRootKind};
+use crate::script::{self, ComponentProperty, DataRoot, DataRootKind};
 
 /// Maximum component-reference depth followed through `usingComponents`.
 pub const MAX_COMPONENT_DEPTH: usize = 16;
@@ -175,6 +175,10 @@ pub struct Component {
     pub json: Option<ProjectPath>,
     /// `properties` roots extracted from the script.
     pub properties: Vec<DataRoot>,
+    /// Statically declared property names, types and documentation.
+    pub property_declarations: Vec<ComponentProperty>,
+    /// Global plus component-local `usingComponents`.
+    pub config: PageConfig,
 }
 
 /// Severity-free category of one discovery issue.
@@ -1241,9 +1245,11 @@ fn visit_component(
         ));
     }
 
-    let json = load_component_json(context, base, depth, pending, reported_missing, issues);
+    let (json, local) =
+        load_component_json(context, base, depth, pending, reported_missing, issues);
     let properties =
         component_properties(root, overlay, script.script.as_ref(), issues, script_budget);
+    let property_declarations = script::extract_component_properties(&properties);
 
     Some(Component {
         id: base.clone(),
@@ -1251,10 +1257,18 @@ fn visit_component(
         script: script.script,
         json,
         properties,
+        property_declarations,
+        config: PageConfig {
+            global: Arc::clone(context.global_components),
+            local,
+        },
     })
 }
 
 /// Parses a component JSON file and enqueues its local children.
+///
+/// Returns the JSON path and the component-local `usingComponents` table so the
+/// component's own WXML can complete its children.
 fn load_component_json(
     context: &mut PageContext<'_>,
     base: &ProjectPath,
@@ -1262,10 +1276,12 @@ fn load_component_json(
     pending: &mut PendingComponents,
     reported_missing: &mut BTreeSet<ProjectPath>,
     issues: &mut Issues,
-) -> Option<ProjectPath> {
+) -> (Option<ProjectPath>, BTreeMap<String, UsingComponent>) {
     let root = context.root;
     let overlay = context.overlay;
-    let candidate = base.with_extension("json").ok()?;
+    let Ok(candidate) = base.with_extension("json") else {
+        return (None, BTreeMap::new());
+    };
     let attempt = if context.budget.exhausted() {
         None
     } else {
@@ -1273,7 +1289,10 @@ fn load_component_json(
     };
     if !charge_json_attempt(context.budget, attempt) {
         context.budget.report(issues, &candidate);
-        return exists(root, overlay, &candidate).then_some(candidate);
+        return (
+            exists(root, overlay, &candidate).then_some(candidate),
+            BTreeMap::new(),
+        );
     }
     match overlay.read_text(root, &candidate) {
         Ok(Some(text)) => {
@@ -1281,7 +1300,7 @@ fn load_component_json(
                 let extra = text.len() - attempt.unwrap_or(0);
                 if !context.budget.consume(extra) {
                     context.budget.report(issues, &candidate);
-                    return Some(candidate);
+                    return (Some(candidate), BTreeMap::new());
                 }
             }
             match parse_page_config_in(&candidate, &text, context.source.parent().as_ref()) {
@@ -1296,16 +1315,19 @@ fn load_component_json(
                         issues,
                     );
                     pending.push_from(&parsed.value.local, depth + 1);
+                    (Some(candidate), parsed.value.local)
                 }
-                Err(error) => issues.push(issue(
-                    &candidate,
-                    DiscoveryIssueKind::InvalidConfig,
-                    error.to_string(),
-                )),
+                Err(error) => {
+                    issues.push(issue(
+                        &candidate,
+                        DiscoveryIssueKind::InvalidConfig,
+                        error.to_string(),
+                    ));
+                    (Some(candidate), BTreeMap::new())
+                }
             }
-            Some(candidate)
         }
-        Ok(None) => None,
+        Ok(None) => (None, BTreeMap::new()),
         Err(error) => {
             context.budget.truncated = true;
             context.budget.report(issues, &candidate);
@@ -1314,7 +1336,7 @@ fn load_component_json(
                 DiscoveryIssueKind::UnreadableFile,
                 error.to_string(),
             ));
-            Some(candidate)
+            (Some(candidate), BTreeMap::new())
         }
     }
 }
@@ -1648,6 +1670,10 @@ mod tests {
         assert_eq!(card.properties[0].kind, DataRootKind::ComponentProperties);
         assert_eq!(card.properties[0].text, "{ title: { type: String } }");
         assert!(!card.properties[0].range.is_empty());
+        assert_eq!(card.property_declarations.len(), 1);
+        assert_eq!(card.property_declarations[0].name, "title");
+        assert_eq!(card.property_declarations[0].type_text, "string");
+        assert_eq!(card.config.local.len(), 0);
     }
 
     #[test]
@@ -1676,6 +1702,24 @@ mod tests {
             .map(|component| component.id.as_str())
             .collect();
         assert_eq!(ids, ["components/a/a", "components/b/b"]);
+        let a = discovery
+            .components
+            .iter()
+            .find(|component| component.id.as_str() == "components/a/a")
+            .expect("a");
+        assert_eq!(
+            a.config.get("b").and_then(|entry| entry.component.as_ref()),
+            Some(&path("components/b/b"))
+        );
+        let b = discovery
+            .components
+            .iter()
+            .find(|component| component.id.as_str() == "components/b/b")
+            .expect("b");
+        assert_eq!(
+            b.config.get("a").and_then(|entry| entry.component.as_ref()),
+            Some(&path("components/a/a"))
+        );
     }
 
     #[test]

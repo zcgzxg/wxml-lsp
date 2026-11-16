@@ -5,6 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
+use wxml_text::SourceRange;
 use wxml_types::{BackendError, CapabilityStatus, HoverResult, MarkupKind, TypeQuality};
 
 use super::{
@@ -12,6 +13,7 @@ use super::{
     source_range_value, status_label, template_document,
 };
 use crate::jsonrpc::{self, Outgoing, RequestKey};
+use crate::metadata::{self, DefinitionAnswer, HoverAnswer, StaticLocation};
 use crate::scheduler::{Job, JobKind, Outcome, SubmitError, WorkDone};
 use crate::server::{Inflight, Server, log};
 use crate::workspace::AnalysisStamp;
@@ -230,6 +232,47 @@ fn newline_count(text: &str) -> usize {
     text.match_indices('\n').count()
 }
 
+/// Returns the custom components registered for one template path.
+fn view_components(server: &Server, path: &str) -> Vec<crate::project_host::ViewComponent> {
+    let Ok(path) = wxml_project::ProjectPath::new(path) else {
+        return Vec::new();
+    };
+    server.host.view_components(&path)
+}
+
+/// Refreshes the one component named by `target` from the effective script.
+fn refresh_component_properties(
+    server: &Server,
+    path: &str,
+    target: &metadata::Target,
+    components: &mut [crate::project_host::ViewComponent],
+) {
+    let tag = match target {
+        metadata::Target::Tag { name, .. } => name,
+        metadata::Target::Attribute { tag, .. } | metadata::Target::Value { tag, .. } => tag,
+    };
+    let Ok(path) = wxml_project::ProjectPath::new(path) else {
+        return;
+    };
+    if let Some(component) = components.iter_mut().find(|entry| entry.name == *tag) {
+        component.properties = server.host.component_properties(&path, tag);
+    }
+}
+
+/// Maps one project-relative static location through the host.
+///
+/// The target never leaves the project: `file_id` validates the path,
+/// `uri_for` builds the client URI, and `file_text` supplies the current
+/// overlay or disk text for the line index.
+fn static_location_value(server: &Server, location: &StaticLocation) -> Option<Value> {
+    let file = server.host.file_id(&location.path).ok()?;
+    let uri = server.host.uri_for(&file)?;
+    let text = server.host.file_text(&file)?;
+    let line_index = wxml_text::LineIndex::new(&*text);
+    let range = line_index_range_value(&line_index, SourceRange::new(location.range))?;
+    Some(json!({"uri": uri, "range": range}))
+}
+
 /// Short message for a full or stopped dispatch queue.
 const fn submit_message(error: SubmitError) -> &'static str {
     match error {
@@ -239,8 +282,78 @@ const fn submit_message(error: SubmitError) -> &'static str {
 }
 
 impl Server {
+    /// Answers a hover statically when the cursor is on a tag, attribute or
+    /// documented value.
+    ///
+    /// Mustaches and event values return `None`, so the backend keeps its
+    /// existing role for data fields and event handlers.
+    fn static_hover(&self, id: &Value, params: Option<&Value>) -> Option<Vec<Outgoing>> {
+        let params = params?;
+        let (uri, position) = hover_target(params)?;
+        if !template_document(self, uri) {
+            return None;
+        }
+        let document = self.workspace.get(uri)?;
+        let offset = document.offset_at(position)?;
+        let context = document.request_context(&self.epoch)?;
+        let target = metadata::target_at(context.source().text(), offset)?;
+        let path = context.source().file().path();
+        let mut components = view_components(self, path);
+        refresh_component_properties(self, path, &target, &mut components);
+        let HoverAnswer::Document { markdown, range } = metadata::hover(&components, &target)
+        else {
+            return None;
+        };
+        let range = source_range_value(document, range)?;
+        Some(vec![Outgoing::success(
+            id.clone(),
+            json!({
+                "contents": {"kind": "markdown", "value": markdown},
+                "range": range,
+            }),
+        )])
+    }
+
+    /// Answers a component definition statically when one is provable.
+    ///
+    /// An unresolved component or undeclared property returns `null` instead
+    /// of a fabricated target; tokens that are not component metadata return
+    /// `None` and keep the backend definition path.
+    fn static_definition(&self, id: &Value, params: Option<&Value>) -> Option<Vec<Outgoing>> {
+        let params = params?;
+        let (uri, position) = hover_target(params)?;
+        if !template_document(self, uri) {
+            return None;
+        }
+        let document = self.workspace.get(uri)?;
+        let offset = document.offset_at(position)?;
+        let context = document.request_context(&self.epoch)?;
+        let target = metadata::target_at(context.source().text(), offset)?;
+        let path = context.source().file().path();
+        let mut components = view_components(self, path);
+        refresh_component_properties(self, path, &target, &mut components);
+        match metadata::definition(&components, &target) {
+            DefinitionAnswer::NotStatic => None,
+            DefinitionAnswer::None => Some(vec![Outgoing::success(id.clone(), Value::Null)]),
+            DefinitionAnswer::Location(location) => {
+                let value = static_location_value(self, &location).unwrap_or(Value::Null);
+                if value.is_null() {
+                    Some(vec![Outgoing::success(id.clone(), Value::Null)])
+                } else {
+                    Some(vec![Outgoing::success(
+                        id.clone(),
+                        Value::Array(vec![value]),
+                    )])
+                }
+            }
+        }
+    }
+
     /// Handles `textDocument/hover`.
     pub(crate) fn hover(&mut self, id: Value, params: Option<Value>) -> Vec<Outgoing> {
+        if let Some(outgoing) = self.static_hover(&id, params.as_ref()) {
+            return outgoing;
+        }
         if !self.capabilities.hover.is_supported() {
             return vec![Outgoing::failure(
                 id,
@@ -253,6 +366,9 @@ impl Server {
 
     /// Handles `textDocument/definition`.
     pub(crate) fn definition(&mut self, id: Value, params: Option<Value>) -> Vec<Outgoing> {
+        if let Some(outgoing) = self.static_definition(&id, params.as_ref()) {
+            return outgoing;
+        }
         if !self.capabilities.definition.is_supported() {
             return vec![Outgoing::failure(
                 id,

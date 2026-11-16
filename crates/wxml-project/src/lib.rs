@@ -32,7 +32,10 @@ pub use files::{
     FileError, FileKey, PathError, ProjectPath, UriError, read_file, root_path_from_uri,
 };
 pub use overlay::{Overlay, OverlayError};
-pub use script::{DataRoot, DataRootKind, ScriptResolution, extract_data_roots, resolve_script};
+pub use script::{
+    ComponentProperty, DataRoot, DataRootKind, ScriptResolution, extract_component_properties,
+    extract_data_roots, resolve_script,
+};
 pub use sources::{SourceFile, SourceIssue, SourceIssueKind, SourceKind, SourceLimits, SourceSet};
 
 /// Why a project could not be opened.

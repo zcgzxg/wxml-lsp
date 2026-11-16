@@ -1,0 +1,8 @@
+{
+  "pages": ["pages/index/index"],
+  "usingComponents": {
+    "shared-card": "/components/global-card/global-card",
+    "remote-card": "plugin://demo/remote",
+    "pkg-card": "some-package/card"
+  }
+}

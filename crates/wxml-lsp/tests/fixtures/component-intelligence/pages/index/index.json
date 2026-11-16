@@ -1,0 +1,6 @@
+{
+  "usingComponents": {
+    "outer-card": "../../components/outer-card/outer-card",
+    "shared-card": "../../components/page-card/page-card"
+  }
+}

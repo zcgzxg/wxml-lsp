@@ -10,6 +10,7 @@
 pub(crate) mod catalog;
 pub(crate) mod context;
 pub(crate) mod expression;
+pub(crate) mod rules;
 pub(crate) mod static_items;
 
 use std::sync::Arc;
@@ -39,16 +40,30 @@ pub(crate) fn static_completion(
     context: &wxml_types::RequestContext,
     detected: &Detected,
 ) -> CompletionResult {
-    // Only tag sites need `usingComponents`; attribute/value sites avoid a
-    // discovery-map clone on every keystroke.
-    let components = if matches!(detected.site, context::Site::Tag { .. }) {
-        let path = context.source().file().path();
-        expression::project_path(path)
-            .map(|path| server.host.view_components(&path))
+    // Tag and attribute-name sites need `usingComponents` (custom component
+    // tags and their property names); value sites avoid a discovery-map clone
+    // on every keystroke.
+    let project_path = expression::project_path(context.source().file().path());
+    let mut components = if matches!(
+        detected.site,
+        context::Site::Tag { .. } | context::Site::AttributeName { .. }
+    ) {
+        project_path
+            .as_ref()
+            .map(|path| server.host.view_components(path))
             .unwrap_or_default()
     } else {
         Vec::new()
     };
+    if let (context::Site::AttributeName { tag, .. }, Some(path)) =
+        (&detected.site, project_path.as_ref())
+    {
+        // Discovery may predate an unsaved component script edit; refresh the
+        // one tag being completed from the effective script text.
+        if let Some(component) = components.iter_mut().find(|entry| entry.name == *tag) {
+            component.properties = server.host.component_properties(path, tag);
+        }
+    }
     let (items, truncated) = static_items::items(detected, &components);
     CompletionResult {
         items,

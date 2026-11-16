@@ -2,11 +2,13 @@
 
 use std::collections::BTreeSet;
 
+use wxml_project::ComponentTargetKind;
 use wxml_text::{SourceRange, TextRange};
 use wxml_types::{CompletionItem, CompletionItemKind, InsertTextFormat, MAX_COMPLETION_ITEMS};
 
 use super::catalog;
-use super::context::{Context, Site};
+use super::context::{AttributeOccurrence, Context, Site};
+use super::rules;
 use crate::project_host::ViewComponent;
 
 /// Builds the static item list for one context.
@@ -18,7 +20,7 @@ pub(crate) fn items(
 ) -> (Vec<CompletionItem>, bool) {
     let mut items = match &context.site {
         Site::Tag { closing, .. } => tag_items(context, components, *closing),
-        Site::AttributeName { tag, .. } => attribute_items(context, tag),
+        Site::AttributeName { tag, .. } => attribute_items(context, tag, components),
         Site::AttributeValue { tag, attribute, .. } => value_items(context, tag, attribute),
         Site::Mustache => Vec::new(),
     };
@@ -69,6 +71,25 @@ fn item(
     }
 }
 
+/// Describes a custom component tag, including honest degradation for
+/// unresolved local, plugin and package components.
+fn component_detail(component: &ViewComponent) -> String {
+    match component.kind {
+        ComponentTargetKind::Local => component.wxml.as_ref().map_or_else(
+            || {
+                component.component.as_ref().map_or_else(
+                    || format!("Custom component ({})", component.specifier),
+                    |base| format!("Custom component {} (target not found)", base.as_str()),
+                )
+            },
+            |wxml| format!("Custom component {}", wxml.as_str()),
+        ),
+        ComponentTargetKind::Plugin => "Plugin component (local metadata unavailable)".to_owned(),
+        ComponentTargetKind::Package => "Package component (local metadata unavailable)".to_owned(),
+        _ => format!("Custom component ({})", component.specifier),
+    }
+}
+
 /// Tag suggestions: builtin tags plus the current view's custom components.
 fn tag_items(
     context: &Context,
@@ -112,15 +133,11 @@ fn tag_items(
         if !matches(&component.name, prefix) || !seen.insert(component.name.clone()) {
             continue;
         }
-        let detail = component.component.as_ref().map_or_else(
-            || format!("Custom component ({})", component.specifier),
-            |path| format!("Custom component {}", path.as_str()),
-        );
         items.push(item(
             &component.name,
             CompletionItemKind::Tag,
             1,
-            Some(detail),
+            Some(component_detail(component)),
             component.name.clone(),
             replace,
         ));
@@ -128,49 +145,172 @@ fn tag_items(
     items
 }
 
+/// Returns whether a completion range overlaps an existing attribute token.
+const fn overlaps(range: TextRange, replace: TextRange) -> bool {
+    range.start() < replace.end() && replace.start() < range.end()
+}
+
+/// Returns whether the attribute under the cursor is the one being edited.
+///
+/// A zero-width replacement at the token start is treated as editing it, so
+/// moving the cursor to the beginning of an existing attribute still offers
+/// that attribute.
+const fn is_current(occurrence: &AttributeOccurrence, replace: TextRange) -> bool {
+    overlaps(occurrence.range, replace)
+        || (replace.is_empty() && occurrence.range.start() == replace.start())
+}
+
+/// Returns whether a unique attribute is already present elsewhere in the tag.
+fn already_declared(context: &Context, name: &str) -> bool {
+    let mut current = false;
+    let mut other = false;
+    for occurrence in &context.attributes {
+        if !occurrence.name.eq_ignore_ascii_case(name) {
+            continue;
+        }
+        if is_current(occurrence, context.replace) {
+            current = true;
+        } else {
+            other = true;
+        }
+    }
+    other && !current
+}
+
+/// Adds one catalog attribute unless it is filtered out.
+#[allow(clippy::too_many_arguments)]
+fn push_attribute(
+    items: &mut Vec<CompletionItem>,
+    seen: &mut BTreeSet<String>,
+    context: &Context,
+    tag: &str,
+    replace: SourceRange,
+    name: &str,
+    detail: &str,
+    category: u8,
+) {
+    if !matches(name, context.prefix.as_str())
+        || seen.contains(name)
+        || already_declared(context, name)
+        || rules::is_hidden(tag, name, &context.attributes)
+    {
+        return;
+    }
+    seen.insert(name.to_owned());
+    items.push(item(
+        name,
+        CompletionItemKind::Attribute,
+        category,
+        Some(detail.to_owned()),
+        name.to_owned(),
+        replace,
+    ));
+}
+
 /// Attribute-name suggestions for one tag.
-fn attribute_items(context: &Context, tag: &str) -> Vec<CompletionItem> {
+fn attribute_items(
+    context: &Context,
+    tag: &str,
+    components: &[ViewComponent],
+) -> Vec<CompletionItem> {
     let replace = source_range(context.replace);
     let prefix = context.prefix.as_str();
     let mut items = Vec::new();
     let mut seen = BTreeSet::new();
-    let mut push = |name: &str, detail: &str, category: u8| {
-        if !matches(name, prefix) || !seen.insert(name.to_owned()) {
-            return;
-        }
-        items.push(item(
-            name,
-            CompletionItemKind::Attribute,
-            category,
-            Some(detail.to_owned()),
-            name.to_owned(),
-            replace,
-        ));
-    };
     if let Some(spec) = catalog::tag(tag) {
         for attribute in spec.attributes {
-            push(attribute.name, attribute.detail, 2);
+            push_attribute(
+                &mut items,
+                &mut seen,
+                context,
+                tag,
+                replace,
+                attribute.name,
+                attribute.detail,
+                2,
+            );
+        }
+    }
+    if let Some(component) = components.iter().find(|component| component.name == tag) {
+        for property in &component.properties {
+            if !matches(&property.name, prefix)
+                || seen.contains(&property.name)
+                || already_declared(context, &property.name)
+                || rules::is_hidden(tag, &property.name, &context.attributes)
+            {
+                continue;
+            }
+            seen.insert(property.name.clone());
+            let mut candidate = item(
+                &property.name,
+                CompletionItemKind::Property,
+                2,
+                Some(property.type_text.clone()),
+                property.name.clone(),
+                replace,
+            );
+            candidate.documentation = property
+                .documentation
+                .as_ref()
+                .map(|documentation| crate::handlers::markdown_escape(documentation));
+            items.push(candidate);
         }
     }
     for attribute in catalog::GLOBAL_ATTRIBUTES {
-        push(attribute.name, attribute.detail, 3);
+        push_attribute(
+            &mut items,
+            &mut seen,
+            context,
+            tag,
+            replace,
+            attribute.name,
+            attribute.detail,
+            3,
+        );
     }
     for directive in catalog::DIRECTIVE_ATTRIBUTES {
-        push(directive.name, directive.detail, 3);
+        push_attribute(
+            &mut items,
+            &mut seen,
+            context,
+            tag,
+            replace,
+            directive.name,
+            directive.detail,
+            3,
+        );
     }
     for event in catalog::EVENT_ATTRIBUTES {
-        push(event.name, event.detail, 4);
+        push_attribute(
+            &mut items,
+            &mut seen,
+            context,
+            tag,
+            replace,
+            event.name,
+            event.detail,
+            4,
+        );
     }
     for name in catalog::EVENT_NAMES {
         // Only expose generated event names when the user is already typing an
         // event prefix; otherwise the list is dominated by noise.
         if catalog::is_event_prefix(prefix) {
             let attribute = format!("bind{name}");
-            push(&attribute, &format!("Bind `{name}`"), 4);
+            let detail = format!("Bind `{name}`");
+            push_attribute(
+                &mut items, &mut seen, context, tag, replace, &attribute, &detail, 4,
+            );
             let attribute = format!("catch{name}");
-            push(&attribute, &format!("Bind `{name}` and stop bubbling"), 4);
+            let detail = format!("Bind `{name}` and stop bubbling");
+            push_attribute(
+                &mut items, &mut seen, context, tag, replace, &attribute, &detail, 4,
+            );
             let attribute = format!("bind:{name}");
-            push(&attribute, &format!("Bind `{name}` (alternate form)"), 4);
+            let detail = format!("Bind `{name}` (alternate form)");
+            push_attribute(
+                &mut items, &mut seen, context, tag, replace, &attribute, &detail, 4,
+            );
         }
     }
     items
@@ -218,6 +358,7 @@ mod tests {
             replace: TextRange::new(start, end).expect("range"),
             prefix: prefix.to_owned(),
             open_tags: Vec::new(),
+            attributes: Vec::new(),
         }
     }
 
@@ -232,6 +373,7 @@ mod tests {
             replace: TextRange::new(0, 0).expect("range"),
             prefix: prefix.to_owned(),
             open_tags: Vec::new(),
+            attributes: Vec::new(),
         };
         let all = value_items(&quoted(""), "button", "type");
         assert_eq!(all.len(), 3);
@@ -246,7 +388,14 @@ mod tests {
         let components = vec![ViewComponent {
             name: "my-card".to_owned(),
             specifier: "/components/card".to_owned(),
+            kind: ComponentTargetKind::Local,
             component: None,
+            wxml: None,
+            json: None,
+            properties: Vec::new(),
+            origin: crate::project_host::ComponentOrigin::App {
+                file: wxml_project::ProjectPath::new("app.json").expect("path"),
+            },
         }];
         let (items, truncated) = items(
             &context(
@@ -300,6 +449,217 @@ mod tests {
         assert!(labels.contains(&"type"));
         assert!(labels.contains(&"id"));
         assert!(labels.contains(&"bindtap"));
+    }
+
+    fn picker_context(
+        prefix: &str,
+        start: u32,
+        end: u32,
+        attributes: Vec<AttributeOccurrence>,
+    ) -> Context {
+        let mut context = context(
+            Site::AttributeName {
+                tag: "picker".to_owned(),
+                name: prefix.to_owned(),
+            },
+            prefix,
+            start,
+            end,
+        );
+        context.attributes = attributes;
+        context
+    }
+
+    #[test]
+    fn picker_mode_conditions_are_data_driven() {
+        let date = picker_context(
+            "",
+            30,
+            30,
+            vec![AttributeOccurrence {
+                name: "mode".to_owned(),
+                value: Some("date".to_owned()),
+                range: TextRange::new(8, 12).expect("range"),
+            }],
+        );
+        let (date_items, _) = items(&date, &[]);
+        let labels: Vec<_> = date_items.iter().map(|item| item.label.as_str()).collect();
+        assert!(labels.contains(&"start"), "{labels:?}");
+        assert!(labels.contains(&"end"), "{labels:?}");
+        assert!(labels.contains(&"fields"), "{labels:?}");
+        assert!(!labels.contains(&"range"), "{labels:?}");
+        assert!(!labels.contains(&"range-key"), "{labels:?}");
+        assert!(!labels.contains(&"bindcolumnchange"), "{labels:?}");
+
+        let selector = picker_context(
+            "",
+            30,
+            30,
+            vec![AttributeOccurrence {
+                name: "mode".to_owned(),
+                value: Some("selector".to_owned()),
+                range: TextRange::new(8, 12).expect("range"),
+            }],
+        );
+        let (selector_items, _) = items(&selector, &[]);
+        let labels: Vec<_> = selector_items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert!(labels.contains(&"range"));
+        assert!(!labels.contains(&"start"));
+        assert!(!labels.contains(&"end"));
+
+        let dynamic = picker_context(
+            "",
+            30,
+            30,
+            vec![AttributeOccurrence {
+                name: "mode".to_owned(),
+                value: Some("{{ pickerMode }}".to_owned()),
+                range: TextRange::new(8, 12).expect("range"),
+            }],
+        );
+        let (dynamic_items, _) = items(&dynamic, &[]);
+        let labels: Vec<_> = dynamic_items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert!(labels.contains(&"range"));
+        assert!(labels.contains(&"start"));
+    }
+
+    #[test]
+    fn already_declared_attributes_are_hidden_but_the_current_one_is_not() {
+        let context = picker_context(
+            "ra",
+            30,
+            32,
+            vec![
+                AttributeOccurrence {
+                    name: "mode".to_owned(),
+                    value: Some("selector".to_owned()),
+                    range: TextRange::new(8, 12).expect("range"),
+                },
+                AttributeOccurrence {
+                    name: "range".to_owned(),
+                    value: Some("a".to_owned()),
+                    range: TextRange::new(20, 25).expect("range"),
+                },
+                AttributeOccurrence {
+                    name: "ra".to_owned(),
+                    value: None,
+                    range: TextRange::new(30, 32).expect("range"),
+                },
+            ],
+        );
+        let (declared_items, _) = items(&context, &[]);
+        let labels: Vec<_> = declared_items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert!(labels.contains(&"range-key"), "{labels:?}");
+        assert!(!labels.contains(&"range"), "{labels:?}");
+
+        let editing = picker_context(
+            "mode",
+            10,
+            14,
+            vec![AttributeOccurrence {
+                name: "mode".to_owned(),
+                value: Some("selector".to_owned()),
+                range: TextRange::new(10, 14).expect("range"),
+            }],
+        );
+        let (editing_items, _) = items(&editing, &[]);
+        let labels: Vec<_> = editing_items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert!(labels.contains(&"mode"), "{labels:?}");
+    }
+
+    #[test]
+    fn input_confirm_type_follows_the_declared_type() {
+        let context = context(
+            Site::AttributeName {
+                tag: "input".to_owned(),
+                name: String::new(),
+            },
+            "",
+            6,
+            6,
+        );
+        let (default_items, _) = items(&context, &[]);
+        assert!(
+            default_items
+                .iter()
+                .any(|item| item.label == "confirm-type"),
+            "default text input keeps confirm-type"
+        );
+
+        let mut digit = context;
+        digit.attributes = vec![AttributeOccurrence {
+            name: "type".to_owned(),
+            value: Some("digit".to_owned()),
+            range: TextRange::new(7, 11).expect("range"),
+        }];
+        let (digit_items, _) = items(&digit, &[]);
+        assert!(
+            !digit_items.iter().any(|item| item.label == "confirm-type"),
+            "non-text input types hide confirm-type"
+        );
+    }
+
+    #[test]
+    fn component_properties_complete_with_type_and_documentation() {
+        let components = vec![ViewComponent {
+            name: "my-card".to_owned(),
+            specifier: "../../components/my-card/index".to_owned(),
+            kind: ComponentTargetKind::Local,
+            component: Some(
+                wxml_project::ProjectPath::new("components/my-card/index").expect("path"),
+            ),
+            wxml: Some(
+                wxml_project::ProjectPath::new("components/my-card/index.wxml").expect("path"),
+            ),
+            json: None,
+            properties: vec![wxml_project::ComponentProperty {
+                name: "title".to_owned(),
+                type_text: "string | number".to_owned(),
+                default_text: None,
+                documentation: Some("标题".to_owned()),
+                script: wxml_project::ProjectPath::new("components/my-card/index.ts")
+                    .expect("path"),
+                range: TextRange::new(10, 15).expect("range"),
+            }],
+            origin: crate::project_host::ComponentOrigin::Local { file: None },
+        }];
+        let context = context(
+            Site::AttributeName {
+                tag: "my-card".to_owned(),
+                name: String::new(),
+            },
+            "",
+            10,
+            10,
+        );
+        let (items_with_property, _) = items(&context, &components);
+        let title = items_with_property
+            .iter()
+            .find(|item| item.label == "title")
+            .expect("component property");
+        assert_eq!(title.detail.as_deref(), Some("string | number"));
+        assert_eq!(title.documentation.as_deref(), Some("标题"));
+
+        let mut with_title = context;
+        with_title.attributes = vec![AttributeOccurrence {
+            name: "title".to_owned(),
+            value: Some("x".to_owned()),
+            range: TextRange::new(11, 16).expect("range"),
+        }];
+        let (items_with_title, _) = items(&with_title, &components);
+        assert!(!items_with_title.iter().any(|item| item.label == "title"));
     }
 
     #[test]

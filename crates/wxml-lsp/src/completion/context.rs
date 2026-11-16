@@ -38,6 +38,23 @@ pub(crate) enum Site {
     Mustache,
 }
 
+/// One attribute occurrence inside the current start tag.
+///
+/// Completion uses the name and range to avoid suggesting a unique attribute
+/// that is already present, while still allowing the attribute under the
+/// cursor to be completed again. `value` keeps the raw literal text (including
+/// any quotes-free content) so conditional rules can read a controlling
+/// attribute such as `picker mode`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AttributeOccurrence {
+    /// Attribute name.
+    pub(crate) name: String,
+    /// Raw value text, or `None` when the attribute has no `=`.
+    pub(crate) value: Option<String>,
+    /// Byte range of the attribute name.
+    pub(crate) range: TextRange,
+}
+
 /// One detected completion site plus the exact text it replaces.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Context {
@@ -49,6 +66,8 @@ pub(crate) struct Context {
     pub(crate) prefix: String,
     /// Open element names, outermost first.
     pub(crate) open_tags: Vec<String>,
+    /// Attributes of the current start tag, in source order.
+    pub(crate) attributes: Vec<AttributeOccurrence>,
 }
 
 /// Characters allowed in a tag name.
@@ -145,7 +164,7 @@ pub(crate) fn detect(text: &str, offset: u32) -> Option<Context> {
                 }
             }
             if bytes.get(index + 1) == Some(&b'/') {
-                match scan_tag(text, bytes, index + 2, offset, true, &mut open_tags) {
+                match scan_tag(text, bytes, index + 2, offset, true, index, &mut open_tags) {
                     TagScan::Found(context) => return Some(context),
                     TagScan::Continue(next) => {
                         index = next;
@@ -179,7 +198,7 @@ pub(crate) fn detect(text: &str, offset: u32) -> Option<Context> {
                     None => return None,
                 }
             }
-            match scan_tag(text, bytes, index + 1, offset, false, &mut open_tags) {
+            match scan_tag(text, bytes, index + 1, offset, false, index, &mut open_tags) {
                 TagScan::Found(context) => return Some(context),
                 TagScan::Continue(next) => {
                     index = next;
@@ -220,7 +239,14 @@ enum TagScan {
 
 /// Builds a `Found` result, or continues the scan when a range is not
 /// representable (only possible above 4 GiB or outside `u32`).
-fn found(site: Site, start: usize, offset: usize, prefix: String, open_tags: &[String]) -> TagScan {
+fn found(
+    site: Site,
+    start: usize,
+    offset: usize,
+    prefix: String,
+    open_tags: &[String],
+    attributes: &[AttributeOccurrence],
+) -> TagScan {
     let (Some(start), Some(end)) = (u32::try_from(start).ok(), u32::try_from(offset).ok()) else {
         return TagScan::Continue(offset);
     };
@@ -232,6 +258,7 @@ fn found(site: Site, start: usize, offset: usize, prefix: String, open_tags: &[S
         replace,
         prefix,
         open_tags: open_tags.to_vec(),
+        attributes: attributes.to_vec(),
     })
 }
 
@@ -243,6 +270,7 @@ fn scan_tag(
     mut index: usize,
     offset: usize,
     closing: bool,
+    tag_start: usize,
     open_tags: &mut Vec<String>,
 ) -> TagScan {
     if closing {
@@ -250,6 +278,11 @@ fn scan_tag(
             index += 1;
         }
     }
+    let attributes = if closing {
+        Vec::new()
+    } else {
+        scan_tag_attributes(text, tag_start)
+    };
     let name_start = index;
     while index < offset && is_tag_name(bytes[index]) {
         index += 1;
@@ -269,6 +302,7 @@ fn scan_tag(
             offset,
             name,
             open_tags,
+            &attributes,
         );
     }
 
@@ -304,6 +338,7 @@ fn scan_tag(
                 offset,
                 String::new(),
                 open_tags,
+                &attributes,
             );
         }
         if bytes[index] == b'>' {
@@ -344,6 +379,7 @@ fn scan_tag(
                 offset,
                 attribute,
                 open_tags,
+                &attributes,
             );
         }
         while index < offset && bytes[index].is_ascii_whitespace() {
@@ -368,6 +404,7 @@ fn scan_tag(
                 offset,
                 String::new(),
                 open_tags,
+                &attributes,
             );
         }
         let quote = bytes[index];
@@ -414,6 +451,7 @@ fn scan_tag(
                 offset,
                 prefix,
                 open_tags,
+                &attributes,
             );
         }
         // Unquoted value. A mustache is legal here (`wx:if={{user.id}}`) and
@@ -456,10 +494,117 @@ fn scan_tag(
                 token_end,
                 prefix,
                 open_tags,
+                &attributes,
             );
         }
         // Continue with the next attribute.
     }
+}
+
+/// Scans attributes of one start tag without requiring a syntax tree.
+///
+/// The scanner is deliberately tolerant: an unterminated tag ends at the next
+/// `<`, and unparsable bytes are skipped one at a time. It never loops without
+/// advancing.
+fn scan_tag_attributes(text: &str, tag_start: usize) -> Vec<AttributeOccurrence> {
+    let bytes = text.as_bytes();
+    let mut index = tag_start.saturating_add(1);
+    while index < bytes.len() && is_tag_name(bytes[index]) {
+        index += 1;
+    }
+    let mut attributes = Vec::new();
+    loop {
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        if index >= bytes.len() {
+            break;
+        }
+        match bytes[index] {
+            b'>' | b'<' => break,
+            b'/' if bytes.get(index + 1) == Some(&b'>') => break,
+            _ => {}
+        }
+        let name_start = index;
+        while index < bytes.len() && is_attribute_name(bytes[index]) {
+            index += 1;
+        }
+        if index == name_start {
+            index += 1;
+            continue;
+        }
+        let name_end = index;
+        let Some(name) = text.get(name_start..name_end).map(str::to_owned) else {
+            index = name_end;
+            continue;
+        };
+        let after_name = index;
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        let mut value = None;
+        if bytes.get(index) == Some(&b'=') {
+            index += 1;
+            while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+                index += 1;
+            }
+            if index < bytes.len() {
+                let quote = bytes[index];
+                if quote == b'"' || quote == b'\'' {
+                    index += 1;
+                    let value_start = index;
+                    while index < bytes.len() {
+                        if bytes[index] == quote {
+                            break;
+                        }
+                        if bytes.get(index..index + 2) == Some(b"{{") {
+                            if let Some(next) = skip_mustache(bytes, index, bytes.len()) {
+                                index = next;
+                                continue;
+                            }
+                            index = bytes.len();
+                            break;
+                        }
+                        index += 1;
+                    }
+                    value = text.get(value_start..index).map(str::to_owned);
+                    if index < bytes.len() {
+                        index += 1;
+                    }
+                } else {
+                    let value_start = index;
+                    while index < bytes.len()
+                        && !bytes[index].is_ascii_whitespace()
+                        && bytes[index] != b'>'
+                    {
+                        if bytes.get(index..index + 2) == Some(b"{{") {
+                            if let Some(next) = skip_mustache(bytes, index, bytes.len()) {
+                                index = next;
+                                continue;
+                            }
+                            index = bytes.len();
+                            break;
+                        }
+                        index += 1;
+                    }
+                    value = text.get(value_start..index).map(str::to_owned);
+                }
+            }
+        } else {
+            index = after_name;
+        }
+        if let Some(range) = text_range(name_start, name_end) {
+            attributes.push(AttributeOccurrence { name, value, range });
+        }
+    }
+    attributes
+}
+
+/// Converts validated byte offsets into a range.
+fn text_range(start: usize, end: usize) -> Option<TextRange> {
+    let start = u32::try_from(start).ok()?;
+    let end = u32::try_from(end).ok()?;
+    TextRange::new(start, end).ok()
 }
 
 /// Scans a mustache beginning at `index`; returns a site only when the cursor
@@ -487,6 +632,7 @@ fn scan_mustache(text: &str, bytes: &[u8], index: usize, offset: usize) -> Optio
         replace: TextRange::new(start.min(end), end).ok()?,
         prefix,
         open_tags: Vec::new(),
+        attributes: Vec::new(),
     })
 }
 
@@ -549,6 +695,23 @@ mod tests {
         );
         assert_eq!(context.replace.start(), 13);
         assert_eq!(context.prefix, "a b");
+    }
+
+    #[test]
+    fn collects_current_tag_attributes_for_duplicate_filtering() {
+        let text = "<picker mode=\"date\" range=\"a\" start=\"{{ value }}\" va";
+        let context = detect_at(text, text.len()).expect("attribute site");
+        assert!(matches!(
+            context.site,
+            Site::AttributeName { ref tag, ref name } if tag == "picker" && name == "va"
+        ));
+        assert_eq!(context.attributes.len(), 4);
+        assert_eq!(context.attributes[0].name, "mode");
+        assert_eq!(context.attributes[0].value.as_deref(), Some("date"));
+        assert_eq!(context.attributes[1].name, "range");
+        assert_eq!(context.attributes[2].value.as_deref(), Some("{{ value }}"));
+        assert_eq!(context.attributes[3].name, "va");
+        assert!(context.attributes[3].range.start() as usize <= text.len() - "va".len());
     }
 
     #[test]

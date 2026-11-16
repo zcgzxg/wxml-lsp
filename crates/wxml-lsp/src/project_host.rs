@@ -22,7 +22,8 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use thiserror::Error;
 use wxml_project::{
-    ComponentTargetKind, Page, Project, ProjectPath, SourceFile, SourceKind, SourceLimits, UriError,
+    ComponentProperty, ComponentTargetKind, Page, Project, ProjectPath, SourceFile, SourceKind,
+    SourceLimits, UriError,
 };
 use wxml_syntax::{ParseErrorKind, ParseResult};
 use wxml_types::{
@@ -76,6 +77,32 @@ const SUPPORTED_COMPILER_OPTIONS: [&str; 33] = [
     "outDir",
 ];
 
+/// Where a custom component tag is registered.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ComponentOrigin {
+    /// Global `app.json` `usingComponents`.
+    App {
+        /// Project-relative `app.json` path.
+        file: ProjectPath,
+    },
+    /// Page- or component-local `usingComponents`.
+    Local {
+        /// Project-relative page/component JSON path, when it exists.
+        file: Option<ProjectPath>,
+    },
+}
+
+impl ComponentOrigin {
+    /// Returns the project-relative declaration file, if any.
+    #[must_use]
+    pub const fn file(&self) -> Option<&ProjectPath> {
+        match self {
+            Self::App { file } => Some(file),
+            Self::Local { file } => file.as_ref(),
+        }
+    }
+}
+
 /// One custom component registered by the current view's `usingComponents`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ViewComponent {
@@ -83,8 +110,18 @@ pub struct ViewComponent {
     pub name: String,
     /// Raw `usingComponents` specifier.
     pub specifier: String,
-    /// Resolved component WXML path, when discovery could resolve it.
+    /// Form of the specifier (local, plugin or package).
+    pub kind: ComponentTargetKind,
+    /// Resolved component base path, when the specifier is local.
     pub component: Option<ProjectPath>,
+    /// Existing component WXML, when discovery found the local target.
+    pub wxml: Option<ProjectPath>,
+    /// Existing component JSON, when discovery found the local target.
+    pub json: Option<ProjectPath>,
+    /// Statically declared component properties.
+    pub properties: Vec<ComponentProperty>,
+    /// Page/component-local or global registration source.
+    pub origin: ComponentOrigin,
 }
 
 /// Why a host operation could not be completed.
@@ -307,6 +344,15 @@ pub trait ProjectHost: Send + Sync {
     /// no project (or an unknown template) returns an empty list; static
     /// completion then simply omits custom component tags.
     fn view_components(&self, _wxml: &ProjectPath) -> Vec<ViewComponent> {
+        Vec::new()
+    }
+
+    /// Returns current component properties for one registered tag.
+    ///
+    /// Unlike [`Self::view_components`] this reads the effective script text
+    /// (overlay first), so an unsaved `properties` edit is reflected in static
+    /// completion, hover and definition. The default returns nothing.
+    fn component_properties(&self, _wxml: &ProjectPath, _tag: &str) -> Vec<ComponentProperty> {
         Vec::new()
     }
 
@@ -643,27 +689,83 @@ impl ProjectHost for ProjectState {
         let Some(project) = state.project.as_ref() else {
             return Vec::new();
         };
-        // Discovery records `usingComponents` for pages; component JSON is
-        // parsed for properties only, so a component's own WXML has no static
-        // component list yet.
-        let Some(config) = project
-            .pages()
-            .iter()
-            .find(|page| page.wxml == *wxml)
-            .map(|page| &page.config)
-        else {
-            return Vec::new();
-        };
+        // Pages keep their own `PageConfig`; components now keep theirs too, so
+        // a component's own `usingComponents` drives its WXML like a page's.
+        let (config, local_file) =
+            if let Some(page) = project.pages().iter().find(|page| page.wxml == *wxml) {
+                (&page.config, page.json.clone())
+            } else if let Some(component) = project
+                .components()
+                .iter()
+                .find(|component| component.wxml == *wxml)
+            {
+                (&component.config, component.json.clone())
+            } else {
+                return Vec::new();
+            };
+        let app_json = project.app_json();
         let mut components: Vec<ViewComponent> = config
             .iter()
-            .map(|(name, usage)| ViewComponent {
-                name: name.clone(),
-                specifier: usage.specifier.clone(),
-                component: usage.component.clone(),
+            .map(|(name, usage)| {
+                let discovered = usage
+                    .component
+                    .as_ref()
+                    .and_then(|base| project.component(base));
+                let origin = if config.local.contains_key(name) {
+                    ComponentOrigin::Local {
+                        file: local_file.clone(),
+                    }
+                } else {
+                    ComponentOrigin::App {
+                        file: app_json.clone(),
+                    }
+                };
+                ViewComponent {
+                    name: name.clone(),
+                    specifier: usage.specifier.clone(),
+                    kind: usage.kind,
+                    component: usage.component.clone(),
+                    wxml: discovered.map(|component| component.wxml.clone()),
+                    json: discovered.and_then(|component| component.json.clone()),
+                    properties: discovered
+                        .map(|component| component.property_declarations.clone())
+                        .unwrap_or_default(),
+                    origin,
+                }
             })
             .collect();
         components.sort_by(|left, right| left.name.cmp(&right.name));
         components
+    }
+
+    fn component_properties(&self, wxml: &ProjectPath, tag: &str) -> Vec<ComponentProperty> {
+        let state = self.read();
+        let Some(project) = state.project.as_ref() else {
+            return Vec::new();
+        };
+        let Some((config, _)) = view_config(project, wxml) else {
+            return Vec::new();
+        };
+        let Some(usage) = config.get(tag) else {
+            return Vec::new();
+        };
+        if usage.kind != ComponentTargetKind::Local {
+            return Vec::new();
+        }
+        let Some(base) = usage.component.as_ref() else {
+            return Vec::new();
+        };
+        let Some(component) = project.component(base) else {
+            return Vec::new();
+        };
+        let Some(script) = component.script.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(text) = project.read(script) else {
+            return Vec::new();
+        };
+        let roots = wxml_project::extract_data_roots(script, &text);
+        wxml_project::extract_component_properties(&roots)
     }
 
     #[allow(clippy::too_many_lines)] // one linear P7-1 pipeline
@@ -1389,6 +1491,21 @@ fn project_id_for(root: &Path) -> ProjectId {
     ProjectId::new(format!("proj-{hash:016x}"))
 }
 
+/// Returns the effective page/component config for one template.
+fn view_config<'a>(
+    project: &'a Project,
+    wxml: &ProjectPath,
+) -> Option<(&'a wxml_project::PageConfig, Option<ProjectPath>)> {
+    if let Some(page) = project.pages().iter().find(|page| page.wxml == *wxml) {
+        return Some((&page.config, page.json.clone()));
+    }
+    project
+        .components()
+        .iter()
+        .find(|component| component.wxml == *wxml)
+        .map(|component| (&component.config, component.json.clone()))
+}
+
 fn build_views(
     project: &Project,
     project_id: &ProjectId,
@@ -1466,17 +1583,22 @@ impl ViewEntry for Page {
     fn components(&self) -> BTreeMap<String, ProjectPath> {
         // `PageConfig::iter` already lets page-local entries shadow globals;
         // only local components have a project path to resolve.
-        self.config
-            .iter()
-            .filter(|(_, component)| component.kind == ComponentTargetKind::Local)
-            .filter_map(|(name, component)| {
-                component
-                    .component
-                    .as_ref()
-                    .map(|path| (name.clone(), path.clone()))
-            })
-            .collect()
+        local_component_paths(&self.config)
     }
+}
+
+/// Returns effective local component targets for one page/component config.
+fn local_component_paths(config: &wxml_project::PageConfig) -> BTreeMap<String, ProjectPath> {
+    config
+        .iter()
+        .filter(|(_, component)| component.kind == ComponentTargetKind::Local)
+        .filter_map(|(name, component)| {
+            component
+                .component
+                .as_ref()
+                .map(|path| (name.clone(), path.clone()))
+        })
+        .collect()
 }
 
 impl ViewEntry for wxml_project::Component {
@@ -1489,9 +1611,7 @@ impl ViewEntry for wxml_project::Component {
     }
 
     fn components(&self) -> BTreeMap<String, ProjectPath> {
-        // `wxml-project` does not expose a `PageConfig` for components, so
-        // component-internal `usingComponents` cannot be resolved here yet.
-        BTreeMap::new()
+        local_component_paths(&self.config)
     }
 }
 
@@ -1945,6 +2065,93 @@ mod tests {
         let names: Vec<_> = components.iter().map(|entry| entry.name.as_str()).collect();
         assert_eq!(names, vec!["local-badge", "my-card"]);
         assert!(components.iter().any(|entry| entry.component.is_some()));
+    }
+
+    #[test]
+    fn components_expose_their_own_using_components_and_local_overrides() {
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/component-intelligence");
+        let state = ProjectState::new();
+        state
+            .open_root(Some(&format!("file://{}", root.display())))
+            .expect("open fixture");
+
+        let page = ProjectPath::new("pages/index/index.wxml").expect("page");
+        let components = state.view_components(&page);
+        let shared = components
+            .iter()
+            .find(|component| component.name == "shared-card")
+            .expect("shared card");
+        assert_eq!(
+            shared.wxml.as_ref().map(ProjectPath::as_str),
+            Some("components/page-card/page-card.wxml"),
+            "the page-local entry must shadow the app entry"
+        );
+        assert_eq!(
+            shared.origin.file().map(ProjectPath::as_str),
+            Some("pages/index/index.json")
+        );
+        assert!(
+            shared
+                .properties
+                .iter()
+                .any(|property| property.name == "pageOnly")
+        );
+        let remote = components
+            .iter()
+            .find(|component| component.name == "remote-card")
+            .expect("plugin component");
+        assert_eq!(remote.kind, ComponentTargetKind::Plugin);
+        assert!(remote.wxml.is_none());
+        assert_eq!(remote.properties.len(), 0);
+
+        let own = ProjectPath::new("components/outer-card/outer-card.wxml").expect("component");
+        let inner = state
+            .view_components(&own)
+            .into_iter()
+            .find(|component| component.name == "inner-badge")
+            .expect("component-own usingComponents");
+        assert_eq!(
+            inner.wxml.as_ref().map(ProjectPath::as_str),
+            Some("components/inner-badge/inner-badge.wxml")
+        );
+        assert_eq!(
+            inner.origin.file().map(ProjectPath::as_str),
+            Some("components/outer-card/outer-card.json")
+        );
+        assert!(
+            inner
+                .properties
+                .iter()
+                .any(|property| property.name == "label")
+        );
+        let own_shared = state
+            .view_components(&own)
+            .into_iter()
+            .find(|component| component.name == "shared-card")
+            .expect("component-local override");
+        assert_eq!(
+            own_shared.wxml.as_ref().map(ProjectPath::as_str),
+            Some("components/page-card/page-card.wxml")
+        );
+        assert_eq!(
+            own_shared.origin.file().map(ProjectPath::as_str),
+            Some("components/outer-card/outer-card.json")
+        );
+
+        let script = ProjectPath::new("components/outer-card/outer-card.ts").expect("script");
+        let uri = format!("file://{}/{}", root.display(), script.as_str());
+        state
+            .open_document(OpenDocument {
+                uri,
+                text: "Component({ properties: { freshCount: { type: Number } } });".to_owned(),
+                version: Some(2),
+            })
+            .expect("script overlay");
+        let properties = state.component_properties(&page, "outer-card");
+        assert_eq!(properties.len(), 1);
+        assert_eq!(properties[0].name, "freshCount");
+        assert_eq!(properties[0].type_text, "number");
     }
 
     #[test]

@@ -45,6 +45,7 @@ pub mod backend_node;
 pub(crate) mod completion;
 pub(crate) mod handlers;
 pub(crate) mod jsonrpc;
+pub(crate) mod metadata;
 pub mod project_host;
 pub(crate) mod scheduler;
 pub(crate) mod server;

@@ -66,6 +66,37 @@ impl DataRootKind {
     }
 }
 
+/// One statically declared component property.
+///
+/// Only `Component({ properties: { ... } })` object literals are inspected;
+/// spreads, computed keys and properties defined in another file keep their
+/// root but produce no declaration here. Types are the raw constructor names,
+/// not TypeScript-resolved types.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComponentProperty {
+    /// Property name as declared in the component script.
+    pub name: String,
+    /// Display type such as `string`, `string | number` or `any`.
+    pub type_text: String,
+    /// Raw `value` expression text, when the declaration has one.
+    pub default_text: Option<String>,
+    /// Leading `JSDoc` or contiguous `//` comments, trimmed.
+    pub documentation: Option<String>,
+    /// Script that declares the property.
+    pub script: ProjectPath,
+    /// Byte range of the property key token in `script`.
+    pub range: TextRange,
+}
+
+/// Maximum component properties kept from one project discovery.
+pub const MAX_COMPONENT_PROPERTIES: usize = 512;
+
+/// Maximum characters kept from one property documentation comment.
+const MAX_PROPERTY_DOC_CHARS: usize = 512;
+
+/// Maximum characters kept from one property type or default expression.
+const MAX_PROPERTY_TYPE_CHARS: usize = 64;
+
 /// Location and raw source of one registration data root.
 ///
 /// The extractor records where the value expression starts and ends; it does
@@ -488,6 +519,355 @@ fn push_root(
     });
 }
 
+/// Extracts component property declarations from `properties` data roots.
+///
+/// The returned declarations come from the raw object literal recorded by
+/// [`extract_data_roots`]. Non-object `properties` expressions (identifiers,
+/// spreads) are silently skipped because their members cannot be proven from
+/// this file alone.
+#[must_use]
+pub fn extract_component_properties(roots: &[DataRoot]) -> Vec<ComponentProperty> {
+    let mut properties = Vec::new();
+    for root in roots {
+        if root.kind != DataRootKind::ComponentProperties {
+            continue;
+        }
+        collect_component_properties(root, &mut properties);
+        if properties.len() >= MAX_COMPONENT_PROPERTIES {
+            properties.truncate(MAX_COMPONENT_PROPERTIES);
+            break;
+        }
+    }
+    properties
+}
+
+/// Collects declarations from one `properties` object literal.
+fn collect_component_properties(root: &DataRoot, properties: &mut Vec<ComponentProperty>) {
+    let text = root.text.as_str();
+    let bytes = text.as_bytes();
+    let Some(object_end) = find_matching(bytes, 0, bytes.len()) else {
+        return;
+    };
+    let mut index = 1_usize;
+    while index + 1 < object_end && properties.len() < MAX_COMPONENT_PROPERTIES {
+        index = skip_trivia(bytes, index);
+        if index >= object_end {
+            break;
+        }
+        match bytes[index] {
+            b',' => {
+                index += 1;
+                continue;
+            }
+            b'}' => break,
+            b'{' | b'[' | b'(' => {
+                index = find_matching(bytes, index, object_end).unwrap_or(object_end);
+                continue;
+            }
+            _ => {}
+        }
+        let Some((name, key_start, key_end)) = property_key(text, index) else {
+            index += 1;
+            continue;
+        };
+        let colon = skip_trivia(bytes, key_end);
+        if bytes.get(colon) != Some(&b':') {
+            index = key_end;
+            continue;
+        }
+        let value_start = skip_trivia(bytes, colon + 1);
+        let Some(value_end) = expression_end(bytes, value_start, object_end) else {
+            index = key_end;
+            continue;
+        };
+        if let Some(property) = component_property(
+            root,
+            text,
+            &name,
+            key_start,
+            key_end,
+            value_start,
+            value_end,
+        ) {
+            properties.push(property);
+        }
+        index = value_end;
+    }
+}
+
+/// Parses an object member key at `index`.
+fn property_key(text: &str, index: usize) -> Option<(String, usize, usize)> {
+    let bytes = text.as_bytes();
+    match *bytes.get(index)? {
+        b'\'' | b'"' => {
+            let end = skip_lexeme(bytes, index, 0)?;
+            let name = text.get(index + 1..end.checked_sub(1)?)?.to_owned();
+            Some((name, index, end))
+        }
+        byte if is_identifier_start(byte) => {
+            let mut end = index + 1;
+            while end < bytes.len() && is_identifier_continue(bytes[end]) {
+                end += 1;
+            }
+            Some((text.get(index..end)?.to_owned(), index, end))
+        }
+        _ => None,
+    }
+}
+
+/// Builds one declaration, rejecting names that cannot be attribute names.
+fn component_property(
+    root: &DataRoot,
+    text: &str,
+    name: &str,
+    key_start: usize,
+    key_end: usize,
+    value_start: usize,
+    value_end: usize,
+) -> Option<ComponentProperty> {
+    if !is_valid_property_name(name) {
+        return None;
+    }
+    let start = root
+        .range
+        .start()
+        .checked_add(u32::try_from(key_start).ok()?)?;
+    let end = root
+        .range
+        .start()
+        .checked_add(u32::try_from(key_end).ok()?)?;
+    let range = TextRange::new(start, end).ok()?;
+    let value = text.get(value_start..value_end).unwrap_or_default();
+    let (type_text, default_text) = property_type(value);
+    Some(ComponentProperty {
+        name: name.to_owned(),
+        type_text,
+        default_text,
+        documentation: leading_documentation(text, key_start),
+        script: root.script.clone(),
+        range,
+    })
+}
+
+/// Returns whether `name` can be shown as a WXML attribute.
+fn is_valid_property_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_PROPERTY_TYPE_CHARS
+        && !name
+            .chars()
+            .any(|character| character.is_control() || character.is_whitespace())
+        && !name
+            .chars()
+            .any(|character| matches!(character, '<' | '>' | '=' | '"' | '\'' | '\0'))
+}
+
+/// Derives the display type and default expression of one property value.
+fn property_type(value: &str) -> (String, Option<String>) {
+    let trimmed = value.trim();
+    if trimmed.starts_with('{') {
+        let type_expression = object_member(trimmed, "type");
+        let optional = object_member(trimmed, "optionalTypes")
+            .map(constructor_list)
+            .unwrap_or_default();
+        let default = object_member(trimmed, "value")
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(|text| truncate_chars(text, MAX_PROPERTY_TYPE_CHARS));
+        let mut types = Vec::new();
+        if let Some(expression) = type_expression {
+            push_constructor(&mut types, expression);
+        }
+        for expression in optional {
+            push_constructor(&mut types, &expression);
+        }
+        let type_text = display_union(&types);
+        (type_text, default)
+    } else {
+        let mut types = Vec::new();
+        push_constructor(&mut types, trimmed);
+        (display_union(&types), None)
+    }
+}
+
+/// Joins constructor names, collapsing unknown/`any` kinds.
+fn display_union(types: &[String]) -> String {
+    if types.is_empty() || types.iter().any(|kind| kind == "any") {
+        return "any".to_owned();
+    }
+    types.join(" | ")
+}
+
+/// Adds one constructor spelling without duplicates.
+fn push_constructor(types: &mut Vec<String>, expression: &str) {
+    let name = constructor_name(expression);
+    if !types.contains(&name) {
+        types.push(name);
+    }
+}
+
+/// Maps a JavaScript constructor expression to a display name.
+fn constructor_name(expression: &str) -> String {
+    let trimmed = expression.trim();
+    let mapped = match trimmed {
+        "String" => "string",
+        "Number" => "number",
+        "Boolean" => "boolean",
+        "Object" => "object",
+        "Array" => "array",
+        "Function" => "function",
+        "null" => "null",
+        "" => "any",
+        other
+            if other.len() <= MAX_PROPERTY_TYPE_CHARS
+                && other.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '_' | '$' | '.')
+                }) =>
+        {
+            other
+        }
+        _ => "any",
+    };
+    mapped.to_owned()
+}
+
+/// Finds one top-level object member value.
+fn object_member<'a>(object: &'a str, name: &str) -> Option<&'a str> {
+    let bytes = object.as_bytes();
+    let object_end = find_matching(bytes, 0, bytes.len())?;
+    let mut index = 1_usize;
+    while index + 1 < object_end {
+        index = skip_trivia(bytes, index);
+        if index >= object_end {
+            break;
+        }
+        match bytes[index] {
+            b',' => {
+                index += 1;
+                continue;
+            }
+            b'}' => break,
+            _ => {}
+        }
+        let Some((key, _, key_end)) = property_key(object, index) else {
+            index += 1;
+            continue;
+        };
+        let colon = skip_trivia(bytes, key_end);
+        if bytes.get(colon) != Some(&b':') {
+            index = key_end;
+            continue;
+        }
+        let value_start = skip_trivia(bytes, colon + 1);
+        let Some(value_end) = expression_end(bytes, value_start, object_end) else {
+            index = key_end;
+            continue;
+        };
+        if key == name {
+            return object.get(value_start..value_end);
+        }
+        index = value_end;
+    }
+    None
+}
+
+/// Splits an `optionalTypes` array into top-level element expressions.
+fn constructor_list(expression: &str) -> Vec<String> {
+    let trimmed = expression.trim();
+    let Some(inner) = trimmed
+        .strip_prefix('[')
+        .and_then(|text| text.strip_suffix(']'))
+    else {
+        return Vec::new();
+    };
+    split_top_level(inner)
+        .into_iter()
+        .map(constructor_name)
+        .collect()
+}
+
+/// Splits an expression list on top-level commas.
+fn split_top_level(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut parts = Vec::new();
+    let mut start = 0_usize;
+    let mut depth = 0_usize;
+    let mut index = 0_usize;
+    while index < bytes.len() {
+        if let Some(next) = skip_lexeme(bytes, index, 0) {
+            index = next;
+            continue;
+        }
+        match bytes[index] {
+            b'{' | b'[' | b'(' => depth = depth.saturating_add(1),
+            b'}' | b']' | b')' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(&text[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    if start <= text.len() {
+        parts.push(&text[start..]);
+    }
+    parts
+}
+
+/// Finds a `JSDoc` or contiguous line-comment block immediately before `key_start`.
+fn leading_documentation(text: &str, key_start: usize) -> Option<String> {
+    let before = text.get(..key_start)?.trim_end();
+    if let Some(rest) = before.strip_suffix("*/") {
+        let start = rest.rfind("/**")?;
+        return clean_block_documentation(rest.get(start + 3..)?);
+    }
+    let mut lines = Vec::new();
+    for line in before.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            if lines.is_empty() {
+                continue;
+            }
+            break;
+        }
+        let Some(rest) = line.strip_prefix("//") else {
+            break;
+        };
+        lines.push(rest.trim().to_owned());
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    lines.reverse();
+    Some(truncate_chars(&lines.join("\n"), MAX_PROPERTY_DOC_CHARS))
+}
+
+/// Strips the leading `*` decoration from a block documentation comment.
+fn clean_block_documentation(text: &str) -> Option<String> {
+    let mut lines: Vec<&str> = text
+        .lines()
+        .map(|line| {
+            let line = line.trim();
+            line.strip_prefix('*').unwrap_or(line).trim()
+        })
+        .collect();
+    while lines.first().is_some_and(|line| line.is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    Some(truncate_chars(&lines.join("\n"), MAX_PROPERTY_DOC_CHARS))
+}
+
+/// Truncates text to `limit` characters.
+fn truncate_chars(text: &str, limit: usize) -> String {
+    text.chars().take(limit).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -662,5 +1042,84 @@ mod tests {
 
         let unrelated = format!("{}{}", "(".repeat(400), ")".repeat(400));
         assert_eq!(extract_data_roots(&script, &unrelated), Vec::new());
+    }
+
+    #[test]
+    fn extracts_component_property_metadata() {
+        let script = path("components/card/card.ts");
+        let source = "Component({\n  properties: {\n    /** 标题，支持字符串或数字 */\n    title: { type: String, optionalTypes: [Number], value: '' },\n    // 是否禁用\n    disabled: { type: Boolean, value: false },\n    plain: String,\n  },\n});";
+        let roots = extract_data_roots(&script, source);
+        let properties = extract_component_properties(&roots);
+        assert_eq!(properties.len(), 3);
+
+        assert_eq!(properties[0].name, "title");
+        assert_eq!(properties[0].type_text, "string | number");
+        assert_eq!(properties[0].default_text.as_deref(), Some("''"));
+        assert_eq!(
+            properties[0].documentation.as_deref(),
+            Some("标题，支持字符串或数字")
+        );
+        assert_eq!(properties[0].script, script);
+        assert_eq!(
+            &source[properties[0].range.start() as usize..properties[0].range.end() as usize],
+            "title"
+        );
+
+        assert_eq!(properties[1].name, "disabled");
+        assert_eq!(properties[1].type_text, "boolean");
+        assert_eq!(properties[1].default_text.as_deref(), Some("false"));
+        assert_eq!(properties[1].documentation.as_deref(), Some("是否禁用"));
+
+        assert_eq!(properties[2].name, "plain");
+        assert_eq!(properties[2].type_text, "string");
+        assert_eq!(properties[2].default_text, None);
+        assert_eq!(properties[2].documentation, None);
+    }
+
+    #[test]
+    fn property_types_are_bounded_and_unknown_kinds_degrade() {
+        let script = path("components/card/card.ts");
+        let source = "Component({ properties: { a: { type: createType() }, b: { type: null, optionalTypes: [String, null] }, c: Object } });";
+        let roots = extract_data_roots(&script, source);
+        let properties = extract_component_properties(&roots);
+        assert_eq!(properties.len(), 3);
+        assert_eq!(properties[0].type_text, "any");
+        assert_eq!(properties[1].type_text, "null | string");
+        assert_eq!(properties[2].type_text, "object");
+    }
+
+    #[test]
+    fn malformed_component_properties_do_not_panic() {
+        let script = path("a.ts");
+        let sources = [
+            "Component({ properties: ",
+            "Component({ properties: {",
+            "Component({ properties: { title:",
+            "Component({ properties: { \"unterminated: String } });",
+            "Component({ properties: { title: { type: String, optionalTypes: [ } });",
+        ];
+        for source in sources {
+            let roots = extract_data_roots(&script, source);
+            let properties = extract_component_properties(&roots);
+            for property in properties {
+                assert!(
+                    source.is_char_boundary(property.range.start() as usize),
+                    "{source:?}"
+                );
+                assert!(
+                    source.is_char_boundary(property.range.end() as usize),
+                    "{source:?}"
+                );
+                assert!(property.range.end() as usize <= source.len(), "{source:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn non_object_properties_yield_no_declarations() {
+        let script = path("a.ts");
+        let source = "const shared = { title: String };\nComponent({ properties: shared });";
+        let roots = extract_data_roots(&script, source);
+        assert_eq!(extract_component_properties(&roots), Vec::new());
     }
 }

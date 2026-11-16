@@ -582,39 +582,91 @@ const TAG_PICKER: TagSpec = TagSpec {
             detail: "End date/time",
         },
         AttributeSpec {
+            name: "fields",
+            detail: "Date granularity",
+        },
+        AttributeSpec {
+            name: "custom-item",
+            detail: "Extra region item",
+        },
+        AttributeSpec {
+            name: "level",
+            detail: "Region selection level",
+        },
+        AttributeSpec {
             name: "bindchange",
             detail: "Selection change",
+        },
+        AttributeSpec {
+            name: "bindcolumnchange",
+            detail: "Multi-column change",
         },
         AttributeSpec {
             name: "bindcancel",
             detail: "Selection cancelled",
         },
     ],
-    values: &[(
-        "mode",
-        &[
-            ValueSpec {
-                value: "selector",
-                detail: "Single column selector",
-            },
-            ValueSpec {
-                value: "multiSelector",
-                detail: "Multi column selector",
-            },
-            ValueSpec {
-                value: "time",
-                detail: "Time picker",
-            },
-            ValueSpec {
-                value: "date",
-                detail: "Date picker",
-            },
-            ValueSpec {
-                value: "region",
-                detail: "Region picker",
-            },
-        ],
-    )],
+    values: &[
+        (
+            "mode",
+            &[
+                ValueSpec {
+                    value: "selector",
+                    detail: "Single column selector",
+                },
+                ValueSpec {
+                    value: "multiSelector",
+                    detail: "Multi column selector",
+                },
+                ValueSpec {
+                    value: "time",
+                    detail: "Time picker",
+                },
+                ValueSpec {
+                    value: "date",
+                    detail: "Date picker",
+                },
+                ValueSpec {
+                    value: "region",
+                    detail: "Region picker",
+                },
+            ],
+        ),
+        (
+            "fields",
+            &[
+                ValueSpec {
+                    value: "year",
+                    detail: "Select a year",
+                },
+                ValueSpec {
+                    value: "month",
+                    detail: "Select a month",
+                },
+                ValueSpec {
+                    value: "day",
+                    detail: "Select a day",
+                },
+            ],
+        ),
+        (
+            "level",
+            &[
+                ValueSpec {
+                    value: "province",
+                    detail: "Province level",
+                },
+                ValueSpec {
+                    value: "city",
+                    detail: "City level",
+                },
+                ValueSpec {
+                    value: "district",
+                    detail: "District level",
+                },
+            ],
+        ),
+    ],
 };
 
 const TAG_SCROLL_VIEW: TagSpec = TagSpec {
@@ -1189,6 +1241,35 @@ pub(crate) fn values_for(tag_name: &str, attribute: &str) -> &'static [ValueSpec
                 .map(|(_, values)| *values)
         })
         .unwrap_or(&[])
+}
+
+/// Finds a `wx:` directive by name.
+pub(crate) fn directive(name: &str) -> Option<&'static AttributeSpec> {
+    DIRECTIVE_ATTRIBUTES
+        .iter()
+        .find(|attribute| attribute.name == name)
+}
+
+/// Finds a tag-specific attribute by exact name.
+pub(crate) fn tag_attribute(tag_name: &str, attribute: &str) -> Option<&'static AttributeSpec> {
+    tag(tag_name)?
+        .attributes
+        .iter()
+        .find(|candidate| candidate.name == attribute)
+}
+
+/// Finds a global attribute by exact name.
+pub(crate) fn global_attribute(attribute: &str) -> Option<&'static AttributeSpec> {
+    GLOBAL_ATTRIBUTES
+        .iter()
+        .find(|candidate| candidate.name == attribute)
+}
+
+/// Finds a documented event-binding attribute by exact name.
+pub(crate) fn event_attribute(attribute: &str) -> Option<&'static AttributeSpec> {
+    EVENT_ATTRIBUTES
+        .iter()
+        .find(|candidate| candidate.name == attribute)
 }
 
 /// True when the attribute name binds an event handler.
