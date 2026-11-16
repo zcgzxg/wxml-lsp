@@ -222,7 +222,7 @@ query、expect、diagnostic 对象只允许文档列出的字段；未知字段�
 | AC-009 | `stale-request`（runtime） | 旧结果不发布、后端退出与世代恢复 |
 | AC-010 | `zed-multi-doc`（runtime）、`multi-view` | Zed 多文档实例归属与主服务并存 |
 | AC-011 | `any-unknown`、`unsupported-forms`、`interface-root` | `any`/`unknown`、未支持形式、interface 根不伪造类型 |
-| AC-012 | `component-bindings` | 组件属性绑定、事件绑定、definition |
+| AC-012 | `component-bindings`、`events-basic` | 组件属性绑定、事件绑定、definition |
 | AC-013 | `component-basic`、`component-properties` | `properties` 的 `type`/`optionalTypes`/JSDoc，未声明属性不伪造 |
 
 ### 7.1 运行时验收（WT-B 样本）
@@ -238,11 +238,56 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored
 | --- | --- |
 | `loop-scope` | 8 条 hover：外层 `itemIndex` 为 number，`item.name`/`item.title` 为 string；内层默认 `index` 为 number、`item.name` 为 string；退出内层后恢复 `item.title`；`groupMap` 的 `index` 为 string；循环外 `{{ item }}` 在 `item` 上报错；`itemIndex` hover 不带文档 |
 | `conditional-union` | 3 条 hover 验证 `wx:elif`/`wx:else` 与真值窄化；`state.user.age` 在 `age` 上报错；守卫外 `maybeUser` 报 null 错误，守卫内通过 |
-| `component-bindings` | 2 条属性绑定 hover（`pageTitle` string、`total` number）；`title="{{ total }}"` 在 `total` 上报 number 不兼容；事件 marker 属于 WT-C，runner 明确跳过 |
+| `component-bindings` | 2 条属性绑定 hover（`pageTitle` string、`total` number）；`title="{{ total }}"` 在 `total` 上报 number 不兼容。事件 marker（`bind:tap="onCardTap"` definition、`bindtap="missingHandler"` 诊断）归 WT-C：WT-B 的断言按 marker 前缀过滤事件项，事件两项由同一测试的 WT-C 断言覆盖 |
 | `multi-view` | 7 条 hover 分别命中 card/badge/a/b 自己的声明与 JSDoc；`card.wxml` 的 `user.nmae` 只在该文件报错；同时打开两个页面、card 组件和两个脚本时互不污染 |
 | `alias-project` | `@models/*` 别名下 `user.name` hover 为 string；`user.nmae` 在 `nmae` 报错；definition 跨别名解析到 `models/user.ts` 的 `name` |
 
-该 runner 被 `#[ignore]` 保护，默认门禁只编译不执行；它只覆盖 WT-B 的 AC-005/006/008/012，不覆盖补全与事件处理函数。
+该 runner 被 `#[ignore]` 保护，默认门禁只编译不执行；它覆盖 WT-B 的 AC-005/006/008/012，以及 WT-C 在 `component-bindings` 与 `events-basic` 中的事件诊断、definition 和事件值补全。
+
+### 7.2 事件处理函数样本（WT-C）
+
+`events-basic` 是一个自包含小程序工程，专门覆盖事件处理函数的诊断、definition 与补全；组件属性绑定仍由 `component-bindings` 负责，两者同属 AC-012。
+
+```text
+events-basic/
+├── app.json                          # pages: index / multi / nonliteral
+├── tsconfig.json                     # strict + ES2020（与 component-bindings 一致）
+├── pages/index/index.{json,ts,wxml}  # Page：方法简写/函数属性/箭头属性
+├── pages/multi/multi.{ts,wxml}       # 两次 Page(...) 注册
+├── pages/nonliteral/nonliteral.{ts,wxml}  # Page(options) 非字面量注册
+├── components/widget/widget.{json,ts,wxml} # Component methods
+└── expected/{hover,diagnostics,definition}.json
+```
+
+| 维度 | 绑定 / 位置 | 期望 |
+| --- | --- | --- |
+| Page 方法简写 | `bindtap="onShorthandTap"` | definition → `pages/index/index.ts` |
+| Page 函数属性 | `catchtap="onFunctionTap"` | definition → `pages/index/index.ts` |
+| Page 箭头属性 | `bind:tap="onArrowTap"` | definition → `pages/index/index.ts` |
+| capture-bind | `capture-bind:tap="onCaptureTap"` | definition → `pages/index/index.ts` |
+| capture-catch | `capture-catch:tap="onCaptureCatchTap"` | definition → `pages/index/index.ts` |
+| mut-bind | `mut-bind:tap="onMutTap"` | definition → `pages/index/index.ts` |
+| catch | `catch:tap="onCatchTap"` | definition → `pages/index/index.ts` |
+| 缺失处理函数 | `bindtap="missingHandler"` | Error 诊断（target 精确为 `missingHandler`，消息含同名），definition 为 `null` |
+| 动态绑定 | `bindtap="{{dynamicHandler}}"` | 无诊断；不做 definition 断言（表达式本身可解析，避免把“未支持”误判成“找不到”） |
+| 空绑定 | `bindtap=""` | 无诊断；无 token，不做 definition 断言 |
+| 非标识符 | `bindtap="this.onTap"` | 无诊断；不做 definition 断言 |
+| Component 方法 | `bindtap="onWidgetTap"` | definition → `components/widget/widget.ts` |
+| Component 箭头属性 | `bindtap="onWidgetArrow"` | definition → `components/widget/widget.ts` |
+| Component 缺失处理函数 | `bindtap="missingWidgetHandler"` | Error 诊断（消息含同名），definition 为 `null` |
+| 多注册降级 | `pages/multi`：`onSecondTap` 只在第二个 `Page(...)` | Partial，无缺失诊断，definition 为 `null` |
+| 非字面量降级 | `pages/nonliteral`：`Page(options)` 内的 `onNonLiteralTap` | `Unsupported`（沿用既有视图策略），无缺失诊断，definition 为 `null` |
+
+`hover.json` 的 3 条正例是 data/properties 锚点（`label`、`title`、`firstLabel`），用于确认样本工程本身可分析；本轮不承诺事件处理函数自身的 hover。
+
+`pages/index/index.wxml` 同时包含动态、空、非标识符三种未支持事件形式；这些片段被记录但不产生诊断，也不会单独降级状态。runner 不要断言该文件的整体 `status`，只断言具体诊断与缺失噪声。
+
+`diagnostics.json` 只能表达“某处必须有诊断”，不能表达“某处必须没有”，因此扩展 runner 时需要补上文件级断言：
+
+- `pages/index/index.wxml` 恰好 1 条诊断，即只有 `missingHandler`；`bindtap="{{dynamicHandler}}"`、`bindtap=""`、`bindtap="this.onTap"` 必须不产生诊断（可用 `assert_no_diagnostic_overlapping` 逐项断言）。
+- `components/widget/widget.wxml` 恰好 1 条诊断，即只有 `missingWidgetHandler`。
+- `pages/multi/multi.wxml`（`bindtap="onSecondTap"`）与 `pages/nonliteral/nonliteral.wxml`（`bindtap="onNonLiteralTap"`）没有任何诊断：多注册按 `Partial`、非字面量根按既有策略 `Unsupported`，均不报缺失。
+- `definition.json` 的 `expect: null` 表示 locations 为空；“找不到”与“后端不可用”仍按 `CapabilityStatus` 区分。当前 `assert_definition` 对 `expect: null` 接受 `supported`/`partial`/`unsupported`，所以动态、空、非标识符绑定不写 definition 期望，改用上面的诊断缺失断言。
 
 延期断言（P6/P7 runner，不是当前校验器）：
 

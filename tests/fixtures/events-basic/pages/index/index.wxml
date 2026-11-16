@@ -1,0 +1,15 @@
+<view class="page">
+  <text>{{ label }}</text>
+  <button bindtap="onShorthandTap">方法简写</button>
+  <button catchtap="onFunctionTap">函数属性</button>
+  <button bind:tap="onArrowTap">箭头属性</button>
+  <button capture-bind:tap="onCaptureTap">捕获绑定</button>
+  <button capture-catch:tap="onCaptureCatchTap">捕获并拦截</button>
+  <button mut-bind:tap="onMutTap">互斥绑定</button>
+  <button catch:tap="onCatchTap">拦截绑定</button>
+  <button bindtap="missingHandler">缺失处理函数</button>
+  <button bindtap="{{dynamicHandler}}">动态处理函数</button>
+  <button bindtap="">空处理函数</button>
+  <button bindtap="this.onTap">非标识符处理函数</button>
+  <widget />
+</view>

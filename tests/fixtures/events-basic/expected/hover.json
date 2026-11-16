@@ -1,0 +1,22 @@
+{
+  "queries": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "{{ label }}",
+      "target": "label",
+      "expect": { "type": "string", "typeKind": "string", "documentation": "页面标签" }
+    },
+    {
+      "file": "components/widget/widget.wxml",
+      "marker": "{{ title }}",
+      "target": "title",
+      "expect": { "type": "string", "typeKind": "string", "documentation": "组件标题" }
+    },
+    {
+      "file": "pages/multi/multi.wxml",
+      "marker": "{{ firstLabel }}",
+      "target": "firstLabel",
+      "expect": { "type": "string", "typeKind": "string", "documentation": "首个注册的标签" }
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+<view class="multi">
+  <text>{{ firstLabel }}</text>
+  <button bindtap="onSecondTap">仅第二个注册声明的处理函数</button>
+</view>

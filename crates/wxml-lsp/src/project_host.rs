@@ -26,9 +26,9 @@ use wxml_project::{
 };
 use wxml_syntax::{ParseErrorKind, ParseResult};
 use wxml_types::{
-    CapabilityStatus, CheckFragment, ComponentUsage, Diagnostic, DiagnosticSeverity, FileId,
-    ProjectId, ProjectRevision, RootKind, SourceSnapshot, TemplateAnalyzer, UnsupportedKind,
-    ViewRevision,
+    CapabilityStatus, CheckFragment, ComponentUsage, Diagnostic, DiagnosticSeverity, EventHandler,
+    FileId, ProjectId, ProjectRevision, RootKind, SourceSnapshot, TemplateAnalyzer,
+    UnsupportedKind, ViewRevision,
 };
 
 /// Marker used by the synthetic host and the synthetic workspace project.
@@ -183,6 +183,13 @@ pub struct PreparedFile {
     pub source_revision: u64,
 }
 
+/// Maximum static event handlers forwarded to a type backend for one view.
+///
+/// Mirrors the C1 event budget: a large template must not turn into an
+/// unbounded request or diagnostics list. Truncation is reported as a
+/// [`CapabilityStatus::Partial`] hint.
+pub const MAX_PREPARED_EVENTS: usize = 1024;
+
 /// Everything a type backend needs for one WXML snapshot.
 #[derive(Clone, Debug)]
 pub struct PreparedView {
@@ -198,6 +205,8 @@ pub struct PreparedView {
     pub fragments: Arc<[CheckFragment]>,
     /// Custom-component usages with resolved local component scripts.
     pub components: Arc<[ComponentUsage]>,
+    /// Static event handlers in source order, capped at [`MAX_PREPARED_EVENTS`].
+    pub events: Arc<[EventHandler]>,
     /// Absolute project root. Never sent to an LSP client.
     pub project_root: PathBuf,
     /// Parser and template-analyzer diagnostics that must be published even
@@ -660,6 +669,9 @@ impl ProjectHost for ProjectState {
             }
         }
         for feature in &analysis.unsupported {
+            if is_silent_unsupported(feature.kind()) {
+                continue;
+            }
             let severity = match feature.kind() {
                 UnsupportedKind::FragmentLimit
                 | UnsupportedKind::MalformedExpression
@@ -675,7 +687,11 @@ impl ProjectHost for ProjectState {
                 },
             );
         }
-        if !analysis.unsupported.is_empty() {
+        if analysis
+            .unsupported
+            .iter()
+            .any(|feature| !is_silent_unsupported(feature.kind()))
+        {
             merge_hint(
                 &mut hint,
                 CapabilityStatus::Partial {
@@ -683,6 +699,8 @@ impl ProjectHost for ProjectState {
                 },
             );
         }
+
+        let events = prepared_events(analysis.events, &mut hint);
 
         let Some(script) = view.script.as_ref() else {
             return Ok(PreparedView {
@@ -692,6 +710,7 @@ impl ProjectHost for ProjectState {
                 compiler_options: serde_json::Map::new(),
                 fragments: Arc::from(analysis.fragments),
                 components: Arc::from(Vec::new()),
+                events,
                 project_root: project.root().to_path_buf(),
                 syntax_diagnostics: syntax,
                 status_hint: Some(CapabilityStatus::Unsupported {
@@ -793,6 +812,7 @@ impl ProjectHost for ProjectState {
             compiler_options,
             fragments: Arc::from(analysis.fragments),
             components: Arc::from(components),
+            events,
             project_root: project.root().to_path_buf(),
             syntax_diagnostics: syntax,
             status_hint: hint,
@@ -1161,6 +1181,7 @@ fn syntax_only_view(
         compiler_options: serde_json::Map::new(),
         fragments: Arc::from(Vec::new()),
         components: Arc::from(Vec::new()),
+        events: Arc::from(Vec::new()),
         project_root: PathBuf::new(),
         syntax_diagnostics: syntax,
         status_hint: Some(CapabilityStatus::Unsupported {
@@ -1173,6 +1194,41 @@ fn push_diagnostic(diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic) {
     if diagnostics.len() < 512 {
         diagnostics.push(diagnostic);
     }
+}
+
+/// Returns `true` for unsupported records that must stay silent.
+///
+/// Dynamic, empty and non-identifier event handlers are valid WXML that simply
+/// cannot be resolved statically. They are recorded for callers and for the
+/// status of the event chain, but publishing a diagnostic for each one would
+/// add noise to every template that uses them, and they must not degrade a
+/// check that otherwise ran completely.
+const fn is_silent_unsupported(kind: UnsupportedKind) -> bool {
+    matches!(
+        kind,
+        UnsupportedKind::DynamicEvent | UnsupportedKind::EmptyEvent | UnsupportedKind::InvalidEvent
+    )
+}
+
+/// Caps the event list and records why later bindings were dropped.
+///
+/// The prepared view is what the request and the response mapping agree on, so
+/// the cap lives here: ids are assigned from this list and anything beyond it
+/// is never requested.
+fn prepared_events(
+    mut events: Vec<EventHandler>,
+    hint: &mut Option<CapabilityStatus>,
+) -> Arc<[EventHandler]> {
+    if events.len() > MAX_PREPARED_EVENTS {
+        events.truncate(MAX_PREPARED_EVENTS);
+        merge_hint(
+            hint,
+            CapabilityStatus::Partial {
+                reason: "event binding limit reached; later handlers were skipped".to_owned(),
+            },
+        );
+    }
+    Arc::from(events)
 }
 
 fn merge_hint(hint: &mut Option<CapabilityStatus>, candidate: CapabilityStatus) {
@@ -1283,6 +1339,8 @@ fn filter_compiler_options(
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
     use wxml_types::{SnapshotId, SourceRevision};
 
@@ -1442,6 +1500,86 @@ mod tests {
         assert_eq!(usage.attributes[0].name, "title");
         let component_file = usage.component_file.as_ref().expect("component file");
         assert_eq!(component_file.path(), "components/card/card.ts");
+    }
+
+    #[test]
+    fn analysis_exposes_static_events_and_filters_dynamic_handlers() {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/component-basic");
+        let root = std::fs::canonicalize(root).expect("fixture root");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open project");
+        let path = ProjectPath::new("pages/index/index.wxml").expect("path");
+        let file = host.file_id(&path).expect("file id");
+        let text =
+            r#"<view bindtap="onTap" catch:tap="{{ dynamic }}" bind:touchstart="item.onTap" />"#;
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(2),
+            text,
+        ));
+        let view = host.analysis(&snapshot).expect("analysis");
+        assert_eq!(view.events.len(), 1);
+        let event = &view.events[0];
+        assert_eq!(event.attribute, "bindtap");
+        assert_eq!(event.event, "tap");
+        assert_eq!(event.handler, "onTap");
+        assert_eq!(
+            text.get(
+                usize::try_from(event.handler_range.start()).expect("start")
+                    ..usize::try_from(event.handler_range.end()).expect("end")
+            ),
+            Some("onTap")
+        );
+        assert_eq!(
+            text.get(
+                usize::try_from(event.attribute_range.start()).expect("start")
+                    ..usize::try_from(event.attribute_range.end()).expect("end")
+            ),
+            Some(r#"bindtap="onTap""#)
+        );
+        assert!(
+            view.syntax_diagnostics.is_empty(),
+            "event handlers must not publish noise: {:?}",
+            view.syntax_diagnostics
+        );
+        assert!(
+            view.status_hint.is_none(),
+            "silent event forms must not degrade the check: {:?}",
+            view.status_hint
+        );
+    }
+
+    #[test]
+    fn analysis_caps_prepared_events_and_merges_a_partial_hint() {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/component-basic");
+        let root = std::fs::canonicalize(root).expect("fixture root");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open project");
+        let path = ProjectPath::new("pages/index/index.wxml").expect("path");
+        let file = host.file_id(&path).expect("file id");
+        let mut text = String::from("<view>");
+        for index in 0..=MAX_PREPARED_EVENTS {
+            write!(text, "<view bindtap=\"onTap{index}\" />").expect("write");
+        }
+        text.push_str("</view>");
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(3),
+            text,
+        ));
+        let view = host.analysis(&snapshot).expect("analysis");
+        assert_eq!(view.events.len(), MAX_PREPARED_EVENTS);
+        assert_eq!(view.events[0].handler, "onTap0");
+        let Some(CapabilityStatus::Partial { reason }) = view.status_hint else {
+            panic!("expected a partial hint, got {:?}", view.status_hint);
+        };
+        assert!(reason.contains("event binding limit"), "{reason}");
     }
 
     #[test]

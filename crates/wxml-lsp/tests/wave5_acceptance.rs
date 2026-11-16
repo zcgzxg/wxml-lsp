@@ -1,6 +1,6 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::too_many_lines)]
 
-//! Wave 5 WT-B acceptance: AC-005/006/008/012 fixture runner.
+//! Wave 5 WT-B/WT-C acceptance: AC-005/006/008/012 fixture runner.
 //!
 //! The fixtures are opened in place (no copying), one `ProjectState` per
 //! fixture root, and queried through the public [`NodeBackend`] boundary with
@@ -89,7 +89,22 @@ struct DefinitionFile {
 
 #[derive(Debug, Deserialize)]
 struct DefinitionQuery {
+    file: String,
     marker: String,
+    /// Handler/field token inside `marker`; derived from the attribute value
+    /// when omitted by an event-only fixture.
+    #[serde(default)]
+    target: Option<String>,
+    /// `null`/absent means "checked, no definition"; an object pins the
+    /// expected script file and declaration token.
+    #[serde(default)]
+    expect: Option<DefinitionExpect>,
+}
+
+#[derive(Debug, Deserialize)]
+struct DefinitionExpect {
+    file: String,
+    target: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -428,6 +443,123 @@ impl Runner {
             );
         }
     }
+
+    /// Asserts one definition query. `expect: null` means the backend checked
+    /// the target and found no declaration (`Supported` + empty), which is
+    /// distinct from "the backend could not answer".
+    fn assert_definition(&self, query: &DefinitionQuery) {
+        let text = self.project.text(&query.file);
+        let target = query
+            .target
+            .clone()
+            .or_else(|| attribute_value(&query.marker))
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: definition marker {:?} needs a target or an attribute value",
+                    query.file, query.marker
+                )
+            });
+        let (start, _) = locate(&text, &query.marker, &target);
+        let context = self.project.context_for(&query.file, &text);
+        let result = self.project.definition(&context, start);
+        // A name the backend checked but did not find is Supported + empty; an
+        // unanalyzable root (for example a non-literal registration) is
+        // Unsupported + empty. Neither is "backend unavailable".
+        let acceptable = match &query.expect {
+            Some(_) => matches!(
+                result.status,
+                wxml_types::CapabilityStatus::Supported
+                    | wxml_types::CapabilityStatus::Partial { .. }
+            ),
+            None => matches!(
+                result.status,
+                wxml_types::CapabilityStatus::Supported
+                    | wxml_types::CapabilityStatus::Partial { .. }
+                    | wxml_types::CapabilityStatus::Unsupported { .. }
+            ),
+        };
+        assert!(
+            acceptable,
+            "{}: definition for {:?} has an unexpected status {:?}",
+            query.file, target, result.status
+        );
+        match &query.expect {
+            Some(expect) => {
+                let script = self.project.text(&expect.file);
+                let expected_start = unique_offset(&script, &expect.target);
+                let expected_end = expected_start + expect.target.len();
+                let found = result.locations.iter().any(|location| {
+                    location.file.path() == expect.file
+                        && usize::try_from(location.range.start()).ok() == Some(expected_start)
+                        && usize::try_from(location.range.end()).ok() == Some(expected_end)
+                });
+                assert!(
+                    found,
+                    "{}: definition for {:?} must point at {} {:?} ({}..{}), got {:?}",
+                    query.file,
+                    target,
+                    expect.file,
+                    expect.target,
+                    expected_start,
+                    expected_end,
+                    result.locations
+                );
+            }
+            None => assert!(
+                result.locations.is_empty(),
+                "{}: definition for {:?} must be empty, got {:?}",
+                query.file,
+                target,
+                result.locations
+            ),
+        }
+    }
+
+    /// Unsupported/ambiguous forms must not publish any diagnostic that
+    /// overlaps the whole attribute.
+    fn assert_no_diagnostic_overlapping(&self, file: &str, marker: &str) {
+        let text = self.project.text(file);
+        let start = unique_offset(&text, marker);
+        let end = start + marker.len();
+        let result = self.diagnostics_for(file);
+        let overlapping = result.diagnostics.iter().find(|diagnostic| {
+            let diagnostic_start =
+                usize::try_from(diagnostic.range.start()).expect("range start fits");
+            let diagnostic_end = usize::try_from(diagnostic.range.end()).expect("range end fits");
+            diagnostic_start < end && start < diagnostic_end
+        });
+        assert!(
+            overlapping.is_none(),
+            "{file}: {marker:?} must not produce a diagnostic, got {overlapping:?}"
+        );
+    }
+
+    fn complete(
+        &self,
+        file: &str,
+        offset: u32,
+        kind: wxml_types::CompletionKind,
+    ) -> wxml_types::CompletionResult {
+        let text = self.project.text(file);
+        let context = self.project.context_for(file, &text);
+        self.project
+            .backend
+            .completion(wxml_types::CompletionRequest {
+                context,
+                offset,
+                kind,
+            })
+            .expect("real Node completion")
+    }
+}
+
+/// Extracts the value of `name="value"` from a fixture marker.
+fn attribute_value(marker: &str) -> Option<String> {
+    let (_, value) = marker.split_once('=')?;
+    let value = value
+        .trim()
+        .trim_matches(|character| character == '"' || character == '\'');
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 // ---------------------------------------------------------------------------
@@ -511,7 +643,8 @@ fn unique_offset(haystack: &str, needle: &str) -> usize {
     first
 }
 
-/// Event-handler markers belong to WT-C; WT-B must not assert them.
+/// Event-handler markers belong to WT-C; WT-B's own assertions must not
+/// silently consume them.
 fn is_event_marker(marker: &str) -> bool {
     ["bind", "catch", "capture", "mut-"]
         .iter()
@@ -642,10 +775,9 @@ fn ac012_component_property_bindings() {
         runner.assert_hover(query);
     }
 
-    // WT-C owns the event-handler markers in this shared fixture; only the
-    // property-binding mismatch is WT-B's assertion.
-    let property_diagnostics = load_diagnostics(runner.root())
-        .into_iter()
+    let diagnostics = load_diagnostics(runner.root());
+    let property_diagnostics = diagnostics
+        .iter()
         .filter(|expected| !is_event_marker(&expected.marker))
         .collect::<Vec<_>>();
     assert_eq!(
@@ -659,8 +791,26 @@ fn ac012_component_property_bindings() {
         assert!(expected.message_contains.contains("number"));
     }
 
-    let property_definitions = load_definitions(runner.root())
-        .into_iter()
+    // WT-C owns the event-handler markers in this shared fixture: a handler
+    // used on a page but absent from the Page options is an error.
+    let event_diagnostics = diagnostics
+        .iter()
+        .filter(|expected| is_event_marker(&expected.marker))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        event_diagnostics.len(),
+        1,
+        "component-bindings event diagnostic count changed"
+    );
+    for expected in &event_diagnostics {
+        runner.assert_diagnostic(expected);
+        assert_eq!(expected.target, "missingHandler");
+        assert_eq!(expected.severity, "error");
+    }
+
+    let all_definitions = load_definitions(runner.root());
+    let property_definitions = all_definitions
+        .iter()
         .filter(|query| !is_event_marker(&query.marker))
         .collect::<Vec<_>>();
     assert!(
@@ -668,6 +818,169 @@ fn ac012_component_property_bindings() {
         "component-bindings gained a property definition expectation; extend this runner: \
          {property_definitions:?}"
     );
+
+    let event_definitions = all_definitions
+        .iter()
+        .filter(|query| is_event_marker(&query.marker))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        event_definitions.len(),
+        2,
+        "component-bindings event definition count changed"
+    );
+    for query in &event_definitions {
+        runner.assert_definition(query);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AC-012 (WT-C): event handler diagnostics, definition and completion.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[ignore = "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1"]
+#[allow(clippy::too_many_lines)]
+fn ac012_event_handlers_basic() {
+    let paths = backend_paths();
+    let runner = Runner::open("events-basic", &paths);
+
+    let hovers = load_hover(runner.root());
+    assert_eq!(hovers.len(), 3, "events-basic hover count changed");
+    for query in &hovers {
+        runner.assert_hover(query);
+    }
+
+    let diagnostics = load_diagnostics(runner.root());
+    assert_eq!(
+        diagnostics.len(),
+        2,
+        "events-basic diagnostic count changed"
+    );
+    for expected in &diagnostics {
+        runner.assert_diagnostic(expected);
+    }
+
+    // Page: exactly one error (the missing handler). Dynamic, empty and
+    // non-identifier forms degrade silently instead of producing noise.
+    let index_file = "pages/index/index.wxml";
+    let index_diagnostics = runner.diagnostics_for(index_file);
+    assert_eq!(
+        index_diagnostics.diagnostics.len(),
+        1,
+        "events-basic page must report only the missing handler: {:?}",
+        index_diagnostics.diagnostics
+    );
+    for marker in [
+        "bindtap=\"{{dynamicHandler}}\"",
+        "bindtap=\"\"",
+        "bindtap=\"this.onTap\"",
+    ] {
+        runner.assert_no_diagnostic_overlapping(index_file, marker);
+    }
+
+    // Component: `methods` is the owner table.
+    let widget_file = "components/widget/widget.wxml";
+    let widget_diagnostics = runner.diagnostics_for(widget_file);
+    assert_eq!(
+        widget_diagnostics.diagnostics.len(),
+        1,
+        "events-basic component must report only the missing method: {:?}",
+        widget_diagnostics.diagnostics
+    );
+    assert!(
+        widget_diagnostics
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("missingWidgetHandler")),
+        "{:?}",
+        widget_diagnostics.diagnostics
+    );
+
+    // Multiple registrations keep the first owner table and degrade to Partial;
+    // the handler may live in the registration we did not read, so a missing
+    // name must not become an error.
+    let multi = runner.diagnostics_for("pages/multi/multi.wxml");
+    assert!(
+        multi.diagnostics.is_empty(),
+        "pages/multi/multi.wxml produced noise: {:?}",
+        multi.diagnostics
+    );
+    assert!(
+        matches!(multi.status, wxml_types::CapabilityStatus::Partial { .. }),
+        "multiple registrations must be Partial, got {:?}",
+        multi.status
+    );
+
+    // A non-literal root has no analyzable owner object at all; the existing
+    // layout policy reports Unsupported and we must not fabricate methods.
+    let nonliteral = runner.diagnostics_for("pages/nonliteral/nonliteral.wxml");
+    assert!(
+        nonliteral.diagnostics.is_empty(),
+        "pages/nonliteral/nonliteral.wxml produced noise: {:?}",
+        nonliteral.diagnostics
+    );
+    assert!(
+        matches!(
+            nonliteral.status,
+            wxml_types::CapabilityStatus::Unsupported { .. }
+        ),
+        "non-literal registration must degrade honestly, got {:?}",
+        nonliteral.status
+    );
+
+    let definitions = load_definitions(runner.root());
+    assert_eq!(
+        definitions.len(),
+        13,
+        "events-basic definition count changed"
+    );
+    for query in &definitions {
+        runner.assert_definition(query);
+    }
+
+    // Event value completion enumerates the owner's methods, not data or
+    // registration containers.
+    let text = runner.project.text(index_file);
+    let (value_start, _) = locate(&text, "bindtap=\"onShorthandTap\"", "onShorthandTap");
+    let handlers = runner.complete(
+        index_file,
+        value_start + u32::try_from("onSh".len()).expect("prefix length"),
+        wxml_types::CompletionKind::EventHandler,
+    );
+    for label in ["onShorthandTap", "onFunctionTap", "onArrowTap"] {
+        assert!(
+            handlers.items.iter().any(|item| item.label == label),
+            "missing {label} in {handlers:?}"
+        );
+    }
+    for reserved in ["label", "data", "__wxml_page"] {
+        assert!(
+            handlers.items.iter().all(|item| item.label != reserved),
+            "{reserved} leaked into event completion: {handlers:?}"
+        );
+    }
+    assert!(
+        handlers
+            .items
+            .iter()
+            .filter(|item| item.label == "onShorthandTap")
+            .all(|item| item.replace.start() == value_start),
+        "event completion must replace the whole handler token: {handlers:?}"
+    );
+
+    let widget_text = runner.project.text(widget_file);
+    let (widget_value_start, _) = locate(&widget_text, "bindtap=\"onWidgetTap\"", "onWidgetTap");
+    let widget_handlers = runner.complete(
+        widget_file,
+        widget_value_start + u32::try_from("onWidget".len()).expect("prefix length"),
+        wxml_types::CompletionKind::EventHandler,
+    );
+    for label in ["onWidgetTap", "onWidgetArrow"] {
+        assert!(
+            widget_handlers.items.iter().any(|item| item.label == label),
+            "missing {label} in {widget_handlers:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

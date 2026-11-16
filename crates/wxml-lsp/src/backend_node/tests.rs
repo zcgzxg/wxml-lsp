@@ -8,9 +8,9 @@ use serde_json::{Value, json};
 use wxml_text::SourceRange;
 use wxml_types::{
     Backend, BackendEpoch, BackendId, CheckFragment, DefinitionRequest, Diagnostic,
-    DiagnosticSeverity, DiagnosticsRequest, FileId, HoverRequest, LocalBinding, LocalRole,
-    MarkupKind, ProjectId, ProjectRevision, RequestContext, RootKind, SnapshotId, SourceRevision,
-    SourceSnapshot, TypeQuality, ViewRevision,
+    DiagnosticSeverity, DiagnosticsRequest, EventBindingKind, EventHandler, FileId, HoverRequest,
+    LocalBinding, LocalRole, MarkupKind, ProjectId, ProjectRevision, RequestContext, RootKind,
+    SnapshotId, SourceRevision, SourceSnapshot, TypeQuality, ViewRevision,
 };
 
 use super::config::NodeBackendConfig;
@@ -76,10 +76,38 @@ fn view(bindings: Vec<LocalBinding>) -> PreparedView {
         compiler_options: serde_json::Map::new(),
         fragments: Arc::from(vec![fragment(bindings)]),
         components: Arc::from(Vec::new()),
+        events: Arc::from(Vec::new()),
         project_root: std::path::PathBuf::from("/tmp/project"),
         syntax_diagnostics: Vec::new(),
         status_hint: None,
     }
+}
+
+/// A view with one static `bindtap="onTap"` handler at bytes 10..15.
+///
+/// The context template is `{{ user.name }}` (13 bytes), so offset 12 falls
+/// inside the handler token without touching the fragment target.
+fn view_with_events() -> PreparedView {
+    let mut prepared = view(Vec::new());
+    prepared.events = Arc::from(vec![EventHandler {
+        attribute: "bindtap".to_owned(),
+        binding: EventBindingKind::Bind,
+        event: "tap".to_owned(),
+        handler: "onTap".to_owned(),
+        range: SourceRange::from_bounds(2, 16).expect("range"),
+        attribute_range: SourceRange::from_bounds(2, 16).expect("range"),
+        handler_range: SourceRange::from_bounds(10, 15).expect("range"),
+    }]);
+    prepared
+}
+
+/// A backend whose fake Node answers `analyze` with `event_results`.
+fn backend_with_events(shared: &Shared, host: StubHost, event_results: Value) -> NodeBackend {
+    backend_with(shared, host, move |line| {
+        let mut value: Value = serde_json::from_str(&respond(line)).expect("response");
+        value["result"]["eventResults"] = event_results.clone();
+        Ok(serde_json::to_string(&value).expect("json"))
+    })
 }
 
 fn context() -> RequestContext {
@@ -810,4 +838,217 @@ fn completion_prefix_keeps_the_tail_of_a_long_token() {
     assert_eq!(prefix.len(), 256);
     assert!(prefix.ends_with("onTap"));
     assert!(text.ends_with(&prefix));
+}
+
+fn last_request(shared: &Shared) -> Value {
+    let line = shared
+        .requests
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .last()
+        .cloned()
+        .expect("a request");
+    serde_json::from_str(&line).expect("request json")
+}
+
+#[test]
+fn event_results_flow_into_diagnostics_and_definition() {
+    let shared = Shared::default();
+    let backend = backend_with_events(
+        &shared,
+        StubHost::new(view_with_events()),
+        json!([{
+            "eventId": "e0",
+            "state": {"status": "supported"},
+            "definition": {"kind": "script", "fileId": SCRIPT, "range": {"start": 5, "end": 10}},
+            "signature": "onTap(event: { detail: { x: number } })",
+            "diagnostic": {
+                "range": {"start": 10, "end": 15},
+                "severity": "error",
+                "message": "Cannot find name 'onTap' for event tap"
+            }
+        }]),
+    );
+    let context = context();
+    let diagnostics = backend
+        .diagnostics(DiagnosticsRequest {
+            context: context.clone(),
+        })
+        .expect("diagnostics");
+    let event = diagnostics
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.message.contains("onTap"))
+        .expect("event diagnostic");
+    assert_eq!(event.severity, DiagnosticSeverity::Error);
+    assert_eq!((event.range.start(), event.range.end()), (10, 15));
+    assert!(diagnostics.status.is_supported());
+
+    // Offset 12 is inside both the event handler and the fragment target; the
+    // event result must win and must not fall through to the fragment.
+    let definition = backend
+        .definition(DefinitionRequest {
+            context: context.clone(),
+            offset: 12,
+        })
+        .expect("definition");
+    assert_eq!(definition.locations.len(), 1);
+    assert_eq!(definition.locations[0].file.path(), SCRIPT);
+    assert_eq!(
+        (
+            definition.locations[0].range.start(),
+            definition.locations[0].range.end()
+        ),
+        (5, 10)
+    );
+    assert!(definition.status.is_supported());
+
+    // The same event must also answer hover with the backend signature, proving
+    // the cached event list is passed into the response mapper.
+    let hover = backend
+        .hover(HoverRequest {
+            context,
+            offset: 12,
+        })
+        .expect("hover");
+    assert!(
+        hover
+            .contents
+            .contains("onTap(event: { detail: { x: number } })")
+    );
+    assert_eq!(
+        hover.range.map(|range| (range.start(), range.end())),
+        Some((10, 15))
+    );
+    assert_eq!(hover.quality, TypeQuality::Known);
+    assert!(hover.status.is_supported());
+
+    assert_eq!(requests(&shared), 1);
+    let request = last_request(&shared);
+    assert_eq!(request["params"]["events"][0]["eventId"], "e0");
+    assert_eq!(request["params"]["events"][0]["handler"], "onTap");
+    assert_eq!(request["params"]["events"][0]["event"], "tap");
+}
+
+#[test]
+fn event_definition_outside_the_view_script_is_partial_and_empty() {
+    let shared = Shared::default();
+    let backend = backend_with_events(
+        &shared,
+        StubHost::new(view_with_events()),
+        json!([{
+            "eventId": "e0",
+            "state": {"status": "supported"},
+            "definition": {"fileId": "pages/other.ts", "range": {"start": 5, "end": 10}}
+        }]),
+    );
+    let definition = backend
+        .definition(DefinitionRequest {
+            context: context(),
+            offset: 12,
+        })
+        .expect("definition");
+    assert!(definition.locations.is_empty(), "{definition:?}");
+    let CapabilityStatus::Partial { reason } = definition.status else {
+        panic!("expected partial");
+    };
+    assert_eq!(reason, "an event definition points at an unexpected file");
+}
+
+#[test]
+fn event_definition_without_a_kind_is_mapped() {
+    let shared = Shared::default();
+    let backend = backend_with_events(
+        &shared,
+        StubHost::new(view_with_events()),
+        json!([{
+            "eventId": "e0",
+            "state": {"status": "supported"},
+            "definition": {"fileId": SCRIPT, "range": {"start": 7, "end": 12}}
+        }]),
+    );
+    let definition = backend
+        .definition(DefinitionRequest {
+            context: context(),
+            offset: 12,
+        })
+        .expect("definition");
+    assert_eq!(definition.locations.len(), 1);
+    assert_eq!(definition.locations[0].file.path(), SCRIPT);
+    assert_eq!(
+        (
+            definition.locations[0].range.start(),
+            definition.locations[0].range.end()
+        ),
+        (7, 12)
+    );
+    assert!(definition.status.is_supported());
+}
+
+#[test]
+fn missing_event_definition_is_supported_without_locations() {
+    let shared = Shared::default();
+    let backend = backend_with_events(
+        &shared,
+        StubHost::new(view_with_events()),
+        json!([{"eventId": "e0", "state": {"status": "supported"}}]),
+    );
+    let definition = backend
+        .definition(DefinitionRequest {
+            context: context(),
+            offset: 12,
+        })
+        .expect("definition");
+    assert!(definition.locations.is_empty());
+    assert!(definition.status.is_supported());
+}
+
+#[test]
+fn partial_event_result_is_partial_and_has_no_definition() {
+    let shared = Shared::default();
+    let backend = backend_with_events(
+        &shared,
+        StubHost::new(view_with_events()),
+        json!([{
+            "eventId": "e0",
+            "state": {"status": "partial", "reason": "multiple registrations"}
+        }]),
+    );
+    let definition = backend
+        .definition(DefinitionRequest {
+            context: context(),
+            offset: 12,
+        })
+        .expect("definition");
+    assert!(definition.locations.is_empty());
+    let CapabilityStatus::Partial { reason } = definition.status else {
+        panic!("expected partial");
+    };
+    assert_eq!(reason, "multiple registrations");
+}
+
+#[test]
+fn events_alone_start_the_backend() {
+    let shared = Shared::default();
+    let mut prepared = view_with_events();
+    prepared.fragments = Arc::from(Vec::new());
+    let backend = backend_with_events(
+        &shared,
+        StubHost::new(prepared),
+        json!([{
+            "eventId": "e0",
+            "state": {"status": "supported"},
+            "diagnostic": {
+                "range": {"start": 10, "end": 15},
+                "severity": "error",
+                "message": "Cannot find name 'onTap'"
+            }
+        }]),
+    );
+    let result = backend
+        .diagnostics(DiagnosticsRequest { context: context() })
+        .expect("diagnostics");
+    assert_eq!(requests(&shared), 1);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].message, "Cannot find name 'onTap'");
 }
