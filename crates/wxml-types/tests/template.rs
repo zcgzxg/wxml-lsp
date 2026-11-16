@@ -39,6 +39,12 @@ fn slice<'a>(tree: &'a SyntaxTree, fragment: &CheckFragment) -> &'a str {
     &tree.text()[start..end]
 }
 
+fn slice_range(tree: &SyntaxTree, range: wxml_text::SourceRange) -> &str {
+    let start = usize::try_from(range.start()).expect("range start fits");
+    let end = usize::try_from(range.end()).expect("range end fits");
+    &tree.text()[start..end]
+}
+
 fn unsupported_kinds(analysis: &TemplateAnalysis) -> Vec<UnsupportedKind> {
     analysis
         .unsupported
@@ -64,6 +70,8 @@ fn extracts_root_member_access() {
     assert_eq!(fragment.expr_text, "user.name");
     assert_eq!(fragment.target.as_deref(), Some("name"));
     assert!(fragment.locals.is_empty());
+    assert!(fragment.bindings.is_empty());
+    assert!(fragment.guards.is_empty());
     assert_eq!(fragment.root, RootKind::Page);
     assert_eq!(fragment.fragment_revision, REVISION);
     assert_eq!(slice(&tree, fragment), "user.name");
@@ -223,7 +231,34 @@ fn static_events_are_collected_without_fragments() {
         let start = usize::try_from(event.range.start()).expect("range");
         let end = usize::try_from(event.range.end()).expect("range");
         assert!(tree.text()[start..end].starts_with(attribute));
+        assert_eq!(event.attribute_range, event.range);
+        assert!(slice_range(&tree, event.attribute_range).starts_with(attribute));
+        assert_eq!(slice_range(&tree, event.handler_range), handler);
     }
+}
+
+#[test]
+fn event_ranges_tolerate_quotes_and_whitespace() {
+    let source = r#"<view bindtap="  onTap  " catch:tap='onCatch' mut-bind:tap=onMut />"#;
+    let (analysis, tree) = analyze(source);
+    let handlers: Vec<(&str, &str)> = analysis
+        .events
+        .iter()
+        .map(|event| {
+            (
+                event.handler.as_str(),
+                slice_range(&tree, event.handler_range),
+            )
+        })
+        .collect();
+    assert_eq!(
+        handlers,
+        vec![
+            ("onTap", "onTap"),
+            ("onCatch", "onCatch"),
+            ("onMut", "onMut")
+        ]
+    );
 }
 
 #[test]

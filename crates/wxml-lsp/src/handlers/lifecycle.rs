@@ -5,7 +5,7 @@ use std::sync::atomic::Ordering;
 use serde_json::{Value, json};
 use wxml_types::CapabilityStatus;
 
-use super::{log_safe_method, status_label};
+use super::{log_safe_method, log_safe_text, status_label};
 use crate::jsonrpc::{self, Outgoing, RequestKey};
 use crate::server::{Lifecycle, Server, log};
 
@@ -47,13 +47,7 @@ fn initialize_result(server: &Server) -> Value {
 fn describe_status(status: &CapabilityStatus) -> String {
     status.reason().map_or_else(
         || status_label(status).to_owned(),
-        |reason| {
-            format!(
-                "{} ({})",
-                status_label(status),
-                super::log_safe_text(reason, 200)
-            )
-        },
+        |reason| format!("{} ({})", status_label(status), log_safe_text(reason, 200)),
     )
 }
 
@@ -135,6 +129,10 @@ impl Server {
             "textDocument/didOpen" => self.did_open(params),
             "textDocument/didChange" => self.did_change(params),
             "textDocument/didClose" => self.did_close(params),
+            // Phase 0 dispatch skeleton: the notifications are parsed and
+            // logged here so later worktrees only fill in the behavior.
+            "textDocument/didSave" => Self::did_save(params.as_ref()),
+            "workspace/didChangeWatchedFiles" => Self::did_change_watched_files(params.as_ref()),
             "$/cancelRequest" => {
                 self.cancel_request(params.as_ref());
                 Vec::new()
@@ -187,6 +185,39 @@ impl Server {
         vec![Outgoing::success(id, Value::Null)]
     }
 
+    /// Handles `textDocument/didSave`.
+    ///
+    /// Phase 0 only validates and logs the notification; snapshot refresh and
+    /// diagnostics are added by the Zed synchronization worktree.
+    pub(crate) fn did_save(params: Option<&Value>) -> Vec<Outgoing> {
+        match params.and_then(saved_uri) {
+            Some(uri) => log(format_args!(
+                "didSave for {} acknowledged (no-op in this phase)",
+                log_safe_text(uri, MAX_LOG_URI_BYTES)
+            )),
+            None => log(format_args!(
+                "ignoring didSave without a valid text document"
+            )),
+        }
+        Vec::new()
+    }
+
+    /// Handles `workspace/didChangeWatchedFiles`.
+    ///
+    /// Phase 0 only validates and logs the notification; cache invalidation is
+    /// added by the Zed synchronization worktree.
+    pub(crate) fn did_change_watched_files(params: Option<&Value>) -> Vec<Outgoing> {
+        match params.and_then(watched_change_count) {
+            Some(count) => log(format_args!(
+                "didChangeWatchedFiles with {count} change(s) acknowledged (no-op in this phase)"
+            )),
+            None => log(format_args!(
+                "ignoring didChangeWatchedFiles without a valid changes array"
+            )),
+        }
+        Vec::new()
+    }
+
     /// Sets the cancel flag of one in-flight request.
     fn cancel_request(&self, params: Option<&Value>) {
         let Some(params) = params else {
@@ -207,6 +238,65 @@ impl Server {
                 log(format_args!("cancelling request"));
             }
             None => log(format_args!("ignoring cancellation of an unknown request")),
+        }
+    }
+}
+
+/// Longest document URI written to stderr for an acknowledged notification.
+const MAX_LOG_URI_BYTES: usize = 256;
+
+/// Reads the document URI of a `didSave` notification.
+fn saved_uri(params: &Value) -> Option<&str> {
+    params
+        .as_object()?
+        .get("textDocument")?
+        .as_object()?
+        .get("uri")?
+        .as_str()
+}
+
+/// Returns the number of entries in a `didChangeWatchedFiles` notification.
+fn watched_change_count(params: &Value) -> Option<usize> {
+    params.as_object()?.get("changes")?.as_array().map(Vec::len)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{saved_uri, watched_change_count};
+
+    #[test]
+    fn reads_saved_uri_only_from_a_text_document() {
+        assert_eq!(
+            saved_uri(&json!({"textDocument": {"uri": "file:///a.wxml"}})),
+            Some("file:///a.wxml")
+        );
+        for params in [
+            json!({}),
+            json!({"textDocument": {}}),
+            json!({"textDocument": {"uri": 1}}),
+            json!({"textDocument": null}),
+            json!(null),
+        ] {
+            assert_eq!(saved_uri(&params), None, "params {params}");
+        }
+    }
+
+    #[test]
+    fn reads_watched_change_count_only_from_an_array() {
+        assert_eq!(
+            watched_change_count(&json!({"changes": [{"uri": "file:///a", "type": 2}]})),
+            Some(1)
+        );
+        assert_eq!(watched_change_count(&json!({"changes": []})), Some(0));
+        for params in [
+            json!({}),
+            json!({"changes": {}}),
+            json!({"changes": null}),
+            json!(null),
+        ] {
+            assert_eq!(watched_change_count(&params), None, "params {params}");
         }
     }
 }

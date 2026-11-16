@@ -8,7 +8,11 @@ use serde_json::{Value, json};
 use thiserror::Error;
 
 /// C1 protocol version.
-pub const PROTOCOL_VERSION: u64 = 1;
+///
+/// Version 2 adds optional `bindings`, `guards`, `components` and `events`
+/// inputs to `analyze` and reserves a `complete` method. Phase 0 only freezes
+/// the shapes; the server ignores unknown optional fields.
+pub const PROTOCOL_VERSION: u64 = 2;
 
 /// Why a Node response could not be accepted.
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
@@ -179,9 +183,9 @@ mod tests {
 
     #[test]
     fn validates_ping_version() {
-        let ok = serde_json::json!({"ok": true, "protocolVersion": 1});
+        let ok = serde_json::json!({"ok": true, "protocolVersion": 2});
         assert!(validate_ping(&ok).is_ok());
-        let bad = serde_json::json!({"ok": true, "protocolVersion": 2});
+        let bad = serde_json::json!({"ok": true, "protocolVersion": 1});
         assert_eq!(validate_ping(&bad), Err(ProtocolError::Version));
     }
 }

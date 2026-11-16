@@ -186,7 +186,7 @@ fn respond(line: &str) -> String {
         "jsonrpc": "2.0",
         "id": id,
         "result": {
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "requestId": request_id,
             "jsCheckApplied": "pragma",
             "registration": {"kind": "page", "count": 1, "topLevel": true},

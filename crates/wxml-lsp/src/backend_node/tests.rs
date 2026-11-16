@@ -39,6 +39,8 @@ fn fragment(locals: Vec<String>) -> CheckFragment {
         expr_text: "user.name".to_owned(),
         target: Some("name".to_owned()),
         locals,
+        bindings: Vec::new(),
+        guards: Vec::new(),
         wxml_range: SourceRange::from_bounds(3, 12).expect("range"),
         fragment_revision: 1,
         root: RootKind::Page,
@@ -262,7 +264,7 @@ fn respond(line: &str) -> String {
         "jsonrpc": "2.0",
         "id": id,
         "result": {
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "requestId": request_id,
             "jsCheckApplied": "pragma",
             "registration": {"kind": "page", "count": 1, "topLevel": true},

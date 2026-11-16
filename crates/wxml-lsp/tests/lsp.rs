@@ -286,6 +286,41 @@ fn did_change_and_close_publish_versioned_diagnostics() {
 }
 
 #[test]
+fn did_save_and_watched_files_are_no_ops_that_keep_the_session_alive() {
+    let mut client = Client::start();
+    client.initialize();
+    client.open("{{ user.name }}", 1);
+    let diagnostics = client.recv_notification("textDocument/publishDiagnostics");
+    assert_eq!(diagnostics["params"]["version"], json!(1));
+
+    client.notify(
+        "textDocument/didSave",
+        json!({"textDocument": {"uri": URI}}),
+    );
+    // Malformed notifications must be ignored instead of closing the stream.
+    client.notify("textDocument/didSave", json!({}));
+    client.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": URI, "type": 2}]}),
+    );
+    client.notify("workspace/didChangeWatchedFiles", json!({"changes": {}}));
+
+    client.request(
+        json!(2),
+        "textDocument/hover",
+        json!({
+            "textDocument": {"uri": URI},
+            "position": {"line": 0, "character": 3},
+        }),
+    );
+    let hover = client.recv_response(&json!(2));
+    assert_eq!(hover["result"]["contents"]["value"], json!("string"));
+
+    client.shutdown();
+    assert!(client.finish().success());
+}
+
+#[test]
 fn unknown_methods_and_malformed_json_are_reported() {
     let mut client = Client::start();
     client.initialize();

@@ -94,7 +94,7 @@ impl StdioNode {
     /// # Errors
     ///
     /// Returns a spawn, I/O or protocol error when the process cannot be
-    /// started or does not advertise protocol version 1.
+    /// started or does not advertise protocol version 2.
     pub fn start(config: &NodeBackendConfig) -> Result<Self, NodeTransportError> {
         let mut child = spawn_command(config)?
             .stdin(Stdio::piped())

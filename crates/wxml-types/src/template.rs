@@ -3,7 +3,8 @@
 //! The analyzer walks the `wxml-syntax` AST in source order and produces:
 //!
 //! - [`CheckFragment`]s for every data mustache, with the current `wx:for`
-//!   bindings in `locals`;
+//!   bindings in `locals`; `bindings` and `guards` are reserved for the
+//!   structured template worktree and stay empty here;
 //! - [`EventHandler`]s for static event bindings;
 //! - [`UnsupportedFeature`]s for dynamic events, unresolved expressions and
 //!   template forms that this phase does not analyze.
@@ -272,13 +273,41 @@ impl<'a> Engine<'a> {
         let Some(range) = self.source_range(attribute.text_range()) else {
             return;
         };
+        let handler_range = self.handler_range(value, handler).unwrap_or(range);
         self.events.push(EventHandler {
             attribute: attribute_name.to_owned(),
             binding,
             event: event.to_owned(),
             handler: handler.to_owned(),
             range,
+            attribute_range: range,
+            handler_range,
         });
+    }
+
+    /// Returns the byte range of the trimmed handler token inside `value`.
+    ///
+    /// Returns `None` when the computed range is not a valid slice of the
+    /// source or does not equal `handler`; callers fall back to the whole
+    /// attribute range.
+    fn handler_range(&self, value: AttributeValue<'a>, handler: &str) -> Option<SourceRange> {
+        let range = value.text_range();
+        let literal = value.literal_text()?;
+        let quote = usize::from(value.is_quoted());
+        let leading_space = literal.len().checked_sub(literal.trim_start().len())?;
+        let offset = u32::try_from(quote.checked_add(leading_space)?).ok()?;
+        let length = u32::try_from(handler.len()).ok()?;
+        let start = range.start().checked_add(offset)?;
+        let end = start.checked_add(length)?;
+        if end > range.end() {
+            return None;
+        }
+        let slice_start = usize::try_from(start).ok()?;
+        let slice_end = usize::try_from(end).ok()?;
+        if self.tree.text().get(slice_start..slice_end)? != handler {
+            return None;
+        }
+        SourceRange::from_bounds(start, end).ok()
     }
 
     fn analyze_mustache(&mut self, mustache: Mustache<'a>) {
@@ -328,6 +357,8 @@ impl<'a> Engine<'a> {
             expr_text: expr_text.to_owned(),
             target,
             locals,
+            bindings: Vec::new(),
+            guards: Vec::new(),
             wxml_range,
             fragment_revision: self.revision,
             root: self.root,

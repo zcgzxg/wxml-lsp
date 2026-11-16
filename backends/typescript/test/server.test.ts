@@ -94,7 +94,7 @@ test("ping and shutdown follow JSON-RPC 2.0", async () => {
     const ping = await client.next();
     assert.equal(ping.jsonrpc, "2.0");
     assert.equal(ping.id, 1);
-    assert.deepEqual(ping.result, { ok: true, protocolVersion: 1, backendVersion: BACKEND_VERSION });
+    assert.deepEqual(ping.result, { ok: true, protocolVersion: 2, backendVersion: BACKEND_VERSION });
 
     client.send({ jsonrpc: "2.0", id: 2, method: "shutdown" });
     const shutdown = await client.next();
@@ -114,7 +114,7 @@ test("analyze returns the C1 response for a page", async () => {
       requestId: string;
       fragments: Array<{ fragmentId: string; hover?: { typeOnly?: string }; diagnostics?: Array<{ range?: unknown }> }>;
     };
-    assert.equal(result.protocolVersion, 1);
+    assert.equal(result.protocolVersion, 2);
     assert.equal(result.requestId, request.requestId);
     const title = result.fragments.find((fragment) => fragment.fragmentId === "title");
     assert.equal(title?.hover?.typeOnly, "string");
@@ -134,7 +134,7 @@ test("unknown methods, bad JSON and bad params do not kill the server", async ()
     assert.equal((parse.error as { code?: number }).code, -32700);
     assert.equal(parse.id, null);
 
-    client.send({ jsonrpc: "2.0", id: 4, method: "analyze", params: { protocolVersion: 1 } });
+    client.send({ jsonrpc: "2.0", id: 4, method: "analyze", params: { protocolVersion: 2 } });
     const invalid = await client.next();
     assert.equal((invalid.error as { code?: number }).code, -32602);
 
@@ -147,7 +147,7 @@ test("unknown methods, bad JSON and bad params do not kill the server", async ()
 test("JSON-RPC notifications get no response", async () => {
   await withServer(async (client) => {
     client.send({ jsonrpc: "2.0", method: "nope" });
-    client.send({ jsonrpc: "2.0", method: "analyze", params: { protocolVersion: 1 } });
+    client.send({ jsonrpc: "2.0", method: "analyze", params: { protocolVersion: 2 } });
     const request = inspectRequest(scenarioById("page-basic"), "in-place-shadow", config);
     request.fragments = [
       {

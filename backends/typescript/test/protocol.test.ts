@@ -19,7 +19,7 @@ const config: RunConfig = { backendDir: BACKEND_DIR, samplesDir: SAMPLES_DIR };
 test("the request carries files, fragments, options, policy and owner", () => {
   const spec = scenarioById("alias-project");
   const request = inspectRequest(spec, "in-place-shadow", config);
-  assert.equal(request.protocolVersion, 1);
+  assert.equal(request.protocolVersion, 2);
   assert.equal(request.view.owner.kind, "page");
   assert.equal(request.view.owner.fileId, "index.ts");
   assert.ok(request.view.viewId.length > 0);
@@ -46,6 +46,79 @@ test("the request carries files, fragments, options, policy and owner", () => {
   assert.ok(fragment.fragmentRevision >= 1);
   assert.ok(fragment.wxmlRange.end > fragment.wxmlRange.start);
   assert.equal(request.limits?.maxFiles, DEFAULT_LIMITS.maxFiles);
+});
+
+test("protocol v2 accepts optional bindings, guards, components and events", () => {
+  const request = inspectRequest(scenarioById("alias-project"), "in-place-shadow", config);
+  assert.equal(request.protocolVersion, 2);
+  request.fragments[0]!.bindings = [
+    {
+      name: "item",
+      role: "item",
+      sourceExpr: "groups",
+      sourceRange: { start: 0, end: 6 },
+    },
+  ];
+  request.fragments[0]!.guards = [
+    {
+      conditions: [{ branch: "if", exprText: "state.ready", range: { start: 0, end: 11 } }],
+      selected: 0,
+    },
+  ];
+  request.components = [
+    {
+      tag: "card",
+      componentFileId: "components/card/card.ts",
+      attributes: [
+        {
+          name: "title",
+          valueKind: "mustache",
+          exprText: "pageTitle",
+          exprRange: { start: 0, end: 9 },
+          attributeRange: { start: 0, end: 20 },
+        },
+      ],
+    },
+  ];
+  request.events = [
+    {
+      eventId: "e0",
+      attribute: "bind:tap",
+      event: "tap",
+      handler: "onCardTap",
+      attributeRange: { start: 0, end: 14 },
+      handlerRange: { start: 10, end: 19 },
+    },
+  ];
+  assert.doesNotThrow(() => validateRequest(request));
+});
+
+test("protocol v2 rejects malformed structured bindings", () => {
+  const request = inspectRequest(scenarioById("alias-project"), "in-place-shadow", config);
+  request.fragments[0]!.bindings = [
+    {
+      name: "item",
+      role: "element" as unknown as "item",
+      sourceExpr: "groups",
+      sourceRange: { start: 0, end: 6 },
+    },
+  ];
+  assert.throws(
+    () => validateRequest(request),
+    (error: unknown) => error instanceof RequestError && error.code === "bad-fragment",
+  );
+  request.fragments[0]!.bindings = [
+    {
+      name: "item",
+      role: "item",
+      sourceExpr: "groups",
+      sourceRange: { start: 6, end: 0 },
+    },
+  ];
+  assert.throws(
+    () => validateRequest(request),
+    (error: unknown) => error instanceof RequestError && error.code === "bad-fragment",
+  );
 });
 
 test("the option digest is independent of the checkout path", () => {
@@ -177,7 +250,7 @@ test("enum values and the protocol version are validated", () => {
   }
   assert.doesNotThrow(() => validateRequest(withOptions({ target: "ES2020", jsx: "react-jsx" }) as typeof request));
   assert.throws(
-    () => validateRequest({ ...request, protocolVersion: 2 }),
+    () => validateRequest({ ...request, protocolVersion: 3 }),
     (error: unknown) => error instanceof RequestError && error.code === "bad-protocol",
   );
 });
@@ -213,7 +286,7 @@ test("the C1 response is assembled from the run", () => {
   const spec = scenarioById("page-basic");
   const request = inspectRequest(spec, "in-place-shadow", config);
   const run = runScenario(spec, "in-place-shadow", config);
-  assert.equal(run.response.protocolVersion, 1);
+  assert.equal(run.response.protocolVersion, 2);
   assert.equal(run.response.requestId, request.requestId);
   assert.deepEqual(run.response.states, run.states);
   assert.equal(run.response.moduleKind.before, "script");

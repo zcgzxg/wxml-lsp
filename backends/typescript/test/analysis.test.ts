@@ -31,7 +31,7 @@ test("analyze returns hover, diagnostic and definition for a page", () => {
   const result = analyze(request, analysisConfig);
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.equal(result.response.protocolVersion, 1);
+  assert.equal(result.response.protocolVersion, 2);
   assert.equal(result.response.requestId, request.requestId);
 
   const title = result.response.fragments.find((entry) => entry.fragmentId === "title");
@@ -261,7 +261,7 @@ test("a missing snapshot file is Unavailable, never read from disk", () => {
 
 test("a malformed request is rejected before analysis", () => {
   const request = pageBasicRequest();
-  request.protocolVersion = 2;
+  request.protocolVersion = 3;
   assert.throws(
     () => validateRequest(request),
     (error: unknown) => error instanceof RequestError && error.code === "bad-protocol",
