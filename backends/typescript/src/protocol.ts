@@ -393,6 +393,19 @@ export interface AnalyzeResponse {
       documentation: string;
       documentationSource: "quickinfo" | "symbol" | "copied" | "none";
     };
+    /**
+     * Hover results for every identifier in the expression (protocol v2).
+     * `range` is a WXML byte range; the LSP picks the candidate under the
+     * pointer. `hover` above stays the expression's default target.
+     */
+    hovers?: Array<{
+      range: { start: number; end: number };
+      typeText: string;
+      typeOnly: string;
+      quality: "known" | "any" | "unknown" | "missing";
+      documentation: string;
+      documentationSource: "quickinfo" | "symbol" | "copied" | "none";
+    }>;
     diagnostics: Array<{
       code: number;
       /** WXML byte range (the only published coordinate). */

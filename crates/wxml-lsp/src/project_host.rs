@@ -453,7 +453,9 @@ impl ProjectState {
         let Some(uri) = root_uri else {
             return Ok(());
         };
-        let project = Project::open_uri(uri).map_err(|_| HostError::ProjectOpen)?;
+        let root = wxml_project::root_path_from_uri(uri).map_err(|_| HostError::ProjectOpen)?;
+        let root = resolve_app_root(root);
+        let project = Project::open(root).map_err(|_| HostError::ProjectOpen)?;
         let project_id = project_id_for(project.root());
         state.project_id = project_id.clone();
         state.project_revision = ProjectRevision::new(project_id.clone(), 1);
@@ -1123,6 +1125,79 @@ const fn map_uri_error(_error: UriError) -> HostError {
     HostError::InvalidUri
 }
 
+/// Directories that cannot contain the Mini Program root of this workspace.
+const APP_ROOT_SKIP: &[&str] = &[
+    "node_modules",
+    ".git",
+    ".hg",
+    ".svn",
+    "dist",
+    "build",
+    "target",
+    "coverage",
+    ".cache",
+    ".next",
+    ".turbo",
+    "out",
+    "vendor",
+    ".venv",
+    "venv",
+];
+
+/// Bounds the nested-root search so a monorepo root stays cheap to open.
+const MAX_APP_ROOT_DEPTH: usize = 6;
+const MAX_APP_ROOT_DIRS: usize = 4096;
+
+/// Resolves the directory that actually contains `app.json`.
+///
+/// Editors commonly open a monorepo root while the Mini Program lives in a
+/// nested package (`apps/miniprogram/src`). If the root has no `app.json`,
+/// search its descendants once and only adopt a nested root when the answer is
+/// unambiguous. Multiple candidates keep the original root so this never
+/// guesses which project the user meant.
+fn resolve_app_root(root: PathBuf) -> PathBuf {
+    if root.join("app.json").is_file() {
+        return root;
+    }
+    let mut pending = vec![(root.clone(), 0usize)];
+    let mut found = Vec::new();
+    let mut visited = 0usize;
+    while let Some((directory, depth)) = pending.pop() {
+        if visited >= MAX_APP_ROOT_DIRS {
+            break;
+        }
+        visited += 1;
+        if directory.join("app.json").is_file() {
+            found.push(directory);
+            if found.len() > 1 {
+                return root;
+            }
+            continue;
+        }
+        if depth >= MAX_APP_ROOT_DEPTH {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&directory) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if !file_type.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if APP_ROOT_SKIP.contains(&name.as_ref()) {
+                continue;
+            }
+            pending.push((entry.path(), depth + 1));
+        }
+    }
+    found.into_iter().next().unwrap_or(root)
+}
+
 fn project_id_for(root: &Path) -> ProjectId {
     let mut hash = 0xcbf2_9ce4_8422_2325_u64;
     for byte in root.to_string_lossy().as_bytes() {
@@ -1284,8 +1359,8 @@ fn limit_request_files(
     script: &ProjectPath,
     hint: &mut Option<CapabilityStatus>,
 ) {
-    const MAX_FILES: usize = 512;
-    const MAX_BYTES: usize = 8 * 1024 * 1024;
+    const MAX_FILES: usize = 1024;
+    const MAX_BYTES: usize = 16 * 1024 * 1024;
     if let Some(position) = files.iter().position(|file| file.path == *script) {
         if position > 0 {
             let file = files.remove(position);
@@ -1607,6 +1682,45 @@ mod tests {
     }
 
     #[test]
+    fn nested_app_root_is_discovered_from_a_monorepo_root() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-nested-root-{stamp}"));
+        let app = root.join("apps/miniprogram/src");
+        std::fs::create_dir_all(app.join("pages/index")).expect("create app root");
+        std::fs::write(app.join("app.json"), r#"{"pages":["pages/index/index"]}"#)
+            .expect("write app.json");
+        std::fs::write(
+            app.join("pages/index/index.wxml"),
+            "<view>{{ title }}</view>",
+        )
+        .expect("write wxml");
+        std::fs::write(
+            app.join("pages/index/index.ts"),
+            "Page({ data: { title: 'nested' } });",
+        )
+        .expect("write script");
+        std::fs::create_dir_all(root.join("apps/miniprogram/dist")).expect("create dist");
+        std::fs::write(
+            root.join("apps/miniprogram/dist/app.json"),
+            r#"{"pages":["pages/ignored/ignored"]}"#,
+        )
+        .expect("write ignored app.json");
+
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open monorepo root");
+        let wxml = ProjectPath::new("pages/index/index.wxml").expect("wxml path");
+        let view = host.view_for(&wxml).expect("nested view");
+        assert_eq!(view.script.as_str(), "pages/index/index.ts");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn project_id_does_not_contain_the_root_path() {
         let id = project_id_for(Path::new("/tmp/very/secret/project"));
         assert!(id.as_str().starts_with("proj-"));
@@ -1677,7 +1791,7 @@ mod tests {
         let project = ProjectId::new("p");
         let script = ProjectPath::new("late.ts").expect("script");
         let mut files = Vec::new();
-        for index in 0..600 {
+        for index in 0..1100 {
             let path = ProjectPath::new(format!("f{index}.ts")).expect("path");
             files.push(PreparedFile {
                 file: FileId::new(project.clone(), path.as_str()).expect("file"),
@@ -1696,7 +1810,7 @@ mod tests {
         });
         let mut hint = None;
         limit_request_files(&mut files, &script, &mut hint);
-        assert_eq!(files.len(), 512);
+        assert_eq!(files.len(), 1024);
         assert_eq!(files[0].path, script);
         assert!(matches!(hint, Some(CapabilityStatus::Partial { .. })));
     }

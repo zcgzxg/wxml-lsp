@@ -47,6 +47,30 @@ test("analyze returns hover, diagnostic and definition for a page", () => {
   assert.deepEqual(name?.definition?.range, { start: 136, end: 140 });
 });
 
+test("hover candidates cover every identifier in the expression", () => {
+  const request = pageBasicRequest();
+  const result = analyze(request, analysisConfig);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+
+  const fragment = result.response.fragments.find((entry) => entry.fragmentId === "user.name");
+  const requestFragment = request.fragments.find((entry) => entry.fragmentId === "user.name");
+  assert.ok(fragment);
+  assert.ok(fragment.hovers);
+  assert.ok(requestFragment);
+  const start = requestFragment.wxmlRange.start;
+  assert.deepEqual(
+    fragment.hovers.map((entry) => entry.range),
+    [
+      { start, end: start + 4 },
+      { start: start + 5, end: start + 9 },
+    ],
+  );
+  assert.match(fragment.hovers[0]!.typeOnly, /name/);
+  assert.equal(fragment.hovers[1]!.typeOnly, "string");
+  assert.equal(fragment.hovers[1]!.documentation, "用户显示名称");
+});
+
 test("a page route may be registered with Component instead of Page", () => {
   const request = pageBasicRequest();
   const script = request.files.find((file) => file.fileId === request.scriptFileId);
@@ -61,6 +85,28 @@ test("a page route may be registered with Component instead of Page", () => {
   assert.equal(result.response.registration.count, 1);
   const title = result.response.fragments.find((entry) => entry.fragmentId === "f0");
   assert.equal(title?.hover?.typeOnly, "string");
+});
+
+test("declared property types survive an unresolved default value", () => {
+  const request = pageBasicRequest();
+  const script = request.files.find((file) => file.fileId === request.scriptFileId);
+  assert.ok(script);
+  script.text = `
+import { MissingEnum } from './missing';
+Component({
+  properties: {
+    approvalStatus: { type: Number, value: MissingEnum.Preview },
+  },
+  methods: {},
+});
+`;
+  request.fragments = [fragment({ exprText: "approvalStatus" })];
+
+  const result = analyze(request, analysisConfig);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const approval = result.response.fragments.find((entry) => entry.fragmentId === "f0");
+  assert.equal(approval?.hover?.typeOnly, "number");
 });
 
 test("analyze uses the unsaved file text from the request (no disk read)", () => {

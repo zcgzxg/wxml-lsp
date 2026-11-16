@@ -347,11 +347,15 @@ impl Runner {
     }
 
     /// Asserts one hover query and that the same target is not an error.
+    ///
+    /// Fixture targets describe the whole member chain (`item.name`); the
+    /// expected type and documentation belong to the final member, so query
+    /// the last byte of the target rather than its root.
     fn assert_hover(&self, query: &HoverQuery) -> HoverResult {
         let text = self.project.text(&query.file);
         let (start, end) = locate(&text, &query.marker, &query.target);
         let context = self.project.context_for(&query.file, &text);
-        let hover = self.project.hover(&context, start);
+        let hover = self.project.hover(&context, end - 1);
 
         assert!(
             !hover.contents.is_empty(),

@@ -264,7 +264,8 @@ fn respond(line: &str) -> String {
         .expect("fragments")
         .iter()
         .map(|fragment| {
-            let value = fragment["wxmlRange"]["start"].as_u64().unwrap_or(3) + 5;
+            let start = fragment["wxmlRange"]["start"].as_u64().unwrap_or(3);
+            let value = start + 5;
             json!({
                 "fragmentId": fragment["fragmentId"],
                 "hover": {
@@ -274,6 +275,21 @@ fn respond(line: &str) -> String {
                     "documentation": "the name",
                     "documentationSource": "quickinfo"
                 },
+                "hovers": [{
+                    "range": {"start": start, "end": start + 4},
+                    "typeText": "(property) user: { name: string; }",
+                    "typeOnly": "{ name: string; }",
+                    "quality": "known",
+                    "documentation": "the user",
+                    "documentationSource": "quickinfo"
+                }, {
+                    "range": {"start": value, "end": value + 4},
+                    "typeText": "string",
+                    "typeOnly": "string",
+                    "quality": "known",
+                    "documentation": "the name",
+                    "documentationSource": "quickinfo"
+                }],
                 "diagnostics": [{
                     "code": 2339,
                     "range": {"start": value, "end": value + 4},
@@ -372,35 +388,38 @@ fn a_second_revision_requests_a_new_analysis() {
 }
 
 #[test]
-fn hover_answers_anywhere_inside_the_expression() {
+fn hover_answers_the_identifier_under_the_pointer() {
     let shared = Shared::default();
     let backend = backend(&shared, StubHost::new(view(Vec::new())));
     let context = context();
-    let hover = backend
-        .hover(HoverRequest {
-            context: context.clone(),
-            offset: 10,
-        })
-        .expect("hover");
-    assert_eq!(hover.quality, TypeQuality::Known);
-    assert_eq!(hover.markup, MarkupKind::Markdown);
-    assert_eq!(
-        hover.range.map(|range| (range.start(), range.end())),
-        Some((8, 12))
-    );
 
-    // `user` is inside the expression but outside the target token `name`.
-    let expression = backend
+    let user = backend
         .hover(HoverRequest {
             context: context.clone(),
             offset: 5,
         })
-        .expect("hover expression");
-    assert_eq!(expression.quality, TypeQuality::Known);
+        .expect("hover user");
+    assert_eq!(user.quality, TypeQuality::Known);
+    assert_eq!(user.markup, MarkupKind::Markdown);
+    assert!(user.contents.contains("name: string"), "{}", user.contents);
+    assert!(user.contents.contains("the user"), "{}", user.contents);
     assert_eq!(
-        expression.range.map(|range| (range.start(), range.end())),
+        user.range.map(|range| (range.start(), range.end())),
+        Some((3, 7))
+    );
+
+    let name = backend
+        .hover(HoverRequest {
+            context: context.clone(),
+            offset: 10,
+        })
+        .expect("hover name");
+    assert_eq!(name.quality, TypeQuality::Known);
+    assert_eq!(
+        name.range.map(|range| (range.start(), range.end())),
         Some((8, 12))
     );
+    assert!(name.contents.contains("the name"), "{}", name.contents);
 
     // The end of the expression is a valid point (right edge of the text).
     let end = backend
@@ -409,7 +428,10 @@ fn hover_answers_anywhere_inside_the_expression() {
             offset: 12,
         })
         .expect("hover end");
-    assert_eq!(end.quality, TypeQuality::Known);
+    assert_eq!(
+        end.range.map(|range| (range.start(), range.end())),
+        Some((8, 12))
+    );
 
     let outside = backend
         .hover(HoverRequest { context, offset: 0 })
@@ -519,8 +541,8 @@ fn hover_escapes_markdown_and_uses_a_safe_fence() {
     let shared = Shared::default();
     let backend = backend_with(&shared, StubHost::new(view(Vec::new())), |line| {
         let mut value: Value = serde_json::from_str(&respond(line)).expect("response");
-        value["result"]["fragments"][0]["hover"]["typeText"] = json!("a```b");
-        value["result"]["fragments"][0]["hover"]["documentation"] =
+        value["result"]["fragments"][0]["hovers"][1]["typeText"] = json!("a```b");
+        value["result"]["fragments"][0]["hovers"][1]["documentation"] =
             json!("](command:evil) ![x](https://x) <b>");
         Ok(serde_json::to_string(&value).expect("json"))
     });

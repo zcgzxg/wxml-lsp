@@ -24,6 +24,14 @@ export type TypeQuality = "known" | "any" | "unknown" | "missing";
 /** Where the hover documentation text came from. */
 export type DocumentationSource = "quickinfo" | "symbol" | "copied" | "none";
 
+/** One identifier inside an expression that can answer hover. */
+export interface HoverTarget {
+  /** Identifier offset inside the mounted text (UTF-16). */
+  offset: number;
+  /** Identifier range in the original WXML bytes. */
+  source: SourceByteRange;
+}
+
 /** A fragment before it is mounted into a generated file. */
 export interface FragmentDraft {
   fragmentId: string;
@@ -34,6 +42,8 @@ export interface FragmentDraft {
   target: string;
   /** Offset of the target identifier inside `mountedText`. */
   targetOffset: number;
+  /** Identifier offsets inside `mountedText`, with WXML source ranges. */
+  hoverTargets: HoverTarget[];
   /** Segments of `mountedText`; source ranges are absolute WXML bytes. */
   segments: Segment[];
   /** Byte range of `expr` in the original WXML text. */
@@ -103,6 +113,8 @@ export interface MountRecord {
   /** Length of the WXML target identifier in UTF-16 code units. */
   targetLengthUtf16: number;
   target: string;
+  /** Identifier offsets inside `file` (UTF-16) that can answer hover. */
+  hoverTargets?: Array<{ startUtf16: number; source: SourceByteRange }>;
   segments: Segment[];
 }
 

@@ -93,7 +93,7 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
     notes.push("optionalTypes coverage may be under-reported because `properties` is not a plain literal");
   }
 
-  const overlayProperties = context.propertyScan.properties.filter((property) => property.hasOptionalTypes);
+  const overlayProperties = context.propertyScan.properties;
   const overlayNames = new Set(overlayProperties.map((property) => property.name));
   const drafts = planFragments(context.fragments, {
     propertyOverlay: overlayNames,
@@ -145,6 +145,7 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
         text: draft.mountedText,
         target: draft.target,
         targetOffset: draft.targetOffset,
+        hoverTargets: draft.hoverTargets,
       },
     ]);
     body.text(`;\n`);
@@ -244,6 +245,7 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
         targetStartUtf16: mount.targetStartUtf16,
         targetLengthUtf16: mount.targetLengthUtf16,
         target: draft.target,
+        hoverTargets: mount.hoverTargets,
         segments: buildSegments(mount.startUtf16, draft),
       })),
   }));

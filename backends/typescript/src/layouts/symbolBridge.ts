@@ -166,6 +166,7 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
       text: draft.mountedText,
       target: draft.target,
       targetOffset: draft.targetOffset,
+      hoverTargets: draft.hoverTargets,
     });
     pieces.push({ kind: "text", text: `;\n` });
     pieces.push({ kind: "text", text: scope.close });
@@ -195,6 +196,7 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
         targetStartUtf16: mount.targetStartUtf16,
         targetLengthUtf16: mount.targetLengthUtf16,
         target: draft.target,
+        hoverTargets: mount.hoverTargets,
         segments: buildSegments(mount.startUtf16, draft),
       })),
   }));

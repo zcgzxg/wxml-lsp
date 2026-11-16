@@ -32,8 +32,8 @@
 
 | 项 | 命令 | 当前结果 |
 | --- | --- | --- |
-| Rust workspace | `cargo test --workspace` | 754 passed / 15 ignored / 28 suites |
-| Node 后端 | `cd backends/typescript && npm test` | 272 passed |
+| Rust workspace | `cargo test --workspace` | 756 passed / 15 ignored / 28 suites |
+| Node 后端 | `cd backends/typescript && npm test` | 274 passed |
 | Zed 扩展 | `cd editors/zed && cargo test --locked` | 25 passed（1 suite） |
 | Zed wasm (debug) | `cargo build --target wasm32-wasip2 --locked` | 7,633,946 B（历史构建） |
 | Zed wasm (release) | `cargo build --target wasm32-wasip2 --release --locked` | 238,792 B |

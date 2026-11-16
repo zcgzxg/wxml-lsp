@@ -24,6 +24,9 @@ pub(crate) const COMPONENT_DIAGNOSTICS_TRUNCATED_REASON: &str =
 /// Maximum definition targets returned for one request.
 pub(crate) const MAX_DEFINITION_LOCATIONS: usize = 32;
 
+/// Maximum per-identifier hover candidates accepted for one fragment.
+pub(crate) const MAX_HOVER_CANDIDATES: usize = 32;
+
 /// Maximum component diagnostics accepted in one response.
 pub(crate) const MAX_COMPONENT_DIAGNOSTICS: usize = 128;
 
@@ -323,12 +326,19 @@ impl<'de> Visitor<'de> for FragmentVisitor<'_> {
     {
         let mut fragment_id = None;
         let mut hover = None;
+        let mut hovers = Vec::new();
+        let mut remaining_hovers = MAX_HOVER_CANDIDATES;
         let mut diagnostics = Vec::new();
         let mut definition = None;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "fragmentId" => fragment_id = Some(map.next_value()?),
                 "hover" => hover = map.next_value()?,
+                "hovers" => {
+                    hovers = map.next_value_seed(HoverCandidatesSeed {
+                        remaining: &mut remaining_hovers,
+                    })?;
+                }
                 "diagnostics" => {
                     diagnostics = map.next_value_seed(DiagnosticsSeed {
                         remaining: &mut *self.remaining_diagnostics,
@@ -344,9 +354,48 @@ impl<'de> Visitor<'de> for FragmentVisitor<'_> {
         Ok(FragmentResult {
             fragment_id: fragment_id.ok_or_else(|| de::Error::missing_field("fragmentId"))?,
             hover,
+            hovers,
             diagnostics,
             definition,
         })
+    }
+}
+
+struct HoverCandidatesSeed<'a> {
+    remaining: &'a mut usize,
+}
+
+impl<'de> DeserializeSeed<'de> for HoverCandidatesSeed<'_> {
+    type Value = Vec<HoverCandidateWire>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(self)
+    }
+}
+
+impl<'de> Visitor<'de> for HoverCandidatesSeed<'_> {
+    type Value = Vec<HoverCandidateWire>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a hover candidate array")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut candidates = Vec::new();
+        while let Some(candidate) = seq.next_element::<HoverCandidateWire>()? {
+            if *self.remaining == 0 {
+                continue;
+            }
+            *self.remaining -= 1;
+            candidates.push(candidate);
+        }
+        Ok(candidates)
     }
 }
 
@@ -575,9 +624,12 @@ pub(crate) struct Insertion {
 pub(crate) struct FragmentResult {
     /// Fragment id.
     pub fragment_id: String,
-    /// Hover result.
+    /// Hover result for the fragment's default target.
     #[serde(default)]
     pub hover: Option<HoverResultWire>,
+    /// Per-identifier hover results (protocol v2).
+    #[serde(default)]
+    pub hovers: Vec<HoverCandidateWire>,
     /// Diagnostics for this fragment.
     #[serde(default)]
     pub diagnostics: Vec<DiagnosticWire>,
@@ -602,6 +654,18 @@ pub(crate) struct HoverResultWire {
     /// Documentation text.
     #[serde(default)]
     pub documentation: String,
+}
+
+/// Hover payload attached to one identifier range.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HoverCandidateWire {
+    /// WXML byte range of the identifier.
+    #[serde(default)]
+    pub range: Option<WireRange>,
+    /// Hover fields for the identifier.
+    #[serde(flatten)]
+    pub hover: HoverResultWire,
 }
 
 /// One diagnostic.
@@ -880,25 +944,29 @@ pub(crate) fn hover(
         let Some(info) = request_fragments.get(&fragment.fragment_id) else {
             continue;
         };
-        let Some(range) = info.target_range else {
-            continue;
-        };
         if !point_in_range(info.expr_range, offset) {
             continue;
         }
-        found = Some((fragment, range));
-        break;
+        // Protocol v2 reports every identifier in the expression. Pick the
+        // identifier under the pointer so `{{ user.name }}` answers `user`
+        // with `user`'s type instead of the expression's default target.
+        if let Some((range, hover)) = fragment.hovers.iter().find_map(|candidate| {
+            let range = candidate.range?.source_range()?;
+            point_in_range(range, offset).then_some((range, &candidate.hover))
+        }) {
+            found = Some((range, hover));
+            break;
+        }
+        // Backward compatibility: an older backend emits only the single
+        // default-target hover. Keep answering anywhere inside the expression.
+        if fragment.hovers.is_empty() {
+            if let (Some(range), Some(hover)) = (info.target_range, fragment.hover.as_ref()) {
+                found = Some((range, hover));
+                break;
+            }
+        }
     }
-    let Some((fragment, range)) = found else {
-        return HoverResult {
-            contents: String::new(),
-            markup: MarkupKind::Markdown,
-            range: None,
-            status,
-            quality: TypeQuality::Unknown,
-        };
-    };
-    let Some(hover) = fragment.hover.as_ref() else {
+    let Some((range, hover)) = found else {
         return HoverResult {
             contents: String::new(),
             markup: MarkupKind::Markdown,

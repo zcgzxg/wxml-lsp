@@ -19,7 +19,7 @@
 | Zed 扩展 | `editors/zed/` | 本地 Dev Extension，id `wxml-lsp`、名称 `WXML LSP`（避免与 Marketplace 上仅 grammar 的 `wxml` 扩展冲突）；WXML 语言配置、tree-sitter 查询、`wasm32-wasip2`；真实 grammar 已用 wasi-sdk 34 构建（约 23,806 B）；从 `WXML_LSP_BIN` 绝对路径启动 `wxml-lsp --stdio` |
 | 样本与证据 | `tests/fixtures/`、`docs/evidence/` | AC-001..AC-013 样本与 schema 校验；类型桥、P7/P8 与 G1 证据记录 |
 
-当前状态快照（2026-11-16）：workspace `754 passed / 15 ignored / 28 suites`；Node 后端 `272 passed`；`editors/zed` `25 passed`；`wasm32-wasip2` release `238,792 B`（debug 历史构建 `7,633,946 B`）。15 个 ignored 包括需显式开启的真实 Node 门禁（`WXML_TEST_NODE=1`）与 Wave 5 真实 Node 验收。Zed 标准 Dev Extension 安装、干净 fixture 的 hover/definition/completion/diagnostics、真实 TS/JS 项目和重启恢复已在隔离 Xvfb 中验收，见 [P8 第 13 节](docs/evidence/p8-zed.md)。
+当前状态快照（2026-11-16）：workspace `756 passed / 15 ignored / 28 suites`；Node 后端 `274 passed`；`editors/zed` `25 passed`；`wasm32-wasip2` release `238,792 B`（debug 历史构建 `7,633,946 B`）。15 个 ignored 包括需显式开启的真实 Node 门禁（`WXML_TEST_NODE=1`）与 Wave 5 真实 Node 验收。Zed 标准 Dev Extension 安装、干净 fixture 的 hover/definition/completion/diagnostics、真实 TS/JS 项目和重启恢复已在隔离 Xvfb 中验收，见 [P8 第 13 节](docs/evidence/p8-zed.md)。
 
 ### 0.2 验证命令
 
@@ -84,7 +84,7 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test real_node -- --ignored
 
 ### 0.4 已知限制
 
-- Wave 5 已完成 typed `wx:for`、条件窄化、多视图/项目别名、自定义组件属性绑定和事件处理函数链路，AC-005/006/008/012 已完成；页面路由没有 `Page` 注册时会回退到 `Component` 注册（真实 TS 项目已验证）。剩余限制包括反向编辑、组件内 `usingComponents` 建模、复杂守卫/组件属性声明降级。
+- Wave 5 已完成 typed `wx:for`、条件窄化、多视图/项目别名、自定义组件属性绑定和事件处理函数链路，AC-005/006/008/012 已完成；页面路由没有 `Page` 注册时会回退到 `Component` 注册（真实 TS 项目已验证）。hover 按光标所在标识符返回类型和文档，不再固定使用表达式最右标识符；工作区根不是小程序根时会自动发现唯一的嵌套 `app.json`（monorepo 场景），源文件预算为 1024 个文件 / 16 MiB，连续 hover 的待处理队列上限为 128。剩余限制包括反向编辑、组件内 `usingComponents` 建模、复杂守卫/组件属性声明降级。
 - Zed 扩展已完成代码评审、host 测试、wasm 构建和真实 `tree-sitter-wxml` grammar 构建（wasi-sdk 34，约 23,806 B）。2026-11-16 已在隔离 user-data-dir 中通过命令面板实际执行 `zed: install dev extension`：安装目录为指向 `editors/zed` 的 symlink，`index.json` 中 `dev=true`，扩展加载并启动 release `wxml-lsp --stdio` 与 Node 后端。干净 fixture 的 `title`/`user.name` hover、definition、标签/属性/事件/成员补全、未知成员诊断和重启恢复均已实际执行并核对内容；真实 TS/JS 项目观感已记录。**Windows/macOS 实机、真实主桌面 Wayland 观感和连续键入延迟仍未验收**；证据见 [P8 第 13 节](docs/evidence/p8-zed.md)。
 - G0/G2 已在隔离 Xvfb 中完成标准安装、扩展加载、五语言注册、LSP/Node 启动、hover/definition/completion/diagnostics 和重启恢复；Windows/macOS、真实主桌面 Wayland 观感和连续键入延迟未验收，完整 G0/G2 矩阵仍不整体勾选。G1 真实 Node 端到端通过（`stdio_type_loop` 5、`real_node` 3、`wave5_acceptance` 7 个显式门禁测试）。
 - 未发布：扩展 id 为 `wxml-lsp`、名称 `WXML LSP`（避免与 Marketplace 上仅 grammar 的 `wxml` 扩展冲突）；没有 marketplace 发布、服务器自动下载或安装流水线。
@@ -461,7 +461,7 @@ docs/                         # 参考、ADR、证据
 快照：2026-11-16。P0–P8 与 G1 已实现并通过代码门禁；CRLF 样本由 `.gitattributes` 保护。文档与本地 Zed 安装状态见后续提交。
 
 - 已完成：C0/C1 契约；`wxml-text`、`wxml-syntax`（容错 lexer/parser、表达式 Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、app 发现、tsconfig、sources）、`wxml-types`（类型契约、typed `wx:for`/条件窄化/组件绑定/事件语义）、`wxml-lsp`（JSON-RPC、真实 Project/FileId、Node 后端、hover/diagnostics/definition/completion/事件链路、版本屏障/缓存/超时/重启）、Node 类型桥与后端、P8 Zed 扩展。Wave 5 已完成 F-01–F-07 补全、AC-005/006/008/012、事件处理函数诊断/definition/补全、Zed 多语言未保存同步；真实 Node `stdio_type_loop` 5、`real_node` 3、`wave5_acceptance` 7。
-- 验证：workspace `754 passed / 15 ignored / 28 suites`；Node `272 passed`；`editors/zed` `25 passed`；wasm32-wasip2 release `238,792 B`（debug 历史构建 `7,633,946 B`）；真实 grammar 约 `23,806 B`（gitignored）。
+- 验证：workspace `756 passed / 15 ignored / 28 suites`；Node `274 passed`；`editors/zed` `25 passed`；wasm32-wasip2 release `238,792 B`（debug 历史构建 `7,633,946 B`）；真实 grammar 约 `23,806 B`（gitignored）。
 - 部分完成：Zed 扩展代码、wasm 构建和真实 `tree-sitter-wxml` grammar 构建通过；隔离 Xvfb 已完成标准 UI 安装、五语言注册、release LSP/Node 启动、干净 fixture 的 hover/definition/completion/diagnostics、真实 TS/JS 项目观感和重启恢复（[P8 第 13 节](docs/evidence/p8-zed.md)）。Windows/macOS 实机、真实主桌面 Wayland 观感、连续键入延迟和 G0/G2 完整矩阵仍未完成。
 - 未完成：反向编辑；F-08+ 其余能力（class/WXSS、资源路径、snippets、格式化、语义高亮、重命名）；多根工作区；发布/自动下载流水线；原生 TypeScript 后端替换/去 Node 决策；Windows/macOS 实机验收。
 - 后续工作的优先级：评估 F-08+ 常用能力与发布/安装流水线；需要跨平台发布前再补 Windows/macOS 验收。

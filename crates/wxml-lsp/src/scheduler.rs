@@ -32,11 +32,12 @@ use crate::workspace::AnalysisStamp;
 
 /// Maximum number of queued jobs before the server reports itself as busy.
 ///
-/// Each job pins an `Arc<SourceSnapshot>` for an old revision. Those snapshots
-/// are outside the workspace's 64 MiB text-plus-line-index budget; the queue
-/// plus the running job bound the extra pinned text to at most 33 × 8 MiB
-/// (≈264 MiB) in the worst case.
-pub(crate) const MAX_PENDING_JOBS: usize = 32;
+/// Pointer hovers arrive in bursts while the first analysis is still running.
+/// The queue is large enough to absorb a normal mouse sweep so the popup does
+/// not disappear with `server is busy`. Jobs for one document share the same
+/// `Arc<SourceSnapshot>`, so a burst on one revision does not multiply its
+/// text; the worst case with many documents and revisions stays bounded.
+pub(crate) const MAX_PENDING_JOBS: usize = 128;
 
 /// How long [`Scheduler::shutdown`] waits for the worker before detaching it.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -615,6 +616,27 @@ mod tests {
             scheduler.submit(job(JobKind::Hover, Some("after"), 1)),
             Err(SubmitError::Stopped)
         );
+        gate.release();
+    }
+
+    #[test]
+    fn default_queue_absorbs_a_hover_burst() {
+        let (backend, gate) = GatedBackend::new();
+        let (sender, _receiver) = mpsc::channel();
+        let scheduler = Scheduler::start(backend, move |done| {
+            let _ = sender.send(done);
+        })
+        .expect("worker");
+
+        scheduler
+            .submit(job(JobKind::Hover, Some("running"), 1))
+            .expect("running");
+        gate.wait_until_entered();
+        for index in 0..64 {
+            scheduler
+                .submit(job(JobKind::Hover, Some(&format!("queued-{index}")), 1))
+                .expect("a hover burst must not report the server busy");
+        }
         gate.release();
     }
 

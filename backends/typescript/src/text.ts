@@ -41,6 +41,8 @@ export type Piece =
       text: string;
       target: string;
       targetOffset: number;
+      /** Identifier offsets relative to `text`, with WXML source ranges. */
+      hoverTargets?: Array<{ offset: number; source: SourceByteRange }>;
     };
 
 export interface Insertion {
@@ -64,6 +66,8 @@ export interface AssembledMount {
   targetStartUtf16: number;
   /** Length of the target identifier in UTF-16 code units. */
   targetLengthUtf16: number;
+  /** Identifier offsets inside the assembled file that can answer hover. */
+  hoverTargets: Array<{ startUtf16: number; source: SourceByteRange }>;
 }
 
 export interface Assembled {
@@ -132,6 +136,10 @@ export function assemble(original: string, insertions: Insertion[], file: string
         startUtf16: shadowLength,
         targetStartUtf16: shadowLength + piece.targetOffset,
         targetLengthUtf16: piece.target.length,
+        hoverTargets: (piece.hoverTargets ?? []).map((target) => ({
+          startUtf16: shadowLength + target.offset,
+          source: target.source,
+        })),
       });
       chunks.push(piece.text);
       shadowLength += piece.text.length;

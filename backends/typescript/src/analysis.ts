@@ -58,11 +58,19 @@ export interface AnalysisConfig {
   layoutId?: LayoutId;
 }
 
+export interface AnalysisHoverCandidate {
+  /** WXML byte range of the identifier. */
+  range: SourceByteRange;
+  observation: HoverObservation;
+}
+
 export interface AnalysisQuery {
   fragmentId: string;
   /** Expression text (the harness calls it `query`). */
   query: string;
   observation: HoverObservation | null;
+  /** Per-identifier hover observations for cursor-accurate LSP hovers. */
+  candidates?: AnalysisHoverCandidate[];
 }
 
 export interface AnalysisDefinition {
@@ -103,7 +111,9 @@ export function toAnalyzeResponse(input: AnalysisResponseInput): AnalyzeResponse
     file ? fileIdOf(input.request, file) : undefined;
 
   const fragments = fragmentIds.map((fragmentId) => {
-    const hover = input.hovers.find((entry) => entry.fragmentId === fragmentId)?.observation;
+    const query = input.hovers.find((entry) => entry.fragmentId === fragmentId);
+    const hover = query?.observation;
+    const candidates = query?.candidates ?? [];
     const definition = input.definitions.find((entry) => entry.fragmentId === fragmentId)?.observation;
     return {
       fragmentId,
@@ -116,6 +126,18 @@ export function toAnalyzeResponse(input: AnalysisResponseInput): AnalyzeResponse
               documentation: hover.documentation,
               documentationSource: hover.documentationSource,
             },
+          }
+        : {}),
+      ...(candidates.length > 0
+        ? {
+            hovers: candidates.map((candidate) => ({
+              range: candidate.range,
+              typeText: candidate.observation.typeText,
+              typeOnly: candidate.observation.typeOnly,
+              quality: candidate.observation.quality,
+              documentation: candidate.observation.documentation,
+              documentationSource: candidate.observation.documentationSource,
+            })),
           }
         : {}),
       diagnostics: input.diagnostics
@@ -830,16 +852,46 @@ export function introducedDiagnostics(
   return introduced.slice(0, 8);
 }
 
+/** Bound the number of hover candidates returned for one expression. */
+const MAX_HOVER_CANDIDATES = 32;
+/** Bound language-service queries spent on candidates across one analysis. */
+const MAX_TOTAL_HOVER_CANDIDATES = 4096;
+
 export function collectHovers(project: VirtualProject, build: LayoutBuild): AnalysisQuery[] {
+  let remaining = MAX_TOTAL_HOVER_CANDIDATES;
   return build.fragments.map((fragment) => {
     const mount = fragment.mounts[0];
     if (!mount) return { fragmentId: fragment.fragmentId, query: fragment.expr, observation: null };
     const observation = hoverAt(project, mount.file, mount.targetStartUtf16);
-    if (!observation) return { fragmentId: fragment.fragmentId, query: fragment.expr, observation: null };
+    const candidates: AnalysisHoverCandidate[] = [];
+    const seen = new Set<string>();
+    for (const target of mount.hoverTargets ?? []) {
+      if (remaining === 0) break;
+      const key = `${target.source.start}:${target.source.end}`;
+      if (seen.has(key)) continue;
+      const candidate = hoverAt(project, mount.file, target.startUtf16);
+      if (!candidate) continue;
+      remaining -= 1;
+      seen.add(key);
+      candidates.push({
+        range: target.source,
+        observation: withProvenance(project, build, mount.file, target.startUtf16, candidate),
+      });
+      if (candidates.length >= MAX_HOVER_CANDIDATES) break;
+    }
+    if (!observation) {
+      return {
+        fragmentId: fragment.fragmentId,
+        query: fragment.expr,
+        observation: null,
+        ...(candidates.length > 0 ? { candidates } : {}),
+      };
+    }
     return {
       fragmentId: fragment.fragmentId,
       query: fragment.expr,
       observation: withProvenance(project, build, mount.file, mount.targetStartUtf16, observation),
+      ...(candidates.length > 0 ? { candidates } : {}),
     };
   });
 }

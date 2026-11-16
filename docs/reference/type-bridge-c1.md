@@ -271,7 +271,7 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
       "fragmentRevision": 1, "root": "page" }
   ],
   "policy": { "jsCheck": "inherit", "propertiesOverlay": "declaration" },
-  "limits": { "maxFiles": 512, "maxTotalBytes": 8388608, "maxFragments": 2048 }
+  "limits": { "maxFiles": 1024, "maxTotalBytes": 16777216, "maxFragments": 2048 }
 }
 ```
 
@@ -280,7 +280,7 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
 - Node 只做**枚举名 → TypeScript 枚举**的转换与已知字段透传，不覆盖、不推断；**未知字段直接拒绝**（`RequestError.unsupported-option`），不得静默丢弃（静默丢弃会让模板按不同规则检查，产生假阴性/假阳性）。
 - `strict:false` 或 `noImplicitThis:false` 会让 `this.data` 退化为 `any`：派生视图必须由探针健康门报 `Unavailable`（本契约不通过强制 `noImplicitThis` 掩盖项目选项）。
 - `fragments[]` 是 Rust 侧的挂载输入；`fragmentId` 是稳定身份，响应逐片段结果按它回显（不得用表达式文本代替）。同一 `exprText` 可有多个 `fragmentId`。
-- **C1.1 增量字段（可选，向后兼容）**：`target` 是希望 hover/诊断的目标标识符（必须是 `exprText` 中按完整标识符边界可定位的 token；缺省为表达式的右值标识符，例如 `user.nmae` → `nmae`、`user` → `user`）。`locals` 是模板作用域绑定名（如 `wx:for` 的 `item`/`index`）：其中的根标识符**不加** `__wxml_root.`/`__wxml_props_*` 前缀。Node 在挂载时必须按 TypeScript 表达式语义重写**每个自由根标识符**，不能只处理表达式首个 token：括号、一元、二元、条件、索引、调用和对象字面量都要正确处理；属性名（`.name`、`{ key: … }` 的 key）、字符串/注释、局部绑定和全局内建名不得加前缀。无法安全挂载的形状必须返回结构化 `bad-fragment`，不得发布假诊断或假 `Supported`。`target` 找不到、`locals` 重复/为空/非标识符/保留名 → `bad-fragment`。`locals` 可以合法覆盖 `Math` 等全局内建名，此时不得按全局名跳过。默认 target 按**最右值标识符的原始偏移**定位（`a.a` 指向第二个 `a`、`user.user` 指向第二个 `user`），不得用 `indexOf` 取首个同名 token。包装必须精确覆盖整个 `exprText`（恰好一个 `const __wxml_expr = (…);` 语句，且括号内 AST 结束位置等于 `exprText.length`），多余语句/括号逃逸 → `bad-fragment`。`satisfies`、任意 TypeNode、`new` 表达式等不安全形状 → `bad-fragment`。表达式遍历深度 > 256 或节点数 > 10,000 → `bad-fragment`，不得以 `RangeError`/`-32603` 结束。
+- **C1.1 增量字段（可选，向后兼容）**：`target` 是默认 hover 与诊断的目标标识符（必须是 `exprText` 中按完整标识符边界可定位的 token；缺省为表达式的右值标识符，例如 `user.nmae` → `nmae`、`user` → `user`）；hover 现在通过 `hovers[]` 覆盖表达式中的每个标识符，`target` 仍作为兼容回退。`locals` 是模板作用域绑定名（如 `wx:for` 的 `item`/`index`）：其中的根标识符**不加** `__wxml_root.`/`__wxml_props_*` 前缀。Node 在挂载时必须按 TypeScript 表达式语义重写**每个自由根标识符**，不能只处理表达式首个 token：括号、一元、二元、条件、索引、调用和对象字面量都要正确处理；属性名（`.name`、`{ key: … }` 的 key）、字符串/注释、局部绑定和全局内建名不得加前缀。无法安全挂载的形状必须返回结构化 `bad-fragment`，不得发布假诊断或假 `Supported`。`target` 找不到、`locals` 重复/为空/非标识符/保留名 → `bad-fragment`。`locals` 可以合法覆盖 `Math` 等全局内建名，此时不得按全局名跳过。默认 target 按**最右值标识符的原始偏移**定位（`a.a` 指向第二个 `a`、`user.user` 指向第二个 `user`），不得用 `indexOf` 取首个同名 token。包装必须精确覆盖整个 `exprText`（恰好一个 `const __wxml_expr = (…);` 语句，且括号内 AST 结束位置等于 `exprText.length`），多余语句/括号逃逸 → `bad-fragment`。`satisfies`、任意 TypeNode、`new` 表达式等不安全形状 → `bad-fragment`。表达式遍历深度 > 256 或节点数 > 10,000 → `bad-fragment`，不得以 `RangeError`/`-32603` 结束。
 - **Wave 5 结构化模板作用域**：protocol v2 的 `bindings[]` 携带完整嵌套链（外层到内层，每层 item/index），`sourceExpr`/`sourceRange` 指向产生绑定的 `wx:for` 表达式；Node 解析数组/元组/Record 的元素与索引类型，无法解析时降级 `any` 并报 `Partial`。`locals[]` 保留为兼容字段，由 bindings 名称派生。`guards[]` 携带 `wx:if/elif/else` 链和选中分支，Node 用合成 `if/else` 块完成窄化；复杂或不可解析守卫降级 `Partial`，不得伪造类型。反向编辑仍未实现。
 - 容器字段（`viewId`/`owner`/`analysisStamp`）参与日志、缓存键与发布屏障。
 
@@ -290,8 +290,8 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
 
 | 上限 | 默认值 | 服务端上限 |
 | --- | --- | --- |
-| `maxFiles` | 512 | 1024 |
-| `maxTotalBytes` | 8 MiB（`files[].text` + `fragments[].exprText` UTF-8） | 16 MiB（同左） |
+| `maxFiles` | 1024 | 1024 |
+| `maxTotalBytes` | 16 MiB（`files[].text` + `fragments[].exprText` UTF-8） | 16 MiB（同左） |
 | `maxFragments` | 2048 | 4096 |
 
 - `limits` 允许缺省或只带部分字段：缺省字段取默认值，**不能因为缺字段而关闭检查**。
@@ -323,6 +323,10 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
   "fragments": [
     { "fragmentId": "f0",
       "hover": { "typeText": "string", "quality": "known", "documentation": "…", "documentationSource": "quickinfo" },
+      "hovers": [
+        { "range": { "start": 124, "end": 128 }, "typeText": "(property) user: { name: string; }", "quality": "known", "documentation": "…", "documentationSource": "quickinfo" },
+        { "range": { "start": 129, "end": 133 }, "typeText": "string", "quality": "known", "documentation": "…", "documentationSource": "quickinfo" }
+      ],
       "diagnostics": [ { "code": 2339, "range": { "start": 134, "end": 138 }, "message": "…", "attribution": "source" } ],
       "definition": { "kind": "script", "fileId": "pages/index/index.ts", "range": { "start": 136, "end": 140 } } }
   ],
@@ -331,6 +335,7 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
 }
 ```
 
+- **逐标识符 hover（C1.2，可选）**：`fragments[].hovers[]` 为同一表达式中每个可映射标识符返回一个 hover 候选，`range` 是 WXML UTF-8 字节范围。Rust 侧按请求光标位置选择包含该位置的候选并原样发布其 `range`；`fragments[].hover` 保留为默认 `target` 的兼容结果，旧 Node 后端没有 `hovers[]` 时仍按 `targetRange` 回退。每个表达式最多 32 个候选，单次响应最多 4096 个。
 - **诊断范围**：`range` 是 WXML UTF-8 字节（唯一发布坐标）；派生文件里的 `spanUtf16` 属于内部实现，不出现在响应契约中。
 - **定义范围**：`fileId` + `range`（目标源文件的 UTF-8 字节）；`startUtf16`/`lengthUtf16` 不发布。生成声明必须已映射回原脚本/`properties` 节点；无法映射时 `kind="dropped"`。
 - `fragments[]` 与 `moduleKind` 由 **Node 适配层组装**（本仓库 `toAnalyzeResponse`），Rust 侧直接消费，不再二次拼装。
@@ -426,3 +431,4 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored
 | 2026-11-15 | P5 MEDIUM 修复：默认 target 使用最右值 token 的原始偏移（重复名 `a.a`/`user.user`）；包装只接受精确覆盖整个表达式的单个 ParenthesizedExpression（拒绝 `); (` 注入）；跨合成间隙诊断裁剪到 target/最大重叠原文段，无法归属时 diagnostics 至少 `Partial`；拒绝 `satisfies`/TypeNode/`new`；表达式深度/节点上限并捕获 RangeError |
 | 2026-11-16 | **WT-B（Wave 5）**：`wx:for` locals 升级为 `bindings` 并解析元素/索引类型，`wx:if/elif/else` 增加 `guards` 窄化；删除“template locals are bound as any”降级；新增 `tests/fixtures/{loop-scope,conditional-union,component-bindings,multi-view,alias-project}` 的 `wave5_acceptance` 真机 runner；多视图隔离（不同脚本、交错请求）与 `@models/*` 别名 definition 验证，详见 §10 验证说明 |
 | 2026-11-16 | **Zed 验收修复**：页面视图没有 `Page` 注册时回退到首个 `Component` 注册，并把 `registration.kind` 置为 `component`；真实 TS 项目 `jielong-team-doc` 的 `Component` 页面已验证 hover/definition，Node 单测覆盖 `Component` 注册页面 |
+| 2026-11-16 | **hover 与真实项目修复**：analyze 响应的 `fragments[].hovers[]` 为表达式中每个标识符返回 hover 候选，Rust 按光标选择；工作区根无 `app.json` 时自动发现唯一嵌套 app 根（深度 6、4096 目录、跳过依赖/构建目录）；声明属性全部走 `properties` overlay，不再依赖 `hasOptionalTypes`；源文件预算提升到 1024 / 16 MiB；待处理任务队列 32 → 128，避免连续 hover 报 Busy |

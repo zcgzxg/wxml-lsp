@@ -14,14 +14,18 @@ import {
   identifierOffset,
   parseExpression,
   rightmostIdentifierToken,
+  scanIdentifiers,
   type IdentifierToken,
 } from "./expression.ts";
 import { RequestError } from "./protocol.ts";
-import type { Segment } from "./types.ts";
+import { byteRangeOf } from "./text.ts";
+import type { Segment, SourceByteRange } from "./types.ts";
 
 /** Hard limits for untrusted expressions. */
 const MAX_EXPRESSION_DEPTH = 256;
 const MAX_EXPRESSION_NODES = 10_000;
+/** Bound the per-expression hover candidates returned to the LSP. */
+const MAX_HOVER_TARGETS = 32;
 
 /** Explicit target name or a parsed token (default target keeps its offset). */
 export type RewriteTarget = string | IdentifierToken | undefined;
@@ -52,6 +56,8 @@ export interface RewrittenExpression {
   segments: Segment[];
   /** Target offset relative to `text` (UTF-16). */
   targetOffset: number;
+  /** Identifier offsets relative to `text`, with ranges in `expr` bytes. */
+  hoverTargets: Array<{ offset: number; source: SourceByteRange }>;
   /** Root identifiers in source order (deduplicated). */
   roots: string[];
   /** True when every root is a template local. */
@@ -276,10 +282,26 @@ export function rewriteExpression(
     mountedCursor += piece.text.length;
   }
 
+  // Every identifier can answer hover at its own cursor position. The LSP
+  // selects the candidate that contains the pointer; the explicit target above
+  // remains the default for diagnostics and the v1-style single hover.
+  const hoverTargets: Array<{ offset: number; source: SourceByteRange }> = [];
+  const seenHoverTargets = new Set<number>();
+  for (const token of scanIdentifiers(expr).sort((left, right) => left.start - right.start)) {
+    if (seenHoverTargets.has(token.start)) continue;
+    const offset = mapSourceOffset(token.start);
+    const source = byteRangeOf(expr, token.start, token.end - token.start);
+    if (offset === undefined || source === undefined) continue;
+    seenHoverTargets.add(token.start);
+    hoverTargets.push({ offset, source });
+    if (hoverTargets.length >= MAX_HOVER_TARGETS) break;
+  }
+
   return {
     text,
     segments,
     targetOffset,
+    hoverTargets,
     roots,
     localRoot: roots.length > 0 && roots.every((root) => options.locals.has(root)),
   };

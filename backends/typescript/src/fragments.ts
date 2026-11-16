@@ -70,6 +70,13 @@ export function planFragments(requestFragments: RequestFragment[], options: Frag
       mountedText: rewritten.text,
       target,
       targetOffset: rewritten.targetOffset,
+      hoverTargets: rewritten.hoverTargets.map((candidate) => ({
+        offset: candidate.offset,
+        source: {
+          start: fragment.wxmlRange.start + candidate.source.start,
+          end: fragment.wxmlRange.start + candidate.source.end,
+        },
+      })),
       segments,
       source: { start: fragment.wxmlRange.start, end: fragment.wxmlRange.end },
       locals,

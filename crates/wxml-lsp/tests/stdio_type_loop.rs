@@ -498,17 +498,29 @@ fn ac001_page_data_and_jsdoc_hover() {
         "hover range must point at `name`: {name}"
     );
 
-    // The whole mustache expression, not only the target token, answers hover.
+    // Hover follows the identifier under the pointer, not the expression's
+    // default target (`name`).
     let user_position = lsp_position(wxml, "user");
     let user = session.hover(&uri, user_position);
+    let user_value = hover_value(&user);
+    eprintln!("AC-001 hover(user): {user}");
     assert!(
-        hover_value(&user).contains("string"),
-        "hover over the expression root must use the target type: {user}"
+        user_value.contains("name"),
+        "the user hover should expose the object shape: {user}"
+    );
+    assert!(
+        !user_value.contains("用户显示名"),
+        "hovering user must not show the name field's JSDoc: {user}"
     );
     assert_eq!(
         user["result"]["range"]["start"],
-        json!({"line": name_position.0, "character": name_position.1}),
-        "the reported range must stay on the target token: {user}"
+        json!({"line": user_position.0, "character": user_position.1}),
+        "hover range must point at `user`: {user}"
+    );
+    assert_eq!(
+        user["result"]["range"]["end"],
+        json!({"line": user_position.0, "character": user_position.1 + 4}),
+        "hover range must point at `user`: {user}"
     );
 
     let name_len = u32::try_from("user.name".len()).expect("expression fits in u32");
