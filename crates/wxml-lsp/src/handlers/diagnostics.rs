@@ -126,7 +126,10 @@ impl Server {
         let version = document.get("version").and_then(Value::as_u64);
         let language_id = document.get("languageId").and_then(Value::as_str);
         let text = text.to_owned();
-        match self.host.route(uri) {
+        let route = self.host.route(uri);
+        self.workspace
+            .set_project(self.host.project_id(), self.host.project_revision());
+        match route {
             DocumentRoute::Wxml(path) => self.open_wxml(uri, &path, text, version),
             DocumentRoute::Script(_) | DocumentRoute::Json(_) => {
                 self.open_overlay(uri, text, version);

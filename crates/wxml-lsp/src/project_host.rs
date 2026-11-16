@@ -391,10 +391,17 @@ struct ViewState {
 #[derive(Debug)]
 struct State {
     project: Option<Project>,
+    /// Candidate Mini Program roots found below the workspace root.
+    app_roots: Vec<PathBuf>,
     project_id: ProjectId,
     project_revision: ProjectRevision,
+    /// Monotonic revision sequence shared by every loaded app root.
+    project_revision_seq: u64,
     views: BTreeMap<ProjectPath, ViewState>,
     snapshots: HashMap<FileId, Arc<SourceSnapshot>>,
+    /// Unsaved script/JSON text keyed by client URI, replayed when an app root
+    /// is loaded again after another root became active.
+    overlays: BTreeMap<String, String>,
     next_view_revision: u64,
     next_overlay_revision: u64,
 }
@@ -419,10 +426,13 @@ impl ProjectState {
         Self {
             state: RwLock::new(State {
                 project: None,
+                app_roots: Vec::new(),
                 project_revision: ProjectRevision::new(project_id.clone(), 1),
                 project_id,
+                project_revision_seq: 1,
                 views: BTreeMap::new(),
                 snapshots: HashMap::new(),
+                overlays: BTreeMap::new(),
                 next_view_revision: 1,
                 next_overlay_revision: 1,
             }),
@@ -446,26 +456,28 @@ impl ProjectState {
     pub fn open_root(&self, root_uri: Option<&str>) -> Result<(), HostError> {
         let mut state = self.write();
         state.project = None;
+        state.app_roots.clear();
         state.views.clear();
         state.snapshots.clear();
+        state.overlays.clear();
         state.project_id = ProjectId::new(SYNTHETIC_PROJECT);
         state.project_revision = ProjectRevision::new(ProjectId::new(SYNTHETIC_PROJECT), 1);
+        state.project_revision_seq = 1;
         let Some(uri) = root_uri else {
             return Ok(());
         };
         let root = wxml_project::root_path_from_uri(uri).map_err(|_| HostError::ProjectOpen)?;
-        let root = resolve_app_root(root);
-        let project = Project::open(root).map_err(|_| HostError::ProjectOpen)?;
-        let project_id = project_id_for(project.root());
-        state.project_id = project_id.clone();
-        state.project_revision = ProjectRevision::new(project_id.clone(), 1);
+        let roots = resolve_app_roots(root);
+        if roots.is_empty() {
+            return Err(HostError::ProjectOpen);
+        }
+        state.app_roots.clone_from(&roots);
         state.next_view_revision = 1;
         state.next_overlay_revision = 1;
-        let mut next_view_revision = state.next_view_revision;
-        let views = build_views(&project, &project_id, &mut next_view_revision);
-        state.views = views;
-        state.next_view_revision = next_view_revision;
-        state.project = Some(project);
+        if roots.len() == 1 {
+            let root = roots.into_iter().next().ok_or(HostError::ProjectOpen)?;
+            load_project(&mut state, &root)?;
+        }
         Ok(())
     }
 
@@ -493,11 +505,13 @@ impl ProjectHost for ProjectState {
     }
 
     fn is_project_open(&self) -> bool {
-        self.read().project.is_some()
+        let state = self.read();
+        state.project.is_some() || !state.app_roots.is_empty()
     }
 
     fn path_for_uri(&self, uri: &str) -> Result<ProjectPath, HostError> {
-        let state = self.read();
+        let mut state = self.write();
+        ensure_project_for_uri(&mut state, uri)?;
         let project = state.project.as_ref().ok_or(HostError::NoProject)?;
         project.path_from_uri(uri).map_err(map_uri_error)
     }
@@ -599,7 +613,8 @@ impl ProjectHost for ProjectState {
         if let Some(snapshot) = self.source(file) {
             return Some(Arc::from(snapshot.text()));
         }
-        let state = self.read();
+        let mut state = self.write();
+        ensure_project_for_id(&mut state, file.project()).ok()?;
         let project = state.project.as_ref()?;
         let path = ProjectPath::new(file.path()).ok()?;
         project.read(&path).ok().map(Arc::from)
@@ -638,7 +653,14 @@ impl ProjectHost for ProjectState {
         let parsed = wxml_syntax::parse(snapshot.text());
         let mut syntax = syntax_diagnostics(&parsed, snapshot);
 
-        let state = self.read();
+        let mut state = self.write();
+        if ensure_project_for_id(&mut state, snapshot.file().project()).is_err() {
+            return Ok(syntax_only_view(
+                snapshot,
+                syntax,
+                "no project root is open",
+            ));
+        }
         let Some(project) = state.project.as_ref() else {
             return Ok(syntax_only_view(
                 snapshot,
@@ -858,6 +880,8 @@ impl ProjectState {
     /// project state or the revision.
     fn overlay_update(&self, uri: &str, text: &str) -> Result<HostUpdate, HostError> {
         let mut state = self.write();
+        ensure_project_for_uri(&mut state, uri)?;
+        state.overlays.insert(uri.to_owned(), text.to_owned());
         let path = {
             let project = state.project.as_ref().ok_or(HostError::NoProject)?;
             project.path_from_uri(uri).map_err(map_uri_error)?
@@ -902,6 +926,8 @@ impl ProjectState {
     /// Removes an overlay when the client closes a tracked document.
     fn close_overlay(&self, uri: &str) -> Result<HostUpdate, HostError> {
         let mut state = self.write();
+        ensure_project_for_uri(&mut state, uri)?;
+        state.overlays.remove(uri);
         let path = {
             let project = state.project.as_ref().ok_or(HostError::NoProject)?;
             project.path_from_uri(uri).map_err(map_uri_error)?
@@ -940,6 +966,7 @@ impl ProjectState {
     /// project state that depends on the saved file is refreshed.
     fn save_overlay(&self, uri: &str) -> Result<HostUpdate, HostError> {
         let mut state = self.write();
+        ensure_project_for_uri(&mut state, uri)?;
         let path = {
             let project = state.project.as_ref().ok_or(HostError::NoProject)?;
             project.path_from_uri(uri).map_err(map_uri_error)?
@@ -1148,18 +1175,18 @@ const APP_ROOT_SKIP: &[&str] = &[
 const MAX_APP_ROOT_DEPTH: usize = 6;
 const MAX_APP_ROOT_DIRS: usize = 4096;
 
-/// Resolves the directory that actually contains `app.json`.
+/// Resolves the directories that contain an `app.json`.
 ///
 /// Editors commonly open a monorepo root while the Mini Program lives in a
 /// nested package (`apps/miniprogram/src`). If the root has no `app.json`,
-/// search its descendants once and only adopt a nested root when the answer is
-/// unambiguous. Multiple candidates keep the original root so this never
-/// guesses which project the user meant.
-fn resolve_app_root(root: PathBuf) -> PathBuf {
+/// search its descendants once and return every candidate. The active root is
+/// selected later from the document URI, so a monorepo with several Mini
+/// Programs does not force the user to open each app separately.
+fn resolve_app_roots(root: PathBuf) -> Vec<PathBuf> {
     if root.join("app.json").is_file() {
-        return root;
+        return vec![root];
     }
-    let mut pending = vec![(root.clone(), 0usize)];
+    let mut pending = vec![(root, 0usize)];
     let mut found = Vec::new();
     let mut visited = 0usize;
     while let Some((directory, depth)) = pending.pop() {
@@ -1169,9 +1196,6 @@ fn resolve_app_root(root: PathBuf) -> PathBuf {
         visited += 1;
         if directory.join("app.json").is_file() {
             found.push(directory);
-            if found.len() > 1 {
-                return root;
-            }
             continue;
         }
         if depth >= MAX_APP_ROOT_DEPTH {
@@ -1195,7 +1219,83 @@ fn resolve_app_root(root: PathBuf) -> PathBuf {
             pending.push((entry.path(), depth + 1));
         }
     }
-    found.into_iter().next().unwrap_or(root)
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// Loads one candidate app root, replaying unsaved overlays that belong to it.
+fn load_project(state: &mut State, root: &Path) -> Result<(), HostError> {
+    if state
+        .project
+        .as_ref()
+        .is_some_and(|project| project.root() == root)
+    {
+        return Ok(());
+    }
+    let mut project = Project::open(root).map_err(|_| HostError::ProjectOpen)?;
+    let project_id = project_id_for(project.root());
+    let mut rediscover = false;
+    for (uri, text) in &state.overlays {
+        let Ok(path) = project.path_from_uri(uri) else {
+            continue;
+        };
+        if !project.accepts_overlay(&path) {
+            continue;
+        }
+        let revision = state.next_overlay_revision.saturating_add(1);
+        state.next_overlay_revision = revision;
+        project
+            .set_overlay(&path, text.clone(), revision)
+            .map_err(|_| HostError::Read)?;
+        rediscover |= project.accepts_json_overlay(&path);
+    }
+    if rediscover {
+        project.rediscover();
+    }
+    state.project_revision_seq = state.project_revision_seq.saturating_add(1);
+    state.project_revision = ProjectRevision::new(project_id.clone(), state.project_revision_seq);
+    state.project_id = project_id.clone();
+    let mut next_view_revision = state.next_view_revision;
+    state.views = build_views(&project, &project_id, &mut next_view_revision);
+    state.next_view_revision = next_view_revision;
+    state.project = Some(project);
+    Ok(())
+}
+
+/// Selects the candidate app root that contains `uri`.
+fn ensure_project_for_uri(state: &mut State, uri: &str) -> Result<(), HostError> {
+    let path = wxml_project::root_path_from_uri(uri).map_err(|_| HostError::InvalidUri)?;
+    if let Some(project) = state.project.as_ref() {
+        if path.starts_with(project.root()) {
+            return Ok(());
+        }
+    }
+    if state.app_roots.is_empty() {
+        return Err(HostError::NoProject);
+    }
+    let root = state
+        .app_roots
+        .iter()
+        .filter(|root| path.starts_with(root))
+        .max_by_key(|root| root.as_os_str().len())
+        .cloned()
+        .ok_or(HostError::InvalidUri)?;
+    load_project(state, &root)
+}
+
+/// Reloads the app root that owns `project_id`.
+fn ensure_project_for_id(state: &mut State, project_id: &ProjectId) -> Result<(), HostError> {
+    if state.project.is_some() && &state.project_id == project_id {
+        return Ok(());
+    }
+    let root = state
+        .app_roots
+        .iter()
+        .find(|root| &project_id_for(root) == project_id)
+        .cloned()
+        .ok_or(HostError::NoProject)?;
+    load_project(state, &root)
 }
 
 fn project_id_for(root: &Path) -> ProjectId {
@@ -1349,7 +1449,9 @@ fn dirty_scripts(state: &State, script: &ProjectPath) -> Vec<ProjectPath> {
 }
 
 fn bump_project_revision(state: &mut State) -> ProjectRevision {
-    state.project_revision = state.project_revision.clone().next();
+    state.project_revision_seq = state.project_revision_seq.saturating_add(1);
+    state.project_revision =
+        ProjectRevision::new(state.project_id.clone(), state.project_revision_seq);
     state.project_revision.clone()
 }
 
@@ -1716,6 +1818,56 @@ mod tests {
         let wxml = ProjectPath::new("pages/index/index.wxml").expect("wxml path");
         let view = host.view_for(&wxml).expect("nested view");
         assert_eq!(view.script.as_str(), "pages/index/index.ts");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn documents_select_their_app_root_in_a_multi_app_workspace() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-multi-root-{stamp}"));
+        for app in ["apps/a/src", "apps/b/src"] {
+            let app = root.join(app);
+            std::fs::create_dir_all(app.join("pages/index")).expect("create app root");
+            std::fs::write(app.join("app.json"), r#"{"pages":["pages/index/index"]}"#)
+                .expect("write app.json");
+            std::fs::write(
+                app.join("pages/index/index.wxml"),
+                "<view>{{ title }}</view>",
+            )
+            .expect("write wxml");
+            std::fs::write(
+                app.join("pages/index/index.ts"),
+                "Page({ data: { title: 'page' } });",
+            )
+            .expect("write script");
+        }
+
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open monorepo root");
+        assert_eq!(host.project_id().as_str(), SYNTHETIC_PROJECT);
+
+        let b_uri = format!(
+            "file://{}/apps/b/src/pages/index/index.wxml",
+            root.display()
+        );
+        let b_path = host.path_for_uri(&b_uri).expect("b path");
+        let b_view = host.view_for(&b_path).expect("b view");
+        assert_eq!(b_view.script.as_str(), "pages/index/index.ts");
+        assert_ne!(host.project_id().as_str(), SYNTHETIC_PROJECT);
+
+        let a_uri = format!(
+            "file://{}/apps/a/src/pages/index/index.wxml",
+            root.display()
+        );
+        let a_path = host.path_for_uri(&a_uri).expect("a path");
+        let a_view = host.view_for(&a_path).expect("a view");
+        assert_eq!(a_view.script.as_str(), "pages/index/index.ts");
 
         let _ = std::fs::remove_dir_all(root);
     }
