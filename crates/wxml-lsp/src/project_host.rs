@@ -1014,14 +1014,12 @@ impl ProjectState {
             let config = if let Some(page) = project.pages().iter().find(|page| page.wxml == *wxml)
             {
                 &page.config
-            } else if let Some(component) = project
-                .components()
-                .iter()
-                .find(|component| component.wxml == *wxml)
-            {
-                &component.config
             } else {
-                return None;
+                let component = project
+                    .components()
+                    .iter()
+                    .find(|component| component.wxml == *wxml)?;
+                &component.config
             };
             let usage = config.get(tag)?;
             if usage.kind == ComponentTargetKind::Plugin {
