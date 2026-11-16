@@ -292,7 +292,13 @@ impl Server {
         let style_uris: Vec<String> = self
             .workspace
             .documents()
-            .filter(|document| style_paths.contains(document.file().path()))
+            .filter(|document| {
+                style_paths.contains(document.file().path())
+                    && update
+                        .project
+                        .as_ref()
+                        .is_none_or(|project| document.file().project() == project)
+            })
             .map(|document| document.uri().to_owned())
             .collect();
         let mut outgoing = Vec::new();

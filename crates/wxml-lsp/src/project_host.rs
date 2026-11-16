@@ -237,6 +237,11 @@ pub struct HostUpdate {
     pub style_views: Vec<ProjectPath>,
     /// New project revision, when the update changed project state.
     pub project_revision: Option<ProjectRevision>,
+    /// App that owns the affected views, including style-only updates.
+    ///
+    /// Relative paths can repeat across explicitly configured apps, so the
+    /// project identity is required to route local diagnostics precisely.
+    pub project: Option<ProjectId>,
 }
 
 /// One `workspace/didChangeWatchedFiles` entry.
@@ -1613,6 +1618,7 @@ impl ProjectState {
                 dirty_views: Vec::new(),
                 style_views,
                 project_revision: None,
+                project: Some(project),
             });
         }
         let dirty = mark_views_dirty(&mut state, &project, dirty);
@@ -1621,6 +1627,7 @@ impl ProjectState {
             dirty_views: dirty,
             style_views,
             project_revision: Some(project_revision),
+            project: Some(project),
         })
     }
 
@@ -1676,6 +1683,7 @@ impl ProjectState {
                 dirty_views: Vec::new(),
                 style_views,
                 project_revision: None,
+                project: Some(project),
             });
         }
         let dirty = mark_views_dirty(&mut state, &project, dirty);
@@ -1684,6 +1692,7 @@ impl ProjectState {
             dirty_views: dirty,
             style_views,
             project_revision: Some(project_revision),
+            project: Some(project),
         })
     }
 
@@ -1714,6 +1723,7 @@ impl ProjectState {
                 dirty_views: Vec::new(),
                 style_views,
                 project_revision: None,
+                project: Some(project),
             });
         }
         if is_json || is_project_json {
@@ -1736,6 +1746,7 @@ impl ProjectState {
                 dirty_views: dirty,
                 style_views,
                 project_revision: Some(project_revision),
+                project: Some(project),
             });
         }
         let refreshed = refresh_component_script_facts(&mut state, &project, &path);
@@ -1759,6 +1770,7 @@ impl ProjectState {
             dirty_views: dirty,
             style_views: Vec::new(),
             project_revision: Some(project_revision),
+            project: Some(project),
         })
     }
 
@@ -1929,6 +1941,7 @@ impl ProjectState {
                 dirty_views: Vec::new(),
                 style_views,
                 project_revision: None,
+                project: Some(project),
             });
         }
         let project_revision = bump_slot_revision(&mut state, &project);
@@ -1936,6 +1949,7 @@ impl ProjectState {
             dirty_views: dirty,
             style_views,
             project_revision: Some(project_revision),
+            project: Some(project),
         })
     }
 }
@@ -3858,6 +3872,10 @@ mod tests {
             })
             .expect("a style overlay");
         assert_eq!(update.style_views, vec![a_path.clone()]);
+        assert!(
+            update.project.is_some(),
+            "style updates carry owner identity"
+        );
         // The diagnostics handler rebuilds facts for the republished view.
         host.style_facts(&a_path).expect("a facts after republish");
 
