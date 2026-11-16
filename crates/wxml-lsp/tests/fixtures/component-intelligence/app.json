@@ -1,8 +1,9 @@
 {
   "pages": ["pages/index/index"],
   "usingComponents": {
+    "app-only": "/components/app-only/app-only",
     "shared-card": "/components/global-card/global-card",
     "remote-card": "plugin://demo/remote",
-    "pkg-card": "some-package/card"
+    "pkg-card": "demo-ui/card/card"
   }
 }

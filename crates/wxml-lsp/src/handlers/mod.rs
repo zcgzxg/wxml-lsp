@@ -7,6 +7,7 @@
 pub(crate) mod diagnostics;
 pub(crate) mod hover;
 pub(crate) mod lifecycle;
+pub(crate) mod mode_diagnostics;
 
 use serde_json::{Map, Value};
 use wxml_text::{Position, SourceRange};

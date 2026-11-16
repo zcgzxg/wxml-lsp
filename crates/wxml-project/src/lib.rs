@@ -33,8 +33,9 @@ pub use files::{
 };
 pub use overlay::{Overlay, OverlayError};
 pub use script::{
-    ComponentProperty, DataRoot, DataRootKind, ScriptResolution, extract_component_properties,
-    extract_data_roots, resolve_script,
+    ComponentProperty, ComponentPropertyFacts, DataRoot, DataRootKind, ScriptResolution,
+    extract_component_properties, extract_component_property_facts, extract_data_roots,
+    resolve_script,
 };
 pub use sources::{SourceFile, SourceIssue, SourceIssueKind, SourceKind, SourceLimits, SourceSet};
 

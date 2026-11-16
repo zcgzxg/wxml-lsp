@@ -75,17 +75,32 @@ fn item(
 /// unresolved local, plugin and package components.
 fn component_detail(component: &ViewComponent) -> String {
     match component.kind {
-        ComponentTargetKind::Local => component.wxml.as_ref().map_or_else(
-            || {
-                component.component.as_ref().map_or_else(
-                    || format!("Custom component ({})", component.specifier),
-                    |base| format!("Custom component {} (target not found)", base.as_str()),
-                )
-            },
-            |wxml| format!("Custom component {}", wxml.as_str()),
-        ),
+        ComponentTargetKind::Local => {
+            let mut detail = component.wxml.as_ref().map_or_else(
+                || {
+                    component.component.as_ref().map_or_else(
+                        || format!("Custom component ({})", component.specifier),
+                        |base| format!("Custom component {} (target not found)", base.as_str()),
+                    )
+                },
+                |wxml| format!("Custom component {}", wxml.as_str()),
+            );
+            if !component.property_facts.complete {
+                detail.push_str(" (property list incomplete)");
+            }
+            detail
+        }
         ComponentTargetKind::Plugin => "Plugin component (local metadata unavailable)".to_owned(),
-        ComponentTargetKind::Package => "Package component (local metadata unavailable)".to_owned(),
+        ComponentTargetKind::Package => component.wxml.as_ref().map_or_else(
+            || "Package component (local metadata unavailable)".to_owned(),
+            |wxml| {
+                let mut detail = format!("Package component {}", wxml.as_str());
+                if !component.property_facts.complete {
+                    detail.push_str(" (property list incomplete)");
+                }
+                detail
+            },
+        ),
         _ => format!("Custom component ({})", component.specifier),
     }
 }
@@ -160,6 +175,14 @@ const fn is_current(occurrence: &AttributeOccurrence, replace: TextRange) -> boo
         || (replace.is_empty() && occurrence.range.start() == replace.start())
 }
 
+/// Returns whether the cursor is on an attribute-name token.
+fn is_editing_attribute(context: &Context) -> bool {
+    context
+        .attributes
+        .iter()
+        .any(|occurrence| is_current(occurrence, context.replace))
+}
+
 /// Returns whether a unique attribute is already present elsewhere in the tag.
 fn already_declared(context: &Context, name: &str) -> bool {
     let mut current = false;
@@ -192,19 +215,68 @@ fn push_attribute(
     if !matches(name, context.prefix.as_str())
         || seen.contains(name)
         || already_declared(context, name)
-        || rules::is_hidden(tag, name, &context.attributes)
     {
         return;
     }
+    let hidden = rules::is_hidden(tag, name, &context.attributes);
+    if hidden && !is_editing_attribute(context) {
+        return;
+    }
     seen.insert(name.to_owned());
+    let detail = if hidden {
+        format!("{detail} (unavailable in the current mode)")
+    } else {
+        detail.to_owned()
+    };
     items.push(item(
         name,
         CompletionItemKind::Attribute,
         category,
-        Some(detail.to_owned()),
+        Some(detail),
         name.to_owned(),
         replace,
     ));
+}
+
+/// Adds one custom component's properties to an attribute completion list.
+fn push_component_properties(
+    context: &Context,
+    tag: &str,
+    component: &ViewComponent,
+    items: &mut Vec<CompletionItem>,
+    seen: &mut BTreeSet<String>,
+    replace: SourceRange,
+) {
+    for property in &component.property_facts.properties {
+        if !matches(&property.name, context.prefix.as_str())
+            || seen.contains(&property.name)
+            || already_declared(context, &property.name)
+        {
+            continue;
+        }
+        let hidden = rules::is_hidden(tag, &property.name, &context.attributes);
+        if hidden && !is_editing_attribute(context) {
+            continue;
+        }
+        seen.insert(property.name.clone());
+        let mut candidate = item(
+            &property.name,
+            CompletionItemKind::Property,
+            2,
+            Some(if hidden {
+                format!("{} (unavailable in the current mode)", property.type_text)
+            } else {
+                property.type_text.clone()
+            }),
+            property.name.clone(),
+            replace,
+        );
+        candidate.documentation = property
+            .documentation
+            .as_ref()
+            .map(|documentation| crate::handlers::markdown_escape(documentation));
+        items.push(candidate);
+    }
 }
 
 /// Attribute-name suggestions for one tag.
@@ -232,29 +304,7 @@ fn attribute_items(
         }
     }
     if let Some(component) = components.iter().find(|component| component.name == tag) {
-        for property in &component.properties {
-            if !matches(&property.name, prefix)
-                || seen.contains(&property.name)
-                || already_declared(context, &property.name)
-                || rules::is_hidden(tag, &property.name, &context.attributes)
-            {
-                continue;
-            }
-            seen.insert(property.name.clone());
-            let mut candidate = item(
-                &property.name,
-                CompletionItemKind::Property,
-                2,
-                Some(property.type_text.clone()),
-                property.name.clone(),
-                replace,
-            );
-            candidate.documentation = property
-                .documentation
-                .as_ref()
-                .map(|documentation| crate::handlers::markdown_escape(documentation));
-            items.push(candidate);
-        }
+        push_component_properties(context, tag, component, &mut items, &mut seen, replace);
     }
     for attribute in catalog::GLOBAL_ATTRIBUTES {
         push_attribute(
@@ -392,7 +442,11 @@ mod tests {
             component: None,
             wxml: None,
             json: None,
-            properties: Vec::new(),
+            property_facts: wxml_project::ComponentPropertyFacts {
+                properties: Vec::new(),
+                complete: true,
+                reason: None,
+            },
             origin: crate::project_host::ComponentOrigin::App {
                 file: wxml_project::ProjectPath::new("app.json").expect("path"),
             },
@@ -580,6 +634,39 @@ mod tests {
     }
 
     #[test]
+    fn the_attribute_under_the_cursor_survives_a_mode_hidden_rule() {
+        let context = picker_context(
+            "star",
+            24,
+            28,
+            vec![
+                AttributeOccurrence {
+                    name: "mode".to_owned(),
+                    value: Some("selector".to_owned()),
+                    range: TextRange::new(8, 12).expect("range"),
+                },
+                AttributeOccurrence {
+                    name: "star".to_owned(),
+                    value: None,
+                    range: TextRange::new(24, 28).expect("range"),
+                },
+            ],
+        );
+        let (items, _) = items(&context, &[]);
+        let start = items
+            .iter()
+            .find(|item| item.label == "start")
+            .expect("editing the hidden attribute must keep it");
+        assert!(
+            start
+                .detail
+                .as_deref()
+                .is_some_and(|detail| detail.contains("unavailable")),
+            "{start:?}"
+        );
+    }
+
+    #[test]
     fn input_confirm_type_follows_the_declared_type() {
         let context = context(
             Site::AttributeName {
@@ -624,15 +711,19 @@ mod tests {
                 wxml_project::ProjectPath::new("components/my-card/index.wxml").expect("path"),
             ),
             json: None,
-            properties: vec![wxml_project::ComponentProperty {
-                name: "title".to_owned(),
-                type_text: "string | number".to_owned(),
-                default_text: None,
-                documentation: Some("标题".to_owned()),
-                script: wxml_project::ProjectPath::new("components/my-card/index.ts")
-                    .expect("path"),
-                range: TextRange::new(10, 15).expect("range"),
-            }],
+            property_facts: wxml_project::ComponentPropertyFacts {
+                properties: vec![wxml_project::ComponentProperty {
+                    name: "title".to_owned(),
+                    type_text: "string | number".to_owned(),
+                    default_text: None,
+                    documentation: Some("标题".to_owned()),
+                    script: wxml_project::ProjectPath::new("components/my-card/index.ts")
+                        .expect("path"),
+                    range: TextRange::new(10, 15).expect("range"),
+                }],
+                complete: true,
+                reason: None,
+            },
             origin: crate::project_host::ComponentOrigin::Local { file: None },
         }];
         let context = context(

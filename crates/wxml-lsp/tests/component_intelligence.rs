@@ -103,6 +103,20 @@ impl Client {
         }
     }
 
+    fn recv_diagnostics(&self, version: i64) -> Value {
+        loop {
+            let message = self
+                .messages
+                .recv_timeout(TIMEOUT)
+                .expect("diagnostics before timeout");
+            if message.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+                && message["params"]["version"] == json!(version)
+            {
+                return message;
+            }
+        }
+    }
+
     fn initialize(&mut self, root: &Path) {
         let id = self.request(
             "initialize",
@@ -114,6 +128,11 @@ impl Client {
             response["result"]["capabilities"]["hoverProvider"],
             json!(true),
             "static hover is always advertised"
+        );
+        assert_eq!(
+            response["result"]["capabilities"]["definitionProvider"],
+            json!(true),
+            "component definition is available without a working Node backend"
         );
         self.notify("initialized", json!({}));
     }
@@ -327,6 +346,14 @@ fn component_completion_hover_and_definition() {
             .is_some_and(|uri| uri.ends_with("components/outer-card/outer-card.wxml")),
         "{definition}"
     );
+    assert_eq!(
+        definition[0]["range"],
+        json!({
+            "start": {"line": 0, "character": 1},
+            "end": {"line": 0, "character": 5},
+        }),
+        "{definition}"
+    );
 
     let text = "<outer-card count=\"1\" />";
     let offset = text.find("count").expect("attribute") + 2;
@@ -471,9 +498,10 @@ fn unsaved_component_properties_update_static_queries() {
         "file://{}/components/outer-card/outer-card.ts",
         root.display()
     );
-    client.open(
+    client.open(&script_uri, "Component({ properties: {} });");
+    client.change(
         &script_uri,
-        "Component({ properties: { freshCount: { type: Number, value: 0 } } });",
+        "Component({\n  properties: {\n    /** 新鲜标题 */\n    freshCount: { type: Number, optionalTypes: [String], value: 0 },\n  },\n});",
     );
 
     let text = "<outer-card ";
@@ -481,12 +509,26 @@ fn unsaved_component_properties_update_static_queries() {
     let visible = labels(&items);
     assert!(visible.contains(&"freshCount".to_owned()), "{visible:?}");
     assert!(!visible.contains(&"count".to_owned()), "{visible:?}");
+    let fresh = items["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["label"] == "freshCount")
+        .expect("fresh property");
+    assert_eq!(fresh["detail"], json!("number | string"));
+    assert!(
+        fresh["documentation"]
+            .as_str()
+            .is_some_and(|documentation| documentation.contains("新鲜标题")),
+        "{fresh}"
+    );
 
     let text = "<outer-card freshCount=\"1\" />";
     let offset = text.find("freshCount").expect("attribute") + 2;
     let hover = client.at("textDocument/hover", &uri, text, offset);
     let hover = hover_text(&hover);
-    assert!(hover.contains("number"), "{hover}");
+    assert!(hover.contains("number | string"), "{hover}");
+    assert!(hover.contains("新鲜标题"), "{hover}");
     assert!(
         hover.contains("components/outer-card/outer-card.ts"),
         "{hover}"
@@ -498,7 +540,176 @@ fn unsaved_component_properties_update_static_queries() {
         definition_uri.ends_with("components/outer-card/outer-card.ts"),
         "{definition_uri}"
     );
-    assert_eq!(definition[0]["range"]["start"]["line"], 0, "{definition}");
+    assert_eq!(
+        definition[0]["range"]["start"],
+        json!({"line": 3, "character": 4}),
+        "{definition}"
+    );
+
+    client.shutdown();
+    assert!(client.finish().success());
+}
+
+#[test]
+fn app_level_and_npm_build_components_use_one_model() {
+    let root = fixture();
+    let uri = page_uri(&root);
+    let mut client = Client::start();
+    client.initialize(&root);
+    client.open(&uri, "<view />");
+
+    let text = "<app-only ";
+    let items = client.at("textDocument/completion", &uri, text, text.len());
+    let visible = labels(&items);
+    assert!(visible.contains(&"appOnly".to_owned()), "{visible:?}");
+
+    let text = "<app-only />";
+    let offset = text.find("app-only").expect("tag") + 2;
+    let hover = client.at("textDocument/hover", &uri, text, offset);
+    let hover = hover_text(&hover);
+    assert!(hover.contains("app.json"), "{hover}");
+    assert!(
+        hover.contains("components/app-only/app-only.wxml"),
+        "{hover}"
+    );
+
+    let definition = client.at("textDocument/definition", &uri, text, offset);
+    assert!(
+        definition_uri(&definition)
+            .is_some_and(|uri| uri.ends_with("components/app-only/app-only.wxml")),
+        "{definition}"
+    );
+
+    let text = "<pkg-card ";
+    let items = client.at("textDocument/completion", &uri, text, text.len());
+    let visible = labels(&items);
+    assert!(visible.contains(&"npmLabel".to_owned()), "{visible:?}");
+
+    let text = "<pkg-card />";
+    let offset = text.find("pkg-card").expect("tag") + 2;
+    let hover = client.at("textDocument/hover", &uri, text, offset);
+    let hover = hover_text(&hover);
+    assert!(hover.contains("Local build"), "{hover}");
+    assert!(
+        hover.contains("miniprogram_npm/demo-ui/card/card.wxml"),
+        "{hover}"
+    );
+    assert!(hover.contains("npmLabel"), "{hover}");
+    let definition = client.at("textDocument/definition", &uri, text, offset);
+    assert!(
+        definition_uri(&definition)
+            .is_some_and(|uri| uri.ends_with("miniprogram_npm/demo-ui/card/card.wxml")),
+        "{definition}"
+    );
+
+    client.shutdown();
+    assert!(client.finish().success());
+}
+
+#[test]
+fn missing_and_invalid_components_degrade_without_paths() {
+    let root = fixture();
+    let uri = page_uri(&root);
+    let mut client = Client::start();
+    client.initialize(&root);
+    client.open(&uri, "<view />");
+
+    let text = "<missing";
+    let items = client.at("textDocument/completion", &uri, text, text.len());
+    let missing = items["items"]
+        .as_array()
+        .expect("items")
+        .iter()
+        .find(|item| item["label"] == "missing-card")
+        .expect("missing component tag");
+    assert!(
+        missing["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("target not found")),
+        "{missing}"
+    );
+    let text = "<missing-card />";
+    let offset = text.find("missing-card").expect("tag") + 2;
+    let hover = client.at("textDocument/hover", &uri, text, offset);
+    let hover = hover_text(&hover);
+    assert!(hover.contains("could not be resolved"), "{hover}");
+    assert!(!hover.contains(root.to_str().expect("root")), "{hover}");
+    let definition = client.at("textDocument/definition", &uri, text, offset);
+    assert_eq!(definition, Value::Null, "{definition}");
+
+    let text = "<bad-json />";
+    let offset = text.find("bad-json").expect("tag") + 2;
+    let hover = client.at("textDocument/hover", &uri, text, offset);
+    let hover = hover_text(&hover);
+    assert!(hover.contains("bad-json"), "{hover}");
+    assert!(!hover.contains(root.to_str().expect("root")), "{hover}");
+
+    client.shutdown();
+    assert!(client.finish().success());
+}
+
+#[test]
+fn picker_mode_diagnostics_follow_the_current_mode() {
+    let root = fixture();
+    let uri = page_uri(&root);
+    let mut client = Client::start();
+    client.initialize(&root);
+    let text = "<picker mode=\"selector\" start=\"1\" />";
+    client.open(&uri, text);
+
+    let diagnostics = client.recv_diagnostics(1);
+    let values = diagnostics["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics");
+    let mode = values
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == "wxml-picker-mode-attribute")
+        .expect("hidden attribute diagnostic");
+    assert_eq!(mode["source"], "wxml-lsp");
+    assert_eq!(
+        mode["range"]["start"],
+        json!({"line": 0, "character": 24}),
+        "{mode}"
+    );
+
+    let text = "<picker mode=\"date\" start=\"1\" />";
+    client.change(&uri, text);
+    let diagnostics = client.recv_diagnostics(2);
+    let values = diagnostics["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics");
+    assert!(
+        !values
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "wxml-picker-mode-attribute"),
+        "{diagnostics}"
+    );
+
+    client.shutdown();
+    assert!(client.finish().success());
+}
+
+#[test]
+fn component_property_definition_handles_crlf_scripts() {
+    let root = fixture();
+    let uri = page_uri(&root);
+    let mut client = Client::start();
+    client.initialize(&root);
+    client.open(&uri, "<view />");
+
+    let text = "<crlf-card crlfTitle=\"x\" />";
+    let offset = text.find("crlfTitle").expect("attribute") + 2;
+    let definition = client.at("textDocument/definition", &uri, text, offset);
+    let definition_uri = definition_uri(&definition).expect("CRLF property definition");
+    assert!(
+        definition_uri.ends_with("components/crlf-card/crlf-card.ts"),
+        "{definition_uri}"
+    );
+    assert_eq!(
+        definition[0]["range"]["start"],
+        json!({"line": 3, "character": 4}),
+        "{definition}"
+    );
 
     client.shutdown();
     assert!(client.finish().success());
@@ -542,6 +753,19 @@ fn unknown_external_components_degrade_honestly() {
     assert!(plugin_hover.contains("unavailable"), "{plugin_hover}");
     let definition = client.at("textDocument/definition", &uri, text, offset);
     assert_eq!(definition, Value::Null, "{definition}");
+
+    let text = "<remote-card mystery=\"1\" />";
+    let offset = text.find("mystery").expect("attribute") + 2;
+    let hover = client.at("textDocument/hover", &uri, text, offset);
+    let attribute_hover = hover_text(&hover);
+    assert!(
+        attribute_hover.contains("cannot verify property"),
+        "{attribute_hover}"
+    );
+    assert!(
+        !attribute_hover.contains("No statically declared"),
+        "{attribute_hover}"
+    );
 
     let text = "<pkg-card />";
     let offset = text.find("pkg-card").expect("tag") + 2;

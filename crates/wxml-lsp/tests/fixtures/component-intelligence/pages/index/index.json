@@ -1,6 +1,9 @@
 {
   "usingComponents": {
     "outer-card": "../../components/outer-card/outer-card",
-    "shared-card": "../../components/page-card/page-card"
+    "shared-card": "../../components/page-card/page-card",
+    "missing-card": "../../components/missing/missing",
+    "bad-json": "../../components/bad-json/bad-json",
+    "crlf-card": "../../components/crlf-card/crlf-card"
   }
 }

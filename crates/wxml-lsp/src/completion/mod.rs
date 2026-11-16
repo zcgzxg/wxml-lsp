@@ -44,10 +44,12 @@ pub(crate) fn static_completion(
     // tags and their property names); value sites avoid a discovery-map clone
     // on every keystroke.
     let project_path = expression::project_path(context.source().file().path());
-    let mut components = if matches!(
-        detected.site,
-        context::Site::Tag { .. } | context::Site::AttributeName { .. }
-    ) {
+    let wants_components = match &detected.site {
+        context::Site::Tag { .. } => true,
+        context::Site::AttributeName { tag, .. } => catalog::tag(tag).is_none(),
+        context::Site::AttributeValue { .. } | context::Site::Mustache => false,
+    };
+    let mut components = if wants_components {
         project_path
             .as_ref()
             .map(|path| server.host.view_components(path))
@@ -61,7 +63,9 @@ pub(crate) fn static_completion(
         // Discovery may predate an unsaved component script edit; refresh the
         // one tag being completed from the effective script text.
         if let Some(component) = components.iter_mut().find(|entry| entry.name == *tag) {
-            component.properties = server.host.component_properties(path, tag);
+            if let Some(facts) = server.host.component_properties(path, tag) {
+                component.apply_live_facts(facts);
+            }
         }
     }
     let (items, truncated) = static_items::items(detected, &components);

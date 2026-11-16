@@ -88,6 +88,22 @@ pub struct ComponentProperty {
     pub range: TextRange,
 }
 
+/// Statically extracted component property declarations and their coverage.
+///
+/// `complete` is `false` when the `properties` value is not a direct object
+/// literal, or when a spread, method/computed key or shorthand member was
+/// skipped. Callers must not present an incomplete set as a complete property
+/// list.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ComponentPropertyFacts {
+    /// Declarations that could be extracted.
+    pub properties: Vec<ComponentProperty>,
+    /// Whether every `properties` member was statically understood.
+    pub complete: bool,
+    /// Stable reason shown when `complete` is `false`.
+    pub reason: Option<&'static str>,
+}
+
 /// Maximum component properties kept from one project discovery.
 pub const MAX_COMPONENT_PROPERTIES: usize = 512;
 
@@ -96,6 +112,9 @@ const MAX_PROPERTY_DOC_CHARS: usize = 512;
 
 /// Maximum characters kept from one property type or default expression.
 const MAX_PROPERTY_TYPE_CHARS: usize = 64;
+
+/// Maximum characters kept from one component property name.
+const MAX_PROPERTY_NAME_CHARS: usize = 128;
 
 /// Location and raw source of one registration data root.
 ///
@@ -521,35 +540,70 @@ fn push_root(
 
 /// Extracts component property declarations from `properties` data roots.
 ///
-/// The returned declarations come from the raw object literal recorded by
-/// [`extract_data_roots`]. Non-object `properties` expressions (identifiers,
-/// spreads) are silently skipped because their members cannot be proven from
-/// this file alone.
+/// Prefer [`extract_component_property_facts`] when coverage matters: this
+/// compatibility helper returns only the declarations, even when the list is
+/// incomplete.
 #[must_use]
 pub fn extract_component_properties(roots: &[DataRoot]) -> Vec<ComponentProperty> {
-    let mut properties = Vec::new();
+    extract_component_property_facts(roots).properties
+}
+
+/// Extracts declarations plus whether the list is statically complete.
+///
+/// A direct object literal with only property keys is complete. A missing
+/// `properties` object, spread member, method/computed key, or shorthand value
+/// (`title: String` instead of `title: { type: String }`) marks the result
+/// incomplete but keeps every declaration that was understood.
+#[must_use]
+pub fn extract_component_property_facts(roots: &[DataRoot]) -> ComponentPropertyFacts {
+    let mut facts = ComponentPropertyFacts {
+        properties: Vec::new(),
+        complete: true,
+        reason: None,
+    };
+    let mut found_root = false;
     for root in roots {
         if root.kind != DataRootKind::ComponentProperties {
             continue;
         }
-        collect_component_properties(root, &mut properties);
-        if properties.len() >= MAX_COMPONENT_PROPERTIES {
-            properties.truncate(MAX_COMPONENT_PROPERTIES);
+        found_root = true;
+        collect_component_properties(root, &mut facts);
+        if facts.properties.len() >= MAX_COMPONENT_PROPERTIES {
+            facts.properties.truncate(MAX_COMPONENT_PROPERTIES);
+            facts.complete = false;
+            facts.reason = Some("component property limit reached");
             break;
         }
     }
-    properties
+    if !found_root {
+        facts.complete = false;
+        facts.reason = Some("properties were not found as a direct object literal");
+    }
+    facts
+}
+
+/// Marks a facts set incomplete while keeping the first reason.
+const fn mark_incomplete(facts: &mut ComponentPropertyFacts, reason: &'static str) {
+    if facts.complete {
+        facts.complete = false;
+        facts.reason = Some(reason);
+    }
 }
 
 /// Collects declarations from one `properties` object literal.
-fn collect_component_properties(root: &DataRoot, properties: &mut Vec<ComponentProperty>) {
+fn collect_component_properties(root: &DataRoot, facts: &mut ComponentPropertyFacts) {
     let text = root.text.as_str();
     let bytes = text.as_bytes();
+    if !text.trim_start().starts_with('{') {
+        mark_incomplete(facts, "properties is not a direct object literal");
+        return;
+    }
     let Some(object_end) = find_matching(bytes, 0, bytes.len()) else {
+        mark_incomplete(facts, "properties object is malformed");
         return;
     };
     let mut index = 1_usize;
-    while index + 1 < object_end && properties.len() < MAX_COMPONENT_PROPERTIES {
+    while index + 1 < object_end && facts.properties.len() < MAX_COMPONENT_PROPERTIES {
         index = skip_trivia(bytes, index);
         if index >= object_end {
             break;
@@ -560,59 +614,108 @@ fn collect_component_properties(root: &DataRoot, properties: &mut Vec<ComponentP
                 continue;
             }
             b'}' => break,
+            b'.' if bytes.get(index..index + 3) == Some(b"...") => {
+                mark_incomplete(facts, "spread properties were not statically extracted");
+                index = expression_end(bytes, index, object_end).unwrap_or(object_end);
+                continue;
+            }
             b'{' | b'[' | b'(' => {
+                mark_incomplete(facts, "computed or nested property keys were skipped");
                 index = find_matching(bytes, index, object_end).unwrap_or(object_end);
                 continue;
             }
             _ => {}
         }
-        let Some((name, key_start, key_end)) = property_key(text, index) else {
+        let Some(key) = property_key(text, index) else {
+            mark_incomplete(facts, "a properties member could not be read");
             index += 1;
             continue;
         };
-        let colon = skip_trivia(bytes, key_end);
+        let colon = skip_trivia(bytes, key.after);
         if bytes.get(colon) != Some(&b':') {
-            index = key_end;
+            mark_incomplete(facts, "method or shorthand properties were skipped");
+            index = key.after;
             continue;
         }
         let value_start = skip_trivia(bytes, colon + 1);
         let Some(value_end) = expression_end(bytes, value_start, object_end) else {
-            index = key_end;
+            mark_incomplete(facts, "a property value could not be read");
+            index = key.after;
             continue;
         };
-        if let Some(property) = component_property(
-            root,
-            text,
-            &name,
-            key_start,
-            key_end,
+        let value = text.get(value_start..value_end).unwrap_or_default();
+        if !value.trim_start().starts_with('{') {
+            mark_incomplete(
+                facts,
+                "shorthand property declarations were not fully modelled",
+            );
+        }
+        let span = PropertySpan {
+            key_start: key.start,
+            key_end: key.end,
+            doc_start: index,
             value_start,
             value_end,
-        ) {
-            properties.push(property);
+        };
+        if let Some(property) = component_property(root, text, &key.name, &span) {
+            facts.properties.push(property);
         }
         index = value_end;
     }
+    if index + 1 < object_end {
+        mark_incomplete(facts, "properties object has trailing members");
+    }
+}
+
+/// One parsed object member key.
+struct ParsedKey {
+    name: String,
+    /// Range start of the key text, without quotes.
+    start: usize,
+    /// Range end of the key text, without quotes.
+    end: usize,
+    /// Offset after the complete token, including a closing quote.
+    after: usize,
 }
 
 /// Parses an object member key at `index`.
-fn property_key(text: &str, index: usize) -> Option<(String, usize, usize)> {
+fn property_key(text: &str, index: usize) -> Option<ParsedKey> {
     let bytes = text.as_bytes();
     match *bytes.get(index)? {
         b'\'' | b'"' => {
-            let end = skip_lexeme(bytes, index, 0)?;
-            let name = text.get(index + 1..end.checked_sub(1)?)?.to_owned();
-            Some((name, index, end))
+            let after = skip_lexeme(bytes, index, 0)?;
+            let end = after.checked_sub(1)?;
+            let name = text.get(index + 1..end)?.to_owned();
+            Some(ParsedKey {
+                name,
+                start: index + 1,
+                end,
+                after,
+            })
         }
         byte if is_identifier_start(byte) => {
             let mut end = index + 1;
             while end < bytes.len() && is_identifier_continue(bytes[end]) {
                 end += 1;
             }
-            Some((text.get(index..end)?.to_owned(), index, end))
+            Some(ParsedKey {
+                name: text.get(index..end)?.to_owned(),
+                start: index,
+                end,
+                after: end,
+            })
         }
         _ => None,
     }
+}
+
+/// Byte spans of one property key and value inside a `properties` root.
+struct PropertySpan {
+    key_start: usize,
+    key_end: usize,
+    doc_start: usize,
+    value_start: usize,
+    value_end: usize,
 }
 
 /// Builds one declaration, rejecting names that cannot be attribute names.
@@ -620,10 +723,7 @@ fn component_property(
     root: &DataRoot,
     text: &str,
     name: &str,
-    key_start: usize,
-    key_end: usize,
-    value_start: usize,
-    value_end: usize,
+    span: &PropertySpan,
 ) -> Option<ComponentProperty> {
     if !is_valid_property_name(name) {
         return None;
@@ -631,19 +731,21 @@ fn component_property(
     let start = root
         .range
         .start()
-        .checked_add(u32::try_from(key_start).ok()?)?;
+        .checked_add(u32::try_from(span.key_start).ok()?)?;
     let end = root
         .range
         .start()
-        .checked_add(u32::try_from(key_end).ok()?)?;
+        .checked_add(u32::try_from(span.key_end).ok()?)?;
     let range = TextRange::new(start, end).ok()?;
-    let value = text.get(value_start..value_end).unwrap_or_default();
+    let value = text
+        .get(span.value_start..span.value_end)
+        .unwrap_or_default();
     let (type_text, default_text) = property_type(value);
     Some(ComponentProperty {
         name: name.to_owned(),
         type_text,
         default_text,
-        documentation: leading_documentation(text, key_start),
+        documentation: leading_documentation(text, span.doc_start),
         script: root.script.clone(),
         range,
     })
@@ -652,7 +754,7 @@ fn component_property(
 /// Returns whether `name` can be shown as a WXML attribute.
 fn is_valid_property_name(name: &str) -> bool {
     !name.is_empty()
-        && name.len() <= MAX_PROPERTY_TYPE_CHARS
+        && name.len() <= MAX_PROPERTY_NAME_CHARS
         && !name
             .chars()
             .any(|character| character.is_control() || character.is_whitespace())
@@ -748,21 +850,21 @@ fn object_member<'a>(object: &'a str, name: &str) -> Option<&'a str> {
             b'}' => break,
             _ => {}
         }
-        let Some((key, _, key_end)) = property_key(object, index) else {
+        let Some(key) = property_key(object, index) else {
             index += 1;
             continue;
         };
-        let colon = skip_trivia(bytes, key_end);
+        let colon = skip_trivia(bytes, key.after);
         if bytes.get(colon) != Some(&b':') {
-            index = key_end;
+            index = key.after;
             continue;
         }
         let value_start = skip_trivia(bytes, colon + 1);
         let Some(value_end) = expression_end(bytes, value_start, object_end) else {
-            index = key_end;
+            index = key.after;
             continue;
         };
-        if key == name {
+        if key.name == name {
             return object.get(value_start..value_end);
         }
         index = value_end;
@@ -1047,9 +1149,11 @@ mod tests {
     #[test]
     fn extracts_component_property_metadata() {
         let script = path("components/card/card.ts");
-        let source = "Component({\n  properties: {\n    /** 标题，支持字符串或数字 */\n    title: { type: String, optionalTypes: [Number], value: '' },\n    // 是否禁用\n    disabled: { type: Boolean, value: false },\n    plain: String,\n  },\n});";
+        let source = "Component({\n  properties: {\n    /** 标题，支持字符串或数字 */\n    title: { type: String, optionalTypes: [Number], value: '' },\n    // 是否禁用\n    disabled: { type: Boolean, value: false },\n    plain: { type: String },\n  },\n});";
         let roots = extract_data_roots(&script, source);
-        let properties = extract_component_properties(&roots);
+        let facts = extract_component_property_facts(&roots);
+        assert!(facts.complete, "{:?}", facts.reason);
+        let properties = facts.properties;
         assert_eq!(properties.len(), 3);
 
         assert_eq!(properties[0].name, "title");
@@ -1121,5 +1225,39 @@ mod tests {
         let source = "const shared = { title: String };\nComponent({ properties: shared });";
         let roots = extract_data_roots(&script, source);
         assert_eq!(extract_component_properties(&roots), Vec::new());
+        let facts = extract_component_property_facts(&roots);
+        assert!(!facts.complete);
+        assert!(facts.reason.is_some());
+    }
+
+    #[test]
+    fn spread_and_shorthand_properties_are_marked_incomplete() {
+        let script = path("a.ts");
+        for source in [
+            "Component({ properties: { ...shared, title: { type: String } } });",
+            "Component({ properties: { title: String } });",
+            "Component({ properties: createProperties() });",
+        ] {
+            let roots = extract_data_roots(&script, source);
+            let facts = extract_component_property_facts(&roots);
+            assert!(!facts.complete, "{source}");
+            assert!(facts.reason.is_some(), "{source}");
+        }
+    }
+
+    #[test]
+    fn quoted_property_keys_report_the_name_range_without_quotes() {
+        let script = path("a.ts");
+        let source = "Component({ properties: { /** 文档 */ 'quoted-key': { type: String } } });";
+        let roots = extract_data_roots(&script, source);
+        let facts = extract_component_property_facts(&roots);
+        assert!(facts.complete, "{:?}", facts.reason);
+        let property = &facts.properties[0];
+        assert_eq!(property.name, "quoted-key");
+        assert_eq!(
+            &source[property.range.start() as usize..property.range.end() as usize],
+            "quoted-key"
+        );
+        assert_eq!(property.documentation.as_deref(), Some("文档"));
     }
 }

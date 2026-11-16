@@ -251,11 +251,16 @@ fn refresh_component_properties(
         metadata::Target::Tag { name, .. } => name,
         metadata::Target::Attribute { tag, .. } | metadata::Target::Value { tag, .. } => tag,
     };
+    if metadata::is_builtin_tag(tag) {
+        return;
+    }
     let Ok(path) = wxml_project::ProjectPath::new(path) else {
         return;
     };
     if let Some(component) = components.iter_mut().find(|entry| entry.name == *tag) {
-        component.properties = server.host.component_properties(&path, tag);
+        if let Some(facts) = server.host.component_properties(&path, tag) {
+            component.apply_live_facts(facts);
+        }
     }
 }
 
@@ -268,8 +273,19 @@ fn static_location_value(server: &Server, location: &StaticLocation) -> Option<V
     let file = server.host.file_id(&location.path).ok()?;
     let uri = server.host.uri_for(&file)?;
     let text = server.host.file_text(&file)?;
+    let target_range = if location.range.is_empty() && location.range.start() == 0 {
+        wxml_syntax::parse(&text)
+            .tree
+            .document()
+            .elements()
+            .next()
+            .and_then(wxml_syntax::Element::name_range)
+            .unwrap_or(location.range)
+    } else {
+        location.range
+    };
     let line_index = wxml_text::LineIndex::new(&*text);
-    let range = line_index_range_value(&line_index, SourceRange::new(location.range))?;
+    let range = line_index_range_value(&line_index, SourceRange::new(target_range))?;
     Some(json!({"uri": uri, "range": range}))
 }
 
@@ -298,7 +314,11 @@ impl Server {
         let context = document.request_context(&self.epoch)?;
         let target = metadata::target_at(context.source().text(), offset)?;
         let path = context.source().file().path();
-        let mut components = view_components(self, path);
+        let mut components = if metadata::needs_components(&target) {
+            view_components(self, path)
+        } else {
+            Vec::new()
+        };
         refresh_component_properties(self, path, &target, &mut components);
         let HoverAnswer::Document { markdown, range } = metadata::hover(&components, &target)
         else {
@@ -330,8 +350,15 @@ impl Server {
         let context = document.request_context(&self.epoch)?;
         let target = metadata::target_at(context.source().text(), offset)?;
         let path = context.source().file().path();
-        let mut components = view_components(self, path);
-        refresh_component_properties(self, path, &target, &mut components);
+        let needs_components = metadata::needs_components(&target);
+        let mut components = if needs_components {
+            view_components(self, path)
+        } else {
+            Vec::new()
+        };
+        if needs_components && matches!(target, metadata::Target::Attribute { .. }) {
+            refresh_component_properties(self, path, &target, &mut components);
+        }
         match metadata::definition(&components, &target) {
             DefinitionAnswer::NotStatic => None,
             DefinitionAnswer::None => Some(vec![Outgoing::success(id.clone(), Value::Null)]),
@@ -355,11 +382,10 @@ impl Server {
             return outgoing;
         }
         if !self.capabilities.hover.is_supported() {
-            return vec![Outgoing::failure(
-                id,
-                jsonrpc::error_codes::METHOD_NOT_FOUND,
-                "hover is not supported",
-            )];
+            log(format_args!(
+                "hover backend is unavailable; returning a static-only empty result"
+            ));
+            return vec![Outgoing::success(id, Value::Null)];
         }
         self.schedule_point(id, JobKind::Hover, params)
     }
@@ -370,11 +396,10 @@ impl Server {
             return outgoing;
         }
         if !self.capabilities.definition.is_supported() {
-            return vec![Outgoing::failure(
-                id,
-                jsonrpc::error_codes::METHOD_NOT_FOUND,
-                "definition is not supported",
-            )];
+            log(format_args!(
+                "definition backend is unavailable; returning a static-only empty result"
+            ));
+            return vec![Outgoing::success(id, Value::Null)];
         }
         self.schedule_point(id, JobKind::Definition, params)
     }

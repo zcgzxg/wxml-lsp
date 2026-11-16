@@ -44,6 +44,11 @@ impl ModeRule {
         }
     }
 
+    /// Returns whether `value` is a known mode value.
+    pub(crate) fn knows_value(&self, value: &str) -> bool {
+        self.case(value).is_some()
+    }
+
     /// Finds one known mode case.
     fn case(&self, value: &str) -> Option<&'static ModeCase> {
         self.cases.iter().find(|case| case.value == value)
@@ -257,6 +262,41 @@ mod tests {
         assert!(is_hidden("input", "confirm-type", &digit));
         let default = Vec::new();
         assert!(!is_hidden("input", "confirm-type", &default));
+    }
+
+    #[test]
+    fn rules_and_catalog_enumerations_stay_in_sync() {
+        for rule in RULES {
+            let values = super::super::catalog::values_for(rule.tag, rule.attribute);
+            assert!(!values.is_empty(), "{} has no controlling enum", rule.tag);
+            for case in rule.cases {
+                assert!(
+                    values.iter().any(|value| value.value == case.value),
+                    "{}.{} is missing catalog value {}",
+                    rule.tag,
+                    rule.attribute,
+                    case.value
+                );
+                for hidden in case.hidden {
+                    assert!(
+                        super::super::catalog::tag_attribute(rule.tag, hidden).is_some(),
+                        "{}.{} hides unknown attribute {}",
+                        rule.tag,
+                        rule.attribute,
+                        hidden
+                    );
+                }
+            }
+            for value in values {
+                assert!(
+                    rule.cases.iter().any(|case| case.value == value.value),
+                    "{}.{} catalog value {} has no rule case",
+                    rule.tag,
+                    rule.attribute,
+                    value.value
+                );
+            }
+        }
     }
 
     #[test]

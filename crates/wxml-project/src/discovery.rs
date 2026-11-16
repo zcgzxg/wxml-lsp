@@ -14,7 +14,7 @@ use thiserror::Error;
 
 use crate::files::{self, MAX_MESSAGE_BYTES, ProjectPath, truncate_message, truncate_owned};
 use crate::overlay::Overlay;
-use crate::script::{self, ComponentProperty, DataRoot, DataRootKind};
+use crate::script::{self, ComponentPropertyFacts, DataRoot, DataRootKind};
 
 /// Maximum component-reference depth followed through `usingComponents`.
 pub const MAX_COMPONENT_DEPTH: usize = 16;
@@ -175,8 +175,8 @@ pub struct Component {
     pub json: Option<ProjectPath>,
     /// `properties` roots extracted from the script.
     pub properties: Vec<DataRoot>,
-    /// Statically declared property names, types and documentation.
-    pub property_declarations: Vec<ComponentProperty>,
+    /// Statically declared property names, types, documentation and coverage.
+    pub property_facts: ComponentPropertyFacts,
     /// Global plus component-local `usingComponents`.
     pub config: PageConfig,
 }
@@ -637,7 +637,13 @@ fn load_app(
                 }
             }
             match parse_app_config(app_json, &text) {
-                Ok(parsed) => {
+                Ok(mut parsed) => {
+                    resolve_built_packages(
+                        root,
+                        overlay,
+                        app_json.parent().as_ref(),
+                        &mut parsed.value.using_components,
+                    );
                     issues.extend(parsed.issues);
                     parsed.value
                 }
@@ -853,6 +859,17 @@ fn resolve_components(
             ));
             continue;
         }
+        if !is_valid_component_name(&name) {
+            issues.push(issue(
+                file,
+                DiscoveryIssueKind::InvalidComponentRef,
+                format!(
+                    "component name `{}` is not a valid WXML tag",
+                    truncate_message(&name, MAX_MESSAGE_BYTES)
+                ),
+            ));
+            continue;
+        }
         match classify_component(file, &specifier, app_dir) {
             Ok((kind, component)) => {
                 resolved.insert(
@@ -905,6 +922,43 @@ fn classify_component(
         |rest| (app_dir, rest),
     );
     ProjectPath::resolve(base, specifier).map(|base| (ComponentTargetKind::Local, Some(base)))
+}
+
+/// Resolves package specifiers through the local `miniprogram_npm` build.
+///
+/// We only accept a package component when its built WXML exists, so a bare
+/// dependency name is never turned into a fake local component.
+fn resolve_built_packages(
+    root: &Path,
+    overlay: &Overlay,
+    app_dir: Option<&ProjectPath>,
+    components: &mut BTreeMap<String, UsingComponent>,
+) {
+    for component in components.values_mut() {
+        if component.kind != ComponentTargetKind::Package || component.component.is_some() {
+            continue;
+        }
+        let Ok(candidate) =
+            ProjectPath::resolve(app_dir, &format!("miniprogram_npm/{}", component.specifier))
+        else {
+            continue;
+        };
+        let Ok(wxml) = candidate.with_extension("wxml") else {
+            continue;
+        };
+        if exists(root, overlay, &wxml) {
+            component.component = Some(candidate);
+        }
+    }
+}
+
+/// Returns whether a `usingComponents` key is safe to emit as a WXML tag.
+fn is_valid_component_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 128
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
 /// Returns whether a specifier names a file inside this project.
@@ -1062,7 +1116,13 @@ fn load_page_local(
                 }
             }
             match parse_page_config_in(&candidate, &text, context.source.parent().as_ref()) {
-                Ok(parsed) => {
+                Ok(mut parsed) => {
+                    resolve_built_packages(
+                        root,
+                        overlay,
+                        context.source.parent().as_ref(),
+                        &mut parsed.value.local,
+                    );
                     issues.extend(parsed.issues);
                     let mut local = parsed.value.local;
                     let page_cap_hit = local.len() > MAX_PAGE_LOCAL_COMPONENTS;
@@ -1249,7 +1309,7 @@ fn visit_component(
         load_component_json(context, base, depth, pending, reported_missing, issues);
     let properties =
         component_properties(root, overlay, script.script.as_ref(), issues, script_budget);
-    let property_declarations = script::extract_component_properties(&properties);
+    let property_facts = script::extract_component_property_facts(&properties);
 
     Some(Component {
         id: base.clone(),
@@ -1257,7 +1317,7 @@ fn visit_component(
         script: script.script,
         json,
         properties,
-        property_declarations,
+        property_facts,
         config: PageConfig {
             global: Arc::clone(context.global_components),
             local,
@@ -1304,7 +1364,13 @@ fn load_component_json(
                 }
             }
             match parse_page_config_in(&candidate, &text, context.source.parent().as_ref()) {
-                Ok(parsed) => {
+                Ok(mut parsed) => {
+                    resolve_built_packages(
+                        root,
+                        overlay,
+                        context.source.parent().as_ref(),
+                        &mut parsed.value.local,
+                    );
                     issues.extend(parsed.issues);
                     report_missing_components(
                         root,
@@ -1670,9 +1736,10 @@ mod tests {
         assert_eq!(card.properties[0].kind, DataRootKind::ComponentProperties);
         assert_eq!(card.properties[0].text, "{ title: { type: String } }");
         assert!(!card.properties[0].range.is_empty());
-        assert_eq!(card.property_declarations.len(), 1);
-        assert_eq!(card.property_declarations[0].name, "title");
-        assert_eq!(card.property_declarations[0].type_text, "string");
+        assert_eq!(card.property_facts.properties.len(), 1);
+        assert_eq!(card.property_facts.properties[0].name, "title");
+        assert_eq!(card.property_facts.properties[0].type_text, "string");
+        assert!(card.property_facts.complete);
         assert_eq!(card.config.local.len(), 0);
     }
 
@@ -1719,6 +1786,68 @@ mod tests {
         assert_eq!(
             b.config.get("a").and_then(|entry| entry.component.as_ref()),
             Some(&path("components/a/a"))
+        );
+    }
+
+    #[test]
+    fn resolves_miniprogram_npm_package_components_only_when_built() {
+        let temp = TempDir::new("npm-components");
+        temp.write(
+            "app.json",
+            r#"{"pages": ["pages/index/index"], "usingComponents": {"pkg": "demo-ui/card/card", "missing-pkg": "other/card/card"}}"#,
+        );
+        temp.write("pages/index/index.wxml", "<view/>");
+        temp.write("pages/index/index.ts", "Page({});");
+        temp.write("miniprogram_npm/demo-ui/card/card.wxml", "<view/>");
+        temp.write(
+            "miniprogram_npm/demo-ui/card/card.ts",
+            "Component({ properties: { npmLabel: { type: String } } });",
+        );
+
+        let discovery = discover(&temp.root(), &Overlay::new(), &path("app.json"));
+        let page = &discovery.pages[0];
+        let built = page.config.get("pkg").expect("built package");
+        assert_eq!(built.kind, ComponentTargetKind::Package);
+        assert_eq!(
+            built.component,
+            Some(path("miniprogram_npm/demo-ui/card/card"))
+        );
+        assert!(
+            discovery
+                .components
+                .iter()
+                .any(|component| component.id.as_str() == "miniprogram_npm/demo-ui/card/card")
+        );
+        let missing = page.config.get("missing-pkg").expect("missing package");
+        assert_eq!(missing.kind, ComponentTargetKind::Package);
+        assert_eq!(missing.component, None);
+        assert!(
+            discovery
+                .components
+                .iter()
+                .all(|component| component.id.as_str() != "miniprogram_npm/other/card/card")
+        );
+    }
+
+    #[test]
+    fn rejects_component_names_that_cannot_be_wxml_tags() {
+        let temp = TempDir::new("invalid-component-name");
+        temp.write(
+            "app.json",
+            r#"{"pages": ["pages/index/index"], "usingComponents": {"<bad>": "/components/a/a", "ok-card": "/components/ok/ok"}}"#,
+        );
+        temp.write("pages/index/index.wxml", "<view/>");
+        temp.write("components/ok/ok.wxml", "<view/>");
+
+        let discovery = discover(&temp.root(), &Overlay::new(), &path("app.json"));
+        let config = &discovery.pages[0].config;
+        assert!(config.get("<bad>").is_none());
+        assert!(config.get("ok-card").is_some());
+        assert!(
+            discovery
+                .issues
+                .iter()
+                .any(|issue| issue.kind == DiscoveryIssueKind::InvalidComponentRef)
         );
     }
 
