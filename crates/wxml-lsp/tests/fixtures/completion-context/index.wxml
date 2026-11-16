@@ -1,0 +1,7 @@
+<view>
+  plain text has no completion
+  <!-- <vi -->
+  <wxs module="m">var value = 1</wxs>
+  <view>{{ user.na }}</view>
+  <view bindtap="on</view>
+</view>

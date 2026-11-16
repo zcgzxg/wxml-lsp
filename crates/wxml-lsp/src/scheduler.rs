@@ -21,8 +21,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use wxml_types::{
-    Backend, BackendError, DefinitionRequest, DefinitionResult, DiagnosticsRequest,
-    DiagnosticsResult, HoverRequest, HoverResult, RequestContext,
+    Backend, BackendError, CompletionKind, CompletionRequest, CompletionResult, DefinitionRequest,
+    DefinitionResult, DiagnosticsRequest, DiagnosticsResult, HoverRequest, HoverResult,
+    RequestContext,
 };
 
 use crate::jsonrpc::RequestKey;
@@ -52,6 +53,8 @@ pub(crate) enum JobKind {
     Diagnostics,
     /// A definition query that will answer a request.
     Definition,
+    /// A completion query that will answer a request.
+    Completion(CompletionKind),
 }
 
 /// One unit of backend work.
@@ -80,6 +83,8 @@ pub(crate) enum Outcome {
     Diagnostics(Box<DiagnosticsResult>),
     /// Definition locations.
     Definition(Box<DefinitionResult>),
+    /// Completion candidates.
+    Completion(Box<CompletionResult>),
 }
 
 /// The completed (or cancelled) result of one job.
@@ -263,6 +268,13 @@ fn run(backend: &dyn Backend, job: &Job) -> Result<Outcome, BackendError> {
                 offset: job.offset,
             })
             .map(|definition| Outcome::Definition(Box::new(definition))),
+        JobKind::Completion(kind) => backend
+            .completion(CompletionRequest {
+                context: job.context.clone(),
+                offset: job.offset,
+                kind,
+            })
+            .map(|completion| Outcome::Completion(Box::new(completion))),
     })) else {
         return Err(BackendError::Internal("backend panicked".to_owned()));
     };

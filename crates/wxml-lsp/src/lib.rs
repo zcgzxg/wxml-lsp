@@ -42,6 +42,7 @@
 #![allow(clippy::redundant_pub_crate)]
 
 pub mod backend_node;
+pub(crate) mod completion;
 pub(crate) mod handlers;
 pub(crate) mod jsonrpc;
 pub mod project_host;

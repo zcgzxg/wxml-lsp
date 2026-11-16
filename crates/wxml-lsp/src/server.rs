@@ -200,10 +200,11 @@ impl Server {
             log(format_args!("dropping a result for an unknown request"));
             return Vec::new();
         };
-        let outgoing = if done.kind == JobKind::Hover {
-            self.hover_done(inflight.id, done, &epoch)
-        } else {
-            self.definition_done(inflight.id, done, &epoch)
+        let outgoing = match done.kind {
+            JobKind::Hover => self.hover_done(inflight.id, done, &epoch),
+            JobKind::Definition => self.definition_done(inflight.id, done, &epoch),
+            JobKind::Completion(_) => self.completion_done(inflight.id, done, &epoch),
+            JobKind::Diagnostics => Vec::new(),
         };
         self.retry_pending_diagnostics_with_epoch(&epoch);
         outgoing
@@ -472,8 +473,9 @@ mod tests {
     use serde_json::json;
     use wxml_text::{Position, SourceRange};
     use wxml_types::{
-        BackendCapabilities, BackendError, BackendId, CapabilityStatus, DefinitionResult,
-        Diagnostic, DiagnosticSeverity, DiagnosticsResult, FileId, HoverResult, MarkupKind,
+        BackendCapabilities, BackendError, BackendId, CapabilityStatus, CompletionItem,
+        CompletionItemKind, CompletionKind, CompletionResult, DefinitionResult, Diagnostic,
+        DiagnosticSeverity, DiagnosticsResult, FileId, HoverResult, InsertTextFormat, MarkupKind,
         MockBackend, ProjectId, SourceLocation, TypeQuality,
     };
 
@@ -656,6 +658,78 @@ mod tests {
             cancelled: false,
             outcome: Ok(Outcome::Diagnostics(Box::new(result))),
         }
+    }
+
+    #[test]
+    fn completion_results_map_items_and_stale_ones_are_dropped() {
+        let capabilities = BackendCapabilities {
+            completion: CapabilityStatus::Supported,
+            ..MockBackend::new().capabilities()
+        };
+        let (mut server, dispatch) = setup_with(capabilities);
+        initialize(&mut server);
+        open_document(&mut server, "<view>{{ user.na }}</view>", 1);
+        dispatch.take();
+
+        server.handle_incoming(request(
+            json!("c1"),
+            "textDocument/completion",
+            hover_params((0, 16)),
+        ));
+        let jobs = dispatch.take();
+        assert_eq!(jobs.len(), 1);
+        let completion = CompletionResult {
+            items: vec![CompletionItem {
+                label: "name".to_owned(),
+                kind: CompletionItemKind::Property,
+                detail: Some("string".to_owned()),
+                documentation: Some("The user name.".to_owned()),
+                insert_text: "name".to_owned(),
+                insert_text_format: InsertTextFormat::PlainText,
+                replace: SourceRange::from_bounds(14, 16).expect("range"),
+                sort_text: Some("m_name".to_owned()),
+                filter_text: None,
+            }],
+            status: CapabilityStatus::Supported,
+            truncated: false,
+        };
+        let outgoing = only(server.handle_work(WorkDone {
+            key: jobs[0].key.clone(),
+            kind: JobKind::Completion(CompletionKind::ExpressionMember),
+            stamp: jobs[0].stamp.clone(),
+            cancelled: false,
+            outcome: Ok(Outcome::Completion(Box::new(completion.clone()))),
+        }));
+        let response = result(&outgoing);
+        assert_eq!(response["isIncomplete"], json!(false));
+        assert_eq!(response["items"][0]["label"], json!("name"));
+        assert_eq!(
+            response["items"][0]["textEdit"]["range"]["start"],
+            json!({"line": 0, "character": 14})
+        );
+        assert_eq!(
+            response["items"][0]["textEdit"]["range"]["end"],
+            json!({"line": 0, "character": 16})
+        );
+        assert_eq!(response["items"][0]["sortText"], json!("m_name"));
+
+        server.handle_incoming(request(
+            json!("c2"),
+            "textDocument/completion",
+            hover_params((0, 16)),
+        ));
+        let jobs = dispatch.take();
+        assert_eq!(jobs.len(), 1);
+        let mut stale = jobs[0].stamp.clone();
+        stale.epoch = epoch().next();
+        let outgoing = only(server.handle_work(WorkDone {
+            key: jobs[0].key.clone(),
+            kind: JobKind::Completion(CompletionKind::ExpressionMember),
+            stamp: stale,
+            cancelled: false,
+            outcome: Ok(Outcome::Completion(Box::new(completion))),
+        }));
+        assert_eq!(result(&outgoing)["items"], json!([]));
     }
 
     #[test]
