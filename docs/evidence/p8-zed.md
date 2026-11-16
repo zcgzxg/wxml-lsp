@@ -21,20 +21,24 @@
 - 已在本机完成 host 侧 `fmt`/`check`/`clippy`/`test`、`wasm32-wasip2`
   debug/release 构建，并验证 `extension.toml`、语言 `config.toml` 可解析，
   四份查询可在 `tree-sitter-wxml` 真实语法树上编译并命中样本。
-- **未**完成标准 UI Dev Extension 安装。早期隔离 smoke 曾用临时 HTML grammar
-  触发注册；最终隔离测试已加载真实 `tree-sitter-wxml` grammar（wasi-sdk 34
-  编译，约 23,806 B），扩展 id 改为 `wxml-lsp` 后不再被 Marketplace 的
-  `wxml` 扩展覆盖。隔离 Zed 已注册 WXML、启动真实 `wxml-lsp --stdio` 并显示
-  `user.nmae` 诊断；第二次启动日志稳定，无卸载/重启。
-- 2026-11-16 的隔离 Xvfb D6 smoke（第 12 节）进一步确认：`wxml-lsp` 以五语言
-  注册同时持有 WXML/JSON/TS 文档；未保存的 TS 字段类型修改会实时反映到 WXML
-  `hover`；`ctrl+s` 到达 `didSave` 后刷新 WXML 诊断；无关 TS 脚本不干扰 WXML。
-- 本机主 Zed 用户数据目录也已放入手工 dev symlink/index
-  （`extensions/installed/wxml-lsp -> <repo>/editors/zed`，`index.json` 中
-  `dev=true`）。主 Zed 已重启加载扩展；在 `tests/fixtures/page-basic`
-  工作区打开页面后，Zed 启动了 `wxml-lsp --stdio` 和 Node 后端，
-  `user.nmae` 显示红色诊断，WXML 语法着色可见。标准 UI 安装仍未确认，
-  定义跳转与服务重启恢复也未做真实编辑器验收。G0/G2 仅部分通过，本记录不声称完整通过。
+- 2026-11-16 **已完成标准 UI Dev Extension 安装**：在隔离 user-data-dir 中通过
+  Zed 命令面板实际执行 `zed: install dev extension`，选择 `editors/zed`。安装目录
+  是指向源码目录的 symlink，`extensions/index.json` 中 `dev=true`，manifest
+  注册 WXML/JavaScript/TypeScript/TSX/JSON 五语言服务。Zed 日志显示编译
+  Rust 扩展、编译真实 `tree-sitter-wxml` grammar（wasi-sdk 34）、加载扩展，
+  并启动 release `wxml-lsp --stdio` 与 Node 后端。详见第 13 节。
+- 干净 fixture 已逐项实测：`title`/`user.name` hover 的类型和 JSDoc 正确；
+  definition 跳到 `index.ts`；标签、属性、事件属性、Mustache 成员补全均实际
+  返回预期候选；`user.nmae` 诊断出现，撤销后 WXML 诊断清空。
+- 真实 TS 项目（`jielong-team-doc/miniprogram/miniprogram`）首次暴露
+  “页面用 `Component` 注册”被拒绝的问题；修复后端页面注册回退后，`src` hover
+  为 `string`，definition 跳到 `data.src`，标签补全可用。真实 JS 项目
+  （`ai-mode-demo`）在无 tsconfig/`allowJs` 时按设计降级为
+  `script is not part of the program`，语法着色和布局正常。
+- 主 Zed 用户数据目录中的手工 dev symlink/index 只作为历史本地安装记录，不再是
+  标准安装的唯一依据。G0/G2 的隔离安装、加载、语言注册、服务器启动、hover/
+  definition/completion/diagnostics 和重启恢复已有证据；Windows/macOS 实机、
+  连续键入延迟和完整 G0/G2 矩阵仍未验收。
 
 ## 2. 环境
 
@@ -148,7 +152,7 @@ dev 扩展）冲突；该命名不影响本记录的验证结果。
 
 | 项 | 原因/状态 |
 | --- | --- |
-| Zed dev extension 安装 | 标准 UI `zed: install dev extension` 未执行；隔离用户目录已用真实 grammar 完成 smoke；主 Zed 已放入手工 dev symlink/index 并重启加载，启动真实 LSP/Node，详见 §6.1/§6.2。标准安装仍未完成 |
+| Zed dev extension 安装 | 本节记录的是早期状态；2026-11-16 后续已在隔离 user-data-dir 中通过命令面板实际执行 `zed: install dev extension`，确认 symlink + `dev=true`、五语言注册、LSP/Node 启动，详见第 13 节 |
 | Zed 内语法高亮/括号/缩进/注入 | 早期 smoke 用临时 HTML grammar；最终隔离测试已加载真实 `tree-sitter-wxml` grammar。主 Zed 中 WXML 语法着色可见，括号/缩进/注入观感仍未逐项验收 |
 | grammar 的 Zed/wasi-sdk 构建 | 已用 wasi-sdk 34 在 host 侧编译真实 grammar（约 23,806 B）；未在 Zed 内触发自动 grammar 构建 |
 | `wxml-lsp` initialize | **已由 Zed 1.28.1 启动**：日志显示 `starting language server process ... args: ["--stdio"]`，工作目录为测试项目页面目录（`.../pages/index`）；未逐项核对 `initializationOptions`/`workspace/configuration` |
@@ -174,7 +178,8 @@ dev 扩展）冲突；该命名不影响本记录的验证结果。
 - 使用 `zed 1.28.1 --user-data-dir /tmp/opencode/zed-user`，项目 `/tmp/opencode/zed-project`（`page-basic` 样本）；`WXML_LSP_BIN=<repo>/target/release/wxml-lsp`（绝对路径），Node 后端指向本仓库 `backends/typescript/dist/server.js`。
 - 扩展 id 改为 `wxml-lsp` 后，不再被 Marketplace 的 `wxml` 扩展覆盖。
 - 结果：Zed 状态栏显示 `WXML`；第二次启动日志稳定为 `starting language server process. binary path: <repo>/target/release/wxml-lsp, working directory: .../pages/index, args: ["--stdio"]`，无卸载/重启；`user.nmae` 行出现诊断下划线，状态栏显示 1 条诊断。
-- 当时未确认悬停内容；后续 D6 已在隔离 Xvfb 中确认（第 12 节）。定义跳转、标准 `zed: install dev extension` 流程仍未验收。
+- 当时未确认悬停内容；后续 D6 已在隔离 Xvfb 中确认（第 12 节）。定义跳转和标准
+  `zed: install dev extension` 流程随后在第 13 节完成验收。
 - 结论：**语言服务器启动与诊断链路已在 Zed 内实际跑通**；G0/G2 仍只算部分通过。
 
 ### 6.2 主 Zed 手工 dev 安装状态（2026-11-16）
@@ -188,9 +193,9 @@ dev 扩展）冲突；该命名不影响本记录的验证结果。
   以 `--stdio` 启动；打开 `tests/fixtures/page-basic` 后还启动了
   `node -- backends/typescript/dist/server.js`。
 - 主 Zed 中 `user.nmae` 显示红色诊断下划线和文件树错误标记，WXML 语法着色可见。
-- 这不是标准 UI `zed: install dev extension` 流程；标准流程仍未确认。
+- 这不是标准 UI `zed: install dev extension` 流程；标准流程已在第 13 节完成。
 - hover 内容已在 D6（第 12 节）确认；definition 内容、诊断刷新时序和服务重启
-  恢复仍未做真实编辑器逐项验收。
+  恢复随后在第 13 节完成真实编辑器验收。
 
 ## 7. Spike S1/D1：多语言共享进程与通知转发（2026-11-16 运行时复测）
 
@@ -298,12 +303,11 @@ grammar 路径依赖执行；未把验证器或依赖复制进仓库。
 - `Worktree::which` 对绝对路径的支持依赖 Zed 实现细节；已在 1.28.1 源码中核对，
   但未来版本可能变化。失败时会给出清晰错误，用户可检查 `WXML_LSP_BIN`。
 - grammar 为小型第三方仓库，长期维护和 ABI 升级不在本仓库控制内；rev 已固定，
-  升级需重新跑查询验证。真实 grammar 已用 wasi-sdk 34 编译并在隔离测试加载，
-  Zed 自动构建和渲染仍需确认。
-- 隔离 smoke 已看到服务器启动和诊断链路；主 Zed 已有手工 dev symlink/index，
-  并已重启加载，启动真实 LSP/Node 且显示诊断。标准 UI 安装、语言服务器
-  生命周期/重启、日志长期可见性、真实 grammar 查询观感和悬停/定义内容
-  仍需手工验收。
+  升级需重新跑查询验证。真实 grammar 已用 wasi-sdk 34 编译并被标准 UI 安装
+  流程加载；渲染观感只在隔离 Xvfb 中验收，Windows/macOS 未验收。
+- 标准 UI 安装、重启加载、真实 LSP/Node 启动、hover、definition、completion 和
+  diagnostics 已在隔离 Xvfb 中通过；Windows/macOS、真实主桌面 Wayland 和连续
+  键入延迟仍未验收。
 - 平台判断依赖 `zed::current_platform()`；host 单测显式传入 `Os`，但 Windows/
   macOS 实机行为仍未验证。
 - P8 代码门禁不要求构建 TypeScript 后端；本地安装已构建
@@ -415,5 +419,124 @@ C>S textDocument/didOpen .../pages/index/index.ts lang=typescript version=0 len=
   （单次 `didChange`）响应即时。真实键入的响应时间仍需单独观测。
 - 非页面脚本（如 `utils/other.ts`）的变更会让全部视图重跑诊断（保守策略）：
   诊断内容不变，但会产生一次额外 `publishDiagnostics`。
-- 标准 UI `zed: install dev extension`、与编辑器内置 JS/TS 服务的显式归属/重启用例
-  仍未验收；本 smoke 只证明两者可同时运行（内置 TS 诊断未被抑制）。
+- 标准 UI `zed: install dev extension` 已于第 13 节完成；与编辑器内置 JS/TS 服务的
+  显式归属/重启用例仍未验收，本 smoke 只证明两者可同时运行（内置 TS 诊断未被抑制）。
+
+## 13. 标准 UI 安装与真实项目验收（2026-11-16）
+
+结论：通过。已在隔离 user-data-dir 中通过命令面板实际执行
+`zed: install dev extension`，确认标准 dev 安装、真实 grammar 编译、五语言注册、
+release LSP + Node 后端启动；干净 fixture 和真实 TS/JS 项目的 hover、definition、
+completion、diagnostics 已在 Zed 中逐项执行并核对内容。验收中发现并修复了
+“页面路由使用 `Component` 注册”被后端拒绝的问题。
+
+### 13.1 环境与隔离
+
+| 项 | 值 |
+| --- | --- |
+| Zed | 1.28.1（`e8bc16a`） |
+| 显示 | Xvfb `:99`，1600x1000，llvmpipe，无窗口管理器 |
+| 用户数据 | `<tmp>/zed-standard/data`（隔离） |
+| HOME / XDG_CONFIG_HOME | `<tmp>/zed-standard/home`（隔离，避免用户 `.bashrc` 覆盖路径） |
+| 项目副本 | `<tmp>/zed-standard/proj`（`page-basic-clean` 副本） |
+| 语言服务器 | release `wxml-lsp --stdio` |
+| 类型后端 | `backends/typescript/dist/server.js`，Node 24 |
+| 真实项目 A | `jielong-team-doc/miniprogram/miniprogram`（TS，`Component` 注册页面） |
+| 真实项目 B | `ai-mode-demo`（JS，无 tsconfig） |
+
+隔离环境使用 `env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 DISPLAY=:99`，避免
+Zed 继承主桌面的 Wayland 连接。命令面板的目录选择使用仓库外私有 session bus
+上的假 portal，仅替代 XDG 文件选择对话框并固定返回 `<repo>/editors/zed`；
+扩展编译、安装和加载均由 Zed 完成，没有手工创建 symlink。
+
+### 13.2 标准安装证据
+
+- Zed 日志：`compiling Rust extension`、`compiling grammar wxml`、
+  `using wasi-sdk from WASI_SDK_PATH`、`finished compiling extension ... in
+  12.25s`、`extensions updated. loading 1`。
+- `<user-data>/extensions/installed/wxml-lsp` 是指向 `<repo>/editors/zed` 的
+  symlink；`extensions/index.json` 中 `dev=true`。
+- manifest languages 为 `languages/wxml`；server languages 为
+  WXML/JavaScript/TypeScript/TSX/JSON。
+- 进程：一个 `target/release/wxml-lsp --stdio`，一个
+  `node backends/typescript/dist/server.js`。
+- 关闭并用同一 user-data-dir 重启后，扩展仍为标准 dev 安装，LSP 重新启动，
+  `title` hover 仍返回 `string` 和“页面标题”。
+- 证据：`docs/evidence/data/zed-standard/install-log.txt`、
+  `extension-index-excerpt.json`、`install-success.png`。
+
+### 13.3 干净 fixture 逐项结果
+
+| 操作 | 实际结果 |
+| --- | --- |
+| hover `{{ title }}` | `(property) title: string` + “页面标题” |
+| hover `{{ user.name }}` | `(property) name: string` + “用户显示名称” |
+| definition `title` | 打开 `pages/index/index.ts`，落在 `data.title`（行 4，列 10），面包屑 `data > title` |
+| 标签补全 `<vi` | `video`、`view`、`web-view`、`cover-view`、`picker-view`、`scroll-view`、`movable-view`、`navigator`、`navigation-bar`、`cover-image` 等 |
+| 属性补全 `<view ` | `class`、`hidden`、`id`、`style`、`wx:elif`、`wx:else`、`wx:for`、`wx:for-index` 等 |
+| 事件属性补全 `<view bindt` | `bindtap`、`bindtouchend`、`bindtouchmove`、`bindtouchstart`、`bind:tap`、`bindinput`、`bindreset`、`bindsubmit` 等 |
+| 成员补全 `{{ user.` | `name` |
+| 未知成员 `user.nmae` | hover 显示 `Property 'nmae' does not exist on type '{ name: string; }'` 和 `type quality: missing`；状态栏 WXML 诊断计数为 1 |
+| 撤销错误 | 文件恢复为干净 fixture，WXML 诊断清空 |
+
+成员补全首次触发时类型后端仍在分析，第二次 `ctrl+space` 才返回 `name`；其余
+补全即时。截图：`hover-title.png`、`hover-user-name3.png`、
+`definition-title.png`、`completion-tag.png`、`comp-attr.png`、
+`comp-event.png`、`comp-member2.png`、`diag-hover-nmae2.png`。
+
+### 13.4 真实 TS 项目：Component 注册页面的修复
+
+项目页面脚本是：
+
+```ts
+Component({ data: { src: '', title: '', userId: '' }, ... })
+```
+
+第一次打开 WXML 时状态栏显示
+`type checking is unsupported: no page registration with an object literal argument`，
+hover/definition 均无结果。原因是后端按页面视图过滤注册时只接受 `Page`，
+而该真实项目使用 `Component` 注册页面路由。
+
+修复：
+
+- ` backends/typescript/src/analysis.ts`：页面视图优先匹配 `Page`；没有
+  `Page` 时回退到 `Component` 注册，并把实际注册种类写入响应，后续数据根、
+  hover、diagnostics、definition 都按组件根处理。
+- ` backends/typescript/test/analysis.test.ts`：新增页面用 `Component` 注册的
+  单元测试，断言 `registration.kind === "component"`、`count === 1`、
+  `title` hover 为 `string`。
+
+修复后实测：
+
+- 状态栏不再出现 unsupported。
+- hover `src`：`(property) src: string`。
+- definition `src`：跳到 `index.ts` 的 `data.src`（行 4）。
+- 标签补全 `<vi`：`video`、`view`。
+- 所有临时编辑已撤销，真实项目没有留下修改。
+
+截图：`real2-hover-src-inner.png`、`real2-def-src.png`、
+`real2-completion-tag2.png`。
+
+### 13.5 真实 JS 项目
+
+项目 `ai-mode-demo` 没有 `tsconfig.json`/`jsconfig.json`，页面为 JS。打开
+`pages/home/home.wxml` 后：
+
+- 状态栏显示 `type checking is unavailable: script is not part of the program`。
+- hover `{{title}}` 无结果；这是未启用 `allowJs`/无项目配置时的既有降级，不是本轮
+  回归。
+- 复杂 `wx:for`、事件和自定义组件的语法着色、缩进、Mustache 注入布局正常。
+
+截图：`ai2-home-open.png`、`ai2-hover-title.png`。
+
+### 13.6 限制与观察
+
+- 真实 TS 项目只覆盖 `Component` 注册的页面；普通 `Page`、组件和跨文件未保存
+  类型传播仍由既有测试覆盖，本轮未逐项重做。
+- 真实 JS 项目无项目配置，类型能力按设计降级；开启 `allowJs` 的 JS 项目未验收。
+- Xvfb 无窗口管理器，观感不等同于用户主桌面 Wayland；Windows/macOS 未验收。
+- 连续键入的诊断/补全延迟未单独测量；此前 D6 观察到 45 次连续 `didChange`
+  后诊断约 26–35 s 稳定，粘贴响应即时。
+- 反复制造损坏 WXML/脚本时曾观察到 `server is busy`、Node CPU 升高和
+  `wxml-lsp` 进程退出；全新重启后恢复，尚未根因定位。本轮正常验收未复现。
+- 与 Zed 内置 JS/TS 服务并存已确认；显式归属/重启用例仍未单独验收。

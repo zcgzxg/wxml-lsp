@@ -1,0 +1,15 @@
+# Zed 1.28.1 标准 UI Dev Extension 安装日志摘录（已清洗路径）
+
+2026-11-16T18:41:52+08:00 INFO [extension::extension_builder] compiling Rust extension "<repo>/editors/zed"
+2026-11-16T18:41:52+08:00 INFO [extension::extension_builder] compiling grammar wxml for extension "<repo>/editors/zed"
+2026-11-16T18:41:52+08:00 INFO [extension::extension_builder] using wasi-sdk from WASI_SDK_PATH: "<wasi-sdk>"
+2026-11-16T18:41:52+08:00 INFO [extension::extension_builder] checking out wxml parser
+2026-11-16T18:41:52+08:00 INFO [extension::extension_builder] compiling Rust crate for extension "<repo>/editors/zed"
+2026-11-16T18:41:54+08:00 INFO [extension::extension_builder] compiled grammar wxml for extension "<repo>/editors/zed"
+2026-11-16T18:42:04+08:00 INFO [extension::extension_builder] compiled Rust crate for extension "<repo>/editors/zed"
+2026-11-16T18:42:04+08:00 INFO [extension::extension_builder] encoding wasm component for extension "<repo>/editors/zed"
+2026-11-16T18:42:04+08:00 INFO [extension::extension_builder] extension "<repo>/editors/zed" written to "<repo>/editors/zed/extension.wasm"
+2026-11-16T18:42:04+08:00 INFO [extension::extension_builder] compiled Rust extension "<repo>/editors/zed"
+2026-11-16T18:42:04+08:00 INFO [extension::extension_builder] finished compiling extension "<repo>/editors/zed" in 12.25s
+2026-11-16T18:42:04+08:00 INFO [extension_host] rebuilt extension index in 1.493932ms
+2026-11-16T18:42:04+08:00 INFO [extension_host] extensions updated. loading 1, reloading 0, unloading 0

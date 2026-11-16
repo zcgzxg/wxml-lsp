@@ -24,7 +24,7 @@
 | 2026-11-15 | [TypeScript 原生语言服务实验](2026-11-15-native-typescript-service.md) | 7.0.2 / 7.1 开发版 | E2 | 虚拟 `file://` 文件可用；自定义 scheme 与显式 `files` 归属存在问题 |
 | 2026-11-15 | [类型桥候选验证与 C1 建议](type-bridge-c1.md) | TypeScript 6.0.3 / miniprogram-api-typings 5.3.1 | E2 | 33 场景 × 2 候选：A 26 supported / 3 Partial / 3 Unsupported / 1 Unavailable（208 tests）；B 在闭包、模块组件与 `this` 类型上失败；选项透传、多注册、替换与定义坐标已冻结为 C1 契约 |
 | 2026-11-16 | [P7 真实集成证据](p7-integration.md) | `wxml-lsp` + Node 24.22.2 | E1 | ProjectHost/NodeBackend/C1.1 路由落地；G1 真实门禁 `stdio_type_loop` 5 passed、`real_node` 1 passed（当时快照）；Wave 5 已补齐 AC-005/006/008/012 与未保存 JS/TS 同步 |
-| 2026-11-16 | [P8 Zed 扩展证据](p8-zed.md) | Zed 1.28.1 / zed_extension_api 0.7.0 | E1 | 显式 `WXML_LSP_BIN` 绝对路径、无 worktree/PATH 回退；host 单测 22 项（Wave 5 后 25 项）；平台感知路径校验；wasm debug 7,633,946 B / release 238,792 B；隔离用户目录 smoke 注册 WXML、启动真实 LSP、显示 `user.nmae` 诊断；标准安装与 hover/定义可视化未确认；Wave 5 多语言同步证据见 §12 |
+| 2026-11-16 | [P8 Zed 扩展证据](p8-zed.md) | Zed 1.28.1 / zed_extension_api 0.7.0 | E1 | 显式 `WXML_LSP_BIN` 绝对路径、无 worktree/PATH 回退；host 单测 25 项；平台感知路径校验；wasm debug 7,633,946 B / release 238,792 B；标准 UI `zed: install dev extension` 已实际执行，symlink + `dev=true`，五语言注册；干净 fixture 的 hover/definition/completion/diagnostics 和重启恢复已实测；真实 TS/JS 项目观感已记录；Wave 5 多语言同步见 §12，标准安装见 §13 |
 
 ## 3. 当前门禁基线（2026-11-16）
 
@@ -33,6 +33,7 @@
 | 项 | 命令 | 当前结果 |
 | --- | --- | --- |
 | Rust workspace | `cargo test --workspace` | 754 passed / 15 ignored / 28 suites |
+| Node 后端 | `cd backends/typescript && npm test` | 272 passed |
 | Zed 扩展 | `cd editors/zed && cargo test --locked` | 25 passed（1 suite） |
 | Zed wasm (debug) | `cargo build --target wasm32-wasip2 --locked` | 7,633,946 B（历史构建） |
 | Zed wasm (release) | `cargo build --target wasm32-wasip2 --release --locked` | 238,792 B |
@@ -43,8 +44,10 @@
 15 个 ignored 就是上述 G1/Wave 5 门禁（5 + 3 + 7），默认 `cargo test` 不运行；设置
 `WXML_TEST_NODE=1` 后仍要求 `backends/typescript/dist/server.js` 已构建。
 
-未计入通过：标准 Zed Dev Extension 安装、真实 grammar 渲染、hover/definition
-可视化、Windows/macOS 实机、G0/G2 完整验收。G0/G2 目前只算部分通过。
+未计入通过：Windows/macOS 实机、真实主桌面 Wayland 观感、连续键入延迟、
+与 Zed 内置 JS/TS 服务的显式归属/重启用例、G0/G2 完整矩阵。标准 UI 安装、
+真实 grammar 加载、hover/definition/completion/diagnostics 和重启恢复已在
+隔离 Xvfb 中通过，见 [p8-zed.md](p8-zed.md) 第 13 节；G0/G2 仍只算部分通过。
 
 ## 4. 维护规则
 
@@ -73,5 +76,6 @@ docs/evidence/
     ├── existing-wxml-lsp-audit/
     ├── official-template-analyzer-audit/
     ├── native-typescript-service/
-    └── type-bridge-c1/
+    ├── type-bridge-c1/
+    └── zed-standard/
 ```

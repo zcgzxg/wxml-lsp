@@ -14,7 +14,7 @@
 | 类型桥契约 | [C1 类型桥契约](reference/type-bridge-c1.md) | 候选 A 布局、数据根与 `properties` 覆盖、源码映射、C1 请求/响应和状态 | C0 坐标/身份/后端接口 |
 | 诊断策略 | [模板类型诊断策略](reference/type-diagnostics.md) | 严格空值、运行时转换、属性绑定、`any`/`unknown` 和未支持形式的降级规则 | 当前实现进度或测试证据 |
 | 验收样本 | [共享验收样本](../tests/fixtures/README.md) | AC-001..AC-013 的正例、反例、runtime 场景、schema v2 与校验入口 | 类型分析实现 |
-| 执行计划 | [Wave 5 并行交付计划](plans/2026-11-16-wave5-parallel-delivery.md) | 并行 worktree、接口冻结、测试门禁与评审流程 | 需求定义和最终状态 |
+| 执行计划 | [Wave 5 并行交付计划](plans/2026-11-16-wave5-parallel-delivery.md)、[Zed 标准安装与真实项目验收计划](plans/2026-11-16-zed-standard-acceptance.md) | 并行 worktree、接口冻结、测试门禁与评审流程；Zed 标准安装和真实编辑器验收步骤 | 需求定义和最终状态 |
 | 架构决策 | [ADR 索引](adr/README.md) | 模块边界、类型检查与映射、文档同步、交付闸门等长期决策 | 日常进度 |
 | 证据 | [证据索引](evidence/README.md) | 实验环境、方法、结果、限制和最小原始数据 | 把实验结论当作已实现功能 |
 | 集成与编辑器证据 | [P7 真实集成](evidence/p7-integration.md)、[P8 Zed 扩展](evidence/p8-zed.md) | 真实 Node 端到端与 G1 门禁；Zed wasm 构建、隔离 smoke 和未验证项 | 把部分证据当作完整验收 |
@@ -63,7 +63,8 @@ README.md                          # 需求、计划、状态
 docs/
 ├── README.md                      # 本索引
 ├── plans/
-│   └── 2026-11-16-wave5-parallel-delivery.md
+│   ├── 2026-11-16-wave5-parallel-delivery.md
+│   └── 2026-11-16-zed-standard-acceptance.md
 ├── reference/
 │   ├── wxml-language-feature-baseline.md
 │   ├── contracts.md

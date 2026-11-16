@@ -197,7 +197,7 @@ WXML 原文 UTF-8 字节
 | 多注册 | `Partial` | `Partial` | `Partial` |
 | `properties` 不完整 | `Partial` | `Partial` | `Partial` |
 | `methods` 非字面量 | `Partial` | `Partial` | `Partial` |
-| 模板 `locals`（Wave 2，绑定为 `any`） | `Partial` | `Partial` | `Partial` |
+| typed 模板 locals / 条件窄化（Wave 5） | `Supported` | `Supported` | `Supported`（复杂守卫/无法映射时 `Partial`） |
 | 挂载内诊断完全无法映射到 WXML | `Supported` | `Partial`/`Disabled` | `Supported` |
 
 降级 reason 必须包含根因；诊断“期望未命中”只能**追加**在根因之后，不能覆盖根因。
@@ -214,6 +214,11 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
 - 不使用后续注册的 `data`/`properties` 合并；
 - 注册数 > 1 时 hover/diagnostics/definition 全部 `Partial`；
 - 该策略与[类型诊断策略](type-diagnostics.md) §10 的多候选行一致。
+
+页面视图的 owner kind 为 `page` 时优先匹配 `Page` 注册；若脚本没有任何 `Page`
+注册、但有 `Component` 注册（真实小程序允许用 `Component` 注册页面路由），则回退到
+首个 `Component`，并把响应中的 `registration.kind` 置为 `component`。组件视图仍只
+匹配 `Component`。回退后数据根按组件的 `data`/`properties` 处理。
 
 ### 5.3 探针健康门
 
@@ -420,3 +425,4 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored
 | 2026-11-15 | P5 第 1 轮修复：`insertions[]` 填 `viewRevision`/`backendFileVersion`；`locals` 根偏移与 dropped definition 状态修正；`target` 默认右值标识符；`locals` 保留字校验；运行时依赖移入 `dependencies`；stdio 行上限 20 MiB（请求上限仍 16 MiB）；`ping` 回传协议/后端版本。第 2 轮补充：Node 必须重写表达式中的每个自由根标识符（括号/一元/二元/条件/索引），不能只前缀首个 token；`wxmlRange` 长度必须等于 `exprText` UTF-8 字节数 |
 | 2026-11-15 | P5 MEDIUM 修复：默认 target 使用最右值 token 的原始偏移（重复名 `a.a`/`user.user`）；包装只接受精确覆盖整个表达式的单个 ParenthesizedExpression（拒绝 `); (` 注入）；跨合成间隙诊断裁剪到 target/最大重叠原文段，无法归属时 diagnostics 至少 `Partial`；拒绝 `satisfies`/TypeNode/`new`；表达式深度/节点上限并捕获 RangeError |
 | 2026-11-16 | **WT-B（Wave 5）**：`wx:for` locals 升级为 `bindings` 并解析元素/索引类型，`wx:if/elif/else` 增加 `guards` 窄化；删除“template locals are bound as any”降级；新增 `tests/fixtures/{loop-scope,conditional-union,component-bindings,multi-view,alias-project}` 的 `wave5_acceptance` 真机 runner；多视图隔离（不同脚本、交错请求）与 `@models/*` 别名 definition 验证，详见 §10 验证说明 |
+| 2026-11-16 | **Zed 验收修复**：页面视图没有 `Page` 注册时回退到首个 `Component` 注册，并把 `registration.kind` 置为 `component`；真实 TS 项目 `jielong-team-doc` 的 `Component` 页面已验证 hover/definition，Node 单测覆盖 `Component` 注册页面 |
