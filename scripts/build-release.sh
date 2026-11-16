@@ -46,6 +46,10 @@ note() {
     printf '%s\n' "$*"
 }
 
+shell_quote() {
+    printf '%q' "$1"
+}
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 output=""
 dry_run=0
@@ -162,8 +166,9 @@ check_prerequisites() {
         rustup target list --installed | grep -qx 'wasm32-wasip2' \
             || die "rustup target wasm32-wasip2 is not installed"
     fi
-    node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 24 ? 0 : 1)' \
-        || die "Node.js >= $node_minimum is required to build the backend"
+    node_major="${node_minimum%%.*}"
+    node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= Number(process.argv[1]) ? 0 : 1)' \
+        "$node_major" || die "Node.js >= $node_minimum is required to build the backend"
 }
 
 if [ "$dry_run" -eq 1 ]; then
@@ -226,7 +231,7 @@ cp "$repo_root/backends/typescript/tsconfig.json" "$node_work/tsconfig.json"
 cp "$repo_root/backends/typescript/tsconfig.build.json" "$node_work/tsconfig.build.json"
 (
     cd "$node_work"
-    npm ci --no-audit --no-fund "${npm_offline[@]}"
+    npm ci --ignore-scripts --no-audit --no-fund "${npm_offline[@]}"
     npm run check
     npm run build
     npm prune --omit=dev --no-audit --no-fund "${npm_offline[@]}"
@@ -298,7 +303,7 @@ note "  index:     $output_abs/index.json"
 note "  installer: $output_abs/wxml-lsp-$version-$platform/bin/wxml-lsp-install"
 note ""
 note "to use the staged release without installing:"
-note "  export WXML_LSP_BIN='$output_abs/wxml-lsp-$version-$platform/bin/wxml-lsp'"
+note "  export WXML_LSP_BIN=$(shell_quote "$output_abs/wxml-lsp-$version-$platform/bin/wxml-lsp")"
 note "to install it:"
-note "  '$output_abs/wxml-lsp-$version-$platform/bin/wxml-lsp-install' install --from-dir '$output_abs' --version '$version'"
+note "  $(shell_quote "$output_abs/wxml-lsp-$version-$platform/bin/wxml-lsp-install") install --from-dir $(shell_quote "$output_abs") --version $(shell_quote "$version")"
 note "no upload, tag or remote release was created."

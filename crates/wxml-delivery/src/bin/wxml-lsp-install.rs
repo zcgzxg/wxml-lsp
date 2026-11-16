@@ -1,12 +1,13 @@
 //! `wxml-lsp-install`: verified local installer, upgrade and rollback.
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use wxml_delivery::acquire::{AcquireMode, AcquireOptions, acquire};
 use wxml_delivery::error::{DeliveryError, Result};
 use wxml_delivery::install::{BINARY_ENV, InstallOutcome, InstallRoot, explicit_binary};
-use wxml_delivery::manifest::{ExpectedManifest, now_rfc3339};
+use wxml_delivery::manifest::{ExpectedManifest, now_rfc3339, set_mode};
 use wxml_delivery::paths::{host_platform, shell_quote};
 use wxml_delivery::semver::compare_versions;
 use wxml_delivery::source::Source;
@@ -42,6 +43,8 @@ A local --from-dir is an explicit offline source. WXML_LSP_BIN always takes
 precedence: when set it is validated and used, and no install or download is
 attempted; when set but invalid the command fails and never falls back.
 
+Read-only commands (list/current/verify/env) never create or chmod the install
+root. `verify` hashes the complete tree before executing its packaged binary.
 The installer never reads project or editor configuration for a download
 source, never uploads anything and never creates remote tags or releases.";
 
@@ -56,27 +59,30 @@ fn main() -> ExitCode {
 }
 
 fn run() -> Result<()> {
-    let mut args = std::env::args().skip(1);
-    let Some(command) = args.next() else {
+    let mut args = std::env::args_os().skip(1);
+    let Some(command_os) = args.next() else {
         eprintln!("{USAGE}");
         return Err(DeliveryError::InvalidArgument(
             "a command is required".to_owned(),
         ));
     };
-    if matches!(command.as_str(), "--help" | "-h") {
+    let command = command_os.to_str().ok_or_else(|| {
+        DeliveryError::InvalidArgument("command names must be valid UTF-8".to_owned())
+    })?;
+    if matches!(command, "--help" | "-h") {
         println!("{USAGE}");
         return Ok(());
     }
-    if matches!(command.as_str(), "--version" | "-V") {
+    if matches!(command, "--version" | "-V") {
         println!("wxml-lsp-install {}", env!("CARGO_PKG_VERSION"));
         return Ok(());
     }
-    let options = Options::parse(args, &allowed_for(&command)?)?;
+    let options = Options::parse(args, &allowed_for(command)?)?;
     if options.help {
         println!("{USAGE}");
         return Ok(());
     }
-    match command.as_str() {
+    match command {
         "install" => install(&options),
         "upgrade" => upgrade(&options),
         "rollback" => rollback(&options),
@@ -144,11 +150,17 @@ struct Options {
 }
 
 impl Options {
-    fn parse(mut args: impl Iterator<Item = String>, allowed: &[&str]) -> Result<Self> {
+    fn parse(mut args: impl Iterator<Item = OsString>, allowed: &[&str]) -> Result<Self> {
         let mut options = Self::default();
         while let Some(argument) = args.next() {
-            let name = argument.strip_prefix("--").ok_or_else(|| {
-                DeliveryError::InvalidArgument(format!("unexpected argument `{argument}`"))
+            let text = argument.to_str().ok_or_else(|| {
+                DeliveryError::InvalidArgument(
+                    "option names must be valid UTF-8; non-UTF-8 values are allowed only after a path option"
+                        .to_owned(),
+                )
+            })?;
+            let name = text.strip_prefix("--").ok_or_else(|| {
+                DeliveryError::InvalidArgument(format!("unexpected argument `{text}`"))
             })?;
             let (name, inline) = name
                 .split_once('=')
@@ -158,27 +170,71 @@ impl Options {
                     "unexpected option `--{name}`"
                 )));
             }
-            let mut value = |option: &str| -> Result<String> {
-                if let Some(value) = inline.clone() {
-                    return Ok(value);
-                }
-                args.next().ok_or_else(|| {
-                    DeliveryError::InvalidArgument(format!("--{option} requires a value"))
-                })
-            };
             match name {
-                "root" => options.root = Some(PathBuf::from(value("root")?)),
-                "version" => options.version = Some(value("version")?),
-                "to" => options.to = Some(value("to")?),
-                "source" => options.source = Some(value("source")?),
-                "from-dir" => options.from_dir = Some(PathBuf::from(value("from-dir")?)),
-                "enable-download" => options.enable_download = true,
-                "offline" => options.offline = true,
-                "help" => options.help = true,
+                "root" => options.root = Some(take_path(&mut args, inline.as_deref(), "root")?),
+                "from-dir" => {
+                    options.from_dir = Some(take_path(&mut args, inline.as_deref(), "from-dir")?);
+                }
+                "version" => {
+                    options.version = Some(take_string(&mut args, inline.as_deref(), "version")?);
+                }
+                "to" => options.to = Some(take_string(&mut args, inline.as_deref(), "to")?),
+                "source" => {
+                    options.source = Some(take_string(&mut args, inline.as_deref(), "source")?);
+                }
+                "enable-download" => {
+                    options.enable_download = parse_flag(inline.as_deref(), "enable-download")?;
+                }
+                "offline" => options.offline = parse_flag(inline.as_deref(), "offline")?,
+                "help" => {
+                    if inline.is_some() {
+                        return Err(DeliveryError::InvalidArgument(
+                            "--help does not take a value".to_owned(),
+                        ));
+                    }
+                    options.help = true;
+                }
                 _ => unreachable!("allowed options are exhaustive"),
             }
         }
         Ok(options)
+    }
+}
+
+fn take_path(
+    args: &mut impl Iterator<Item = OsString>,
+    inline: Option<&str>,
+    option: &str,
+) -> Result<PathBuf> {
+    if let Some(value) = inline {
+        return Ok(PathBuf::from(value));
+    }
+    args.next()
+        .map(PathBuf::from)
+        .ok_or_else(|| DeliveryError::InvalidArgument(format!("--{option} requires a path value")))
+}
+
+fn take_string(
+    args: &mut impl Iterator<Item = OsString>,
+    inline: Option<&str>,
+    option: &str,
+) -> Result<String> {
+    if let Some(value) = inline {
+        return Ok(value.to_owned());
+    }
+    args.next()
+        .ok_or_else(|| DeliveryError::InvalidArgument(format!("--{option} requires a value")))?
+        .into_string()
+        .map_err(|_| DeliveryError::InvalidArgument(format!("--{option} must be valid UTF-8")))
+}
+
+fn parse_flag(inline: Option<&str>, option: &str) -> Result<bool> {
+    match inline {
+        None | Some("true") => Ok(true),
+        Some("false") => Ok(false),
+        Some(value) => Err(DeliveryError::InvalidArgument(format!(
+            "--{option}={value} is not a boolean; use true or false"
+        ))),
     }
 }
 
@@ -193,7 +249,7 @@ fn install(options: &Options) -> Result<()> {
         .clone()
         .ok_or_else(|| DeliveryError::InvalidArgument("install requires --version".to_owned()))?;
     let source = source(options)?;
-    let root = root(options)?;
+    let root = root_mut(options)?;
     let _lock = root.lock()?;
     let acquired = acquire(&AcquireOptions {
         root: &root,
@@ -202,12 +258,7 @@ fn install(options: &Options) -> Result<()> {
         allow_download: options.enable_download,
         offline: options.offline,
     })?;
-    let result = root.install_tree(&acquired.tree, &version);
-    if result.is_err() {
-        let _ = std::fs::remove_dir_all(&acquired.tree);
-    }
-    let outcome = result?;
-    print_install_result(&root, &version, outcome, acquired.cache_hit)
+    install_and_report(&root, &acquired.tree, &version, acquired.cache_hit)
 }
 
 fn upgrade(options: &Options) -> Result<()> {
@@ -217,8 +268,9 @@ fn upgrade(options: &Options) -> Result<()> {
         return Ok(());
     }
     let source = source(options)?;
-    let root = root(options)?;
+    let root = root_mut(options)?;
     let _lock = root.lock()?;
+    let current = root.current_version()?;
     let acquired = acquire(&AcquireOptions {
         root: &root,
         source: source.as_ref(),
@@ -227,12 +279,15 @@ fn upgrade(options: &Options) -> Result<()> {
         offline: options.offline,
     })?;
     let version = acquired.manifest.package_version.clone();
-    let result = root.install_tree(&acquired.tree, &version);
-    if result.is_err() {
-        let _ = std::fs::remove_dir_all(&acquired.tree);
+    if let Some(current) = current {
+        if compare_versions(&version, &current).is_lt() {
+            let _ = std::fs::remove_dir_all(&acquired.tree);
+            return Err(DeliveryError::InvalidArgument(format!(
+                "refusing to downgrade from {current} to {version}; use `rollback --to {version}` explicitly"
+            )));
+        }
     }
-    let outcome = result?;
-    print_install_result(&root, &version, outcome, acquired.cache_hit)
+    install_and_report(&root, &acquired.tree, &version, acquired.cache_hit)
 }
 
 fn rollback(options: &Options) -> Result<()> {
@@ -244,7 +299,7 @@ fn rollback(options: &Options) -> Result<()> {
     let target = options.to.clone().ok_or_else(|| {
         DeliveryError::InvalidArgument("rollback requires --to VERSION".to_owned())
     })?;
-    let root = root(options)?;
+    let root = root_mut(options)?;
     let _lock = root.lock()?;
     if !root.versions_dir().join(&target).is_dir() {
         let source = source(options)?;
@@ -256,9 +311,7 @@ fn rollback(options: &Options) -> Result<()> {
             offline: options.offline,
         })?;
         let result = root.install_tree(&acquired.tree, &target);
-        if result.is_err() {
-            let _ = std::fs::remove_dir_all(&acquired.tree);
-        }
+        cleanup_staging(&root, &acquired.tree);
         result?;
     }
     root.verify_installed(&target)?;
@@ -307,7 +360,10 @@ fn versions(options: &Options) -> Result<()> {
 }
 
 fn list(options: &Options) -> Result<()> {
-    let root = root(options)?;
+    let Some(root) = InstallRoot::open(&root_path(options)?)? else {
+        println!("no installed versions");
+        return Ok(());
+    };
     let current = root.current_version()?;
     let installed = root.versions()?;
     if installed.is_empty() {
@@ -333,8 +389,7 @@ fn current(options: &Options) -> Result<()> {
         println!("source: {BINARY_ENV}");
         return Ok(());
     }
-    let root = root(options)?;
-    let _lock = root.lock()?;
+    let root = open_root(options)?;
     let version = root
         .current_version()?
         .ok_or_else(|| DeliveryError::InstallState("no installed version is active".to_owned()))?;
@@ -358,27 +413,20 @@ fn verify(options: &Options) -> Result<()> {
         println!("note: installed state is not checked while {BINARY_ENV} is set");
         return Ok(());
     }
-    let root = root(options)?;
-    let _lock = root.lock()?;
+    let root = open_root(options)?;
     let version = options
         .version
         .clone()
         .or(root.current_version()?)
         .ok_or_else(|| DeliveryError::InstallState("no installed version is active".to_owned()))?;
     let directory = root.versions_dir().join(&version);
-    let platform = host_platform()?;
-    let manifest = wxml_delivery::manifest::read_manifest(
-        &directory,
-        ExpectedManifest {
-            version: Some(&version),
-            platform: Some(&platform),
-            protocol_version: None,
-        },
-    )?;
+    // Hash-verify the whole tree before executing the packaged binary. A
+    // tampered `bin/wxml-lsp` must never run just because the user asked to
+    // verify it.
+    let manifest = root.verify_installed(&version)?;
     let binary = check_binary(&directory, &manifest)?;
     check_backend(&directory, &manifest)?;
     let node = check_node(&manifest.node.minimum_version)?;
-    root.verify_installed(&version)?;
     println!("verified {version}");
     println!("binary version: {binary}");
     println!("node: {node} (minimum {})", manifest.node.minimum_version);
@@ -394,8 +442,7 @@ fn env(options: &Options) -> Result<()> {
         );
         return Ok(());
     }
-    let root = root(options)?;
-    let _lock = root.lock()?;
+    let root = open_root(options)?;
     let version = root
         .current_version()?
         .ok_or_else(|| DeliveryError::InstallState("no installed version is active".to_owned()))?;
@@ -468,6 +515,51 @@ fn verify_package(options: &Options) -> Result<()> {
     Ok(())
 }
 
+fn install_and_report(
+    root: &InstallRoot,
+    tree: &Path,
+    version: &str,
+    cache_hit: bool,
+) -> Result<()> {
+    let previous = root.current_version()?;
+    let result = root.install_tree(tree, version);
+    if let Err(error) = result {
+        let _ = std::fs::remove_dir_all(tree);
+        cleanup_staging(root, tree);
+        return Err(error);
+    }
+    let outcome = result?;
+    let report = print_install_result(root, version, outcome, cache_hit);
+    cleanup_staging(root, tree);
+    match report {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            if let Some(previous) = previous {
+                let _ = root.switch(&previous);
+                return Err(DeliveryError::Runtime(format!(
+                    "{error}; rolled back to {previous}"
+                )));
+            }
+            Err(error)
+        }
+    }
+}
+
+fn cleanup_staging(root: &InstallRoot, tree: &Path) {
+    let Some(parent) = tree.parent() else {
+        return;
+    };
+    let Ok(parent) = std::fs::canonicalize(parent) else {
+        return;
+    };
+    let Ok(tmp) = std::fs::canonicalize(root.tmp_dir()) else {
+        return;
+    };
+    if parent.starts_with(&tmp) && parent != tmp {
+        let _ = std::fs::remove_dir_all(parent);
+    }
+}
+
 fn print_install_result(
     root: &InstallRoot,
     version: &str,
@@ -498,20 +590,45 @@ fn print_install_result(
     Ok(())
 }
 
-fn root(options: &Options) -> Result<InstallRoot> {
-    InstallRoot::create(&options.root.clone().map_or_else(default_root, Ok)?)
+fn root_path(options: &Options) -> Result<PathBuf> {
+    options.root.clone().map_or_else(default_root, Ok)
+}
+
+fn root_mut(options: &Options) -> Result<InstallRoot> {
+    InstallRoot::create(&root_path(options)?)
+}
+
+fn open_root(options: &Options) -> Result<InstallRoot> {
+    InstallRoot::open(&root_path(options)?)?.ok_or_else(|| {
+        DeliveryError::InstallState(
+            "no installed version is available; run install first".to_owned(),
+        )
+    })
 }
 
 fn default_root() -> Result<PathBuf> {
     if let Some(xdg) = std::env::var_os("XDG_DATA_HOME") {
-        return Ok(PathBuf::from(xdg).join("wxml-lsp"));
+        let path = PathBuf::from(xdg);
+        if !path.is_absolute() {
+            return Err(DeliveryError::InvalidArgument(
+                "XDG_DATA_HOME must be an absolute path; pass --root to choose an install directory"
+                    .to_owned(),
+            ));
+        }
+        return Ok(path.join("wxml-lsp"));
     }
     let home = std::env::var_os("HOME").ok_or_else(|| {
         DeliveryError::InvalidArgument(
             "HOME is not set; pass --root to choose an install directory".to_owned(),
         )
     })?;
-    Ok(PathBuf::from(home).join(".local/share/wxml-lsp"))
+    let home = PathBuf::from(home);
+    if !home.is_absolute() {
+        return Err(DeliveryError::InvalidArgument(
+            "HOME must be an absolute path; pass --root to choose an install directory".to_owned(),
+        ));
+    }
+    Ok(home.join(".local/share/wxml-lsp"))
 }
 
 fn source(options: &Options) -> Result<Option<Source>> {
@@ -519,7 +636,12 @@ fn source(options: &Options) -> Result<Option<Source>> {
         (Some(_), Some(_)) => Err(DeliveryError::InvalidArgument(
             "use either --source or --from-dir, not both".to_owned(),
         )),
-        (Some(source), None) => Source::remote(source).map(Some),
+        (Some(source), None) => {
+            if options.offline {
+                eprintln!("warning: remote source is ignored in offline mode");
+            }
+            Source::remote(source).map(Some)
+        }
         (None, Some(directory)) => Source::local(directory).map(Some),
         (None, None) => {
             if options.offline {
@@ -549,5 +671,49 @@ fn scratch_dir() -> Result<PathBuf> {
         now_rfc3339().replace([':', '-'], "")
     ));
     std::fs::create_dir(&directory).map_err(|error| DeliveryError::io(&directory, error))?;
+    set_mode(&directory, 0o700)?;
     Ok(directory)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::unix::ffi::OsStringExt;
+
+    #[test]
+    fn parses_non_utf8_paths_and_boolean_flags() {
+        let raw_path = OsString::from_vec(b"/tmp/non-utf8-\xff".to_vec());
+        let options = Options::parse(
+            vec![OsString::from("--root"), raw_path.clone()].into_iter(),
+            &["root"],
+        )
+        .expect("non-UTF-8 path must be accepted");
+        assert_eq!(options.root, Some(PathBuf::from(raw_path)));
+
+        let options = Options::parse(
+            vec![OsString::from("--enable-download=false")].into_iter(),
+            &["enable-download"],
+        )
+        .expect("false is a valid boolean");
+        assert!(!options.enable_download);
+
+        assert!(
+            Options::parse(
+                vec![OsString::from("--offline=maybe")].into_iter(),
+                &["offline"]
+            )
+            .is_err()
+        );
+        assert!(
+            Options::parse(
+                vec![
+                    OsString::from("--enable-download=true"),
+                    OsString::from("--help=x")
+                ]
+                .into_iter(),
+                &["enable-download", "help"]
+            )
+            .is_err()
+        );
+    }
 }

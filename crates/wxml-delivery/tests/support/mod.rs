@@ -54,7 +54,13 @@ pub fn host_platform() -> String {
 
 /// Creates a fake staged package tree whose `wxml-lsp` prints `version`.
 pub fn fake_input(base: &Path, version: &str) -> PathBuf {
-    let root = base.join(format!("input-{version}"));
+    fake_input_with_binary(base, version, version)
+}
+
+/// Creates a fake staged package tree whose binary reports `binary_output`
+/// while the release/manifest version is `version`.
+pub fn fake_input_with_binary(base: &Path, version: &str, binary_output: &str) -> PathBuf {
+    let root = base.join(format!("input-{version}-{binary_output}"));
     std::fs::create_dir_all(root.join("bin/wxml-type-backend/node_modules/typescript")).unwrap();
     std::fs::create_dir_all(
         root.join("bin/wxml-type-backend/node_modules/miniprogram-api-typings"),
@@ -62,7 +68,7 @@ pub fn fake_input(base: &Path, version: &str) -> PathBuf {
     .unwrap();
     std::fs::create_dir_all(root.join("zed-extension/languages/wxml")).unwrap();
     let script = format!(
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'wxml-lsp {version}\\n'; exit 0; fi\nexit 0\n"
+        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'wxml-lsp {binary_output}\\n'; exit 0; fi\nexit 0\n"
     );
     std::fs::write(root.join("bin/wxml-lsp"), script).unwrap();
     set_mode(&root.join("bin/wxml-lsp"), 0o755).unwrap();
@@ -110,6 +116,53 @@ pub fn pack_with(output: &Path, version: &str, protocol: u64, platform: &str) ->
         release_version: version.to_owned(),
         platform: platform.to_owned(),
         protocol_version: protocol,
+        node_minimum: "24.0.0".to_owned(),
+        backend_version: "0.1.0".to_owned(),
+        zed_version: Some("0.0.1".to_owned()),
+        built_at: "2026-01-01T00:00:00Z".to_owned(),
+        mtime: 0,
+        force: true,
+        dry_run: false,
+    })
+    .expect("build package")
+}
+
+/// Builds a package with a binary that reports a different version.
+pub fn pack_broken_binary(output: &Path, version: &str, binary_output: &str) -> BuildReport {
+    let base = output.parent().expect("output parent");
+    let input = fake_input_with_binary(base, version, binary_output);
+    build_package(&BuildOptions {
+        input,
+        output: output.to_path_buf(),
+        release_version: version.to_owned(),
+        platform: host_platform(),
+        protocol_version: 2,
+        node_minimum: "24.0.0".to_owned(),
+        backend_version: "0.1.0".to_owned(),
+        zed_version: Some("0.0.1".to_owned()),
+        built_at: "2026-01-01T00:00:00Z".to_owned(),
+        mtime: 0,
+        force: true,
+        dry_run: false,
+    })
+    .expect("build package")
+}
+
+/// Builds a package with one extra payload file (same version re-release).
+pub fn pack_with_extra(output: &Path, version: &str, path: &str, bytes: &[u8]) -> BuildReport {
+    let base = output.parent().expect("output parent");
+    let input = fake_input(base, version);
+    let extra = input.join(path);
+    if let Some(parent) = extra.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(&extra, bytes).unwrap();
+    build_package(&BuildOptions {
+        input,
+        output: output.to_path_buf(),
+        release_version: version.to_owned(),
+        platform: host_platform(),
+        protocol_version: 2,
         node_minimum: "24.0.0".to_owned(),
         backend_version: "0.1.0".to_owned(),
         zed_version: Some("0.0.1".to_owned()),

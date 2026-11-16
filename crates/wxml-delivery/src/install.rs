@@ -9,7 +9,7 @@ use crate::error::{DeliveryError, Result};
 use crate::manifest::{ExpectedManifest, Manifest, set_mode};
 use crate::paths::{host_platform, validate_version};
 use crate::semver::compare_versions;
-use crate::verify::verify_tree;
+use crate::verify::{check_backend, check_binary, verify_tree};
 
 /// Environment variable that always wins over the installed server.
 pub const BINARY_ENV: &str = "WXML_LSP_BIN";
@@ -21,12 +21,40 @@ pub struct InstallRoot {
 }
 
 impl InstallRoot {
-    /// Creates or opens an installation root and canonicalizes it.
+    /// Opens an existing installation root without creating or chmodifying it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the path exists but is not a directory.
+    pub fn open(path: &Path) -> Result<Option<Self>> {
+        if !path.exists() {
+            return Ok(None);
+        }
+        let canonical =
+            std::fs::canonicalize(path).map_err(|error| DeliveryError::io(path, error))?;
+        if !canonical.is_dir() {
+            return Err(DeliveryError::InvalidArgument(
+                "install root is not a directory".to_owned(),
+            ));
+        }
+        Ok(Some(Self { path: canonical }))
+    }
+
+    /// Creates or opens an installation root for a mutating command.
+    ///
+    /// Existing directories are never chmodded. Only a root created by this
+    /// call receives the initial 0755 mode.
     ///
     /// # Errors
     ///
     /// Returns an error when the directory cannot be created or resolved.
     pub fn create(path: &Path) -> Result<Self> {
+        if path == Path::new("/") {
+            return Err(DeliveryError::InvalidArgument(
+                "refusing to use the filesystem root as an install root".to_owned(),
+            ));
+        }
+        let existed = path.exists();
         std::fs::create_dir_all(path).map_err(|error| DeliveryError::io(path, error))?;
         let canonical =
             std::fs::canonicalize(path).map_err(|error| DeliveryError::io(path, error))?;
@@ -35,7 +63,14 @@ impl InstallRoot {
                 "install root is not a directory".to_owned(),
             ));
         }
-        set_mode(&canonical, 0o755)?;
+        if is_forbidden_root(&canonical) {
+            return Err(DeliveryError::InvalidArgument(
+                "refusing to use HOME or XDG_DATA_HOME itself as an install root".to_owned(),
+            ));
+        }
+        if !existed {
+            set_mode(&canonical, 0o755)?;
+        }
         Ok(Self { path: canonical })
     }
 
@@ -70,8 +105,11 @@ impl InstallRoot {
     /// Returns an error when the directory cannot be created.
     pub fn new_temp_dir(&self, prefix: &str) -> Result<PathBuf> {
         let tmp = self.tmp_dir();
+        let existed = tmp.exists();
         std::fs::create_dir_all(&tmp).map_err(|error| DeliveryError::io(&tmp, error))?;
-        set_mode(&tmp, 0o700)?;
+        if !existed {
+            set_mode(&tmp, 0o700)?;
+        }
         for _ in 0..32 {
             let candidate = tmp.join(format!(
                 "{prefix}-{}-{}",
@@ -101,6 +139,7 @@ impl InstallRoot {
     /// Returns an error when the lock file cannot be opened or locked.
     pub fn lock(&self) -> Result<InstallLock> {
         let path = self.path.join(".lock");
+        let existed = path.exists();
         let file = OpenOptions::new()
             .read(true)
             .write(true)
@@ -108,7 +147,9 @@ impl InstallRoot {
             .truncate(false)
             .open(&path)
             .map_err(|error| DeliveryError::io(&path, error))?;
-        set_mode(&path, 0o600)?;
+        if !existed {
+            set_mode(&path, 0o600)?;
+        }
         FileExt::lock_exclusive(&file).map_err(|error| DeliveryError::io(&path, error))?;
         Ok(InstallLock { file })
     }
@@ -256,17 +297,28 @@ impl InstallRoot {
             },
         )?;
 
+        // Runtime checks happen on the staged tree, before it can become
+        // active. A bad binary or backend must not replace a working version.
+        check_binary(&canonical_tree, &manifest)?;
+        check_backend(&canonical_tree, &manifest)?;
+
         let versions = self.versions_dir();
+        let versions_existed = versions.exists();
         std::fs::create_dir_all(&versions).map_err(|error| DeliveryError::io(&versions, error))?;
-        set_mode(&versions, 0o755)?;
+        if !versions_existed {
+            set_mode(&versions, 0o755)?;
+        }
         let destination = versions.join(version);
-        let mut outcome = InstallOutcome::Installed;
         if destination.exists() {
-            if self.verify_installed(version).is_ok() {
-                let _ = std::fs::remove_dir_all(&canonical_tree);
-                outcome = InstallOutcome::AlreadyInstalled;
-                self.switch(version)?;
-                return Ok(outcome);
+            if let Ok(existing) = self.verify_installed(version) {
+                if same_payload(&existing, &manifest) {
+                    let _ = std::fs::remove_dir_all(&canonical_tree);
+                    self.switch(version)?;
+                    return Ok(InstallOutcome::AlreadyInstalled);
+                }
+                return Err(DeliveryError::InstallState(format!(
+                    "version {version} is already installed with different contents;                      remove that version or rebuild with a new version number"
+                )));
             }
             let broken = self.new_temp_dir("broken")?;
             let _ = std::fs::remove_dir(&broken);
@@ -278,12 +330,7 @@ impl InstallRoot {
             .map_err(|error| DeliveryError::io(&destination, error))?;
         set_mode(&destination, 0o755)?;
         self.switch(version)?;
-        if manifest.package_version != version {
-            return Err(DeliveryError::Integrity(
-                "installed manifest version differs from the directory".to_owned(),
-            ));
-        }
-        Ok(outcome)
+        Ok(InstallOutcome::Installed)
     }
 
     /// Atomically switches the `current` symlink to `version`.
@@ -324,6 +371,24 @@ impl InstallRoot {
             ))
         }
     }
+}
+
+fn is_forbidden_root(path: &Path) -> bool {
+    [std::env::var_os("HOME"), std::env::var_os("XDG_DATA_HOME")]
+        .into_iter()
+        .flatten()
+        .filter_map(|value| std::fs::canonicalize(PathBuf::from(value)).ok())
+        .any(|candidate| candidate == path)
+}
+
+/// Compares installed payloads without treating the build timestamp as content.
+fn same_payload(left: &Manifest, right: &Manifest) -> bool {
+    left.package_version == right.package_version
+        && left.platform == right.platform
+        && left.protocol_version == right.protocol_version
+        && left.node == right.node
+        && left.binaries == right.binaries
+        && left.files == right.files
 }
 
 /// Result of installing one version.
@@ -475,6 +540,93 @@ mod tests {
         let outside = base.join("tree");
         std::fs::create_dir_all(&outside).unwrap();
         assert!(root.install_tree(&outside, "0.1.0").is_err());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn missing_backend_dependency_is_rejected_before_activation() {
+        use crate::manifest::{
+            ArtifactKind, BinaryArtifact, FileEntry, Manifest, NodeInfo, PACKAGE_NAME,
+            SCHEMA_VERSION, atomic_write, sha256_file,
+        };
+        use crate::verify::checksums_for_tree;
+
+        let base = scratch("backend-order");
+        let root = InstallRoot::create(&base.join("root")).unwrap();
+        let tree = root.new_temp_dir("stage").unwrap();
+        std::fs::create_dir_all(tree.join("bin")).unwrap();
+        std::fs::create_dir_all(tree.join("bin/wxml-type-backend")).unwrap();
+        std::fs::write(
+            tree.join("bin/wxml-lsp"),
+            b"#!/bin/sh\nprintf 'wxml-lsp 0.1.0\\n'\n",
+        )
+        .unwrap();
+        set_mode(&tree.join("bin/wxml-lsp"), 0o755).unwrap();
+        std::fs::write(
+            tree.join("bin/wxml-type-backend/server.js"),
+            b"console.log('backend');\n",
+        )
+        .unwrap();
+        let binary_hash = sha256_file(&tree.join("bin/wxml-lsp")).unwrap();
+        let backend_hash = sha256_file(&tree.join("bin/wxml-type-backend/server.js")).unwrap();
+        let manifest = Manifest {
+            schema_version: SCHEMA_VERSION,
+            package: PACKAGE_NAME.to_owned(),
+            package_version: "0.1.0".to_owned(),
+            platform: host_platform().unwrap(),
+            protocol_version: 2,
+            node: NodeInfo {
+                minimum_version: "24.0.0".to_owned(),
+                backend_version: "0.1.0".to_owned(),
+            },
+            built_at: "2026-01-01T00:00:00Z".to_owned(),
+            binaries: vec![
+                BinaryArtifact {
+                    kind: ArtifactKind::Rust,
+                    name: "wxml-lsp".to_owned(),
+                    path: "bin/wxml-lsp".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    protocol_version: None,
+                    sha256: binary_hash,
+                },
+                BinaryArtifact {
+                    kind: ArtifactKind::NodeBackend,
+                    name: "node-backend".to_owned(),
+                    path: "bin/wxml-type-backend/server.js".to_owned(),
+                    version: "0.1.0".to_owned(),
+                    protocol_version: Some(2),
+                    sha256: backend_hash,
+                },
+            ],
+            files: vec![
+                FileEntry {
+                    path: "bin/wxml-lsp".to_owned(),
+                    sha256: sha256_file(&tree.join("bin/wxml-lsp")).unwrap(),
+                    size: std::fs::metadata(tree.join("bin/wxml-lsp")).unwrap().len(),
+                    mode: "0755".to_owned(),
+                },
+                FileEntry {
+                    path: "bin/wxml-type-backend/server.js".to_owned(),
+                    sha256: sha256_file(&tree.join("bin/wxml-type-backend/server.js")).unwrap(),
+                    size: std::fs::metadata(tree.join("bin/wxml-type-backend/server.js"))
+                        .unwrap()
+                        .len(),
+                    mode: "0644".to_owned(),
+                },
+            ],
+        };
+        atomic_write(
+            &tree.join("manifest.json"),
+            &manifest.to_json().unwrap(),
+            0o644,
+        )
+        .unwrap();
+        let checksums = checksums_for_tree(&tree, &manifest).unwrap();
+        atomic_write(&tree.join("SHA256SUMS"), &checksums, 0o644).unwrap();
+        let error = root.install_tree(&tree, "0.1.0").unwrap_err();
+        assert!(matches!(error, DeliveryError::Runtime(_)), "{error:?}");
+        assert!(root.current_version().unwrap().is_none());
+        assert!(!root.versions_dir().exists());
         let _ = std::fs::remove_dir_all(&base);
     }
 

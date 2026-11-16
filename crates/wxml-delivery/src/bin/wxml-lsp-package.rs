@@ -23,7 +23,7 @@ must contain:
 
 Options:
   --input DIR               staged package root (required)
-  --output DIR              artifact directory (required; never a repository path)
+  --output DIR              artifact directory (required; keep it outside the repository)
   --release-version V       package version (default: this build's version)
   --platform P              target platform (default: host)
   --protocol-version N      Rust/Node protocol version (default: 2)
@@ -52,9 +52,16 @@ fn main() -> ExitCode {
     }
 }
 
-#[allow(clippy::too_many_lines)]
 fn run() -> Result<(), String> {
-    let mut args = std::env::args().skip(1);
+    let args = std::env::args_os()
+        .skip(1)
+        .map(|argument| {
+            argument
+                .into_string()
+                .map_err(|_| "arguments must be valid UTF-8".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut args = args.into_iter();
     let Some(first) = args.next() else {
         eprintln!("{USAGE}");
         return Err("missing arguments".to_owned());
@@ -71,7 +78,19 @@ fn run() -> Result<(), String> {
         println!("{}", host_platform().map_err(|error| error.to_string())?);
         return Ok(());
     }
+    let Some(options) = parse_build_options(first, args)? else {
+        return Ok(());
+    };
+    let dry_run = options.dry_run;
+    let report = build_package(&options).map_err(|error| error.to_string())?;
+    print_report(&report, dry_run);
+    Ok(())
+}
 
+fn parse_build_options(
+    first: String,
+    mut args: impl Iterator<Item = String>,
+) -> Result<Option<BuildOptions>, String> {
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
     let mut release_version = env!("CARGO_PKG_VERSION").to_owned();
@@ -115,7 +134,7 @@ fn run() -> Result<(), String> {
             "--dry-run" => dry_run = true,
             "--help" | "-h" => {
                 println!("{USAGE}");
-                return Ok(());
+                return Ok(None);
             }
             other => return Err(format!("unexpected argument `{other}`\n\n{USAGE}")),
         }
@@ -128,8 +147,7 @@ fn run() -> Result<(), String> {
     let backend_version = backend_version.unwrap_or_else(|| release_version.clone());
     validate_version(&release_version).map_err(|error| error.to_string())?;
     validate_platform(&platform).map_err(|error| error.to_string())?;
-
-    let report = build_package(&BuildOptions {
+    Ok(Some(BuildOptions {
         input,
         output,
         release_version,
@@ -142,9 +160,10 @@ fn run() -> Result<(), String> {
         mtime,
         force,
         dry_run,
-    })
-    .map_err(|error| error.to_string())?;
+    }))
+}
 
+fn print_report(report: &wxml_delivery::package::BuildReport, dry_run: bool) {
     println!(
         "package: {} {} ({})",
         report.manifest.package, report.manifest.package_version, report.manifest.platform
@@ -157,17 +176,16 @@ fn run() -> Result<(), String> {
     );
     if dry_run {
         println!("dry-run: validated staged tree; no files written");
-    } else {
-        if let Some(directory) = report.release_dir.as_ref() {
-            println!("release directory: {}", directory.display());
-        }
-        if let Some(archive) = report.archive.as_ref() {
-            println!("archive: {}", archive.display());
-            println!("sha256: {}", report.sha256);
-            println!("size: {} bytes", report.size);
-        }
+        return;
     }
-    Ok(())
+    if let Some(directory) = report.release_dir.as_ref() {
+        println!("release directory: {}", directory.display());
+    }
+    if let Some(archive) = report.archive.as_ref() {
+        println!("archive: {}", archive.display());
+        println!("sha256: {}", report.sha256);
+        println!("size: {} bytes", report.size);
+    }
 }
 
 fn take_value(next: &mut impl FnMut() -> Option<String>, option: &str) -> Result<String, String> {

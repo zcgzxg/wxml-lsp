@@ -2,7 +2,8 @@
 
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::error::{DeliveryError, Result, display_name};
 use crate::manifest::{
@@ -179,6 +180,43 @@ fn check_mode(path: &Path, metadata: &std::fs::Metadata, expected: u32) -> Resul
     }
 }
 
+/// Runs a short version probe with a hard timeout.
+fn output_with_timeout(command: &mut Command, timeout: Duration) -> Result<Output> {
+    let mut child = command
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| {
+            DeliveryError::Runtime(format!("could not execute a version probe: {error}"))
+        })?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                return child.wait_with_output().map_err(|error| {
+                    DeliveryError::Runtime(format!("could not collect version output: {error}"))
+                });
+            }
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(DeliveryError::Runtime(
+                    "version probe timed out; the installed binary or Node.js did not exit"
+                        .to_owned(),
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(DeliveryError::Runtime(format!(
+                    "could not wait for version probe: {error}"
+                )));
+            }
+        }
+    }
+}
+
 /// Checks that the installed server reports the manifest version.
 ///
 /// # Errors
@@ -220,16 +258,14 @@ pub fn check_binary(root: &Path, manifest: &Manifest) -> Result<String> {
 /// Returns an error when the process cannot start, exits unsuccessfully or
 /// prints an unexpected version line.
 pub fn binary_version(binary: &Path) -> Result<String> {
-    let output = Command::new(binary)
-        .arg("--version")
-        .output()
-        .map_err(|error| {
-            DeliveryError::Runtime(format!(
-                "could not execute the installed wxml-lsp (`{}`); package may be corrupt",
-                display_name(binary)
-            ))
-            .with_source(error)
-        })?;
+    let mut command = Command::new(binary);
+    command.arg("--version");
+    let output = output_with_timeout(&mut command, Duration::from_secs(10)).map_err(|error| {
+        DeliveryError::Runtime(format!(
+            "could not execute the installed wxml-lsp (`{}`); package may be corrupt: {error}",
+            display_name(binary)
+        ))
+    })?;
     if !output.status.success() {
         return Err(DeliveryError::Runtime(
             "installed wxml-lsp --version exited unsuccessfully".to_owned(),
@@ -314,9 +350,11 @@ pub fn resolve_node() -> Result<PathBuf> {
 pub fn check_node(minimum: &str) -> Result<String> {
     let minimum_version = Semver::parse(minimum)?;
     let node = resolve_node()?;
-    let output = Command::new(&node).arg("--version").output().map_err(|_| {
+    let mut command = Command::new(&node);
+    command.arg("--version");
+    let output = output_with_timeout(&mut command, Duration::from_secs(10)).map_err(|_| {
         DeliveryError::Runtime(format!(
-            "Node.js was not found; install Node.js >= {minimum} or set WXML_NODE to an absolute path"
+            "Node.js was not found or did not respond; install Node.js >= {minimum} or set WXML_NODE to an absolute path"
         ))
     })?;
     if !output.status.success() {
@@ -376,19 +414,6 @@ pub fn verify_archive(
 pub fn checked_sha256(value: &str) -> Result<&str> {
     validate_sha256(value)?;
     Ok(value)
-}
-
-trait WithSource {
-    fn with_source(self, source: std::io::Error) -> Self;
-}
-
-impl WithSource for DeliveryError {
-    fn with_source(self, source: std::io::Error) -> Self {
-        match self {
-            Self::Runtime(message) => Self::Runtime(format!("{message}: {source}")),
-            other => other,
-        }
-    }
 }
 
 #[cfg(test)]

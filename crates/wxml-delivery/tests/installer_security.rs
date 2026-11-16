@@ -80,6 +80,24 @@ fn rejects_a_bad_archive_hash() {
 }
 
 #[test]
+fn rejects_false_inline_boolean_flags_without_network() {
+    let base = TempDir::new("sec-bool");
+    let output = base.path().join("release");
+    pack(&output, "0.1.0");
+    let server = FixtureServer::directory(&output);
+    let mut command = installer();
+    command.args([
+        "versions",
+        "--source",
+        &server.url(),
+        "--enable-download=false",
+    ]);
+    let result = run(&mut command);
+    assert_failure(&result, "download is disabled");
+    assert!(server.hits().is_empty());
+}
+
+#[test]
 fn rejects_an_index_with_an_unsupported_protocol_before_download() {
     let base = TempDir::new("sec-protocol");
     let output = base.path().join("release");

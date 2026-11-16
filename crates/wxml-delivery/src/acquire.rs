@@ -278,7 +278,12 @@ fn check_release_consistency(release: &Release, manifest: &Manifest) -> Result<(
 /// # Errors
 ///
 /// See [`Source::read_index`].
-pub fn read_versions(source: &Source, _offline: bool) -> Result<Index> {
+pub fn read_versions(source: &Source, offline: bool) -> Result<Index> {
+    if offline && matches!(source, Source::Remote(_)) {
+        return Err(DeliveryError::InvalidArgument(
+            "offline version listing cannot query a remote source".to_owned(),
+        ));
+    }
     source.read_index()
 }
 

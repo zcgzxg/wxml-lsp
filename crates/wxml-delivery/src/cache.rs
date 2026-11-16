@@ -13,7 +13,7 @@ use crate::manifest::{
     PACKAGE_NAME, Release, SCHEMA_VERSION, SUPPORTED_PROTOCOL_VERSIONS, read_limited, sha256_file,
 };
 use crate::paths::{validate_platform, validate_sha256, validate_version};
-use crate::semver::{Semver, compare_versions};
+use crate::semver::{Semver, compare_versions, is_prerelease};
 
 /// Maximum accepted cache metadata file.
 const MAX_ENTRY_BYTES: u64 = 64 * 1024;
@@ -159,8 +159,12 @@ impl CacheEntry {
 ///
 /// Returns an error when the directory cannot be created.
 pub fn ensure_cache_root(root: &Path) -> Result<()> {
+    let existed = root.exists();
     std::fs::create_dir_all(root).map_err(|error| DeliveryError::io(root, error))?;
-    crate::manifest::set_mode(root, 0o755)
+    if !existed {
+        crate::manifest::set_mode(root, 0o755)?;
+    }
+    Ok(())
 }
 
 /// Stores a fully verified archive in the cache atomically.
@@ -331,10 +335,13 @@ pub fn find_version(
 /// Returns an error when the cache cannot be read.
 pub fn latest(cache_root: &Path, platform: &str) -> Result<Option<CacheEntry>> {
     let entries = list_entries(cache_root, platform)?;
-    Ok(entries.into_iter().max_by(|left, right| {
-        compare_versions(&left.version, &right.version)
-            .then_with(|| left.verified_at.cmp(&right.verified_at))
-    }))
+    Ok(entries
+        .into_iter()
+        .filter(|entry| !is_prerelease(&entry.version))
+        .max_by(|left, right| {
+            compare_versions(&left.version, &right.version)
+                .then_with(|| left.verified_at.cmp(&right.verified_at))
+        }))
 }
 
 /// Removes one cache entry under the caller's install lock.

@@ -77,24 +77,8 @@ impl BuildReport {
 /// Returns an error for missing required artifacts, unsafe input files,
 /// unsupported modes, oversized payloads, existing output without `force`, or
 /// a post-build verification failure.
-#[allow(clippy::too_many_lines)]
 pub fn build_package(options: &BuildOptions) -> Result<BuildReport> {
-    validate_version(&options.release_version)?;
-    validate_platform(&options.platform)?;
-    if !crate::manifest::SUPPORTED_PROTOCOL_VERSIONS.contains(&options.protocol_version) {
-        return Err(DeliveryError::InvalidArgument(format!(
-            "protocol {} is not supported by this packager",
-            options.protocol_version
-        )));
-    }
-    crate::semver::Semver::parse(&options.node_minimum)?;
-    validate_version(&options.backend_version)?;
-    if options.built_at.is_empty() || options.built_at.len() > 64 {
-        return Err(DeliveryError::InvalidArgument(
-            "builtAt must be 1-64 bytes".to_owned(),
-        ));
-    }
-
+    validate_build_options(options)?;
     let input = std::fs::canonicalize(&options.input)
         .map_err(|error| DeliveryError::io(&options.input, error))?;
     if !input.is_dir() {
@@ -116,16 +100,67 @@ pub fn build_package(options: &BuildOptions) -> Result<BuildReport> {
         });
     }
 
+    let (output, release_dir) = prepare_release_dir(&input, options)?;
+    write_release_tree(&release_dir, &files, &manifest, options)?;
+    let (archive_path, sha256, size) = write_archive(&output, &release_dir, &manifest, options)?;
+
+    let verify_scratch = output.join(format!(
+        ".verify-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos())
+    ));
+    let _ = std::fs::remove_dir_all(&verify_scratch);
+    verify_archive(&archive_path, &verify_scratch, expected_for(options))?;
+    record_release(&output, &manifest, &sha256, size, options.force)?;
+
+    Ok(BuildReport {
+        manifest,
+        release_dir: Some(release_dir),
+        archive: Some(archive_path),
+        sha256,
+        size,
+    })
+}
+
+fn validate_build_options(options: &BuildOptions) -> Result<()> {
+    validate_version(&options.release_version)?;
+    validate_platform(&options.platform)?;
+    if !crate::manifest::SUPPORTED_PROTOCOL_VERSIONS.contains(&options.protocol_version) {
+        return Err(DeliveryError::InvalidArgument(format!(
+            "protocol {} is not supported by this packager",
+            options.protocol_version
+        )));
+    }
+    crate::semver::Semver::parse(&options.node_minimum)?;
+    validate_version(&options.backend_version)?;
+    if options.built_at.is_empty() || options.built_at.len() > 64 {
+        return Err(DeliveryError::InvalidArgument(
+            "builtAt must be 1-64 bytes".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn expected_for(options: &BuildOptions) -> ExpectedManifest<'_> {
+    ExpectedManifest {
+        version: Some(&options.release_version),
+        platform: Some(&options.platform),
+        protocol_version: Some(options.protocol_version),
+    }
+}
+
+fn prepare_release_dir(input: &Path, options: &BuildOptions) -> Result<(PathBuf, PathBuf)> {
     std::fs::create_dir_all(&options.output)
         .map_err(|error| DeliveryError::io(&options.output, error))?;
     let output = std::fs::canonicalize(&options.output)
         .map_err(|error| DeliveryError::io(&options.output, error))?;
-    if output.starts_with(&input) || input.starts_with(&output) {
+    if output.starts_with(input) || input.starts_with(&output) {
         return Err(DeliveryError::InvalidArgument(
             "input and output directories must not contain each other".to_owned(),
         ));
     }
-
     let release_name = format!(
         "{PACKAGE_NAME}-{}-{}",
         options.release_version, options.platform
@@ -149,7 +184,16 @@ pub fn build_package(options: &BuildOptions) -> Result<BuildReport> {
     }
     std::fs::create_dir(&release_dir).map_err(|error| DeliveryError::io(&release_dir, error))?;
     set_mode(&release_dir, 0o755)?;
-    for file in &files {
+    Ok((output, release_dir))
+}
+
+fn write_release_tree(
+    release_dir: &Path,
+    files: &[SourceFile],
+    manifest: &Manifest,
+    options: &BuildOptions,
+) -> Result<()> {
+    for file in files {
         let destination = release_dir.join(&file.entry.path);
         if let Some(parent) = destination.parent() {
             std::fs::create_dir_all(parent).map_err(|error| DeliveryError::io(parent, error))?;
@@ -161,17 +205,18 @@ pub fn build_package(options: &BuildOptions) -> Result<BuildReport> {
         &manifest.to_json()?,
         0o644,
     )?;
-    let checksums = checksums_for_tree(&release_dir, &manifest)?;
+    let checksums = checksums_for_tree(release_dir, manifest)?;
     atomic_write(&release_dir.join("SHA256SUMS"), &checksums, 0o644)?;
-    verify_tree(
-        &release_dir,
-        ExpectedManifest {
-            version: Some(&options.release_version),
-            platform: Some(&options.platform),
-            protocol_version: Some(options.protocol_version),
-        },
-    )?;
+    verify_tree(release_dir, expected_for(options))?;
+    Ok(())
+}
 
+fn write_archive(
+    output: &Path,
+    release_dir: &Path,
+    manifest: &Manifest,
+    options: &BuildOptions,
+) -> Result<(PathBuf, String, u64)> {
     let archive_path = output.join(archive_name(&options.release_version, &options.platform)?);
     if archive_path.exists() {
         if !options.force {
@@ -183,24 +228,18 @@ pub fn build_package(options: &BuildOptions) -> Result<BuildReport> {
             .map_err(|error| DeliveryError::io(&archive_path, error))?;
     }
     let mut archive_entries = manifest.files.clone();
-    archive_entries.push(FileEntry {
-        path: "manifest.json".to_owned(),
-        sha256: sha256_file(&release_dir.join("manifest.json"))?,
-        size: std::fs::metadata(release_dir.join("manifest.json"))
-            .map_err(|error| DeliveryError::io(&release_dir.join("manifest.json"), error))?
-            .len(),
-        mode: "0644".to_owned(),
-    });
-    archive_entries.push(FileEntry {
-        path: "SHA256SUMS".to_owned(),
-        sha256: sha256_file(&release_dir.join("SHA256SUMS"))?,
-        size: std::fs::metadata(release_dir.join("SHA256SUMS"))
-            .map_err(|error| DeliveryError::io(&release_dir.join("SHA256SUMS"), error))?
-            .len(),
-        mode: "0644".to_owned(),
-    });
+    for name in ["manifest.json", "SHA256SUMS"] {
+        let path = release_dir.join(name);
+        let metadata = std::fs::metadata(&path).map_err(|error| DeliveryError::io(&path, error))?;
+        archive_entries.push(FileEntry {
+            path: name.to_owned(),
+            sha256: sha256_file(&path)?,
+            size: metadata.len(),
+            mode: "0644".to_owned(),
+        });
+    }
     archive_entries.sort_by(|left, right| left.path.cmp(&right.path));
-    create_tar_gz(&release_dir, &archive_path, &archive_entries, options.mtime)?;
+    create_tar_gz(release_dir, &archive_path, &archive_entries, options.mtime)?;
     let sha256 = sha256_file(&archive_path)?;
     let size = std::fs::metadata(&archive_path)
         .map_err(|error| DeliveryError::io(&archive_path, error))?
@@ -210,41 +249,24 @@ pub fn build_package(options: &BuildOptions) -> Result<BuildReport> {
             "generated archive exceeds the size limit".to_owned(),
         ));
     }
-    atomic_write(
-        &PathBuf::from(format!("{}.sha256", archive_path.display())),
-        format!(
-            "{sha256}  {}\n",
-            archive_path.file_name().map_or_else(
-                || "archive".to_owned(),
-                |name| name.to_string_lossy().into_owned()
-            )
-        )
-        .as_bytes(),
-        0o644,
-    )?;
+    let sidecar = PathBuf::from(format!("{}.sha256", archive_path.display()));
+    let name = archive_path.file_name().map_or_else(
+        || "archive".to_owned(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    atomic_write(&sidecar, format!("{sha256}  {name}\n").as_bytes(), 0o644)?;
+    Ok((archive_path, sha256, size))
+}
 
-    update_index(&output, &manifest, &sha256, size, options.force)?;
-    update_archive_checksums(&output)?;
-
-    let verify_scratch = output.join(format!(".verify-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&verify_scratch);
-    verify_archive(
-        &archive_path,
-        &verify_scratch,
-        ExpectedManifest {
-            version: Some(&options.release_version),
-            platform: Some(&options.platform),
-            protocol_version: Some(options.protocol_version),
-        },
-    )?;
-
-    Ok(BuildReport {
-        manifest,
-        release_dir: Some(release_dir),
-        archive: Some(archive_path),
-        sha256,
-        size,
-    })
+fn record_release(
+    output: &Path,
+    manifest: &Manifest,
+    sha256: &str,
+    size: u64,
+    force: bool,
+) -> Result<()> {
+    update_index(output, manifest, sha256, size, force)?;
+    update_archive_checksums(output)
 }
 
 struct SourceFile {

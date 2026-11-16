@@ -7,12 +7,13 @@
 
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
-use tar::{Archive, Builder, EntryType, Header};
+use tar::{Archive, Builder, Entry, EntryType, Header};
 
 use crate::error::{DeliveryError, Result};
 use crate::manifest::{
@@ -111,6 +112,227 @@ pub fn create_tar_gz(root: &Path, archive: &Path, entries: &[FileEntry], mtime: 
     std::fs::rename(&temporary, archive).map_err(|error| DeliveryError::io(archive, error))
 }
 
+/// Upper bound for one GNU/PAX extension header (long name, link or PAX
+/// record). Real paths are tiny; a large value here is an archive attack.
+const MAX_EXTENSION_BYTES: u64 = 64 * 1024;
+
+/// Hard budget for decompressed tar bytes, including headers and padding.
+const MAX_DECOMPRESSED_BYTES: u64 = MAX_EXTRACTED_BYTES + 64 * 1024 * 1024;
+
+const TAR_BLOCK: usize = 512;
+
+/// A `Read` adapter that fails once the decompressed budget is exhausted.
+struct BoundedReader<R> {
+    inner: R,
+    remaining: u64,
+}
+
+impl<R> BoundedReader<R> {
+    const fn new(inner: R, remaining: u64) -> Self {
+        Self { inner, remaining }
+    }
+}
+
+impl<R: Read> Read for BoundedReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Err(std::io::Error::other("decompressed size limit exceeded"));
+        }
+        let maximum = buffer
+            .len()
+            .min(usize::try_from(self.remaining).unwrap_or(usize::MAX));
+        let read = self.inner.read(&mut buffer[..maximum])?;
+        self.remaining -= u64::try_from(read).unwrap_or(0);
+        Ok(read)
+    }
+}
+
+/// Scans tar headers without materialising extension payloads.
+///
+/// `tar-rs` reads GNU long-name and PAX extension headers into a `Vec` before
+/// returning an entry. A crafted archive can therefore claim a multi-gigabyte
+/// extension header and exhaust memory before our entry loop runs. This
+/// streaming pre-scan rejects oversized extension headers and conflicting PAX
+/// sizes before the real extractor is allowed to see them.
+fn prescan_tar(mut reader: impl Read) -> Result<()> {
+    let mut total_files = 0_usize;
+    let mut total_bytes = 0_u64;
+    let mut pending_pax_size = None;
+
+    loop {
+        let Some(header) = read_header(&mut reader)? else {
+            return Ok(());
+        };
+        if header.iter().all(|byte| *byte == 0) {
+            return Ok(());
+        }
+        let kind = header[156];
+        let raw_size = parse_tar_size(&header[124..136])?;
+        let is_extension = matches!(kind, b'L' | b'K' | b'x' | b'g');
+        if is_extension && raw_size > MAX_EXTENSION_BYTES {
+            return Err(DeliveryError::SizeLimit(format!(
+                "tar extension header declares {raw_size} bytes"
+            )));
+        }
+        if kind == b'x' {
+            let content = read_exact_vec(&mut reader, raw_size)?;
+            pending_pax_size = parse_pax_size(&content)?;
+            skip_padding(&mut reader, raw_size)?;
+            continue;
+        }
+        if is_extension {
+            skip_padded(&mut reader, raw_size)?;
+            continue;
+        }
+
+        total_files += 1;
+        if total_files > MAX_FILES.saturating_mul(2) {
+            return Err(DeliveryError::SizeLimit(
+                "archive contains too many entries".to_owned(),
+            ));
+        }
+        let effective_size = match pending_pax_size.take() {
+            Some(pax_size) if pax_size != raw_size => {
+                return Err(DeliveryError::UnsafeArchive(
+                    "PAX size overrides the tar header size".to_owned(),
+                ));
+            }
+            Some(pax_size) => pax_size,
+            None => raw_size,
+        };
+        if effective_size > MAX_FILE_BYTES {
+            return Err(DeliveryError::SizeLimit(format!(
+                "entry declares {effective_size} bytes, above the per-file limit"
+            )));
+        }
+        total_bytes = total_bytes
+            .checked_add(effective_size)
+            .ok_or_else(|| DeliveryError::SizeLimit("archive sizes overflow".to_owned()))?;
+        if total_bytes > MAX_EXTRACTED_BYTES {
+            return Err(DeliveryError::SizeLimit(
+                "archive exceeds the total extracted-size limit".to_owned(),
+            ));
+        }
+        skip_padded(&mut reader, effective_size)?;
+    }
+}
+
+fn read_header(reader: &mut impl Read) -> Result<Option<[u8; TAR_BLOCK]>> {
+    let mut header = [0_u8; TAR_BLOCK];
+    let mut read = 0;
+    while read < TAR_BLOCK {
+        match reader.read(&mut header[read..]) {
+            Ok(0) if read == 0 => return Ok(None),
+            Ok(0) => {
+                return Err(DeliveryError::Integrity(
+                    "tar header was truncated".to_owned(),
+                ));
+            }
+            Ok(count) => read += count,
+            Err(error) => return Err(DeliveryError::io_label("archive", error)),
+        }
+    }
+    Ok(Some(header))
+}
+
+fn read_exact_vec(reader: &mut impl Read, size: u64) -> Result<Vec<u8>> {
+    let size = usize::try_from(size)
+        .map_err(|_| DeliveryError::SizeLimit("extension header is too large".to_owned()))?;
+    let mut bytes = vec![0_u8; size];
+    reader
+        .read_exact(&mut bytes)
+        .map_err(|error| DeliveryError::io_label("archive", error))?;
+    Ok(bytes)
+}
+
+fn skip_padding(reader: &mut impl Read, size: u64) -> Result<()> {
+    let padding = (u64::try_from(TAR_BLOCK).unwrap_or(512)
+        - size % u64::try_from(TAR_BLOCK).unwrap_or(512))
+        % u64::try_from(TAR_BLOCK).unwrap_or(512);
+    let mut buffer = [0_u8; TAR_BLOCK];
+    let padding = usize::try_from(padding).unwrap_or(0);
+    reader
+        .read_exact(&mut buffer[..padding])
+        .map_err(|error| DeliveryError::io_label("archive", error))
+}
+
+fn skip_padded(reader: &mut impl Read, size: u64) -> Result<()> {
+    let padded = size
+        .checked_add(u64::try_from(TAR_BLOCK - 1).unwrap_or(511))
+        .ok_or_else(|| DeliveryError::SizeLimit("tar size overflow".to_owned()))?
+        / u64::try_from(TAR_BLOCK).unwrap_or(512)
+        * u64::try_from(TAR_BLOCK).unwrap_or(512);
+    let mut remaining = padded;
+    let mut buffer = [0_u8; 8192];
+    while remaining > 0 {
+        let count = usize::try_from(remaining.min(buffer.len() as u64)).unwrap_or(buffer.len());
+        reader
+            .read_exact(&mut buffer[..count])
+            .map_err(|error| DeliveryError::io_label("archive", error))?;
+        remaining -= u64::try_from(count).unwrap_or(0);
+    }
+    Ok(())
+}
+
+fn parse_tar_size(field: &[u8]) -> Result<u64> {
+    if field.first().is_some_and(|byte| byte & 0x80 != 0) {
+        return Err(DeliveryError::UnsafeArchive(
+            "base-256 tar size fields are not accepted".to_owned(),
+        ));
+    }
+    let text = field
+        .iter()
+        .copied()
+        .take_while(|byte| *byte != 0 && *byte != b' ')
+        .collect::<Vec<_>>();
+    if text.is_empty() {
+        return Ok(0);
+    }
+    let text = std::str::from_utf8(&text)
+        .map_err(|_| DeliveryError::UnsafeArchive("tar size field is not ASCII".to_owned()))?;
+    u64::from_str_radix(text, 8)
+        .map_err(|_| DeliveryError::UnsafeArchive("tar size field is malformed".to_owned()))
+}
+
+fn parse_pax_size(content: &[u8]) -> Result<Option<u64>> {
+    let text = std::str::from_utf8(content)
+        .map_err(|_| DeliveryError::UnsafeArchive("PAX header is not UTF-8".to_owned()))?;
+    let mut rest = text;
+    while !rest.is_empty() {
+        let mut split = rest.splitn(2, ' ');
+        let Some(length_text) = split.next() else {
+            break;
+        };
+        let Some(record) = split.next() else {
+            return Err(DeliveryError::UnsafeArchive(
+                "PAX record has no payload".to_owned(),
+            ));
+        };
+        let length = length_text
+            .parse::<usize>()
+            .map_err(|_| DeliveryError::UnsafeArchive("PAX length is malformed".to_owned()))?;
+        if length == 0 || length > rest.len() || length_text.len() + 1 > length {
+            return Err(DeliveryError::UnsafeArchive(
+                "PAX record length is inconsistent".to_owned(),
+            ));
+        }
+        let end = length;
+        let record_without_length = &rest[length_text.len() + 1..end];
+        let record_without_length = record_without_length
+            .strip_suffix('\n')
+            .ok_or_else(|| DeliveryError::UnsafeArchive("PAX record has no newline".to_owned()))?;
+        if let Some(value) = record_without_length.strip_prefix("size=") {
+            let size = value.parse::<u64>().map_err(|_| {
+                DeliveryError::UnsafeArchive("PAX size value is malformed".to_owned())
+            })?;
+            return Ok(Some(size));
+        }
+        rest = &rest[end..];
+        let _ = record;
+    }
+    Ok(None)
+}
+
 /// Extracts a gzip-compressed tar archive into a new directory.
 ///
 /// The destination must not exist. On failure the partial directory is
@@ -121,7 +343,13 @@ pub fn create_tar_gz(root: &Path, archive: &Path, entries: &[FileEntry], mtime: 
 /// Returns an error for oversized archives/files, unsafe paths, links, device
 /// entries, duplicate paths, unsupported modes or truncated data.
 pub fn extract_tar_gz(archive: &Path, destination: &Path) -> Result<ExtractReport> {
-    let metadata = std::fs::metadata(archive).map_err(|error| DeliveryError::io(archive, error))?;
+    let metadata =
+        std::fs::symlink_metadata(archive).map_err(|error| DeliveryError::io(archive, error))?;
+    if !metadata.file_type().is_file() {
+        return Err(DeliveryError::UnsafeArchive(
+            "archive path is not a regular file".to_owned(),
+        ));
+    }
     if metadata.len() > MAX_ARCHIVE_BYTES {
         return Err(DeliveryError::SizeLimit(format!(
             "archive exceeds the {MAX_ARCHIVE_BYTES} byte limit"
@@ -145,9 +373,15 @@ pub fn extract_tar_gz(archive: &Path, destination: &Path) -> Result<ExtractRepor
 }
 
 fn extract_inner(archive: &Path, destination: &Path) -> Result<ExtractReport> {
-    let file = File::open(archive).map_err(|error| DeliveryError::io(archive, error))?;
+    let mut file = File::open(archive).map_err(|error| DeliveryError::io(archive, error))?;
+    prescan_tar(BoundedReader::new(
+        GzDecoder::new(&mut file),
+        MAX_DECOMPRESSED_BYTES,
+    ))?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|error| DeliveryError::io(archive, error))?;
     let decoder = GzDecoder::new(file);
-    let mut tar = Archive::new(decoder);
+    let mut tar = Archive::new(BoundedReader::new(decoder, MAX_DECOMPRESSED_BYTES));
     let mut files = BTreeSet::new();
     let mut directories = BTreeSet::new();
     let mut total_bytes = 0_u64;
@@ -164,73 +398,14 @@ fn extract_inner(archive: &Path, destination: &Path) -> Result<ExtractReport> {
             ));
         }
         let mut entry = entry.map_err(|error| DeliveryError::io(archive, error))?;
-        let header = entry.header();
-        let kind = header.entry_type();
-        let raw_path = entry.path_bytes().into_owned();
-        let path_text = std::str::from_utf8(&raw_path).map_err(|_| {
-            DeliveryError::UnsafeArchive("archive path is not valid UTF-8".to_owned())
-        })?;
-        if path_text.len() > MAX_PATH_BYTES {
-            return Err(DeliveryError::SizeLimit(
-                "archive path exceeds the path-length limit".to_owned(),
-            ));
-        }
-        validate_relative_path(path_text, true)?;
-        let relative = PathBuf::from(path_text);
-
-        if kind.is_dir() {
-            check_entry_mode(header.mode().unwrap_or(0o755), true, path_text)?;
-            ensure_directory(destination, &relative, &mut directories, &files)?;
-            continue;
-        }
-        if !kind.is_file() {
-            return Err(DeliveryError::UnsafeArchive(format!(
-                "entry `{path_text}` is not a regular file or directory"
-            )));
-        }
-        let size = header
-            .size()
-            .map_err(|error| DeliveryError::io(archive, error))?;
-        if size > MAX_FILE_BYTES {
-            return Err(DeliveryError::SizeLimit(format!(
-                "entry `{path_text}` exceeds the per-file limit"
-            )));
-        }
-        total_bytes = total_bytes
-            .checked_add(size)
-            .ok_or_else(|| DeliveryError::SizeLimit("archive sizes overflow".to_owned()))?;
-        if total_bytes > MAX_EXTRACTED_BYTES {
-            return Err(DeliveryError::SizeLimit(
-                "archive exceeds the total extracted-size limit".to_owned(),
-            ));
-        }
-        if !files.insert(path_text.to_owned()) {
-            return Err(DeliveryError::UnsafeArchive(format!(
-                "duplicate archive path `{path_text}`"
-            )));
-        }
-        if directories.contains(path_text) {
-            return Err(DeliveryError::UnsafeArchive(format!(
-                "archive path `{path_text}` is both a file and a directory"
-            )));
-        }
-        check_entry_mode(header.mode().unwrap_or(0o644), false, path_text)?;
-        let executable = header.mode().is_ok_and(|mode| mode & 0o111 != 0);
-        let destination_path = destination.join(&relative);
-        ensure_parents(destination, &relative, &files)?;
-        let mut output = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&destination_path)
-            .map_err(|error| DeliveryError::io(&destination_path, error))?;
-        let written = std::io::copy(&mut entry, &mut output)
-            .map_err(|error| DeliveryError::io(&destination_path, error))?;
-        if written != size {
-            return Err(DeliveryError::Integrity(format!(
-                "entry `{path_text}` was truncated"
-            )));
-        }
-        set_mode(&destination_path, if executable { 0o755 } else { 0o644 })?;
+        process_entry(
+            &mut entry,
+            archive,
+            destination,
+            &mut files,
+            &mut directories,
+            &mut total_bytes,
+        )?;
     }
 
     let mut files: Vec<ExtractedFile> = files
@@ -243,6 +418,96 @@ fn extract_inner(archive: &Path, destination: &Path) -> Result<ExtractReport> {
         file.size = metadata.len();
     }
     Ok(ExtractReport { files, total_bytes })
+}
+
+fn process_entry<R: Read>(
+    entry: &mut Entry<'_, R>,
+    archive: &Path,
+    destination: &Path,
+    files: &mut BTreeSet<String>,
+    directories: &mut BTreeSet<String>,
+    total_bytes: &mut u64,
+) -> Result<()> {
+    let header = entry.header();
+    let kind = header.entry_type();
+    let raw_path = entry.path_bytes().into_owned();
+    let mut path_text = std::str::from_utf8(&raw_path)
+        .map_err(|_| DeliveryError::UnsafeArchive("archive path is not valid UTF-8".to_owned()))?
+        .to_owned();
+    if kind.is_dir() {
+        if let Some(stripped) = path_text.strip_suffix('/') {
+            path_text = stripped.to_owned();
+        }
+    }
+    if path_text.len() > MAX_PATH_BYTES {
+        return Err(DeliveryError::SizeLimit(
+            "archive path exceeds the path-length limit".to_owned(),
+        ));
+    }
+    validate_relative_path(&path_text, true)?;
+    let relative = PathBuf::from(&path_text);
+    let mode = header
+        .mode()
+        .map_err(|error| DeliveryError::io(archive, error))?;
+    let header_size = header
+        .size()
+        .map_err(|error| DeliveryError::io(archive, error))?;
+    let size = entry.size();
+    if size != header_size {
+        return Err(DeliveryError::UnsafeArchive(format!(
+            "entry `{path_text}` has conflicting sizes"
+        )));
+    }
+
+    if kind.is_dir() {
+        check_entry_mode(mode, true, &path_text)?;
+        return ensure_directory(destination, &relative, directories, files);
+    }
+    if !kind.is_file() {
+        return Err(DeliveryError::UnsafeArchive(format!(
+            "entry `{path_text}` is not a regular file or directory"
+        )));
+    }
+    if size > MAX_FILE_BYTES {
+        return Err(DeliveryError::SizeLimit(format!(
+            "entry `{path_text}` exceeds the per-file limit"
+        )));
+    }
+    *total_bytes = total_bytes
+        .checked_add(size)
+        .ok_or_else(|| DeliveryError::SizeLimit("archive sizes overflow".to_owned()))?;
+    if *total_bytes > MAX_EXTRACTED_BYTES {
+        return Err(DeliveryError::SizeLimit(
+            "archive exceeds the total extracted-size limit".to_owned(),
+        ));
+    }
+    if !files.insert(path_text.clone()) {
+        return Err(DeliveryError::UnsafeArchive(format!(
+            "duplicate archive path `{path_text}`"
+        )));
+    }
+    if directories.contains(&path_text) {
+        return Err(DeliveryError::UnsafeArchive(format!(
+            "archive path `{path_text}` is both a file and a directory"
+        )));
+    }
+    check_entry_mode(mode, false, &path_text)?;
+    let executable = mode & 0o111 != 0;
+    let destination_path = destination.join(&relative);
+    ensure_parents(destination, &relative, files)?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&destination_path)
+        .map_err(|error| DeliveryError::io(&destination_path, error))?;
+    let written = std::io::copy(&mut entry.by_ref().take(MAX_FILE_BYTES + 1), &mut output)
+        .map_err(|error| DeliveryError::io(&destination_path, error))?;
+    if written > MAX_FILE_BYTES || written != size {
+        return Err(DeliveryError::Integrity(format!(
+            "entry `{path_text}` was truncated or oversized"
+        )));
+    }
+    set_mode(&destination_path, if executable { 0o755 } else { 0o644 })
 }
 
 fn check_entry_mode(mode: u32, directory: bool, path: &str) -> Result<()> {
@@ -357,6 +622,7 @@ mod tests {
         Dir(&'static str),
         File(&'static str, u32, &'static [u8]),
         Symlink(&'static str, &'static str),
+        Fifo(&'static str),
         Hardlink(&'static str, &'static str),
         Char(&'static str),
     }
@@ -385,6 +651,15 @@ mod tests {
                     header.set_path(name).unwrap();
                     header.set_cksum();
                     builder.append(&header, Cursor::new(body)).unwrap();
+                }
+                Spec::Fifo(name) => {
+                    header.set_entry_type(EntryType::Fifo);
+                    header.set_size(0);
+                    header.set_mode(0o644);
+                    header.set_mtime(0);
+                    header.set_path(name).unwrap();
+                    header.set_cksum();
+                    builder.append(&header, Cursor::new(Vec::new())).unwrap();
                 }
                 Spec::Symlink(name, target) => {
                     header.set_entry_type(EntryType::Symlink);
@@ -426,7 +701,7 @@ mod tests {
         build_raw_archive_with_size(path, name, 0);
     }
 
-    fn build_raw_archive_with_size(path: &Path, name: &str, size: u64) {
+    fn raw_header(name: &str, size: u64, typeflag: u8) -> [u8; 512] {
         let mut block = [0_u8; 512];
         block[..name.len()].copy_from_slice(name.as_bytes());
         block[100..108].copy_from_slice(b"0000644\0");
@@ -436,17 +711,79 @@ mod tests {
         block[124..136].copy_from_slice(size_field.as_bytes());
         block[136..148].copy_from_slice(b"00000000000\0");
         block[148..156].fill(b' ');
-        block[156] = b'0';
+        block[156] = typeflag;
         block[257..263].copy_from_slice(b"ustar\0");
         block[263..265].copy_from_slice(b"00");
         let sum: u32 = block.iter().map(|byte| u32::from(*byte)).sum();
         let checksum = format!("{sum:06o}\0 ");
         block[148..156].copy_from_slice(checksum.as_bytes());
+        block
+    }
+
+    fn build_raw_archive_with_size(path: &Path, name: &str, size: u64) {
         let file = File::create(path).unwrap();
         let mut encoder = GzEncoder::new(file, Compression::default());
-        encoder.write_all(&block).unwrap();
+        encoder.write_all(&raw_header(name, size, b'0')).unwrap();
         encoder.write_all(&[0_u8; 1024]).unwrap();
         encoder.finish().unwrap();
+    }
+
+    fn pax_record(key: &str, value: &str) -> String {
+        let payload = format!(" {key}={value}\n");
+        let mut length = payload.len() + 1;
+        loop {
+            let record = format!("{length}{payload}");
+            if record.len() == length {
+                return record;
+            }
+            length = record.len();
+        }
+    }
+
+    #[test]
+    fn rejects_pax_size_overrides_before_writing_data() {
+        let base = scratch("pax-size");
+        std::fs::create_dir_all(&base).unwrap();
+        let archive = base.join("a.tar.gz");
+        let content = pax_record("size", &(MAX_FILE_BYTES + 1).to_string());
+        let file = File::create(&archive).unwrap();
+        let mut encoder = GzEncoder::new(file, Compression::default());
+        encoder
+            .write_all(&raw_header("pax", content.len() as u64, b'x'))
+            .unwrap();
+        encoder.write_all(content.as_bytes()).unwrap();
+        let padding = (TAR_BLOCK - content.len() % TAR_BLOCK) % TAR_BLOCK;
+        encoder.write_all(&vec![0_u8; padding]).unwrap();
+        encoder.write_all(&raw_header("payload", 1, b'0')).unwrap();
+        encoder.write_all(&[0_u8; 1024]).unwrap();
+        encoder.finish().unwrap();
+        let dest = base.join("out");
+        let error = extract_tar_gz(&archive, &dest).unwrap_err();
+        assert!(
+            matches!(error, DeliveryError::UnsafeArchive(_)),
+            "{error:?}"
+        );
+        assert!(!dest.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rejects_huge_extension_headers_without_reading_them() {
+        let base = scratch("huge-extension");
+        std::fs::create_dir_all(&base).unwrap();
+        let archive = base.join("a.tar.gz");
+        let file = File::create(&archive).unwrap();
+        let mut encoder = GzEncoder::new(file, Compression::default());
+        encoder
+            .write_all(&raw_header("longname", 1024 * 1024 * 1024, b'L'))
+            .unwrap();
+        encoder.write_all(&[0_u8; 1024]).unwrap();
+        encoder.finish().unwrap();
+        let started = std::time::Instant::now();
+        let error = extract_tar_gz(&archive, &base.join("out")).unwrap_err();
+        assert!(matches!(error, DeliveryError::SizeLimit(_)), "{error:?}");
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
@@ -477,7 +814,7 @@ mod tests {
         let archive = base.join("a.tar.gz");
         build_archive(
             &archive,
-            &[Spec::Dir("nested"), Spec::File("nested/a", 0o644, b"a")],
+            &[Spec::Dir("nested/"), Spec::File("nested/a", 0o644, b"a")],
         );
         let dest = base.join("out");
         let report = extract_tar_gz(&archive, &dest).unwrap();
@@ -510,6 +847,7 @@ mod tests {
             ("symlink", vec![Spec::Symlink("link", "/etc/passwd")]),
             ("hardlink", vec![Spec::Hardlink("link", "target")]),
             ("char", vec![Spec::Char("device")]),
+            ("fifo", vec![Spec::Fifo("pipe")]),
         ] {
             let base = scratch(name);
             let archive = base.join("a.tar.gz");

@@ -10,11 +10,13 @@
 mod support;
 
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use support::{
-    FixtureServer, TempDir, assert_failure, assert_success, installer, pack, run, stderr, stdout,
+    FixtureServer, TempDir, assert_failure, assert_success, installer, pack, pack_broken_binary,
+    pack_with_extra, run, stderr, stdout,
 };
 
 fn install(root: &Path, source: &str, version: &str, extra: &[&str]) -> Output {
@@ -364,6 +366,145 @@ fn explicit_binary_wins_and_invalid_values_never_download() {
 }
 
 #[test]
+fn relative_xdg_data_home_is_rejected_without_creating_a_root() {
+    let base = TempDir::new("flow-relative-xdg");
+    let mut command = installer();
+    command.env("XDG_DATA_HOME", "relative-data").arg("list");
+    let result = run(&mut command);
+    assert_failure(&result, "absolute");
+    assert!(!base.path().join("wxml-lsp").exists());
+}
+
+#[test]
+fn read_only_commands_do_not_create_or_chmod_the_root() {
+    let base = TempDir::new("flow-readonly");
+    let root = base.path().join("private");
+    fs::create_dir(&root).unwrap();
+    wxml_delivery::manifest::set_mode(&root, 0o700).unwrap();
+    let before = fs::read_dir(&root).unwrap().count();
+    let mut list = installer();
+    list.args(["list", "--root", root.to_str().expect("root")]);
+    let result = run(&mut list);
+    assert_success(&result);
+    assert_eq!(fs::read_dir(&root).unwrap().count(), before);
+    assert_eq!(
+        fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    for name in ["current", "env", "verify"] {
+        let mut command = installer();
+        command.args([name, "--root", root.to_str().expect("root")]);
+        let result = run(&mut command);
+        assert!(!result.status.success());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), before);
+        assert_eq!(
+            fs::metadata(&root).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+    assert!(!root.join("versions").exists());
+    assert!(!root.join("tmp").exists());
+    assert!(!root.join("cache").exists());
+    assert!(!root.join(".lock").exists());
+}
+
+#[test]
+fn verify_does_not_execute_a_tampered_binary() {
+    let base = TempDir::new("flow-verify-order");
+    let output = base.path().join("release");
+    pack(&output, "0.1.0");
+    let server = FixtureServer::directory(&output);
+    let root = base.path().join("root");
+    assert_success(&install(&root, &server.url(), "0.1.0", &[]));
+    let marker = base.path().join("EXECUTED");
+    let binary = root.join("current/bin/wxml-lsp");
+    fs::write(
+        &binary,
+        format!(
+            "#!/bin/sh\ntouch {}\nprintf 'wxml-lsp 0.1.0\\n'\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    wxml_delivery::manifest::set_mode(&binary, 0o755).unwrap();
+    let mut verify = installer();
+    verify.args(["verify", "--root", root.to_str().expect("root")]);
+    let result = run(&mut verify);
+    assert!(!result.status.success());
+    assert!(!marker.exists(), "verify executed a tampered binary");
+}
+
+#[test]
+fn failed_runtime_check_keeps_the_previous_active_version() {
+    let base = TempDir::new("flow-runtime-rollback");
+    let good = base.path().join("good");
+    let bad = base.path().join("bad");
+    pack(&good, "0.1.0");
+    pack_broken_binary(&bad, "0.3.0", "0.2.0-broken");
+    let server = FixtureServer::directory(&good);
+    let root = base.path().join("root");
+    assert_success(&install(&root, &server.url(), "0.1.0", &[]));
+    let mut command = installer();
+    command.args([
+        "install",
+        "--root",
+        root.to_str().expect("root"),
+        "--from-dir",
+        bad.to_str().expect("bad"),
+        "--version",
+        "0.3.0",
+        "--offline",
+    ]);
+    let result = run(&mut command);
+    assert_failure(&result, "reports");
+    assert_eq!(active_version(&root), "0.1.0");
+    assert!(!root.join("versions/0.3.0").exists());
+    assert_success(&current(&root));
+}
+
+#[test]
+fn upgrade_refuses_downgrades_and_same_version_rebuilds() {
+    let base = TempDir::new("flow-upgrade-policy");
+    let high = base.path().join("high");
+    let low = base.path().join("low");
+    let rebuilt = base.path().join("rebuilt");
+    pack(&high, "0.2.0");
+    pack(&low, "0.1.0");
+    pack_with_extra(&rebuilt, "0.2.0", "bin/extra.txt", b"new bytes");
+    let server = FixtureServer::directory(&high);
+    let root = base.path().join("root");
+    assert_success(&install(&root, &server.url(), "0.2.0", &[]));
+    let mut upgrade = installer();
+    upgrade.args([
+        "upgrade",
+        "--root",
+        root.to_str().expect("root"),
+        "--from-dir",
+        low.to_str().expect("low"),
+        "--offline",
+    ]);
+    let result = run(&mut upgrade);
+    assert_failure(&result, "downgrade");
+    assert_eq!(active_version(&root), "0.2.0");
+
+    let mut install = installer();
+    install.args([
+        "install",
+        "--root",
+        root.to_str().expect("root"),
+        "--from-dir",
+        rebuilt.to_str().expect("rebuilt"),
+        "--version",
+        "0.2.0",
+        "--offline",
+    ]);
+    let result = run(&mut install);
+    assert_failure(&result, "different contents");
+    assert_eq!(active_version(&root), "0.2.0");
+    assert!(!root.join("current/bin/extra.txt").exists());
+}
+
+#[test]
 fn reports_node_missing_old_and_broken_runtime() {
     let base = TempDir::new("flow-node");
     let output = base.path().join("release");
@@ -402,7 +543,7 @@ fn reports_node_missing_old_and_broken_runtime() {
     let mut verify = installer();
     verify.args(["verify", "--root", root.to_str().expect("root")]);
     let result = run(&mut verify);
-    assert_failure(&result, "not executable");
+    assert_failure(&result, "mode");
 }
 
 #[test]

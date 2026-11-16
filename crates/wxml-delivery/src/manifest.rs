@@ -15,7 +15,7 @@ use crate::paths::{
     validate_archive_name, validate_platform, validate_relative_path, validate_sha256,
     validate_version,
 };
-use crate::semver::{Semver, compare_versions};
+use crate::semver::{Semver, compare_versions, is_prerelease};
 
 /// Package identity written into manifests and index files.
 pub const PACKAGE_NAME: &str = "wxml-lsp";
@@ -158,8 +158,13 @@ impl Manifest {
     ///
     /// Returns an error for schema, version, path, mode, size or artifact
     /// mismatches.
-    #[allow(clippy::too_many_lines)]
     pub fn validate(&self, expected: ExpectedManifest<'_>) -> Result<()> {
+        self.validate_identity(expected)?;
+        self.validate_files()?;
+        self.validate_artifacts()
+    }
+
+    fn validate_identity(&self, expected: ExpectedManifest<'_>) -> Result<()> {
         if self.schema_version != SCHEMA_VERSION {
             return Err(DeliveryError::InvalidPackage(format!(
                 "unsupported manifest schema {}",
@@ -217,6 +222,10 @@ impl Manifest {
             ));
         }
 
+        Ok(())
+    }
+
+    fn validate_files(&self) -> Result<()> {
         if self.files.is_empty() {
             return Err(DeliveryError::InvalidPackage(
                 "manifest contains no payload files".to_owned(),
@@ -255,6 +264,15 @@ impl Manifest {
             }
         }
 
+        Ok(())
+    }
+
+    fn validate_artifacts(&self) -> Result<()> {
+        let (node_backends, zed_extensions) = self.validate_artifact_entries()?;
+        self.validate_required_artifacts(node_backends, zed_extensions)
+    }
+
+    fn validate_artifact_entries(&self) -> Result<(usize, usize)> {
         let mut rust_names = BTreeSet::new();
         let mut node_backends = 0;
         let mut zed_extensions = 0;
@@ -330,6 +348,14 @@ impl Manifest {
             }
         }
 
+        Ok((node_backends, zed_extensions))
+    }
+
+    fn validate_required_artifacts(
+        &self,
+        node_backends: usize,
+        zed_extensions: usize,
+    ) -> Result<()> {
         let server = self
             .binaries
             .iter()
@@ -505,10 +531,10 @@ impl Index {
     pub fn latest(&self, platform: &str) -> Result<&Release> {
         self.releases
             .iter()
-            .filter(|release| release.platform == platform)
+            .filter(|release| release.platform == platform && !is_prerelease(&release.version))
             .max_by(|left, right| compare_versions(&left.version, &right.version))
             .ok_or_else(|| {
-                DeliveryError::InvalidPackage(format!("no releases for platform {platform}"))
+                DeliveryError::InvalidPackage(format!("no stable releases for platform {platform}"))
             })
     }
 
@@ -543,7 +569,14 @@ impl Index {
 ///
 /// Returns an error when the file cannot be read or exceeds `maximum`.
 pub fn read_limited(path: &Path, maximum: u64) -> Result<Vec<u8>> {
-    let metadata = std::fs::metadata(path).map_err(|error| DeliveryError::io(path, error))?;
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|error| DeliveryError::io(path, error))?;
+    if !metadata.file_type().is_file() {
+        return Err(DeliveryError::InvalidArgument(format!(
+            "`{}` must be a regular file",
+            crate::paths::redact(path)
+        )));
+    }
     if metadata.len() > maximum {
         return Err(DeliveryError::SizeLimit(format!(
             "`{}` exceeds {} bytes",
@@ -602,6 +635,14 @@ pub fn read_index(path: &Path) -> Result<Index> {
 ///
 /// Returns an error when the file cannot be opened or read.
 pub fn sha256_file(path: &Path) -> Result<String> {
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|error| DeliveryError::io(path, error))?;
+    if !metadata.file_type().is_file() {
+        return Err(DeliveryError::InvalidArgument(format!(
+            "`{}` must be a regular file",
+            crate::paths::redact(path)
+        )));
+    }
     let mut file = File::open(path).map_err(|error| DeliveryError::io(path, error))?;
     let mut hasher = Sha256::new();
     let mut buffer = vec![0_u8; 64 * 1024];

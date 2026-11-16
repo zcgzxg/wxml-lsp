@@ -69,14 +69,68 @@ fn parse_part(part: Option<&str>, input: &str) -> Result<u64> {
     })
 }
 
-/// Orders two version strings by numeric core, then by the original text.
+/// Returns whether a version has a pre-release suffix after the numeric core.
+#[must_use]
+pub fn is_prerelease(version: &str) -> bool {
+    version
+        .split_once('-')
+        .is_some_and(|(_, suffix)| !suffix.is_empty())
+}
+
+/// Orders two version strings by numeric core, then by `SemVer` pre-release rules.
 #[must_use]
 pub fn compare_versions(left: &str, right: &str) -> Ordering {
-    match (Semver::parse(left), Semver::parse(right)) {
-        (Ok(left), Ok(right)) => left
-            .cmp(&right)
-            .then_with(|| left.to_string().cmp(&right.to_string())),
-        _ => left.cmp(right),
+    let (Ok(left_core), Ok(right_core)) = (Semver::parse(left), Semver::parse(right)) else {
+        return left.cmp(right);
+    };
+    left_core
+        .cmp(&right_core)
+        .then_with(|| compare_prerelease(prerelease(left), prerelease(right)))
+}
+
+fn prerelease(version: &str) -> Option<&str> {
+    version
+        .split_once('-')
+        .map(|(_, suffix)| suffix.split_once('+').map_or(suffix, |(suffix, _)| suffix))
+}
+
+fn compare_prerelease(left: Option<&str>, right: Option<&str>) -> Ordering {
+    match (left, right) {
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Greater,
+        (Some(_), None) => Ordering::Less,
+        (Some(left), Some(right)) => {
+            let mut left = left.split('.');
+            let mut right = right.split('.');
+            loop {
+                match (left.next(), right.next()) {
+                    (None, None) => return Ordering::Equal,
+                    (None, Some(_)) => return Ordering::Less,
+                    (Some(_), None) => return Ordering::Greater,
+                    (Some(left), Some(right)) => {
+                        let ordering = compare_prerelease_part(left, right);
+                        if ordering != Ordering::Equal {
+                            return ordering;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn compare_prerelease_part(left: &str, right: &str) -> Ordering {
+    let left_numeric = left.bytes().all(|byte| byte.is_ascii_digit());
+    let right_numeric = right.bytes().all(|byte| byte.is_ascii_digit());
+    match (left_numeric, right_numeric) {
+        (true, true) => {
+            let left: u64 = left.parse().unwrap_or(u64::MAX);
+            let right: u64 = right.parse().unwrap_or(u64::MAX);
+            left.cmp(&right)
+        }
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        (false, false) => left.cmp(right),
     }
 }
 
@@ -109,6 +163,15 @@ mod tests {
         for value in ["", "v", "1", "1.2", "1.2.3.4", "1.x.3", "1.2-beta"] {
             assert!(Semver::parse(value).is_err(), "{value}");
         }
+    }
+
+    #[test]
+    fn orders_prereleases_below_stable_releases() {
+        assert!(compare_versions("2.0.0-rc.1", "2.0.0").is_lt());
+        assert!(compare_versions("2.0.0", "2.0.0-rc.1").is_gt());
+        assert!(compare_versions("2.0.0-rc.2", "2.0.0-rc.10").is_lt());
+        assert!(is_prerelease("2.0.0-rc.1"));
+        assert!(!is_prerelease("2.0.0"));
     }
 
     #[test]
