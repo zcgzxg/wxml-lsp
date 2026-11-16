@@ -26,9 +26,10 @@
 //!   other element does. A chain whose condition is dynamic or unparseable is
 //!   not attached to any fragment at all.
 //! - `wx:key` is not a data expression.
-//! - `wxs`, `template`, `import` and `include` are reported and their content
-//!   is not analyzed. These names are matched exactly; `<WXS>` is an ordinary
-//!   element name, matching the syntax crate's raw-text rule.
+//! - `wxs`, `template`, `import` and `include` are reported as static-module
+//!   facts by [`crate::template_semantics`]; their bodies are not mounted as
+//!   data fragments here. These names are matched exactly; `<WXS>` is an
+//!   ordinary element name, matching the syntax crate's raw-text rule.
 //!
 //! Fragment ids are assigned after traversal in source-range order (`f0`,
 //! `f1`, ...), so they stay stable even though `wx:for` and guard attributes

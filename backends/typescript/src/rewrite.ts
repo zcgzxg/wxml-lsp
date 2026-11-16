@@ -47,6 +47,8 @@ export interface RewriteOptions {
   propertyOverlay: ReadonlySet<string>;
   /** Template locals (no prefix). */
   locals: ReadonlySet<string>;
+  /** Behavior `data` members declared as probe locals (no prefix). */
+  dataOverlay: ReadonlySet<string>;
 }
 
 export interface RewrittenExpression {
@@ -212,7 +214,7 @@ export function rewriteExpression(
       throw new RequestError("bad-fragment", `overlapping root identifiers in ${describeExpression(expr)}`);
     }
     pushSource(cursor, occurrence.start);
-    const prefix = options.locals.has(occurrence.name)
+    const prefix = options.locals.has(occurrence.name) || options.dataOverlay.has(occurrence.name)
       ? ""
       : options.propertyOverlay.has(occurrence.name)
         ? options.propsPrefix
@@ -303,7 +305,9 @@ export function rewriteExpression(
     targetOffset,
     hoverTargets,
     roots,
-    localRoot: roots.length > 0 && roots.every((root) => options.locals.has(root)),
+    localRoot:
+      roots.length > 0 &&
+      roots.every((root) => options.locals.has(root) || options.dataOverlay.has(root)),
   };
 }
 

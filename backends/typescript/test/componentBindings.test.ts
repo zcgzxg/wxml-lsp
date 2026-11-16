@@ -9,12 +9,14 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
+import ts from "typescript";
 import { analyze, buildView } from "../src/analysis.ts";
+import { typeOfInitializer } from "../src/behaviors.ts";
 import { collectComponentDiagnostics } from "../src/componentBindings.ts";
 import { defaultReadPolicy, VirtualProject } from "../src/compiler.ts";
 import { BACKEND_DIR } from "../src/env.ts";
 import { toCompilerOptions, type AnalyzeRequest, type RequestComponentAttribute, type RequestComponentUsage, type RequestFragment } from "../src/protocol.ts";
-import { analyzeRequest, fragment, template } from "./support.ts";
+import { analyzeRequest, fragment, template, type TestFile } from "./support.ts";
 
 const config = { backendDir: BACKEND_DIR };
 
@@ -285,4 +287,282 @@ test("symbol-bridge component messages are path-free as well", () => {
   assert.equal(messages.length, 1);
   assert.ok(!messages[0]!.includes("/"), `path-free message: ${messages[0]}`);
   assert.match(messages[0]!, /component property "title" expects string, got number/);
+});
+
+test("behavior properties and kebab/camel bindings are checked", () => {
+  const component = `Component({
+    behaviors: [Behavior({
+      properties: {
+        cardTitle: { type: String },
+        score: { type: String, optionalTypes: [Number], required: true, value: 1, observer() {} },
+        loose: { type: null },
+        items: { type: Array },
+        defaulted: { type: Number, value: "not-a-number" },
+      },
+    })],
+  });\n`;
+  const request = analyzeRequest({
+    script: PAGE,
+    extraFiles: [{ path: "behavior-card.ts", text: component }],
+    fragments: FRAGMENTS,
+    components: [
+      usage("behavior-ok", [mustache("card-title", "pageTitle"), mustache("score", "total"), mustache("items", "list"), mustache("defaulted", "total"), mustache("unknown", "total")], "behavior-card.ts"),
+      usage("behavior-bad", [mustache("card-title", "total"), mustache("score", "flag"), attribute("score", "literal"), attribute("defaulted", "literal")], "behavior-card.ts"),
+      usage("behavior-loose", [mustache("loose", "total")], "behavior-card.ts"),
+      // Missing required attributes are not diagnosed by the existing
+      // strategy; this pins that decision instead of inventing a diagnostic.
+      usage("behavior-missing-required", [], "behavior-card.ts"),
+    ],
+  });
+  const outcome = componentOutcome(request);
+  const results = new Map(outcome.results.map((entry) => [entry.tag, entry.diagnostics]));
+  assert.deepEqual(results.get("behavior-ok"), []);
+  const bad = results.get("behavior-bad") ?? [];
+  assert.equal(bad.length, 3);
+  assert.match(bad[0]?.message ?? "", /component property "card-title" expects string, got number/);
+  assert.match(bad[1]?.message ?? "", /component property "score" expects string \| number, got boolean/);
+  assert.match(bad[2]?.message ?? "", /component property "defaulted" expects number, got string literal/);
+  assert.equal(results.has("behavior-loose"), false);
+  assert.equal(results.has("behavior-missing-required"), false);
+  assert.equal(outcome.skipped, 1);
+  assert.deepEqual(outcome.skippedDetails, ["behavior-loose.loose"]);
+});
+
+function componentRequest(options: {
+  script: string;
+  fragments: Array<[string, string]>;
+  extraFiles?: TestFile[];
+  jsCheck?: "inherit" | "pragma" | "off";
+  checkJs?: boolean;
+  scriptPath?: string;
+}) {
+  return analyzeRequest({
+    script: options.script,
+    scriptPath: options.scriptPath ?? "index.ts",
+    kind: "component",
+    ...(options.extraFiles ? { extraFiles: options.extraFiles } : {}),
+    ...(options.jsCheck ? { jsCheck: options.jsCheck } : {}),
+    ...(options.checkJs ? { checkJs: options.checkJs } : {}),
+    fragments: options.fragments.map(([fragmentId, exprText]) =>
+      fragment(fragmentId, exprText, { start: 0, end: Buffer.byteLength(exprText, "utf8") }, { root: "component" }),
+    ),
+  });
+}
+
+function hoverOf(result: ReturnType<typeof analyze>, fragmentId: string) {
+  if (!result.ok) throw new Error(result.reason);
+  return result.response.fragments.find((entry) => entry.fragmentId === fragmentId);
+}
+
+test("inline Behavior data and properties join the component instance type", () => {
+  const request = componentRequest({
+    script: `Component({
+      behaviors: [Behavior({
+        data: {
+          /** 共享计数 */
+          sharedCount: 3,
+          nested: { label: "x" },
+        },
+        properties: { cardTitle: { type: String } },
+      })],
+      data: { own: "own" },
+      properties: { ownProp: { type: Number } },
+    });`,
+    fragments: [
+      ["count", "sharedCount"],
+      ["nested", "nested.label"],
+      ["cardTitle", "cardTitle"],
+      ["ownProp", "ownProp"],
+    ],
+  });
+  const result = analyze(request, config);
+  const count = hoverOf(result, "count");
+  assert.equal(count?.hover?.typeOnly, "number", JSON.stringify(count));
+  assert.equal(count?.hover?.documentation, "共享计数");
+  assert.deepEqual(count?.diagnostics, []);
+  assert.equal(count?.definition?.kind, "generated");
+  assert.deepEqual(count?.definition?.range, {
+    start: Buffer.byteLength(
+      request.files[0]!.text.slice(0, request.files[0]!.text.indexOf("sharedCount")),
+      "utf8",
+    ),
+    end:
+      Buffer.byteLength(
+        request.files[0]!.text.slice(0, request.files[0]!.text.indexOf("sharedCount")),
+        "utf8",
+      ) + "sharedCount".length,
+  });
+  const nested = hoverOf(result, "nested");
+  assert.equal(nested?.hover?.typeOnly, "string");
+  assert.deepEqual(nested?.diagnostics, []);
+  assert.equal(hoverOf(result, "cardTitle")?.hover?.typeOnly, "string");
+  assert.equal(hoverOf(result, "ownProp")?.hover?.typeOnly, "number");
+  assert.deepEqual(hoverOf(result, "ownProp")?.diagnostics, []);
+});
+
+test("component's own data wins over a behavior field with the same name", () => {
+  const request = componentRequest({
+    script: `Component({
+      behaviors: [Behavior({ data: { title: 1 } })],
+      data: { title: "own" },
+    });`,
+    fragments: [["title", "title"]],
+  });
+  const title = hoverOf(analyze(request, config), "title");
+  assert.equal(title?.hover?.typeOnly, "string");
+  assert.deepEqual(title?.diagnostics, []);
+});
+
+test("imported behavior default export contributes data and properties", () => {
+  const behavior = `const shared = Behavior({
+    data: { importedCount: 7 },
+    properties: { importedTitle: { type: String, optionalTypes: [Number] } },
+  });
+  export default shared;`;
+  const request = componentRequest({
+    script: `import shared from "./shared";
+    Component({ behaviors: [shared], data: {} });`,
+    extraFiles: [{ path: "shared.ts", text: behavior }],
+    fragments: [
+      ["count", "importedCount"],
+      ["title", "importedTitle"],
+    ],
+  });
+  const result = analyze(request, config);
+  assert.equal(hoverOf(result, "count")?.hover?.typeOnly, "number");
+  assert.equal(hoverOf(result, "title")?.hover?.typeOnly, "string | number");
+  assert.deepEqual(hoverOf(result, "count")?.diagnostics, []);
+  assert.deepEqual(hoverOf(result, "title")?.diagnostics, []);
+  const definition = hoverOf(result, "count")?.definition;
+  assert.equal(definition?.kind, "generated");
+  assert.equal(definition?.fileId, "shared.ts");
+  const propertyDefinition = hoverOf(result, "title")?.definition;
+  assert.equal(propertyDefinition?.kind, "generated");
+  assert.equal(propertyDefinition?.fileId, "shared.ts");
+  const behaviorText = behavior;
+  assert.equal(
+    behaviorText.slice(
+      propertyDefinition?.range?.start ?? 0,
+      propertyDefinition?.range?.end ?? 0,
+    ),
+    "importedTitle",
+  );
+});
+
+test("nested behaviors apply before their owner and later behaviors win", () => {
+  const request = componentRequest({
+    script: `Component({
+      behaviors: [
+        Behavior({ data: { later: "later", nested: { value: 1 } } }),
+        Behavior({
+          behaviors: [Behavior({ data: { nested: { value: "inner" }, onlyNested: 1 } })],
+          data: { later: 2 },
+        }),
+      ],
+      data: {},
+    });`,
+    fragments: [
+      ["later", "later"],
+      ["nested", "nested.value"],
+      ["only", "onlyNested"],
+    ],
+  });
+  const result = analyze(request, config);
+  assert.equal(hoverOf(result, "later")?.hover?.typeOnly, "number");
+  assert.equal(hoverOf(result, "nested")?.hover?.typeOnly, "string");
+  assert.equal(hoverOf(result, "only")?.hover?.typeOnly, "number");
+});
+
+test("behavior cycles and factory calls degrade with a reason, not a crash", () => {
+  const a = `import b from "./b"; export default Behavior({ behaviors: [b], data: { fromA: 1 } });`;
+  const b = `import a from "./a"; export default Behavior({ behaviors: [a], data: { fromB: 2 } });`;
+  const request = componentRequest({
+    script: `import a from "./a";
+    Component({ behaviors: [a, createBehavior()], data: {} });`,
+    extraFiles: [
+      { path: "a.ts", text: a },
+      { path: "b.ts", text: b },
+    ],
+    fragments: [["a", "fromA"]],
+  });
+  const result = analyze(request, config);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const fragment = hoverOf(result, "a");
+  assert.equal(fragment?.hover?.typeOnly, "number");
+  const reason = result.states.hover.reason ?? "";
+  assert.match(reason, /behavior/i, reason);
+  assert.match(reason, /dynamic|could not|cycle|not part/i, reason);
+});
+
+test("spread and dynamic data members are reported and stay any", () => {
+  const request = componentRequest({
+    script: `const extra = { value: 1 };
+    Component({
+      behaviors: [Behavior({ data: { ...extra, dynamic: makeValue() } })],
+      data: {},
+    });`,
+    fragments: [["dynamic", "dynamic"]],
+  });
+  const result = analyze(request, config);
+  if (!result.ok) throw new Error(result.reason);
+  const dynamic = hoverOf(result, "dynamic");
+  assert.equal(dynamic?.hover?.typeOnly, "any");
+  assert.match(result.states.hover.reason ?? "", /behavior/i);
+});
+
+test("behavior type inference is conservative for literals", () => {
+  const parsed = ts.createSourceFile("x.ts", "const value = 1;", ts.ScriptTarget.Latest, true);
+  const initializer = (parsed.statements[0] as ts.VariableStatement).declarationList
+    .declarations[0]!.initializer!;
+  assert.deepEqual(typeOfInitializer(initializer, parsed), { text: "number", exact: true });
+});
+
+test("named behavior imports and re-export aliases resolve statically", () => {
+  const behavior = `const implementation = Behavior({ data: { namedCount: 4 } });
+  export { implementation as shared };`;
+  const request = componentRequest({
+    script: `import { shared } from "./shared";
+    Component({ behaviors: [shared], data: {} });`,
+    extraFiles: [{ path: "shared.ts", text: behavior }],
+    fragments: [["count", "namedCount"]],
+  });
+  const result = analyze(request, config);
+  assert.equal(hoverOf(result, "count")?.hover?.typeOnly, "number");
+  assert.equal(
+    result.ok && result.states.hover.status,
+    "supported",
+    result.ok ? result.states.hover.reason : "analysis unavailable",
+  );
+});
+
+test("a behavior data member initialized from a local const keeps its checked type", () => {
+  const request = componentRequest({
+    script: `const initial = { label: "x" };
+    Component({ behaviors: [Behavior({ data: { fromConst: initial } })], data: {} });`,
+    fragments: [["field", "fromConst"]],
+  });
+  const field = hoverOf(analyze(request, config), "field");
+  assert.match(field?.hover?.typeOnly ?? "", /label/, JSON.stringify(field));
+  assert.deepEqual(field?.diagnostics, []);
+});
+
+test("JavaScript behavior data uses JSDoc casts under checkJs", () => {
+  const request = componentRequest({
+    scriptPath: "index.js",
+    checkJs: true,
+    script: `Component({
+      behaviors: [Behavior({ data: {
+        /** js count */
+        jsCount: 2,
+      } })],
+      data: {},
+    });`,
+    fragments: [["count", "jsCount"]],
+  });
+  const result = analyze(request, config);
+  const count = hoverOf(result, "count");
+  assert.equal(count?.hover?.typeOnly, "number");
+  assert.equal(count?.hover?.documentation, "js count");
+  assert.deepEqual(count?.diagnostics, []);
 });

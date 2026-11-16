@@ -178,6 +178,20 @@ impl Server {
             return vec![Outgoing::success(id, empty_list())];
         };
         let text = context.source().text();
+        // Static template names, template-instance data keys and WXS module
+        // members never start the type backend.
+        {
+            let access = crate::static_semantics::host_access(self);
+            if let Some(items) = crate::static_semantics::completion(
+                context.source().file().path(),
+                text,
+                offset,
+                &access,
+            ) {
+                let value = crate::static_semantics::completion_values(document, &items);
+                return vec![Outgoing::success(id, value)];
+            }
+        }
         let Some(detected) = detect(text, offset) else {
             return vec![Outgoing::success(id, empty_list())];
         };

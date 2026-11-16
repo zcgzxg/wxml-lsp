@@ -2,6 +2,7 @@
 
 import type ts from "typescript";
 import type { DataRootKind, PropertyScan, Registration, RegistrationScan } from "../ast.ts";
+import type { BehaviorResolution } from "../behaviors.ts";
 import type { RequestFragment } from "../protocol.ts";
 import type { PragmaScan } from "../probes.ts";
 
@@ -23,6 +24,8 @@ export interface LayoutContext {
   dataRootKind: DataRootKind;
   /** Declared component properties (may be incomplete on spread). */
   propertyScan: PropertyScan;
+  /** Static `behaviors` graph of a component (empty for pages). */
+  behavior: BehaviorResolution;
   /** Leading pragma scan of the original script. */
   pragma: PragmaScan;
   /** True when the policy asks for a shadow-only `@ts-check`. */

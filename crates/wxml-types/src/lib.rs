@@ -25,6 +25,8 @@ pub mod contract;
 pub mod mock;
 pub mod status;
 pub mod template;
+pub mod template_semantics;
+pub mod wxs;
 
 pub use backend::{
     Backend, BackendCapabilities, BackendError, CompletionItem, CompletionItemKind, CompletionKind,
@@ -48,3 +50,9 @@ pub use template::{
     MAX_BINDINGS, MAX_COMPONENTS, MAX_FRAGMENTS, MAX_GUARD_CHAINS, MAX_GUARD_CONDITIONS,
     TemplateAnalyzer, analyze_template,
 };
+pub use template_semantics::{
+    StaticImport, StaticImportKind, StaticIssue, StaticIssueKind, TemplateCall, TemplateData,
+    TemplateDataKey, TemplateDataUse, TemplateDefinition, TemplateSemantics, WxsBlock,
+    analyze_template_semantics, resolve_static_specifier, summarize_wxs_block,
+};
+pub use wxs::{WxsMember, WxsMemberKind, WxsRequire, WxsSummary, summarize_wxs};

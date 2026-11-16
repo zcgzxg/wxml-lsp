@@ -312,6 +312,34 @@ impl Server {
             )];
         }
 
+        // Static template/WXS facts (declarations, imports, WXS exports) are
+        // answered without the type backend. A point outside those constructs
+        // falls through to the normal mustache type query.
+        {
+            let access = crate::static_semantics::host_access(self);
+            let path = context.source().file().path();
+            let text = context.source().text();
+            match kind {
+                JobKind::Hover => {
+                    if let Some(result) =
+                        crate::static_semantics::hover(path, text, offset, &access)
+                    {
+                        let value = crate::static_semantics::hover_value(document, &result);
+                        return vec![Outgoing::success(id, value)];
+                    }
+                }
+                JobKind::Definition => {
+                    if let Some(positions) =
+                        crate::static_semantics::definition(path, text, offset, &access)
+                    {
+                        let values =
+                            crate::static_semantics::definition_value(self, document, &positions);
+                        return vec![Outgoing::success(id, Value::Array(values))];
+                    }
+                }
+                _ => {}
+            }
+        }
         let cancel = Arc::new(AtomicBool::new(false));
         self.inflight.insert(
             key.clone(),

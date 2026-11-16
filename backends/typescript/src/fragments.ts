@@ -12,6 +12,8 @@ export const PROPS_PREFIX = "__wxml_props_0.";
 export interface FragmentPlanOptions {
   /** Names that must be read from the declaration-derived properties overlay. */
   propertyOverlay: ReadonlySet<string>;
+  /** Behavior `data` names declared as probe-local values. */
+  dataOverlay: ReadonlySet<string>;
   /** Root symbol prefix of this candidate (`__wxml_root.` / `__wxml_root_0.`). */
   rootPrefix: string;
   /** Prefix of the declaration-derived properties overlay. */
@@ -51,6 +53,7 @@ export function planFragments(requestFragments: RequestFragment[], options: Frag
       rootPrefix: options.rootPrefix,
       propsPrefix,
       propertyOverlay: options.propertyOverlay,
+      dataOverlay: options.dataOverlay,
       locals: localNames,
     });
     const segments = rewritten.segments.map((segment) => ({

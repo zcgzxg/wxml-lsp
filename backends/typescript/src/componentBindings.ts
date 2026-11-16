@@ -18,7 +18,8 @@
 
 import path from "node:path";
 import ts from "typescript";
-import { findRegistrations, memberMap, propertyName, scanDeclaredProperties } from "./ast.ts";
+import { findRegistrations, memberMap, scanDeclaredProperties } from "./ast.ts";
+import { resolveBehaviors } from "./behaviors.ts";
 import type { VirtualProject } from "./compiler.ts";
 import { sanitizeMessage } from "./messages.ts";
 import type {
@@ -160,7 +161,7 @@ function checkUsage(
   }
   const sourceFile = componentSource(input, usage.componentFileId);
   if (!sourceFile) return { skipped: 1, skippedDetails: [usage.tag] };
-  const properties = declaredProperties(sourceFile, checker);
+  const properties = declaredProperties(sourceFile, checker, input.project);
   if (!properties) return { skipped: 1, skippedDetails: [usage.tag] };
 
   const stringType = checker.getStringType();
@@ -176,7 +177,10 @@ function checkUsage(
   };
 
   for (const attribute of usage.attributes) {
-    const declared = properties.get(attribute.name);
+    const declared =
+      properties.get(attribute.name) ??
+      properties.get(camelCase(attribute.name)) ??
+      properties.get(kebabCase(attribute.name));
     if (!declared) continue; // `class`, `style` and undeclared attributes are not properties
     if (declared.targets === null) {
       skip(attribute.name); // property is `any`/an unreadable constructor
@@ -282,29 +286,52 @@ function componentSource(input: ComponentDiagnosticsInput, fileId: string): ts.S
  * narrowed: the usage is counted as skipped instead.
  *
  * The property *set* comes from `scanDeclaredProperties`, the same helper the
- * declaration overlay uses; only the constructor identifiers are read again,
- * because allowed-target `ts.Type`s cannot be recovered from its `typeText`.
+ * declaration overlay uses, plus statically resolved behavior properties. Each
+ * declaration carries its option initializer so the allowed `ts.Type`s can be
+ * derived from the real constructor instead of parsing `typeText`.
  */
-function declaredProperties(sourceFile: ts.SourceFile, checker: ts.TypeChecker): Map<string, DeclaredProperty> | undefined {
+function declaredProperties(
+  sourceFile: ts.SourceFile,
+  checker: ts.TypeChecker,
+  project: VirtualProject,
+): Map<string, DeclaredProperty> | undefined {
   const registration = findRegistrations(sourceFile).registrations.find((entry) => entry.kind === "component");
   if (!registration) return undefined;
   const scan = scanDeclaredProperties(registration.options);
   if (!scan.complete) return undefined;
-  const member = memberMap(registration.options).get("properties");
-  if (!member || !ts.isPropertyAssignment(member) || !ts.isObjectLiteralExpression(member.initializer)) {
-    return undefined;
-  }
-  const initializers = new Map<string, ts.Expression>();
-  for (const property of member.initializer.properties) {
-    if (!ts.isPropertyAssignment(property)) continue;
-    const name = propertyName(property);
-    if (name !== undefined) initializers.set(name, property.initializer);
-  }
+  // Behavior properties are checked from the same snapshot. A dynamic or
+  // incomplete behavior graph is not narrowed: the usage is skipped.
+  const behavior = resolveBehaviors({
+    scriptPath: sourceFile.fileName,
+    sourceFile,
+    registration,
+    getSourceFile: (absolute) => project.program().getSourceFile(path.resolve(absolute)),
+    checker,
+  });
+  // An unresolved behavior may also declare properties; checking against a
+  // partial declaration would fabricate missing/unknown-property results.
+  if (behavior.propertiesIncomplete || behavior.problems.length > 0) return undefined;
+  const hasOwnProperties = memberMap(registration.options).has("properties");
+  if (!hasOwnProperties && behavior.properties.length === 0) return undefined;
   const properties = new Map<string, DeclaredProperty>();
-  for (const declared of scan.properties) {
-    properties.set(declared.name, allowedTypes(initializers.get(declared.name), declared.typeText, checker));
+  for (const declared of [...scan.properties, ...behavior.properties]) {
+    if (properties.has(declared.name)) continue; // the component's own declaration wins
+    properties.set(
+      declared.name,
+      allowedTypes(declared.initializer, declared.typeText, checker),
+    );
   }
   return properties;
+}
+
+/** `card-title` -> `cardTitle` (WeChat attribute/property mapping). */
+function camelCase(name: string): string {
+  return name.replace(/-([a-z])/g, (_, letter: string) => letter.toUpperCase());
+}
+
+/** `cardTitle` -> `card-title`, for a property declared in kebab case. */
+function kebabCase(name: string): string {
+  return name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`);
 }
 
 /**

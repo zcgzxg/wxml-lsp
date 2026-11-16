@@ -10,6 +10,7 @@
 
 import ts from "typescript";
 import { memberMap, type Registration } from "../ast.ts";
+import type { BehaviorDataMember } from "../behaviors.ts";
 import { planFragments, PROPS_PREFIX, ROOT_PREFIX } from "../fragments.ts";
 import { indentLines, localHelpers, renderFragmentScope } from "./locals.ts";
 import { buildSegments } from "./segments.ts";
@@ -95,14 +96,20 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
 
   const overlayProperties = context.propertyScan.properties;
   const overlayNames = new Set(overlayProperties.map((property) => property.name));
+  const dataMembers = context.behavior.data.filter(
+    (member) => !overlayNames.has(member.name) && isIdentifierName(member.name),
+  );
+  const dataOverlay = new Set(dataMembers.map((member) => member.name));
   const drafts = planFragments(context.fragments, {
     propertyOverlay: overlayNames,
+    dataOverlay,
     rootPrefix: ROOT_PREFIX,
   });
 
   const syntax = context.isJavaScript ? "js" : "ts";
   const body = new Pieces();
   const marks: Array<{ member: RenderedMember; renderedStart: number }> = [];
+  const dataMarks: Array<{ member: BehaviorDataMember; renderedStart: number }> = [];
   body.text(`\n    ${IN_PLACE_PROBE}() {\n`);
   body.text(`${BODY_INDENT}const ${ROOT_NAME} = this.data;\n`);
   const rootExpressionOffset = body.length - "this.data;\n".length;
@@ -116,6 +123,28 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
     for (const member of value.members) marks.push({ member, renderedStart: body.length + member.offset });
     body.text(`${value.text}\n`);
   }
+  // Behavior `data` members are declared as probe-local values with the
+  // conservative type derived from the behavior declaration. A local wins over
+  // the typings' intersection (which turns a component/behavior name conflict
+  // into `never`), and it keeps behavior-only fields resolvable when the
+  // typings cannot merge an import.
+  for (const member of dataMembers) {
+    if (member.doc) {
+      body.text(`${BODY_INDENT}/** ${sanitizeDoc(member.doc)} */\n`);
+    }
+    body.text(`${BODY_INDENT}const `);
+    dataMarks.push({ member, renderedStart: body.length });
+    if (syntax === "js") {
+      // JavaScript has no `as` assertions; JSDoc keeps the declared type while
+      // the index access avoids a missing-property error when the typings do
+      // not merge the behavior into `this.data`.
+      body.text(
+        `${member.name} = /** @type {${member.typeText}} */ (/** @type {any} */ (${ROOT_NAME})[${JSON.stringify(member.name)}]);\n`,
+      );
+    } else {
+      body.text(`${member.name} = (${ROOT_NAME} as any).${member.name} as ${member.typeText};\n`);
+    }
+  }
   // The helper types are only needed when a `wx:for` source has to be typed; they
   // are declared once per probe, after the root, because they depend on nothing.
   const typedBindings = drafts.some((draft) => draft.bindings.length > 0);
@@ -128,9 +157,15 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
     const scope = renderFragmentScope(draft, {
       indent: BODY_INDENT,
       syntax,
-      rewriteSource: (sourceExpr, outerNames) => rewriteInScope(overlayNames, sourceExpr, outerNames),
+      rewriteSource: (sourceExpr, outerNames) =>
+        rewriteInScope(overlayNames, dataOverlay, sourceExpr, outerNames),
       rewriteCondition: (exprText) =>
-        rewriteInScope(overlayNames, exprText, new Set(draft.bindings.length > 0 ? draft.bindings.map((b) => b.name) : draft.locals)),
+        rewriteInScope(
+          overlayNames,
+          dataOverlay,
+          exprText,
+          new Set(draft.bindings.length > 0 ? draft.bindings.map((b) => b.name) : draft.locals),
+        ),
     });
     unresolvedBindings += scope.unresolvedBindings;
     unresolvedGuards += scope.unresolvedGuards;
@@ -254,8 +289,16 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
     file: context.scriptPath,
     start: probeInsertion.startUtf16 + methodWrapperShift + mark.renderedStart,
     length: mark.member.length,
-    source: byteRangeOfNode(context.scriptText, context.scriptPath, propertyNameNode(context, mark.member.name)),
+    source: propertySource(context, mark.member.name),
   }));
+  for (const mark of dataMarks) {
+    generatedDeclarations.push({
+      file: context.scriptPath,
+      start: probeInsertion.startUtf16 + methodWrapperShift + mark.renderedStart,
+      length: mark.member.name.length,
+      source: mark.member.source,
+    });
+  }
 
   // Offsets are relative to the whole insertion (the wrapper included).
   const helperOffsets = [
@@ -265,6 +308,19 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
       ? [{ name: PROPS_VALUE_NAME, offset: probeInsertion.startUtf16 + bodyOffsetOf(probePieces, PROPS_VALUE_NAME) }]
       : []),
   ];
+
+  if (
+    context.behavior.dataIncomplete ||
+    context.behavior.propertiesIncomplete ||
+    context.behavior.problems.length > 0
+  ) {
+    buildStatus = "partial";
+    const behaviorReason = context.behavior.problems.length > 0
+      ? `component behaviors are partially resolved: ${context.behavior.problems.slice(0, 3).join("; ")}`
+      : "component behaviors are partially resolved";
+    reason = reason ? `${reason}; ${behaviorReason}` : behaviorReason;
+    notes.push("behavior data/properties that cannot be resolved statically are not checked");
+  }
 
   if (unresolvedBindings > 0 || unresolvedGuards > 0) {
     buildStatus = "partial";
@@ -319,25 +375,28 @@ export function effectiveJsCheck(
   return "off";
 }
 
-function propertyNameNode(context: LayoutContext, name: string): ts.Node | undefined {
+function propertySource(context: LayoutContext, name: string): GeneratedDeclaration["source"] {
   const declaration = context.propertyScan.properties.find((property) => property.name === name);
-  return declaration?.nameNode;
+  if (!declaration) return undefined;
+  if (declaration.source) return declaration.source;
+  const start = Buffer.byteLength(context.scriptText.slice(0, declaration.nameNode.getStart()), "utf8");
+  const end = Buffer.byteLength(context.scriptText.slice(0, declaration.nameNode.getEnd()), "utf8");
+  return { file: context.scriptPath, start, end };
 }
 
-function byteRangeOfNode(
-  text: string,
-  file: string,
-  node: ts.Node | undefined,
-): GeneratedDeclaration["source"] {
-  if (!node) return undefined;
-  const start = Buffer.byteLength(text.slice(0, node.getStart()), "utf8");
-  const end = Buffer.byteLength(text.slice(0, node.getEnd()), "utf8");
-  return { file, start, end };
+/** Kebab/quoted data names cannot become probe locals; they stay unresolved. */
+function isIdentifierName(name: string): boolean {
+  return /^[\p{L}_$][\p{L}\p{N}_$]*$/u.test(name);
+}
+
+function sanitizeDoc(doc: string): string {
+  return doc.replace(/\*\//g, "*\\/").replace(/\s+/g, " ").trim();
 }
 
 /** Rewrite a template sub-expression against `this.data` (and the props overlay). */
 function rewriteInScope(
   overlay: ReadonlySet<string>,
+  dataOverlay: ReadonlySet<string>,
   exprText: string,
   locals: ReadonlySet<string>,
 ): string | undefined {
@@ -346,6 +405,7 @@ function rewriteInScope(
       rootPrefix: ROOT_PREFIX,
       propsPrefix: PROPS_PREFIX,
       propertyOverlay: overlay,
+      dataOverlay,
       locals,
     }).text;
   } catch {

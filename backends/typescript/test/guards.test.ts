@@ -202,3 +202,129 @@ test("an unparseable guard does not fabricate a diagnostic and reports Partial",
   assert.deepEqual(result.diagnostics, [], "the unnarrowed error is suppressed, not published");
   assert.deepEqual(result.response.fragments[0]?.diagnostics, []);
 });
+
+test("&&, || and ! guards narrow by truthiness", () => {
+  const doc = template();
+  const andRange = doc.expr("maybeUser.name");
+  const orRange = doc.expr("state.user.name");
+  const negatedRange = doc.expr("maybeUser.name");
+  const request = analyzeRequest({
+    script: `type State = { kind: 'ready'; user: { name: string } } | { kind: 'loading' };
+Page({
+  data: {
+    state: { kind: 'loading' } as State,
+    maybeUser: null as { name: string } | null,
+    fallback: false,
+  },
+});
+`,
+    fragments: [
+      fragment("and", "maybeUser.name", andRange, {
+        guards: [chain([condition("if", "maybeUser && maybeUser.name")], 0)],
+      }),
+      fragment("or", "state.user.name", orRange, {
+        guards: [chain([condition("if", "state.kind !== 'ready' || state.user")], 0)],
+      }),
+      fragment("negated", "maybeUser.name", negatedRange, {
+        guards: [chain([condition("if", "!maybeUser")], 0)],
+      }),
+    ],
+  });
+  const result = analyze(request, config);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const hovers = new Map(result.response.fragments.map((entry) => [entry.fragmentId, entry.hover]));
+  assert.equal(hovers.get("and")?.typeOnly, "string");
+  assert.deepEqual(fragmentDiagnostics(result.response, "and"), []);
+  // `||` guards are not narrowed: TypeScript cannot prove the union case, so
+  // the view degrades to Partial and publishes no guessed diagnostic.
+  assert.equal(hovers.get("or")?.typeOnly, "any");
+  assert.deepEqual(fragmentDiagnostics(result.response, "or"), []);
+  assert.equal(result.build.unresolvedGuards, 1);
+  assert.equal(result.states.diagnostics.status, "partial");
+  // `!maybeUser` proves the null branch; the access below it must stay an error.
+  assert.ok(fragmentDiagnostics(result.response, "negated").length > 0);
+});
+
+test("guards interleave with nested shadowed loops", () => {
+  const doc = template();
+  const range = doc.expr("item.name");
+  const request = analyzeRequest({
+    script: `Page({
+  data: {
+    groups: [{ name: 'g1', members: [{ name: 'Ada', active: true }] }],
+  },
+});
+`,
+    fragments: [
+      fragment("inner", "item.name", range, {
+        bindings: [
+          { name: "item", role: "item", sourceExpr: "groups", sourceRange: { start: 0, end: 6 } },
+          { name: "index", role: "index", sourceExpr: "groups", sourceRange: { start: 0, end: 6 } },
+          { name: "item", role: "item", sourceExpr: "item.members", sourceRange: { start: 0, end: 12 } },
+          { name: "index", role: "index", sourceExpr: "item.members", sourceRange: { start: 0, end: 12 } },
+        ],
+        guards: [chain([condition("if", "item.active")], 0)],
+      }),
+    ],
+  });
+  const result = analyze(request, config);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.probeProblems, []);
+  assert.deepEqual(result.diagnostics, []);
+  assert.equal(result.response.fragments[0]?.hover?.typeOnly, "string");
+});
+
+function jsRequest(overrides: { jsCheck?: "inherit" | "pragma" | "off"; checkJs?: boolean; script?: string }) {
+  const expr = "user.nmae";
+  return analyzeRequest({
+    script: overrides.script ?? `Page({ data: { user: { name: 'Ada' } } });`,
+    scriptPath: "index.js",
+    fragments: [fragment("typo", expr, { start: 0, end: Buffer.byteLength(expr, "utf8") })],
+    ...(overrides.jsCheck ? { jsCheck: overrides.jsCheck } : {}),
+    ...(overrides.checkJs ? { checkJs: overrides.checkJs } : {}),
+  });
+}
+
+test("checkJs off keeps hover but disables template diagnostics", () => {
+  const result = analyze(jsRequest({}), config);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.response.jsCheckApplied, "off");
+  assert.equal(result.states.diagnostics.status, "disabled");
+  assert.equal(result.response.fragments[0]?.hover?.typeOnly, "any");
+  assert.deepEqual(result.response.fragments[0]?.diagnostics, []);
+});
+
+test("pragma injects a shadow-only @ts-check and reports the typo", () => {
+  const result = analyze(jsRequest({ jsCheck: "pragma" }), config);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.response.jsCheckApplied, "pragma");
+  assert.ok(result.build.notes.some((note) => note.includes("@ts-check")));
+  assert.ok((result.response.fragments[0]?.diagnostics.length ?? 0) > 0);
+});
+
+test("checkJs true inherits the project option", () => {
+  const result = analyze(jsRequest({ checkJs: true }), config);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.response.jsCheckApplied, "inherit");
+  assert.ok((result.response.fragments[0]?.diagnostics.length ?? 0) > 0);
+});
+
+test("JSDoc documentation survives a JavaScript view", () => {
+  const expr = "title";
+  const request = analyzeRequest({
+    script: `Page({\n  data: {\n    /** Visible title. */\n    title: 'x',\n  },\n});`,
+    scriptPath: "index.js",
+    checkJs: true,
+    fragments: [fragment("title", expr, { start: 0, end: Buffer.byteLength(expr, "utf8") })],
+  });
+  const result = analyze(request, config);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.response.fragments[0]?.hover?.typeOnly, "string");
+  assert.equal(result.response.fragments[0]?.hover?.documentation, "Visible title.");
+});

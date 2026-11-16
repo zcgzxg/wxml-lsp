@@ -10,7 +10,8 @@
 import path from "node:path";
 import ts from "typescript";
 import { declarationSpans, findRegistrations, memberMap, scanDeclaredProperties } from "./ast.ts";
-import type { DataRootKind } from "./ast.ts";
+import type { DataRootKind, PropertyScan } from "./ast.ts";
+import { resolveBehaviors } from "./behaviors.ts";
 import {
   assertEnvironment,
   defaultReadPolicy,
@@ -225,6 +226,21 @@ export interface UnavailableView {
   registration: AnalyzeResponse["registration"];
 }
 
+/** Merges the component's own properties with behavior properties. */
+function mergePropertyScan(
+  own: PropertyScan,
+  behaviorProperties: ReadonlyArray<import("./ast.ts").DeclaredProperty>,
+): PropertyScan {
+  const names = new Set(own.properties.map((property) => property.name));
+  const properties = [...own.properties];
+  for (const property of behaviorProperties) {
+    if (names.has(property.name)) continue;
+    names.add(property.name);
+    properties.push(property);
+  }
+  return { ...own, properties };
+}
+
 /** Validate the request, build the derived view, but do not run queries. */
 export function buildView(request: AnalyzeRequest, config: AnalysisConfig): PreparedView | UnavailableView {
   // Validate before touching any optional field: a malformed request must not
@@ -292,7 +308,39 @@ export function buildView(request: AnalyzeRequest, config: AnalysisConfig): Prep
   registration.kind = found ? found.kind : wantedKind;
   registration.count = registrations.length;
   registration.topLevel = found ? found.topLevel : null;
-  const propertyScan = scanDeclaredProperties(found?.options);
+  // Behavior declarations need an explicit static overlay: imports/nested
+  // graphs may not be merged by the typings, and the typings intersect a
+  // component's own field with a conflicting behavior field into `never`.
+  // Resolve the graph from the request snapshot only; a behavior outside it is
+  // reported, never guessed from disk.
+  const behaviorCache = new Map<string, ts.SourceFile>();
+  const behaviorSource = (absolute: string): ts.SourceFile | undefined => {
+    const resolved = path.resolve(absolute);
+    const cached = behaviorCache.get(resolved);
+    if (cached) return cached;
+    const text = files.get(resolved);
+    if (text === undefined) return undefined;
+    const parsed = parseSource(text, resolved);
+    behaviorCache.set(resolved, parsed);
+    return parsed;
+  };
+  // Use the program's AST so non-literal behavior data initializers can be
+  // typed by the checker. It is the same snapshot text as `sourceFile`.
+  const programScript = baseline.program().getSourceFile(scriptPath) ?? sourceFile;
+  const programRegistration = findRegistrations(programScript).registrations.find(
+    (candidate) => candidate.kind === "component",
+  );
+  const behavior = resolveBehaviors({
+    scriptPath,
+    sourceFile: programScript,
+    ...(programRegistration ? { registration: programRegistration } : {}),
+    getSourceFile: (absolute: string) =>
+      baseline.program().getSourceFile(path.resolve(absolute)) ?? behaviorSource(absolute),
+    checker: baseline.checker(),
+  });
+  const ownPropertyScan = scanDeclaredProperties(found?.options);
+  const propertyScan = mergePropertyScan(ownPropertyScan, behavior.properties);
+
   const dataMember = found ? memberMap(found.options).get("data") : undefined;
   // Distinguish "no data member" (empty root) from "data exists but is not a
   // property assignment" (cannot bind a root at all).
@@ -324,6 +372,7 @@ export function buildView(request: AnalyzeRequest, config: AnalysisConfig): Prep
     registrationCount: registrations.length,
     dataRootKind,
     propertyScan,
+    behavior,
     pragma,
     wantPragma,
     fragments: request.fragments,

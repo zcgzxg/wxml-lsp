@@ -255,6 +255,28 @@ impl Session {
         self.response(id)
     }
 
+    fn completion(&mut self, uri: &str, position: (u32, u32)) -> Value {
+        let id = self.request(
+            "textDocument/completion",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": position.0, "character": position.1},
+            }),
+        );
+        self.response(id)
+    }
+
+    fn definition(&mut self, uri: &str, position: (u32, u32)) -> Value {
+        let id = self.request(
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": position.0, "character": position.1},
+            }),
+        );
+        self.response(id)
+    }
+
     fn stderr_text(&self) -> String {
         self.stderr
             .lock()
@@ -785,6 +807,183 @@ fn ac011_unknown_owner_degrades_honestly() {
             .all(|diagnostic| diagnostic["severity"] != json!(1)),
         "an unknown owner must not fabricate a type diagnostic: {diagnostics}"
     );
+
+    session.shutdown();
+}
+
+#[test]
+#[ignore = "requires the real server binary and Node fixture; set WXML_TEST_NODE=1"]
+fn static_wxs_and_template_semantics_work_over_stdio() {
+    let paths = backend_paths();
+    let project = TempProject::new("wxml-static-template-wxs");
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    let wxml_text = r#"<wxs module="utils">/** Formats a value. */
+function format(value) { return "x"; }
+module.exports = { format };</wxs>
+<template name="card"><view>{{ title }} {{ count }}</view></template>
+<import src="./shared.wxml" />
+<view>{{ utils.format(pageTitle) }}</view>
+<template is="card" data="{{ { title: pageTitle } }}" />
+<template is="shared" />"#;
+    project.write("pages/index/index.wxml", wxml_text);
+    project.write(
+        "pages/index/index.ts",
+        "Page({ data: { pageTitle: 'x' } });",
+    );
+    project.write(
+        "pages/index/shared.wxml",
+        r#"<template name="shared"><view>{{ sharedTitle }}</view></template>"#,
+    );
+    project.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+
+    let mut session = Session::start(&project, &paths);
+    let uri = project.uri("pages/index/index.wxml");
+    session.open_wxml(&uri, wxml_text, 1);
+
+    let format = lsp_position(wxml_text, "format(pageTitle)");
+    let hover = session.hover(&uri, (format.0, format.1 + 1));
+    let hover_text = hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("wxs hover text");
+    assert!(hover_text.contains("utils.format"), "{hover}");
+    assert!(hover_text.contains("=> string"), "{hover}");
+    assert!(hover_text.contains("Formats a value."), "{hover}");
+
+    let definition = session.definition(&uri, (format.0, format.1 + 1));
+    let locations = definition["result"].as_array().expect("definition array");
+    assert_eq!(locations[0]["uri"], json!(uri));
+    assert_eq!(locations[0]["range"]["start"]["line"], json!(1));
+
+    let card = lsp_position(wxml_text, "is=\"card\"");
+    let template_hover = session.hover(&uri, (card.0, card.1 + 4));
+    let template_text = template_hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("template hover");
+    assert!(
+        template_text.contains("template `card`"),
+        "{template_hover}"
+    );
+
+    let shared = lsp_position(wxml_text, "is=\"shared\"");
+    let shared_definition = session.definition(&uri, (shared.0, shared.1 + 4));
+    let shared_locations = shared_definition["result"]
+        .as_array()
+        .expect("shared definition");
+    assert_eq!(
+        shared_locations[0]["uri"],
+        json!(project.uri("pages/index/shared.wxml"))
+    );
+
+    let incomplete_is = wxml_text.replace("is=\"shared\"", "is=\"sh\"");
+    session.change_wxml(&uri, &incomplete_is, 2);
+    let is_position = lsp_position(&incomplete_is, "\"sh\"");
+    let completion = session.completion(&uri, (is_position.0, is_position.1 + 3));
+    assert!(
+        completion["result"]["items"]
+            .as_array()
+            .expect("completion items")
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .any(|label| label == "shared"),
+        "{completion}"
+    );
+
+    let incomplete_member = wxml_text.replace("utils.format(pageTitle)", "utils.");
+    session.change_wxml(&uri, &incomplete_member, 3);
+    let member_position = lsp_position(&incomplete_member, "utils.");
+    let member_completion = session.completion(&uri, (member_position.0, member_position.1 + 6));
+    assert!(
+        member_completion["result"]["items"]
+            .as_array()
+            .expect("member completion items")
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .any(|label| label == "format"),
+        "{member_completion}"
+    );
+
+    let incomplete_data = wxml_text.replace("{ title: pageTitle }", "{ ti");
+    session.change_wxml(&uri, &incomplete_data, 4);
+    let data_position = lsp_position(&incomplete_data, "data=\"{{ { ti");
+    let data_completion = session.completion(&uri, (data_position.0, data_position.1 + 13));
+    assert!(
+        data_completion["result"]["items"]
+            .as_array()
+            .expect("data completion items")
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .any(|label| label == "title"),
+        "{data_completion}"
+    );
+
+    session.shutdown();
+}
+
+#[test]
+#[ignore = "requires the real server binary and Node fixture; set WXML_TEST_NODE=1"]
+fn component_behavior_data_and_properties_work_over_stdio() {
+    let paths = backend_paths();
+    let project = TempProject::new("wxml-behavior-stdio");
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    project.write("pages/index/index.wxml", "<card />");
+    project.write(
+        "pages/index/index.json",
+        r#"{"usingComponents":{"card":"/components/card/card"}}"#,
+    );
+    project.write("pages/index/index.ts", "Page({ data: {} });");
+    project.write("components/card/card.json", r#"{"component":true}"#);
+    let card = "Component({
+  behaviors: [Behavior({
+    data: {
+      /** 共享计数 */
+      sharedCount: 3,
+    },
+    properties: {
+      cardTitle: { type: String, optionalTypes: [Number] },
+    },
+  })],
+  data: {},
+});";
+    project.write("components/card/card.ts", card);
+    let wxml_text = "{{ sharedCount }}{{ cardTitle }}";
+    project.write("components/card/card.wxml", wxml_text);
+    project.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+
+    let mut session = Session::start(&project, &paths);
+    let uri = project.uri("components/card/card.wxml");
+    let diagnostics = session.open_wxml(&uri, wxml_text, 1);
+    assert!(
+        diagnostics.as_array().is_some_and(Vec::is_empty),
+        "{diagnostics}"
+    );
+
+    let shared = lsp_position(wxml_text, "sharedCount");
+    let hover = session.hover(&uri, shared);
+    let text = hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("behavior hover");
+    assert!(text.contains("number"), "{hover}");
+    assert!(text.contains("共享计数"), "{hover}");
+
+    let definition = session.definition(&uri, shared);
+    let locations = definition["result"].as_array().expect("definition");
+    assert_eq!(
+        locations[0]["uri"],
+        json!(project.uri("components/card/card.ts"))
+    );
+
+    let title = lsp_position(wxml_text, "cardTitle");
+    let title_hover = session.hover(&uri, title);
+    let title_text = title_hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("property hover");
+    assert!(title_text.contains("string | number"), "{title_hover}");
 
     session.shutdown();
 }

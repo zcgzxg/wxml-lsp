@@ -271,13 +271,17 @@ pub struct EventHandler {
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum UnsupportedKind {
-    /// `<wxs>` blocks are not analyzed in this phase.
+    /// A `<wxs>` block is summarized statically; its body is not mounted as a
+    /// template data fragment.
     Wxs,
-    /// `<template>` definitions are not analyzed in this phase.
+    /// A `<template>` definition is indexed for call-site completion and
+    /// hover; its body is not type-checked per call site in this phase.
     Template,
-    /// `<import>` statements are not analyzed in this phase.
+    /// An `<import>` is resolved for template names; imported markup is not
+    /// type-checked as part of this document.
     Import,
-    /// `<include>` statements are not analyzed in this phase.
+    /// An `<include>` is resolved for navigation; included markup is not
+    /// type-checked as part of this document.
     Include,
     /// An event handler is a mustache or mixed dynamic value.
     DynamicEvent,
@@ -303,10 +307,18 @@ impl UnsupportedKind {
     #[must_use]
     pub const fn reason(self) -> &'static str {
         match self {
-            Self::Wxs => "wxs blocks are not analyzed in this phase",
-            Self::Template => "template definitions are not analyzed in this phase",
-            Self::Import => "template imports are not analyzed in this phase",
-            Self::Include => "template includes are not analyzed in this phase",
+            Self::Wxs => {
+                "wxs block is summarized for hover/completion; its body is not executed or type-checked"
+            }
+            Self::Template => {
+                "template definition is indexed for completion/navigation; its body is not type-checked per call site"
+            }
+            Self::Import => {
+                "template import is resolved for names; imported markup is not type-checked as this document"
+            }
+            Self::Include => {
+                "template include is resolved for navigation; included markup is not type-checked as this document"
+            }
             Self::DynamicEvent => "dynamic event handlers are not analyzed",
             Self::EmptyEvent => "event binding has no static handler",
             Self::InvalidEvent => "event handler is not a static method name",
@@ -327,22 +339,23 @@ impl UnsupportedKind {
 #[non_exhaustive]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum UnsupportedFeature {
-    /// `<wxs>` blocks are not analyzed in this phase.
+    /// A `<wxs>` block is summarized statically; its body is not mounted as a
+    /// template data fragment.
     Wxs {
         /// Byte range of the element in the original WXML source.
         range: SourceRange,
     },
-    /// `<template>` definitions are not analyzed in this phase.
+    /// A `<template>` definition is indexed; its body is checked at call sites.
     Template {
         /// Byte range of the element in the original WXML source.
         range: SourceRange,
     },
-    /// `<import>` statements are not analyzed in this phase.
+    /// An `<import>` is resolved for template names.
     Import {
         /// Byte range of the element in the original WXML source.
         range: SourceRange,
     },
-    /// `<include>` statements are not analyzed in this phase.
+    /// An `<include>` is resolved for navigation.
     Include {
         /// Byte range of the element in the original WXML source.
         range: SourceRange,

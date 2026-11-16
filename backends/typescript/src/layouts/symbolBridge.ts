@@ -109,6 +109,7 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
   const checkPath = path.join(path.dirname(context.scriptPath), CHECK_FILE_NAME);
   const drafts = planFragments(context.fragments, {
     propertyOverlay: new Set(),
+    dataOverlay: new Set(),
     rootPrefix: `${ROOT_VAR}.`,
   });
 
@@ -226,6 +227,12 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
   if (!anchorInsertion) throw new Error("layout B: anchor insertion missing");
   const anchorOffset = assembledScript.text.indexOf(`const ${ROOT_VAR}`, anchorInsertion.startUtf16);
 
+  if (context.behavior.data.length > 0 || context.behavior.properties.length > 0) {
+    buildStatus = "partial";
+    reason ??= "component behaviors are not expanded by the symbol-bridge layout";
+    notes.push("behavior data/properties require the in-place-shadow layout");
+  }
+
   if (unresolvedBindings > 0 || unresolvedGuards > 0) {
     buildStatus = "partial";
     const unresolvedReason = "some template bindings or guards could not be resolved and were not checked";
@@ -283,6 +290,7 @@ function rewriteInCheck(exprText: string, locals: ReadonlySet<string>): string |
       rootPrefix: `${ROOT_VAR}.`,
       propsPrefix: PROPS_PREFIX,
       propertyOverlay: new Set(),
+      dataOverlay: new Set(),
       locals,
     }).text;
   } catch {
