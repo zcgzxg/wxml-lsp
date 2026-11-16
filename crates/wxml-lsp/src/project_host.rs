@@ -412,6 +412,11 @@ pub trait ProjectHost: Send + Sync {
     fn remove_wxml_snapshot(&self, file: &FileId);
     /// Returns a stored WXML snapshot.
     fn source(&self, file: &FileId) -> Option<Arc<SourceSnapshot>>;
+    /// Returns effective file size for pre-read limits, when the host can
+    /// determine it cheaply. A simple host may return `None`.
+    fn file_size(&self, _file: &FileId) -> Option<u64> {
+        None
+    }
     /// Returns effective text for any project file (overlay first, then disk).
     ///
     /// This is used to convert byte ranges in definition targets to LSP
@@ -1132,6 +1137,10 @@ impl ProjectHost for ProjectState {
             Some("ts" | "tsx" | "js" | "jsx" | "mts" | "cts" | "mjs" | "cjs" | "d.ts") => {
                 DocumentRoute::Script(path)
             }
+            // WXS buffers are tracked as side documents so their unsaved text
+            // reaches the static WXS analyzer; they are not part of the Node
+            // script snapshot.
+            Some("wxs") => DocumentRoute::Script(path),
             Some("json") => DocumentRoute::Json(path),
             Some("wxss" | "scss" | "css") => DocumentRoute::Style(path),
             _ => DocumentRoute::Unknown,
@@ -1193,6 +1202,13 @@ impl ProjectHost for ProjectState {
 
     fn source(&self, file: &FileId) -> Option<Arc<SourceSnapshot>> {
         self.read().snapshots.get(file).cloned()
+    }
+
+    fn file_size(&self, file: &FileId) -> Option<u64> {
+        let state = self.read();
+        let slot = state.projects.get(file.project())?;
+        let path = ProjectPath::new(file.path()).ok()?;
+        slot.project.file_size(&path)
     }
 
     fn file_text(&self, file: &FileId) -> Option<Arc<str>> {
@@ -1621,6 +1637,9 @@ impl ProjectState {
                 project: Some(project),
             });
         }
+        // Unknown sources (including .wxs until the graph records WXS edges)
+        // invalidate every view through `dirty_for_source`; known page,
+        // component and config sources stay precise.
         let dirty = mark_views_dirty(&mut state, &project, dirty);
         let project_revision = bump_slot_revision(&mut state, &project);
         Ok(HostUpdate {

@@ -231,7 +231,23 @@ impl Project {
     /// workspace snapshot instead.
     #[must_use]
     pub fn accepts_overlay(&self, path: &ProjectPath) -> bool {
-        self.accepts_script_overlay(path) || self.accepts_json_overlay(path)
+        self.accepts_script_overlay(path)
+            || self.accepts_wxs_overlay(path)
+            || self.accepts_json_overlay(path)
+    }
+
+    /// Returns whether an unsaved WXS buffer may become a project overlay.
+    ///
+    /// WXS is not part of the script snapshot sent to Node; the static WXS
+    /// analyzer reads it through [`Project::read`], so an overlay matters for
+    /// hover/completion/definition and dependency invalidation.
+    #[must_use]
+    pub fn accepts_wxs_overlay(&self, path: &ProjectPath) -> bool {
+        self.contains_source(path)
+            && path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("wxs"))
+            && !has_excluded_component(path)
     }
 
     /// Returns whether `path` is a page or component config that discovery has
@@ -585,6 +601,10 @@ mod tests {
             assert!(project.accepts_overlay(&path), "{accepted}");
             assert!(!project.accepts_json_overlay(&path), "{accepted}");
         }
+        let wxs = path("src/util.wxs");
+        assert!(project.accepts_wxs_overlay(&wxs));
+        assert!(project.accepts_overlay(&wxs));
+        assert!(!project.accepts_script_overlay(&wxs));
         for rejected in ["node_modules/pkg/index.js", "dist/bundle.js"] {
             let path = path(rejected);
             assert!(!project.accepts_script_overlay(&path), "{rejected}");

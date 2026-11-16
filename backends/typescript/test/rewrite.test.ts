@@ -389,6 +389,7 @@ test("expression emission is linear for 1 MiB and 4 MiB / 9k roots", () => {
     rootPrefix: "__wxml_root.",
     propsPrefix: "__wxml_props_0.",
     propertyOverlay: new Set<string>(),
+    dataOverlay: new Set<string>(),
     locals: new Set<string>(),
   };
   const measure = (bytes: number): number => {

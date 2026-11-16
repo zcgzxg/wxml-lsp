@@ -146,6 +146,10 @@ export interface DeclaredProperty {
   doc: string;
   /** Property name node in the original script (UTF-16 offsets, original file). */
   nameNode: ts.Node;
+  /** The `{ type, value, ... }` initializer, when it is an object literal. */
+  initializer?: ts.ObjectLiteralExpression;
+  /** Override for declarations that live in another file (component behaviors). */
+  source?: { file: string; start: number; end: number };
 }
 
 export interface PropertyScan {
@@ -208,6 +212,7 @@ export function scanDeclaredProperties(options: ts.ObjectLiteralExpression | und
       hasOptionalTypes: option.has("optionalTypes"),
       doc: docTextOf(property),
       nameNode: property.name ?? property,
+      initializer: property.initializer,
     });
   }
 

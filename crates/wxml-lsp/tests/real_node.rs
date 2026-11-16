@@ -33,28 +33,7 @@ fn real_node_hover_and_diagnostics_smoke() {
         std::env::var("WXML_TEST_NODE").as_deref() == Ok("1"),
         "set WXML_TEST_NODE=1 to run the real Node smoke test"
     );
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repo = manifest
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("repo root")
-        .to_path_buf();
-    let server = std::env::var_os("WXML_TYPE_BACKEND").map_or_else(
-        || repo.join("backends/typescript/dist/server.js"),
-        PathBuf::from,
-    );
-    let backend_dir = std::env::var_os("WXML_BACKEND_DIR")
-        .map_or_else(|| repo.join("backends/typescript"), PathBuf::from);
-    assert!(
-        server.is_file(),
-        "WXML_TEST_NODE=1 but {} is missing; run `npm ci && npm run build` in backends/typescript",
-        server.display()
-    );
-    assert!(
-        backend_dir.is_dir(),
-        "WXML_TEST_NODE=1 but backend dir {} is missing",
-        backend_dir.display()
-    );
+    let (server, backend_dir) = real_node_backend_paths();
 
     let project = TempProject::new("wxml-p7-real-node");
     project.write(
@@ -130,18 +109,7 @@ fn real_node_expression_and_event_completion_smoke() {
         std::env::var("WXML_TEST_NODE").as_deref() == Ok("1"),
         "set WXML_TEST_NODE=1 to run the real Node smoke test"
     );
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repo = manifest
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("repo root")
-        .to_path_buf();
-    let server = std::env::var_os("WXML_TYPE_BACKEND").map_or_else(
-        || repo.join("backends/typescript/dist/server.js"),
-        PathBuf::from,
-    );
-    let backend_dir = std::env::var_os("WXML_BACKEND_DIR")
-        .map_or_else(|| repo.join("backends/typescript"), PathBuf::from);
+    let (server, backend_dir) = real_node_backend_paths();
 
     let project = TempProject::new("wxml-wave5-completion");
     project.write(
@@ -494,12 +462,21 @@ fn real_node_backend_paths() -> (PathBuf, PathBuf) {
         .and_then(std::path::Path::parent)
         .expect("repo root")
         .to_path_buf();
-    let server = std::env::var_os("WXML_TYPE_BACKEND").map_or_else(
-        || repo.join("backends/typescript/dist/server.js"),
-        PathBuf::from,
-    );
-    let backend_dir = std::env::var_os("WXML_BACKEND_DIR")
-        .map_or_else(|| repo.join("backends/typescript"), PathBuf::from);
+    let external = std::env::var("WXML_TEST_EXTERNAL_BACKEND").as_deref() == Ok("1");
+    let server = if external {
+        std::env::var_os("WXML_TYPE_BACKEND").map_or_else(
+            || panic!("WXML_TEST_EXTERNAL_BACKEND=1 requires WXML_TYPE_BACKEND"),
+            PathBuf::from,
+        )
+    } else {
+        repo.join("backends/typescript/dist/server.js")
+    };
+    let backend_dir = if external {
+        std::env::var_os("WXML_BACKEND_DIR")
+            .map_or_else(|| repo.join("backends/typescript"), PathBuf::from)
+    } else {
+        repo.join("backends/typescript")
+    };
     assert!(
         server.is_file(),
         "WXML_TEST_NODE=1 but {} is missing; run `npm ci && npm run build` in backends/typescript",
@@ -511,4 +488,136 @@ fn real_node_backend_paths() -> (PathBuf, PathBuf) {
         backend_dir.display()
     );
     (server, backend_dir)
+}
+
+#[test]
+#[ignore = "requires Node 24 and a built P5 dist/server.js; set WXML_TEST_NODE=1"]
+#[allow(clippy::too_many_lines)]
+fn non_owner_script_overlay_propagates_and_survives_a_node_restart() {
+    use wxml_lsp::project_host::OpenDocument;
+
+    assert!(
+        std::env::var("WXML_TEST_NODE").as_deref() == Ok("1"),
+        "set WXML_TEST_NODE=1 to run the real Node smoke test"
+    );
+    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let repo = manifest
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("repo root")
+        .to_path_buf();
+    let external = std::env::var("WXML_TEST_EXTERNAL_BACKEND").as_deref() == Ok("1");
+    let server = if external {
+        std::env::var_os("WXML_TYPE_BACKEND").map_or_else(
+            || panic!("WXML_TEST_EXTERNAL_BACKEND=1 requires WXML_TYPE_BACKEND"),
+            PathBuf::from,
+        )
+    } else {
+        repo.join("backends/typescript/dist/server.js")
+    };
+    let backend_dir = if external {
+        std::env::var_os("WXML_BACKEND_DIR")
+            .map_or_else(|| repo.join("backends/typescript"), PathBuf::from)
+    } else {
+        repo.join("backends/typescript")
+    };
+    assert!(
+        server.is_file(),
+        "WXML_TEST_NODE=1 but backend {} is missing; run `npm ci && npm run build` in backends/typescript",
+        server.display()
+    );
+    assert!(
+        backend_dir.is_dir(),
+        "WXML_TEST_NODE=1 but backend dir {} is missing",
+        backend_dir.display()
+    );
+
+    let project = TempProject::new("wxml-overlay-restart");
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    let wxml_text = "{{ user.name }}";
+    project.write("pages/index/index.wxml", wxml_text);
+    project.write(
+        "pages/index/index.ts",
+        "import type { User } from \"../../models/user\";\nPage({ data: { user: null as unknown as User } });",
+    );
+    project.write("models/user.ts", "export interface User { name: string }\n");
+    project.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+
+    let host: Arc<dyn ProjectHost> = Arc::new(ProjectState::new());
+    host.open_root(Some(&project.root_uri()))
+        .expect("open project");
+    let path = wxml_project::ProjectPath::new("pages/index/index.wxml").expect("path");
+    let file = host.file_id(&path).expect("file id");
+    let snapshot = Arc::new(SourceSnapshot::new(
+        file,
+        SourceRevision::new(1),
+        SnapshotId::new(1),
+        wxml_text,
+    ));
+    let target = host.view_for(&path).expect("view");
+
+    let user_uri = project.uri("models/user.ts");
+    host.open_document(OpenDocument {
+        uri: user_uri.clone(),
+        text: "export interface User { name: \"OVERLAY\" }\n".to_owned(),
+        version: Some(1),
+    })
+    .expect("user overlay");
+
+    let config = NodeBackendConfig {
+        server: Some(server),
+        backend_dir: Some(backend_dir),
+        timeout: std::time::Duration::from_secs(20),
+        ..NodeBackendConfig::default()
+    };
+    let backend = NodeBackend::new(config.clone(), Arc::clone(&host));
+
+    let hover_with = |backend: &NodeBackend| {
+        let context = RequestContext::new(
+            host.project_revision(),
+            target.view_revision,
+            backend.epoch(),
+            Arc::clone(&snapshot),
+        )
+        .expect("context");
+        backend
+            .hover(HoverRequest {
+                context,
+                offset: 10,
+            })
+            .expect("real node hover")
+            .contents
+    };
+
+    let before = hover_with(&backend);
+    assert!(
+        before.contains("OVERLAY"),
+        "overlay not visible: {before:?}"
+    );
+
+    host.close_document(&user_uri).expect("close overlay");
+    let after_close = hover_with(&backend);
+    assert!(
+        !after_close.contains("OVERLAY"),
+        "closing the overlay must restore the disk declaration: {after_close:?}"
+    );
+
+    host.open_document(OpenDocument {
+        uri: user_uri,
+        text: "export interface User { name: \"OVERLAY\" }\n".to_owned(),
+        version: Some(2),
+    })
+    .expect("reopen overlay");
+    assert!(hover_with(&backend).contains("OVERLAY"));
+
+    drop(backend);
+    let restarted = NodeBackend::new(config, Arc::clone(&host));
+    let after_restart = hover_with(&restarted);
+    assert!(
+        after_restart.contains("OVERLAY"),
+        "the restarted backend must see the replayed overlay: {after_restart:?}"
+    );
 }

@@ -386,6 +386,24 @@ impl Project {
         Arc::make_mut(&mut self.overlay).remove(path)
     }
 
+    /// Returns the effective size of a file without reading its contents when
+    /// it is not overlaid. Used to bound large optional sources (for example a
+    /// WXS `src`) before allocating their text.
+    #[must_use]
+    pub fn file_size(&self, path: &ProjectPath) -> Option<u64> {
+        if let Some(text) = self.overlay.text(path) {
+            return Some(u64::try_from(text.len()).unwrap_or(u64::MAX));
+        }
+        let target = self.root.join(path.as_str());
+        let canonical = std::fs::canonicalize(&target).ok()?;
+        if !canonical.starts_with(&self.root) {
+            return None;
+        }
+        std::fs::metadata(canonical)
+            .ok()
+            .map(|metadata| metadata.len())
+    }
+
     /// Reads effective text: overlay first, then disk.
     ///
     /// # Errors

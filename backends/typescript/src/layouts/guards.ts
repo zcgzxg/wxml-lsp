@@ -56,10 +56,86 @@ export function renderGuards(chain: RequestGuardChain, options: GuardRenderOptio
       break;
     }
     const rewritten = options.rewriteCondition(condition.exprText);
-    if (rewritten === undefined) return { open: "", close: "", unresolved: true };
+    // TypeScript's control-flow analysis cannot prove every legal `||` guard
+    // (a discriminated union behind `a !== 'x' || a.b` is a false positive in
+    // the narrowed branch). Degrade only that risky shape: plain value-level
+    // `a || b` conditions are left to TypeScript. Do not publish diagnostics
+    // under a narrowing we cannot justify, and report the view Partial.
+    if (
+      rewritten === undefined ||
+      (containsLogicalOr(rewritten) && containsMemberAccess(condition.exprText))
+    ) {
+      return { open: "", close: "", unresolved: true };
+    }
     lines.push(`${options.indent}${index === 0 ? "if" : "} else if"} (${rewritten}) {`);
   }
 
   if (selected === conditions.length && !terminated) lines.push(`${options.indent}} else {`);
   return { open: `${lines.join("\n")}\n`, close: `${options.indent}}\n`, unresolved: false };
+}
+
+/** True when `text` contains `||` outside strings and comments. */
+function containsLogicalOr(text: string): boolean {
+  let quote: string | undefined;
+  let index = 0;
+  while (index < text.length) {
+    const character = text[index]!;
+    if (quote !== undefined) {
+      if (character === "\\") {
+        index += 2;
+        continue;
+      }
+      if (character === quote) quote = undefined;
+      index += 1;
+      continue;
+    }
+    if (character === "'" || character === '"' || character === "`") {
+      quote = character;
+      index += 1;
+      continue;
+    }
+    if (character === "/" && text[index + 1] === "/") {
+      const end = text.indexOf("\n", index);
+      if (end < 0) return false;
+      index = end + 1;
+      continue;
+    }
+    if (character === "/" && text[index + 1] === "*") {
+      const end = text.indexOf("*/", index + 2);
+      if (end < 0) return false;
+      index = end + 2;
+      continue;
+    }
+    if (character === "|" && text[index + 1] === "|") return true;
+    index += 1;
+  }
+  return false;
+}
+
+/** True when an expression accesses a member/index outside strings. */
+function containsMemberAccess(text: string): boolean {
+  let quote: string | undefined;
+  let index = 0;
+  while (index < text.length) {
+    const character = text[index]!;
+    if (quote !== undefined) {
+      if (character === "\\") {
+        index += 2;
+        continue;
+      }
+      if (character === quote) quote = undefined;
+      index += 1;
+      continue;
+    }
+    if (character === "'" || character === '"' || character === "`") {
+      quote = character;
+      index += 1;
+      continue;
+    }
+    if ((character === "." || character === "?") && text[index + 1] === ".") return true;
+    if (character === ".") return true;
+    if (character === "[") return true;
+    index += 1;
+  }
+  return false;
 }

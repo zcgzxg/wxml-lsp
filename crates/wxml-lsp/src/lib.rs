@@ -52,6 +52,7 @@ pub(crate) mod metadata;
 pub mod project_host;
 pub(crate) mod scheduler;
 pub(crate) mod server;
+pub(crate) mod static_semantics;
 pub(crate) mod structure;
 pub(crate) mod styles;
 pub(crate) mod workspace;

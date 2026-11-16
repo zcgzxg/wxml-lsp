@@ -10,7 +10,8 @@
 import path from "node:path";
 import ts from "typescript";
 import { declarationSpans, findRegistrations, memberMap, scanDeclaredProperties } from "./ast.ts";
-import type { DataRootKind } from "./ast.ts";
+import type { DataRootKind, PropertyScan } from "./ast.ts";
+import { resolveBehaviors } from "./behaviors.ts";
 import {
   assertEnvironment,
   defaultReadPolicy,
@@ -225,6 +226,21 @@ export interface UnavailableView {
   registration: AnalyzeResponse["registration"];
 }
 
+/** Merges the component's own properties with behavior properties. */
+function mergePropertyScan(
+  own: PropertyScan,
+  behaviorProperties: ReadonlyArray<import("./ast.ts").DeclaredProperty>,
+): PropertyScan {
+  const names = new Set(own.properties.map((property) => property.name));
+  const properties = [...own.properties];
+  for (const property of behaviorProperties) {
+    if (names.has(property.name)) continue;
+    names.add(property.name);
+    properties.push(property);
+  }
+  return { ...own, properties };
+}
+
 /** Validate the request, build the derived view, but do not run queries. */
 export function buildView(request: AnalyzeRequest, config: AnalysisConfig): PreparedView | UnavailableView {
   // Validate before touching any optional field: a malformed request must not
@@ -292,8 +308,49 @@ export function buildView(request: AnalyzeRequest, config: AnalysisConfig): Prep
   registration.kind = found ? found.kind : wantedKind;
   registration.count = registrations.length;
   registration.topLevel = found ? found.topLevel : null;
-  const propertyScan = scanDeclaredProperties(found?.options);
+  // Behavior declarations need an explicit static overlay: imports/nested
+  // graphs may not be merged by the typings, and the typings intersect a
+  // component's own field with a conflicting behavior field into `never`.
+  // Resolve the graph from the request snapshot only; a behavior outside it is
+  // reported, never guessed from disk.
+  const behaviorCache = new Map<string, ts.SourceFile>();
+  const behaviorSource = (absolute: string): ts.SourceFile | undefined => {
+    const resolved = path.resolve(absolute);
+    const cached = behaviorCache.get(resolved);
+    if (cached) return cached;
+    const text = files.get(resolved);
+    if (text === undefined) return undefined;
+    const parsed = parseSource(text, resolved);
+    behaviorCache.set(resolved, parsed);
+    return parsed;
+  };
+  // Use the program's AST so non-literal behavior data initializers can be
+  // typed by the checker. It is the same snapshot text as `sourceFile`.
+  const programScript = baseline.program().getSourceFile(scriptPath) ?? sourceFile;
+  // Match the selected registration, not merely the first Component in the
+  // file: a page and a component may share one script, and only the selected
+  // registration owns the template root.
+  const programRegistration = found
+    ? findRegistrations(programScript).registrations.find(
+        (candidate) =>
+          candidate.kind === found.kind && candidate.options.pos === found.options.pos,
+      )
+    : undefined;
+  const behavior = resolveBehaviors({
+    scriptPath,
+    sourceFile: programScript,
+    ...(programRegistration ? { registration: programRegistration } : {}),
+    getSourceFile: (absolute: string) =>
+      baseline.program().getSourceFile(path.resolve(absolute)) ?? behaviorSource(absolute),
+    checker: baseline.checker(),
+  });
+  const ownPropertyScan = scanDeclaredProperties(found?.options);
+  const propertyScan = mergePropertyScan(ownPropertyScan, behavior.properties);
   const dataMember = found ? memberMap(found.options).get("data") : undefined;
+  const dataNames =
+    dataMember && ts.isPropertyAssignment(dataMember) && ts.isObjectLiteralExpression(dataMember.initializer)
+      ? [...memberMap(dataMember.initializer).keys()]
+      : [];
   // Distinguish "no data member" (empty root) from "data exists but is not a
   // property assignment" (cannot bind a root at all).
   const dataRootKind: DataRootKind = !found
@@ -324,6 +381,8 @@ export function buildView(request: AnalyzeRequest, config: AnalysisConfig): Prep
     registrationCount: registrations.length,
     dataRootKind,
     propertyScan,
+    behavior,
+    dataNames,
     pragma,
     wantPragma,
     fragments: request.fragments,
@@ -721,11 +780,16 @@ function computeStates(input: StateInput, missing: number, unexpected: number): 
 
   const problems = input.probeProblems;
   const rootBroken = problems.some((problem) => problem.includes("probe root"));
+  // An incomplete behavior can make the root opaque without invalidating the
+  // component's own data. Report that as Partial (no guessed property error),
+  // not as an unavailable root.
+  const behaviorIncomplete = input.build.behaviorIncomplete === true;
+  const rootGate: CapabilityStatus = rootBroken && !behaviorIncomplete ? "unavailable" : "partial";
   let hover: CapabilityState =
     input.build.buildStatus === "partial"
       ? base("partial")
       : problems.length > 0
-        ? { status: rootBroken ? "unavailable" : "partial", reason: problems.join("; ") }
+        ? { status: rootGate, reason: problems.join("; ") }
         : { status: "supported" };
   let diagnostics: CapabilityState =
     input.build.buildStatus === "partial" ? base("partial") : { status: "supported" };
@@ -743,7 +807,7 @@ function computeStates(input: StateInput, missing: number, unexpected: number): 
   }
   if (problems.length > 0) {
     const gate: CapabilityState = {
-      status: rootBroken ? "unavailable" : "partial",
+      status: rootGate,
       reason: [reason, ...problems].filter(Boolean).join("; "),
     };
     if (!checkOff) diagnostics = gate;
@@ -930,6 +994,21 @@ function withProvenance(
   };
 }
 
+function unknownBehaviorRoot(
+  build: LayoutBuild,
+  hit: { fragmentId: string; mount: { text: string } },
+): boolean {
+  const match = /^__(?:wxml_root(?:_0)?|wxml_props_0)\.([\p{L}_$][\p{L}\p{N}_$]*)/u.exec(
+    hit.mount.text,
+  );
+  const root = match?.[1] ?? /^([\p{L}_$][\p{L}\p{N}_$]*)/u.exec(hit.mount.text)?.[1];
+  if (root === undefined) return false;
+  if ((build.knownRoots ?? []).includes(root)) return false;
+  const fragment = build.fragments.find((entry) => entry.fragmentId === hit.fragmentId);
+  if (fragment?.bindings.some((binding) => binding.name === root)) return false;
+  return true;
+}
+
 export function mapDiagnostics(
   project: VirtualProject,
   build: LayoutBuild,
@@ -963,6 +1042,17 @@ export function mapDiagnostics(
         if (suppressedDetails.length < 5 && !suppressedDetails.some((entry) => entry.message === message)) {
           suppressedDetails.push({ code: diagnostic.code, message });
         }
+        continue;
+      }
+      if (
+        build.behaviorIncomplete === true &&
+        (diagnostic.code === 2339 || diagnostic.code === 2551) &&
+        unknownBehaviorRoot(build, hit)
+      ) {
+        // A behavior that could not be resolved may declare the missing root;
+        // do not turn incomplete coverage into a property-does-not-exist error.
+        // A known data/property/local root keeps its real typo diagnostic.
+        suppressed += 1;
         continue;
       }
       const span = mapSpanToSource(hit.mount, diagnostic.start, diagnostic.length);

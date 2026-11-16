@@ -59,15 +59,27 @@ fn backend_paths() -> BackendPaths {
         .and_then(Path::parent)
         .expect("repo root")
         .to_path_buf();
-    let server = std::env::var_os("WXML_TYPE_BACKEND").map_or_else(
-        || repo.join("backends/typescript/dist/server.js"),
-        PathBuf::from,
-    );
-    let backend_dir = std::env::var_os("WXML_BACKEND_DIR")
-        .map_or_else(|| repo.join("backends/typescript"), PathBuf::from);
+    // Default to this checkout's backend. An external backend must be
+    // requested explicitly so a stale WXML_TYPE_BACKEND in the developer shell
+    // cannot silently change what these tests verify.
+    let external = std::env::var("WXML_TEST_EXTERNAL_BACKEND").as_deref() == Ok("1");
+    let server = if external {
+        std::env::var_os("WXML_TYPE_BACKEND").map_or_else(
+            || panic!("WXML_TEST_EXTERNAL_BACKEND=1 requires WXML_TYPE_BACKEND"),
+            PathBuf::from,
+        )
+    } else {
+        repo.join("backends/typescript/dist/server.js")
+    };
+    let backend_dir = if external {
+        std::env::var_os("WXML_BACKEND_DIR")
+            .map_or_else(|| repo.join("backends/typescript"), PathBuf::from)
+    } else {
+        repo.join("backends/typescript")
+    };
     assert!(
         server.is_file(),
-        "WXML_TEST_NODE=1 but {} is missing; run `npm ci && npm run build` in backends/typescript",
+        "WXML_TEST_NODE=1 but backend {} is missing; run `npm ci && npm run build` in backends/typescript",
         server.display()
     );
     assert!(
@@ -94,10 +106,14 @@ struct Session {
 
 impl Session {
     fn start(project: &TempProject, paths: &BackendPaths) -> Self {
+        Self::start_with_server(project, paths, &paths.server)
+    }
+
+    fn start_with_server(project: &TempProject, paths: &BackendPaths, server: &Path) -> Self {
         let mut child = Command::new(BIN)
             .arg("--stdio")
             .current_dir(project.root())
-            .env("WXML_TYPE_BACKEND", &paths.server)
+            .env("WXML_TYPE_BACKEND", server)
             .env("WXML_BACKEND_DIR", &paths.backend_dir)
             .env("WXML_ANALYZE_TIMEOUT_MS", "30000")
             .stdin(Stdio::piped())
@@ -247,6 +263,28 @@ impl Session {
     fn hover(&mut self, uri: &str, position: (u32, u32)) -> Value {
         let id = self.request(
             "textDocument/hover",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": position.0, "character": position.1},
+            }),
+        );
+        self.response(id)
+    }
+
+    fn completion(&mut self, uri: &str, position: (u32, u32)) -> Value {
+        let id = self.request(
+            "textDocument/completion",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": position.0, "character": position.1},
+            }),
+        );
+        self.response(id)
+    }
+
+    fn definition(&mut self, uri: &str, position: (u32, u32)) -> Value {
+        let id = self.request(
+            "textDocument/definition",
             json!({
                 "textDocument": {"uri": uri},
                 "position": {"line": position.0, "character": position.1},
@@ -784,6 +822,296 @@ fn ac011_unknown_owner_degrades_honestly() {
             .iter()
             .all(|diagnostic| diagnostic["severity"] != json!(1)),
         "an unknown owner must not fabricate a type diagnostic: {diagnostics}"
+    );
+
+    session.shutdown();
+}
+
+#[test]
+#[ignore = "requires the real server binary and Node fixture; set WXML_TEST_NODE=1"]
+fn static_wxs_and_template_semantics_work_over_stdio() {
+    let paths = backend_paths();
+    let project = TempProject::new("wxml-static-template-wxs");
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    let wxml_text = r#"<wxs module="utils">/** Formats a value. */
+function format(value) { return "x"; }
+module.exports = { format };</wxs>
+<template name="card"><view>{{ title }} {{ count }}</view></template>
+<import src="./shared.wxml" />
+<view>{{ utils.format(pageTitle) }}</view>
+<template is="card" data="{{ { title: pageTitle } }}" />
+<template is="shared" />"#;
+    project.write("pages/index/index.wxml", wxml_text);
+    project.write(
+        "pages/index/index.ts",
+        "Page({ data: { pageTitle: 'x' } });",
+    );
+    project.write(
+        "pages/index/shared.wxml",
+        r#"<template name="shared"><view>{{ sharedTitle }}</view></template>"#,
+    );
+    project.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+
+    let mut session = Session::start(&project, &paths);
+    let uri = project.uri("pages/index/index.wxml");
+    session.open_wxml(&uri, wxml_text, 1);
+
+    let format = lsp_position(wxml_text, "format(pageTitle)");
+    let hover = session.hover(&uri, (format.0, format.1 + 1));
+    let hover_text = hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("wxs hover text");
+    assert!(hover_text.contains("utils.format"), "{hover}");
+    assert!(hover_text.contains("=> string"), "{hover}");
+    assert!(hover_text.contains("Formats a value."), "{hover}");
+
+    let definition = session.definition(&uri, (format.0, format.1 + 1));
+    let locations = definition["result"].as_array().expect("definition array");
+    assert_eq!(locations[0]["uri"], json!(uri));
+    assert_eq!(locations[0]["range"]["start"]["line"], json!(1));
+
+    let card = lsp_position(wxml_text, "is=\"card\"");
+    let template_hover = session.hover(&uri, (card.0, card.1 + 4));
+    let template_text = template_hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("template hover");
+    assert!(
+        template_text.contains("template `card`"),
+        "{template_hover}"
+    );
+
+    let shared = lsp_position(wxml_text, "is=\"shared\"");
+    let shared_definition = session.definition(&uri, (shared.0, shared.1 + 4));
+    let shared_locations = shared_definition["result"]
+        .as_array()
+        .expect("shared definition");
+    assert_eq!(
+        shared_locations[0]["uri"],
+        json!(project.uri("pages/index/shared.wxml"))
+    );
+
+    let incomplete_is = wxml_text.replace("is=\"shared\"", "is=\"sh\"");
+    session.change_wxml(&uri, &incomplete_is, 2);
+    let is_position = lsp_position(&incomplete_is, "\"sh\"");
+    let completion = session.completion(&uri, (is_position.0, is_position.1 + 3));
+    assert!(
+        completion["result"]["items"]
+            .as_array()
+            .expect("completion items")
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .any(|label| label == "shared"),
+        "{completion}"
+    );
+
+    let incomplete_member = wxml_text.replace("utils.format(pageTitle)", "utils.");
+    session.change_wxml(&uri, &incomplete_member, 3);
+    let member_position = lsp_position(&incomplete_member, "utils.");
+    let member_completion = session.completion(&uri, (member_position.0, member_position.1 + 6));
+    assert!(
+        member_completion["result"]["items"]
+            .as_array()
+            .expect("member completion items")
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .any(|label| label == "format"),
+        "{member_completion}"
+    );
+
+    let incomplete_data = wxml_text.replace("{ title: pageTitle }", "{ ti");
+    session.change_wxml(&uri, &incomplete_data, 4);
+    let data_position = lsp_position(&incomplete_data, "data=\"{{ { ti");
+    let data_completion = session.completion(&uri, (data_position.0, data_position.1 + 13));
+    assert!(
+        data_completion["result"]["items"]
+            .as_array()
+            .expect("data completion items")
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .any(|label| label == "title"),
+        "{data_completion}"
+    );
+
+    session.shutdown();
+}
+
+#[test]
+#[ignore = "requires the real server binary and Node fixture; set WXML_TEST_NODE=1"]
+fn component_behavior_data_and_properties_work_over_stdio() {
+    let paths = backend_paths();
+    let project = TempProject::new("wxml-behavior-stdio");
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    project.write("pages/index/index.wxml", "<card />");
+    project.write(
+        "pages/index/index.json",
+        r#"{"usingComponents":{"card":"/components/card/card"}}"#,
+    );
+    project.write("pages/index/index.ts", "Page({ data: {} });");
+    project.write("components/card/card.json", r#"{"component":true}"#);
+    let card = "Component({
+  behaviors: [Behavior({
+    data: {
+      /** 共享计数 */
+      sharedCount: 3,
+    },
+    properties: {
+      cardTitle: { type: String, optionalTypes: [Number] },
+    },
+  })],
+  data: {},
+});";
+    project.write("components/card/card.ts", card);
+    let wxml_text = "{{ sharedCount }}{{ cardTitle }}";
+    project.write("components/card/card.wxml", wxml_text);
+    project.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+
+    let mut session = Session::start(&project, &paths);
+    let uri = project.uri("components/card/card.wxml");
+    let diagnostics = session.open_wxml(&uri, wxml_text, 1);
+    assert!(
+        diagnostics.as_array().is_some_and(Vec::is_empty),
+        "{diagnostics}"
+    );
+
+    let shared = lsp_position(wxml_text, "sharedCount");
+    let hover = session.hover(&uri, shared);
+    let text = hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("behavior hover");
+    assert!(text.contains("number"), "{hover}");
+    assert!(text.contains("共享计数"), "{hover}");
+
+    let definition = session.definition(&uri, shared);
+    let locations = definition["result"].as_array().expect("definition");
+    assert_eq!(
+        locations[0]["uri"],
+        json!(project.uri("components/card/card.ts"))
+    );
+
+    let title = lsp_position(wxml_text, "cardTitle");
+    let title_hover = session.hover(&uri, title);
+    let title_text = title_hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("property hover");
+    assert!(title_text.contains("string | number"), "{title_hover}");
+
+    session.shutdown();
+}
+
+#[test]
+#[ignore = "requires the real server binary and Node fixture; set WXML_TEST_NODE=1"]
+fn unsaved_wxs_overlay_updates_static_hover_and_completion() {
+    let paths = backend_paths();
+    let project = TempProject::new("wxml-static-wxs-overlay");
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    let wxml_text = r#"<wxs module="u" src="./u.wxs" />
+<view>{{ u.label }}</view>"#;
+    project.write("pages/index/index.wxml", wxml_text);
+    project.write("pages/index/index.ts", "Page({ data: {} });");
+    project.write("pages/index/u.wxs", "module.exports = { label: 'disk' };");
+    project.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+
+    let mut session = Session::start(&project, &paths);
+    let wxml = project.uri("pages/index/index.wxml");
+    let wxs = project.uri("pages/index/u.wxs");
+    session.open_wxml(&wxml, wxml_text, 1);
+
+    let label = lsp_position(wxml_text, "label");
+    let disk_hover = session.hover(&wxml, (label.0, label.1 + 1));
+    let disk_text = disk_hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("disk WXS hover");
+    assert!(disk_text.contains("string"), "{disk_hover}");
+
+    session.notify(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": wxs,
+                "languageId": "javascript",
+                "version": 1,
+                "text": "module.exports = { label: 456, renamed: 1 };",
+            }
+        }),
+    );
+    let renamed_hover = session.hover(&wxml, (label.0, label.1 + 1));
+    let renamed_text = renamed_hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("overlay WXS hover");
+    assert!(renamed_text.contains("number"), "{renamed_hover}");
+
+    let completion = session.completion(&wxml, (label.0, label.1));
+    assert!(
+        completion["result"]["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .any(|label| label == "renamed"),
+        "{completion}"
+    );
+
+    session.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": wxs}}),
+    );
+    let restored = session.hover(&wxml, (label.0, label.1 + 1));
+    let restored_text = restored["result"]["contents"]["value"]
+        .as_str()
+        .expect("restored WXS hover");
+    assert!(restored_text.contains("string"), "{restored}");
+    assert!(restored_text.contains("label"), "{restored}");
+
+    session.shutdown();
+}
+
+#[test]
+#[ignore = "requires the real server binary; set WXML_TEST_NODE=1"]
+fn static_wxs_answers_survive_an_unavailable_type_backend() {
+    let paths = backend_paths();
+    let project = TempProject::new("wxml-static-no-backend");
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    let wxml_text = r#"<wxs module="u">function format(v) { return "x"; }
+module.exports = { format };</wxs>
+<view>{{ u.format(title) }}</view>"#;
+    project.write("pages/index/index.wxml", wxml_text);
+    project.write("pages/index/index.ts", "Page({ data: { title: 'x' } });");
+    project.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+
+    let unavailable = PathBuf::from("/nonexistent/wxml-type-backend.js");
+    let mut session = Session::start_with_server(&project, &paths, &unavailable);
+    let uri = project.uri("pages/index/index.wxml");
+    session.open_wxml(&uri, wxml_text, 1);
+
+    let format = lsp_position(wxml_text, "format(title)");
+    let hover = session.hover(&uri, (format.0, format.1 + 1));
+    let text = hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("static hover without a backend");
+    assert!(
+        text.contains("utils.format") || text.contains("u.format"),
+        "{hover}"
+    );
+    assert!(text.contains("=> string"), "{hover}");
+
+    let definition = session.definition(&uri, (format.0, format.1 + 1));
+    assert!(
+        definition["result"]
+            .as_array()
+            .is_some_and(|locations| !locations.is_empty()),
+        "{definition}"
     );
 
     session.shutdown();

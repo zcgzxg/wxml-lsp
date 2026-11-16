@@ -109,6 +109,7 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
   const checkPath = path.join(path.dirname(context.scriptPath), CHECK_FILE_NAME);
   const drafts = planFragments(context.fragments, {
     propertyOverlay: new Set(),
+    dataOverlay: new Set(),
     rootPrefix: `${ROOT_VAR}.`,
   });
 
@@ -226,6 +227,20 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
   if (!anchorInsertion) throw new Error("layout B: anchor insertion missing");
   const anchorOffset = assembledScript.text.indexOf(`const ${ROOT_VAR}`, anchorInsertion.startUtf16);
 
+  const behaviorIncomplete =
+    context.behavior.data.length > 0 ||
+    context.behavior.properties.length > 0 ||
+    context.behavior.dataIncomplete ||
+    context.behavior.propertiesIncomplete ||
+    context.behavior.problems.length > 0;
+  if (behaviorIncomplete) {
+    buildStatus = "partial";
+    reason ??= "component behaviors are not expanded by the symbol-bridge layout";
+    notes.push(
+      "behavior data/properties require the in-place-shadow layout; behavior roots are not diagnosed as missing",
+    );
+  }
+
   if (unresolvedBindings > 0 || unresolvedGuards > 0) {
     buildStatus = "partial";
     const unresolvedReason = "some template bindings or guards could not be resolved and were not checked";
@@ -239,6 +254,16 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
     ...(reason ? { reason } : {}),
     unresolvedBindings,
     unresolvedGuards,
+    behaviorIncomplete,
+    knownRoots: [
+      ...context.dataNames,
+      // Behavior properties/data are not mounted by this layout; leave those
+      // roots to the incomplete-behavior suppression instead of reporting a
+      // missing property that the layout itself could not expose.
+      ...context.propertyScan.properties
+        .filter((property) => property.source === undefined)
+        .map((property) => property.name),
+    ],
     files: [
       { path: context.scriptPath, text: assembledScript.text },
       { path: checkPath, text: assembledCheck.text },
@@ -283,6 +308,7 @@ function rewriteInCheck(exprText: string, locals: ReadonlySet<string>): string |
       rootPrefix: `${ROOT_VAR}.`,
       propsPrefix: PROPS_PREFIX,
       propertyOverlay: new Set(),
+      dataOverlay: new Set(),
       locals,
     }).text;
   } catch {

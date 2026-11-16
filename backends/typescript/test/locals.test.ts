@@ -31,6 +31,7 @@ const rewriteSource: RewriteSource = (exprText, outerNames) => {
       rootPrefix: "__wxml_root.",
       propsPrefix: "__wxml_props_0.",
       propertyOverlay: new Set(),
+      dataOverlay: new Set(),
       locals: outerNames,
     }).text;
   } catch {
