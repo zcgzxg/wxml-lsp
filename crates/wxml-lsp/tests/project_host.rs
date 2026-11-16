@@ -777,6 +777,30 @@ fn watched_style_files_invalidate_views_but_other_files_are_ignored() {
 }
 
 #[test]
+fn watched_resource_changes_only_refresh_local_diagnostics() {
+    let project = fixture();
+    project.write("images/logo.png", "png");
+    let host = host_with(&project);
+    let before_revision = host.project_revision();
+    let update = host
+        .watched_files_changed(&[watched(
+            &project.uri("images/logo.png"),
+            WatchedChangeKind::Created,
+        )])
+        .expect("watched resource");
+    assert!(update.dirty_views.is_empty());
+    assert!(
+        update
+            .style_views
+            .iter()
+            .any(|path| path.as_str() == "pages/index/index.wxml"),
+        "{update:?}"
+    );
+    assert!(update.project_revision.is_none());
+    assert_eq!(host.project_revision(), before_revision);
+}
+
+#[test]
 fn parent_tsconfig_supplies_paths_for_a_nested_app() {
     let project = TempProject::new();
     project.write(

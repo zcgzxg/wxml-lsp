@@ -36,7 +36,10 @@ pub use files::{
 };
 pub use overlay::{Overlay, OverlayError};
 pub use resources::{ResourceCandidate, ResourceCandidates, ResourceKind, ResourceResolution};
-pub use script::{DataRoot, DataRootKind, ScriptResolution, extract_data_roots, resolve_script};
+pub use script::{
+    DataRoot, DataRootKind, RegistrationKind, ScriptResolution, ScriptStyleHints,
+    extract_data_roots, registration_style_hints, resolve_script,
+};
 pub use sources::{SourceFile, SourceIssue, SourceIssueKind, SourceKind, SourceLimits, SourceSet};
 pub use styles::{
     ClassDefinition, ClassToken, StyleConfig, StyleDiagnosticsPolicy, StyleFileInfo, StyleFileKind,

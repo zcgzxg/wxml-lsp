@@ -263,13 +263,24 @@ fn local_definition_locations(
     if !site.kind.accepts(&target) {
         return Some(empty_links());
     }
-    let mut targets = Targets::new(server);
-    let Ok(offset) = SourceRange::from_bounds(0, 0) else {
+    // Resource targets may be binary; never run them through the UTF-8
+    // text/line-index path. The protocol only needs the file URI and a range.
+    let Ok(file) = server.host.file_id(&target) else {
         return Some(empty_links());
     };
-    Some(Value::Array(
-        targets.location(&target, offset).into_iter().collect(),
-    ))
+    let Some(uri) = server.host.uri_for(&file) else {
+        return Some(empty_links());
+    };
+    if uri.len() > MAX_LOCAL_URI_BYTES {
+        return Some(empty_links());
+    }
+    Some(Value::Array(vec![json!({
+        "uri": uri,
+        "range": {
+            "start": {"line": 0, "character": 0},
+            "end": {"line": 0, "character": 0},
+        },
+    })]))
 }
 
 impl Server {
@@ -340,6 +351,10 @@ impl Server {
         };
         let facts = self.host.style_facts(&path)?;
         let replace = source_range_value(document, SourceRange::new(site.token))?;
+        let external = site
+            .existing
+            .iter()
+            .any(|name| styles::is_external_class(name));
         let mut items = Vec::new();
         let mut seen = HashSet::new();
         let mut truncated = false;
@@ -376,7 +391,7 @@ impl Server {
             items.push(item);
         }
         Some(json!({
-            "isIncomplete": truncated || !facts.complete,
+            "isIncomplete": truncated || !facts.complete || external,
             "items": items,
         }))
     }

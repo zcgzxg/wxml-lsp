@@ -126,13 +126,28 @@ impl Parser<'_> {
                 break;
             }
             let byte = self.bytes[index];
+            if starts_url_function(self.bytes, index) {
+                if let Some(end) = skip_url_function(self.bytes, index, len) {
+                    index = end;
+                    continue;
+                }
+                self.mark_incomplete("unterminated url()");
+                self.issue(
+                    StyleIssueKind::Malformed,
+                    "unterminated url(); the rest of the style file was not indexed",
+                );
+                break;
+            }
             match byte {
                 b'/' if self.bytes.get(index + 1) == Some(&b'*') => {
                     let end = self.block_comment_end(index);
                     self.handle_comment(index, end);
                     index = end;
                 }
-                b'/' if self.bytes.get(index + 1) == Some(&b'/') && self.is_scss() => {
+                b'/' if self.bytes.get(index + 1) == Some(&b'/')
+                    && self.is_scss()
+                    && self.paren_depth == 0 =>
+                {
                     index = self.text[index..]
                         .find('\n')
                         .map_or(len, |offset| index + offset + 1);
@@ -414,7 +429,12 @@ impl Parser<'_> {
         let base = self.current_selectors().to_vec();
         let mut expanded = Vec::new();
         let mut tokens = Vec::new();
-        for (selector, relative) in split_selector_list(trimmed) {
+        let (items, truncated) = split_selector_list(trimmed);
+        if truncated {
+            self.mark_incomplete("selector list budget reached");
+            self.issue(StyleIssueKind::Truncated, "selector list budget reached");
+        }
+        for (selector, relative) in items {
             let (mut selectors, mut items) =
                 expand_selector(selector, offset + relative, &base, &mut self.sheet);
             expanded.append(&mut selectors);
@@ -515,14 +535,6 @@ impl Parser<'_> {
             self.mark_incomplete("class name exceeds the index limit");
             return;
         }
-        if self
-            .sheet
-            .classes
-            .iter()
-            .any(|existing| existing.range == token.range && existing.name == token.name)
-        {
-            return;
-        }
         if self.sheet.classes.len() >= self.max_classes {
             self.class_limit_hit = true;
             self.mark_incomplete("class budget reached");
@@ -554,7 +566,21 @@ fn expand_selector(
         }
         vec![normalize_selector(selector)]
     } else if contains_top_level_ampersand(selector) {
-        expand_parent_references(selector, base)
+        let (expanded, truncated) = expand_parent_references(selector, base);
+        if truncated {
+            if sheet.complete {
+                sheet.complete = false;
+                sheet.reason = Some("selector expansion budget reached".to_owned());
+            }
+            if sheet.issues.len() < MAX_STYLE_ISSUES {
+                sheet.issues.push(StyleIssue::new(
+                    &sheet.path,
+                    StyleIssueKind::Truncated,
+                    "selector expansion budget reached",
+                ));
+            }
+        }
+        expanded
     } else {
         base.iter()
             .map(|parent| normalize_selector(&format!("{parent} {selector}")))
@@ -571,27 +597,26 @@ fn expand_selector(
 ///
 /// Only top-level `&` characters are replaced; ampersands inside strings,
 /// comments, attribute selectors or pseudo arguments stay literal.
-fn expand_parent_references(selector: &str, base: &[String]) -> Vec<String> {
+fn expand_parent_references(selector: &str, base: &[String]) -> (Vec<String>, bool) {
     let positions = top_level_ampersands(selector);
     if positions.is_empty() {
-        return vec![normalize_selector(selector)];
+        return (vec![normalize_selector(selector)], false);
     }
     let mut results = vec![String::new()];
     let mut last = 0_usize;
+    let mut truncated = false;
     for position in positions {
         let Some(text) = selector.get(last..position) else {
-            return Vec::new();
+            return (Vec::new(), true);
         };
         let mut next = Vec::new();
-        for prefix in &results {
+        'expand: for prefix in &results {
             for parent in base {
                 if next.len() >= MAX_SELECTOR_EXPANSIONS {
-                    break;
+                    truncated = true;
+                    break 'expand;
                 }
                 next.push(format!("{prefix}{text}{parent}"));
-            }
-            if next.len() >= MAX_SELECTOR_EXPANSIONS {
-                break;
             }
         }
         results = next;
@@ -602,10 +627,13 @@ fn expand_parent_references(selector: &str, base: &[String]) -> Vec<String> {
             result.push_str(tail);
         }
     }
-    results
-        .into_iter()
-        .map(|item| truncate_selector(&normalize_selector(&item)))
-        .collect()
+    (
+        results
+            .into_iter()
+            .map(|item| truncate_selector(&normalize_selector(&item)))
+            .collect(),
+        truncated,
+    )
 }
 
 /// Returns byte positions of `&` outside strings, comments, brackets and
@@ -815,7 +843,7 @@ fn contains_top_level_ampersand(selector: &str) -> bool {
 }
 
 /// Splits a selector list at top-level commas.
-fn split_selector_list(text: &str) -> Vec<(&str, usize)> {
+fn split_selector_list(text: &str) -> (Vec<(&str, usize)>, bool) {
     let bytes = text.as_bytes();
     let mut items = Vec::new();
     let mut start = 0_usize;
@@ -840,7 +868,7 @@ fn split_selector_list(text: &str) -> Vec<(&str, usize)> {
                 if let Some(item) = selector_item(text, start, index) {
                     items.push(item);
                     if items.len() >= MAX_SELECTOR_ITEMS {
-                        return items;
+                        return (items, true);
                     }
                 }
                 start = index + 1;
@@ -852,7 +880,7 @@ fn split_selector_list(text: &str) -> Vec<(&str, usize)> {
     if let Some(item) = selector_item(text, start, text.len()) {
         items.push(item);
     }
-    items
+    (items, false)
 }
 
 /// Trims one selector item and returns it with its relative offset.
@@ -876,6 +904,52 @@ fn at_rule_name(prelude: &str) -> &str {
         })
         .next()
         .unwrap_or("")
+}
+
+/// Returns whether `index` starts a case-insensitive `url(` function.
+fn starts_url_function(bytes: &[u8], index: usize) -> bool {
+    if index > 0 && is_identifier_continue(bytes[index - 1]) {
+        return false;
+    }
+    bytes
+        .get(index..index + 4)
+        .is_some_and(|slice| slice.eq_ignore_ascii_case(b"url("))
+}
+
+/// Skips one `url(...)` function, including quoted strings and escapes.
+fn skip_url_function(bytes: &[u8], index: usize, limit: usize) -> Option<usize> {
+    let mut cursor = index + 4;
+    let mut depth = 1_usize;
+    while cursor < limit {
+        match bytes[cursor] {
+            b'\\' => cursor = cursor.saturating_add(2),
+            b'\'' | b'"' => cursor = skip_string(bytes, cursor, limit)?,
+            b'(' => {
+                depth = depth.saturating_add(1);
+                cursor += 1;
+            }
+            b')' => {
+                depth = depth.saturating_sub(1);
+                cursor += 1;
+                if depth == 0 {
+                    return Some(cursor);
+                }
+            }
+            b'/' if bytes.get(cursor + 1) == Some(&b'*') => {
+                cursor = bytes[cursor + 2..]
+                    .windows(2)
+                    .position(|window| window == b"*/")
+                    .map_or(limit, |position| cursor + 2 + position + 2);
+            }
+            _ => cursor += 1,
+        }
+    }
+    None
+}
+
+/// Returns whether a byte may continue an identifier.
+const fn is_identifier_continue(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$' | b'-')
 }
 
 /// Skips a quoted string and returns the offset after it.
@@ -1094,6 +1168,68 @@ mod tests {
     }
 
     #[test]
+    fn selector_list_truncation_marks_the_sheet_incomplete() {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        for index in 0..(MAX_SELECTOR_ITEMS + 2) {
+            write!(text, ".c{index}, ").expect("selector");
+        }
+        text.push_str(".last { }");
+        let sheet = parse(&text);
+        assert!(!sheet.complete);
+        assert!(
+            sheet
+                .issues
+                .iter()
+                .any(|issue| issue.kind == StyleIssueKind::Truncated)
+        );
+    }
+
+    #[test]
+    fn selector_expansion_truncation_marks_the_sheet_incomplete() {
+        let mut text = String::new();
+        for index in 0..MAX_SELECTOR_EXPANSIONS {
+            use std::fmt::Write as _;
+            write!(text, ".c{index}, ").expect("selector");
+        }
+        text.push_str(".last { &-x { } }");
+        let sheet = parse(&text);
+        assert!(!sheet.complete);
+        assert!(
+            sheet
+                .issues
+                .iter()
+                .any(|issue| issue.kind == StyleIssueKind::Truncated)
+        );
+    }
+
+    #[test]
+    fn selector_expansion_at_the_limit_stays_complete() {
+        let mut text = String::new();
+        for index in 0..(MAX_SELECTOR_EXPANSIONS - 1) {
+            use std::fmt::Write as _;
+            write!(text, ".c{index}, ").expect("selector");
+        }
+        text.push_str(".last { &-x { } }");
+        let sheet = parse(&text);
+        assert!(sheet.complete, "{:?}", sheet.reason);
+    }
+
+    #[test]
+    fn twenty_thousand_unique_classes_parse_within_the_class_budget() {
+        use std::fmt::Write as _;
+        let mut text = String::new();
+        for index in 0..20_000 {
+            writeln!(text, ".c{index} {{ color: red; }}").expect("class");
+        }
+        let sheet = parse_style_sheet(&path("large.scss"), &text, crate::styles::MAX_STYLE_CLASSES);
+        assert_eq!(sheet.classes.len(), 20_000);
+        assert!(sheet.complete);
+        assert_eq!(sheet.classes[0].name, "c0");
+        assert_eq!(sheet.classes[19_999].name, "c19999");
+    }
+
+    #[test]
     fn caps_classes_and_marks_truncation() {
         use std::fmt::Write as _;
 
@@ -1159,18 +1295,14 @@ mod tests {
             &text[header.range.start() as usize..header.range.end() as usize],
             "header"
         );
-        let hover = sheet
-            .classes
-            .iter()
-            .find(|class| class.name == "card:hover")
-            .unwrap_or_else(|| {
-                sheet
-                    .classes
-                    .iter()
-                    .find(|class| class.name == "card")
-                    .expect("card")
-            });
-        assert!(!hover.selector.contains("a.cardb"), "{}", hover.selector);
+        assert!(
+            sheet
+                .classes
+                .iter()
+                .all(|class| !class.selector.contains("a.cardb")),
+            "{:?}",
+            sheet.classes
+        );
     }
 
     #[test]
@@ -1223,6 +1355,40 @@ mod tests {
                 .issues
                 .iter()
                 .any(|issue| issue.kind == StyleIssueKind::Truncated)
+        );
+    }
+
+    #[test]
+    fn urls_do_not_start_scss_line_comments_or_rule_boundaries() {
+        let sheet = parse(".a { background: url(https://cdn/x.png); }\n.b { color: red; }\n");
+        assert_eq!(names(&sheet), vec!["a", "b"]);
+        assert!(sheet.complete, "{:?}", sheet.issues);
+
+        let sheet = parse(".a { background: url(//cdn/x.png); }\n.b { }");
+        assert_eq!(names(&sheet), vec!["a", "b"]);
+
+        let sheet = parse(".a { background: url(data:image/svg+xml;utf8,<svg>{}</svg>); }\n.b { }");
+        assert_eq!(names(&sheet), vec!["a", "b"]);
+        assert!(sheet.complete, "{:?}", sheet.issues);
+    }
+
+    #[test]
+    fn remote_url_imports_are_recorded() {
+        let sheet = parse("@import url(https://cdn/x.css);\n.a { }\n");
+        assert_eq!(sheet.imports.len(), 1);
+        assert_eq!(sheet.imports[0].kind, StyleImportKind::Remote);
+        assert!(names(&sheet).contains(&"a"));
+    }
+
+    #[test]
+    fn unterminated_url_is_malformed_and_incomplete() {
+        let sheet = parse(".a { background: url(./bg.png; }\n.b { }\n");
+        assert!(!sheet.complete);
+        assert!(
+            sheet
+                .issues
+                .iter()
+                .any(|issue| issue.kind == StyleIssueKind::Malformed)
         );
     }
 

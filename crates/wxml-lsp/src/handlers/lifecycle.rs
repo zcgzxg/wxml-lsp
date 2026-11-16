@@ -86,13 +86,22 @@ fn style_initialization_options(params: Option<&Value>) -> (StyleConfig, StyleDi
     if let Some(paths) = options.get("globalStyles").and_then(Value::as_array) {
         for path in paths.iter().take(64) {
             let Some(path) = path.as_str() else {
+                config
+                    .invalid_global_styles
+                    .push("<non-string globalStyles entry>".to_owned());
                 continue;
             };
             if path.len() > 1024 {
+                config
+                    .invalid_global_styles
+                    .push(path.chars().take(256).collect());
                 continue;
             }
-            if let Ok(path) = ProjectPath::new(path) {
-                config.global_styles.push(path);
+            match ProjectPath::new(path) {
+                Ok(path) => config.global_styles.push(path),
+                Err(_) => config
+                    .invalid_global_styles
+                    .push(path.chars().take(256).collect()),
             }
         }
     }
@@ -456,7 +465,7 @@ const WATCH_REGISTRATION_ID: &str = "wxml-lsp-watch";
 const WATCH_KIND_ALL: u8 = 7;
 
 /// Glob patterns registered for `workspace/didChangeWatchedFiles`.
-const WATCH_GLOBS: [&str; 13] = [
+const WATCH_GLOBS: [&str; 30] = [
     "**/*.wxml",
     "**/*.json",
     "**/*.ts",
@@ -470,6 +479,23 @@ const WATCH_GLOBS: [&str; 13] = [
     "**/*.wxss",
     "**/*.scss",
     "**/*.css",
+    "**/*.wxs",
+    "**/*.png",
+    "**/*.jpg",
+    "**/*.jpeg",
+    "**/*.gif",
+    "**/*.svg",
+    "**/*.webp",
+    "**/*.bmp",
+    "**/*.ico",
+    "**/*.mp4",
+    "**/*.mov",
+    "**/*.webm",
+    "**/*.mp3",
+    "**/*.wav",
+    "**/*.m4a",
+    "**/*.ogg",
+    "**/*.ttf",
 ];
 
 /// Largest number of `didChangeWatchedFiles` entries processed per call.
@@ -542,6 +568,15 @@ mod tests {
         );
         assert!(!policy.resources);
         assert!(policy.classes);
+
+        let (invalid, _) = style_initialization_options(Some(&json!({
+            "initializationOptions": {"style": {"globalStyles": ["/abs/theme.scss", 3]}}
+        })));
+        assert_eq!(invalid.global_styles, Vec::new());
+        assert_eq!(
+            invalid.invalid_global_styles,
+            vec!["/abs/theme.scss", "<non-string globalStyles entry>"]
+        );
 
         let (_, defaults) = style_initialization_options(None);
         assert!(defaults.resources);

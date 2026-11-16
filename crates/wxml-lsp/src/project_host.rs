@@ -916,10 +916,30 @@ impl ProjectHost for ProjectState {
 
     fn style_facts(&self, wxml: &ProjectPath) -> Option<Arc<StyleViewFacts>> {
         let (snapshot, project_id, scope, isolation, epoch) = self.style_context(wxml)?;
-        Some(
-            self.styles()
-                .facts(&project_id, &snapshot, wxml, scope, isolation, epoch),
-        )
+        let facts = self
+            .styles()
+            .facts(&project_id, &snapshot, wxml, scope, isolation, epoch);
+        // External `~class` / `^class` references live in the open template,
+        // not in the style chain. Keep the cached index complete but return a
+        // partial view to consumers that must not claim rename/reference
+        // completeness.
+        let file = FileId::new(project_id, wxml.as_str()).ok();
+        let external = file.and_then(|file| {
+            self.read()
+                .snapshots
+                .get(&file)
+                .map(|snapshot| crate::styles::has_external_class_reference(snapshot.text()))
+        });
+        if external == Some(true) && facts.complete {
+            let mut partial = (*facts).clone();
+            partial.complete = false;
+            partial.reason = Some(
+                "template uses external ~class/^class references; caller styles are unknown"
+                    .to_owned(),
+            );
+            return Some(Arc::new(partial));
+        }
+        Some(facts)
     }
 
     fn resource_resolution(
@@ -964,7 +984,7 @@ impl ProjectHost for ProjectState {
         };
         let mut diagnostics = Vec::new();
         if let (true, Some(facts)) = (policy.classes, facts.as_ref()) {
-            if facts.complete {
+            if facts.complete && !crate::styles::has_external_class_reference(snapshot.text()) {
                 let defined: std::collections::BTreeSet<&str> = facts
                     .classes
                     .iter()
@@ -1471,6 +1491,7 @@ impl ProjectState {
         let mut json_changes: Vec<ProjectPath> = Vec::new();
         let mut script_changes: Vec<(ProjectPath, WatchedChangeKind)> = Vec::new();
         let mut style_changes: Vec<ProjectPath> = Vec::new();
+        let mut resource_changes: Vec<ProjectPath> = Vec::new();
         let mut wxml_need_rediscovery = false;
         let mut ignored = 0_usize;
         for change in changes {
@@ -1483,7 +1504,7 @@ impl ProjectState {
                 ignored = ignored.saturating_add(1);
                 continue;
             };
-            let (is_json, is_script, is_discovery_json, is_style) = {
+            let (is_json, is_script, is_discovery_json, is_style, is_resource) = {
                 let project = state.project.as_ref().ok_or(HostError::NoProject)?;
                 let is_json = project.accepts_json_overlay(&path);
                 let is_script = project.accepts_script_overlay(&path);
@@ -1492,6 +1513,7 @@ impl ProjectState {
                     is_script,
                     !is_json && project.is_project_json(&path),
                     Project::is_style_path(&path),
+                    is_watch_resource(&path),
                 )
             };
             if is_json || is_discovery_json {
@@ -1500,6 +1522,8 @@ impl ProjectState {
                 script_changes.push((path, change.kind));
             } else if is_style {
                 style_changes.push(path);
+            } else if is_resource {
+                resource_changes.push(path);
             } else if path
                 .extension()
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("wxml"))
@@ -1519,6 +1543,7 @@ impl ProjectState {
         if json_changes.is_empty()
             && script_changes.is_empty()
             && style_changes.is_empty()
+            && resource_changes.is_empty()
             && !wxml_need_rediscovery
         {
             if ignored > 0 {
@@ -1568,7 +1593,8 @@ impl ProjectState {
                 dirty.extend(state.views.keys().cloned());
             }
         }
-        let style_views = if rediscover || !style_changes.is_empty() {
+        let style_views = if rediscover || !style_changes.is_empty() || !resource_changes.is_empty()
+        {
             state.views.keys().cloned().collect()
         } else {
             Vec::new()
@@ -1593,6 +1619,44 @@ impl ProjectState {
             project_revision,
         })
     }
+}
+
+/// Common resource extensions whose create/delete affects local diagnostics.
+fn is_watch_resource(path: &ProjectPath) -> bool {
+    path.extension().is_some_and(|extension| {
+        matches!(
+            extension.to_ascii_lowercase().as_str(),
+            "png"
+                | "jpg"
+                | "jpeg"
+                | "gif"
+                | "svg"
+                | "webp"
+                | "bmp"
+                | "ico"
+                | "avif"
+                | "heic"
+                | "heif"
+                | "mp4"
+                | "mov"
+                | "m4v"
+                | "webm"
+                | "avi"
+                | "mkv"
+                | "mp3"
+                | "wav"
+                | "aac"
+                | "m4a"
+                | "ogg"
+                | "flac"
+                | "wma"
+                | "wxs"
+                | "ttf"
+                | "otf"
+                | "woff"
+                | "woff2"
+        )
+    })
 }
 
 /// Rebuilds the view table after rediscovery.
@@ -2848,6 +2912,37 @@ mod tests {
     }
 
     #[test]
+    fn local_resource_diagnostics_are_bounded() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-style-diag-budget-{stamp}"));
+        std::fs::create_dir_all(root.join("pages/index")).expect("dirs");
+        std::fs::write(root.join("app.json"), r#"{"pages":["pages/index/index"]}"#)
+            .expect("app json");
+        std::fs::write(root.join("pages/index/index.wxml"), "<view/>").expect("wxml");
+        std::fs::write(root.join("pages/index/index.ts"), "Page({})").expect("script");
+        std::fs::write(root.join("pages/index/index.wxss"), ".a {}").expect("style");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open");
+        let path = ProjectPath::new("pages/index/index.wxml").expect("path");
+        let file = host.file_id(&path).expect("file");
+        let text = "<image src=\"missing.png\"/>".repeat(2_200);
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(99),
+            text,
+        ));
+        let diagnostics = host.style_diagnostics(&snapshot);
+        assert_eq!(diagnostics.len(), 2048);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn script_changes_keep_style_facts_but_style_changes_invalidate_them() {
         let base = std::env::var_os("TMPDIR")
             .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
@@ -2893,6 +2988,41 @@ mod tests {
         );
         assert!(third.primary("b").is_some());
         assert!(third.primary("a").is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn external_class_references_make_open_template_facts_partial() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-style-external-{stamp}"));
+        std::fs::create_dir_all(root.join("pages/index")).expect("dirs");
+        std::fs::write(root.join("app.json"), r#"{"pages":["pages/index/index"]}"#)
+            .expect("app json");
+        std::fs::write(root.join("pages/index/index.wxml"), "<view class=\"a\"/>").expect("wxml");
+        std::fs::write(root.join("pages/index/index.ts"), "Page({})").expect("script");
+        std::fs::write(root.join("pages/index/index.wxss"), ".a { color: red; }\n").expect("style");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open");
+        let path = ProjectPath::new("pages/index/index.wxml").expect("path");
+        assert!(host.style_facts(&path).expect("facts").complete);
+
+        let file = host.file_id(&path).expect("view file");
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file.clone(),
+            SourceRevision::new(1),
+            SnapshotId::new(7),
+            "<view class=\"~external a\"/>".to_owned(),
+        ));
+        host.set_wxml_snapshot(file, snapshot);
+        let facts = host.style_facts(&path).expect("external facts");
+        assert!(!facts.complete);
+        assert!(facts.reason.is_some());
+        assert!(facts.primary("a").is_some());
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -190,6 +190,9 @@ impl ProjectSnapshot {
         if !self.contains_source(&target) {
             return ResourceResolution::OutsideRoot;
         }
+        if crate::sources::has_excluded_component(&target) {
+            return ResourceResolution::OutsideRoot;
+        }
         if !self.target_stays_in_source(&target) {
             return ResourceResolution::OutsideRoot;
         }

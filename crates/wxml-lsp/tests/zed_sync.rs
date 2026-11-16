@@ -433,6 +433,23 @@ fn initialized_registers_watched_files_for_a_project() {
             "**/*.wxss",
             "**/*.scss",
             "**/*.css",
+            "**/*.wxs",
+            "**/*.png",
+            "**/*.jpg",
+            "**/*.jpeg",
+            "**/*.gif",
+            "**/*.svg",
+            "**/*.webp",
+            "**/*.bmp",
+            "**/*.ico",
+            "**/*.mp4",
+            "**/*.mov",
+            "**/*.webm",
+            "**/*.mp3",
+            "**/*.wav",
+            "**/*.m4a",
+            "**/*.ogg",
+            "**/*.ttf",
         ]
     );
     assert!(watchers.iter().all(|watcher| watcher["kind"] == json!(7)));

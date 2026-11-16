@@ -18,6 +18,9 @@ pub(crate) const MAX_WXML_RESOURCE_SITES: usize = 4096;
 /// Maximum class attribute sites inspected for one document.
 pub(crate) const MAX_WXML_CLASS_SITES: usize = 4096;
 
+/// Class names longer than the style index limit are ignored.
+const MAX_CLASS_NAME_BYTES: usize = 128;
+
 /// Maximum static runs or class tokens inspected for one value.
 const MAX_STATIC_RUNS: usize = 4096;
 const MAX_CLASS_TOKENS_PER_RUN: usize = 4096;
@@ -171,6 +174,11 @@ fn trimmed_value(text: &str, range: TextRange) -> Option<(TextRange, String)> {
     Some((TextRange::new(start, end).ok()?, trimmed.to_owned()))
 }
 
+/// Returns whether a class token is an external `~class`/`^class` reference.
+pub(crate) fn is_external_class(name: &str) -> bool {
+    name.starts_with('~') || name.starts_with('^')
+}
+
 /// Returns whether a byte may appear in a class name.
 const fn is_class_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-' || byte >= 0x80
@@ -205,6 +213,9 @@ fn class_token_at(text: &str, range: TextRange, offset: u32) -> Option<(TextRang
     let mut token_end = probe + 1;
     while token_end < end && is_class_byte(bytes[token_end]) {
         token_end += 1;
+    }
+    if token_end.saturating_sub(token_start) > MAX_CLASS_NAME_BYTES {
+        return None;
     }
     let token = TextRange::new(
         u32::try_from(token_start).ok()?,
@@ -316,6 +327,9 @@ pub(crate) fn class_completion_site(
     while token_end < run.end && is_class_byte(bytes[token_end]) {
         token_end += 1;
     }
+    if token_end.saturating_sub(token_start) > MAX_CLASS_NAME_BYTES {
+        return None;
+    }
     let token = TextRange::new(
         u32::try_from(token_start).ok()?,
         u32::try_from(token_end).ok()?,
@@ -366,7 +380,9 @@ fn class_tokens_in_run(text: &str, run: &Range<usize>, limit: usize) -> Vec<(usi
         while index < run.end && !bytes[index].is_ascii_whitespace() {
             index += 1;
         }
-        tokens.push((start, index));
+        if index.saturating_sub(start) <= MAX_CLASS_NAME_BYTES {
+            tokens.push((start, index));
+        }
     }
     tokens
 }
@@ -446,8 +462,7 @@ fn attribute_value_end(
 pub(crate) fn resource_attribute(tag: &str, attribute: &str) -> Option<ResourceKind> {
     match (tag, attribute) {
         ("image" | "cover-image", "src" | "url")
-        | ("video" | "live-player" | "live-pusher", "poster")
-        | ("view" | "page-meta", "background") => Some(ResourceKind::Image),
+        | ("video" | "live-player" | "live-pusher", "poster") => Some(ResourceKind::Image),
         ("video" | "live-player" | "live-pusher", "src") => Some(ResourceKind::Video),
         ("audio", "src") => Some(ResourceKind::Audio),
         ("wxs", "src") => Some(ResourceKind::Wxs),
@@ -464,6 +479,15 @@ pub(crate) fn resource_attribute(tag: &str, attribute: &str) -> Option<ResourceK
 /// provable local paths.
 pub(crate) fn looks_like_path(value: &str) -> bool {
     let value = value.trim();
+    if value.contains('(')
+        || value.contains(')')
+        || value.contains(',')
+        || value.contains('%')
+        || value.contains(';')
+        || value.to_ascii_lowercase().contains("url(")
+    {
+        return false;
+    }
     value.starts_with('/')
         || value.starts_with('.')
         || value.contains('/')
@@ -566,6 +590,44 @@ pub(crate) fn resource_site_at(text: &str, offset: u32) -> Option<ResourceSite> 
     None
 }
 
+/// Returns whether a document contains an external `~class`/`^class`
+/// reference in a class attribute.
+pub(crate) fn has_external_class_reference(text: &str) -> bool {
+    let parsed = wxml_syntax::parse(text);
+    let mut inspected = 0_usize;
+    for element in parsed.tree.document().elements() {
+        for attribute in element.attributes() {
+            inspected = inspected.saturating_add(1);
+            if inspected > MAX_WXML_CLASS_SITES {
+                // The scan is truncated, so an external reference may exist
+                // beyond the cap. Report the possibility rather than claiming
+                // completeness.
+                return true;
+            }
+            if attribute.name() != Some("class") {
+                continue;
+            }
+            let Some(value) = attribute.value() else {
+                continue;
+            };
+            let Some(inner) = inner_value_range(value) else {
+                continue;
+            };
+            let start = usize::try_from(inner.start()).unwrap_or(0);
+            let end = usize::try_from(inner.end()).unwrap_or(0);
+            for run in static_runs(text, start, end) {
+                if class_tokens_in_run(text, &run, MAX_CLASS_TOKENS_PER_RUN)
+                    .into_iter()
+                    .any(|(start, end)| text.get(start..end).is_some_and(is_external_class))
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Finds every static class token in a document for diagnostics.
 pub(crate) fn class_tokens(text: &str) -> Vec<ClassSite> {
     let parsed = wxml_syntax::parse(text);
@@ -603,7 +665,7 @@ pub(crate) fn class_tokens(text: &str) -> Vec<ClassSite> {
                         continue;
                     };
                     if let Some(name) = text.get(token_start..token_end) {
-                        if !name.is_empty() {
+                        if !name.is_empty() && !is_external_class(name) {
                             tokens.push(ClassSite {
                                 token,
                                 name: name.to_owned(),
@@ -635,6 +697,24 @@ mod tests {
         let offset = u32::try_from(byte_offset).expect("offset");
         let detected = detect(text, offset)?;
         class_completion_site(text, offset, &detected)
+    }
+
+    #[test]
+    fn external_class_references_are_not_local_definitions() {
+        let text = "<view class=\"~page ^parent local\"></view>";
+        let names: Vec<_> = class_tokens(text)
+            .into_iter()
+            .map(|site| site.name)
+            .collect();
+        assert_eq!(names, vec!["local"]);
+    }
+
+    #[test]
+    fn oversized_class_tokens_are_ignored() {
+        let name = "a".repeat(MAX_CLASS_NAME_BYTES + 1);
+        let text = format!("<view class=\"{name}\"></view>");
+        assert!(class_site_at(&text, 1).is_none());
+        assert_eq!(class_tokens(&text), Vec::new());
     }
 
     #[test]
@@ -712,7 +792,7 @@ mod tests {
     fn resource_sites_are_literal_and_trimmed() {
         let text = "<image src=\" images/logo.png \" /><video poster='p.png' src='v.mp4'/><view background=\"bg.png\"/><navigator url=\"a\"/><my-card src=\"c.png\"/>";
         let sites = resource_sites(text, MAX_WXML_RESOURCE_SITES);
-        assert_eq!(sites.len(), 4);
+        assert_eq!(sites.len(), 3);
         assert_eq!(sites[0].text, "images/logo.png");
         assert_eq!(
             &text[sites[0].value.start() as usize..sites[0].value.end() as usize],
@@ -720,7 +800,6 @@ mod tests {
         );
         assert_eq!(sites[1].text, "p.png");
         assert_eq!(sites[2].text, "v.mp4");
-        assert_eq!(sites[3].text, "bg.png");
         assert!(
             sites
                 .iter()
@@ -759,9 +838,26 @@ mod tests {
             resource_attribute("import", "src"),
             Some(ResourceKind::Template)
         );
+        assert_eq!(
+            resource_attribute("include", "src"),
+            Some(ResourceKind::Template)
+        );
         assert_eq!(resource_attribute("navigator", "url"), None);
         assert_eq!(resource_attribute("my-card", "src"), None);
         assert_eq!(resource_attribute("view", "url"), None);
+        assert_eq!(resource_attribute("view", "background"), None);
+        assert_eq!(resource_attribute("page-meta", "background"), None);
+    }
+
+    #[test]
+    fn css_colors_and_url_functions_are_not_paths() {
+        assert!(!looks_like_path("rgba(0, 0, 0, 0.5)"));
+        assert!(!looks_like_path("url(./bg.png)"));
+        assert!(!looks_like_path("url(https://cdn/x.png)"));
+        assert!(!looks_like_path("linear-gradient(red, blue)"));
+        assert!(!looks_like_path("my%20pic.png"));
+        assert!(looks_like_path("images/bg.png"));
+        assert!(looks_like_path("../bg.png"));
     }
 
     #[test]

@@ -179,6 +179,30 @@ fn page_component_app_and_configured_classes_are_scoped() {
 }
 
 #[test]
+fn missing_or_invalid_configured_global_styles_make_the_index_partial() {
+    let project = fixture();
+    let project = open(&project);
+    let config = StyleConfig {
+        global_styles: vec![path("styles/missing.wxss"), path("styles/not-a-style.txt")],
+        invalid_global_styles: vec!["/absolute/theme.wxss".to_owned()],
+    };
+    let mut index = StyleIndex::new();
+    let facts = facts(&project, &mut index, "pages/index/index.wxml", &config);
+    assert!(!facts.complete);
+    assert!(
+        facts
+            .issues
+            .iter()
+            .any(|issue| issue.kind == StyleIssueKind::MissingImport)
+    );
+    assert!(facts.reason.is_some());
+    assert!(
+        facts.primary("app-global").is_some(),
+        "valid app style remains"
+    );
+}
+
+#[test]
 fn nested_and_ampersand_selectors_are_expanded() {
     let project = fixture();
     let project = open(&project);
@@ -326,6 +350,34 @@ fn symlinked_style_files_do_not_escape_the_root() {
 
 #[cfg(unix)]
 #[test]
+fn unquoted_remote_url_import_is_not_complete() {
+    let project = TempProject::new();
+    project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
+    project.write("pages/index/index.wxml", "<view/>");
+    project.write("pages/index/index.ts", "Page({})");
+    project.write(
+        "pages/index/index.scss",
+        "@import url(https://cdn.example/x.css);\n.local { }\n",
+    );
+    let project = open(&project);
+    let mut index = StyleIndex::new();
+    let facts = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert!(!facts.complete);
+    assert!(
+        facts
+            .issues
+            .iter()
+            .any(|issue| issue.kind == StyleIssueKind::RemoteImport)
+    );
+    assert!(facts.primary("local").is_some());
+}
+
+#[test]
 fn scss_builtins_and_use_with_do_not_make_the_index_partial() {
     let project = TempProject::new();
     project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
@@ -349,6 +401,7 @@ fn scss_builtins_and_use_with_do_not_make_the_index_partial() {
     assert!(facts.complete, "{:?}", facts.issues);
 }
 
+#[cfg(unix)]
 #[test]
 fn symlinked_view_style_root_reports_escape() {
     use std::os::unix::fs::symlink;
@@ -438,6 +491,70 @@ fn budgets_limit_file_size_and_file_count() {
             .any(|issue| issue.kind == StyleIssueKind::Truncated),
         "{:?}",
         limited.issues
+    );
+}
+
+#[test]
+fn total_byte_and_import_depth_budgets_are_really_triggered() {
+    let project = fixture();
+    let project = open(&project);
+    let mut index = StyleIndex::with_limits(StyleLimits {
+        max_total_bytes: 1,
+        ..StyleLimits::default()
+    });
+    let limited = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert!(!limited.complete);
+    assert!(
+        limited
+            .issues
+            .iter()
+            .any(|issue| issue.kind == StyleIssueKind::TooLarge)
+    );
+
+    let project = fixture();
+    let project = open(&project);
+    let mut index = StyleIndex::with_limits(StyleLimits {
+        max_import_depth: 0,
+        ..StyleLimits::default()
+    });
+    let shallow = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert!(!shallow.complete);
+    assert!(shallow.primary("page").is_some());
+    assert!(
+        shallow.primary("shared").is_none(),
+        "imported classes are beyond the depth budget"
+    );
+
+    let project = fixture();
+    let project = open(&project);
+    let mut index = StyleIndex::with_limits(StyleLimits {
+        max_imports_per_view: 0,
+        ..StyleLimits::default()
+    });
+    let no_imports = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert!(!no_imports.complete);
+    assert!(no_imports.primary("page").is_some());
+    assert!(no_imports.primary("shared").is_none());
+    assert!(
+        no_imports
+            .issues
+            .iter()
+            .any(|issue| issue.kind == StyleIssueKind::Truncated)
     );
 }
 
@@ -578,6 +695,145 @@ fn shared_component_and_add_global_class_include_app_but_stay_partial() {
         assert!(component.class_names().contains(&"app-global"), "{config}");
         assert!(!component.complete, "{config}");
     }
+}
+
+#[test]
+fn component_script_options_are_combined_with_json() {
+    let project = fixture();
+    project.write(
+        "components/card/card.ts",
+        "Component({ options: { addGlobalClass: true } })",
+    );
+    let opened = open(&project);
+    let mut index = StyleIndex::new();
+    let component = facts(
+        &opened,
+        &mut index,
+        "components/card/card.wxml",
+        &StyleConfig::default(),
+    );
+    assert_eq!(component.isolation, StyleIsolation::ApplyShared);
+    assert!(component.class_names().contains(&"app-global"));
+    assert!(!component.complete);
+
+    project.write(
+        "components/card/card.json",
+        r#"{"styleIsolation":"isolated"}"#,
+    );
+    let reopened = open(&project);
+    let mut index = StyleIndex::new();
+    let conflict = facts(
+        &reopened,
+        &mut index,
+        "components/card/card.wxml",
+        &StyleConfig::default(),
+    );
+    assert_eq!(conflict.isolation, StyleIsolation::Unknown);
+    assert!(!conflict.complete);
+}
+
+#[test]
+fn page_modes_and_component_constructed_pages_follow_official_isolation() {
+    let project = fixture();
+    project.write("pages/index/index.ts", "Component({ options: {} })");
+    let project = open(&project);
+    let mut index = StyleIndex::new();
+    let component_page = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert_eq!(component_page.isolation, StyleIsolation::Shared);
+    assert!(component_page.class_names().contains(&"app-global"));
+    assert!(!component_page.complete);
+
+    let project = fixture();
+    project.write(
+        "pages/index/index.ts",
+        "Component({ options: { addGlobalClass: true } })",
+    );
+    let project = open(&project);
+    let mut index = StyleIndex::new();
+    let global_component_page = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert_eq!(global_component_page.isolation, StyleIsolation::Shared);
+    assert!(global_component_page.class_names().contains(&"app-global"));
+    assert!(!global_component_page.complete);
+
+    let project = fixture();
+    project.write(
+        "pages/index/index.ts",
+        "Component({ options: { styleIsolation: 'isolated' } })",
+    );
+    let project = open(&project);
+    let mut index = StyleIndex::new();
+    let isolated_component_page = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert_eq!(
+        isolated_component_page.isolation,
+        StyleIsolation::PageShared
+    );
+    assert!(
+        !isolated_component_page
+            .class_names()
+            .contains(&"app-global")
+    );
+    assert!(!isolated_component_page.complete);
+
+    for (mode, expected, app_global, complete) in [
+        ("page-isolated", StyleIsolation::PageIsolated, false, true),
+        (
+            "page-apply-shared",
+            StyleIsolation::PageApplyShared,
+            false,
+            false,
+        ),
+        ("page-shared", StyleIsolation::PageShared, false, false),
+    ] {
+        let project = fixture();
+        project.write(
+            "pages/index/index.json",
+            &format!(r#"{{"styleIsolation":"{mode}"}}"#),
+        );
+        let project = open(&project);
+        let mut index = StyleIndex::new();
+        let page = facts(
+            &project,
+            &mut index,
+            "pages/index/index.wxml",
+            &StyleConfig::default(),
+        );
+        assert_eq!(page.isolation, expected, "{mode}");
+        assert_eq!(
+            page.class_names().contains(&"app-global"),
+            app_global,
+            "{mode}"
+        );
+        assert_eq!(page.complete, complete, "{mode}");
+    }
+
+    // Ordinary Page with no JSON remains the app-sharing default.
+    let project = fixture();
+    let project = open(&project);
+    let mut index = StyleIndex::new();
+    let page = facts(
+        &project,
+        &mut index,
+        "pages/index/index.wxml",
+        &StyleConfig::default(),
+    );
+    assert_eq!(page.isolation, StyleIsolation::Default);
+    assert!(page.class_names().contains(&"app-global"));
+    assert!(page.complete);
 }
 
 #[test]
@@ -830,6 +1086,10 @@ fn resource_completion_skips_excluded_directories_and_bounds_results() {
     let wxml = path("src/pages/index/index.wxml");
     fixture.project_root.write("src/node_modules/x.png", "png");
     fixture.project_root.write("src/.git/y.png", "png");
+    assert_eq!(
+        project.resolve_resource(&wxml, "/node_modules/x.png"),
+        ResourceResolution::OutsideRoot
+    );
     for index in 0..300 {
         fixture
             .project_root

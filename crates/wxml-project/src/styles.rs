@@ -31,7 +31,8 @@ use wxml_text::SourceRange;
 
 use crate::files::{self, FileError, ProjectPath};
 use crate::resources::is_remote_specifier;
-use crate::{Project, ProjectSnapshot};
+use crate::script::RegistrationKind;
+use crate::{Component, Page, Project, ProjectSnapshot};
 
 pub use parse::parse_style_sheet;
 
@@ -88,6 +89,8 @@ pub struct StyleLimits {
     pub max_files: usize,
     /// Maximum import depth.
     pub max_import_depth: usize,
+    /// Maximum imports resolved for one view.
+    pub max_imports_per_view: usize,
     /// Maximum classes kept per sheet.
     pub max_classes: usize,
 }
@@ -99,6 +102,7 @@ impl Default for StyleLimits {
             max_total_bytes: MAX_STYLE_TOTAL_BYTES,
             max_files: MAX_STYLE_FILES,
             max_import_depth: MAX_IMPORT_DEPTH,
+            max_imports_per_view: MAX_STYLE_IMPORTS_PER_VIEW,
             max_classes: MAX_STYLE_CLASSES,
         }
     }
@@ -138,6 +142,8 @@ impl StyleScope {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum StyleIsolation {
+    /// Ordinary page with no explicit isolation; app styles apply.
+    Default,
     /// Component style is isolated from app/page styles.
     Isolated,
     /// App styles apply to the component; page styles are unknown.
@@ -146,27 +152,31 @@ pub enum StyleIsolation {
     Shared,
     /// Page style is isolated from app styles.
     PageIsolated,
-    /// Page applies app styles and is shared with components.
+    /// Page styles apply to components; app styles are disabled. Shared child
+    /// components may still affect the page, so the index is partial.
     PageApplyShared,
-    /// Page and components share styles.
+    /// Page and components share styles; app styles are disabled. Shared child
+    /// components may still affect the page, so the index is partial.
     PageShared,
-    /// The raw value is missing or not understood.
+    /// The value is missing or not understood; callers must treat facts as
+    /// incomplete.
     Unknown,
 }
 
 impl StyleIsolation {
     /// Parses the raw JSON value for a page or component.
     #[must_use]
-    pub fn from_config(raw: Option<&str>, add_global_class: bool, component: bool) -> Self {
+    pub fn from_config(raw: Option<&str>, add_global_class: Option<bool>, component: bool) -> Self {
         let normalized = raw.map(|value| value.trim().to_ascii_lowercase());
         match (component, normalized.as_deref()) {
-            (true, None) if add_global_class => Self::ApplyShared,
+            (true, None) if add_global_class == Some(true) => Self::ApplyShared,
             (true, Some("isolated") | None) => Self::Isolated,
             (true, Some("apply-shared")) => Self::ApplyShared,
             (true, Some("shared")) => Self::Shared,
             (false, Some("page-isolated")) => Self::PageIsolated,
             (false, Some("page-apply-shared")) => Self::PageApplyShared,
-            (false, Some("page-shared") | None) => Self::PageShared,
+            (false, Some("page-shared")) => Self::PageShared,
+            (false, None) => Self::Default,
             (_, Some(_)) => Self::Unknown,
         }
     }
@@ -174,6 +184,15 @@ impl StyleIsolation {
     /// Returns whether app/configured global styles apply to this view.
     #[must_use]
     pub const fn app_styles_apply(self) -> bool {
+        matches!(
+            self,
+            Self::Default | Self::ApplyShared | Self::Shared | Self::Unknown
+        )
+    }
+
+    /// Returns whether styles from an unknown enclosing page may still apply.
+    #[must_use]
+    pub const fn enclosing_page_unknown(self) -> bool {
         matches!(
             self,
             Self::ApplyShared
@@ -184,16 +203,11 @@ impl StyleIsolation {
         )
     }
 
-    /// Returns whether styles from an unknown enclosing page may still apply.
-    #[must_use]
-    pub const fn enclosing_page_unknown(self) -> bool {
-        matches!(self, Self::ApplyShared | Self::Shared | Self::Unknown)
-    }
-
     /// Returns a stable label for diagnostics/hover.
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Default => "default",
             Self::Isolated => "isolated",
             Self::ApplyShared => "apply-shared",
             Self::Shared => "shared",
@@ -372,7 +386,7 @@ pub struct ClassDefinition {
     pub scope: StyleScope,
     /// `true` when the definition came through an import.
     pub imported: bool,
-    /// Global order in the view's style chain (lower is more local).
+    /// Global insertion order in the view's style chain.
     pub order: u32,
 }
 
@@ -427,7 +441,8 @@ pub struct StyleViewFacts {
     pub isolation: StyleIsolation,
     /// Style files in chain order.
     pub files: Vec<StyleFileInfo>,
-    /// Class definitions in precedence order.
+    /// Class definitions in style-chain order; use [`Self::definitions`] for
+    /// cascade precedence.
     pub classes: Vec<ClassDefinition>,
     /// Recoverable issues from every file in the chain.
     pub issues: Vec<StyleIssue>,
@@ -498,17 +513,41 @@ impl StyleViewFacts {
     /// Estimated heap bytes used by this view's shared references.
     #[must_use]
     pub fn estimated_bytes(&self) -> usize {
-        self.classes
+        let mut total = self
+            .classes
             .len()
             .saturating_mul(size_of::<ClassDefinition>())
             .saturating_add(self.files.len().saturating_mul(size_of::<StyleFileInfo>()))
-            .saturating_add(self.classes.len().saturating_mul(8))
+            .saturating_add(self.classes.len().saturating_mul(8));
+        for class in &self.classes {
+            total = total
+                .saturating_add(size_of::<ClassToken>())
+                .saturating_add(class.name().len())
+                .saturating_add(class.selector().len())
+                .saturating_add(class.comment().map_or(0, str::len));
+        }
+        for file in &self.files {
+            total = total
+                .saturating_add(file.path.as_str().len())
+                .saturating_add(
+                    file.imported_from
+                        .as_ref()
+                        .map_or(0, |path| path.as_str().len()),
+                );
+        }
+        for issue in &self.issues {
+            total = total
+                .saturating_add(issue.file.as_str().len())
+                .saturating_add(issue.message.len());
+        }
+        total.saturating_add(self.reason.as_ref().map_or(0, String::len))
     }
 }
 
 /// Extra style roots explicitly configured by the caller.
 ///
-/// `app.wxss`/`app.scss` are always included. This list is for projects that
+/// `app.wxss`/`app.scss` are included for ordinary pages and shared
+/// components; page isolation can disable them. This list is for projects that
 /// keep additional global styles (for example a shared theme) outside the
 /// page's own style file. Paths are project-relative and are never guessed
 /// from a fixed file name.
@@ -516,6 +555,8 @@ impl StyleViewFacts {
 pub struct StyleConfig {
     /// Additional global style files.
     pub global_styles: Vec<ProjectPath>,
+    /// Configured global style strings that were not valid project paths.
+    pub invalid_global_styles: Vec<String>,
 }
 
 impl StyleConfig {
@@ -524,6 +565,7 @@ impl StyleConfig {
     pub fn with_global_styles(global_styles: impl IntoIterator<Item = ProjectPath>) -> Self {
         Self {
             global_styles: global_styles.into_iter().collect(),
+            invalid_global_styles: Vec::new(),
         }
     }
 }
@@ -555,9 +597,9 @@ impl Project {
 
     /// Returns the effective style isolation for a WXML view.
     ///
-    /// The value comes from page/component JSON discovered at open/rediscover
-    /// time. Isolation configured only in a script `Component({options})` is
-    /// not interpreted; callers see the JSON/default value.
+    /// Page/component JSON and static `Component({options})` hints discovered
+    /// at open/rediscover time are combined. Conflicting or unprovable values
+    /// yield [`StyleIsolation::Unknown`].
     #[must_use]
     pub fn style_isolation(&self, view: &ProjectPath) -> StyleIsolation {
         let scope = self.style_scope(view);
@@ -757,7 +799,7 @@ impl StyleIndex {
         config: &StyleConfig,
         project_id: Option<&str>,
     ) -> StyleViewFacts {
-        let roots = style_roots(project, view, scope, isolation, config);
+        let (roots, root_issues) = style_roots(project, view, scope, isolation, config);
         let limits = self.limits;
         let mut collector = Collector {
             index: self,
@@ -787,6 +829,10 @@ impl StyleIndex {
         if matches!(isolation, StyleIsolation::Unknown) {
             collector.mark_incomplete("styleIsolation value is not understood");
         }
+        for issue in root_issues {
+            collector.mark_incomplete(issue.message.clone());
+            push_issue(&mut collector.issues, issue);
+        }
         for root in roots {
             collector.collect(&root.path, root.scope, true, 0, None);
         }
@@ -806,7 +852,7 @@ impl StyleIndex {
 
 /// Returns the estimated heap cost of one parsed sheet.
 fn estimate_sheet_bytes(sheet: &StyleSheet) -> usize {
-    let mut total = sheet.bytes;
+    let mut total = sheet.bytes.saturating_add(sheet.path.as_str().len());
     for class in &sheet.classes {
         total = total
             .saturating_add(size_of::<ClassToken>())
@@ -819,7 +865,12 @@ fn estimate_sheet_bytes(sheet: &StyleSheet) -> usize {
             .saturating_add(size_of::<StyleImport>())
             .saturating_add(import.specifier.len());
     }
-    total
+    for issue in &sheet.issues {
+        total = total
+            .saturating_add(issue.file.as_str().len())
+            .saturating_add(issue.message.len());
+    }
+    total.saturating_add(sheet.reason.as_ref().map_or(0, String::len))
 }
 
 /// One chain root before parsing.
@@ -835,8 +886,9 @@ fn style_roots(
     scope: StyleScope,
     isolation: StyleIsolation,
     config: &StyleConfig,
-) -> Vec<RootStyle> {
+) -> (Vec<RootStyle>, Vec<StyleIssue>) {
     let mut roots = Vec::new();
+    let mut issues = Vec::new();
     let mut seen = BTreeSet::new();
     let mut push = |path: ProjectPath, scope: StyleScope| {
         if !is_style_path(&path) || seen.contains(&path) {
@@ -864,10 +916,43 @@ fn style_roots(
             }
         }
         for path in &config.global_styles {
-            push(path.clone(), StyleScope::ConfiguredGlobal);
+            if !is_style_path(path) {
+                issues.push(StyleIssue::new(
+                    path,
+                    StyleIssueKind::MissingImport,
+                    "configured global style must use .wxss, .scss or .css",
+                ));
+                continue;
+            }
+            let exists = exists(project, path);
+            let escapes = files::escapes_root(project.root(), path);
+            if !exists && !escapes {
+                issues.push(StyleIssue::new(
+                    path,
+                    StyleIssueKind::MissingImport,
+                    "configured global style does not exist",
+                ));
+                continue;
+            }
+            if seen.insert(path.clone()) {
+                roots.push(RootStyle {
+                    path: path.clone(),
+                    scope: StyleScope::ConfiguredGlobal,
+                });
+            }
+        }
+        for raw in &config.invalid_global_styles {
+            issues.push(StyleIssue::new(
+                view,
+                StyleIssueKind::MissingImport,
+                format!(
+                    "configured global style path is invalid: {}",
+                    files::truncate_message(raw, 256)
+                ),
+            ));
         }
     }
-    roots
+    (roots, issues)
 }
 
 /// Returns the app-root-relative style path for a fixed file name.
@@ -893,33 +978,109 @@ fn view_scope(project: &Project, view: &ProjectPath) -> StyleScope {
     }
 }
 
-/// Reads isolation from the discovered page/component configuration.
+/// Reads isolation from discovered JSON and script hints.
 fn view_isolation(project: &Project, view: &ProjectPath, scope: StyleScope) -> StyleIsolation {
     match scope {
         StyleScope::Page => project
             .pages()
             .iter()
             .find(|page| &page.wxml == view)
-            .map_or(StyleIsolation::Unknown, |page| {
+            .map_or(StyleIsolation::Unknown, page_isolation),
+        StyleScope::Component => project
+            .components()
+            .iter()
+            .find(|component| &component.wxml == view)
+            .map_or(StyleIsolation::Unknown, component_isolation),
+        _ => StyleIsolation::Unknown,
+    }
+}
+
+/// Combines page JSON and script registration/options.
+fn page_isolation(page: &Page) -> StyleIsolation {
+    let hints = &page.script_hints;
+    if !hints.complete {
+        return StyleIsolation::Unknown;
+    }
+    match hints.registration {
+        Some(RegistrationKind::Component) => component_page_isolation(page),
+        Some(RegistrationKind::Unknown) => StyleIsolation::Unknown,
+        Some(RegistrationKind::Page) => StyleIsolation::from_config(
+            page.config.style_isolation.as_deref(),
+            page.config.add_global_class,
+            false,
+        ),
+        None => {
+            if page.script.is_none() {
                 StyleIsolation::from_config(
                     page.config.style_isolation.as_deref(),
                     page.config.add_global_class,
                     false,
                 )
-            }),
-        StyleScope::Component => project
-            .components()
-            .iter()
-            .find(|component| &component.wxml == view)
-            .map_or(StyleIsolation::Unknown, |component| {
-                StyleIsolation::from_config(
-                    component.style_isolation.as_deref(),
-                    component.add_global_class,
-                    true,
-                )
-            }),
-        _ => StyleIsolation::Unknown,
+            } else {
+                StyleIsolation::Unknown
+            }
+        }
     }
+}
+
+/// Combines page JSON and `Component({options})` for a Component page.
+///
+/// A `Component` constructor used as a page defaults to component `shared`
+/// (app styles apply, child components may share back), so it is never
+/// complete. Explicit page-* JSON modes keep normal page semantics.
+fn component_page_isolation(page: &Page) -> StyleIsolation {
+    let hints = &page.script_hints;
+    let json_isolation = page.config.style_isolation.as_deref();
+    let script_isolation = hints.style_isolation.as_deref();
+    if let (Some(json), Some(script)) = (json_isolation, script_isolation) {
+        if !json.eq_ignore_ascii_case(script) {
+            return StyleIsolation::Unknown;
+        }
+    }
+    let isolation = script_isolation.or(json_isolation);
+    let add = hints.add_global_class.or(page.config.add_global_class);
+    if script_isolation.is_none()
+        && isolation.is_some_and(|value| value.trim().to_ascii_lowercase().starts_with("page-"))
+    {
+        return StyleIsolation::from_config(isolation, add, false);
+    }
+    let normalized = isolation.map(|value| value.trim().to_ascii_lowercase());
+    match normalized.as_deref() {
+        // Component pages default to `shared` when no options are present.
+        None | Some("apply-shared" | "shared") => StyleIsolation::Shared,
+        Some("isolated") if add == Some(true) => StyleIsolation::Unknown,
+        Some("isolated") => StyleIsolation::PageShared,
+        Some(_) => StyleIsolation::Unknown,
+    }
+}
+
+/// Combines component JSON and `Component({options})`.
+fn component_isolation(component: &Component) -> StyleIsolation {
+    let hints = &component.script_hints;
+    if !hints.complete {
+        return StyleIsolation::Unknown;
+    }
+    if hints.registration == Some(RegistrationKind::Page) {
+        return StyleIsolation::Unknown;
+    }
+    let json_isolation = component.style_isolation.as_deref();
+    let script_isolation = hints.style_isolation.as_deref();
+    if json_isolation.is_some() && script_isolation.is_some() && json_isolation != script_isolation
+    {
+        return StyleIsolation::Unknown;
+    }
+    let isolation = json_isolation.or(script_isolation);
+    let json_add = component.add_global_class;
+    let script_add = hints.add_global_class;
+    let add = match (json_add, script_add) {
+        (Some(left), Some(right)) if left != right => return StyleIsolation::Unknown,
+        (Some(value), _) | (_, Some(value)) => Some(value),
+        (None, None) => None,
+    };
+    if isolation.is_some_and(|value| value.eq_ignore_ascii_case("isolated")) && add == Some(true) {
+        return StyleIsolation::Unknown;
+    }
+    StyleIsolation::from_config(isolation, add, true)
 }
 
 /// Cascade priority of a scope; lower ranks override higher ranks.
@@ -1089,7 +1250,7 @@ impl Collector<'_> {
         }
         if self.files.len() >= self.limits.max_files
             || self.total_bytes >= self.limits.max_total_bytes
-            || self.imports_seen >= MAX_STYLE_IMPORTS_PER_VIEW
+            || self.imports_seen >= self.limits.max_imports_per_view
         {
             self.mark_incomplete("style import budget reached");
             self.issue(

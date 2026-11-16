@@ -80,12 +80,13 @@ fn fixture() -> TempProject {
     project.write("pages/index/index.ts", "Page({})");
     project.write("images/logo.png", "png");
     project.write("images/my logo.png", "png");
+    std::fs::write(project.root.join("images/bin.png"), [0xff, 0xfe, 0x00]).expect("binary image");
     project.write("styles/extra.wxss", ".configured { color: gray; }\n");
     project
 }
 
 const fn wxml_text() -> &'static str {
-    "<!-- 😀 中文 -->\r\n<view class=\"card \">\r\n  <image src=\"../../images/logo.png\" />\r\n  <image src=\"../../images/my logo.png\" />\r\n  <image src=\"../../images/lo\" />\r\n  <image src=\"https://example.com/a.png\" />\r\n  <image src=\"../../images/missing.png\" />\r\n  <navigator url=\"../../images/logo.png\" />\r\n</view>\r\n"
+    "<!-- 😀 中文 -->\r\n<view class=\"card \">\r\n  <image src=\"../../images/logo.png\" />\r\n  <image src=\"../../images/my logo.png\" />\r\n  <image src=\"../../images/bin.png\" />\r\n  <image src=\"../../images/lo\" />\r\n  <image src=\"https://example.com/a.png\" />\r\n  <image src=\"../../images/missing.png\" />\r\n  <navigator url=\"../../images/logo.png\" />\r\n</view>\r\n"
 }
 
 fn completion_offset(text: &str) -> usize {
@@ -339,6 +340,7 @@ fn resource_links_completion_and_definition_are_local_only() {
     let text = wxml_text();
     let typed = text.find("../../images/lo\"").expect("typed") + "../../images/".len();
     let logo = text.find("../../images/logo.png").expect("logo") + 2;
+    let binary = text.find("../../images/bin.png").expect("binary") + 2;
 
     let messages = vec![
         request(
@@ -373,6 +375,11 @@ fn resource_links_completion_and_definition_are_local_only() {
             "textDocument/definition",
             document_position(text, &uri, logo),
         ),
+        response(
+            14,
+            "textDocument/definition",
+            document_position(text, &uri, binary),
+        ),
         request(99, "shutdown", Value::Null),
         notification("exit", Value::Null),
     ];
@@ -383,7 +390,7 @@ fn resource_links_completion_and_definition_are_local_only() {
         .iter()
         .filter_map(|link| link["target"].as_str())
         .collect();
-    assert_eq!(targets.len(), 2, "{links:?}");
+    assert_eq!(targets.len(), 3, "{links:?}");
     assert!(
         targets
             .iter()
