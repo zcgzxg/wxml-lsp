@@ -360,6 +360,11 @@ export interface LayoutBuild {
   unresolvedBindings?: number;
   /** Guard conditions that could not be rewritten; they do not narrow. */
   unresolvedGuards?: number;
+  /**
+   * The component behavior graph could not be fully resolved, so roots that
+   * may come from an unmodeled behavior are not diagnosed as missing.
+   */
+  behaviorIncomplete?: boolean;
   files: Array<{ path: string; text: string }>;
   /** File that hosts the mounted fragments (the script for A, the check file for B). */
   queryFile: string;

@@ -227,10 +227,18 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
   if (!anchorInsertion) throw new Error("layout B: anchor insertion missing");
   const anchorOffset = assembledScript.text.indexOf(`const ${ROOT_VAR}`, anchorInsertion.startUtf16);
 
-  if (context.behavior.data.length > 0 || context.behavior.properties.length > 0) {
+  const behaviorIncomplete =
+    context.behavior.data.length > 0 ||
+    context.behavior.properties.length > 0 ||
+    context.behavior.dataIncomplete ||
+    context.behavior.propertiesIncomplete ||
+    context.behavior.problems.length > 0;
+  if (behaviorIncomplete) {
     buildStatus = "partial";
     reason ??= "component behaviors are not expanded by the symbol-bridge layout";
-    notes.push("behavior data/properties require the in-place-shadow layout");
+    notes.push(
+      "behavior data/properties require the in-place-shadow layout; behavior roots are not diagnosed as missing",
+    );
   }
 
   if (unresolvedBindings > 0 || unresolvedGuards > 0) {
@@ -246,6 +254,7 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
     ...(reason ? { reason } : {}),
     unresolvedBindings,
     unresolvedGuards,
+    behaviorIncomplete,
     files: [
       { path: context.scriptPath, text: assembledScript.text },
       { path: checkPath, text: assembledCheck.text },

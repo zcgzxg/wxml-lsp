@@ -33,28 +33,7 @@ fn real_node_hover_and_diagnostics_smoke() {
         std::env::var("WXML_TEST_NODE").as_deref() == Ok("1"),
         "set WXML_TEST_NODE=1 to run the real Node smoke test"
     );
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repo = manifest
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("repo root")
-        .to_path_buf();
-    let server = std::env::var_os("WXML_TYPE_BACKEND").map_or_else(
-        || repo.join("backends/typescript/dist/server.js"),
-        PathBuf::from,
-    );
-    let backend_dir = std::env::var_os("WXML_BACKEND_DIR")
-        .map_or_else(|| repo.join("backends/typescript"), PathBuf::from);
-    assert!(
-        server.is_file(),
-        "WXML_TEST_NODE=1 but {} is missing; run `npm ci && npm run build` in backends/typescript",
-        server.display()
-    );
-    assert!(
-        backend_dir.is_dir(),
-        "WXML_TEST_NODE=1 but backend dir {} is missing",
-        backend_dir.display()
-    );
+    let (server, backend_dir) = real_node_backend_paths();
 
     let project = TempProject::new("wxml-p7-real-node");
     project.write(
@@ -130,18 +109,7 @@ fn real_node_expression_and_event_completion_smoke() {
         std::env::var("WXML_TEST_NODE").as_deref() == Ok("1"),
         "set WXML_TEST_NODE=1 to run the real Node smoke test"
     );
-    let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let repo = manifest
-        .parent()
-        .and_then(std::path::Path::parent)
-        .expect("repo root")
-        .to_path_buf();
-    let server = std::env::var_os("WXML_TYPE_BACKEND").map_or_else(
-        || repo.join("backends/typescript/dist/server.js"),
-        PathBuf::from,
-    );
-    let backend_dir = std::env::var_os("WXML_BACKEND_DIR")
-        .map_or_else(|| repo.join("backends/typescript"), PathBuf::from);
+    let (server, backend_dir) = real_node_backend_paths();
 
     let project = TempProject::new("wxml-wave5-completion");
     project.write(
@@ -494,12 +462,21 @@ fn real_node_backend_paths() -> (PathBuf, PathBuf) {
         .and_then(std::path::Path::parent)
         .expect("repo root")
         .to_path_buf();
-    let server = std::env::var_os("WXML_TYPE_BACKEND").map_or_else(
-        || repo.join("backends/typescript/dist/server.js"),
-        PathBuf::from,
-    );
-    let backend_dir = std::env::var_os("WXML_BACKEND_DIR")
-        .map_or_else(|| repo.join("backends/typescript"), PathBuf::from);
+    let external = std::env::var("WXML_TEST_EXTERNAL_BACKEND").as_deref() == Ok("1");
+    let server = if external {
+        std::env::var_os("WXML_TYPE_BACKEND").map_or_else(
+            || panic!("WXML_TEST_EXTERNAL_BACKEND=1 requires WXML_TYPE_BACKEND"),
+            PathBuf::from,
+        )
+    } else {
+        repo.join("backends/typescript/dist/server.js")
+    };
+    let backend_dir = if external {
+        std::env::var_os("WXML_BACKEND_DIR")
+            .map_or_else(|| repo.join("backends/typescript"), PathBuf::from)
+    } else {
+        repo.join("backends/typescript")
+    };
     assert!(
         server.is_file(),
         "WXML_TEST_NODE=1 but {} is missing; run `npm ci && npm run build` in backends/typescript",
@@ -529,16 +506,30 @@ fn non_owner_script_overlay_propagates_and_survives_a_node_restart() {
         .and_then(std::path::Path::parent)
         .expect("repo root")
         .to_path_buf();
-    let server = std::env::var_os("WXML_TYPE_BACKEND").map_or_else(
-        || repo.join("backends/typescript/dist/server.js"),
-        PathBuf::from,
-    );
-    let backend_dir = std::env::var_os("WXML_BACKEND_DIR")
-        .map_or_else(|| repo.join("backends/typescript"), PathBuf::from);
+    let external = std::env::var("WXML_TEST_EXTERNAL_BACKEND").as_deref() == Ok("1");
+    let server = if external {
+        std::env::var_os("WXML_TYPE_BACKEND").map_or_else(
+            || panic!("WXML_TEST_EXTERNAL_BACKEND=1 requires WXML_TYPE_BACKEND"),
+            PathBuf::from,
+        )
+    } else {
+        repo.join("backends/typescript/dist/server.js")
+    };
+    let backend_dir = if external {
+        std::env::var_os("WXML_BACKEND_DIR")
+            .map_or_else(|| repo.join("backends/typescript"), PathBuf::from)
+    } else {
+        repo.join("backends/typescript")
+    };
     assert!(
         server.is_file(),
-        "WXML_TEST_NODE=1 but {} is missing; run `npm ci && npm run build` in backends/typescript",
+        "WXML_TEST_NODE=1 but backend {} is missing; run `npm ci && npm run build` in backends/typescript",
         server.display()
+    );
+    assert!(
+        backend_dir.is_dir(),
+        "WXML_TEST_NODE=1 but backend dir {} is missing",
+        backend_dir.display()
     );
 
     let project = TempProject::new("wxml-overlay-restart");

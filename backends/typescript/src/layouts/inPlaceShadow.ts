@@ -15,6 +15,7 @@ import { planFragments, PROPS_PREFIX, ROOT_PREFIX } from "../fragments.ts";
 import { indentLines, localHelpers, renderFragmentScope } from "./locals.ts";
 import { buildSegments } from "./segments.ts";
 import { rewriteExpression } from "../rewrite.ts";
+import { isBindingIdentifier } from "../expression.ts";
 import { PROPS_TYPE_NAME, PROPS_VALUE_NAME, renderPropsType, renderPropsValue, type RenderedMember } from "../propsOverlay.ts";
 import { assemble, type Piece } from "../text.ts";
 import type {
@@ -96,9 +97,19 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
 
   const overlayProperties = context.propertyScan.properties;
   const overlayNames = new Set(overlayProperties.map((property) => property.name));
-  const dataMembers = context.behavior.data.filter(
-    (member) => !overlayNames.has(member.name) && isIdentifierName(member.name),
-  );
+  let behaviorIncomplete =
+    context.behavior.dataIncomplete ||
+    context.behavior.propertiesIncomplete ||
+    context.behavior.problems.length > 0;
+  const dataMembers = context.behavior.data.filter((member) => {
+    if (overlayNames.has(member.name)) return false;
+    if (!isIdentifierName(member.name)) {
+      behaviorIncomplete = true;
+      notes.push(`behavior data name \`${member.name}\` cannot be bound in the probe`);
+      return false;
+    }
+    return true;
+  });
   const dataOverlay = new Set(dataMembers.map((member) => member.name));
   const drafts = planFragments(context.fragments, {
     propertyOverlay: overlayNames,
@@ -335,6 +346,7 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
     ...(reason ? { reason } : {}),
     unresolvedBindings,
     unresolvedGuards,
+    behaviorIncomplete,
     files: [{ path: context.scriptPath, text: assembled.text }],
     queryFile: context.scriptPath,
     insertions: assembled.insertions,
@@ -384,9 +396,9 @@ function propertySource(context: LayoutContext, name: string): GeneratedDeclarat
   return { file: context.scriptPath, start, end };
 }
 
-/** Kebab/quoted data names cannot become probe locals; they stay unresolved. */
+/** Keywords, strict-mode bindings and probe names cannot become locals. */
 function isIdentifierName(name: string): boolean {
-  return /^[\p{L}_$][\p{L}\p{N}_$]*$/u.test(name);
+  return isBindingIdentifier(name) && !name.startsWith("__");
 }
 
 function sanitizeDoc(doc: string): string {

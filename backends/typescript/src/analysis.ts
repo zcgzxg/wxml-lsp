@@ -327,9 +327,15 @@ export function buildView(request: AnalyzeRequest, config: AnalysisConfig): Prep
   // Use the program's AST so non-literal behavior data initializers can be
   // typed by the checker. It is the same snapshot text as `sourceFile`.
   const programScript = baseline.program().getSourceFile(scriptPath) ?? sourceFile;
-  const programRegistration = findRegistrations(programScript).registrations.find(
-    (candidate) => candidate.kind === "component",
-  );
+  // Match the selected registration, not merely the first Component in the
+  // file: a page and a component may share one script, and only the selected
+  // registration owns the template root.
+  const programRegistration = found
+    ? findRegistrations(programScript).registrations.find(
+        (candidate) =>
+          candidate.kind === found.kind && candidate.options.pos === found.options.pos,
+      )
+    : undefined;
   const behavior = resolveBehaviors({
     scriptPath,
     sourceFile: programScript,
@@ -770,11 +776,16 @@ function computeStates(input: StateInput, missing: number, unexpected: number): 
 
   const problems = input.probeProblems;
   const rootBroken = problems.some((problem) => problem.includes("probe root"));
+  // An incomplete behavior can make the root opaque without invalidating the
+  // component's own data. Report that as Partial (no guessed property error),
+  // not as an unavailable root.
+  const behaviorIncomplete = input.build.behaviorIncomplete === true;
+  const rootGate: CapabilityStatus = rootBroken && !behaviorIncomplete ? "unavailable" : "partial";
   let hover: CapabilityState =
     input.build.buildStatus === "partial"
       ? base("partial")
       : problems.length > 0
-        ? { status: rootBroken ? "unavailable" : "partial", reason: problems.join("; ") }
+        ? { status: rootGate, reason: problems.join("; ") }
         : { status: "supported" };
   let diagnostics: CapabilityState =
     input.build.buildStatus === "partial" ? base("partial") : { status: "supported" };
@@ -792,7 +803,7 @@ function computeStates(input: StateInput, missing: number, unexpected: number): 
   }
   if (problems.length > 0) {
     const gate: CapabilityState = {
-      status: rootBroken ? "unavailable" : "partial",
+      status: rootGate,
       reason: [reason, ...problems].filter(Boolean).join("; "),
     };
     if (!checkOff) diagnostics = gate;
@@ -1012,6 +1023,15 @@ export function mapDiagnostics(
         if (suppressedDetails.length < 5 && !suppressedDetails.some((entry) => entry.message === message)) {
           suppressedDetails.push({ code: diagnostic.code, message });
         }
+        continue;
+      }
+      if (
+        build.behaviorIncomplete === true &&
+        (diagnostic.code === 2339 || diagnostic.code === 2551)
+      ) {
+        // A behavior that could not be resolved may declare the missing root;
+        // do not turn incomplete coverage into a property-does-not-exist error.
+        suppressed += 1;
         continue;
       }
       const span = mapSpanToSource(hit.mount, diagnostic.start, diagnostic.length);

@@ -161,8 +161,9 @@ function checkUsage(
   }
   const sourceFile = componentSource(input, usage.componentFileId);
   if (!sourceFile) return { skipped: 1, skippedDetails: [usage.tag] };
-  const properties = declaredProperties(sourceFile, checker, input.project);
-  if (!properties) return { skipped: 1, skippedDetails: [usage.tag] };
+  const declaration = declaredProperties(sourceFile, checker, input.project);
+  if (!declaration) return { skipped: 1, skippedDetails: [usage.tag] };
+  const properties = declaration.properties;
 
   const stringType = checker.getStringType();
   const booleanType = checker.getBooleanType();
@@ -244,6 +245,10 @@ function checkUsage(
     });
   }
 
+  if (declaration.incomplete) {
+    skipped += 1;
+    skippedDetails.push(`${usage.tag}.behavior`);
+  }
   if (checked === 0 && diagnostics.length === 0) return { skipped, skippedDetails };
   return { result: { tag: usage.tag, diagnostics }, skipped, skippedDetails };
 }
@@ -294,7 +299,7 @@ function declaredProperties(
   sourceFile: ts.SourceFile,
   checker: ts.TypeChecker,
   project: VirtualProject,
-): Map<string, DeclaredProperty> | undefined {
+): { properties: Map<string, DeclaredProperty>; incomplete: boolean } | undefined {
   const registration = findRegistrations(sourceFile).registrations.find((entry) => entry.kind === "component");
   if (!registration) return undefined;
   const scan = scanDeclaredProperties(registration.options);
@@ -308,9 +313,6 @@ function declaredProperties(
     getSourceFile: (absolute) => project.program().getSourceFile(path.resolve(absolute)),
     checker,
   });
-  // An unresolved behavior may also declare properties; checking against a
-  // partial declaration would fabricate missing/unknown-property results.
-  if (behavior.propertiesIncomplete || behavior.problems.length > 0) return undefined;
   const hasOwnProperties = memberMap(registration.options).has("properties");
   if (!hasOwnProperties && behavior.properties.length === 0) return undefined;
   const properties = new Map<string, DeclaredProperty>();
@@ -321,7 +323,14 @@ function declaredProperties(
       allowedTypes(declared.initializer, declared.typeText, checker),
     );
   }
-  return properties;
+  return {
+    properties,
+    // The component's own declarations are always checked. Only missing
+    // behavior-derived declarations are unknown; undeclared attributes are
+    // ignored by the checker, so this is a coverage gap, not a fabricated
+    // unknown-property diagnostic.
+    incomplete: behavior.propertiesIncomplete || behavior.problems.length > 0,
+  };
 }
 
 /** `card-title` -> `cardTitle` (WeChat attribute/property mapping). */

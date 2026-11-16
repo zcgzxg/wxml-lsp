@@ -59,15 +59,27 @@ fn backend_paths() -> BackendPaths {
         .and_then(Path::parent)
         .expect("repo root")
         .to_path_buf();
-    let server = std::env::var_os("WXML_TYPE_BACKEND").map_or_else(
-        || repo.join("backends/typescript/dist/server.js"),
-        PathBuf::from,
-    );
-    let backend_dir = std::env::var_os("WXML_BACKEND_DIR")
-        .map_or_else(|| repo.join("backends/typescript"), PathBuf::from);
+    // Default to this checkout's backend. An external backend must be
+    // requested explicitly so a stale WXML_TYPE_BACKEND in the developer shell
+    // cannot silently change what these tests verify.
+    let external = std::env::var("WXML_TEST_EXTERNAL_BACKEND").as_deref() == Ok("1");
+    let server = if external {
+        std::env::var_os("WXML_TYPE_BACKEND").map_or_else(
+            || panic!("WXML_TEST_EXTERNAL_BACKEND=1 requires WXML_TYPE_BACKEND"),
+            PathBuf::from,
+        )
+    } else {
+        repo.join("backends/typescript/dist/server.js")
+    };
+    let backend_dir = if external {
+        std::env::var_os("WXML_BACKEND_DIR")
+            .map_or_else(|| repo.join("backends/typescript"), PathBuf::from)
+    } else {
+        repo.join("backends/typescript")
+    };
     assert!(
         server.is_file(),
-        "WXML_TEST_NODE=1 but {} is missing; run `npm ci && npm run build` in backends/typescript",
+        "WXML_TEST_NODE=1 but backend {} is missing; run `npm ci && npm run build` in backends/typescript",
         server.display()
     );
     assert!(
@@ -94,10 +106,14 @@ struct Session {
 
 impl Session {
     fn start(project: &TempProject, paths: &BackendPaths) -> Self {
+        Self::start_with_server(project, paths, &paths.server)
+    }
+
+    fn start_with_server(project: &TempProject, paths: &BackendPaths, server: &Path) -> Self {
         let mut child = Command::new(BIN)
             .arg("--stdio")
             .current_dir(project.root())
-            .env("WXML_TYPE_BACKEND", &paths.server)
+            .env("WXML_TYPE_BACKEND", server)
             .env("WXML_BACKEND_DIR", &paths.backend_dir)
             .env("WXML_ANALYZE_TIMEOUT_MS", "30000")
             .stdin(Stdio::piped())
@@ -984,6 +1000,119 @@ fn component_behavior_data_and_properties_work_over_stdio() {
         .as_str()
         .expect("property hover");
     assert!(title_text.contains("string | number"), "{title_hover}");
+
+    session.shutdown();
+}
+
+#[test]
+#[ignore = "requires the real server binary and Node fixture; set WXML_TEST_NODE=1"]
+fn unsaved_wxs_overlay_updates_static_hover_and_completion() {
+    let paths = backend_paths();
+    let project = TempProject::new("wxml-static-wxs-overlay");
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    let wxml_text = r#"<wxs module="u" src="./u.wxs" />
+<view>{{ u.label }}</view>"#;
+    project.write("pages/index/index.wxml", wxml_text);
+    project.write("pages/index/index.ts", "Page({ data: {} });");
+    project.write("pages/index/u.wxs", "module.exports = { label: 'disk' };");
+    project.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+
+    let mut session = Session::start(&project, &paths);
+    let wxml = project.uri("pages/index/index.wxml");
+    let wxs = project.uri("pages/index/u.wxs");
+    session.open_wxml(&wxml, wxml_text, 1);
+
+    let label = lsp_position(wxml_text, "label");
+    let disk_hover = session.hover(&wxml, (label.0, label.1 + 1));
+    let disk_text = disk_hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("disk WXS hover");
+    assert!(disk_text.contains("string"), "{disk_hover}");
+
+    session.notify(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": wxs,
+                "languageId": "javascript",
+                "version": 1,
+                "text": "module.exports = { label: 456, renamed: 1 };",
+            }
+        }),
+    );
+    let renamed_hover = session.hover(&wxml, (label.0, label.1 + 1));
+    let renamed_text = renamed_hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("overlay WXS hover");
+    assert!(renamed_text.contains("number"), "{renamed_hover}");
+
+    let completion = session.completion(&wxml, (label.0, label.1));
+    assert!(
+        completion["result"]["items"]
+            .as_array()
+            .expect("items")
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .any(|label| label == "renamed"),
+        "{completion}"
+    );
+
+    session.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": wxs}}),
+    );
+    let restored = session.hover(&wxml, (label.0, label.1 + 1));
+    let restored_text = restored["result"]["contents"]["value"]
+        .as_str()
+        .expect("restored WXS hover");
+    assert!(restored_text.contains("string"), "{restored}");
+    assert!(restored_text.contains("label"), "{restored}");
+
+    session.shutdown();
+}
+
+#[test]
+#[ignore = "requires the real server binary; set WXML_TEST_NODE=1"]
+fn static_wxs_answers_survive_an_unavailable_type_backend() {
+    let paths = backend_paths();
+    let project = TempProject::new("wxml-static-no-backend");
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    let wxml_text = r#"<wxs module="u">function format(v) { return "x"; }
+module.exports = { format };</wxs>
+<view>{{ u.format(title) }}</view>"#;
+    project.write("pages/index/index.wxml", wxml_text);
+    project.write("pages/index/index.ts", "Page({ data: { title: 'x' } });");
+    project.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+
+    let unavailable = PathBuf::from("/nonexistent/wxml-type-backend.js");
+    let mut session = Session::start_with_server(&project, &paths, &unavailable);
+    let uri = project.uri("pages/index/index.wxml");
+    session.open_wxml(&uri, wxml_text, 1);
+
+    let format = lsp_position(wxml_text, "format(title)");
+    let hover = session.hover(&uri, (format.0, format.1 + 1));
+    let text = hover["result"]["contents"]["value"]
+        .as_str()
+        .expect("static hover without a backend");
+    assert!(
+        text.contains("utils.format") || text.contains("u.format"),
+        "{hover}"
+    );
+    assert!(text.contains("=> string"), "{hover}");
+
+    let definition = session.definition(&uri, (format.0, format.1 + 1));
+    assert!(
+        definition["result"]
+            .as_array()
+            .is_some_and(|locations| !locations.is_empty()),
+        "{definition}"
+    );
 
     session.shutdown();
 }

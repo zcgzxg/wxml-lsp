@@ -11,11 +11,11 @@
 //!   `require("./x.wxs")` edges.
 //!
 //! Everything is bounded: the module reads at most [`MAX_STATIC_FILES`] files,
-//! follows imports at most [`MAX_IMPORT_DEPTH`] levels, and ignores URL or
+//! keeps imports non-transitive (matching WXML scope), and ignores URL or
 //! absolute specifiers. Dynamic template names and computed WXS exports are
 //! reported by the core analysis (`wxml_types`), never guessed here.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
 use serde_json::{Value, json};
@@ -24,8 +24,9 @@ use wxml_syntax::expr::{Expr, ExprKind};
 use wxml_syntax::{Mustache, SyntaxTree, parse};
 use wxml_text::{SourceRange, TextRange};
 use wxml_types::{
-    StaticImport, StaticImportKind, TemplateDefinition, TemplateSemantics, WxsBlock, WxsMember,
-    WxsSummary, analyze_template_semantics, resolve_static_specifier, summarize_wxs,
+    StaticImport, StaticImportKind, StaticIssue, StaticIssueKind, TemplateDefinition,
+    TemplateSemantics, WxsBlock, WxsMember, WxsSummary, analyze_template_semantics,
+    resolve_static_specifier, summarize_wxs,
 };
 
 use crate::handlers::{line_index_range_value, source_range_value};
@@ -113,6 +114,15 @@ pub(crate) enum StaticItemKind {
     Property,
 }
 
+/// Static completion items plus coverage.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StaticCompletionList {
+    /// Items in display order.
+    pub(crate) items: Vec<StaticCompletion>,
+    /// `true` when a WXS/template budget or dynamic summary may hide items.
+    pub(crate) incomplete: bool,
+}
+
 /// One static completion item.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StaticCompletion {
@@ -169,8 +179,24 @@ fn build_index(path: &str, text: &str, access: &Access<'_>) -> StaticIndex {
         true
     });
     let blocks = index.semantics.wxs.clone();
+    let mut wxs_cache: HashMap<String, Option<String>> = HashMap::new();
     for block in &blocks {
-        if let Some(wxs) = load_wxs(path, text, block, access) {
+        let resolved_src = block
+            .src
+            .as_deref()
+            .and_then(|src| resolve_static_specifier(path, src));
+        if let Some(src) = &resolved_src {
+            if !visited.contains(src) && visited.len() >= MAX_STATIC_FILES {
+                index.semantics.truncated = true;
+                index.semantics.issues.push(StaticIssue {
+                    kind: StaticIssueKind::LimitReached,
+                    range: block.element_range,
+                });
+                break;
+            }
+            visited.insert(src.clone());
+        }
+        if let Some(wxs) = load_wxs(path, text, block, access, &mut wxs_cache) {
             index.wxs.push(wxs);
         }
     }
@@ -223,11 +249,18 @@ fn load_wxs(
     current_text: &str,
     block: &WxsBlock,
     access: &Access<'_>,
+    cache: &mut HashMap<String, Option<String>>,
 ) -> Option<LocatedWxs> {
     let module = block.module.clone()?;
     let (path, text, offset_base) = if let Some(src) = &block.src {
         let resolved = resolve_static_specifier(current_path, src)?;
-        let text = access(&resolved)?;
+        let text = if let Some(cached) = cache.get(&resolved) {
+            cached.clone()?
+        } else {
+            let read = access(&resolved);
+            cache.insert(resolved.clone(), read.clone());
+            read?
+        };
         (Some(resolved), text, 0)
     } else {
         let range = block.body_range?;
@@ -260,7 +293,7 @@ pub(crate) fn hover(
     let index = build_index(path, text, access);
     let tree = parse(text).tree;
 
-    if let Some(hover) = wxs_hover(path, text, &tree, offset, &index) {
+    if let Some(hover) = wxs_hover(path, text, &tree, offset, &index, access) {
         return Some(hover);
     }
     template_hover(path, &tree, &index, offset, access)
@@ -278,7 +311,7 @@ pub(crate) fn definition(
     }
     let index = build_index(path, text, access);
     let tree = parse(text).tree;
-    if let Some(positions) = wxs_definition(path, text, &tree, offset, &index) {
+    if let Some(positions) = wxs_definition(path, text, &tree, offset, &index, access) {
         return Some(positions);
     }
     template_definition(position_in_tree(path, &tree, &index, offset, access))
@@ -290,7 +323,7 @@ pub(crate) fn completion(
     text: &str,
     offset: u32,
     access: &Access<'_>,
-) -> Option<Vec<StaticCompletion>> {
+) -> Option<StaticCompletionList> {
     let template_site = template_attribute_site(text, offset, "is").is_some()
         || template_attribute_site(text, offset, "data").is_some();
     let wxs_member_site = text.contains("<wxs") && unclosed_mustache(text, offset).is_some();
@@ -298,13 +331,29 @@ pub(crate) fn completion(
         return None;
     }
     let index = build_index(path, text, access);
-    if let Some(items) = wxs_member_completion(text, offset, &index) {
-        return Some(items);
-    }
-    if let Some(items) = template_is_completion(text, offset, &index) {
-        return Some(items);
-    }
-    template_data_completion(text, offset, &index)
+    let incomplete = index_incomplete(&index);
+    let items = if let Some(items) = wxs_member_completion(text, offset, &index) {
+        items
+    } else if let Some(items) = template_is_completion(text, offset, &index) {
+        items
+    } else {
+        template_data_completion(text, offset, &index)?
+    };
+    Some(StaticCompletionList { items, incomplete })
+}
+
+/// True when a static budget or dynamic export may have hidden facts.
+fn index_incomplete(index: &StaticIndex) -> bool {
+    index.semantics.truncated
+        || index
+            .semantics
+            .issues
+            .iter()
+            .any(|issue| issue.kind == StaticIssueKind::LimitReached)
+        || index
+            .wxs
+            .iter()
+            .any(|wxs| wxs.summary.truncated || wxs.summary.dynamic.is_some())
 }
 
 /// Cheap gate: building the index reads imported files and parses WXS bodies.
@@ -322,6 +371,7 @@ fn wxs_hover(
     tree: &SyntaxTree,
     offset: u32,
     index: &StaticIndex,
+    access: &Access<'_>,
 ) -> Option<StaticHover> {
     for block in &index.semantics.wxs {
         let Some(wxs) = index
@@ -336,7 +386,7 @@ fn wxs_hover(
             return Some(module_hover(wxs, path, block));
         }
         if contains(block.body_range, offset) {
-            if let Some(hover) = wxs_body_hover(path, text, wxs, offset) {
+            if let Some(hover) = wxs_body_hover(path, text, wxs, offset, access) {
                 return Some(hover);
             }
         }
@@ -345,7 +395,9 @@ fn wxs_hover(
     // nothing was loaded instead of silently falling through.
     for block in &index.semantics.wxs {
         if contains(block.src_range, offset) || contains(block.module_range, offset) {
-            let mut contents = "WXS module source is not in the project snapshot".to_owned();
+            let mut contents =
+                "WXS module source is not a readable local project file (missing, too large, or not a relative path)"
+                    .to_owned();
             if let Some(src) = &block.src {
                 let _ = write!(contents, ": `{src}`");
             }
@@ -373,12 +425,19 @@ fn wxs_hover(
     })
 }
 
-fn wxs_body_hover(path: &str, text: &str, wxs: &LocatedWxs, offset: u32) -> Option<StaticHover> {
+fn wxs_body_hover(
+    path: &str,
+    text: &str,
+    wxs: &LocatedWxs,
+    offset: u32,
+    access: &Access<'_>,
+) -> Option<StaticHover> {
     // `require("./x.wxs")`: the specifier is a module target, not a member.
     for require in &wxs.summary.requires {
         if contains(Some(shift(wxs, require.specifier_range)), offset) {
             let resolved =
-                resolve_static_specifier(wxs.path.as_deref().unwrap_or(path), &require.specifier);
+                resolve_static_specifier(wxs.path.as_deref().unwrap_or(path), &require.specifier)
+                    .filter(|resolved| access(resolved).is_some());
             let mut contents = format!("module `{}`", require.specifier);
             let mut positions = Vec::new();
             if let Some(resolved) = resolved {
@@ -387,6 +446,8 @@ fn wxs_body_hover(path: &str, text: &str, wxs: &LocatedWxs, offset: u32) -> Opti
                     path: resolved,
                     range: zero_range(),
                 });
+            } else {
+                contents.push_str("\n\nNot found in the project snapshot.");
             }
             return Some(StaticHover {
                 contents,
@@ -429,6 +490,9 @@ fn module_hover(wxs: &LocatedWxs, path: &str, block: &WxsBlock) -> StaticHover {
     }
     if let Some(dynamic) = &wxs.summary.dynamic {
         let _ = write!(contents, "\n\nPartial: {dynamic}");
+    }
+    if wxs.summary.truncated {
+        contents.push_str("\n\nPartial: WXS summary truncated; later members were skipped.");
     }
     let positions = wxs.path.as_ref().map_or_else(
         || {
@@ -478,6 +542,9 @@ fn member_markdown(wxs: &LocatedWxs, member: &WxsMember, name: &str) -> String {
             let _ = write!(contents, "\n\nRequires `{specifier}`");
         }
     }
+    if wxs.summary.truncated {
+        contents.push_str("\n\nPartial: WXS summary truncated; later members were skipped.");
+    }
     contents
 }
 
@@ -487,6 +554,7 @@ fn wxs_definition(
     tree: &SyntaxTree,
     offset: u32,
     index: &StaticIndex,
+    access: &Access<'_>,
 ) -> Option<Vec<StaticPosition>> {
     for block in &index.semantics.wxs {
         let Some(wxs) = index
@@ -516,7 +584,9 @@ fn wxs_definition(
                     if let Some(resolved) = resolve_static_specifier(
                         wxs.path.as_deref().unwrap_or(path),
                         &require.specifier,
-                    ) {
+                    )
+                    .filter(|resolved| access(resolved).is_some())
+                    {
                         return Some(vec![StaticPosition {
                             path: resolved,
                             range: zero_range(),
@@ -623,8 +693,8 @@ fn wxs_member_completion(
     .ok()?;
 
     if let Some(dot) = before
-        .strip_suffix('.')
-        .or_else(|| before.strip_suffix("?."))
+        .strip_suffix("?.")
+        .or_else(|| before.strip_suffix('.'))
     {
         let root = dot
             .trim_end()
@@ -691,6 +761,7 @@ fn template_hover(
     access: &Access<'_>,
 ) -> Option<StaticHover> {
     let semantics = &index.semantics;
+    let partial = template_partial_note(index);
     for call in &semantics.calls {
         if contains(Some(call.name_range), offset) {
             let definitions = templates_named(index, &call.name);
@@ -707,6 +778,9 @@ fn template_hover(
                             .join(", ")
                     );
                 }
+            }
+            if let Some(partial) = &partial {
+                let _ = write!(contents, "\n\nPartial: {partial}");
             }
             if definitions.is_empty() {
                 contents.push_str(
@@ -749,8 +823,13 @@ fn template_hover(
                                 .collect::<Vec<_>>()
                         })
                         .collect::<Vec<_>>();
+                    let mut contents =
+                        format!("data key `{}` for template `{}`", key.name, call.name);
+                    if let Some(partial) = &partial {
+                        let _ = write!(contents, "\n\nPartial: {partial}");
+                    }
                     return Some(StaticHover {
-                        contents: format!("data key `{}` for template `{}`", key.name, call.name),
+                        contents,
                         range: Some(key.range),
                         positions: uses,
                     });
@@ -776,6 +855,9 @@ fn template_hover(
             if let Some(incomplete) = &definition.incomplete {
                 let _ = write!(contents, "\n\nPartial: {incomplete}");
             }
+            if let Some(partial) = &partial {
+                let _ = write!(contents, "\n\nPartial: {partial}");
+            }
             return Some(StaticHover {
                 contents,
                 range: Some(definition.name_range),
@@ -798,6 +880,9 @@ fn template_hover(
                 contents.push_str(
                     "\n\nNot a local relative path in the project snapshot; not resolved.",
                 );
+            }
+            if let Some(partial) = &partial {
+                let _ = write!(contents, "\n\nPartial: {partial}");
             }
             return Some(StaticHover {
                 contents,
@@ -886,6 +971,21 @@ fn position_in_tree(
     None
 }
 
+fn template_partial_note(index: &StaticIndex) -> Option<String> {
+    if index.semantics.truncated {
+        return Some("template/WXS budget reached; later facts were skipped".to_owned());
+    }
+    if index
+        .semantics
+        .issues
+        .iter()
+        .any(|issue| issue.kind == StaticIssueKind::LimitReached)
+    {
+        return Some("template/WXS budget reached; later facts were skipped".to_owned());
+    }
+    None
+}
+
 fn templates_named<'a>(index: &'a StaticIndex, name: &str) -> Vec<&'a LocatedTemplate> {
     let mut seen = HashSet::new();
     index
@@ -901,6 +1001,13 @@ fn template_is_completion(
     index: &StaticIndex,
 ) -> Option<Vec<StaticCompletion>> {
     let site = template_attribute_site(text, offset, "is")?;
+    let offset = usize::try_from(offset).ok()?;
+    if text
+        .get(site.value_range.start() as usize..offset)
+        .is_some_and(|value| value.contains("{{"))
+    {
+        return None;
+    }
     let names: BTreeSet<&str> = index
         .templates
         .iter()
@@ -1277,10 +1384,14 @@ fn unclosed_mustache(text: &str, offset: u32) -> Option<(u32, String)> {
 
 /// Maps a static hover to the LSP hover shape.
 pub(crate) fn hover_value(document: &Document, hover: &StaticHover) -> Value {
+    let mut contents = hover.contents.clone();
+    if let Some(definition) = hover.positions.first() {
+        let _ = write!(contents, "\n\n---\n\nDefinition: `{}`", definition.path);
+    }
     let mut value = json!({
         "contents": {
             "kind": "markdown",
-            "value": hover.contents,
+            "value": contents,
         },
     });
     if let Some(range) = hover
@@ -1301,8 +1412,7 @@ pub(crate) fn definition_value(
     positions: &[StaticPosition],
 ) -> Vec<Value> {
     let mut locations = Vec::new();
-    let mut indexes: std::collections::HashMap<String, Option<wxml_text::LineIndex>> =
-        std::collections::HashMap::new();
+    let mut indexes: HashMap<String, Option<wxml_text::LineIndex>> = HashMap::new();
     let current = document.file().path().to_owned();
     for position in positions.iter().take(MAX_DEFINITION_LOCATIONS) {
         if position.path == current {
@@ -1344,8 +1454,9 @@ pub(crate) fn definition_value(
 }
 
 /// Maps static completion items to LSP `CompletionItem` values.
-pub(crate) fn completion_values(document: &Document, items: &[StaticCompletion]) -> Value {
-    let values: Vec<Value> = items
+pub(crate) fn completion_values(document: &Document, result: &StaticCompletionList) -> Value {
+    let values: Vec<Value> = result
+        .items
         .iter()
         .filter_map(|item| {
             let range = source_range_value(document, item.replace)?;
@@ -1373,14 +1484,33 @@ pub(crate) fn completion_values(document: &Document, items: &[StaticCompletion])
             Some(value)
         })
         .collect();
-    json!({"isIncomplete": false, "items": values})
+    json!({"isIncomplete": result.incomplete, "items": values})
 }
 
-/// Reads the text of a project-relative path through the host.
+/// Reads the text of a project-relative path through the LSP workspace first
+/// (open/unsaved buffers, including `.wxs`), then the project host.
 pub(crate) fn host_access(server: &Server) -> impl Fn(&str) -> Option<String> + '_ {
     move |path: &str| {
         let path = ProjectPath::new(path).ok()?;
         let file = server.host.file_id(&path).ok()?;
+        if path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("wxs"))
+            && server
+                .host
+                .file_size(&file)
+                .is_some_and(|size| size > u64::try_from(MAX_WXS_SOURCE_BYTES).unwrap_or(u64::MAX))
+        {
+            return None;
+        }
+        if let Some(document) = server.workspace.get_by_file(&file) {
+            return Some(document.snapshot().text().to_owned());
+        }
+        if let Some(uri) = server.host.uri_for(&file) {
+            if let Some(document) = server.workspace.get(&uri) {
+                return Some(document.snapshot().text().to_owned());
+            }
+        }
         server.host.file_text(&file).map(|text| text.to_string())
     }
 }
@@ -1466,9 +1596,13 @@ module.exports = { format };</wxs>
     fn template_instance_data_keys_hover_and_complete() {
         let wxml = r#"<template name="card"><view>{{ title }} {{ count }}</view></template><template is="card" data="{{ { ti } }}" /><template is="card" data="{{ { title: pageTitle } }}" />"#;
         let key_offset = u32::try_from(wxml.find("{ ti }").expect("data") + 2).expect("offset");
-        let items = completion("pages/index/index.wxml", wxml, key_offset, &no_access)
+        let result = completion("pages/index/index.wxml", wxml, key_offset, &no_access)
             .expect("data completion");
-        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        let labels: Vec<&str> = result
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
         assert!(labels.contains(&"title"), "{labels:?}");
         let title_offset =
             u32::try_from(wxml.find("title: pageTitle").expect("use")).expect("offset");
@@ -1488,26 +1622,33 @@ module.exports = { format };</wxs>
         let entries = [("pages/index/shared.wxml", shared)];
         let access = access_map(&entries);
         let offset = u32::try_from(wxml.find("\"c\"").expect("is") + 2).expect("offset");
-        let items =
+        let result =
             completion("pages/index/index.wxml", wxml, offset, &access).expect("completion");
-        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        let labels: Vec<&str> = result
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
         assert_eq!(labels, vec!["card", "chip"]);
     }
 
     #[test]
     fn wxs_require_specifier_navigates_to_the_target_file() {
         let wxml = r#"<wxs module="utils">const ext = require("./ext.wxs"); module.exports = { ext };</wxs>"#;
+        let entries = [("pages/index/ext.wxs", "module.exports = { x: 1 };")];
+        let access = access_map(&entries);
         let offset = u32::try_from(wxml.find("./ext.wxs").expect("specifier")).expect("offset");
-        let hover = hover("pages/index/index.wxml", wxml, offset, &no_access).expect("hover");
+        let hover = hover("pages/index/index.wxml", wxml, offset, &access).expect("hover");
         assert!(
             hover.contents.contains("module `./ext.wxs`"),
             "{}",
             hover.contents
         );
-        let definition =
-            definition("pages/index/index.wxml", wxml, offset, &no_access).expect("definition");
-        assert_eq!(definition[0].path, "pages/index/ext.wxs");
-        assert_eq!(definition[0].range.start(), 0);
+        let target =
+            definition("pages/index/index.wxml", wxml, offset, &access).expect("definition");
+        assert_eq!(target[0].path, "pages/index/ext.wxs");
+        assert_eq!(target[0].range.start(), 0);
+        assert!(definition("pages/index/index.wxml", wxml, offset, &no_access).is_none());
     }
 
     #[test]
@@ -1533,9 +1674,13 @@ module.exports = { format };</wxs>
             definition("pages/index/index.wxml", wxml, offset, &access).expect("definition");
         assert_eq!(definition.len(), 1);
         assert_eq!(definition[0].path, "pages/index/index.wxml");
-        let items =
+        let result =
             completion("pages/index/index.wxml", wxml, offset, &access).expect("completion");
-        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        let labels: Vec<&str> = result
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
         assert_eq!(labels, vec!["card", "chip"]);
     }
 
@@ -1548,9 +1693,13 @@ module.exports = { format };</wxs>
         let access = access_map(&entries);
         let offset = u32::try_from(wxml.find("is=\"fromC\"").expect("is") + 4).expect("offset");
         assert!(definition("pages/index/index.wxml", wxml, offset, &access).is_none());
-        let items =
+        let result =
             completion("pages/index/index.wxml", wxml, offset, &access).expect("completion");
-        let labels: Vec<&str> = items.iter().map(|item| item.label.as_str()).collect();
+        let labels: Vec<&str> = result
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
         assert_eq!(labels, vec!["fromB"]);
     }
 
@@ -1571,11 +1720,78 @@ module.exports = { format };</wxs>
         let src_hover =
             hover("pages/index/index.wxml", wxml, src_offset, &no_access).expect("wxs hover");
         assert!(
-            src_hover.contents.contains("not in the project snapshot"),
+            src_hover
+                .contents
+                .contains("not a readable local project file"),
             "{}",
             src_hover.contents
         );
         assert!(definition("pages/index/index.wxml", wxml, src_offset, &no_access).is_none());
+    }
+
+    #[test]
+    fn dynamic_wxs_summary_marks_completion_incomplete() {
+        let wxml = r#"<wxs module="u">module.exports = { a: 1 }; exports[k] = 2;</wxs><view>{{ u."#;
+        let offset = u32::try_from(wxml.len()).expect("offset");
+        let result =
+            completion("pages/index/index.wxml", wxml, offset, &no_access).expect("wxs completion");
+        assert!(
+            result.incomplete,
+            "dynamic exports must mark completion incomplete"
+        );
+        assert!(result.items.iter().any(|item| item.label == "a"));
+    }
+
+    #[test]
+    fn static_ranges_stay_on_the_original_utf16_surface() {
+        let wxml = "😀<template name=\"card\">x</template><template is=\"card\" />";
+        let offset = u32::try_from(wxml.find("is=\"card\"").expect("is") + 4).expect("offset");
+        let hover = hover("pages/index/index.wxml", wxml, offset, &no_access).expect("hover");
+        let range = hover.range.expect("range");
+        assert_eq!(&wxml[range.start() as usize..range.end() as usize], "card");
+        assert!(range.start() > 4, "emoji bytes must be preserved");
+    }
+
+    #[test]
+    fn template_budget_marks_completion_incomplete() {
+        let mut wxml = String::new();
+        for index in 0..1025 {
+            let _ = write!(wxml, "<template is=\"t{index}\" />");
+        }
+        wxml.push_str("<template is=\"x");
+        let offset = u32::try_from(wxml.len()).expect("offset");
+        let result =
+            completion("pages/index/index.wxml", &wxml, offset, &no_access).expect("completion");
+        assert!(result.incomplete);
+    }
+
+    #[test]
+    fn optional_chain_wxs_member_completion_works() {
+        let wxml = r#"<wxs module="u">module.exports = { label: 1 };</wxs><view>{{ u?."#;
+        let offset = u32::try_from(wxml.len()).expect("offset");
+        let result =
+            completion("pages/index/index.wxml", wxml, offset, &no_access).expect("completion");
+        assert!(result.items.iter().any(|item| item.label == "label"));
+    }
+
+    #[test]
+    fn dynamic_template_is_is_not_completed_as_a_name() {
+        let wxml = r#"<template name="card">x</template><template is="{{ na"#;
+        let offset = u32::try_from(wxml.len()).expect("offset");
+        assert!(completion("pages/index/index.wxml", wxml, offset, &no_access).is_none());
+    }
+
+    #[test]
+    fn include_does_not_contribute_template_definitions() {
+        let wxml = r#"<include src="./part.wxml" /><template is="inside" />"#;
+        let part = r#"<template name="inside">x</template>"#;
+        let entries = [("pages/index/part.wxml", part)];
+        let access = access_map(&entries);
+        let offset = u32::try_from(wxml.find("is=\"inside\"").expect("is") + 4).expect("offset");
+        assert!(definition("pages/index/index.wxml", wxml, offset, &access).is_none());
+        let items =
+            completion("pages/index/index.wxml", wxml, offset, &access).expect("completion");
+        assert!(items.items.is_empty(), "{items:?}");
     }
 
     #[test]

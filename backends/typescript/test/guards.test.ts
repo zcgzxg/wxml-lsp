@@ -72,6 +72,18 @@ test("renderGuards never renders a condition after the selected branch", () => {
   assert.ok(!rendered.open.includes("b"));
 });
 
+test("plain value-level || guards are not degraded", () => {
+  const rendered = renderGuards(chain([condition("if", "flagA || flagB")], 0), {
+    indent: "",
+    rewriteCondition: (exprText) => exprText,
+  });
+  assert.deepEqual(rendered, {
+    open: "if (flagA || flagB) {\n",
+    close: "}\n",
+    unresolved: false,
+  });
+});
+
 test("an unrewritable condition yields no narrowing block", () => {
   const rendered = renderGuards(chain([condition("if", "a")], 0), {
     indent: "",

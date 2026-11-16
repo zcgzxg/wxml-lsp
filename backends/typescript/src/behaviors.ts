@@ -2,15 +2,17 @@
  * Static `Behavior({...})` resolution for components.
  *
  * WeChat components may compose shared state through `Component({ behaviors:
- * [shared, ...] })`. The TypeScript typings do not merge a behavior's `data`
- * or `properties` into the instance type, so the declaration overlay would
- * report every shared field as missing. This module resolves the static subset
- * the runtime uses:
+ * [shared, ...] })`. `miniprogram-api-typings` merges typed local behaviors in
+ * many cases, but it ignores `optionalTypes` unions and intersects conflicting
+ * component/behavior names into `never`; imported/erased or dynamically built
+ * behaviors may not be merged at all. This module resolves the static subset
+ * the runtime uses and renders a conservative overlay:
  *
  * - inline `Behavior({...})` calls;
  * - `const shared = Behavior({...})` in the same file;
  * - local relative imports (`import shared from "./shared"`,
- *   `import { shared } from "./shared"`, `const shared = require("./shared")`);
+ *   `import { shared } from "./shared"`, `const shared = require("./shared")`,
+ *   `import shared = require("./shared")`);
  * - nested `behaviors: [...]` inside a behavior;
  * - local `export default`, named exports and `module.exports`.
  *
@@ -27,6 +29,7 @@
 import path from "node:path";
 import ts from "typescript";
 import { docTextOf, memberMap, propertyName, type DeclaredProperty, type Registration } from "./ast.ts";
+import { isBindingIdentifier } from "./expression.ts";
 
 /** Upper bounds that keep hostile behavior graphs bounded. */
 const MAX_BEHAVIORS = 64;
@@ -127,16 +130,24 @@ export function resolveBehaviors(input: BehaviorInput): BehaviorResolution {
     };
   }
 
+  let unresolvedBehavior = false;
   for (const element of behaviorsMember.initializer.elements) {
     if (units.length >= MAX_BEHAVIORS) {
       problems.push("behavior budget reached; later behaviors were skipped");
+      unresolvedBehavior = true;
       break;
     }
     const unit = resolveBehaviorExpression(element, input.sourceFile, input, stack, 0, problems);
     if (unit) collectUnit(unit, input, units, stack, 0, problems);
+    else unresolvedBehavior = true;
   }
 
-  return mergeUnits(units, options, input, problems);
+  const merged = mergeUnits(units, options, input, problems);
+  if (unresolvedBehavior) {
+    merged.dataIncomplete = true;
+    merged.propertiesIncomplete = true;
+  }
+  return merged;
 }
 
 /**
@@ -168,8 +179,12 @@ function mergeUnits(
   for (const unit of [...units].reverse()) {
     const members = memberMap(unit.options);
     const dataMember = members.get("data");
-    if (dataMember && ts.isPropertyAssignment(dataMember) && ts.isObjectLiteralExpression(dataMember.initializer)) {
-      for (const property of dataMember.initializer.properties) {
+    if (dataMember !== undefined) {
+      if (!ts.isPropertyAssignment(dataMember) || !ts.isObjectLiteralExpression(dataMember.initializer)) {
+        problems.push(`behavior \`${unit.label}\` has a non-object-literal \`data\` member`);
+        dataIncomplete = true;
+      } else {
+        for (const property of dataMember.initializer.properties) {
         if (ts.isSpreadAssignment(property)) {
           problems.push(`behavior \`${unit.label}\` has a spread in \`data\``);
           dataIncomplete = true;
@@ -197,15 +212,24 @@ function mergeUnits(
           dataIncomplete = true;
           break;
         }
+        if (!isProbeMemberName(name)) {
+          dataIncomplete = true;
+          problems.push(
+            `behavior data name \`${name}\` cannot be used as a template root; it is not checked`,
+          );
+          continue;
+        }
         const own = ownDataMembers.get(name);
         const owner = own ?? property;
         const ownerFile = own ? options.getSourceFile() : unit.sourceFile;
         const ownerPath = own ? ownerFile.fileName : unit.path;
         const inferred = typeOfInitializer(owner.initializer, ownerFile, input.checker);
-        if (!inferred.exact && own === undefined) {
+        if (!inferred.exact) {
           dataIncomplete = true;
           problems.push(
-            `behavior data member \`${name}\` is typed any: its initializer is not resolvable in the component scope`,
+            own
+              ? `component data member \`${name}\` is typed any in the overlay because its initializer is not resolvable here`
+              : `behavior data member \`${name}\` is typed any: its initializer is not resolvable in the component scope`,
           );
         }
         data.set(name, {
@@ -221,12 +245,20 @@ function mergeUnits(
           },
           ...(own ? { ownOverride: true } : {}),
         });
+        }
       }
     }
 
     const propertyMember = members.get("properties");
-    if (propertyMember && ts.isPropertyAssignment(propertyMember) && ts.isObjectLiteralExpression(propertyMember.initializer)) {
-      for (const property of propertyMember.initializer.properties) {
+    if (propertyMember !== undefined) {
+      if (
+        !ts.isPropertyAssignment(propertyMember) ||
+        !ts.isObjectLiteralExpression(propertyMember.initializer)
+      ) {
+        problems.push(`behavior \`${unit.label}\` has a non-object-literal \`properties\` member`);
+        propertiesIncomplete = true;
+      } else {
+        for (const property of propertyMember.initializer.properties) {
         if (ts.isSpreadAssignment(property) || !ts.isPropertyAssignment(property)) {
           problems.push(`behavior \`${unit.label}\` has a non-literal \`properties\` member`);
           propertiesIncomplete = true;
@@ -265,6 +297,7 @@ function mergeUnits(
             ...byteSpanOf(unit.sourceFile, property.name ?? property),
           },
         });
+        }
       }
     }
   }
@@ -360,6 +393,18 @@ function resolveBinding(
     return undefined;
   }
   if (binding.kind === "expression") {
+    if (
+      ts.isCallExpression(binding.expression) &&
+      ts.isIdentifier(binding.expression.expression) &&
+      binding.expression.expression.text === "require"
+    ) {
+      const argument = binding.expression.arguments[0];
+      if (argument && ts.isStringLiteralLike(argument)) {
+        return resolveExport(argument.text, undefined, sourceFile, input, stack, depth + 1, problems);
+      }
+      problems.push("CommonJS `require(...)` behavior needs a static string specifier");
+      return undefined;
+    }
     return resolveBehaviorExpression(binding.expression, sourceFile, input, stack, depth + 1, problems);
   }
   return resolveExport(binding.module, binding.exportName, sourceFile, input, stack, depth + 1, problems);
@@ -379,6 +424,12 @@ function findModuleBinding(sourceFile: ts.SourceFile, name: string): ModuleBindi
             ? undefined
             : { kind: "expression", expression: declaration.initializer };
         }
+      }
+    }
+    if (ts.isImportEqualsDeclaration(statement)) {
+      const reference = statement.moduleReference;
+      if (ts.isExternalModuleReference(reference) && reference.expression && ts.isStringLiteralLike(reference.expression)) {
+        return { kind: "import", module: reference.expression.text, exportName: undefined };
       }
     }
     if (ts.isImportDeclaration(statement) && statement.importClause) {
@@ -548,6 +599,11 @@ function byteSpanOf(
  * call, template literal with substitutions), so the caller reports the field
  * as `any` with a reason instead of inventing a type.
  */
+/** A behavior data key that can become a probe-local binding. */
+function isProbeMemberName(name: string): boolean {
+  return isBindingIdentifier(name) && !name.startsWith("__");
+}
+
 /**
  * True when a checker-rendered type names a type that is not a language
  * builtin. Such a name may live in the behavior module and is not in scope in

@@ -58,10 +58,13 @@ export function renderGuards(chain: RequestGuardChain, options: GuardRenderOptio
     const rewritten = options.rewriteCondition(condition.exprText);
     // TypeScript's control-flow analysis cannot prove every legal `||` guard
     // (a discriminated union behind `a !== 'x' || a.b` is a false positive in
-    // the narrowed branch). Do not publish diagnostics under a narrowing we
-    // cannot justify: the fragment stays mounted without a guard and the view
-    // is reported Partial.
-    if (rewritten === undefined || containsLogicalOr(rewritten)) {
+    // the narrowed branch). Degrade only that risky shape: plain value-level
+    // `a || b` conditions are left to TypeScript. Do not publish diagnostics
+    // under a narrowing we cannot justify, and report the view Partial.
+    if (
+      rewritten === undefined ||
+      (containsLogicalOr(rewritten) && containsMemberAccess(condition.exprText))
+    ) {
       return { open: "", close: "", unresolved: true };
     }
     lines.push(`${options.indent}${index === 0 ? "if" : "} else if"} (${rewritten}) {`);
@@ -104,6 +107,34 @@ function containsLogicalOr(text: string): boolean {
       continue;
     }
     if (character === "|" && text[index + 1] === "|") return true;
+    index += 1;
+  }
+  return false;
+}
+
+/** True when an expression accesses a member/index outside strings. */
+function containsMemberAccess(text: string): boolean {
+  let quote: string | undefined;
+  let index = 0;
+  while (index < text.length) {
+    const character = text[index]!;
+    if (quote !== undefined) {
+      if (character === "\\") {
+        index += 2;
+        continue;
+      }
+      if (character === quote) quote = undefined;
+      index += 1;
+      continue;
+    }
+    if (character === "'" || character === '"' || character === "`") {
+      quote = character;
+      index += 1;
+      continue;
+    }
+    if ((character === "." || character === "?") && text[index + 1] === ".") return true;
+    if (character === ".") return true;
+    if (character === "[") return true;
     index += 1;
   }
   return false;

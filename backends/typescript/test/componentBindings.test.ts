@@ -566,3 +566,130 @@ test("JavaScript behavior data uses JSDoc casts under checkJs", () => {
   assert.equal(count?.hover?.documentation, "js count");
   assert.deepEqual(count?.diagnostics, []);
 });
+
+test("unresolved behavior does not fabricate 2339 in either layout", () => {
+  for (const layoutId of ["in-place-shadow", "symbol-bridge"] as const) {
+    const request = componentRequest({
+      script: `Component({ behaviors: [factory()], data: {} });`,
+      fragments: [["unknown", "x"]],
+    });
+    const result = analyze(request, { ...config, layoutId });
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    assert.equal(result.build.behaviorIncomplete, true, layoutId);
+    assert.equal(result.build.buildStatus, "partial", layoutId);
+    assert.equal(result.states.diagnostics.status, "partial", layoutId);
+    const fragment = result.response.fragments.find((entry) => entry.fragmentId === "unknown");
+    assert.deepEqual(
+      (fragment?.diagnostics ?? []).filter((diagnostic) => diagnostic.code === 2339),
+      [],
+      `${layoutId}: ${JSON.stringify(fragment)}`,
+    );
+  }
+});
+
+test("CommonJS require behavior resolves statically", () => {
+  const behavior = `const shared = Behavior({ data: { importedCount: 7 } });
+  module.exports = shared;`;
+  const request = componentRequest({
+    script: `const shared = require("./shared");
+    Component({ behaviors: [shared], data: {} });`,
+    extraFiles: [{ path: "shared.js", text: behavior }],
+    fragments: [["count", "importedCount"]],
+  });
+  const result = analyze(request, config);
+  const count = hoverOf(result, "count");
+  assert.equal(count?.hover?.typeOnly, "number");
+  assert.deepEqual(count?.diagnostics, []);
+  assert.equal(result.ok && result.build.behaviorIncomplete, false);
+});
+
+test("non-literal behavior data/properties mark the view Partial", () => {
+  const request = componentRequest({
+    script: `const shared = { known: 1 };
+    const sharedProps = { title: { type: String } };
+    Component({ behaviors: [Behavior({ data: shared, properties: sharedProps })], data: {} });`,
+    fragments: [["unknown", "missingField"]],
+  });
+  const result = analyze(request, config);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.build.behaviorIncomplete, true);
+  assert.equal(result.build.buildStatus, "partial");
+  assert.match(result.build.reason ?? "", /non-object-literal/);
+  assert.deepEqual(
+    (hoverOf(result, "unknown")?.diagnostics ?? []).filter(
+      (diagnostic) => diagnostic.code === 2339,
+    ),
+    [],
+  );
+});
+
+test("behavior data keys that cannot be probe locals never break the probe", () => {
+  const request = componentRequest({
+    script: `Component({
+      behaviors: [Behavior({ data: { default: 1, eval: 2, class: 3, __wxml_root: 4, ok: 5 } })],
+      data: {},
+    });`,
+    fragments: [
+      ["unknown", "other"],
+      ["ok", "ok"],
+    ],
+  });
+  const result = analyze(request, config);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.deepEqual(result.probeProblems, []);
+  assert.equal(result.build.behaviorIncomplete, true);
+  assert.match(result.build.reason ?? "", /cannot be used as a template root/);
+  assert.deepEqual(
+    (hoverOf(result, "unknown")?.diagnostics ?? []).filter(
+      (diagnostic) => diagnostic.code === 2339,
+    ),
+    [],
+  );
+  assert.equal(hoverOf(result, "ok")?.hover?.typeOnly, "number");
+});
+
+test("a Page and Component in one file use the selected registration's behaviors", () => {
+  const request = analyzeRequest({
+    script: `Page({ data: { pageOnly: "p" } });
+    Component({ behaviors: [Behavior({ data: { leaked: 1 } })], data: {} });`,
+    fragments: [
+      fragment("page", "pageOnly", { start: 0, end: 8 }),
+      fragment("leaked", "leaked", { start: 0, end: 6 }),
+    ],
+  });
+  const result = analyze(request, config);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.registration.kind, "page");
+  assert.equal(result.build.behaviorIncomplete, false);
+  assert.equal(
+    result.response.fragments.find((entry) => entry.fragmentId === "page")?.hover?.typeOnly,
+    "string",
+  );
+  const leaked = result.response.fragments.find((entry) => entry.fragmentId === "leaked");
+  assert.notEqual(leaked?.hover?.typeOnly, "number", JSON.stringify(leaked));
+});
+
+test("an unresolved external behavior keeps the component's own property checks", () => {
+  const component = `import { externalBehavior } from "some-lib";
+  Component({ behaviors: [externalBehavior], properties: { title: { type: String } } });`;
+  const request = analyzeRequest({
+    script: PAGE,
+    extraFiles: [{ path: "external.ts", text: component }],
+    fragments: FRAGMENTS,
+    components: [
+      usage("bad", [mustache("title", "total")], "external.ts"),
+    ],
+  });
+  const outcome = componentOutcome(request);
+  const diagnostic = outcome.results.find((entry) => entry.tag === "bad")?.diagnostics[0];
+  assert.match(
+    diagnostic?.message ?? "",
+    /component property "title" expects string, got number/,
+  );
+  assert.ok(outcome.skipped >= 1);
+  assert.ok(outcome.skippedDetails.includes("bad.behavior"));
+});

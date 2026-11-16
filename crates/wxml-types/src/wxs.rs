@@ -137,7 +137,7 @@ impl WxsSummary {
                 "module {}",
                 member.module_specifier.as_deref().unwrap_or("<unknown>")
             ),
-            WxsMemberKind::Value => format!("{}: {}", member.name, member.type_text),
+            WxsMemberKind::Value => member.type_text.clone(),
         }
     }
 }
@@ -149,8 +149,14 @@ impl WxsSummary {
 /// [`WxsSummary::dynamic`]; it never throws.
 #[must_use]
 pub fn summarize_wxs(text: &str) -> WxsSummary {
-    let sliced = text.get(..MAX_WXS_BYTES).unwrap_or(text);
+    let limit = MAX_WXS_BYTES.min(text.len());
+    let end = (0..=limit)
+        .rev()
+        .find(|&index| text.is_char_boundary(index))
+        .unwrap_or(0);
+    let sliced = text.get(..end).unwrap_or_default();
     let tokens = lex(sliced);
+    let truncated = end < text.len() || tokens.len() >= MAX_WXS_TOKENS;
     let mut parser = Parser {
         tokens: &tokens,
         summary: WxsSummary::default(),
@@ -158,6 +164,9 @@ pub fn summarize_wxs(text: &str) -> WxsSummary {
         local_by_name: Vec::new(),
     };
     parser.run();
+    if truncated {
+        parser.summary.truncated = true;
+    }
     parser.summary
 }
 
@@ -714,61 +723,77 @@ impl<'a> Parser<'a> {
         let keyword = self.tokens[start].text;
         let mutable = keyword != "const";
         let mut index = self.skip_comments(start + 1);
-        if !self
-            .tokens
-            .get(index)
-            .is_some_and(|token| token.kind == TokenKind::Identifier)
-        {
-            return self.skip_to_statement_end(start, &mut 0);
-        }
-        let name_token = self.tokens[index];
-        let name = name_token.text.to_owned();
-        let name_range = self.token_range(index);
-        index = self.skip_comments(index + 1);
-        if !self.is_punct(index, b'=') {
-            let doc = self.take_doc();
+        let mut first = true;
+        loop {
+            if !self
+                .tokens
+                .get(index)
+                .is_some_and(|token| token.kind == TokenKind::Identifier)
+            {
+                return self.skip_to_statement_end(index, &mut 0);
+            }
+            let name_token = self.tokens[index];
+            let name = name_token.text.to_owned();
+            let name_range = self.token_range(index);
+            index = self.skip_comments(index + 1);
+            if !self.is_punct(index, b'=') {
+                let doc = if first {
+                    self.take_doc()
+                } else {
+                    String::new()
+                };
+                self.push_member(WxsMember {
+                    name,
+                    kind: WxsMemberKind::Value,
+                    type_text: "any".to_owned(),
+                    signature: None,
+                    doc,
+                    exported: false,
+                    name_range,
+                    decl_range: Self::range(name_token.start, name_token.end),
+                    module_specifier: None,
+                });
+                return self.skip_to_statement_end(index, &mut 0);
+            }
+            index = self.skip_comments(index + 1);
+            let end = self.expression_end(index);
+            let doc = if first {
+                self.take_doc()
+            } else {
+                String::new()
+            };
+            let (kind, type_text, signature, module_specifier) =
+                self.classify_initializer(index, end, &name);
+            if kind == WxsMemberKind::Module {
+                if let Some((specifier, specifier_range)) = self.require_specifier(index) {
+                    self.push_require(name.clone(), specifier, name_range, specifier_range);
+                }
+            }
+            // A mutable local keeps its declared/initial type for hover;
+            // reassignment is not a reason to discard the whole module summary.
+            let _ = mutable;
+            let decl_end = self
+                .tokens
+                .get(end.saturating_sub(1))
+                .map_or(name_token.end, |token| token.end);
             self.push_member(WxsMember {
                 name,
-                kind: WxsMemberKind::Value,
-                type_text: "any".to_owned(),
-                signature: None,
+                kind,
+                type_text,
+                signature,
                 doc,
                 exported: false,
                 name_range,
-                decl_range: Self::range(name_token.start, name_token.end),
-                module_specifier: None,
+                decl_range: Self::range(name_token.start, decl_end),
+                module_specifier,
             });
-            return self.skip_to_statement_end(index, &mut 0);
-        }
-        index = self.skip_comments(index + 1);
-        let end = self.expression_end(index);
-        let doc = self.take_doc();
-        let (kind, type_text, signature, module_specifier) =
-            self.classify_initializer(index, end, &name);
-        if kind == WxsMemberKind::Module {
-            if let Some((specifier, specifier_range)) = self.require_specifier(index) {
-                self.push_require(name.clone(), specifier, name_range, specifier_range);
+            first = false;
+            if self.is_punct(end, b',') {
+                index = self.skip_comments(end + 1);
+                continue;
             }
+            return end;
         }
-        // A mutable local keeps its declared/initial type for hover; reassignment
-        // is not a reason to discard the whole module summary.
-        let _ = mutable;
-        let decl_end = self
-            .tokens
-            .get(end.saturating_sub(1))
-            .map_or(name_token.end, |token| token.end);
-        self.push_member(WxsMember {
-            name,
-            kind,
-            type_text,
-            signature,
-            doc,
-            exported: false,
-            name_range,
-            decl_range: Self::range(name_token.start, decl_end),
-            module_specifier,
-        });
-        end
     }
 
     fn classify_initializer(
@@ -910,6 +935,10 @@ impl<'a> Parser<'a> {
             return None;
         }
         index = self.skip_comments(index + 1);
+        if self.is_punct(index, b'[') {
+            self.mark_dynamic("computed `module.exports[...]` members are not analyzed");
+            return Some(self.skip_to_statement_end(index, &mut 0));
+        }
         if self.is_punct(index, b'.') {
             let name_index = self.skip_comments(index + 1);
             let name = self
@@ -982,6 +1011,36 @@ impl<'a> Parser<'a> {
                 // Spread of another module/object is dynamic.
                 self.mark_dynamic("export spread members are not analyzed");
                 index = self.skip_to_statement_end(index, &mut depth);
+                continue;
+            }
+            if depth == 0 && matches!(token.kind, TokenKind::String | TokenKind::Number) {
+                let (name, name_range) = key_literal(token, Self::range(token.start, token.end));
+                let next = self.skip_comments(index + 1);
+                if self.is_punct(next, b':') {
+                    let value_start = self.skip_comments(next + 1);
+                    let end = self.member_value_end(value_start, open);
+                    let (kind, type_text, signature, module_specifier) =
+                        self.classify_initializer(value_start, end, &name);
+                    self.push_exported(
+                        name,
+                        kind,
+                        type_text,
+                        signature,
+                        pending_doc.clone(),
+                        name_range,
+                        end,
+                        module_specifier,
+                    );
+                    index = end;
+                    continue;
+                }
+                self.mark_dynamic("string/number export keys must have a static value");
+                index += 1;
+                continue;
+            }
+            if depth == 0 && token.kind == TokenKind::Punct(b'[') {
+                self.mark_dynamic("computed export keys are not analyzed");
+                index = self.skip_computed_key(index);
                 continue;
             }
             if depth == 0 && token.kind == TokenKind::Identifier {
@@ -1096,6 +1155,27 @@ impl<'a> Parser<'a> {
             }
             if index <= object_open {
                 return index + 1;
+            }
+            index += 1;
+        }
+        index
+    }
+
+    /// Skips a `[computed]` key, balancing nested brackets.
+    #[allow(clippy::missing_const_for_fn)]
+    fn skip_computed_key(&self, open: TokenIndex) -> TokenIndex {
+        let mut depth = 0_i32;
+        let mut index = open;
+        while index < self.tokens.len() {
+            match self.tokens[index].kind {
+                TokenKind::Punct(b'[') => depth += 1,
+                TokenKind::Punct(b']') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return index + 1;
+                    }
+                }
+                _ => {}
             }
             index += 1;
         }
@@ -1239,6 +1319,27 @@ fn valid_range(start: usize, end: usize) -> TextRange {
     TextRange::new(start, end).unwrap_or_else(|_| {
         TextRange::new(0, 0).unwrap_or_else(|_| unreachable!("an empty text range is valid"))
     })
+}
+
+/// Extracts a static string/number export key and its name range.
+fn key_literal(token: Token<'_>, token_range: SourceRange) -> (String, SourceRange) {
+    if token.kind == TokenKind::String {
+        let raw = token.text;
+        let quote = raw.chars().next().unwrap_or('"');
+        let name = raw
+            .strip_prefix(quote)
+            .and_then(|raw| raw.strip_suffix(quote))
+            .unwrap_or(raw)
+            .to_owned();
+        let start = token_range.start() + u32::try_from(quote.len_utf8()).unwrap_or(0);
+        let end = token_range.end().saturating_sub(1);
+        (
+            name,
+            SourceRange::from_bounds(start, end).unwrap_or(token_range),
+        )
+    } else {
+        (token.text.to_owned(), token_range)
+    }
 }
 
 fn comment_text(raw: &str, doc_block: bool) -> String {
@@ -1464,6 +1565,7 @@ fn starts_statement(token: Token<'_>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
 
     fn member<'a>(summary: &'a WxsSummary, name: &str) -> &'a WxsMember {
         summary
@@ -1594,6 +1696,18 @@ module.exports = {
     }
 
     #[test]
+    fn string_export_keys_are_collected_and_computed_keys_are_dynamic() {
+        let text = r#"
+module.exports = { "a-b": 1, 2: "two", [name]: 3, "bad" };
+module.exports[computed] = 4;
+"#;
+        let summary = summarize_wxs(text);
+        assert_eq!(member(&summary, "a-b").type_text, "number");
+        assert_eq!(member(&summary, "2").type_text, "string");
+        assert!(summary.dynamic.is_some(), "{summary:?}");
+    }
+
+    #[test]
     fn callable_module_exports_are_reported_not_faked_as_members() {
         let summary = summarize_wxs("module.exports = function format(value) { return value; };");
         assert!(summary.dynamic.is_some(), "{summary:?}");
@@ -1629,6 +1743,32 @@ module.exports = {
         let summary = summarize_wxs(text);
         assert_eq!(member(&summary, "a").doc, "docs");
         assert_eq!(member(&summary, "b").doc, "other");
+    }
+
+    #[test]
+    fn byte_and_member_budgets_are_visible() {
+        let mut text = "a".repeat(MAX_WXS_BYTES - 1);
+        text.push('😀');
+        text.push_str("module.exports = { label: 1 };");
+        let summary = summarize_wxs(&text);
+        assert!(summary.truncated, "a non-UTF-8-boundary cut must truncate");
+
+        let mut many = String::new();
+        for index in 0..600 {
+            let _ = writeln!(many, "exports.m{index} = {index};");
+        }
+        let summary = summarize_wxs(&many);
+        assert!(summary.truncated, "member budget must set truncated");
+        assert!(summary.members.len() <= MAX_WXS_MEMBERS);
+    }
+
+    #[test]
+    fn multiple_declarators_are_all_collected() {
+        let text = "const a = 1, b = \"x\", c = [true];";
+        let summary = summarize_wxs(text);
+        assert_eq!(member(&summary, "a").type_text, "number");
+        assert_eq!(member(&summary, "b").type_text, "string");
+        assert_eq!(member(&summary, "c").type_text, "boolean[]");
     }
 
     #[test]

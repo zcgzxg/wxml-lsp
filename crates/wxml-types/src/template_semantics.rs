@@ -36,8 +36,6 @@ pub const MAX_TEMPLATE_CALLS: usize = 1024;
 pub const MAX_STATIC_MODULES: usize = 256;
 /// Maximum data keys per template instance or definition.
 pub const MAX_TEMPLATE_DATA_KEYS: usize = 256;
-/// Maximum data-key uses collected from one template definition body.
-pub const MAX_TEMPLATE_DATA_USES: usize = 2048;
 /// Maximum data uses collected for one template definition.
 pub const MAX_TEMPLATE_DATA_USES_PER_TEMPLATE: usize = 256;
 
@@ -349,7 +347,19 @@ struct Engine<'a> {
 }
 
 impl Engine<'_> {
-    fn finish(self) -> TemplateSemantics {
+    fn finish(mut self) -> TemplateSemantics {
+        // WXS module names are file-level values, not template data keys.
+        let modules: HashSet<String> = self
+            .semantics
+            .wxs
+            .iter()
+            .filter_map(|block| block.module.clone())
+            .collect();
+        for definition in &mut self.semantics.definitions {
+            definition
+                .data_uses
+                .retain(|use_| !modules.contains(&use_.name));
+        }
         self.semantics
     }
 
@@ -513,10 +523,12 @@ impl Engine<'_> {
         let Some((name, name_range)) =
             static_value(is_attribute).and_then(|(value, range)| range.map(|range| (value, range)))
         else {
-            self.issue(
-                StaticIssueKind::MissingTemplateIs,
-                as_source_range(is_attribute.text_range()),
-            );
+            let kind = if dynamic_attribute_value(is_attribute) {
+                StaticIssueKind::DynamicTemplateIs
+            } else {
+                StaticIssueKind::MissingTemplateIs
+            };
+            self.issue(kind, as_source_range(is_attribute.text_range()));
             return;
         };
         let data = attributes
@@ -663,7 +675,7 @@ impl Engine<'_> {
     }
 
     fn push_mustache_uses(
-        &self,
+        &mut self,
         mustache: wxml_syntax::Mustache<'_>,
         locals: &HashSet<String>,
         seen: &mut HashSet<String>,
@@ -682,14 +694,11 @@ impl Engine<'_> {
             }
             if uses.len() >= MAX_TEMPLATE_DATA_USES_PER_TEMPLATE {
                 incomplete.get_or_insert_with(|| "too many data keys".to_owned());
+                self.semantics.truncated = true;
                 return;
             }
             if seen.insert(name.clone()) {
                 uses.push(TemplateDataUse { name, range });
-            }
-            if uses.len() >= MAX_TEMPLATE_DATA_USES || uses.len() % 256 == 0 {
-                // Keep the overall bound; per-template bound above is the
-                // actionable one.
             }
         }
     }
@@ -711,10 +720,12 @@ impl Engine<'_> {
             return;
         };
         let Some((src, src_range)) = static_value(attribute) else {
-            self.issue(
-                StaticIssueKind::MissingImportSrc,
-                as_source_range(attribute.text_range()),
-            );
+            let kind = if dynamic_attribute_value(attribute) {
+                StaticIssueKind::DynamicImportSrc
+            } else {
+                StaticIssueKind::MissingImportSrc
+            };
+            self.issue(kind, as_source_range(attribute.text_range()));
             return;
         };
         let Some(src_range) = src_range else {
@@ -808,6 +819,12 @@ fn collect_children(element: Element<'_>) -> Vec<AstNode<'_>> {
 /// Returns the static value of an attribute plus the token range of the value.
 ///
 /// `None` means the value is dynamic, mixed or missing.
+fn dynamic_attribute_value(attribute: Attribute<'_>) -> bool {
+    attribute
+        .value()
+        .is_some_and(|value| value.mustaches().next().is_some())
+}
+
 fn static_value(attribute: Attribute<'_>) -> Option<(String, Option<SourceRange>)> {
     let value = attribute.value()?;
     let literal = value.literal_text()?;
@@ -1064,13 +1081,26 @@ module.exports = { format };
     }
 
     #[test]
+    fn wxs_module_names_are_not_template_data_keys() {
+        let source = r#"<wxs module="utils">module.exports = { format };</wxs><template name="card"><view>{{ utils.format(title) }}</view></template>"#;
+        let (semantics, _) = analyze(source);
+        let names: Vec<&str> = semantics.definitions[0]
+            .data_uses
+            .iter()
+            .map(|use_| use_.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["title"]);
+    }
+
+    #[test]
     fn dynamic_forms_are_reported_not_guessed() {
         let source = r#"<template is="{{ name }}" /><template is="card" data="{{ payload }}" /><import src="{{ target }}" /><wxs>1</wxs>"#;
         let (semantics, _) = analyze(source);
         let kinds: Vec<StaticIssueKind> = semantics.issues.iter().map(|issue| issue.kind).collect();
-        assert!(kinds.contains(&StaticIssueKind::MissingTemplateIs));
+        assert!(kinds.contains(&StaticIssueKind::DynamicTemplateIs));
+        assert!(kinds.contains(&StaticIssueKind::DynamicImportSrc));
         assert!(kinds.contains(&StaticIssueKind::DynamicTemplateData));
-        assert!(kinds.contains(&StaticIssueKind::MissingImportSrc));
+        assert!(kinds.contains(&StaticIssueKind::DynamicImportSrc));
         assert!(kinds.contains(&StaticIssueKind::MissingWxsModule));
     }
 

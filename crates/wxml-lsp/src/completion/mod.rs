@@ -182,13 +182,13 @@ impl Server {
         // members never start the type backend.
         {
             let access = crate::static_semantics::host_access(self);
-            if let Some(items) = crate::static_semantics::completion(
+            if let Some(result) = crate::static_semantics::completion(
                 context.source().file().path(),
                 text,
                 offset,
                 &access,
             ) {
-                let value = crate::static_semantics::completion_values(document, &items);
+                let value = crate::static_semantics::completion_values(document, &result);
                 return vec![Outgoing::success(id, value)];
             }
         }
