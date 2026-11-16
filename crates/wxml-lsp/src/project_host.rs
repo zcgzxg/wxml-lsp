@@ -788,14 +788,16 @@ impl ProjectHost for ProjectState {
         {
             let state = self.read();
             if let Some(slot) = state.projects.get(&project_id) {
-                if let Some(view) = slot.views.get(&path) {
-                    if let Some(cache) = slot.prepared.iter().find(|cache| {
-                        cache.key.path == path
-                            && cache.key.snapshot == snapshot.snapshot()
-                            && cache.key.view_revision == view.view_revision
-                            && cache.key.project_revision == slot.project_revision
-                    }) {
-                        return Ok((*cache.view).clone());
+                if !slot.config_stale {
+                    if let Some(view) = slot.views.get(&path) {
+                        if let Some(cache) = slot.prepared.iter().find(|cache| {
+                            cache.key.path == path
+                                && cache.key.snapshot == snapshot.snapshot()
+                                && cache.key.view_revision == view.view_revision
+                                && cache.key.project_revision == slot.project_revision
+                        }) {
+                            return Ok((*cache.view).clone());
+                        }
                     }
                 }
             }
@@ -804,11 +806,22 @@ impl ProjectHost for ProjectState {
         let parsed = wxml_syntax::parse(snapshot.text());
         let syntax = syntax_diagnostics(&parsed, snapshot);
 
-        // Load an inactive app once; never change foreground identity here.
-        let missing = !self.read().projects.contains_key(&project_id);
-        if missing {
+        // Load an inactive app once, including a shared tsconfig that was
+        // created after startup; never change foreground identity here.
+        let needs_load = {
+            let state = self.read();
+            state
+                .projects
+                .get(&project_id)
+                .is_none_or(|slot| slot.config_stale)
+        };
+        if needs_load {
             let mut state = self.write();
-            if !state.projects.contains_key(&project_id) {
+            let needs_load = state
+                .projects
+                .get(&project_id)
+                .is_none_or(|slot| slot.config_stale);
+            if needs_load {
                 let app = state
                     .app_roots
                     .iter()
@@ -1193,10 +1206,11 @@ fn mark_shared_config_stale(state: &mut State, project: &ProjectId, path: &Proje
         let Some(slot) = state.projects.get(project) else {
             return;
         };
-        let is_tsconfig = slot
-            .project
-            .tsconfig()
-            .is_some_and(|config| config.path == *path || config.extends.contains(path));
+        let is_tsconfig = path.as_str() == "tsconfig.json"
+            || slot
+                .project
+                .tsconfig()
+                .is_some_and(|config| config.path == *path || config.extends.contains(path));
         if !is_tsconfig {
             return;
         }

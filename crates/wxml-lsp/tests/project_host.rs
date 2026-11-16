@@ -1441,3 +1441,137 @@ fn reopening_the_workspace_produces_stable_project_ids() {
     );
     assert_ne!(first[0], first[1]);
 }
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn new_shared_tsconfig_reloads_the_non_owner_app() {
+    let project = TempProject::new();
+    for app in ["a", "b"] {
+        project.write(
+            &format!("{app}/app.json"),
+            r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+        );
+        project.write(
+            &format!("{app}/pages/index/index.wxml"),
+            "<view>{{ user.name }}</view>",
+        );
+        project.write(
+            &format!("{app}/pages/index/index.ts"),
+            "Page({ data: { user: { name: 'x' } } });",
+        );
+    }
+    let options = InitializationOptions::parse(&json!({
+        "apps": [
+            {"root": "a", "projectRoot": "."},
+            {"root": "b", "projectRoot": "."}
+        ]
+    }))
+    .expect("options");
+    let host = ProjectState::new();
+    host.open_root_with_options(Some(&project.root_uri()), &options)
+        .expect("open shared root");
+
+    let a_path = host
+        .path_for_uri(&project.uri("a/pages/index/index.wxml"))
+        .expect("a path");
+    let a_file = host.file_id(&a_path).expect("a file");
+    let a_snapshot = Arc::new(SourceSnapshot::new(
+        a_file.clone(),
+        SourceRevision::new(1),
+        SnapshotId::new(1),
+        "<view>{{ user.name }}</view>",
+    ));
+    let a_before = host.analysis(&a_snapshot).expect("a before");
+    assert_eq!(a_before.compiler_options.get("strict"), None);
+
+    let b_path = host
+        .path_for_uri(&project.uri("b/pages/index/index.wxml"))
+        .expect("b path");
+    let b_file = host.file_id(&b_path).expect("b file");
+    let b_snapshot = Arc::new(SourceSnapshot::new(
+        b_file.clone(),
+        SourceRevision::new(1),
+        SnapshotId::new(2),
+        "<view>{{ user.name }}</view>",
+    ));
+    assert_eq!(
+        host.analysis(&b_snapshot)
+            .expect("b before")
+            .compiler_options
+            .get("strict"),
+        None
+    );
+    assert_ne!(a_file.project(), b_file.project());
+
+    // A differently-cased file is not the project tsconfig and must not load.
+    project.write("TSConfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+    let update = host
+        .watched_files_changed(&[watched(
+            &project.uri("TSConfig.json"),
+            WatchedChangeKind::Created,
+        )])
+        .expect("uppercase ignored");
+    assert_eq!(update, HostUpdate::default());
+    assert_eq!(
+        host.analysis(&a_snapshot)
+            .expect("a after uppercase")
+            .compiler_options
+            .get("strict"),
+        None
+    );
+
+    // Creating a real tsconfig at runtime refreshes the active owner and marks
+    // the other app sharing its projectRoot for a fresh disk load.
+    project.write(
+        "tsconfig.base.json",
+        r#"{"compilerOptions":{"strict":true}}"#,
+    );
+    project.write("tsconfig.json", r#"{"extends":"./tsconfig.base.json"}"#);
+    host.watched_files_changed(&[watched(
+        &project.uri("tsconfig.json"),
+        WatchedChangeKind::Created,
+    )])
+    .expect("new shared tsconfig");
+
+    let a_after = host.analysis(&a_snapshot).expect("a after new tsconfig");
+    assert_eq!(a_after.compiler_options.get("strict"), Some(&json!(true)));
+    let b_after = host.analysis(&b_snapshot).expect("b after new tsconfig");
+    assert_eq!(b_after.compiler_options.get("strict"), Some(&json!(true)));
+    assert_ne!(
+        a_after
+            .target
+            .as_ref()
+            .expect("a target")
+            .script_file
+            .project(),
+        b_after
+            .target
+            .as_ref()
+            .expect("b target")
+            .script_file
+            .project()
+    );
+
+    // Renaming the tsconfig away refreshes both apps again; the uppercase file
+    // is still not treated as configuration.
+    std::fs::remove_file(project.root.join("tsconfig.json")).expect("remove tsconfig");
+    host.watched_files_changed(&[watched(
+        &project.uri("tsconfig.json"),
+        WatchedChangeKind::Deleted,
+    )])
+    .expect("removed shared tsconfig");
+    assert_eq!(
+        host.analysis(&a_snapshot)
+            .expect("a after removal")
+            .compiler_options
+            .get("strict"),
+        None
+    );
+    assert_eq!(
+        host.analysis(&b_snapshot)
+            .expect("b after removal")
+            .compiler_options
+            .get("strict"),
+        None
+    );
+}
