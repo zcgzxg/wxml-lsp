@@ -9,11 +9,17 @@ use wxml_project::ProjectPath;
 
 /// Startup options sent by an editor as `initialize.initializationOptions`.
 #[derive(Clone, Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InitializationOptions {
     /// Mini Programs in this workspace; empty means the workspace root.
     #[serde(default)]
     pub apps: Vec<AppConfig>,
+    /// Optional workspace snippet configuration path.
+    #[serde(default)]
+    pub snippets_path: Option<String>,
+    /// Optional switch for all snippets.
+    #[serde(default)]
+    pub snippets_enabled: Option<bool>,
 }
 
 /// One Mini Program, with no filesystem-based root inference.
@@ -544,6 +550,7 @@ mod tests {
                 root: "../outside".to_owned(),
                 project_root: None,
             }],
+            ..InitializationOptions::default()
         };
         assert_eq!(
             options.resolve(&temp.0),

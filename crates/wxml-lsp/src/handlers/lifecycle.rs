@@ -26,6 +26,30 @@ fn requested_root(params: Option<&Value>) -> Option<&str> {
         .as_str()
 }
 
+/// Reads one boolean capability nested under `capabilities`.
+fn client_capability(params: Option<&Value>, path: &[&str]) -> bool {
+    let Some(mut value) = params.and_then(|params| params.get("capabilities")) else {
+        return false;
+    };
+    for key in path {
+        let Some(next) = value.get(*key) else {
+            return false;
+        };
+        value = next;
+    }
+    value.as_bool().unwrap_or(false)
+}
+
+/// Reads one string initialization option.
+fn initialization_string<'a>(params: Option<&'a Value>, key: &str) -> Option<&'a str> {
+    params?.get("initializationOptions")?.get(key)?.as_str()
+}
+
+/// Reads one boolean initialization option.
+fn initialization_bool(params: Option<&Value>, key: &str) -> Option<bool> {
+    params?.get("initializationOptions")?.get(key)?.as_bool()
+}
+
 /// Builds the `InitializeResult`.
 fn initialize_result(server: &Server) -> Value {
     json!({
@@ -48,6 +72,14 @@ fn initialize_result(server: &Server) -> Value {
                 "triggerCharacters": ["<", " ", ":", "\"", "'", ".", "{", "="],
                 "resolveProvider": false,
             },
+            // Formatting and structure are answered locally from the WXML
+            // syntax tree, so they stay available when Node is offline.
+            "documentFormattingProvider": true,
+            "documentRangeFormattingProvider": true,
+            "linkedEditingRangeProvider": true,
+            "foldingRangeProvider": true,
+            "selectionRangeProvider": true,
+            "documentSymbolProvider": true,
         },
         "serverInfo": {
             "name": "wxml-lsp",
@@ -99,6 +131,12 @@ impl Server {
             "textDocument/hover" => self.hover(id, params),
             "textDocument/definition" => self.definition(id, params),
             "textDocument/completion" => self.completion(id, params),
+            "textDocument/formatting" => self.formatting(id, params),
+            "textDocument/rangeFormatting" => self.range_formatting(id, params),
+            "textDocument/linkedEditingRange" => self.linked_editing(id, params),
+            "textDocument/foldingRange" => self.folding_range(id, params),
+            "textDocument/selectionRange" => self.selection_range(id, params),
+            "textDocument/documentSymbol" => self.document_symbol(id, params),
             other => {
                 log(format_args!(
                     "unknown request method `{}`",
@@ -181,14 +219,42 @@ impl Server {
                 )];
             }
         };
-        self.client_watched_files = params
-            .and_then(|params| params.get("capabilities"))
-            .and_then(|capabilities| capabilities.get("workspace"))
-            .and_then(|workspace| workspace.get("didChangeWatchedFiles"))
-            .and_then(|watched| watched.get("dynamicRegistration"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
+        self.client.watched_files = client_capability(
+            params,
+            &["workspace", "didChangeWatchedFiles", "dynamicRegistration"],
+        );
+        self.client.snippets = client_capability(
+            params,
+            &[
+                "textDocument",
+                "completion",
+                "completionItem",
+                "snippetSupport",
+            ],
+        );
+        self.client.hierarchical_symbols = client_capability(
+            params,
+            &[
+                "textDocument",
+                "documentSymbol",
+                "hierarchicalDocumentSymbolSupport",
+            ],
+        );
         let root = requested_root(params);
+        let root_path = root.and_then(|uri| wxml_project::root_path_from_uri(uri).ok());
+        let configured = initialization_string(params, "snippetsPath")
+            .or_else(|| initialization_string(params, "wxmlSnippetsPath"));
+        let snippets_enabled = initialization_bool(params, "snippetsEnabled")
+            .or_else(|| initialization_bool(params, "wxmlSnippetsEnabled"))
+            .unwrap_or(true);
+        let snippets_path =
+            crate::completion::user_snippets::resolve_path(root_path.as_deref(), configured);
+        if configured.is_some() && snippets_path.is_none() {
+            log(format_args!(
+                "ignoring snippetsPath: relative paths require a file workspace root"
+            ));
+        }
+        self.snippets.configure(snippets_path, snippets_enabled);
         match self.host.open_root_with_options(root, &options) {
             Ok(()) => {
                 if root.is_some() {
@@ -286,6 +352,7 @@ impl Server {
             ));
             return Vec::new();
         }
+        self.snippets.watched_files_changed(&changes);
         // An open buffer is authoritative: a watched-file event for it may be
         // a delayed notification for a save that `didSave` already handled, or
         // an unrelated on-disk edit that must not discard unsaved text.
@@ -338,7 +405,7 @@ impl Server {
     /// Clients without a project (and the mock/`NullHost` server) must keep
     /// the current message flow, so no registration is sent for them.
     fn initialized(&self) -> Vec<Outgoing> {
-        if !self.client_watched_files || !self.host.is_project_open() {
+        if !self.client.watched_files || !self.host.is_project_open() {
             return Vec::new();
         }
         let watchers: Vec<Value> = WATCH_GLOBS

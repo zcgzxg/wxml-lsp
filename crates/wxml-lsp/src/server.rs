@@ -79,6 +79,19 @@ pub(crate) struct Inflight {
     pub(crate) uri: String,
 }
 
+/// Client capabilities that change server behavior.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ClientFlags {
+    /// The client declared dynamic watched-file registrations.
+    pub(crate) watched_files: bool,
+    /// The client accepts LSP snippets
+    /// (`textDocument.completion.completionItem.snippetSupport`).
+    pub(crate) snippets: bool,
+    /// The client accepts hierarchical `DocumentSymbol` results
+    /// (`textDocument.documentSymbol.hierarchicalDocumentSymbolSupport`).
+    pub(crate) hierarchical_symbols: bool,
+}
+
 /// One connected client.
 pub(crate) struct Server {
     /// Open documents.
@@ -110,8 +123,10 @@ pub(crate) struct Server {
     pub(crate) stop: bool,
     /// Set by `shutdown`.
     pub(crate) clean_shutdown: bool,
-    /// Whether the client declared dynamic watched-file registrations.
-    pub(crate) client_watched_files: bool,
+    /// Capability flags read once from `initialize`.
+    pub(crate) client: ClientFlags,
+    /// Workspace/user snippet configuration and cache.
+    pub(crate) snippets: crate::completion::user_snippets::Store,
     /// Synthetic (non-project) documents the client opened as WXML.
     ///
     /// Their route is `Unknown`, so the URI extension alone cannot tell a
@@ -155,7 +170,8 @@ impl Server {
             diagnostics_cancel: HashMap::new(),
             stop: false,
             clean_shutdown: false,
-            client_watched_files: false,
+            client: ClientFlags::default(),
+            snippets: crate::completion::user_snippets::Store::default(),
             synthetic_templates: HashSet::new(),
         }
     }
@@ -1550,8 +1566,11 @@ mod tests {
     fn unknown_methods_and_client_responses_are_handled() {
         let (mut server, _) = setup();
         initialize(&mut server);
-        let outgoing =
-            only(server.handle_incoming(request(json!(16), "textDocument/formatting", json!({}))));
+        let outgoing = only(server.handle_incoming(request(
+            json!(16),
+            "textDocument/documentColor",
+            json!({}),
+        )));
         assert_eq!(
             error_code(&outgoing),
             jsonrpc::error_codes::METHOD_NOT_FOUND
