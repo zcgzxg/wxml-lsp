@@ -1,0 +1,20 @@
+[package]
+name = "wxml-delivery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Reproducible local packaging and verified installation for WXML LSP"
+
+[dependencies]
+flate2 = { workspace = true }
+fs2 = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+tar = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
