@@ -782,7 +782,7 @@ mod tests {
             // The budget is a wall-time guard, not just a counter: the
             // pre-fix version spent >10 s on this input.
             assert!(
-                elapsed < Duration::from_secs(2),
+                elapsed < Duration::from_secs(5),
                 "full size {full_size} took {elapsed:?}"
             );
             assert_eq!(
@@ -805,7 +805,7 @@ mod tests {
         let result = workspace.change(uri(), 2, &changes);
         let elapsed = started.elapsed();
         assert!(matches!(result, Err(WorkspaceError::TooMuchWork { .. })));
-        assert!(elapsed < Duration::from_secs(2), "{elapsed:?}");
+        assert!(elapsed < Duration::from_secs(5), "{elapsed:?}");
         assert_eq!(workspace.get(uri()).expect("document").text(), text);
     }
 

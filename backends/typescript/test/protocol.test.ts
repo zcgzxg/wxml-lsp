@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import { test } from "node:test";
+import ts from "typescript";
 import { BACKEND_DIR, SAMPLES_DIR } from "../src/env.ts";
 import {
   DEFAULT_LIMITS,
@@ -350,7 +351,7 @@ test("enum values and the protocol version are validated", () => {
     ...request,
     project: { ...request.project, compilerOptions: { ...request.project.compilerOptions, ...options } },
   });
-  for (const options of [{ target: "ES2021" }, { module: "Bogus" }, { moduleResolution: "classic" }, { jsx: "vue" }]) {
+  for (const options of [{ target: "ES1999" }, { module: "Bogus" }, { moduleResolution: "classic" }, { jsx: "vue" }]) {
     assert.throws(
       () => validateRequest(withOptions(options) as typeof request),
       (error: unknown) => error instanceof RequestError && error.code === "bad-option",
@@ -475,20 +476,30 @@ test("candidate B generated files use a synthetic fileId and definitions point a
   assert.deepEqual(definition?.range, { start: 77, end: 82 });
 });
 
-test("lib and new strict-family switches pass through the request", () => {
+test("lib, target and new strict-family switches pass through the request", () => {
   const options = {
     strict: true,
     allowJs: false,
     checkJs: false,
-    target: "ES2022" as const,
+    target: "ES2017" as const,
     module: "ESNext" as const,
     moduleResolution: "bundler" as const,
     lib: ["ES2022", "DOM"],
     strictBuiltinIteratorReturn: true,
+    experimentalDecorators: true,
+    outDir: "./dist/",
   };
   const converted = toCompilerOptions(options);
-  assert.deepEqual(converted.lib, ["ES2022", "DOM"]);
+  assert.deepEqual(converted.lib, ["lib.es2022.d.ts", "lib.dom.d.ts"]);
+  assert.equal(converted.target, ts.ScriptTarget.ES2017);
   assert.equal(converted.strictBuiltinIteratorReturn, true);
+  assert.equal(converted.experimentalDecorators, true);
+  assert.equal(converted.outDir, "./dist/");
+});
+
+test("case-insensitive target names map to script targets", () => {
+  assert.equal(toCompilerOptions({ target: "ES2017" }).target, ts.ScriptTarget.ES2017);
+  assert.equal(toCompilerOptions({ target: "ESNext" }).target, ts.ScriptTarget.ESNext);
 });
 
 test("fragment ids from the request are echoed, not replaced by expressions", () => {

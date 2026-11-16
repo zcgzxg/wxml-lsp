@@ -1,7 +1,7 @@
 //! Document synchronization and diagnostics publication.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
 use wxml_types::{BackendEpoch, BackendError, CapabilityStatus, Diagnostic, ViewRevision};
@@ -341,6 +341,9 @@ impl Server {
             .map(|document| document.file().clone());
         self.workspace.close(uri);
         self.clear_dirty(uri);
+        if let Some(cancel) = self.diagnostics_cancel.remove(uri) {
+            cancel.store(true, Ordering::SeqCst);
+        }
         self.cancel_document_requests(uri);
         match route {
             DocumentRoute::Wxml(_) => {
@@ -392,16 +395,24 @@ impl Server {
             return Vec::new();
         };
         let stamp = document.stamp(epoch);
+        // A newer edit makes every older diagnostics request for this
+        // document obsolete. Cancelling the queued job before moving the
+        // pointer as well as after it closes the race with the worker.
+        if let Some(previous) = self.diagnostics_cancel.remove(uri) {
+            previous.store(true, Ordering::SeqCst);
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
         let job = Job {
             key: None,
             kind: JobKind::Diagnostics,
             context,
             offset: 0,
             stamp,
-            cancel: Arc::new(AtomicBool::new(false)),
+            cancel: Arc::clone(&cancel),
         };
         match self.dispatch.submit(job) {
             Ok(()) => {
+                self.diagnostics_cancel.insert(uri.to_owned(), cancel);
                 self.clear_dirty(uri);
             }
             Err(error) => {

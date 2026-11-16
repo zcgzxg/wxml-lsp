@@ -276,7 +276,7 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
 ```
 
 - `files[]` 是本次分析的**完整**输入（含未保存 overlay、`models.ts`、`.d.ts`）；Node 不得对项目文件回退磁盘读取。
-- `compilerOptions` 是 P3 解析后的**有效值**，覆盖 `strictNullChecks`、`noImplicitThis`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`、`jsx`、`lib` 等影响类型检查的开关；`tsconfig` 的 `extends`/`paths` 已在 P3 完成。
+- `compilerOptions` 是 P3 解析后的**有效值**，覆盖 `strictNullChecks`、`noImplicitThis`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`、`jsx`、`lib`、`target`、`module`、`moduleResolution`、`typeRoots`、`experimentalDecorators`、`outDir` 等影响类型检查的开关；`tsconfig` 的 `extends`/`paths` 已在 P3 完成。`lib` 短名在 Node 侧规范化为 TypeScript 的 `lib.<name>.d.ts`；`typeRoots` 由 Rust 解析为绝对目录后传给 Node，只用于读取声明文件；app 根与 `tsconfig.json` 不在同一层时，P3 会向上找到最近的 tsconfig，并用 app.json 的相对路径打开项目。
 - Node 只做**枚举名 → TypeScript 枚举**的转换与已知字段透传，不覆盖、不推断；**未知字段直接拒绝**（`RequestError.unsupported-option`），不得静默丢弃（静默丢弃会让模板按不同规则检查，产生假阴性/假阳性）。
 - `strict:false` 或 `noImplicitThis:false` 会让 `this.data` 退化为 `any`：派生视图必须由探针健康门报 `Unavailable`（本契约不通过强制 `noImplicitThis` 掩盖项目选项）。
 - `fragments[]` 是 Rust 侧的挂载输入；`fragmentId` 是稳定身份，响应逐片段结果按它回显（不得用表达式文本代替）。同一 `exprText` 可有多个 `fragmentId`。
@@ -432,3 +432,4 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored
 | 2026-11-16 | **WT-B（Wave 5）**：`wx:for` locals 升级为 `bindings` 并解析元素/索引类型，`wx:if/elif/else` 增加 `guards` 窄化；删除“template locals are bound as any”降级；新增 `tests/fixtures/{loop-scope,conditional-union,component-bindings,multi-view,alias-project}` 的 `wave5_acceptance` 真机 runner；多视图隔离（不同脚本、交错请求）与 `@models/*` 别名 definition 验证，详见 §10 验证说明 |
 | 2026-11-16 | **Zed 验收修复**：页面视图没有 `Page` 注册时回退到首个 `Component` 注册，并把 `registration.kind` 置为 `component`；真实 TS 项目 `jielong-team-doc` 的 `Component` 页面已验证 hover/definition，Node 单测覆盖 `Component` 注册页面 |
 | 2026-11-16 | **hover 与真实项目修复**：analyze 响应的 `fragments[].hovers[]` 为表达式中每个标识符返回 hover 候选，Rust 按光标选择；工作区根无 `app.json` 时自动发现嵌套 app 根（深度 6、4096 目录、跳过依赖/构建目录），多个候选项按当前文档 URI 所属根选择；声明属性全部走 `properties` overlay，不再依赖 `hasOptionalTypes`；源文件预算提升到 2048 / 16 MiB；待处理任务队列 32 → 128，避免连续 hover 报 Busy |
+| 2026-11-16 | **tsconfig 与编辑后 hover 修复**：app.json 与 tsconfig 可分层（`open_with_app_json` + `source_root`），app 根向上找最近的 tsconfig，绝对 `usingComponents` 仍按小程序根解析；`target`/`module`/`moduleResolution`/`jsx`/`moduleDetection` 大小写归一化，`lib` 短名转 `lib.<name>.d.ts`，支持 `typeRoots`/`experimentalDecorators`/`outDir`；每次 `didChange` 取消同一文档旧的 diagnostics 任务，避免快速输入后 hover 排在多个过期分析后 |

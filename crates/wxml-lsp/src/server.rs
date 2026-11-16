@@ -100,6 +100,12 @@ pub(crate) struct Server {
     /// Documents whose diagnostics could not be queued because the worker was
     /// busy. They are retried in rotation after completed jobs.
     pub(crate) dirty: VecDeque<String>,
+    /// Cancellation flag of the newest queued diagnostics job per document.
+    ///
+    /// Every edit supersedes the previous diagnostics request. Cancelling the
+    /// old flag keeps a burst of keystrokes from queueing one multi-second
+    /// analysis per character ahead of hover and completion requests.
+    pub(crate) diagnostics_cancel: HashMap<String, Arc<AtomicBool>>,
     /// Set by `exit` or a fatal transport error.
     pub(crate) stop: bool,
     /// Set by `shutdown`.
@@ -146,6 +152,7 @@ impl Server {
             dispatch,
             inflight: HashMap::new(),
             dirty: VecDeque::new(),
+            diagnostics_cancel: HashMap::new(),
             stop: false,
             clean_shutdown: false,
             client_watched_files: false,
@@ -1309,6 +1316,85 @@ mod tests {
         let message = diagnostics[0]["message"].as_str().expect("message");
         assert!(message.contains("unavailable"), "{message}");
         assert!(!message.contains("no node"), "leaked detail: {message}");
+    }
+
+    #[test]
+    fn rapid_changes_cancel_superseded_diagnostics() {
+        let (mut server, dispatch) = setup();
+        initialize(&mut server);
+        open_document(&mut server, "abc", 1);
+        let opened = dispatch.take();
+        assert_eq!(opened.len(), 1);
+
+        for (version, text) in [(2, "ab"), (3, "abc"), (4, "abcd")] {
+            server.handle_incoming(notification(
+                "textDocument/didChange",
+                json!({
+                    "textDocument": {"uri": URI, "version": version},
+                    "contentChanges": [{"text": text}],
+                }),
+            ));
+        }
+
+        let jobs = dispatch.take();
+        assert_eq!(jobs.len(), 3, "one diagnostics job per change is queued");
+        assert!(
+            jobs[0].cancel.load(Ordering::SeqCst),
+            "the first superseded change is cancelled"
+        );
+        assert!(
+            jobs[1].cancel.load(Ordering::SeqCst),
+            "the second superseded change is cancelled"
+        );
+        assert!(
+            !jobs[2].cancel.load(Ordering::SeqCst),
+            "the newest change stays live"
+        );
+        assert!(
+            server.workspace.is_current(&jobs[2].stamp),
+            "the newest diagnostics job matches the document revision"
+        );
+    }
+
+    #[test]
+    fn hover_after_an_incremental_change_uses_the_new_revision() {
+        let (mut server, dispatch) = setup();
+        initialize(&mut server);
+        open_document(&mut server, "{{ title }}", 1);
+        dispatch.take();
+
+        server.handle_incoming(notification(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {"uri": URI, "version": 2},
+                "contentChanges": [{
+                    "range": {
+                        "start": {"line": 0, "character": 3},
+                        "end": {"line": 0, "character": 8},
+                    },
+                    "text": "user",
+                }],
+            }),
+        ));
+        let diagnostics = dispatch.take();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].kind, JobKind::Diagnostics);
+
+        server.handle_incoming(request(
+            json!(7),
+            "textDocument/hover",
+            hover_params((0, 5)),
+        ));
+        let jobs = dispatch.take();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].kind, JobKind::Hover);
+        assert_eq!(jobs[0].offset, 5);
+        assert!(
+            server.workspace.is_current(&jobs[0].stamp),
+            "hover sees the document text after the incremental edit"
+        );
+        let outgoing = only(server.handle_work(completed_hover(&jobs[0], hover_result())));
+        assert_eq!(result(&outgoing)["contents"]["value"], json!("string"));
     }
 
     #[test]

@@ -754,6 +754,116 @@ fn watched_other_files_and_outside_roots_are_ignored() {
 }
 
 #[test]
+fn parent_tsconfig_supplies_paths_for_a_nested_app() {
+    let project = TempProject::new();
+    project.write(
+        "apps/miniprogram/src/app.json",
+        r#"{"pages":["pages/index/index"]}"#,
+    );
+    project.write(
+        "apps/miniprogram/src/pages/index/index.wxml",
+        "<view>{{ user.name }}</view>",
+    );
+    project.write(
+        "apps/miniprogram/src/pages/index/index.ts",
+        "Page({ data: { user: { name: 'Ada' } } });",
+    );
+    project.write(
+        "apps/miniprogram/src/models/user.ts",
+        "export interface User { name: string }",
+    );
+    project.write(
+        "apps/miniprogram/tsconfig.json",
+        r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]},"target":"es2017","lib":["ES2022","DOM"]}}"#,
+    );
+
+    let host = host_with(&project);
+    let path = host
+        .path_for_uri(&project.uri("apps/miniprogram/src/pages/index/index.wxml"))
+        .expect("source path");
+    assert_eq!(path.as_str(), "src/pages/index/index.wxml");
+    let file = host.file_id(&path).expect("file id");
+    let snapshot = Arc::new(SourceSnapshot::new(
+        file,
+        SourceRevision::new(1),
+        SnapshotId::new(1),
+        "<view>{{ user.name }}</view>",
+    ));
+    let view = host.analysis(&snapshot).expect("analysis");
+    assert_eq!(
+        view.target.as_ref().expect("target").script.as_str(),
+        "src/pages/index/index.ts"
+    );
+    assert_eq!(
+        view.compiler_options["baseUrl"],
+        project
+            .root
+            .join("apps/miniprogram")
+            .to_string_lossy()
+            .as_ref()
+    );
+    assert_eq!(
+        view.compiler_options["target"],
+        serde_json::Value::String("ES2017".to_owned())
+    );
+    assert_eq!(view.compiler_options["paths"]["@/*"][0], "src/*");
+    assert!(
+        view.files
+            .iter()
+            .any(|file| file.path.as_str() == "src/models/user.ts")
+    );
+}
+
+#[test]
+fn each_app_uses_its_own_parent_tsconfig() {
+    let project = TempProject::new();
+    for app in ["a", "b"] {
+        project.write(
+            &format!("apps/{app}/src/app.json"),
+            r#"{"pages":["pages/index/index"]}"#,
+        );
+        project.write(
+            &format!("apps/{app}/src/pages/index/index.wxml"),
+            "<view>{{ title }}</view>",
+        );
+        project.write(
+            &format!("apps/{app}/src/pages/index/index.ts"),
+            "Page({ data: { title: 'x' } });",
+        );
+        project.write(
+            &format!("apps/{app}/tsconfig.json"),
+            &format!(
+                r#"{{"compilerOptions":{{"baseUrl":".","paths":{{"@/*":["src/*"]}},"strict":{}}}}}"#,
+                app == "a"
+            ),
+        );
+    }
+    let host = host_with(&project);
+    for app in ["a", "b"] {
+        let path = host
+            .path_for_uri(&project.uri(&format!("apps/{app}/src/pages/index/index.wxml")))
+            .expect("source path");
+        let file = host.file_id(&path).expect("file id");
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(1),
+            "<view>{{ title }}</view>",
+        ));
+        let view = host.analysis(&snapshot).expect("analysis");
+        let expected_root = project.root.join(format!("apps/{app}"));
+        assert_eq!(
+            view.compiler_options["baseUrl"],
+            expected_root.to_string_lossy().as_ref()
+        );
+        assert_eq!(
+            view.compiler_options["strict"],
+            serde_json::Value::Bool(app == "a")
+        );
+    }
+}
+
+#[test]
 fn watched_kind_maps_lsp_type_numbers() {
     assert_eq!(
         WatchedChangeKind::from_lsp(1),

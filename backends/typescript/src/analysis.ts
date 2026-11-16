@@ -250,7 +250,15 @@ export function buildView(request: AnalyzeRequest, config: AnalysisConfig): Prep
   }
 
   const compilerOptions = toCompilerOptions(request.project.compilerOptions);
+  if (compilerOptions.typeRoots) {
+    // The pinned typings package lives under the backend, outside the project.
+    // Keep it visible even when tsconfig constrains `typeRoots`.
+    compilerOptions.typeRoots.push(path.join(config.backendDir, "node_modules"));
+  }
   const readPolicy = defaultReadPolicy(config.backendDir);
+  for (const typeRoot of compilerOptions.typeRoots ?? []) {
+    readPolicy.diskRoots.push(path.resolve(typeRoot));
+  }
   try {
     assertEnvironment(config.backendDir, compilerOptions);
   } catch (error) {
@@ -431,7 +439,6 @@ export function analyze(request: AnalyzeRequest, config: AnalysisConfig): Analys
     baselineDiagnostics,
     rootDeclarationSpans,
   } = view;
-
   // A template without mustaches can still have component bindings (literal or
   // boolean attributes) and event handlers; only a request with none of the
   // three can skip the whole pipeline.

@@ -147,7 +147,20 @@ export interface RequestEvent {
   handlerRange: { start: number; end: number };
 }
 
-export type TargetName = "ES2020" | "ES2022" | "ESNext";
+export type TargetName =
+  | "ES3"
+  | "ES5"
+  | "ES2015"
+  | "ES2016"
+  | "ES2017"
+  | "ES2018"
+  | "ES2019"
+  | "ES2020"
+  | "ES2021"
+  | "ES2022"
+  | "ES2023"
+  | "ES2024"
+  | "ESNext";
 export type ModuleKindName = "ESNext" | "CommonJS" | "Preserve";
 export type ModuleResolutionName = "bundler" | "node16" | "nodenext" | "node10";
 export type JsxName = "preserve" | "react" | "react-jsx" | "react-jsxdev" | "react-native";
@@ -196,6 +209,8 @@ export interface RequestCompilerOptions {
   types?: string[];
   typeRoots?: string[];
   rootDir?: string;
+  experimentalDecorators?: boolean;
+  outDir?: string;
 }
 
 /** Keys that the request may carry; anything else is rejected. */
@@ -231,6 +246,8 @@ export const REQUEST_COMPILER_OPTION_KEYS: ReadonlySet<string> = new Set([
   "types",
   "typeRoots",
   "rootDir",
+  "experimentalDecorators",
+  "outDir",
 ]);
 
 export interface AnalyzeRequest {
@@ -463,7 +480,21 @@ export const SERVER_LIMITS: RequestLimits = {
   maxFragments: 4096,
 };
 
-const TARGET_NAMES = new Set<string>(["ES2020", "ES2022", "ESNext"]);
+const TARGET_NAMES = new Set<string>([
+  "ES3",
+  "ES5",
+  "ES2015",
+  "ES2016",
+  "ES2017",
+  "ES2018",
+  "ES2019",
+  "ES2020",
+  "ES2021",
+  "ES2022",
+  "ES2023",
+  "ES2024",
+  "ESNext",
+]);
 const MODULE_NAMES = new Set<string>(["ESNext", "CommonJS", "Preserve"]);
 const RESOLUTION_NAMES = new Set<string>(["bundler", "node16", "nodenext", "node10"]);
 const JSX_NAMES = new Set<string>(["preserve", "react", "react-jsx", "react-jsxdev", "react-native"]);
@@ -1029,8 +1060,18 @@ const BOOLEAN_COMPILER_OPTIONS = [
 const STRING_ARRAY_COMPILER_OPTIONS = ["lib", "types", "typeRoots"] as const;
 
 const TARGETS: Record<TargetName, ts.ScriptTarget> = {
+  ES3: ts.ScriptTarget.ES3,
+  ES5: ts.ScriptTarget.ES5,
+  ES2015: ts.ScriptTarget.ES2015,
+  ES2016: ts.ScriptTarget.ES2016,
+  ES2017: ts.ScriptTarget.ES2017,
+  ES2018: ts.ScriptTarget.ES2018,
+  ES2019: ts.ScriptTarget.ES2019,
   ES2020: ts.ScriptTarget.ES2020,
+  ES2021: ts.ScriptTarget.ES2021,
   ES2022: ts.ScriptTarget.ES2022,
+  ES2023: ts.ScriptTarget.ES2023,
+  ES2024: ts.ScriptTarget.ES2024,
   ESNext: ts.ScriptTarget.ESNext,
 };
 
@@ -1060,6 +1101,19 @@ const MODULE_DETECTION: Record<ModuleDetectionName, ts.ModuleDetectionKind> = {
   legacy: ts.ModuleDetectionKind.Legacy,
   force: ts.ModuleDetectionKind.Force,
 };
+
+/**
+ * TypeScript's `CompilerOptions.lib` expects lib file names such as
+ * `lib.es2022.d.ts`, while tsconfig accepts the shorter `ES2022` spelling.
+ * The request carries the resolved tsconfig value; normalize it here so the
+ * program actually loads its core libs.
+ */
+function normalizeLibName(name: string): string {
+  const lower = name.toLowerCase();
+  if (lower.startsWith("lib.") && lower.endsWith(".d.ts")) return lower;
+  const short = lower.startsWith("lib.") ? lower.slice("lib.".length).replace(/\.d\.ts$/, "") : lower;
+  return `lib.${short}.d.ts`;
+}
 
 /** Convert the request options into TypeScript compiler options. */
 export function toCompilerOptions(options: RequestCompilerOptions): ts.CompilerOptions {
@@ -1104,10 +1158,14 @@ export function toCompilerOptions(options: RequestCompilerOptions): ts.CompilerO
     ...(options.moduleResolution ? { moduleResolution: RESOLUTIONS[options.moduleResolution] } : {}),
     ...(options.jsx ? { jsx: JSX[options.jsx] } : {}),
     ...(options.moduleDetection ? { moduleDetection: MODULE_DETECTION[options.moduleDetection] } : {}),
-    ...(options.lib ? { lib: options.lib } : {}),
+    ...(options.lib ? { lib: options.lib.map(normalizeLibName) } : {}),
     ...(options.types ? { types: options.types } : {}),
     ...(options.typeRoots ? { typeRoots: options.typeRoots } : {}),
     ...(options.rootDir ? { rootDir: options.rootDir } : {}),
+    ...(options.experimentalDecorators !== undefined
+      ? { experimentalDecorators: options.experimentalDecorators }
+      : {}),
+    ...(options.outDir ? { outDir: options.outDir } : {}),
     ...(options.baseUrl ? { baseUrl: options.baseUrl } : {}),
     ...(options.paths ? { paths: options.paths } : {}),
   };

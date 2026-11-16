@@ -270,80 +270,18 @@ pub fn parse_app_config(
     let mut remaining = MAX_APP_ENTRIES;
     let mut truncated = false;
 
-    let mut pages = Vec::new();
-    for route in raw_pages {
-        if remaining == 0 {
-            truncated = true;
-            break;
-        }
-        remaining -= 1;
-        match ProjectPath::new(&route) {
-            Ok(path) => pages.push(path.as_str().to_owned()),
-            Err(error) => issues.push(issue(
-                file,
-                DiscoveryIssueKind::InvalidRoute,
-                format!(
-                    "invalid page route `{}`: {error}",
-                    truncate_message(&route, MAX_MESSAGE_BYTES)
-                ),
-            )),
-        }
-    }
+    let (pages, page_issues) = app_pages(file, raw_pages, &mut remaining, &mut truncated);
+    issues.extend(page_issues);
+    let (sub_packages, sub_package_issues) =
+        app_sub_packages(file, raw_sub_packages, &mut remaining, &mut truncated);
+    issues.extend(sub_package_issues);
 
-    let mut sub_packages = Vec::new();
-    'sub_packages: for sub_package in raw_sub_packages {
-        if remaining == 0 {
-            truncated = true;
-            break;
-        }
-        remaining -= 1;
-        let root = match ProjectPath::new(&sub_package.root) {
-            Ok(root) => root,
-            Err(error) => {
-                issues.push(issue(
-                    file,
-                    DiscoveryIssueKind::InvalidRoute,
-                    format!(
-                        "invalid subpackage root `{}`: {error}",
-                        truncate_message(&sub_package.root, MAX_MESSAGE_BYTES)
-                    ),
-                ));
-                continue;
-            }
-        };
-        let mut routes = Vec::new();
-        for page in sub_package.pages {
-            if remaining == 0 {
-                truncated = true;
-                sub_packages.push(SubPackage {
-                    root,
-                    pages: routes,
-                });
-                break 'sub_packages;
-            }
-            remaining -= 1;
-            let route = ProjectPath::new(&page)
-                .and_then(|relative| ProjectPath::resolve(Some(&root), relative.as_str()));
-            match route {
-                Ok(route) => routes.push(route.as_str().to_owned()),
-                Err(error) => issues.push(issue(
-                    file,
-                    DiscoveryIssueKind::InvalidRoute,
-                    format!(
-                        "invalid subpackage page `{}`: {error}",
-                        truncate_message(&page, MAX_MESSAGE_BYTES)
-                    ),
-                )),
-            }
-        }
-        sub_packages.push(SubPackage {
-            root,
-            pages: routes,
-        });
-    }
-
-    let (using_components, component_issues, components_truncated) =
-        resolve_components(file, raw_using_components, remaining);
+    let (using_components, component_issues, components_truncated) = resolve_components(
+        file,
+        raw_using_components,
+        remaining,
+        file.parent().as_ref(),
+    );
     issues.extend(component_issues);
     truncated |= components_truncated;
     if truncated {
@@ -364,6 +302,98 @@ pub fn parse_app_config(
     })
 }
 
+/// Normalizes the main-package page list.
+fn app_pages(
+    file: &ProjectPath,
+    raw_pages: Vec<String>,
+    remaining: &mut usize,
+    truncated: &mut bool,
+) -> (Vec<String>, Vec<DiscoveryIssue>) {
+    let mut pages = Vec::new();
+    let mut issues = Vec::new();
+    for route in raw_pages {
+        if *remaining == 0 {
+            *truncated = true;
+            break;
+        }
+        *remaining -= 1;
+        match ProjectPath::new(&route) {
+            Ok(path) => pages.push(path.as_str().to_owned()),
+            Err(error) => issues.push(issue(
+                file,
+                DiscoveryIssueKind::InvalidRoute,
+                format!(
+                    "invalid page route `{}`: {error}",
+                    truncate_message(&route, MAX_MESSAGE_BYTES)
+                ),
+            )),
+        }
+    }
+    (pages, issues)
+}
+
+/// Normalizes and expands the subpackage list.
+fn app_sub_packages(
+    file: &ProjectPath,
+    raw_sub_packages: Vec<RawSubPackage>,
+    remaining: &mut usize,
+    truncated: &mut bool,
+) -> (Vec<SubPackage>, Vec<DiscoveryIssue>) {
+    let mut sub_packages = Vec::new();
+    let mut issues = Vec::new();
+    'sub_packages: for sub_package in raw_sub_packages {
+        if *remaining == 0 {
+            *truncated = true;
+            break;
+        }
+        *remaining -= 1;
+        let root = match ProjectPath::new(&sub_package.root) {
+            Ok(root) => root,
+            Err(error) => {
+                issues.push(issue(
+                    file,
+                    DiscoveryIssueKind::InvalidRoute,
+                    format!(
+                        "invalid subpackage root `{}`: {error}",
+                        truncate_message(&sub_package.root, MAX_MESSAGE_BYTES)
+                    ),
+                ));
+                continue;
+            }
+        };
+        let mut routes = Vec::new();
+        for page in sub_package.pages {
+            if *remaining == 0 {
+                *truncated = true;
+                sub_packages.push(SubPackage {
+                    root,
+                    pages: routes,
+                });
+                break 'sub_packages;
+            }
+            *remaining -= 1;
+            let route = ProjectPath::new(&page)
+                .and_then(|relative| ProjectPath::resolve(Some(&root), relative.as_str()));
+            match route {
+                Ok(route) => routes.push(route.as_str().to_owned()),
+                Err(error) => issues.push(issue(
+                    file,
+                    DiscoveryIssueKind::InvalidRoute,
+                    format!(
+                        "invalid subpackage page `{}`: {error}",
+                        truncate_message(&page, MAX_MESSAGE_BYTES)
+                    ),
+                )),
+            }
+        }
+        sub_packages.push(SubPackage {
+            root,
+            pages: routes,
+        });
+    }
+    (sub_packages, issues)
+}
+
 /// Parses one page or component JSON file.
 ///
 /// # Errors
@@ -373,9 +403,18 @@ pub fn parse_page_config(
     file: &ProjectPath,
     text: &str,
 ) -> Result<Parsed<PageConfig>, DiscoveryError> {
+    parse_page_config_in(file, text, None)
+}
+
+/// Parses a page/component config with an explicit Mini Program source root.
+fn parse_page_config_in(
+    file: &ProjectPath,
+    text: &str,
+    app_dir: Option<&ProjectPath>,
+) -> Result<Parsed<PageConfig>, DiscoveryError> {
     let raw: RawPageConfig = parse_json(file, text)?;
     let (using_components, mut issues, truncated) =
-        resolve_components(file, raw.using_components, MAX_APP_ENTRIES);
+        resolve_components(file, raw.using_components, MAX_APP_ENTRIES, app_dir);
     if truncated {
         issues.push(issue(
             file,
@@ -788,6 +827,7 @@ fn resolve_components(
     file: &ProjectPath,
     entries: BTreeMap<String, String>,
     limit: usize,
+    app_dir: Option<&ProjectPath>,
 ) -> (BTreeMap<String, UsingComponent>, Vec<DiscoveryIssue>, bool) {
     let truncated = entries.len() > limit;
     let mut issues = Vec::new();
@@ -809,7 +849,7 @@ fn resolve_components(
             ));
             continue;
         }
-        match classify_component(file, &specifier) {
+        match classify_component(file, &specifier, app_dir) {
             Ok((kind, component)) => {
                 resolved.insert(
                     name.clone(),
@@ -839,6 +879,7 @@ fn resolve_components(
 fn classify_component(
     file: &ProjectPath,
     specifier: &str,
+    app_dir: Option<&ProjectPath>,
 ) -> Result<(ComponentTargetKind, Option<ProjectPath>), files::PathError> {
     if specifier.starts_with("plugin://") {
         return Ok((ComponentTargetKind::Plugin, None));
@@ -852,8 +893,14 @@ fn classify_component(
     if !is_local_specifier(specifier) {
         return Ok((ComponentTargetKind::Package, None));
     }
-    ProjectPath::resolve(file.parent().as_ref(), specifier)
-        .map(|base| (ComponentTargetKind::Local, Some(base)))
+    let file_dir = file.parent();
+    let (base, specifier) = specifier.strip_prefix('/').map_or(
+        (file_dir.as_ref(), specifier),
+        // A leading `/` means the Mini Program root, not the TypeScript
+        // project root (which may be an ancestor of `app.json`).
+        |rest| (app_dir, rest),
+    );
+    ProjectPath::resolve(base, specifier).map(|base| (ComponentTargetKind::Local, Some(base)))
 }
 
 /// Returns whether a specifier names a file inside this project.
@@ -885,7 +932,11 @@ fn build_page(
     let root = context.root;
     let overlay = context.overlay;
     let source = context.source;
-    let base = match ProjectPath::new(route) {
+    let base = context.source.parent().map_or_else(
+        || ProjectPath::new(route),
+        |app_dir| ProjectPath::resolve(Some(&app_dir), route),
+    );
+    let base = match base {
         Ok(base) => base,
         Err(error) => {
             issues.push(issue(
@@ -1006,7 +1057,7 @@ fn load_page_local(
                     return (Some(candidate), BTreeMap::new());
                 }
             }
-            match parse_page_config(&candidate, &text) {
+            match parse_page_config_in(&candidate, &text, context.source.parent().as_ref()) {
                 Ok(parsed) => {
                     issues.extend(parsed.issues);
                     let mut local = parsed.value.local;
@@ -1233,7 +1284,7 @@ fn load_component_json(
                     return Some(candidate);
                 }
             }
-            match parse_page_config(&candidate, &text) {
+            match parse_page_config_in(&candidate, &text, context.source.parent().as_ref()) {
                 Ok(parsed) => {
                     issues.extend(parsed.issues);
                     report_missing_components(

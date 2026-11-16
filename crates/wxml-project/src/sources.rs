@@ -196,7 +196,7 @@ impl Project {
     /// never change analysis.
     #[must_use]
     pub fn accepts_script_overlay(&self, path: &ProjectPath) -> bool {
-        source_kind(path).is_some() && !has_excluded_component(path)
+        self.contains_source(path) && source_kind(path).is_some() && !has_excluded_component(path)
     }
 
     /// Returns whether an unsaved JSON buffer may become a project overlay.
@@ -242,9 +242,10 @@ impl Project {
     /// only triggers rediscovery.
     #[must_use]
     pub fn is_project_json(&self, path: &ProjectPath) -> bool {
-        if !path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+        if !self.contains_source(path)
+            || !path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
             || has_excluded_component(path)
         {
             return false;
@@ -381,7 +382,11 @@ fn collect_candidates_with_limit(
     max_entries: usize,
 ) -> (BTreeSet<ProjectPath>, bool) {
     let mut candidates = BTreeSet::new();
-    let mut stack = vec![(project.root().to_path_buf(), None::<ProjectPath>)];
+    let start = project.source_root().map_or_else(
+        || (project.root().to_path_buf(), None),
+        |root| (project.root().join(root.as_str()), Some(root.clone())),
+    );
+    let mut stack = vec![start];
     let mut scanned = 0usize;
     while let Some((directory, relative)) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&directory) else {
@@ -440,7 +445,10 @@ fn collect_candidates_with_limit(
         }
     }
     for path in project.overlay().paths() {
-        if source_kind(path).is_some() && !has_excluded_component(path) {
+        if project.contains_source(path)
+            && source_kind(path).is_some()
+            && !has_excluded_component(path)
+        {
             candidates.insert(path.clone());
         }
     }

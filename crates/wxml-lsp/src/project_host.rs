@@ -40,7 +40,7 @@ pub const SYNTHETIC_PROJECT: &str = "lsp";
 /// `backends/typescript/src/protocol.ts`. Unknown keys are filtered here and
 /// reported as a `Partial` hint instead of being sent to Node, which rejects
 /// unknown options.
-const SUPPORTED_COMPILER_OPTIONS: [&str; 31] = [
+const SUPPORTED_COMPILER_OPTIONS: [&str; 33] = [
     "strict",
     "strictNullChecks",
     "strictFunctionTypes",
@@ -72,6 +72,8 @@ const SUPPORTED_COMPILER_OPTIONS: [&str; 31] = [
     "types",
     "typeRoots",
     "rootDir",
+    "experimentalDecorators",
+    "outDir",
 ];
 
 /// One custom component registered by the current view's `usingComponents`.
@@ -388,11 +390,25 @@ struct ViewState {
     components: BTreeMap<String, ProjectPath>,
 }
 
+/// One Mini Program candidate and the TypeScript project that owns it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AppRoot {
+    /// Directory containing `app.json`; used to pick a project from a URI.
+    app_dir: PathBuf,
+    /// Directory containing the nearest `tsconfig.json` (or `app_dir` when
+    /// there is none). This is the backend `projectRoot`.
+    project_root: PathBuf,
+    /// `app.json` relative to `project_root`.
+    app_json: ProjectPath,
+}
+
 #[derive(Debug)]
 struct State {
     project: Option<Project>,
     /// Candidate Mini Program roots found below the workspace root.
-    app_roots: Vec<PathBuf>,
+    app_roots: Vec<AppRoot>,
+    /// The candidate currently loaded, if any.
+    active_app: Option<AppRoot>,
     project_id: ProjectId,
     project_revision: ProjectRevision,
     /// Monotonic revision sequence shared by every loaded app root.
@@ -427,6 +443,7 @@ impl ProjectState {
             state: RwLock::new(State {
                 project: None,
                 app_roots: Vec::new(),
+                active_app: None,
                 project_revision: ProjectRevision::new(project_id.clone(), 1),
                 project_id,
                 project_revision_seq: 1,
@@ -457,6 +474,7 @@ impl ProjectState {
         let mut state = self.write();
         state.project = None;
         state.app_roots.clear();
+        state.active_app = None;
         state.views.clear();
         state.snapshots.clear();
         state.overlays.clear();
@@ -1182,11 +1200,25 @@ const MAX_APP_ROOT_DIRS: usize = 4096;
 /// search its descendants once and return every candidate. The active root is
 /// selected later from the document URI, so a monorepo with several Mini
 /// Programs does not force the user to open each app separately.
-fn resolve_app_roots(root: PathBuf) -> Vec<PathBuf> {
-    if root.join("app.json").is_file() {
-        return vec![root];
-    }
-    let mut pending = vec![(root, 0usize)];
+fn resolve_app_roots(root: PathBuf) -> Vec<AppRoot> {
+    let workspace_root = std::fs::canonicalize(&root).unwrap_or(root);
+    let app_dirs = if workspace_root.join("app.json").is_file() {
+        vec![workspace_root.clone()]
+    } else {
+        find_app_dirs(&workspace_root)
+    };
+    let mut found: Vec<AppRoot> = app_dirs
+        .into_iter()
+        .filter_map(|app_dir| app_root_for(&workspace_root, app_dir))
+        .collect();
+    found.sort_by(|left, right| left.app_dir.cmp(&right.app_dir));
+    found.dedup_by(|left, right| left.app_dir == right.app_dir);
+    found
+}
+
+/// Finds every descendant directory that contains `app.json`.
+fn find_app_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut pending = vec![(root.to_path_buf(), 0usize)];
     let mut found = Vec::new();
     let mut visited = 0usize;
     while let Some((directory, depth)) = pending.pop() {
@@ -1224,17 +1256,49 @@ fn resolve_app_roots(root: PathBuf) -> Vec<PathBuf> {
     found
 }
 
+/// Pairs an `app.json` directory with the nearest enclosing `tsconfig.json`.
+fn app_root_for(workspace_root: &Path, app_dir: PathBuf) -> Option<AppRoot> {
+    let mut cursor = Some(app_dir.as_path());
+    let mut project_root = app_dir.clone();
+    while let Some(directory) = cursor {
+        if !directory.starts_with(workspace_root) {
+            break;
+        }
+        if directory.join("tsconfig.json").is_file() {
+            project_root = directory.to_path_buf();
+            break;
+        }
+        if directory == workspace_root {
+            break;
+        }
+        cursor = directory.parent();
+    }
+    let relative = app_dir.strip_prefix(&project_root).ok()?;
+    let prefix = relative.to_str()?.replace('\\', "/");
+    let app_json = if prefix.is_empty() {
+        "app.json".to_owned()
+    } else {
+        format!("{prefix}/app.json")
+    };
+    Some(AppRoot {
+        app_dir,
+        project_root,
+        app_json: ProjectPath::new(app_json).ok()?,
+    })
+}
+
 /// Loads one candidate app root, replaying unsaved overlays that belong to it.
-fn load_project(state: &mut State, root: &Path) -> Result<(), HostError> {
-    if state
-        .project
-        .as_ref()
-        .is_some_and(|project| project.root() == root)
-    {
+fn load_project(state: &mut State, candidate: &AppRoot) -> Result<(), HostError> {
+    if state.project.as_ref().is_some_and(|project| {
+        project.root() == candidate.project_root && project.app_json() == &candidate.app_json
+    }) {
+        state.active_app = Some(candidate.clone());
         return Ok(());
     }
-    let mut project = Project::open(root).map_err(|_| HostError::ProjectOpen)?;
-    let project_id = project_id_for(project.root());
+    let mut project =
+        Project::open_with_app_json(&candidate.project_root, candidate.app_json.clone())
+            .map_err(|_| HostError::ProjectOpen)?;
+    let project_id = project_id_for(&candidate.app_dir);
     let mut rediscover = false;
     for (uri, text) in &state.overlays {
         let Ok(path) = project.path_from_uri(uri) else {
@@ -1260,28 +1324,46 @@ fn load_project(state: &mut State, root: &Path) -> Result<(), HostError> {
     state.views = build_views(&project, &project_id, &mut next_view_revision);
     state.next_view_revision = next_view_revision;
     state.project = Some(project);
+    state.active_app = Some(candidate.clone());
     Ok(())
 }
 
 /// Selects the candidate app root that contains `uri`.
 fn ensure_project_for_uri(state: &mut State, uri: &str) -> Result<(), HostError> {
     let path = wxml_project::root_path_from_uri(uri).map_err(|_| HostError::InvalidUri)?;
-    if let Some(project) = state.project.as_ref() {
-        if path.starts_with(project.root()) {
-            return Ok(());
-        }
-    }
     if state.app_roots.is_empty() {
         return Err(HostError::NoProject);
     }
-    let root = state
+    if let Some(candidate) = state
         .app_roots
         .iter()
-        .filter(|root| path.starts_with(root))
-        .max_by_key(|root| root.as_os_str().len())
+        .filter(|candidate| path.starts_with(&candidate.app_dir))
+        .max_by_key(|candidate| candidate.app_dir.as_os_str().len())
         .cloned()
-        .ok_or(HostError::InvalidUri)?;
-    load_project(state, &root)
+    {
+        if state.active_app.as_ref() == Some(&candidate) {
+            return Ok(());
+        }
+        return load_project(state, &candidate);
+    }
+    // A tsconfig or other file may live above `app.json` but inside the loaded
+    // TypeScript project. Keep the active project for it.
+    if state
+        .active_app
+        .as_ref()
+        .is_some_and(|active| path.starts_with(&active.project_root))
+    {
+        return Ok(());
+    }
+    let mut roots = state
+        .app_roots
+        .iter()
+        .filter(|candidate| path.starts_with(&candidate.project_root));
+    let candidate = roots.next().cloned().ok_or(HostError::InvalidUri)?;
+    if roots.next().is_some() {
+        return Err(HostError::InvalidUri);
+    }
+    load_project(state, &candidate)
 }
 
 /// Reloads the app root that owns `project_id`.
@@ -1289,13 +1371,13 @@ fn ensure_project_for_id(state: &mut State, project_id: &ProjectId) -> Result<()
     if state.project.is_some() && &state.project_id == project_id {
         return Ok(());
     }
-    let root = state
+    let candidate = state
         .app_roots
         .iter()
-        .find(|root| &project_id_for(root) == project_id)
+        .find(|candidate| &project_id_for(&candidate.app_dir) == project_id)
         .cloned()
         .ok_or(HostError::NoProject)?;
-    load_project(state, &root)
+    load_project(state, &candidate)
 }
 
 fn project_id_for(root: &Path) -> ProjectId {
@@ -1677,6 +1759,81 @@ const fn rank(status: &CapabilityStatus) -> u8 {
     }
 }
 
+/// Normalizes TypeScript enum spellings to the protocol's canonical names.
+///
+/// `tsconfig.json` values are case-insensitive (`Bundler`, `es2017`), while
+/// the Node bridge compares exact strings. Normalizing here keeps a valid
+/// project config from rejecting the whole analysis request.
+fn normalize_compiler_option(key: &str, value: &serde_json::Value) -> serde_json::Value {
+    let Some(text) = value.as_str() else {
+        return value.clone();
+    };
+    let normalized = match key {
+        "target" => {
+            let upper = text.to_ascii_uppercase();
+            if upper == "ESNEXT" {
+                "ESNext".to_owned()
+            } else {
+                upper
+            }
+        }
+        "module" => match text.to_ascii_uppercase().as_str() {
+            "ESNEXT" => "ESNext".to_owned(),
+            "COMMONJS" => "CommonJS".to_owned(),
+            "PRESERVE" => "Preserve".to_owned(),
+            _ => text.to_owned(),
+        },
+        "moduleResolution" | "jsx" | "moduleDetection" => text.to_ascii_lowercase(),
+        _ => text.to_owned(),
+    };
+    serde_json::Value::String(normalized)
+}
+
+/// Resolves existing `typeRoots` entries against the project root.
+///
+/// The backend reads declarations from these directories, so missing entries
+/// are reported as a partial result instead of silently dropped.
+fn resolve_type_roots(
+    value: &serde_json::Value,
+    root: &Path,
+    partial: &mut bool,
+) -> Option<serde_json::Value> {
+    let Some(entries) = value.as_array() else {
+        *partial = true;
+        return None;
+    };
+    let mut roots = Vec::new();
+    for entry in entries {
+        let Some(text) = entry.as_str() else {
+            *partial = true;
+            continue;
+        };
+        let candidate = Path::new(text);
+        let candidate = if candidate.is_absolute() {
+            candidate.to_path_buf()
+        } else {
+            root.join(candidate)
+        };
+        let candidate: PathBuf = candidate
+            .components()
+            .filter(|component| !matches!(component, std::path::Component::CurDir))
+            .collect();
+        if candidate.is_dir() {
+            roots.push(serde_json::Value::String(
+                candidate.to_string_lossy().into_owned(),
+            ));
+        } else {
+            *partial = true;
+        }
+    }
+    if roots.is_empty() {
+        *partial = true;
+        None
+    } else {
+        Some(serde_json::Value::Array(roots))
+    }
+}
+
 fn filter_compiler_options(
     input: Option<&BTreeMap<String, serde_json::Value>>,
     root: &Path,
@@ -1700,6 +1857,7 @@ fn filter_compiler_options(
             *partial = true;
             continue;
         }
+        let value = &normalize_compiler_option(key, value);
         if key == "baseUrl" {
             if let Some(base) = value.as_str() {
                 let base = Path::new(base);
@@ -1724,6 +1882,12 @@ fn filter_compiler_options(
                 }
             } else {
                 *partial = true;
+            }
+            continue;
+        }
+        if key == "typeRoots" {
+            if let Some(roots) = resolve_type_roots(value, root, partial) {
+                output.insert(key.clone(), roots);
             }
             continue;
         }
@@ -1878,6 +2042,76 @@ mod tests {
         assert!(id.as_str().starts_with("proj-"));
         assert!(!id.as_str().contains("secret"));
         assert!(!id.as_str().contains('/'));
+    }
+
+    #[test]
+    fn normalizes_case_insensitive_tsconfig_enums() {
+        for (key, input, expected) in [
+            ("target", "es2017", "ES2017"),
+            ("target", "ESNext", "ESNext"),
+            ("module", "esnext", "ESNext"),
+            ("module", "commonjs", "CommonJS"),
+            ("moduleResolution", "Bundler", "bundler"),
+            ("jsx", "React-JSX", "react-jsx"),
+        ] {
+            let value = serde_json::Value::String(input.to_owned());
+            assert_eq!(
+                normalize_compiler_option(key, &value),
+                serde_json::Value::String(expected.to_owned()),
+                "{key}={input}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolves_existing_type_roots_and_reports_missing_ones() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let existing = root.join("tests/fixtures");
+        let mut input = BTreeMap::new();
+        input.insert(
+            "typeRoots".to_owned(),
+            serde_json::json!(["tests/fixtures", existing.to_string_lossy()]),
+        );
+        let mut partial = false;
+        let output = filter_compiler_options(Some(&input), &root, &mut partial);
+        assert!(!partial);
+        assert_eq!(
+            output["typeRoots"],
+            serde_json::json!([existing.to_string_lossy(), existing.to_string_lossy()])
+        );
+
+        input.insert(
+            "typeRoots".to_owned(),
+            serde_json::json!(["does-not-exist"]),
+        );
+        let mut partial = false;
+        let output = filter_compiler_options(Some(&input), &root, &mut partial);
+        assert!(partial);
+        assert!(!output.contains_key("typeRoots"));
+    }
+
+    #[test]
+    fn passes_decorator_and_output_options_through() {
+        let mut input = BTreeMap::new();
+        input.insert(
+            "experimentalDecorators".to_owned(),
+            serde_json::Value::Bool(true),
+        );
+        input.insert(
+            "outDir".to_owned(),
+            serde_json::Value::String("./dist/".to_owned()),
+        );
+        let mut partial = false;
+        let output = filter_compiler_options(Some(&input), Path::new("/tmp/root"), &mut partial);
+        assert!(!partial);
+        assert_eq!(
+            output["experimentalDecorators"],
+            serde_json::Value::Bool(true)
+        );
+        assert_eq!(
+            output["outDir"],
+            serde_json::Value::String("./dist/".to_owned())
+        );
     }
 
     #[test]

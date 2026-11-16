@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { analyze, finishedStates } from "../src/analysis.ts";
 import { BACKEND_DIR, SAMPLES_DIR } from "../src/env.ts";
@@ -69,6 +72,51 @@ test("hover candidates cover every identifier in the expression", () => {
   assert.match(fragment.hovers[0]!.typeOnly, /name/);
   assert.equal(fragment.hovers[1]!.typeOnly, "string");
   assert.equal(fragment.hovers[1]!.documentation, "用户显示名称");
+});
+
+test("tsconfig lib and target spellings load the core libraries", () => {
+  const request = pageBasicRequest();
+  request.project.compilerOptions.lib = ["ES2022", "DOM"];
+  request.project.compilerOptions.target = "ES2017";
+
+  const result = analyze(request, analysisConfig);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const title = result.response.fragments.find((entry) => entry.fragmentId === "title");
+  assert.equal(title?.hover?.typeOnly, "string");
+  const codes = result.response.fragments.flatMap((entry) => entry.diagnostics.map((diagnostic) => diagnostic.code));
+  assert.ok(!codes.includes(2693), `core lib types must load: ${codes.join(",")}`);
+  assert.ok(!codes.includes(2304), `global names must resolve: ${codes.join(",")}`);
+});
+
+test("typeRoots declarations are readable without project files on disk", () => {
+  const typeRoots = fs.mkdtempSync(path.join(os.tmpdir(), "wxml-type-roots-"));
+  try {
+    const globals = path.join(typeRoots, "globals");
+    fs.mkdirSync(globals);
+    fs.writeFileSync(
+      path.join(globals, "index.d.ts"),
+      "declare const PROJECT_GLOBAL: { value: 'from-type-root' };\n",
+    );
+
+    const request = pageBasicRequest();
+    const script = request.files.find((file) => file.fileId === request.scriptFileId);
+    assert.ok(script);
+    script.text = "Component({ data: { value: PROJECT_GLOBAL.value } })";
+    request.fragments = [fragment({ exprText: "value" })];
+    request.project.compilerOptions.typeRoots = [typeRoots];
+    request.project.compilerOptions.types = ["miniprogram-api-typings", "globals"];
+
+    const result = analyze(request, analysisConfig);
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    const value = result.response.fragments.find((entry) => entry.fragmentId === "f0");
+    assert.equal(value?.hover?.typeOnly, '"from-type-root"');
+    const codes = value?.diagnostics.map((diagnostic) => diagnostic.code) ?? [];
+    assert.ok(!codes.includes(2304), `typeRoots declarations must resolve: ${codes.join(",")}`);
+  } finally {
+    fs.rmSync(typeRoots, { recursive: true, force: true });
+  }
 });
 
 test("a page route may be registered with Component instead of Page", () => {

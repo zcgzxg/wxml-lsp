@@ -65,6 +65,11 @@ pub enum ProjectError {
 pub struct Project {
     root: PathBuf,
     app_json: ProjectPath,
+    /// Directory the Mini Program routes and scripts are relative to.
+    ///
+    /// This is the `app.json` directory. It is `None` when `app.json` lives at
+    /// the project root, which keeps the common case free of a path prefix.
+    source_root: Option<ProjectPath>,
     tsconfig_path: ProjectPath,
     overlay: Overlay,
     discovery: Discovery,
@@ -102,6 +107,29 @@ impl Project {
     /// Returns [`ProjectError`] when the root is inaccessible or not a
     /// directory.
     pub fn open(root: impl Into<PathBuf>) -> Result<Self, ProjectError> {
+        Self::open_with_app_json(root, ProjectPath::new("app.json")?)
+    }
+
+    /// Opens a project whose `app.json` is at `app_json`.
+    ///
+    /// The project root is the directory holding the TypeScript configuration,
+    /// which may be an ancestor of the directory holding `app.json`. For
+    /// example, a monorepo may keep `tsconfig.json` in `apps/miniprogram` and
+    /// `app.json` in `apps/miniprogram/src`; the project root is then
+    /// `apps/miniprogram`, and routes and scripts use a `src/` prefix.
+    ///
+    /// `app_json` must be a canonical path inside `root`. Discovery still uses
+    /// the `app.json` directory as the base for page routes, so the returned
+    /// [`ProjectPath`] values remain valid project paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ProjectError`] when the root is inaccessible or not a
+    /// directory, or when `app_json` is not a valid path inside it.
+    pub fn open_with_app_json(
+        root: impl Into<PathBuf>,
+        app_json: ProjectPath,
+    ) -> Result<Self, ProjectError> {
         let root = root.into();
         let canonical = std::fs::canonicalize(&root)
             .map_err(|error| ProjectError::RootUnavailable { kind: error.kind() })?;
@@ -110,13 +138,14 @@ impl Project {
         if !metadata.is_dir() {
             return Err(ProjectError::RootNotDirectory);
         }
-        let app_json = ProjectPath::new("app.json")?;
+        let source_root = app_json.parent();
         let tsconfig_path = ProjectPath::new("tsconfig.json")?;
         let overlay = Overlay::new();
         let discovery = discover(&canonical, &overlay, &app_json);
         let mut project = Self {
             root: canonical,
             app_json,
+            source_root,
             tsconfig_path,
             overlay,
             discovery,
@@ -162,6 +191,31 @@ impl Project {
     #[must_use]
     pub fn components(&self) -> &[Component] {
         &self.discovery.components
+    }
+
+    /// Returns the `app.json` path relative to the project root.
+    #[must_use]
+    pub const fn app_json(&self) -> &ProjectPath {
+        &self.app_json
+    }
+
+    /// Returns the directory containing `app.json`, relative to the root.
+    ///
+    /// `None` means `app.json` is at the project root.
+    #[must_use]
+    pub const fn source_root(&self) -> Option<&ProjectPath> {
+        self.source_root.as_ref()
+    }
+
+    /// Returns whether `path` belongs to this Mini Program's source tree.
+    pub(crate) fn contains_source(&self, path: &ProjectPath) -> bool {
+        self.source_root.as_ref().is_none_or(|root| {
+            path == root
+                || path
+                    .as_str()
+                    .strip_prefix(root.as_str())
+                    .is_some_and(|rest| rest.starts_with('/'))
+        })
     }
 
     /// Finds a page by route, normalizing leading `./` and `\` separators.
@@ -325,6 +379,8 @@ impl Project {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
@@ -333,5 +389,92 @@ mod tests {
             ProjectPath::new("app.json").expect("valid").as_str(),
             "app.json"
         );
+    }
+
+    #[test]
+    fn a_parent_tsconfig_roots_the_project_above_the_app_directory() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-parent-tsconfig-{stamp}"));
+        let app = root.join("src");
+        std::fs::create_dir_all(app.join("pages/index")).expect("create app");
+        std::fs::write(
+            app.join("app.json"),
+            r#"{"pages":["pages/index/index"],"usingComponents":{"card":"/components/card/card"}}"#,
+        )
+        .expect("write app.json");
+        std::fs::write(
+            app.join("pages/index/index.wxml"),
+            "<view>{{ title }}</view><card />",
+        )
+        .expect("write wxml");
+        std::fs::write(
+            app.join("pages/index/index.ts"),
+            "Page({ data: { title: 'ok' } });",
+        )
+        .expect("write script");
+        std::fs::create_dir_all(app.join("components/card")).expect("create component");
+        std::fs::write(app.join("components/card/card.wxml"), "<view />")
+            .expect("write component wxml");
+        std::fs::write(app.join("components/card/card.ts"), "Component({})")
+            .expect("write component script");
+        std::fs::write(app.join("components/card/card.json"), "{}").expect("write component json");
+        std::fs::write(
+            root.join("tsconfig.json"),
+            r#"{"compilerOptions":{"baseUrl":"./","paths":{"@/*":["src/*"]}}}"#,
+        )
+        .expect("write tsconfig");
+
+        let project =
+            Project::open_with_app_json(&root, ProjectPath::new("src/app.json").expect("app path"))
+                .expect("open nested app");
+        assert_eq!(project.root(), root.canonicalize().expect("canonical"));
+        assert_eq!(
+            project.tsconfig().map(|config| config.path.as_str()),
+            Some("tsconfig.json")
+        );
+        assert_eq!(
+            project.pages()[0].wxml.as_str(),
+            "src/pages/index/index.wxml"
+        );
+        assert_eq!(
+            project.pages()[0].script.as_ref().map(ProjectPath::as_str),
+            Some("src/pages/index/index.ts")
+        );
+        let card = project
+            .components()
+            .iter()
+            .find(|component| component.id.as_str() == "src/components/card/card")
+            .expect("absolute usingComponents path resolves from the app root");
+        assert_eq!(card.wxml.as_str(), "src/components/card/card.wxml");
+        assert_eq!(
+            card.script.as_ref().map(ProjectPath::as_str),
+            Some("src/components/card/card.ts")
+        );
+        assert_eq!(
+            project
+                .tsconfig()
+                .and_then(|config| config.paths.get("@/*"))
+                .map(|paths| paths.iter().map(ProjectPath::as_str).collect::<Vec<_>>()),
+            Some(vec!["src/*"])
+        );
+        let sources = project.collect_sources(SourceLimits::default());
+        assert!(
+            sources
+                .files
+                .iter()
+                .all(|file| file.path.as_str().starts_with("src/"))
+        );
+        assert!(
+            sources
+                .files
+                .iter()
+                .any(|file| file.path.as_str() == "src/pages/index/index.ts")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 }
