@@ -16,7 +16,7 @@
 6. 请求/响应模型：`files[]`、`fragments[]`、`compilerOptions`、`policy`、`viewId`/owner、输入上限（§6）。
 7. 消息可见性、ABI 保留名、版本锁定（§7–§9）。
 
-未冻结：P6 完整模板作用域（`wx:for` 元素类型/窄化，Wave 4）、补全与反向编辑、Zed 同步（P8）。
+未冻结：反向编辑、组件内 `usingComponents` 建模、多根工作区、发布流水线。P6 完整模板作用域（`wx:for` 元素/索引类型、条件窄化）、补全和 Zed 多语言同步已在 Wave 5 实现，接口见 §6 的 protocol v2 增量。
 
 ## 1. 布局 A（唯一）
 
@@ -276,7 +276,7 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
 - `strict:false` 或 `noImplicitThis:false` 会让 `this.data` 退化为 `any`：派生视图必须由探针健康门报 `Unavailable`（本契约不通过强制 `noImplicitThis` 掩盖项目选项）。
 - `fragments[]` 是 Rust 侧的挂载输入；`fragmentId` 是稳定身份，响应逐片段结果按它回显（不得用表达式文本代替）。同一 `exprText` 可有多个 `fragmentId`。
 - **C1.1 增量字段（可选，向后兼容）**：`target` 是希望 hover/诊断的目标标识符（必须是 `exprText` 中按完整标识符边界可定位的 token；缺省为表达式的右值标识符，例如 `user.nmae` → `nmae`、`user` → `user`）。`locals` 是模板作用域绑定名（如 `wx:for` 的 `item`/`index`）：其中的根标识符**不加** `__wxml_root.`/`__wxml_props_*` 前缀。Node 在挂载时必须按 TypeScript 表达式语义重写**每个自由根标识符**，不能只处理表达式首个 token：括号、一元、二元、条件、索引、调用和对象字面量都要正确处理；属性名（`.name`、`{ key: … }` 的 key）、字符串/注释、局部绑定和全局内建名不得加前缀。无法安全挂载的形状必须返回结构化 `bad-fragment`，不得发布假诊断或假 `Supported`。`target` 找不到、`locals` 重复/为空/非标识符/保留名 → `bad-fragment`。`locals` 可以合法覆盖 `Math` 等全局内建名，此时不得按全局名跳过。默认 target 按**最右值标识符的原始偏移**定位（`a.a` 指向第二个 `a`、`user.user` 指向第二个 `user`），不得用 `indexOf` 取首个同名 token。包装必须精确覆盖整个 `exprText`（恰好一个 `const __wxml_expr = (…);` 语句，且括号内 AST 结束位置等于 `exprText.length`），多余语句/括号逃逸 → `bad-fragment`。`satisfies`、任意 TypeNode、`new` 表达式等不安全形状 → `bad-fragment`。表达式遍历深度 > 256 或节点数 > 10,000 → `bad-fragment`，不得以 `RangeError`/`-32603` 结束。
-- **Wave 2 locals 限制**：P6 当前只提供绑定名，P5 以 `any` 绑定；含非空 `locals` 的片段，其 hover/diagnostics/definition 必须报 `Partial`（reason 说明 “template locals are bound as any; loop item/index member checks deferred”），不得把空诊断展示为检查通过。例外：`jsCheck:off`/`@ts-nocheck` 优先，diagnostics 保持 `Disabled`，hover/definition 仍 `Partial`。`wx:for` 元素类型与 AC-005 完整检查延期 Wave 4/C1.2（`locals` 可扩展为带 `from`/`iteration` 的对象，向后兼容）；P6 不应发送无标识符的纯字面量片段。
+- **Wave 5 结构化模板作用域**：protocol v2 的 `bindings[]` 携带完整嵌套链（外层到内层，每层 item/index），`sourceExpr`/`sourceRange` 指向产生绑定的 `wx:for` 表达式；Node 解析数组/元组/Record 的元素与索引类型，无法解析时降级 `any` 并报 `Partial`。`locals[]` 保留为兼容字段，由 bindings 名称派生。`guards[]` 携带 `wx:if/elif/else` 链和选中分支，Node 用合成 `if/else` 块完成窄化；复杂或不可解析守卫降级 `Partial`，不得伪造类型。反向编辑仍未实现。
 - 容器字段（`viewId`/`owner`/`analysisStamp`）参与日志、缓存键与发布屏障。
 
 ### 6.2 输入上限
