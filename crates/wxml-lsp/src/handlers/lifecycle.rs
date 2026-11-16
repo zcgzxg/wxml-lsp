@@ -4,11 +4,12 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use serde_json::{Value, json};
-use wxml_types::{CapabilityStatus, SourceSnapshot};
+use wxml_types::{CapabilityStatus, ProjectId, SourceSnapshot};
 
 use super::{log_safe_method, log_safe_text, status_label, template_document};
+use crate::configuration::InitializationOptions;
 use crate::jsonrpc::{self, Outgoing, RequestKey};
-use crate::project_host::{DocumentRoute, WatchedChangeKind, WatchedFileChange};
+use crate::project_host::{DocumentRoute, HostError, WatchedChangeKind, WatchedFileChange};
 use crate::server::{Lifecycle, Server, log};
 
 /// Reads `rootUri`, falling back to the first workspace folder.
@@ -167,6 +168,19 @@ impl Server {
                 "server is already initialized",
             )];
         }
+        let options = params
+            .and_then(|params| params.get("initializationOptions"))
+            .unwrap_or(&Value::Null);
+        let options = match InitializationOptions::parse(options) {
+            Ok(options) => options,
+            Err(error) => {
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::INVALID_PARAMS,
+                    error.to_string(),
+                )];
+            }
+        };
         self.client_watched_files = params
             .and_then(|params| params.get("capabilities"))
             .and_then(|capabilities| capabilities.get("workspace"))
@@ -175,13 +189,20 @@ impl Server {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let root = requested_root(params);
-        match self.host.open_root(root) {
+        match self.host.open_root_with_options(root, &options) {
             Ok(()) => {
                 if root.is_some() {
                     let project_id = self.host.project_id();
                     let revision = self.host.project_revision();
                     self.workspace.set_project(project_id, revision);
                 }
+            }
+            Err(HostError::Configuration(error)) => {
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::INVALID_PARAMS,
+                    error.to_string(),
+                )];
             }
             Err(error) => log(format_args!("project root could not be opened: {error}")),
         }
@@ -269,40 +290,47 @@ impl Server {
         // a delayed notification for a save that `didSave` already handled, or
         // an unrelated on-disk edit that must not discard unsaved text.
         let total = changes.len();
-        let changes: Vec<_> = changes
-            .into_iter()
-            .filter(|change| !self.document_is_open(&change.uri))
-            .collect();
-        if changes.len() < total {
+        // A notification can contain changes for several configured apps.
+        // Resolve every owner against the same foreground state, before any
+        // update activates another app. Shared files keep their active owner.
+        let mut groups: Vec<(Option<ProjectId>, Vec<WatchedFileChange>)> = Vec::new();
+        let mut kept = 0;
+        for change in changes {
+            let file = self.host.resolve_file(&change.uri).ok();
+            if self.workspace.get(&change.uri).is_some()
+                || file
+                    .as_ref()
+                    .is_some_and(|file| self.workspace.get_by_file(file).is_some())
+            {
+                continue;
+            }
+            kept += 1;
+            let project = file.map(|file| file.project().clone());
+            if let Some((_, group)) = groups.iter_mut().find(|(id, _)| id == &project) {
+                group.push(change);
+            } else {
+                groups.push((project, vec![change]));
+            }
+        }
+        if kept < total {
             log(format_args!(
                 "keeping overlays for {} open document(s) during watched file changes",
-                total - changes.len()
+                total - kept
             ));
         }
-        if changes.is_empty() {
-            return Vec::new();
-        }
-        match self.host.watched_files_changed(&changes) {
-            Ok(update) => self.apply_host_update(&update),
-            Err(error) => log(format_args!("watched file change failed: {error}")),
+        for (project, changes) in groups {
+            if let Some(project) = project {
+                if let Err(error) = self.host.activate_project(&project) {
+                    log(format_args!("watched file project unavailable: {error}"));
+                    continue;
+                }
+            }
+            match self.host.watched_files_changed(&changes) {
+                Ok(update) => self.apply_host_update(&update),
+                Err(error) => log(format_args!("watched file change failed: {error}")),
+            }
         }
         Vec::new()
-    }
-
-    /// Returns whether a watched URI belongs to an open workspace document.
-    ///
-    /// Clients may normalize paths differently between `didOpen` and watched
-    /// events, so fall back to the host's canonical project path identity.
-    fn document_is_open(&self, uri: &str) -> bool {
-        if self.workspace.get(uri).is_some() {
-            return true;
-        }
-        let Ok(path) = self.host.path_for_uri(uri) else {
-            return false;
-        };
-        self.host
-            .file_id(&path)
-            .is_ok_and(|file| self.workspace.get_by_file(&file).is_some())
     }
 
     /// Registers dynamic watched-file events when a real project is open.

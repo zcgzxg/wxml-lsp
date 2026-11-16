@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "WXML language server initialization options",
+  "description": "The object passed as initialize.initializationOptions, including through a .zed settings configuration. Configure apps explicitly; the server does not scan for app.json or search parent directories for tsconfig.json. The server also treats an omitted or null initializationOptions value as the default; this schema describes the object form. Restart the language server after changing these options.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "apps": {
+      "type": "array",
+      "default": [],
+      "maxItems": 64,
+      "description": "Mini Programs in this workspace. Omitted or [] means one app whose root and projectRoot are both '.' (the workspace root), even if nested apps exist. Canonical app roots must be unique; distinct apps may share a projectRoot. Existence, canonical uniqueness, containment and symlink targets are checked by the server, not by JSON Schema.",
+      "items": {
+        "$ref": "#/$defs/app"
+      }
+    }
+  },
+  "$defs": {
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root"
+      ],
+      "properties": {
+        "root": {
+          "$ref": "#/$defs/relativeDirectory",
+          "description": "Workspace-relative directory containing app.json. '.' or './' means the workspace root. Required for each explicit app; no directory or tsconfig inference occurs. After canonicalization it must be inside both the workspace and projectRoot. Different entries must not resolve to the same app directory."
+        },
+        "projectRoot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/relativeDirectory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "TypeScript project directory, relative to the workspace (not to root). Omitted or null defaults to root. The server uses tsconfig.json directly in this directory if present; it does not search ancestors. This directory must contain root and remain within the workspace after canonicalization."
+        }
+      }
+    },
+    "relativeDirectory": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?:\\./?|(?:\\.[/\\\\])*(?![A-Za-z]:)(?!\\.{1,2}(?:[/\\\\]|$))[^/\\\\]+(?:[/\\\\](?!\\.{1,2}(?:[/\\\\]|$))[^/\\\\]+)*)$",
+      "not": {
+        "pattern": "[\\u0000-\\u001f\\u007f-\\u009f\\u200b-\\u200f\\u202a-\\u202e\\u2066-\\u2069]"
+      },
+      "description": "An existing workspace-relative directory, or '.' / './' for the workspace itself. Forward and backward slashes are normalized; leading ./ segments are allowed. Absolute, drive-letter and UNC paths, parent components, interior '.' components, empty components, trailing separators other than './', control characters and specified zero-width/bidirectional format characters are rejected. The server enforces at most 4096 UTF-8 bytes. JSON Schema maxLength counts Unicode code points, not bytes, so this 4096-character bound is necessary but not sufficient for non-ASCII paths. Canonical paths must remain inside the workspace; internal symlinks are allowed, escaping symlinks are rejected. Filesystem checks require the server and cannot be expressed by this schema."
+    }
+  },
+  "examples": [
+    {},
+    {
+      "apps": [
+        {
+          "root": "."
+        }
+      ]
+    },
+    {
+      "apps": [
+        {
+          "root": "apps/miniprogram/src",
+          "projectRoot": "apps/miniprogram"
+        },
+        {
+          "root": "apps/another-miniprogram"
+        }
+      ]
+    }
+  ]
+}

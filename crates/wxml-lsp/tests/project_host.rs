@@ -7,6 +7,8 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde_json::json;
+use wxml_lsp::configuration::InitializationOptions;
 use wxml_lsp::project_host::{
     ChangeDocument, DocumentRoute, HostError, HostUpdate, OpenDocument, ProjectHost, ProjectState,
     WatchedChangeKind, WatchedFileChange,
@@ -754,7 +756,7 @@ fn watched_other_files_and_outside_roots_are_ignored() {
 }
 
 #[test]
-fn parent_tsconfig_supplies_paths_for_a_nested_app() {
+fn configured_project_root_supplies_tsconfig_for_a_nested_app() {
     let project = TempProject::new();
     project.write(
         "apps/miniprogram/src/app.json",
@@ -777,7 +779,16 @@ fn parent_tsconfig_supplies_paths_for_a_nested_app() {
         r#"{"compilerOptions":{"baseUrl":".","paths":{"@/*":["src/*"]},"target":"es2017","lib":["ES2022","DOM"]}}"#,
     );
 
-    let host = host_with(&project);
+    project.write("tsconfig.json", r#"{"compilerOptions":{"target":"es5"}}"#);
+    let host = ProjectState::new();
+    host.open_root_with_options(
+        Some(&project.root_uri()),
+        &InitializationOptions::parse(&json!({"apps": [{
+            "root": "apps/miniprogram/src", "projectRoot": "apps/miniprogram"
+        }]}))
+        .expect("options"),
+    )
+    .expect("configured root");
     let path = host
         .path_for_uri(&project.uri("apps/miniprogram/src/pages/index/index.wxml"))
         .expect("source path");
@@ -815,7 +826,7 @@ fn parent_tsconfig_supplies_paths_for_a_nested_app() {
 }
 
 #[test]
-fn each_app_uses_its_own_parent_tsconfig() {
+fn each_app_uses_its_configured_tsconfig_and_preserves_identity() {
     let project = TempProject::new();
     for app in ["a", "b"] {
         project.write(
@@ -838,14 +849,25 @@ fn each_app_uses_its_own_parent_tsconfig() {
             ),
         );
     }
-    let host = host_with(&project);
-    for app in ["a", "b"] {
+    let host = ProjectState::new();
+    host.open_root_with_options(
+        Some(&project.root_uri()),
+        &InitializationOptions::parse(&json!({"apps": [
+            {"root": "apps/a/src", "projectRoot": "apps/a"},
+            {"root": "apps/b/src", "projectRoot": "apps/b"}
+        ]}))
+        .expect("options"),
+    )
+    .expect("configured roots");
+    let mut files = Vec::new();
+    let mut revisions = Vec::new();
+    for app in ["a", "b", "a"] {
         let path = host
             .path_for_uri(&project.uri(&format!("apps/{app}/src/pages/index/index.wxml")))
             .expect("source path");
         let file = host.file_id(&path).expect("file id");
         let snapshot = Arc::new(SourceSnapshot::new(
-            file,
+            file.clone(),
             SourceRevision::new(1),
             SnapshotId::new(1),
             "<view>{{ title }}</view>",
@@ -860,7 +882,231 @@ fn each_app_uses_its_own_parent_tsconfig() {
             view.compiler_options["strict"],
             serde_json::Value::Bool(app == "a")
         );
+        files.push(file);
+        revisions.push(host.project_revision());
     }
+    assert_ne!(files[0].project(), files[1].project());
+    assert_eq!(files[0], files[2]);
+    assert_eq!(
+        revisions[0], revisions[2],
+        "routing alone preserves revisions"
+    );
+    // Resolving a definition from B must not use whichever app was last active.
+    assert_eq!(
+        host.uri_for(&files[1]),
+        Some(project.uri("apps/b/src/pages/index/index.wxml"))
+    );
+    assert_eq!(
+        host.uri_for(&files[0]),
+        Some(project.uri("apps/a/src/pages/index/index.wxml"))
+    );
+    // Background jobs must not change the foreground app's routing identity.
+    let active = host.project_id();
+    let active_revision = host.project_revision();
+    let background = Arc::new(SourceSnapshot::new(
+        files[1].clone(),
+        SourceRevision::new(2),
+        SnapshotId::new(2),
+        "{{ title }}",
+    ));
+    host.analysis(&background).expect("background analysis");
+    assert_eq!(host.project_id(), active);
+    assert_eq!(host.project_revision(), active_revision);
+    let script = FileId::new(files[1].project().clone(), "src/pages/index/index.ts")
+        .expect("script identity");
+    assert!(host.file_text(&script).is_some());
+    assert_eq!(host.project_id(), active);
+}
+
+#[test]
+fn switching_apps_replays_newly_discovered_configuration_overlays() {
+    let project = TempProject::new();
+    for app in ["a", "b"] {
+        project.write(&format!("apps/{app}/app.json"), r#"{"pages":[]}"#);
+    }
+    for view in [
+        "pages/new/index",
+        "components/card/index",
+        "components/leaf/index",
+    ] {
+        project.write(&format!("apps/a/{view}.wxml"), "<leaf />");
+        project.write(&format!("apps/a/{view}.ts"), "Component({});");
+        project.write(&format!("apps/a/{view}.json"), "{}");
+    }
+    let host = ProjectState::new();
+    host.open_root_with_options(
+        Some(&project.root_uri()),
+        &InitializationOptions::parse(&json!({"apps":[{"root":"apps/a"},{"root":"apps/b"}]}))
+            .expect("options"),
+    )
+    .expect("configured roots");
+    for (path, text) in [
+        ("app.json", r#"{"pages":["pages/new/index"]}"#),
+        (
+            "pages/new/index.json",
+            r#"{"usingComponents":{"review-card":"../../components/card/index"}}"#,
+        ),
+        (
+            "components/card/index.json",
+            r#"{"component":true,"usingComponents":{"leaf":"../leaf/index"}}"#,
+        ),
+        (
+            "components/leaf/index.ts",
+            "Component({data:{unsaved:42}});",
+        ),
+    ] {
+        host.open_document(opened(&project.uri(&format!("apps/a/{path}")), text))
+            .expect("open overlay");
+    }
+    let page = project_path("pages/new/index.wxml");
+    assert_eq!(host.view_components(&page)[0].name, "review-card");
+    let background = snapshot(&host, page.as_str(), "<review-card />");
+    let leaf = snapshot(&host, "components/leaf/index.wxml", "{{ unsaved }}");
+    assert!(host.analysis(&leaf).expect("initial leaf").target.is_some());
+    host.path_for_uri(&project.uri("apps/b/app.json"))
+        .expect("switch to B");
+    let view = host.analysis(&background).expect("background A analysis");
+    assert_eq!(view.components.len(), 1, "replay the whole config chain");
+    assert!(view.components[0].component_file.is_some());
+    assert!(
+        host.analysis(&leaf)
+            .expect("background leaf")
+            .target
+            .is_some()
+    );
+    assert!(
+        view.files
+            .iter()
+            .any(|file| file.text.contains("unsaved:42"))
+    );
+    host.path_for_uri(&project.uri("apps/a/pages/new/index.wxml"))
+        .expect("switch back to A");
+    assert_eq!(host.view_components(&page)[0].name, "review-card");
+    assert_eq!(
+        host.analysis(&background)
+            .expect("foreground analysis")
+            .components
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn nested_app_roots_use_the_longest_match_in_either_configuration_order() {
+    let project = TempProject::new();
+    project.write("apps/outer/app.json", "{}");
+    project.write("apps/outer/nested/app.json", "{}");
+    for roots in [
+        json!([{"root":"apps/outer"}, {"root":"apps/outer/nested"}]),
+        json!([{"root":"apps/outer/nested"}, {"root":"apps/outer"}]),
+    ] {
+        let host = ProjectState::new();
+        host.open_root_with_options(
+            Some(&project.root_uri()),
+            &InitializationOptions::parse(&json!({"apps": roots})).expect("options"),
+        )
+        .expect("configured roots");
+        let path = host
+            .path_for_uri(&project.uri("apps/outer/nested/pages/new.wxml"))
+            .expect("nested file");
+        assert_eq!(path.as_str(), "pages/new.wxml");
+        assert_eq!(host.root(), Some(project.root.join("apps/outer/nested")));
+        let nested = host.project_id();
+        host.path_for_uri(&project.uri("apps/outer/pages/new.wxml"))
+            .expect("outer file");
+        assert_eq!(host.root(), Some(project.root.join("apps/outer")));
+        assert_ne!(host.project_id(), nested);
+    }
+}
+
+#[test]
+fn shared_project_files_use_an_active_or_unique_owner_and_reject_ambiguity() {
+    let project = TempProject::new();
+    project.write("apps/a/app.json", "{}");
+    project.write("apps/b/app.json", "{}");
+    project.write("shared/model.ts", "export const value = 1;");
+    let host = ProjectState::new();
+    host.open_root_with_options(
+        Some(&project.root_uri()),
+        &InitializationOptions::parse(&json!({"apps": [
+            {"root":"apps/a", "projectRoot":"."},
+            {"root":"apps/b", "projectRoot":"."}
+        ]}))
+        .expect("options"),
+    )
+    .expect("configured roots");
+    let shared = project.uri("shared/model.ts");
+    assert!(matches!(
+        host.path_for_uri(&shared),
+        Err(HostError::InvalidUri)
+    ));
+    for app in ["a", "b"] {
+        host.path_for_uri(&project.uri(&format!("apps/{app}/page.wxml")))
+            .expect("select app");
+        let owner = host.project_id();
+        assert_eq!(
+            host.path_for_uri(&shared)
+                .expect("active shared owner")
+                .as_str(),
+            "shared/model.ts"
+        );
+        assert_eq!(host.project_id(), owner);
+    }
+    let active = host.project_id();
+    let other = host
+        .resolve_file(&project.uri("apps/a/page.wxml"))
+        .expect("resolve A");
+    assert_ne!(other.project(), &active);
+    assert_eq!(host.project_id(), active, "resolving an owner is read-only");
+    assert_eq!(
+        host.resolve_file(&shared).expect("shared owner").project(),
+        &active
+    );
+    host.activate_project(other.project())
+        .expect("activate saved owner");
+    assert_eq!(&host.project_id(), other.project());
+    host.open_root_with_options(
+        Some(&project.root_uri()),
+        &InitializationOptions::parse(&json!({"apps": [
+            {"root":"apps/a", "projectRoot":"apps"},
+            {"root":"apps/b"}
+        ]}))
+        .expect("options"),
+    )
+    .expect("configured roots");
+    assert_eq!(
+        host.path_for_uri(&project.uri("apps/shared.ts"))
+            .expect("unique shared owner")
+            .as_str(),
+        "shared.ts"
+    );
+    assert_eq!(host.root(), Some(project.root.join("apps")));
+}
+
+#[test]
+fn explicit_app_does_not_infer_a_parent_tsconfig() {
+    let project = TempProject::new();
+    project.write("apps/a/src/app.json", r#"{"pages":["pages/index/index"]}"#);
+    project.write("apps/a/src/pages/index/index.wxml", "{{ title }}");
+    project.write(
+        "apps/a/src/pages/index/index.ts",
+        "Page({data:{title:'a'}});",
+    );
+    project.write(
+        "apps/a/tsconfig.json",
+        r#"{"compilerOptions":{"strict":false}}"#,
+    );
+    let host = ProjectState::new();
+    host.open_root_with_options(
+        Some(&project.root_uri()),
+        &InitializationOptions::parse(&json!({"apps":[{"root":"apps/a/src"}]})).expect("options"),
+    )
+    .expect("configured root");
+    assert_eq!(host.root(), Some(project.root.join("apps/a/src")));
+    let view = host
+        .analysis(&snapshot(&host, "pages/index/index.wxml", "{{ title }}"))
+        .expect("analysis");
+    assert_ne!(view.compiler_options.get("strict"), Some(&json!(false)));
 }
 
 #[test]

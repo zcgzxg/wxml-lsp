@@ -9,13 +9,13 @@ use serde::{Deserialize, Deserializer};
 use wxml_project::ProjectPath;
 use wxml_text::{SourceRange, TextRange};
 use wxml_types::{
-    CapabilityStatus, DefinitionResult, Diagnostic, DiagnosticSeverity, DiagnosticsResult,
+    CapabilityStatus, DefinitionResult, Diagnostic, DiagnosticSeverity, DiagnosticsResult, FileId,
     HoverResult, MarkupKind, SourceLocation, SourceSnapshot, TypeQuality,
 };
 
 use super::protocol::{PROTOCOL_VERSION, ProtocolError};
 use super::request::{EventInfo, FragmentInfo};
-use crate::project_host::{PreparedView, ProjectHost};
+use crate::project_host::PreparedView;
 
 /// Reason attached when component diagnostics were truncated.
 pub(crate) const COMPONENT_DIAGNOSTICS_TRUNCATED_REASON: &str =
@@ -1327,7 +1327,6 @@ pub(crate) fn definition(
     request_fragments: &BTreeMap<String, FragmentInfo>,
     request_events: &[EventInfo],
     offset: u32,
-    host: &dyn ProjectHost,
 ) -> DefinitionResult {
     let mut status = truncated_status(
         status_for(&response.states.definition, view),
@@ -1339,8 +1338,8 @@ pub(crate) fn definition(
     {
         // Event offsets belong to the attribute, not to a mustache expression,
         // so they must never fall through to fragment definitions.
-        let script_file = view.target.as_ref().map(|target| target.script_file.path());
-        return event_definition(response, request_events, info, status, script_file, host);
+        let script_file = view.target.as_ref().map(|target| &target.script_file);
+        return event_definition(response, request_events, info, status, script_file);
     }
     let mut locations = Vec::new();
     let mut seen = HashSet::new();
@@ -1376,7 +1375,7 @@ pub(crate) fn definition(
             dropped = true;
             continue;
         };
-        let Ok(file) = host.file_id(&path) else {
+        let Some(file) = definition_file(view, &path) else {
             dropped = true;
             continue;
         };
@@ -1409,6 +1408,12 @@ pub(crate) fn definition(
     DefinitionResult { locations, status }
 }
 
+/// Backend file paths belong to the request's app, regardless of foreground focus.
+fn definition_file(view: &PreparedView, path: &ProjectPath) -> Option<FileId> {
+    let owner = &view.target.as_ref()?.script_file;
+    FileId::new(owner.project().clone(), path.as_str()).ok()
+}
+
 /// Maps the definition of one requested event handler.
 ///
 /// The event result is authoritative: a missing definition is an empty,
@@ -1418,8 +1423,7 @@ fn event_definition(
     request_events: &[EventInfo],
     info: &EventInfo,
     mut status: CapabilityStatus,
-    script_file: Option<&str>,
-    host: &dyn ProjectHost,
+    script_file: Option<&FileId>,
 ) -> DefinitionResult {
     status = event_scope_status(response, request_events, status);
     let Some(result) = response
@@ -1446,7 +1450,7 @@ fn event_definition(
     let unexpected_file = definition
         .file_id
         .as_deref()
-        .is_some_and(|file_id| script_file.is_some_and(|expected| file_id != expected));
+        .is_some_and(|file_id| script_file.is_some_and(|expected| file_id != expected.path()));
     if unexpected_file {
         return DefinitionResult {
             locations: Vec::new(),
@@ -1463,7 +1467,7 @@ fn event_definition(
             .zip(definition.range)
             .and_then(|(file_id, range)| {
                 let path = ProjectPath::new(file_id.clone()).ok()?;
-                let file = host.file_id(&path).ok()?;
+                let file = FileId::new(script_file?.project().clone(), path.as_str()).ok()?;
                 let range = range.source_range()?;
                 Some(SourceLocation { file, range })
             })

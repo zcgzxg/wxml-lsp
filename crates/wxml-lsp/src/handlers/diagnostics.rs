@@ -220,14 +220,19 @@ impl Server {
 
     /// Revisions and dirty views after a script/JSON overlay update.
     pub(crate) fn apply_host_update(&mut self, update: &HostUpdate) {
-        self.workspace
-            .set_project_revision(self.host.project_revision());
+        let Some(revision) = &update.project_revision else {
+            return;
+        };
+        self.workspace.set_project_revision(revision);
         let mut uris = Vec::new();
         for path in &update.dirty_views {
             let Some(uri) = self
                 .workspace
                 .documents()
-                .find(|document| document.file().path() == path.as_str())
+                .find(|document| {
+                    document.file().project() == revision.project()
+                        && document.file().path() == path.as_str()
+                })
                 .map(|document| document.uri().to_owned())
             else {
                 continue;

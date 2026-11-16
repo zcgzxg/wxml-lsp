@@ -4,6 +4,8 @@
 **Status**: accepted  
 **Deciders**: 项目维护者、规划协作 agent
 
+**2026-11-16 补充**：[ADR-0006](0006-explicit-mini-program-roots.md) 明确 app 根与类型项目根的初始化配置和职责，替代根扫描及最近 tsconfig 推断；本记录的历史背景、分层和依赖边界继续有效。
+
 ## Context
 
 项目面向在 Zed 中开发原生微信小程序的个人使用场景，核心需求是 WXML 引用能获得实际 JS/TS 类型、字段说明和精确诊断，且不要求改写普通 `Page({...})`、`Component({...})`。当前工程已有五 crate workspace、文本坐标模块和 CLI 脚手架，尚无完整语言服务、Node 类型后端或 Zed 扩展。有限的隔离实验支持继续验证 TypeScript Language Service 路线，但没有证明完整模板语义和编辑器行为。原 README 禁止兄弟 crate 横向依赖，而 Cargo 注释允许 `types → project/syntax`，需要统一成明确的无环依赖约定。
@@ -56,11 +58,13 @@ wxml-lsp ──→ wxml-types ──→ wxml-syntax ──→ wxml-text
 | --- | --- | --- | --- |
 | `wxml-text` | `line_index.rs`、`range.rs`、`utf16.rs` | 行索引、类型化半开范围、UTF-8 字节与行内/全文 UTF-16 转换；明确 EOF、代理对和 CRLF 边界 | 坐标原语；不放 AST、项目状态或协议类型 |
 | `wxml-syntax` | `parser.rs`、`ast.rs`、`expr/`、`source_map.rs` | 容错 WXML CST/AST、独立表达式解析、通用分段映射；复用经编辑的旧树进行增量解析 | 带源码范围的语法快照；不理解 TS 类型或访问项目文件系统 |
-| `wxml-project` | `files.rs`、`overlay.rs`、`discovery.rs`、`components.rs`、`config.rs`、`graph.rs` | 文件身份、内存覆盖、页面/组件关联、`miniprogramRoot`、`usingComponents`、配置候选、依赖和逆向失效 | 不可变项目事实；不生成检查代码或重新实现 TS 模块解析 |
+| `wxml-project` | `files.rs`、`overlay.rs`、`discovery.rs`、`components.rs`、`config.rs`、`graph.rs` | 文件身份、内存覆盖、页面/组件关联、`miniprogramRoot`、`usingComponents`、配置候选、依赖和逆向失效（根配置由 [ADR-0006](0006-explicit-mini-program-roots.md) 补充） | 不可变项目事实；不生成检查代码或重新实现 TS 模块解析 |
 | `wxml-types` | `context.rs`、`semantic/`、`check_view/`、`mapping.rs`、`policy.rs`、`backend/` | 名字绑定、循环和条件语义、检查片段、后端查询、映射组合与诊断策略 | 拥有 `AnalysisContext`、`TemplateIR`、`CheckFragment` 和映射后的结果 |
 | `wxml-lsp` | `server.rs`、`workspace.rs`、`scheduler.rs`、`handlers/`、`convert.rs` | stdio 生命周期、状态唯一写入口、快照调度、取消、请求路由和协议转换 | 将 project 结果适配为 types 输入；不复制 AST 或模板类型语义 |
 | Node 后端 | `backends/typescript/src/{protocol,projects,host,registrations,context_bridge,shadow,queries}.ts` | 脚本 AST、注册识别、TS 配置解释、真实数据上下文、原样片段插入、类型/文档/诊断查询 | 独占脚本上下文和 shadow 映射；不重新改写模板表达式 |
 | Zed 扩展 | `editors/zed/` 中的扩展清单、Rust 启动入口、语言配置与查询 | 注册 WXML、启动本地服务、辅助语言同步和主 JS/TS 服务并存 | 编辑器适配；不承担类型推断 |
+
+根目录职责按 [ADR-0006](0006-explicit-mini-program-roots.md) 补充：LSP 在初始化时校验 `apps[].root`（`app.json` 目录）及可选 `projectRoot`（类型项目/`tsconfig.json` 目录，默认 `root`），project 层消费显式目录事实；不自动扫描小程序或向上选择最近 tsconfig。类型桥文件相对路径基于 `projectRoot`，app 资源仍按 app 根解析。单 workspace 内的显式多 app 不等同完整多 workspace 或跨 app 依赖图支持。
 
 文档数据库由 project 提供数据结构及读写操作，LSP 协调器是唯一写入口；所有分析任务读取不可变快照。`LineIndex` 与文本在同一文档快照中封装使用，避免将旧索引用于新文本。
 
@@ -125,3 +129,4 @@ Vue/Pug、Emmet、创建组件命令、自定义变量装饰、市场发布和�
 - [ADR-0002：模板类型检查与映射](0002-template-type-checking-and-source-maps.md)
 - [ADR-0003：版本化同步与接入](0003-versioned-document-synchronization.md)
 - [ADR-0004：并行交付与验收](0004-parallel-delivery-and-validation-gates.md)
+- [ADR-0006：显式小程序根与类型项目根](0006-explicit-mini-program-roots.md)

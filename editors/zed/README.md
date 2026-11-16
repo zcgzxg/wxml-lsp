@@ -1,5 +1,7 @@
 # WXML LSP Zed extension (local development)
 
+Last updated: 2026-11-16.
+
 Minimal, local-only Zed extension for WXML. It provides:
 
 - a `WXML` language (`languages/wxml/`) with highlighting, brackets, indentation,
@@ -190,6 +192,98 @@ Their full semantics are documented in
 `Command.env` is **not** a redaction boundary: it only adds these variables,
 while Zed still merges the full shell environment when spawning the language
 server. Other exported variables may therefore be visible to the process.
+
+## Mini-program roots (initialization options)
+
+Set `lsp.wxml-lsp.initialization_options` in the workspace's
+`.zed/settings.json`. Zed sends its value as LSP
+`initialize.initializationOptions`:
+
+```json
+{
+  "lsp": {
+    "wxml-lsp": {
+      "initialization_options": {
+        "apps": [{ "root": "." }]
+      }
+    }
+  }
+}
+```
+
+Omitting `initialization_options`, or using `null`, `{}`, or `{ "apps": [] }`,
+all select one app with `root: "."`. Each app entry requires a `root` string.
+The optional `projectRoot` defaults to that entry's `root`:
+
+| Field | Meaning |
+| --- | --- |
+| `root` | Directory containing the mini-program's `app.json` |
+| `projectRoot` | Type-backend project directory containing `tsconfig.json`; not the backend executable directory selected by `WXML_BACKEND_DIR` |
+
+Both paths are relative to the **LSP workspace root** (`rootUri`, or the first
+`workspaceFolders` root), not the `.zed` directory. For example, opening the
+repository root as the LSP workspace root uses this configuration for a
+two-app layout:
+
+```json
+{
+  "lsp": {
+    "wxml-lsp": {
+      "initialization_options": {
+        "apps": [
+          {
+            "root": "apps/miniprogram/src",
+            "projectRoot": "apps/miniprogram"
+          },
+          {
+            "root": "apps/sub-merchant/src",
+            "projectRoot": "apps/sub-merchant"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+The first app uses `apps/miniprogram/src/app.json` and
+`apps/miniprogram/tsconfig.json`; the second uses the corresponding files under
+`apps/sub-merchant`. This example illustrates the configuration shape; it is
+not evidence of a real Zed validation.
+
+Rules and failure modes:
+
+- Both directories must exist. After canonicalization, containment must be
+  `workspace ⊇ projectRoot ⊇ root`. Absolute paths, `..` components, and symlink
+  escapes are rejected. Duplicate canonical app roots are rejected.
+- At most 64 apps are accepted; each path is limited to 4096 UTF-8 bytes.
+- Invalid configuration fails `initialize` with `-32602`; it does not silently
+  fall back to another app. A missing or malformed `app.json` in a valid
+  directory continues through the existing project-issue reporting path.
+- There is no scan for nested `app.json` files or upward search for the nearest
+  `tsconfig.json`. Generated directories are neither automatically ignored nor
+  automatically discovered as apps; list the intended roots explicitly.
+- A document URI selects the longest matching app directory. Stable
+  `projectId` values isolate app state, and backend relative paths are based on
+  the selected app's `projectRoot`.
+- Shared files outside app directories but inside a `projectRoot` retain the
+  active owner, or use the unique owner. Multiple owners without an active
+  owner are ambiguous; the server does not guess. This does not provide full
+  multi-workspace support or a cross-app dependency graph.
+
+The server consumes this configuration only at startup. **Restart the language
+server after changing it**; root changes are not applied live. This follows
+[Zed's initialization-options lifecycle](https://zed.dev/docs/configuring-languages#possible-configuration-options).
+
+The [initialization-options JSON Schema](initialization-options.schema.json)
+describes only the inner `initialization_options` value, not the entire
+`.zed/settings.json` file. Do not replace Zed's settings schema with this
+schema. It describes JSON structure; filesystem existence, canonical
+containment, symlink checks, and UTF-8 byte limits are enforced by the server.
+For migration from automatic root discovery, explicitly list each app and its
+type project, then restart the server. See
+[ADR-0006](../../docs/adr/0006-explicit-mini-program-roots.md) for the decision
+and trade-offs.
 
 ## Coexistence with the JavaScript/TypeScript language server
 

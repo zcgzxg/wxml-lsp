@@ -2,7 +2,7 @@
 
 更新日期：2026-11-16。
 
-架构决策于 2026-11-15 整理至 [ADR 索引](docs/adr/README.md)，包含模块边界、类型检查与源码映射、文档同步及并行交付方案。架构边界以有效 ADR 为准；`accepted` 不表示功能已实现，实际进度与证据仍见本文。
+架构决策于 2026-11-15 整理至 [ADR 索引](docs/adr/README.md)，包含模块边界、类型检查与源码映射、文档同步及并行交付方案；2026-11-16 的 [ADR-0006](docs/adr/0006-explicit-mini-program-roots.md) 补充显式小程序根配置。架构边界以有效 ADR 为准；`accepted` 不表示功能已实现，实际进度与证据仍见本文。
 
 本文记录已确认的需求、方案评审结果、实验依据和后续计划。项目用于个人在 Zed 中开发微信小程序；当前已完成 Rust workspace、WXML 语法/项目模型、C0/C1 契约、类型桥（候选 A）、Node 类型后端、模板语义（typed `wx:for`、条件窄化、组件属性绑定）、LSP（hover/definition/诊断/补全/事件链路）、Zed 扩展、真实 Node 验证，以及 Zed 标准 Dev Extension 安装与真实 TS/JS 项目验收；剩余主要是 F-08+ 其余语言能力、Windows/macOS 实机验证、发布流水线。
 
@@ -14,7 +14,7 @@
 
 | 组件 | 位置 | 当前内容 |
 | --- | --- | --- |
-| Rust workspace | `crates/` | `wxml-text`（UTF-8 字节 ↔ UTF-16 位置、行索引）、`wxml-syntax`（容错 lexer/parser、Mustache Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、app 发现、tsconfig、sources）、`wxml-types`（C0 契约、模板语义、`wx:for` 作用域、后端接口与 mock）、`wxml-lsp`（JSON-RPC、ProjectHost、Node 后端、hover/diagnostics/definition、静态与后端补全、版本屏障/缓存/超时/重启）、`wxml-fixtures`（schema v2 校验） |
+| Rust workspace | `crates/` | `wxml-text`（UTF-8 字节 ↔ UTF-16 位置、行索引）、`wxml-syntax`（容错 lexer/parser、Mustache Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、app 模型、tsconfig、sources）、`wxml-types`（C0 契约、模板语义、`wx:for` 作用域、后端接口与 mock）、`wxml-lsp`（JSON-RPC、ProjectHost、Node 后端、hover/diagnostics/definition、静态与后端补全、版本屏障/缓存/超时/重启）、`wxml-fixtures`（schema v2 校验） |
 | Node 类型后端 | `backends/typescript/` | C1.1 类型桥；固定 `typescript@6.0.3`、`miniprogram-api-typings@5.3.1`；要求 Node >= 24；内存原位 shadow，不写业务文件 |
 | Zed 扩展 | `editors/zed/` | 本地 Dev Extension，id `wxml-lsp`、名称 `WXML LSP`（避免与 Marketplace 上仅 grammar 的 `wxml` 扩展冲突）；WXML 语言配置、tree-sitter 查询、`wasm32-wasip2`；真实 grammar 已用 wasi-sdk 34 构建（约 23,806 B）；从 `WXML_LSP_BIN` 绝对路径启动 `wxml-lsp --stdio` |
 | 样本与证据 | `tests/fixtures/`、`docs/evidence/` | AC-001..AC-013 样本与 schema 校验；类型桥、P7/P8 与 G1 证据记录 |
@@ -82,9 +82,42 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test real_node -- --ignored
 
 未设置 `WXML_TYPE_BACKEND` 时，服务只探测可执行文件相对的安装布局，不读取当前工作目录；`WXML_BACKEND_DIR` 只改后端工作目录，不能替代服务器路径。类型能力会降级。
 
+#### 小程序根与类型项目根
+
+服务通过 `initialize.initializationOptions` 接收 `{ "apps": [{ "root": "." }] }`。省略该选项、传 `null`、`{}` 或 `{ "apps": [] }`，都等价于单 app `{ "root": "." }`。每个 app 的 `root` 必填，指向 `app.json` 所在目录；可选 `projectRoot` 指向类型后端项目及 `tsconfig.json` 所在目录，默认等于 `root`，与 `WXML_BACKEND_DIR` 无关。
+
+Zed 中写入工作区的 `.zed/settings.json`，位置是 `lsp.wxml-lsp.initialization_options`。例如以仓库根为 LSP workspace root 时，`apps/miniprogram` 和 `apps/sub-merchant` 两个小程序可使用以下配置：
+
+```json
+{
+  "lsp": {
+    "wxml-lsp": {
+      "initialization_options": {
+        "apps": [
+          {
+            "root": "apps/miniprogram/src",
+            "projectRoot": "apps/miniprogram"
+          },
+          {
+            "root": "apps/sub-merchant/src",
+            "projectRoot": "apps/sub-merchant"
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+两个路径都相对 **LSP workspace root**（`rootUri`，或首个 `workspaceFolders` 根），不是 `.zed/` 目录；上例分别使用 `apps/miniprogram/src/app.json` 与 `apps/miniprogram/tsconfig.json`，以及另一 app 的对应文件。路径必须是工作区内已存在的相对目录，不允许绝对路径、`..` 或 symlink 越界；canonical 后须满足 `workspace ⊇ projectRoot ⊇ root`。重复 root 报错；最多 64 个 app，每个路径最多 4096 UTF-8 bytes。
+
+不再扫描子目录发现 `app.json`，不再向上推断最近的 `tsconfig.json`，生成目录也不再按名称自动忽略或自动发现为 app。嵌套小程序、分层 tsconfig 和需要使用的生成目录都应明确配置。非法配置使 `initialize` 返回 `-32602`，不静默回退；目录有效但 `app.json` 缺失或内容错误，仍走现有 project issues。
+
+配置仅在启动时消费，修改后需重启 LSP，没有根热更新；这与 [Zed 官方初始化选项说明](https://zed.dev/docs/configuring-languages#possible-configuration-options) 一致。[JSON Schema](editors/zed/initialization-options.schema.json) 仅覆盖 `initialization_options` 的内层值，不能替换整个 Zed settings schema。路由、共享文件归属和迁移细节见 [Zed 配置指南](editors/zed/README.md#mini-program-roots-initialization-options) 与 [ADR-0006](docs/adr/0006-explicit-mini-program-roots.md)；这些配置示例不构成真实 Zed 多 app 验收证据。
+
 ### 0.4 已知限制
 
-- Wave 5 已完成 typed `wx:for`、条件窄化、多视图/项目别名、自定义组件属性绑定和事件处理函数链路，AC-005/006/008/012 已完成；页面路由没有 `Page` 注册时会回退到 `Component` 注册（真实 TS 项目已验证）。hover 按光标所在标识符返回类型和文档，不再固定使用表达式最右标识符；工作区根不是小程序根时会自动发现嵌套 `app.json`（monorepo 场景），多个小程序按当前文档所属的 app 根选择，并向上加载最近的 `tsconfig.json`（含 `paths`、`lib`、`typeRoots`）；每次编辑会取消该文档的旧诊断任务，避免快速修改后 hover 排队变慢。源文件预算为 2048 个文件 / 16 MiB，连续 hover 的待处理队列上限为 128。剩余限制包括反向编辑、组件内 `usingComponents` 建模、复杂守卫/组件属性声明降级。
+- Wave 5 已完成 typed `wx:for`、条件窄化、多视图/项目别名、自定义组件属性绑定和事件处理函数链路，AC-005/006/008/012 已完成；页面路由没有 `Page` 注册时会回退到 `Component` 注册（真实 TS 项目已验证）。hover 按光标所在标识符返回类型和文档，不再固定使用表达式最右标识符；小程序根与类型项目根改由上述 `apps` 显式配置，多个 app 按文档 URI 的最长 app 目录匹配，以稳定 `projectId` 隔离。app 外、`projectRoot` 内的共享文件保留 active owner 或唯一 owner，多个 owner 且无 active 时不猜测；这不表示完整多 workspace 或跨 app 依赖图支持。每次编辑会取消该文档的旧诊断任务，避免快速修改后 hover 排队变慢。源文件预算为 2048 个文件 / 16 MiB，连续 hover 的待处理队列上限为 128。剩余限制包括反向编辑、组件内 `usingComponents` 建模、复杂守卫/组件属性声明降级。
 - Zed 扩展已完成代码评审、host 测试、wasm 构建和真实 `tree-sitter-wxml` grammar 构建（wasi-sdk 34，约 23,806 B）。2026-11-16 已在隔离 user-data-dir 中通过命令面板实际执行 `zed: install dev extension`：安装目录为指向 `editors/zed` 的 symlink，`index.json` 中 `dev=true`，扩展加载并启动 release `wxml-lsp --stdio` 与 Node 后端。干净 fixture 的 `title`/`user.name` hover、definition、标签/属性/事件/成员补全、未知成员诊断和重启恢复均已实际执行并核对内容；真实 TS/JS 项目观感已记录。**Windows/macOS 实机、真实主桌面 Wayland 观感和连续键入延迟仍未验收**；证据见 [P8 第 13 节](docs/evidence/p8-zed.md)。
 - G0/G2 已在隔离 Xvfb 中完成标准安装、扩展加载、五语言注册、LSP/Node 启动、hover/definition/completion/diagnostics 和重启恢复；Windows/macOS、真实主桌面 Wayland 观感和连续键入延迟未验收，完整 G0/G2 矩阵仍不整体勾选。G1 真实 Node 端到端通过（`stdio_type_loop` 5、`real_node` 3、`wave5_acceptance` 7 个显式门禁测试）。
 - 未发布：扩展 id 为 `wxml-lsp`、名称 `WXML LSP`（避免与 Marketplace 上仅 grammar 的 `wxml` 扩展冲突）；没有 marketplace 发布、服务器自动下载或安装流水线。
@@ -460,7 +493,7 @@ docs/                         # 参考、ADR、证据
 
 快照：2026-11-16。P0–P8 与 G1 已实现并通过代码门禁；CRLF 样本由 `.gitattributes` 保护。文档与本地 Zed 安装状态见后续提交。
 
-- 已完成：C0/C1 契约；`wxml-text`、`wxml-syntax`（容错 lexer/parser、表达式 Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、app 发现、tsconfig、sources）、`wxml-types`（类型契约、typed `wx:for`/条件窄化/组件绑定/事件语义）、`wxml-lsp`（JSON-RPC、真实 Project/FileId、Node 后端、hover/diagnostics/definition/completion/事件链路、版本屏障/缓存/超时/重启）、Node 类型桥与后端、P8 Zed 扩展。Wave 5 已完成 F-01–F-07 补全、AC-005/006/008/012、事件处理函数诊断/definition/补全、Zed 多语言未保存同步；真实 Node `stdio_type_loop` 5、`real_node` 3、`wave5_acceptance` 7。
+- 已完成：C0/C1 契约；`wxml-text`、`wxml-syntax`（容错 lexer/parser、表达式 Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、app 模型、tsconfig、sources）、`wxml-types`（类型契约、typed `wx:for`/条件窄化/组件绑定/事件语义）、`wxml-lsp`（JSON-RPC、真实 Project/FileId、Node 后端、hover/diagnostics/definition/completion/事件链路、版本屏障/缓存/超时/重启）、Node 类型桥与后端、P8 Zed 扩展。Wave 5 已完成 F-01–F-07 补全、AC-005/006/008/012、事件处理函数诊断/definition/补全、Zed 多语言未保存同步；真实 Node `stdio_type_loop` 5、`real_node` 3、`wave5_acceptance` 7。
 - 验证：workspace `765 passed / 15 ignored / 28 suites`；Node `277 passed`；`editors/zed` `25 passed`；wasm32-wasip2 release `238,792 B`（debug 历史构建 `7,633,946 B`）；真实 grammar 约 `23,806 B`（gitignored）。
 - 部分完成：Zed 扩展代码、wasm 构建和真实 `tree-sitter-wxml` grammar 构建通过；隔离 Xvfb 已完成标准 UI 安装、五语言注册、release LSP/Node 启动、干净 fixture 的 hover/definition/completion/diagnostics、真实 TS/JS 项目观感和重启恢复（[P8 第 13 节](docs/evidence/p8-zed.md)）。Windows/macOS 实机、真实主桌面 Wayland 观感、连续键入延迟和 G0/G2 完整矩阵仍未完成。
 - 未完成：反向编辑；F-08+ 其余能力（class/WXSS、资源路径、snippets、格式化、语义高亮、重命名）；多根工作区；发布/自动下载流水线；原生 TypeScript 后端替换/去 Node 决策；Windows/macOS 实机验收。

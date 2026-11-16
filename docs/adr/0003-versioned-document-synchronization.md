@@ -4,6 +4,8 @@
 **Status**: accepted  
 **Deciders**: 项目维护者、规划协作 agent
 
+**2026-11-16 补充**：根配置来源、项目选择和配置生效时机以 [ADR-0006](0006-explicit-mini-program-roots.md) 为准；本记录的历史背景与版本化同步原则继续有效。
+
 ## Context
 
 未保存的 WXML、页面/组件脚本、`data`/`properties` 字段引用的跨文件类型声明和字段说明都必须影响模板结果，只监听磁盘不足以满足要求。跨进程查询、编辑器事件、配置变化和后端重启可能让旧结果覆盖新结果，单个 WXML 的编辑器版本无法表示完整依赖状态。Zed 的多语言注册与辅助服务配置提供接入方向，但同一实例归属、更新顺序和多服务并存仍需本项目早期实测。项目层和 TS 宿主还必须避免各自解释一套不一致的项目与文件语义。
@@ -16,10 +18,14 @@
 
 - project 拥有文件身份、overlay、磁盘回退、配置候选与依赖图的数据结构；LSP 协调器顺序应用修改，分析任务不直接修改数据库。
 - 已打开文档以内存内容为准；磁盘变化更新其磁盘基线，不覆盖尚未保存内容；关闭后回退磁盘并产生新的内部版本。
-- Rust 发现小程序根、页面/组件和 TS 配置候选；Node 使用 TS 规则确定实际配置归属、选项、文件集合、路径别名、模块解析和项目引用，并反馈项目身份及依据。
+- Rust 发现小程序根、页面/组件和 TS 配置候选；Node 使用 TS 规则确定实际配置归属、选项、文件集合、路径别名、模块解析和项目引用，并反馈项目身份及依据。（根发现与配置选择部分由 [ADR-0006](0006-explicit-mini-program-roots.md) 收敛，见下文补充。）
 - 多配置归属必须有确定策略，不能仅凭“最近 tsconfig”猜测。无适用配置时显式标记 inferred project 及生效选项。
 - Node 反馈实际读取的依赖。先保守刷新相关 TS 项目的活跃模板，再按证据优化依赖粒度。
 - Node 的文件缓存与查询依赖必须绑定版本；发现快照外依赖时登记其内容版本，扩充并验证快照，必要时重跑，不能用实时磁盘读取绕过一致性校验。
+
+上述根发现与配置归属是最初的职责规划；[ADR-0006](0006-explicit-mini-program-roots.md) 将其收敛为 Rust 校验并消费 `initialize.initializationOptions.apps[]` 的显式 `root`/`projectRoot`，不扫描子 `app.json`、向上推断最近 tsconfig，或按生成目录名称自动忽略/发现 app。Node 消费 Rust 提供的项目快照与有效编译选项，不另行发现 app/tsconfig。根配置只在启动时消费，修改后重启 LSP，没有根热更新；配置非法以 `initialize -32602` 失败，合法目录中的 `app.json` 问题仍走 project issues。
+
+同一 workspace 的多 app 按文档 URI 最长 app 目录匹配，以稳定 `projectId` 隔离；app 外而 `projectRoot` 内的共享文件保留 active 或唯一 owner，多个 owner 且无 active 时不猜测。`projectRoot` 是后端相对文件路径的基准。这一边界补充不把下文多 worktree/多配置验收目标改写成已支持的完整多 workspace 或跨 app 依赖图。
 
 ### 版本契约
 
@@ -91,6 +97,8 @@ disposeProject / shutdown
 
 扩展负责语言注册、grammar/查询和本地启动，WXML 服务作为相关 JS/TS 文档的辅助接收者，不替代其主服务，不重复发布无关脚本诊断和补全。相关 JSON/JSONC 及后续样式未保存同步按能力接入，启用范围清晰可配置。
 
+根配置写在 `.zed/settings.json` 的 `lsp.wxml-lsp.initialization_options` 内；两个路径均相对 LSP workspace root，不相对 `.zed`。配置示例及仅覆盖内层值的 Schema 见 [Zed 指南](../../editors/zed/README.md#mini-program-roots-initialization-options)。[Zed 官方文档](https://zed.dev/docs/configuring-languages#possible-configuration-options) 说明初始化选项修改后须重启服务；本补充不新增真实 Zed 运行验收结论。
+
 在最小 LSP 存在后立即验证：
 
 1. WXML、JS、TS、导入类型是否进入预期服务实例，记录 worktree/根目录和实例身份。
@@ -142,3 +150,4 @@ disposeProject / shutdown
 - [ADR-0001：运行时与模块边界](0001-layered-language-service-architecture.md)
 - [ADR-0002：片段、映射与检查状态](0002-template-type-checking-and-source-maps.md)
 - [ADR-0004：验证工作包和闸门](0004-parallel-delivery-and-validation-gates.md)
+- [ADR-0006：显式根配置、归属与重启生效](0006-explicit-mini-program-roots.md)

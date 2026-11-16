@@ -15,5 +15,8 @@ wxml-syntax = { path = "../wxml-syntax" }
 wxml-text = { path = "../wxml-text" }
 wxml-types = { path = "../wxml-types" }
 
+[dev-dependencies]
+proptest.workspace = true
+
 [lints]
 workspace = true

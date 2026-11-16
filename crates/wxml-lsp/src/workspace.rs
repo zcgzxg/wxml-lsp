@@ -283,15 +283,14 @@ impl Workspace {
         }
     }
 
-    /// Updates the project revision used by new and existing documents.
-    pub(crate) fn set_project_revision(&mut self, project_revision: ProjectRevision) {
-        if project_revision.project() != &self.project {
-            return;
+    /// Updates documents of the changed project, including an inactive app.
+    pub(crate) fn set_project_revision(&mut self, project_revision: &ProjectRevision) {
+        if project_revision.project() == &self.project {
+            self.project_revision = project_revision.clone();
         }
-        self.project_revision = project_revision;
         for document in self.documents.values_mut() {
-            if document.file.project() == &self.project {
-                document.project_revision = self.project_revision.clone();
+            if document.file.project() == project_revision.project() {
+                document.project_revision = project_revision.clone();
             }
         }
     }

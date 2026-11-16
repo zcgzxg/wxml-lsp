@@ -479,7 +479,6 @@ impl Backend for NodeBackend {
                 &cached.fragments,
                 &cached.events,
                 request.offset,
-                self.host.as_ref(),
             ))
         } else {
             Ok(DefinitionResult {
