@@ -188,6 +188,72 @@ impl SourceIssues {
 }
 
 impl Project {
+    /// Returns whether an unsaved script buffer may become a project overlay.
+    ///
+    /// A path is accepted when it is a script the source collector would pick
+    /// up (including `.d.ts`, `.d.mts` and `.d.cts`) and it has no
+    /// [`EXCLUDED_DIRECTORIES`] component, so `node_modules` or `dist` buffers
+    /// never change analysis.
+    #[must_use]
+    pub fn accepts_script_overlay(&self, path: &ProjectPath) -> bool {
+        source_kind(path).is_some() && !has_excluded_component(path)
+    }
+
+    /// Returns whether an unsaved JSON buffer may become a project overlay.
+    ///
+    /// Only configuration discovery consumes is accepted: the root `app.json`,
+    /// the root `tsconfig.json`, and the JSON of a discovered page or
+    /// component. Arbitrary project JSON such as `package.json` is ignored.
+    #[must_use]
+    pub fn accepts_json_overlay(&self, path: &ProjectPath) -> bool {
+        if path == &self.app_json || path == &self.tsconfig_path {
+            return true;
+        }
+        if self.tsconfig.as_ref().is_some_and(|config| {
+            &config.path == path || config.extends.iter().any(|extended| extended == path)
+        }) {
+            return true;
+        }
+        self.discovery
+            .pages
+            .iter()
+            .any(|page| page.json.as_ref() == Some(path))
+            || self
+                .discovery
+                .components
+                .iter()
+                .any(|component| component.json.as_ref() == Some(path))
+    }
+
+    /// Returns whether an unsaved buffer may become a project overlay.
+    ///
+    /// WXML templates are never overlaid here: their text lives in the LSP
+    /// workspace snapshot instead.
+    #[must_use]
+    pub fn accepts_overlay(&self, path: &ProjectPath) -> bool {
+        self.accepts_script_overlay(path) || self.accepts_json_overlay(path)
+    }
+
+    /// Returns whether `path` is a page or component config that discovery has
+    /// not seen yet (for example a JSON file created after startup).
+    ///
+    /// A config is recognizable by its sibling template. Such a file is never
+    /// overlaid unless [`Self::accepts_json_overlay`] also returns `true`; it
+    /// only triggers rediscovery.
+    #[must_use]
+    pub fn is_project_json(&self, path: &ProjectPath) -> bool {
+        if !path
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+            || has_excluded_component(path)
+        {
+            return false;
+        }
+        path.with_extension("wxml").is_ok_and(|template| {
+            self.overlay.contains(&template) || self.root.join(template.as_str()).is_file()
+        })
+    }
+
     /// Collects project scripts for the type backend.
     ///
     /// Only `.ts`, `.tsx`, `.js`, `.jsx`, `.mts`, `.cts`, `.mjs` and `.cjs`
@@ -484,6 +550,54 @@ mod tests {
         assert_eq!(source_kind(&path("a.wxml")), None);
         assert_eq!(source_kind(&path("a.json")), None);
         assert_eq!(source_kind(&path("no-extension")), None);
+    }
+
+    #[test]
+    fn accepts_only_discoverable_config_and_script_overlays() {
+        let temp = TempDir::new("accepts");
+        temp.write(
+            "app.json",
+            r#"{"pages":["pages/index/index"],"usingComponents":{"card":"./components/card/card"}}"#,
+        );
+        temp.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+        temp.write("pages/index/index.json", r#"{"usingComponents":{}}"#);
+        temp.write("components/card/card.wxml", "<view>{{ title }}</view>");
+        temp.write("components/card/card.json", r#"{"component":true}"#);
+        temp.write("package.json", r#"{"name":"fixture"}"#);
+        temp.write("src/util.ts", "export const x = 1;");
+        temp.write("src/types.d.ts", "export interface X { a: string }");
+        temp.write("node_modules/pkg/index.js", "module.exports = 1;");
+        temp.write("dist/bundle.js", "var x = 1;");
+        temp.write("pages/index/index.wxml", "{{ x }}");
+        let project = Project::open(temp.path.clone()).expect("open");
+
+        for accepted in ["src/util.ts", "src/types.d.ts"] {
+            let path = path(accepted);
+            assert!(project.accepts_script_overlay(&path), "{accepted}");
+            assert!(project.accepts_overlay(&path), "{accepted}");
+            assert!(!project.accepts_json_overlay(&path), "{accepted}");
+        }
+        for rejected in ["node_modules/pkg/index.js", "dist/bundle.js"] {
+            let path = path(rejected);
+            assert!(!project.accepts_script_overlay(&path), "{rejected}");
+            assert!(!project.accepts_overlay(&path), "{rejected}");
+        }
+        for accepted in [
+            "app.json",
+            "tsconfig.json",
+            "pages/index/index.json",
+            "components/card/card.json",
+        ] {
+            let path = path(accepted);
+            assert!(project.accepts_json_overlay(&path), "{accepted}");
+            assert!(project.accepts_overlay(&path), "{accepted}");
+            assert!(!project.accepts_script_overlay(&path), "{accepted}");
+        }
+        for rejected in ["package.json", "app.wxml", "pages/index/index.wxml"] {
+            let path = path(rejected);
+            assert!(!project.accepts_json_overlay(&path), "{rejected}");
+            assert!(!project.accepts_overlay(&path), "{rejected}");
+        }
     }
 
     #[test]

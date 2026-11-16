@@ -124,6 +124,7 @@ impl Server {
             return Vec::new();
         };
         let version = document.get("version").and_then(Value::as_u64);
+        let language_id = document.get("languageId").and_then(Value::as_str);
         let text = text.to_owned();
         match self.host.route(uri) {
             DocumentRoute::Wxml(path) => self.open_wxml(uri, &path, text, version),
@@ -136,7 +137,16 @@ impl Server {
                     log(format_args!("rejected didOpen: {error}"));
                     return vec![rejected_open(&error.to_string())];
                 }
-                self.schedule_diagnostics(uri)
+                if language_id == Some("wxml") {
+                    self.synthetic_templates.insert(uri.to_owned());
+                } else {
+                    self.synthetic_templates.remove(uri);
+                }
+                if super::template_document(self, uri) {
+                    self.schedule_diagnostics(uri)
+                } else {
+                    Vec::new()
+                }
             }
         }
     }
@@ -206,7 +216,7 @@ impl Server {
     }
 
     /// Revisions and dirty views after a script/JSON overlay update.
-    fn apply_host_update(&mut self, update: &HostUpdate) {
+    pub(crate) fn apply_host_update(&mut self, update: &HostUpdate) {
         self.workspace
             .set_project_revision(self.host.project_revision());
         let mut uris = Vec::new();
@@ -286,7 +296,13 @@ impl Server {
                     }
                     Vec::new()
                 }
-                DocumentRoute::Unknown => self.schedule_diagnostics(uri),
+                DocumentRoute::Unknown => {
+                    if super::template_document(self, uri) {
+                        self.schedule_diagnostics(uri)
+                    } else {
+                        Vec::new()
+                    }
+                }
             },
             Err(error) => {
                 log(format_args!("rejected didChange: {error}"));
@@ -314,6 +330,8 @@ impl Server {
             return Vec::new();
         }
         let route = self.host.route(uri);
+        let was_template = super::template_document(self, uri);
+        self.synthetic_templates.remove(uri);
         let file = self
             .workspace
             .get(uri)
@@ -335,10 +353,14 @@ impl Server {
             }
             DocumentRoute::Unknown => {}
         }
-        vec![Outgoing::notification(
-            PUBLISH,
-            json!({"uri": uri, "diagnostics": []}),
-        )]
+        if was_template {
+            vec![Outgoing::notification(
+                PUBLISH,
+                json!({"uri": uri, "diagnostics": []}),
+            )]
+        } else {
+            Vec::new()
+        }
     }
 
     /// Queues a diagnostics job for the current revision of `uri`.
@@ -429,6 +451,11 @@ impl Server {
             }
         }
         if !self.workspace.is_current(&done.stamp) {
+            // Every content, view or project revision change that affects this
+            // document schedules a fresh job itself (`didChange`,
+            // `set_wxml_snapshot`, `apply_host_update`). Publishing this stale
+            // result would either duplicate that job or race a `didClose`
+            // acknowledgement, so drop it.
             log(format_args!("dropping diagnostics for an old revision"));
             return Vec::new();
         }

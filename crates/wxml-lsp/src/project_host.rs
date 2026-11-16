@@ -168,6 +168,39 @@ pub struct HostUpdate {
     pub project_revision: Option<ProjectRevision>,
 }
 
+/// One `workspace/didChangeWatchedFiles` entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WatchedFileChange {
+    /// Client URI of the changed file.
+    pub uri: String,
+    /// What happened to the file.
+    pub kind: WatchedChangeKind,
+}
+
+/// LSP `FileChangeType` values understood by this server.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WatchedChangeKind {
+    /// The file was created (`1`).
+    Created,
+    /// The file changed (`2`).
+    Changed,
+    /// The file was deleted (`3`).
+    Deleted,
+}
+
+impl WatchedChangeKind {
+    /// Maps the numeric LSP `FileChangeType` to a kind.
+    #[must_use]
+    pub const fn from_lsp(value: i64) -> Option<Self> {
+        match value {
+            1 => Some(Self::Created),
+            2 => Some(Self::Changed),
+            3 => Some(Self::Deleted),
+            _ => None,
+        }
+    }
+}
+
 /// One source file sent to the type backend.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedFile {
@@ -215,6 +248,10 @@ pub trait ProjectHost: Send + Sync {
     fn project_id(&self) -> ProjectId;
     /// Returns the current project revision.
     fn project_revision(&self) -> ProjectRevision;
+    /// Returns whether a project root is currently loaded.
+    fn is_project_open(&self) -> bool {
+        false
+    }
     /// Maps a client URI to a project-relative path.
     fn path_for_uri(&self, uri: &str) -> Result<ProjectPath, HostError>;
     /// Maps a file identity back to a client URI.
@@ -231,6 +268,17 @@ pub trait ProjectHost: Send + Sync {
     fn change_document(&self, change: ChangeDocument) -> Result<HostUpdate, HostError>;
     /// Removes an overlay when the client closes a document.
     fn close_document(&self, uri: &str) -> Result<HostUpdate, HostError>;
+    /// Handles `textDocument/didSave` for a script or JSON document.
+    fn save_document(&self, _uri: &str) -> Result<HostUpdate, HostError> {
+        Ok(HostUpdate::default())
+    }
+    /// Handles `workspace/didChangeWatchedFiles`.
+    fn watched_files_changed(
+        &self,
+        _changes: &[WatchedFileChange],
+    ) -> Result<HostUpdate, HostError> {
+        Ok(HostUpdate::default())
+    }
     /// Stores the current WXML snapshot and advances its view revision.
     fn set_wxml_snapshot(&self, file: FileId, snapshot: Arc<SourceSnapshot>);
     /// Removes a WXML snapshot and advances its view revision.
@@ -433,6 +481,10 @@ impl ProjectHost for ProjectState {
         self.read().project_revision.clone()
     }
 
+    fn is_project_open(&self) -> bool {
+        self.read().project.is_some()
+    }
+
     fn path_for_uri(&self, uri: &str) -> Result<ProjectPath, HostError> {
         let state = self.read();
         let project = state.project.as_ref().ok_or(HostError::NoProject)?;
@@ -494,42 +546,18 @@ impl ProjectHost for ProjectState {
     }
 
     fn close_document(&self, uri: &str) -> Result<HostUpdate, HostError> {
-        let mut state = self.write();
-        let path = {
-            let project = state.project.as_mut().ok_or(HostError::NoProject)?;
-            let path = project.path_from_uri(uri).map_err(map_uri_error)?;
-            project.remove_overlay(&path);
-            if path
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
-            {
-                project.rediscover();
-            }
-            path
-        };
-        let is_json = path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"));
-        if is_json {
-            let project_id = state.project_id.clone();
-            let mut next_view_revision = state.next_view_revision;
-            let views = {
-                let project = state.project.as_ref().ok_or(HostError::NoProject)?;
-                build_views(project, &project_id, &mut next_view_revision)
-            };
-            state.views = views;
-            state.next_view_revision = next_view_revision;
-        }
-        let dirty = if is_json {
-            state.views.keys().cloned().collect()
-        } else {
-            dirty_scripts(&state, &path)
-        };
-        let revision = bump_project_revision(&mut state);
-        Ok(HostUpdate {
-            dirty_views: dirty,
-            project_revision: Some(revision),
-        })
+        self.close_overlay(uri)
+    }
+
+    fn save_document(&self, uri: &str) -> Result<HostUpdate, HostError> {
+        self.save_overlay(uri)
+    }
+
+    fn watched_files_changed(
+        &self,
+        changes: &[WatchedFileChange],
+    ) -> Result<HostUpdate, HostError> {
+        self.watched_changes(changes)
     }
 
     fn set_wxml_snapshot(&self, file: FileId, snapshot: Arc<SourceSnapshot>) {
@@ -802,53 +830,272 @@ impl ProjectHost for ProjectState {
 
 impl ProjectState {
     /// Applies a script or JSON overlay and reports affected views.
+    ///
+    /// Non-config JSON (for example `package.json`) and scripts in excluded
+    /// directories are tracked by the workspace only, so they never change
+    /// project state or the revision.
     fn overlay_update(&self, uri: &str, text: &str) -> Result<HostUpdate, HostError> {
         let mut state = self.write();
-        let revision = state.next_overlay_revision.saturating_add(1);
-        state.next_overlay_revision = revision;
         let path = {
-            let project = state.project.as_mut().ok_or(HostError::NoProject)?;
-            let path = project.path_from_uri(uri).map_err(map_uri_error)?;
-            let extension = path
-                .extension()
-                .map(str::to_ascii_lowercase)
-                .unwrap_or_default();
-            if extension == "wxml" {
+            let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+            project.path_from_uri(uri).map_err(map_uri_error)?
+        };
+        let is_json = {
+            let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+            if !project.accepts_overlay(&path) {
                 return Ok(HostUpdate::default());
             }
+            project.accepts_json_overlay(&path)
+        };
+        let revision = state.next_overlay_revision.saturating_add(1);
+        state.next_overlay_revision = revision;
+        {
+            let project = state.project.as_mut().ok_or(HostError::NoProject)?;
             project
                 .set_overlay(&path, text.to_owned(), revision)
                 .map_err(|_| HostError::Read)?;
-            if extension == "json" {
+            if is_json {
                 // Full rediscovery per JSON overlay is intentional for
                 // correctness; incremental discovery is deferred (M6).
                 project.rediscover();
             }
-            path
-        };
-        let is_json = path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"));
-        if is_json {
-            let project_id = state.project_id.clone();
-            let mut next_view_revision = state.next_view_revision;
-            let views = {
-                let project = state.project.as_ref().ok_or(HostError::NoProject)?;
-                build_views(project, &project_id, &mut next_view_revision)
-            };
-            state.views = views;
-            state.next_view_revision = next_view_revision;
         }
-        let dirty = if is_json {
-            state.views.keys().cloned().collect()
-        } else {
-            dirty_scripts(&state, &path)
-        };
+        if is_json {
+            rebuild_views(&mut state)?;
+        }
+        let mut dirty = dirty_after(&state, &path, is_json);
+        if !is_json && dirty.is_empty() {
+            // The script owns no view, but every project source feeds the type
+            // backend, so an imported module can change any view's results.
+            // Re-analyze all views instead of leaving diagnostics stale.
+            dirty = state.views.keys().cloned().collect();
+        }
         let project_revision = bump_project_revision(&mut state);
         Ok(HostUpdate {
             dirty_views: dirty,
             project_revision: Some(project_revision),
         })
+    }
+
+    /// Removes an overlay when the client closes a tracked document.
+    fn close_overlay(&self, uri: &str) -> Result<HostUpdate, HostError> {
+        let mut state = self.write();
+        let path = {
+            let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+            project.path_from_uri(uri).map_err(map_uri_error)?
+        };
+        let is_json = {
+            let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+            if !project.accepts_overlay(&path) {
+                return Ok(HostUpdate::default());
+            }
+            project.accepts_json_overlay(&path)
+        };
+        {
+            let project = state.project.as_mut().ok_or(HostError::NoProject)?;
+            project.remove_overlay(&path);
+            if is_json {
+                project.rediscover();
+            }
+        }
+        if is_json {
+            rebuild_views(&mut state)?;
+        }
+        let mut dirty = dirty_after(&state, &path, is_json);
+        if !is_json && dirty.is_empty() {
+            dirty = state.views.keys().cloned().collect();
+        }
+        let revision = bump_project_revision(&mut state);
+        Ok(HostUpdate {
+            dirty_views: dirty,
+            project_revision: Some(revision),
+        })
+    }
+
+    /// Handles a saved script/JSON document.
+    ///
+    /// Overlays are kept because the client still holds the buffer; only the
+    /// project state that depends on the saved file is refreshed.
+    fn save_overlay(&self, uri: &str) -> Result<HostUpdate, HostError> {
+        let mut state = self.write();
+        let path = {
+            let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+            project.path_from_uri(uri).map_err(map_uri_error)?
+        };
+        let is_json = {
+            let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+            if project.accepts_overlay(&path) {
+                project.accepts_json_overlay(&path)
+            } else if project.is_project_json(&path) {
+                // A JSON file that discovery has not seen yet (for example a
+                // page config created after startup) still affects
+                // discovery when saved.
+                true
+            } else {
+                return Ok(HostUpdate::default());
+            }
+        };
+        if is_json {
+            let project = state.project.as_mut().ok_or(HostError::NoProject)?;
+            project.rediscover();
+            rebuild_views(&mut state)?;
+            let dirty = state.views.keys().cloned().collect();
+            let revision = bump_project_revision(&mut state);
+            return Ok(HostUpdate {
+                dirty_views: dirty,
+                project_revision: Some(revision),
+            });
+        }
+        let dirty = dirty_scripts(&state, &path);
+        if dirty.is_empty() {
+            // The saved script does not own a discovered view, so nothing
+            // observable changed.
+            return Ok(HostUpdate::default());
+        }
+        let revision = bump_project_revision(&mut state);
+        Ok(HostUpdate {
+            dirty_views: dirty,
+            project_revision: Some(revision),
+        })
+    }
+
+    /// Applies `workspace/didChangeWatchedFiles`.
+    ///
+    /// Discovery runs at most once per notification and the project revision
+    /// advances at most once. Paths outside the root, excluded scripts and
+    /// irrelevant extensions are ignored.
+    fn watched_changes(&self, changes: &[WatchedFileChange]) -> Result<HostUpdate, HostError> {
+        let mut state = self.write();
+        if state.project.is_none() {
+            return Ok(HostUpdate::default());
+        }
+        let mut json_changes: Vec<ProjectPath> = Vec::new();
+        let mut script_changes: Vec<(ProjectPath, WatchedChangeKind)> = Vec::new();
+        let mut wxml_need_rediscovery = false;
+        let mut ignored = 0_usize;
+        for change in changes {
+            let Ok(path) = state
+                .project
+                .as_ref()
+                .ok_or(HostError::NoProject)?
+                .path_from_uri(&change.uri)
+            else {
+                ignored = ignored.saturating_add(1);
+                continue;
+            };
+            let (is_json, is_script, is_discovery_json) = {
+                let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+                let is_json = project.accepts_json_overlay(&path);
+                let is_script = project.accepts_script_overlay(&path);
+                (
+                    is_json,
+                    is_script,
+                    !is_json && project.is_project_json(&path),
+                )
+            };
+            if is_json || is_discovery_json {
+                json_changes.push(path);
+            } else if is_script {
+                script_changes.push((path, change.kind));
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("wxml"))
+            {
+                // Created/deleted templates change discovery inputs; changed
+                // templates are re-read when their view is next analyzed.
+                if matches!(
+                    change.kind,
+                    WatchedChangeKind::Created | WatchedChangeKind::Deleted
+                ) {
+                    wxml_need_rediscovery = true;
+                }
+            } else {
+                ignored = ignored.saturating_add(1);
+            }
+        }
+        if json_changes.is_empty() && script_changes.is_empty() && !wxml_need_rediscovery {
+            if ignored > 0 {
+                crate::server::log(format_args!(
+                    "ignoring {ignored} watched file change(s) that do not affect analysis"
+                ));
+            }
+            return Ok(HostUpdate::default());
+        }
+
+        let scripts_need_rediscovery = script_changes.iter().any(|(_, kind)| {
+            matches!(
+                kind,
+                WatchedChangeKind::Created | WatchedChangeKind::Deleted
+            )
+        });
+        let rediscover =
+            !json_changes.is_empty() || scripts_need_rediscovery || wxml_need_rediscovery;
+        {
+            let project = state.project.as_mut().ok_or(HostError::NoProject)?;
+            for path in &json_changes {
+                project.remove_overlay(path);
+            }
+            for (path, _) in &script_changes {
+                project.remove_overlay(path);
+            }
+            if rediscover {
+                project.rediscover();
+            }
+        }
+        if rediscover {
+            rebuild_views(&mut state)?;
+        }
+
+        let mut dirty = Vec::new();
+        if rediscover {
+            dirty.extend(state.views.keys().cloned());
+        } else {
+            for (path, _) in &script_changes {
+                merge_paths(&mut dirty, dirty_scripts(&state, path));
+            }
+            if !script_changes.is_empty() && dirty.is_empty() {
+                // Imported scripts can affect every view's type results.
+                dirty.extend(state.views.keys().cloned());
+            }
+        }
+        dirty.sort();
+        dirty.dedup();
+        let revision = bump_project_revision(&mut state);
+        Ok(HostUpdate {
+            dirty_views: dirty,
+            project_revision: Some(revision),
+        })
+    }
+}
+
+/// Rebuilds the view table after rediscovery.
+fn rebuild_views(state: &mut State) -> Result<(), HostError> {
+    let project_id = state.project_id.clone();
+    let mut next_view_revision = state.next_view_revision;
+    let views = {
+        let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+        build_views(project, &project_id, &mut next_view_revision)
+    };
+    state.views = views;
+    state.next_view_revision = next_view_revision;
+    Ok(())
+}
+
+/// Views affected by one overlay path.
+fn dirty_after(state: &State, path: &ProjectPath, is_json: bool) -> Vec<ProjectPath> {
+    if is_json {
+        state.views.keys().cloned().collect()
+    } else {
+        dirty_scripts(state, path)
+    }
+}
+
+/// Appends paths that are not already present.
+fn merge_paths(target: &mut Vec<ProjectPath>, paths: Vec<ProjectPath>) {
+    for path in paths {
+        if !target.contains(&path) {
+            target.push(path);
+        }
     }
 }
 

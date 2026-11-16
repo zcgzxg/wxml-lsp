@@ -237,6 +237,10 @@ fn initialize_hover_shutdown_flow() {
     let capabilities = &response["result"]["capabilities"];
     assert_eq!(capabilities["textDocumentSync"]["openClose"], json!(true));
     assert_eq!(capabilities["textDocumentSync"]["change"], json!(2));
+    assert_eq!(
+        capabilities["textDocumentSync"]["save"]["includeText"],
+        json!(false)
+    );
     assert_eq!(capabilities["hoverProvider"], json!(true));
     assert_eq!(capabilities["definitionProvider"], json!(false));
     assert_eq!(response["result"]["serverInfo"]["name"], json!("wxml-lsp"));
@@ -410,7 +414,7 @@ fn oversized_content_length_is_rejected_without_panicking() {
 fn path_traversal_uris_do_not_escape_the_server() {
     let mut client = Client::start();
     client.initialize();
-    let suspect = "file:///../../etc/passwd";
+    let suspect = "file:///../../etc/passwd.wxml";
     client.notify(
         "textDocument/didOpen",
         json!({

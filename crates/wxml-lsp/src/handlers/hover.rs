@@ -9,7 +9,7 @@ use wxml_types::{BackendError, CapabilityStatus, HoverResult, MarkupKind, TypeQu
 
 use super::{
     hover_target, line_index_range_value, markdown_escape, quality_label, sanitized_reason,
-    source_range_value, status_label,
+    source_range_value, status_label, template_document,
 };
 use crate::jsonrpc::{self, Outgoing, RequestKey};
 use crate::scheduler::{Job, JobKind, Outcome, SubmitError, WorkDone};
@@ -279,6 +279,12 @@ impl Server {
                 "invalid textDocument or position",
             )];
         };
+        // Hover and definition are template features. Script and JSON buffers
+        // are tracked for overlays, but a point query on them is not answered
+        // by WXML analysis; `null` is the protocol-correct empty result.
+        if !template_document(self, uri) {
+            return vec![Outgoing::success(id, Value::Null)];
+        }
         let epoch = self.refresh_epoch();
         let Some(document) = self.workspace.get(uri) else {
             return vec![Outgoing::success(id, Value::Null)];

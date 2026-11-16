@@ -1,12 +1,14 @@
 //! Lifecycle methods and method dispatch.
 
+use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use serde_json::{Value, json};
-use wxml_types::CapabilityStatus;
+use wxml_types::{CapabilityStatus, SourceSnapshot};
 
-use super::{log_safe_method, log_safe_text, status_label};
+use super::{log_safe_method, log_safe_text, status_label, template_document};
 use crate::jsonrpc::{self, Outgoing, RequestKey};
+use crate::project_host::{DocumentRoute, WatchedChangeKind, WatchedFileChange};
 use crate::server::{Lifecycle, Server, log};
 
 /// Reads `rootUri`, falling back to the first workspace folder.
@@ -32,6 +34,10 @@ fn initialize_result(server: &Server) -> Value {
                 "openClose": true,
                 // 2 = incremental; full changes are also accepted.
                 "change": 2,
+                // Zed only forwards `textDocument/didSave` when the server
+                // advertises save support. The handler reads the open buffer
+                // instead of asking the client to resend its text.
+                "save": { "includeText": false },
             },
             "hoverProvider": server.capabilities.hover.is_supported(),
             "definitionProvider": server.capabilities.definition.is_supported(),
@@ -132,14 +138,12 @@ impl Server {
         }
 
         match method {
-            "initialized" => Vec::new(),
+            "initialized" => self.initialized(),
             "textDocument/didOpen" => self.did_open(params),
             "textDocument/didChange" => self.did_change(params),
             "textDocument/didClose" => self.did_close(params),
-            // Phase 0 dispatch skeleton: the notifications are parsed and
-            // logged here so later worktrees only fill in the behavior.
-            "textDocument/didSave" => Self::did_save(params.as_ref()),
-            "workspace/didChangeWatchedFiles" => Self::did_change_watched_files(params.as_ref()),
+            "textDocument/didSave" => self.did_save(params),
+            "workspace/didChangeWatchedFiles" => self.did_change_watched_files(params),
             "$/cancelRequest" => {
                 self.cancel_request(params.as_ref());
                 Vec::new()
@@ -163,6 +167,13 @@ impl Server {
                 "server is already initialized",
             )];
         }
+        self.client_watched_files = params
+            .and_then(|params| params.get("capabilities"))
+            .and_then(|capabilities| capabilities.get("workspace"))
+            .and_then(|workspace| workspace.get("didChangeWatchedFiles"))
+            .and_then(|watched| watched.get("dynamicRegistration"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
         let root = requested_root(params);
         match self.host.open_root(root) {
             Ok(()) => {
@@ -195,35 +206,160 @@ impl Server {
 
     /// Handles `textDocument/didSave`.
     ///
-    /// Phase 0 only validates and logs the notification; snapshot refresh and
-    /// diagnostics are added by the Zed synchronization worktree.
-    pub(crate) fn did_save(params: Option<&Value>) -> Vec<Outgoing> {
-        match params.and_then(saved_uri) {
-            Some(uri) => log(format_args!(
-                "didSave for {} acknowledged (no-op in this phase)",
-                log_safe_text(uri, MAX_LOG_URI_BYTES)
-            )),
-            None => log(format_args!(
+    /// A saved WXML document refreshes its analysis snapshot; a saved script
+    /// or JSON document keeps its overlay but rediscovery/dirty views are
+    /// refreshed so dependent WXML diagnostics run again. Non-WXML documents
+    /// never publish diagnostics themselves.
+    pub(crate) fn did_save(&mut self, params: Option<Value>) -> Vec<Outgoing> {
+        let Some(params) = params else {
+            log(format_args!("ignoring didSave without parameters"));
+            return Vec::new();
+        };
+        let Some(uri) = saved_uri(&params) else {
+            log(format_args!(
                 "ignoring didSave without a valid text document"
-            )),
+            ));
+            return Vec::new();
+        };
+        if uri.is_empty() || uri.len() > crate::workspace::MAX_URI_BYTES {
+            log(format_args!("ignoring didSave with an invalid URI"));
+            return Vec::new();
+        }
+        match self.host.route(uri) {
+            DocumentRoute::Wxml(path) => {
+                self.save_wxml(uri, &path);
+                self.schedule_diagnostics(uri)
+            }
+            DocumentRoute::Script(_) | DocumentRoute::Json(_) => {
+                match self.host.save_document(uri) {
+                    Ok(update) => self.apply_host_update(&update),
+                    Err(error) => log(format_args!("overlay save failed: {error}")),
+                }
+                Vec::new()
+            }
+            DocumentRoute::Unknown => {
+                // Synthetic documents keep their text in the LSP workspace;
+                // they have no host snapshot to refresh.
+                if template_document(self, uri) {
+                    self.schedule_diagnostics(uri)
+                } else {
+                    log(format_args!("ignoring didSave for a non-template document"));
+                    Vec::new()
+                }
+            }
+        }
+    }
+
+    /// Handles `workspace/didChangeWatchedFiles`.
+    pub(crate) fn did_change_watched_files(&mut self, params: Option<Value>) -> Vec<Outgoing> {
+        let Some(params) = params else {
+            log(format_args!(
+                "ignoring didChangeWatchedFiles without parameters"
+            ));
+            return Vec::new();
+        };
+        let changes = watched_changes(&params);
+        if changes.is_empty() {
+            log(format_args!(
+                "ignoring didChangeWatchedFiles without a valid changes array"
+            ));
+            return Vec::new();
+        }
+        // An open buffer is authoritative: a watched-file event for it may be
+        // a delayed notification for a save that `didSave` already handled, or
+        // an unrelated on-disk edit that must not discard unsaved text.
+        let total = changes.len();
+        let changes: Vec<_> = changes
+            .into_iter()
+            .filter(|change| !self.document_is_open(&change.uri))
+            .collect();
+        if changes.len() < total {
+            log(format_args!(
+                "keeping overlays for {} open document(s) during watched file changes",
+                total - changes.len()
+            ));
+        }
+        if changes.is_empty() {
+            return Vec::new();
+        }
+        match self.host.watched_files_changed(&changes) {
+            Ok(update) => self.apply_host_update(&update),
+            Err(error) => log(format_args!("watched file change failed: {error}")),
         }
         Vec::new()
     }
 
-    /// Handles `workspace/didChangeWatchedFiles`.
+    /// Returns whether a watched URI belongs to an open workspace document.
     ///
-    /// Phase 0 only validates and logs the notification; cache invalidation is
-    /// added by the Zed synchronization worktree.
-    pub(crate) fn did_change_watched_files(params: Option<&Value>) -> Vec<Outgoing> {
-        match params.and_then(watched_change_count) {
-            Some(count) => log(format_args!(
-                "didChangeWatchedFiles with {count} change(s) acknowledged (no-op in this phase)"
-            )),
-            None => log(format_args!(
-                "ignoring didChangeWatchedFiles without a valid changes array"
-            )),
+    /// Clients may normalize paths differently between `didOpen` and watched
+    /// events, so fall back to the host's canonical project path identity.
+    fn document_is_open(&self, uri: &str) -> bool {
+        if self.workspace.get(uri).is_some() {
+            return true;
         }
-        Vec::new()
+        let Ok(path) = self.host.path_for_uri(uri) else {
+            return false;
+        };
+        self.host
+            .file_id(&path)
+            .is_ok_and(|file| self.workspace.get_by_file(&file).is_some())
+    }
+
+    /// Registers dynamic watched-file events when a real project is open.
+    ///
+    /// Clients without a project (and the mock/`NullHost` server) must keep
+    /// the current message flow, so no registration is sent for them.
+    fn initialized(&self) -> Vec<Outgoing> {
+        if !self.client_watched_files || !self.host.is_project_open() {
+            return Vec::new();
+        }
+        let watchers: Vec<Value> = WATCH_GLOBS
+            .iter()
+            .map(|glob| json!({"globPattern": glob, "kind": WATCH_KIND_ALL}))
+            .collect();
+        vec![Outgoing::request(
+            json!(WATCH_REGISTRATION_ID),
+            "client/registerCapability",
+            json!({
+                "registrations": [{
+                    "id": WATCH_REGISTRATION_ID,
+                    "method": "workspace/didChangeWatchedFiles",
+                    "registerOptions": {"watchers": watchers},
+                }],
+            }),
+        )]
+    }
+
+    /// Refreshes the stored WXML snapshot for a saved template.
+    fn save_wxml(&mut self, uri: &str, path: &wxml_project::ProjectPath) {
+        let open = self.workspace.get(uri).map(|document| {
+            (
+                document.file().clone(),
+                document.revision(),
+                document.snapshot().snapshot(),
+                document.text().to_owned(),
+            )
+        });
+        let Some((file, revision, snapshot_id, open_text)) = open else {
+            // No open workspace document: there is nothing to refresh, and
+            // storing unbound save text would grow host snapshots without
+            // bound.
+            return;
+        };
+        // The open buffer is authoritative. `didChange` already delivered its
+        // text; a redundant `didSave.text` (when a client sends one) must not
+        // desynchronize the workspace snapshot from the host snapshot.
+        let text = open_text;
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file.clone(),
+            revision,
+            snapshot_id,
+            text,
+        ));
+        self.host.set_wxml_snapshot(file, snapshot);
+        if let Ok(target) = self.host.view_for(path) {
+            self.workspace.set_view_revision(uri, target.view_revision);
+        }
     }
 
     /// Sets the cancel flag of one in-flight request.
@@ -250,8 +386,29 @@ impl Server {
     }
 }
 
-/// Longest document URI written to stderr for an acknowledged notification.
-const MAX_LOG_URI_BYTES: usize = 256;
+/// Identifier of the watched-files registration sent to the client.
+const WATCH_REGISTRATION_ID: &str = "wxml-lsp-watch";
+
+/// `FileChangeType` mask covering create, change and delete.
+const WATCH_KIND_ALL: u8 = 7;
+
+/// Glob patterns registered for `workspace/didChangeWatchedFiles`.
+const WATCH_GLOBS: [&str; 11] = [
+    "**/*.wxml",
+    "**/*.json",
+    "**/*.ts",
+    "**/*.tsx",
+    "**/*.js",
+    "**/*.jsx",
+    "**/*.mts",
+    "**/*.cts",
+    "**/*.mjs",
+    "**/*.cjs",
+    "**/*.wxss",
+];
+
+/// Largest number of `didChangeWatchedFiles` entries processed per call.
+const MAX_WATCHED_CHANGES: usize = 4_096;
 
 /// Reads the document URI of a `didSave` notification.
 fn saved_uri(params: &Value) -> Option<&str> {
@@ -263,16 +420,42 @@ fn saved_uri(params: &Value) -> Option<&str> {
         .as_str()
 }
 
-/// Returns the number of entries in a `didChangeWatchedFiles` notification.
-fn watched_change_count(params: &Value) -> Option<usize> {
-    params.as_object()?.get("changes")?.as_array().map(Vec::len)
+/// Parses the `changes` array of a `didChangeWatchedFiles` notification.
+///
+/// Malformed entries are skipped and the processed count is bounded so a
+/// hostile client cannot force unbounded rediscovery work.
+fn watched_changes(params: &Value) -> Vec<WatchedFileChange> {
+    let Some(changes) = params
+        .as_object()
+        .and_then(|object| object.get("changes"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    changes
+        .iter()
+        .take(MAX_WATCHED_CHANGES)
+        .filter_map(|change| {
+            let change = change.as_object()?;
+            let uri = change.get("uri")?.as_str()?;
+            if uri.is_empty() || uri.len() > crate::workspace::MAX_URI_BYTES {
+                return None;
+            }
+            let kind = WatchedChangeKind::from_lsp(change.get("type")?.as_i64()?)?;
+            Some(WatchedFileChange {
+                uri: uri.to_owned(),
+                kind,
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::{saved_uri, watched_change_count};
+    use super::{MAX_WATCHED_CHANGES, saved_uri, watched_changes};
+    use crate::project_host::WatchedChangeKind;
 
     #[test]
     fn reads_saved_uri_only_from_a_text_document() {
@@ -292,19 +475,39 @@ mod tests {
     }
 
     #[test]
-    fn reads_watched_change_count_only_from_an_array() {
-        assert_eq!(
-            watched_change_count(&json!({"changes": [{"uri": "file:///a", "type": 2}]})),
-            Some(1)
-        );
-        assert_eq!(watched_change_count(&json!({"changes": []})), Some(0));
+    fn reads_watched_changes_and_skips_malformed_entries() {
+        let changes = watched_changes(&json!({
+            "changes": [
+                {"uri": "file:///a.ts", "type": 1},
+                {"uri": "file:///b.json", "type": 2},
+                {"uri": "file:///c.wxml", "type": 3},
+                {"uri": "file:///d.ts", "type": 4},
+                {"uri": 1, "type": 2},
+                {"uri": "file:///e.ts"},
+                null,
+            ],
+        }));
+        assert_eq!(changes.len(), 3);
+        assert_eq!(changes[0].kind, WatchedChangeKind::Created);
+        assert_eq!(changes[1].kind, WatchedChangeKind::Changed);
+        assert_eq!(changes[2].kind, WatchedChangeKind::Deleted);
+
         for params in [
             json!({}),
             json!({"changes": {}}),
             json!({"changes": null}),
             json!(null),
         ] {
-            assert_eq!(watched_change_count(&params), None, "params {params}");
+            assert!(watched_changes(&params).is_empty(), "params {params}");
         }
+    }
+
+    #[test]
+    fn bounds_the_number_of_watched_changes() {
+        let changes: Vec<_> = (0..=MAX_WATCHED_CHANGES)
+            .map(|_| json!({"uri": "file:///a.ts", "type": 2}))
+            .collect();
+        let parsed = watched_changes(&json!({"changes": changes}));
+        assert_eq!(parsed.len(), MAX_WATCHED_CHANGES);
     }
 }
