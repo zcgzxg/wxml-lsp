@@ -77,6 +77,8 @@ struct StaticIndex {
     semantics: TemplateSemantics,
     templates: Vec<LocatedTemplate>,
     wxs: Vec<LocatedWxs>,
+    /// Reasons for a configured module whose source could not be loaded.
+    wxs_unavailable: HashMap<String, String>,
 }
 
 /// A definition/hover navigation target.
@@ -145,6 +147,11 @@ fn build_index(path: &str, text: &str, access: &Access<'_>) -> StaticIndex {
     index.semantics = analyze_template_semantics(&tree);
     for definition in &index.semantics.definitions {
         if index.templates.len() >= MAX_INDEXED_TEMPLATES {
+            index.semantics.truncated = true;
+            index.semantics.issues.push(StaticIssue {
+                kind: StaticIssueKind::LimitReached,
+                range: definition.element_range,
+            });
             break;
         }
         index.templates.push(LocatedTemplate {
@@ -180,6 +187,7 @@ fn build_index(path: &str, text: &str, access: &Access<'_>) -> StaticIndex {
     });
     let blocks = index.semantics.wxs.clone();
     let mut wxs_cache: HashMap<String, Option<String>> = HashMap::new();
+    let mut wxs_budget_reported = false;
     for block in &blocks {
         let resolved_src = block
             .src
@@ -188,16 +196,36 @@ fn build_index(path: &str, text: &str, access: &Access<'_>) -> StaticIndex {
         if let Some(src) = &resolved_src {
             if !visited.contains(src) && visited.len() >= MAX_STATIC_FILES {
                 index.semantics.truncated = true;
-                index.semantics.issues.push(StaticIssue {
-                    kind: StaticIssueKind::LimitReached,
-                    range: block.element_range,
-                });
-                break;
+                if !wxs_budget_reported {
+                    wxs_budget_reported = true;
+                    index.semantics.issues.push(StaticIssue {
+                        kind: StaticIssueKind::LimitReached,
+                        range: block.element_range,
+                    });
+                }
+                if let Some(module) = &block.module {
+                    index
+                        .wxs_unavailable
+                        .insert(module.clone(), "WXS file budget reached".to_owned());
+                }
+                // Inline modules after the budget do not read files and remain
+                // analyzable; only the oversized `src` graph is skipped.
+                continue;
             }
             visited.insert(src.clone());
         }
-        if let Some(wxs) = load_wxs(path, text, block, access, &mut wxs_cache) {
-            index.wxs.push(wxs);
+        match load_wxs(path, text, block, access, &mut wxs_cache) {
+            Some(wxs) => index.wxs.push(wxs),
+            None => {
+                if let Some(module) = block.module.clone() {
+                    let reason = if block.src.is_some() {
+                        "WXS source is missing, too large, or not a readable project file"
+                    } else {
+                        "WXS inline body is missing"
+                    };
+                    index.wxs_unavailable.insert(module, reason.to_owned());
+                }
+            }
         }
     }
     index
@@ -230,6 +258,11 @@ fn collect_imports(
         let semantics = analyze_template_semantics(&imported_tree);
         for definition in semantics.definitions {
             if index.templates.len() >= MAX_INDEXED_TEMPLATES {
+                index.semantics.truncated = true;
+                index.semantics.issues.push(StaticIssue {
+                    kind: StaticIssueKind::LimitReached,
+                    range: import.element_range,
+                });
                 return;
             }
             index.templates.push(LocatedTemplate {
@@ -395,9 +428,15 @@ fn wxs_hover(
     // nothing was loaded instead of silently falling through.
     for block in &index.semantics.wxs {
         if contains(block.src_range, offset) || contains(block.module_range, offset) {
-            let mut contents =
-                "WXS module source is not a readable local project file (missing, too large, or not a relative path)"
-                    .to_owned();
+            let reason = block
+                .module
+                .as_deref()
+                .and_then(|module| index.wxs_unavailable.get(module))
+                .map_or(
+                    "WXS module source is not a readable local project file",
+                    String::as_str,
+                );
+            let mut contents = reason.to_owned();
             if let Some(src) = &block.src {
                 let _ = write!(contents, ": `{src}`");
             }
@@ -416,7 +455,7 @@ fn wxs_hover(
         return Some(module_hover(wxs, path, first_block(index, &wxs.module)?));
     }
     let member_name = chain.member?;
-    let member = declaration_member(&wxs.summary, &member_name)?;
+    let member = exported_member(&wxs.summary, &member_name)?;
     let positions = vec![defined_position(path, wxs, member.name_range)];
     Some(StaticHover {
         contents: member_markdown(wxs, member, &member_name),
@@ -625,8 +664,12 @@ fn wxs_definition(
             })
         });
     }
-    let member = declaration_member(&wxs.summary, &chain.member?)?;
-    Some(vec![defined_position(path, wxs, member.name_range)])
+    let member = exported_member(&wxs.summary, &chain.member?)?;
+    Some(vec![defined_position(
+        path,
+        wxs,
+        member.alias_of.unwrap_or(member.name_range),
+    )])
 }
 
 /// Definition target for a WXS member, translating inline body offsets.
@@ -648,13 +691,9 @@ fn shift(wxs: &LocatedWxs, range: SourceRange) -> SourceRange {
     .unwrap_or(range)
 }
 
-/// Definition target prefers the original declaration over an export alias.
-fn declaration_member<'a>(summary: &'a WxsSummary, name: &str) -> Option<&'a WxsMember> {
-    summary
-        .members
-        .iter()
-        .find(|member| member.name == name && !member.exported)
-        .or_else(|| summary.member(name))
+/// Runtime-visible member: only `module.exports` entries can be accessed.
+fn exported_member<'a>(summary: &'a WxsSummary, name: &str) -> Option<&'a WxsMember> {
+    summary.exported().find(|member| member.name == name)
 }
 
 fn first_block<'a>(index: &'a StaticIndex, module: &str) -> Option<&'a WxsBlock> {
@@ -712,7 +751,7 @@ fn wxs_member_completion(
         let mut items: Vec<StaticCompletion> = wxs
             .summary
             .exported()
-            .filter(|member| member.name.starts_with(prefix))
+            .filter(|member| is_dot_member_name(&member.name) && member.name.starts_with(prefix))
             .map(|member| StaticCompletion {
                 label: member.name.clone(),
                 detail: wxs.summary.describe(member),
@@ -993,6 +1032,57 @@ fn templates_named<'a>(index: &'a StaticIndex, name: &str) -> Vec<&'a LocatedTem
         .iter()
         .filter(|template| template.definition.name == name && seen.insert(template.path.clone()))
         .collect()
+}
+
+/// A dot member must be a legal identifier in the current expression grammar.
+fn is_dot_member_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_alphabetic() || matches!(first, '_' | '$'))
+        && chars.all(|character| character.is_alphanumeric() || matches!(character, '_' | '$'))
+        && !matches!(
+            name,
+            "true"
+                | "false"
+                | "null"
+                | "undefined"
+                | "this"
+                | "super"
+                | "default"
+                | "class"
+                | "function"
+                | "return"
+                | "new"
+                | "delete"
+                | "typeof"
+                | "void"
+                | "in"
+                | "instanceof"
+                | "var"
+                | "let"
+                | "const"
+                | "if"
+                | "else"
+                | "for"
+                | "while"
+                | "do"
+                | "switch"
+                | "case"
+                | "break"
+                | "continue"
+                | "try"
+                | "catch"
+                | "finally"
+                | "throw"
+                | "with"
+                | "yield"
+                | "await"
+                | "import"
+                | "export"
+                | "extends"
+        )
 }
 
 fn template_is_completion(
@@ -1493,9 +1583,9 @@ pub(crate) fn host_access(server: &Server) -> impl Fn(&str) -> Option<String> + 
     move |path: &str| {
         let path = ProjectPath::new(path).ok()?;
         let file = server.host.file_id(&path).ok()?;
-        if path
+        if !path
             .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("wxs"))
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("wxml"))
             && server
                 .host
                 .file_size(&file)
@@ -1633,6 +1723,91 @@ module.exports = { format };</wxs>
     }
 
     #[test]
+    fn only_exported_wxs_members_are_hoverable_and_navigable() {
+        let wxml = r#"<wxs module="u">const hidden = 1; const visible = 2; module.exports = { visible };</wxs><view>{{ u.hidden }}</view><view>{{ u.visible }}</view>"#;
+        let hidden = u32::try_from(wxml.find("hidden }").expect("hidden use")).expect("offset");
+        assert!(hover("pages/index/index.wxml", wxml, hidden, &no_access).is_none());
+        assert!(definition("pages/index/index.wxml", wxml, hidden, &no_access).is_none());
+        let visible = u32::try_from(wxml.rfind("visible").expect("visible use")).expect("offset");
+        let visible_hover =
+            hover("pages/index/index.wxml", wxml, visible, &no_access).expect("visible hover");
+        assert!(
+            visible_hover.contents.contains("number"),
+            "{visible_hover:?}"
+        );
+    }
+
+    #[test]
+    fn explicit_wxs_export_type_wins_over_a_local_alias() {
+        let wxml = r#"<wxs module="u">const foo = 1; module.exports = { foo: "s" };</wxs><view>{{ u.foo }}</view>"#;
+        let offset = u32::try_from(wxml.rfind("foo").expect("use")).expect("offset");
+        let hover = hover("pages/index/index.wxml", wxml, offset, &no_access).expect("hover");
+        assert!(hover.contents.contains("string"), "{hover:?}");
+        assert!(!hover.contents.contains("number"), "{hover:?}");
+        let definition =
+            definition("pages/index/index.wxml", wxml, offset, &no_access).expect("definition");
+        let range = definition[0].range;
+        assert_eq!(&wxml[range.start() as usize..range.end() as usize], "foo");
+        // The definition is the explicit export property, not the earlier local.
+        assert!(range.start() > u32::try_from(wxml.find("const foo").expect("local")).unwrap());
+    }
+
+    #[test]
+    fn wxs_alias_definition_points_at_the_local_declaration() {
+        let wxml = r#"<wxs module="u">const foo = 1; module.exports = { foo };</wxs><view>{{ u.foo }}</view>"#;
+        let offset = u32::try_from(wxml.rfind("foo").expect("use")).expect("offset");
+        let hover = hover("pages/index/index.wxml", wxml, offset, &no_access).expect("hover");
+        assert!(hover.contents.contains("number"), "{hover:?}");
+        let definition =
+            definition("pages/index/index.wxml", wxml, offset, &no_access).expect("definition");
+        let range = definition[0].range;
+        let local = &wxml[range.start() as usize..range.end() as usize];
+        assert_eq!(local, "foo");
+        assert!(range.start() < u32::try_from(wxml.find("module.exports").unwrap()).unwrap());
+    }
+
+    #[test]
+    fn indexed_template_budget_marks_completion_incomplete() {
+        use std::fmt::Write as _;
+        let mut wxml = String::new();
+        for index in 0..513 {
+            let _ = write!(wxml, "<template name=\"t{index}\">x</template>");
+        }
+        wxml.push_str("<template is=\"x");
+        let offset = u32::try_from(wxml.len()).expect("offset");
+        let result =
+            completion("pages/index/index.wxml", &wxml, offset, &no_access).expect("completion");
+        assert!(result.incomplete);
+    }
+
+    #[test]
+    fn wxs_file_budget_is_reported_as_a_budget_not_a_missing_file() {
+        let mut wxml = String::new();
+        for index in 0..40 {
+            let _ = write!(wxml, "<wxs module=\"u{index}\" src=\"./u{index}.wxs\" />");
+        }
+        let offset = u32::try_from(wxml.rfind("./u39.wxs").expect("last src")).expect("offset");
+        let hover = hover("pages/index/index.wxml", &wxml, offset, &no_access).expect("hover");
+        assert!(hover.contents.contains("file budget reached"), "{hover:?}");
+        assert!(!hover.contents.contains("missing"), "{hover:?}");
+    }
+
+    #[test]
+    fn wxs_dot_completion_omits_illegal_member_names() {
+        let wxml =
+            r#"<wxs module="u">module.exports = { "a-b": 1, 2: "two", ok: 3 };</wxs><view>{{ u."#;
+        let offset = u32::try_from(wxml.len()).expect("offset");
+        let result =
+            completion("pages/index/index.wxml", wxml, offset, &no_access).expect("completion");
+        let labels: Vec<&str> = result
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["ok"]);
+    }
+
+    #[test]
     fn wxs_require_specifier_navigates_to_the_target_file() {
         let wxml = r#"<wxs module="utils">const ext = require("./ext.wxs"); module.exports = { ext };</wxs>"#;
         let entries = [("pages/index/ext.wxs", "module.exports = { x: 1 };")];
@@ -1720,9 +1895,7 @@ module.exports = { format };</wxs>
         let src_hover =
             hover("pages/index/index.wxml", wxml, src_offset, &no_access).expect("wxs hover");
         assert!(
-            src_hover
-                .contents
-                .contains("not a readable local project file"),
+            src_hover.contents.contains("WXS source is missing"),
             "{}",
             src_hover.contents
         );

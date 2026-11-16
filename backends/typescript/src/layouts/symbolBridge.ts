@@ -255,6 +255,15 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
     unresolvedBindings,
     unresolvedGuards,
     behaviorIncomplete,
+    knownRoots: [
+      ...context.dataNames,
+      // Behavior properties/data are not mounted by this layout; leave those
+      // roots to the incomplete-behavior suppression instead of reporting a
+      // missing property that the layout itself could not expose.
+      ...context.propertyScan.properties
+        .filter((property) => property.source === undefined)
+        .map((property) => property.name),
+    ],
     files: [
       { path: context.scriptPath, text: assembledScript.text },
       { path: checkPath, text: assembledCheck.text },

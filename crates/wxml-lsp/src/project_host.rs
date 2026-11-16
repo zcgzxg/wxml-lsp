@@ -1019,7 +1019,9 @@ impl ProjectState {
         if !is_json && dirty.is_empty() {
             // The script owns no view, but every project source feeds the type
             // backend, so an imported module can change any view's results.
-            // Re-analyze all views instead of leaving diagnostics stale.
+            // WXS also feeds static hover/completion; until the dependency
+            // graph records WXS edges, invalidate all views rather than leave
+            // stale static answers.
             dirty = state.views.keys().cloned().collect();
         }
         let project_revision = bump_project_revision(&mut state);

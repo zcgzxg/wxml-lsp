@@ -980,6 +980,7 @@ fn find_tag_end(text: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use wxml_syntax::parse;
 
     fn analyze(source: &str) -> (TemplateSemantics, SyntaxTree) {
@@ -1078,6 +1079,19 @@ module.exports = { format };
                 "{specifier:?}"
             );
         }
+    }
+
+    #[test]
+    fn per_template_data_use_budget_marks_the_result_incomplete() {
+        let mut source = "<template name=\"t\">".to_owned();
+        for index in 0..300 {
+            let _ = write!(source, "{{{{v{index}}}}}");
+        }
+        source.push_str("</template>");
+        let (semantics, _) = analyze(&source);
+        assert!(semantics.truncated);
+        assert!(semantics.definitions[0].incomplete.is_some());
+        assert!(semantics.definitions[0].data_uses.len() <= 256);
     }
 
     #[test]

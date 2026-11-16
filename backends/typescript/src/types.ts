@@ -365,6 +365,8 @@ export interface LayoutBuild {
    * may come from an unmodeled behavior are not diagnosed as missing.
    */
   behaviorIncomplete?: boolean;
+  /** Root names the component can prove (own data/properties and behavior data). */
+  knownRoots?: string[];
   files: Array<{ path: string; text: string }>;
   /** File that hosts the mounted fragments (the script for A, the check file for B). */
   queryFile: string;

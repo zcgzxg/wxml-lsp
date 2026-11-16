@@ -79,6 +79,10 @@ pub struct WxsMember {
     pub decl_range: SourceRange,
     /// Specifier of a `require(...)` binding, for [`WxsMemberKind::Module`].
     pub module_specifier: Option<String>,
+    /// Local declaration this exported alias points at, when the export is a
+    /// shorthand/alias. Definition queries may use it, but types always come
+    /// from the exported member itself.
+    pub alias_of: Option<SourceRange>,
 }
 
 /// One `require("./x.wxs")` binding.
@@ -155,8 +159,10 @@ pub fn summarize_wxs(text: &str) -> WxsSummary {
         .find(|&index| text.is_char_boundary(index))
         .unwrap_or(0);
     let sliced = text.get(..end).unwrap_or_default();
-    let tokens = lex(sliced);
-    let truncated = end < text.len() || tokens.len() >= MAX_WXS_TOKENS;
+    let (tokens, token_truncated) = lex(sliced);
+    // The lexer stops before adding a token past the cap; an input that ends
+    // exactly at the cap is complete.
+    let truncated = end < text.len() || token_truncated;
     let mut parser = Parser {
         tokens: &tokens,
         summary: WxsSummary::default(),
@@ -192,13 +198,15 @@ struct Token<'a> {
     doc_comment: bool,
 }
 
-fn lex(text: &str) -> Vec<Token<'_>> {
+fn lex(text: &str) -> (Vec<Token<'_>>, bool) {
     let bytes = text.as_bytes();
     let mut tokens = Vec::new();
     let mut index = 0_usize;
     let mut at_line_start = true;
+    let mut truncated = false;
     while index < bytes.len() {
         if tokens.len() >= MAX_WXS_TOKENS {
+            truncated = true;
             break;
         }
         let byte = bytes[index];
@@ -290,7 +298,7 @@ fn lex(text: &str) -> Vec<Token<'_>> {
         });
         at_line_start = false;
     }
-    tokens
+    (tokens, truncated)
 }
 
 const fn is_ident_start(byte: u8) -> bool {
@@ -554,6 +562,7 @@ impl<'a> Parser<'a> {
                     decl_end,
                 ),
                 module_specifier: None,
+                alias_of: None,
             };
             self.push_member(member);
         }
@@ -720,8 +729,6 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_declaration(&mut self, start: TokenIndex) -> TokenIndex {
-        let keyword = self.tokens[start].text;
-        let mutable = keyword != "const";
         let mut index = self.skip_comments(start + 1);
         let mut first = true;
         loop {
@@ -752,6 +759,7 @@ impl<'a> Parser<'a> {
                     name_range,
                     decl_range: Self::range(name_token.start, name_token.end),
                     module_specifier: None,
+                    alias_of: None,
                 });
                 return self.skip_to_statement_end(index, &mut 0);
             }
@@ -771,7 +779,6 @@ impl<'a> Parser<'a> {
             }
             // A mutable local keeps its declared/initial type for hover;
             // reassignment is not a reason to discard the whole module summary.
-            let _ = mutable;
             let decl_end = self
                 .tokens
                 .get(end.saturating_sub(1))
@@ -786,6 +793,7 @@ impl<'a> Parser<'a> {
                 name_range,
                 decl_range: Self::range(name_token.start, decl_end),
                 module_specifier,
+                alias_of: None,
             });
             first = false;
             if self.is_punct(end, b',') {
@@ -1021,6 +1029,7 @@ impl<'a> Parser<'a> {
                     let end = self.member_value_end(value_start, open);
                     let (kind, type_text, signature, module_specifier) =
                         self.classify_initializer(value_start, end, &name);
+                    let alias_of = self.local_alias_range(value_start);
                     self.push_exported(
                         name,
                         kind,
@@ -1030,6 +1039,7 @@ impl<'a> Parser<'a> {
                         name_range,
                         end,
                         module_specifier,
+                        alias_of,
                     );
                     index = end;
                     continue;
@@ -1040,8 +1050,29 @@ impl<'a> Parser<'a> {
             }
             if depth == 0 && token.kind == TokenKind::Punct(b'[') {
                 self.mark_dynamic("computed export keys are not analyzed");
-                index = self.skip_computed_key(index);
+                let after_key = self.skip_computed_key(index);
+                let next = self.skip_comments(after_key);
+                if self.is_punct(next, b':') {
+                    let value_start = self.skip_comments(next + 1);
+                    index = self.member_value_end(value_start, open);
+                } else {
+                    // Computed method key: skip its parameter list and body.
+                    index = self.member_value_end(after_key, open);
+                }
                 continue;
+            }
+            if depth == 0
+                && token.kind == TokenKind::Identifier
+                && matches!(token.text, "get" | "set" | "async")
+            {
+                let after = self.skip_comments(index + 1);
+                if self.tokens.get(after).is_some_and(|next| {
+                    next.kind == TokenKind::Identifier || next.kind == TokenKind::Punct(b'[')
+                }) {
+                    self.mark_dynamic("accessor/async export members are not analyzed statically");
+                    index = self.member_value_end(after, open);
+                    continue;
+                }
             }
             if depth == 0 && token.kind == TokenKind::Identifier {
                 let name = token.text.to_owned();
@@ -1052,6 +1083,7 @@ impl<'a> Parser<'a> {
                     let end = self.member_value_end(value_start, open);
                     let (kind, type_text, signature, module_specifier) =
                         self.classify_initializer(value_start, end, &name);
+                    let alias_of = self.local_alias_range(value_start);
                     self.push_exported(
                         name,
                         kind,
@@ -1061,6 +1093,7 @@ impl<'a> Parser<'a> {
                         name_range,
                         end,
                         module_specifier,
+                        alias_of,
                     );
                     index = end;
                     continue;
@@ -1078,6 +1111,7 @@ impl<'a> Parser<'a> {
                             name_range,
                             end,
                             None,
+                            None,
                         );
                         index = end;
                         continue;
@@ -1090,6 +1124,13 @@ impl<'a> Parser<'a> {
                     .find(|entry| entry.0 == name)
                     .cloned();
                 if let Some((local_name, kind, type_text, signature)) = alias {
+                    let local_range = self
+                        .summary
+                        .members
+                        .iter()
+                        .rev()
+                        .find(|member| member.name == local_name && !member.exported)
+                        .map(|member| member.name_range);
                     self.push_exported(
                         name.clone(),
                         kind,
@@ -1099,8 +1140,8 @@ impl<'a> Parser<'a> {
                         name_range,
                         index + 1,
                         None,
+                        local_range,
                     );
-                    let _ = local_name;
                 } else {
                     self.push_exported(
                         name,
@@ -1110,6 +1151,7 @@ impl<'a> Parser<'a> {
                         pending_doc.clone(),
                         name_range,
                         index + 1,
+                        None,
                         None,
                     );
                 }
@@ -1182,6 +1224,20 @@ impl<'a> Parser<'a> {
         index
     }
 
+    /// Local declaration range when the export value is a bare identifier.
+    fn local_alias_range(&self, value_start: TokenIndex) -> Option<SourceRange> {
+        let token = self.tokens.get(value_start)?;
+        if token.kind != TokenKind::Identifier {
+            return None;
+        }
+        self.summary
+            .members
+            .iter()
+            .rev()
+            .find(|member| member.name == token.text && !member.exported)
+            .map(|member| member.name_range)
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn push_exported(
         &mut self,
@@ -1193,6 +1249,7 @@ impl<'a> Parser<'a> {
         name_range: SourceRange,
         end: TokenIndex,
         module_specifier: Option<String>,
+        alias_of: Option<SourceRange>,
     ) {
         let decl_end = self.tokens.get(end.saturating_sub(1)).map_or_else(
             || name_range.end(),
@@ -1231,6 +1288,7 @@ impl<'a> Parser<'a> {
             name_range,
             decl_range: Self::range(name_range.start() as usize, decl_end as usize),
             module_specifier,
+            alias_of,
         });
     }
 
@@ -1247,6 +1305,7 @@ impl<'a> Parser<'a> {
         }
         let (kind, type_text, signature, module_specifier) =
             self.classify_initializer(value_start, end, &name);
+        let alias_of = self.local_alias_range(value_start);
         self.push_exported(
             name,
             kind,
@@ -1256,6 +1315,7 @@ impl<'a> Parser<'a> {
             name_range,
             end,
             module_specifier,
+            alias_of,
         );
     }
 
@@ -1300,6 +1360,7 @@ impl<'a> Parser<'a> {
                     name_range,
                     body_end,
                     None,
+                    None,
                 );
                 return Some(body_end);
             }
@@ -1321,16 +1382,42 @@ fn valid_range(start: usize, end: usize) -> TextRange {
     })
 }
 
+/// Decodes the small escape subset meaningful in a static export key.
+fn unescape_key(raw: &str) -> String {
+    let mut output = String::new();
+    let mut chars = raw.chars();
+    while let Some(character) = chars.next() {
+        if character == '\\' {
+            match chars.next() {
+                Some('n') => output.push('\n'),
+                Some('r') => output.push('\r'),
+                Some('t') => output.push('\t'),
+                Some('b') => output.push('\u{8}'),
+                Some('f') => output.push('\u{c}'),
+                Some(quote @ ('\'' | '"' | '\\' | '`')) => output.push(quote),
+                Some(other) => {
+                    output.push('\\');
+                    output.push(other);
+                }
+                None => output.push('\\'),
+            }
+        } else {
+            output.push(character);
+        }
+    }
+    output
+}
+
 /// Extracts a static string/number export key and its name range.
 fn key_literal(token: Token<'_>, token_range: SourceRange) -> (String, SourceRange) {
     if token.kind == TokenKind::String {
         let raw = token.text;
         let quote = raw.chars().next().unwrap_or('"');
-        let name = raw
-            .strip_prefix(quote)
-            .and_then(|raw| raw.strip_suffix(quote))
-            .unwrap_or(raw)
-            .to_owned();
+        let name = unescape_key(
+            raw.strip_prefix(quote)
+                .and_then(|raw| raw.strip_suffix(quote))
+                .unwrap_or(raw),
+        );
         let start = token_range.start() + u32::try_from(quote.len_utf8()).unwrap_or(0);
         let end = token_range.end().saturating_sub(1);
         (
@@ -1705,6 +1792,38 @@ module.exports[computed] = 4;
         assert_eq!(member(&summary, "a-b").type_text, "number");
         assert_eq!(member(&summary, "2").type_text, "string");
         assert!(summary.dynamic.is_some(), "{summary:?}");
+    }
+
+    #[test]
+    fn escaped_string_export_keys_are_decoded() {
+        let summary = summarize_wxs(r#"module.exports = { "a\"b": 1 };"#);
+        assert_eq!(member(&summary, "a\"b").type_text, "number", "{summary:?}");
+    }
+
+    #[test]
+    fn computed_keys_skip_their_values_and_accessors_are_not_members() {
+        let text = r#"
+const k = "x";
+const foo = 1;
+module.exports = {
+  [k]: foo,
+  [k]: foo(),
+  [k]() { return 1; },
+  get label() { return "x"; },
+  set label(value) {},
+  async run() { return 1; },
+  normal: 2,
+};
+"#;
+        let summary = summarize_wxs(text);
+        for name in ["foo", "get", "set", "async", "label", "run"] {
+            assert!(
+                summary.exported().all(|member| member.name != name),
+                "name {name} in {summary:?}"
+            );
+        }
+        assert_eq!(member(&summary, "normal").type_text, "number");
+        assert!(summary.dynamic.is_some());
     }
 
     #[test]

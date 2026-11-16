@@ -26,6 +26,8 @@ export interface LayoutContext {
   propertyScan: PropertyScan;
   /** Static `behaviors` graph of a component (empty for pages). */
   behavior: BehaviorResolution;
+  /** First-level names of the component's own `data` object. */
+  dataNames: string[];
   /** Leading pragma scan of the original script. */
   pragma: PragmaScan;
   /** True when the policy asks for a shadow-only `@ts-check`. */

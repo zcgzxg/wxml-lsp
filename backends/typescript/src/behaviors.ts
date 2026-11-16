@@ -426,7 +426,7 @@ function findModuleBinding(sourceFile: ts.SourceFile, name: string): ModuleBindi
         }
       }
     }
-    if (ts.isImportEqualsDeclaration(statement)) {
+    if (ts.isImportEqualsDeclaration(statement) && statement.name.text === name) {
       const reference = statement.moduleReference;
       if (ts.isExternalModuleReference(reference) && reference.expression && ts.isStringLiteralLike(reference.expression)) {
         return { kind: "import", module: reference.expression.text, exportName: undefined };
@@ -601,7 +601,7 @@ function byteSpanOf(
  */
 /** A behavior data key that can become a probe-local binding. */
 function isProbeMemberName(name: string): boolean {
-  return isBindingIdentifier(name) && !name.startsWith("__");
+  return isBindingIdentifier(name);
 }
 
 /**

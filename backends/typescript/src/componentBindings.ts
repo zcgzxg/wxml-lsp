@@ -285,10 +285,12 @@ function componentSource(input: ComponentDiagnosticsInput, fileId: string): ts.S
 }
 
 /**
- * Declared `properties` of the component, or `undefined` when the declaration
- * cannot be read completely (no registration, no object literal, spread or a
- * constructor this module cannot map). An incomplete declaration is never
- * narrowed: the usage is counted as skipped instead.
+ * Declared `properties` of the component, or `undefined` when the component
+ * declaration itself cannot be read (no registration or a spread/invalid own
+ * `properties` object). An unresolved behavior only makes the returned
+ * `incomplete` flag true: the component's own properties are still checked,
+ * while attributes that may belong to the missing behavior coverage are
+ * counted as skipped.
  *
  * The property *set* comes from `scanDeclaredProperties`, the same helper the
  * declaration overlay uses, plus statically resolved behavior properties. Each

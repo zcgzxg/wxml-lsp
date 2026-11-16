@@ -347,6 +347,11 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
     unresolvedBindings,
     unresolvedGuards,
     behaviorIncomplete,
+    knownRoots: [
+      ...context.dataNames,
+      ...context.propertyScan.properties.map((property) => property.name),
+      ...context.behavior.data.map((member) => member.name),
+    ],
     files: [{ path: context.scriptPath, text: assembled.text }],
     queryFile: context.scriptPath,
     insertions: assembled.insertions,
@@ -398,7 +403,7 @@ function propertySource(context: LayoutContext, name: string): GeneratedDeclarat
 
 /** Keywords, strict-mode bindings and probe names cannot become locals. */
 function isIdentifierName(name: string): boolean {
-  return isBindingIdentifier(name) && !name.startsWith("__");
+  return isBindingIdentifier(name);
 }
 
 function sanitizeDoc(doc: string): string {

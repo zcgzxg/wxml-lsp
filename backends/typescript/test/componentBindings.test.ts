@@ -693,3 +693,97 @@ test("an unresolved external behavior keeps the component's own property checks"
   assert.ok(outcome.skipped >= 1);
   assert.ok(outcome.skippedDetails.includes("bad.behavior"));
 });
+
+test("behaviorIncomplete suppresses only unknown behavior roots, not known-root typos", () => {
+  const request = componentRequest({
+    script: `const shared = { known: 1 };
+    Component({ behaviors: [Behavior({ data: shared })], data: { user: { name: "Ada" } } });`,
+    fragments: [
+      ["typo", "user.nmae"],
+      ["missing", "unknownBehaviorRoot"],
+    ],
+  });
+  const result = analyze(request, config);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.build.behaviorIncomplete, true);
+  const typo = result.response.fragments.find((entry) => entry.fragmentId === "typo");
+  assert.deepEqual(
+    (typo?.diagnostics ?? []).map((diagnostic) => diagnostic.code),
+    [2339],
+    JSON.stringify(typo),
+  );
+  const missing = result.response.fragments.find((entry) => entry.fragmentId === "missing");
+  assert.deepEqual(
+    (missing?.diagnostics ?? []).filter((diagnostic) => diagnostic.code === 2339),
+    [],
+    JSON.stringify(missing),
+  );
+});
+
+test("unrelated import-equals does not hijack behavior binding resolution", () => {
+  const request = componentRequest({
+    script: `import ext = require("./ext");
+    import shared = require("./shared");
+    Component({ behaviors: [shared], data: {} });`,
+    extraFiles: [
+      { path: "ext.ts", text: `const b = Behavior({ data: { wrong: 1 }, properties: { title: { type: Number } } }); export = b;` },
+      { path: "shared.ts", text: `const b = Behavior({ data: { correct: 2 }, properties: { title: { type: String } } }); export = b;` },
+    ],
+    fragments: [
+      ["wrong", "wrong"],
+      ["correct", "correct"],
+    ],
+  });
+  const result = analyze(request, config);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.build.behaviorIncomplete, false, result.build.reason);
+  assert.notEqual(hoverOf(result, "wrong")?.hover?.typeOnly, "number");
+  assert.equal(hoverOf(result, "correct")?.hover?.typeOnly, "number");
+  assert.deepEqual(result.response.fragments.find((entry) => entry.fragmentId === "correct")?.diagnostics, []);
+
+  const component = `import ext = require("./ext");
+  import shared = require("./shared");
+  Component({ behaviors: [shared], properties: {} });`;
+  const componentRequestWithImports = analyzeRequest({
+    script: PAGE,
+    extraFiles: [
+      { path: "ext.ts", text: `const b = Behavior({ properties: { title: { type: Number } } }); export = b;` },
+      { path: "shared.ts", text: `const b = Behavior({ properties: { title: { type: String } } }); export = b;` },
+      { path: "component.ts", text: component },
+    ],
+    fragments: FRAGMENTS,
+    components: [usage("valid", [attribute("title", "literal")], "component.ts")],
+  });
+  const outcome = componentOutcome(componentRequestWithImports);
+  assert.deepEqual(outcome.results.find((entry) => entry.tag === "valid")?.diagnostics, []);
+});
+
+test("behavior data names with a non-probe double underscore remain usable", () => {
+  const request = componentRequest({
+    script: `Component({ behaviors: [Behavior({ data: { __state: 1 } })], data: {} });`,
+    fragments: [["state", "__state"]],
+  });
+  const result = analyze(request, config);
+  const hover = hoverOf(result, "state");
+  assert.equal(hover?.hover?.typeOnly, "number", JSON.stringify(hover));
+  assert.equal(result.ok && result.build.behaviorIncomplete, false);
+});
+
+test("symbol-bridge does not report resolved behavior roots as missing", () => {
+  const request = componentRequest({
+    script: `Component({ behaviors: [Behavior({ data: { fromBehavior: 1 } })], data: {} });`,
+    fragments: [["behavior", "fromBehavior"]],
+  });
+  const result = analyze(request, { ...config, layoutId: "symbol-bridge" });
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.build.buildStatus, "partial");
+  const fragment = result.response.fragments.find((entry) => entry.fragmentId === "behavior");
+  assert.deepEqual(
+    (fragment?.diagnostics ?? []).filter((diagnostic) => diagnostic.code === 2339),
+    [],
+    JSON.stringify(fragment),
+  );
+});

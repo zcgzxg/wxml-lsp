@@ -346,8 +346,11 @@ export function buildView(request: AnalyzeRequest, config: AnalysisConfig): Prep
   });
   const ownPropertyScan = scanDeclaredProperties(found?.options);
   const propertyScan = mergePropertyScan(ownPropertyScan, behavior.properties);
-
   const dataMember = found ? memberMap(found.options).get("data") : undefined;
+  const dataNames =
+    dataMember && ts.isPropertyAssignment(dataMember) && ts.isObjectLiteralExpression(dataMember.initializer)
+      ? [...memberMap(dataMember.initializer).keys()]
+      : [];
   // Distinguish "no data member" (empty root) from "data exists but is not a
   // property assignment" (cannot bind a root at all).
   const dataRootKind: DataRootKind = !found
@@ -379,6 +382,7 @@ export function buildView(request: AnalyzeRequest, config: AnalysisConfig): Prep
     dataRootKind,
     propertyScan,
     behavior,
+    dataNames,
     pragma,
     wantPragma,
     fragments: request.fragments,
@@ -990,6 +994,21 @@ function withProvenance(
   };
 }
 
+function unknownBehaviorRoot(
+  build: LayoutBuild,
+  hit: { fragmentId: string; mount: { text: string } },
+): boolean {
+  const match = /^__(?:wxml_root(?:_0)?|wxml_props_0)\.([\p{L}_$][\p{L}\p{N}_$]*)/u.exec(
+    hit.mount.text,
+  );
+  const root = match?.[1] ?? /^([\p{L}_$][\p{L}\p{N}_$]*)/u.exec(hit.mount.text)?.[1];
+  if (root === undefined) return false;
+  if ((build.knownRoots ?? []).includes(root)) return false;
+  const fragment = build.fragments.find((entry) => entry.fragmentId === hit.fragmentId);
+  if (fragment?.bindings.some((binding) => binding.name === root)) return false;
+  return true;
+}
+
 export function mapDiagnostics(
   project: VirtualProject,
   build: LayoutBuild,
@@ -1027,10 +1046,12 @@ export function mapDiagnostics(
       }
       if (
         build.behaviorIncomplete === true &&
-        (diagnostic.code === 2339 || diagnostic.code === 2551)
+        (diagnostic.code === 2339 || diagnostic.code === 2551) &&
+        unknownBehaviorRoot(build, hit)
       ) {
         // A behavior that could not be resolved may declare the missing root;
         // do not turn incomplete coverage into a property-does-not-exist error.
+        // A known data/property/local root keeps its real typo diagnostic.
         suppressed += 1;
         continue;
       }
