@@ -7,7 +7,7 @@ use wxml_types::{CompletionItem, CompletionItemKind, InsertTextFormat, MAX_COMPL
 
 use super::catalog;
 use super::context::{Context, Site};
-use super::snippets::{self, SnippetEnv};
+use super::snippets::{self, SnippetContext};
 use crate::project_host::ViewComponent;
 
 /// Builds the static item list for one context.
@@ -22,17 +22,20 @@ pub(crate) fn items(
     context: &Context,
     components: &[ViewComponent],
 ) -> (Vec<CompletionItem>, bool) {
-    items_with_snippets(context, components, None)
+    items_with_snippets(context, components, None, "")
 }
 
-/// Builds the static item list, optionally adding built-in snippets.
+/// Builds the static item list, optionally adding built-in and user snippets.
 ///
-/// `snippet_env` is `Some` only when the client advertised snippet support;
-/// otherwise snippet items would be rendered as literal placeholder text.
+/// `snippet` is `Some` only when the client advertised snippet support and the
+/// workspace catalog is enabled; otherwise snippet items would be rendered as
+/// literal placeholder text. `text` is the current document used to verify
+/// that a snippet insertion is safe.
 pub(crate) fn items_with_snippets(
     context: &Context,
     components: &[ViewComponent],
-    snippet_env: Option<&SnippetEnv>,
+    snippet: Option<&SnippetContext<'_>>,
+    text: &str,
 ) -> (Vec<CompletionItem>, bool) {
     let mut items = match &context.site {
         Site::Tag { closing, .. } => tag_items(context, components, *closing),
@@ -40,8 +43,8 @@ pub(crate) fn items_with_snippets(
         Site::AttributeValue { tag, attribute, .. } => value_items(context, tag, attribute),
         Site::Mustache => Vec::new(),
     };
-    if let Some(snippet_env) = snippet_env {
-        items.extend(snippets::items(context, snippet_env));
+    if let Some(snippet) = snippet {
+        items.extend(snippets::items(context, text, snippet));
     }
     items.sort_by(|left, right| {
         left.sort_text

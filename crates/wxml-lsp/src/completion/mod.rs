@@ -12,6 +12,7 @@ pub(crate) mod context;
 pub(crate) mod expression;
 pub(crate) mod snippets;
 pub(crate) mod static_items;
+pub(crate) mod user_snippets;
 
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -51,11 +52,17 @@ pub(crate) fn static_completion(
         Vec::new()
     };
     let text = context.source().text();
-    let snippet_env = server
-        .client_snippets
-        .then(|| snippets::SnippetEnv::new(text, detected.replace.start()));
+    let snippet = server.client.snippets.then(|| {
+        (
+            snippets::SnippetEnv::new(text, detected.replace.start()),
+            server.snippets.catalog(),
+        )
+    });
+    let snippet_context = snippet
+        .as_ref()
+        .map(|(env, catalog)| snippets::SnippetContext { env, catalog });
     let (items, truncated) =
-        static_items::items_with_snippets(detected, &components, snippet_env.as_ref());
+        static_items::items_with_snippets(detected, &components, snippet_context.as_ref(), text);
     CompletionResult {
         items,
         status: CapabilityStatus::Supported,

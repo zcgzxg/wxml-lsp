@@ -79,11 +79,20 @@ pub(crate) struct Inflight {
     pub(crate) uri: String,
 }
 
+/// Client capabilities that change server behavior.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct ClientFlags {
+    /// The client declared dynamic watched-file registrations.
+    pub(crate) watched_files: bool,
+    /// The client accepts LSP snippets
+    /// (`textDocument.completion.completionItem.snippetSupport`).
+    pub(crate) snippets: bool,
+    /// The client accepts hierarchical `DocumentSymbol` results
+    /// (`textDocument.documentSymbol.hierarchicalDocumentSymbolSupport`).
+    pub(crate) hierarchical_symbols: bool,
+}
+
 /// One connected client.
-///
-/// The boolean fields are independent protocol flags; grouping them into a
-/// bitflag or options struct would make each read less direct.
-#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct Server {
     /// Open documents.
     pub(crate) workspace: Workspace,
@@ -114,14 +123,10 @@ pub(crate) struct Server {
     pub(crate) stop: bool,
     /// Set by `shutdown`.
     pub(crate) clean_shutdown: bool,
-    /// Whether the client declared dynamic watched-file registrations.
-    pub(crate) client_watched_files: bool,
-    /// Whether the client accepts LSP snippets
-    /// (`textDocument.completion.completionItem.snippetSupport`).
-    pub(crate) client_snippets: bool,
-    /// Whether the client accepts hierarchical `DocumentSymbol` results
-    /// (`textDocument.documentSymbol.hierarchicalDocumentSymbolSupport`).
-    pub(crate) client_hierarchical_symbols: bool,
+    /// Capability flags read once from `initialize`.
+    pub(crate) client: ClientFlags,
+    /// Workspace/user snippet configuration and cache.
+    pub(crate) snippets: crate::completion::user_snippets::Store,
     /// Synthetic (non-project) documents the client opened as WXML.
     ///
     /// Their route is `Unknown`, so the URI extension alone cannot tell a
@@ -165,9 +170,8 @@ impl Server {
             diagnostics_cancel: HashMap::new(),
             stop: false,
             clean_shutdown: false,
-            client_watched_files: false,
-            client_snippets: false,
-            client_hierarchical_symbols: false,
+            client: ClientFlags::default(),
+            snippets: crate::completion::user_snippets::Store::default(),
             synthetic_templates: HashSet::new(),
         }
     }

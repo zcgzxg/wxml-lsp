@@ -39,6 +39,16 @@ fn client_capability(params: Option<&Value>, path: &[&str]) -> bool {
     value.as_bool().unwrap_or(false)
 }
 
+/// Reads one string initialization option.
+fn initialization_string<'a>(params: Option<&'a Value>, key: &str) -> Option<&'a str> {
+    params?.get("initializationOptions")?.get(key)?.as_str()
+}
+
+/// Reads one boolean initialization option.
+fn initialization_bool(params: Option<&Value>, key: &str) -> Option<bool> {
+    params?.get("initializationOptions")?.get(key)?.as_bool()
+}
+
 /// Builds the `InitializeResult`.
 fn initialize_result(server: &Server) -> Value {
     json!({
@@ -195,14 +205,11 @@ impl Server {
                 "server is already initialized",
             )];
         }
-        self.client_watched_files = params
-            .and_then(|params| params.get("capabilities"))
-            .and_then(|capabilities| capabilities.get("workspace"))
-            .and_then(|workspace| workspace.get("didChangeWatchedFiles"))
-            .and_then(|watched| watched.get("dynamicRegistration"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        self.client_snippets = client_capability(
+        self.client.watched_files = client_capability(
+            params,
+            &["workspace", "didChangeWatchedFiles", "dynamicRegistration"],
+        );
+        self.client.snippets = client_capability(
             params,
             &[
                 "textDocument",
@@ -211,7 +218,7 @@ impl Server {
                 "snippetSupport",
             ],
         );
-        self.client_hierarchical_symbols = client_capability(
+        self.client.hierarchical_symbols = client_capability(
             params,
             &[
                 "textDocument",
@@ -220,6 +227,20 @@ impl Server {
             ],
         );
         let root = requested_root(params);
+        let root_path = root.and_then(|uri| wxml_project::root_path_from_uri(uri).ok());
+        let configured = initialization_string(params, "snippetsPath")
+            .or_else(|| initialization_string(params, "wxmlSnippetsPath"));
+        let snippets_enabled = initialization_bool(params, "snippetsEnabled")
+            .or_else(|| initialization_bool(params, "wxmlSnippetsEnabled"))
+            .unwrap_or(true);
+        let snippets_path =
+            crate::completion::user_snippets::resolve_path(root_path.as_deref(), configured);
+        if configured.is_some() && snippets_path.is_none() {
+            log(format_args!(
+                "ignoring snippetsPath: relative paths require a file workspace root"
+            ));
+        }
+        self.snippets.configure(snippets_path, snippets_enabled);
         match self.host.open_root(root) {
             Ok(()) => {
                 if root.is_some() {
@@ -310,6 +331,7 @@ impl Server {
             ));
             return Vec::new();
         }
+        self.snippets.watched_files_changed(&changes);
         // An open buffer is authoritative: a watched-file event for it may be
         // a delayed notification for a save that `didSave` already handled, or
         // an unrelated on-disk edit that must not discard unsaved text.
@@ -355,7 +377,7 @@ impl Server {
     /// Clients without a project (and the mock/`NullHost` server) must keep
     /// the current message flow, so no registration is sent for them.
     fn initialized(&self) -> Vec<Outgoing> {
-        if !self.client_watched_files || !self.host.is_project_open() {
+        if !self.client.watched_files || !self.host.is_project_open() {
             return Vec::new();
         }
         let watchers: Vec<Value> = WATCH_GLOBS

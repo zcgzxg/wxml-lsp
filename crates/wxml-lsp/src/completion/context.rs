@@ -57,12 +57,13 @@ const fn is_tag_start(byte: u8) -> bool {
     byte.is_ascii_alphabetic() || matches!(byte, b'_' | b':' | b'.' | b'-')
 }
 
-const fn is_tag_name(byte: u8) -> bool {
+/// Characters allowed in a tag name.
+pub(super) const fn is_tag_name(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.')
 }
 
 /// Characters allowed in an attribute name.
-const fn is_attribute_name(byte: u8) -> bool {
+pub(super) const fn is_attribute_name(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.' | b'@' | b'*')
 }
 

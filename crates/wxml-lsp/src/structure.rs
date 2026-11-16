@@ -6,6 +6,40 @@
 //! are used to rediscover structure. Requests are answered from the open
 //! document snapshot, so these features keep working when the Node type
 //! backend is unavailable.
+//!
+//! [`StructureFacts`] is the crate-internal single source of structural
+//! queries. It parses once and exposes linked-editing pairs, selection parent
+//! chains, folding ranges and document symbols. S must reuse
+//! [`StructureFacts::document_symbols`] for `documentSymbol` instead of parsing
+//! the document a second time; T can combine its ordered scope frames with the
+//! ranges returned here.
+//!
+//! Linked editing is intentionally separate from rename: this module never
+//! claims `textDocument/rename`, which belongs to the semantic package.
+
+#[cfg(test)]
+use std::cell::Cell;
+
+#[cfg(test)]
+thread_local! {
+    /// Counts parses on the current test thread.
+    static STRUCTURE_PARSE_CALLS: Cell<usize> = const { Cell::new(0) };
+}
+
+#[cfg(test)]
+fn bump_parse_count() {
+    STRUCTURE_PARSE_CALLS.with(|count| count.set(count.get().saturating_add(1)));
+}
+
+#[cfg(test)]
+fn reset_parse_count() {
+    STRUCTURE_PARSE_CALLS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+fn parse_count() -> usize {
+    STRUCTURE_PARSE_CALLS.with(Cell::get)
+}
 
 use serde_json::{Value, json};
 use wxml_syntax::parser::{NodeId, NodeKind, SyntaxTree};
@@ -18,7 +52,10 @@ use crate::server::{Server, log};
 pub(crate) const MAX_FOLDING_RANGES: usize = 2_000;
 
 /// Largest number of positions accepted by one `selectionRange` request.
-pub(crate) const MAX_SELECTION_POSITIONS: usize = 32;
+///
+/// Multi-cursor selection requests commonly exceed a handful of positions;
+/// 256 covers realistic editor use while keeping the one-parse request bounded.
+pub(crate) const MAX_SELECTION_POSITIONS: usize = 256;
 
 /// Largest ancestor chain returned for one selection position.
 pub(crate) const MAX_SELECTION_DEPTH: usize = 32;
@@ -55,6 +92,65 @@ pub(crate) struct DocumentSymbol {
     pub(crate) selection: TextRange,
     /// Nested elements in source order.
     pub(crate) children: Vec<Self>,
+}
+
+/// Parses a document once and exposes reusable structural queries.
+///
+/// Parsing is rejected only when a resource budget truncated the tree, because
+/// a partial tree cannot produce trustworthy ranges. Ordinary syntax errors
+/// are tolerated: structural ranges stay inside the nodes the parser recovered.
+#[derive(Debug)]
+pub(crate) struct StructureFacts {
+    tree: SyntaxTree,
+}
+
+impl StructureFacts {
+    /// Parses `text` into reusable facts.
+    #[must_use]
+    pub(crate) fn parse(text: &str) -> Option<Self> {
+        #[cfg(test)]
+        bump_parse_count();
+        let parsed = wxml_syntax::parse(text);
+        if parsed.is_truncated() {
+            log(format_args!(
+                "structure skipped: parse was truncated by a resource budget"
+            ));
+            return None;
+        }
+        Some(Self { tree: parsed.tree })
+    }
+
+    /// Returns the paired tag-name ranges for linked editing.
+    #[must_use]
+    #[allow(dead_code)] // Stable crate-internal API for S/T consumers.
+    pub(crate) fn linked_editing_range(&self, offset: u32) -> Option<(TextRange, TextRange)> {
+        linked_editing_range_in(&self.tree, offset)
+    }
+
+    /// Returns the selection ancestor chain for `offset`, innermost first.
+    #[must_use]
+    #[allow(dead_code)] // Stable crate-internal API for S/T consumers.
+    pub(crate) fn selection_chain(&self, offset: u32) -> Vec<TextRange> {
+        selection_chain_in(&self.tree, offset)
+    }
+
+    /// Returns folding ranges for elements, multiline start tags, comments and
+    /// whole WXS elements.
+    #[must_use]
+    #[allow(dead_code)] // Stable crate-internal API for S/T consumers.
+    pub(crate) fn folding_ranges(&self, line_index: &LineIndex) -> Vec<Fold> {
+        folding_ranges_in(&self.tree, line_index)
+    }
+
+    /// Builds hierarchical document symbols.
+    ///
+    /// This is the single outline implementation; the semantic package must
+    /// reuse it rather than performing a second structural parse.
+    #[must_use]
+    #[allow(dead_code)] // Stable crate-internal API for S/T consumers.
+    pub(crate) fn document_symbols(&self) -> Vec<DocumentSymbol> {
+        document_symbols_in(&self.tree)
+    }
 }
 
 /// Converts a byte range into a line-only folding range.
@@ -96,31 +192,21 @@ fn add_fold(
     }
 }
 
-/// Returns folding ranges for elements, multiline start tags, comments and
-/// whole WXS elements.
-pub(crate) fn folding_ranges(text: &str, line_index: &LineIndex) -> Vec<Fold> {
-    let parsed = wxml_syntax::parse(text);
-    if parsed.is_truncated() {
-        log(format_args!(
-            "folding skipped: parse was truncated by a resource budget"
-        ));
-        return Vec::new();
-    }
-    let tree = &parsed.tree;
+/// Folding implementation over an already parsed tree.
+fn folding_ranges_in(tree: &SyntaxTree, line_index: &LineIndex) -> Vec<Fold> {
+    let text = tree.text();
     let mut folds = Vec::new();
     for id in tree.descendants(tree.root()) {
         match tree.kind(id) {
             Some(NodeKind::Element) => {
-                let Some(element) = tree.ast(id) else {
+                let Some(element) = tree.ast(id).and_then(as_element) else {
                     continue;
                 };
-                let Some(element) = as_element(element) else {
-                    continue;
-                };
-                if !element.is_closed() {
-                    continue;
+                if element.is_closed() || element.is_self_closing() {
+                    add_fold(text, line_index, &mut folds, element.text_range(), "region");
                 }
-                add_fold(text, line_index, &mut folds, element.text_range(), "region");
+                // A multiline start tag is foldable even for an unclosed or
+                // self-closing element; dedup removes the duplicate range.
                 if let Some(start_tag) = start_tag_id(tree, id) {
                     if let Some(range) = tree.text_range(start_tag) {
                         add_fold(text, line_index, &mut folds, range, "region");
@@ -174,18 +260,12 @@ fn end_tag_id(tree: &SyntaxTree, element: NodeId) -> Option<NodeId> {
         .find(|id| tree.kind(*id) == Some(NodeKind::EndTag))
 }
 
-/// Returns the paired tag-name ranges for linked editing at `offset`.
-///
-/// The pair always belongs to one element, so nested elements with the same
-/// name and unclosed tags never borrow a different sibling's name.
-pub(crate) fn linked_editing_range(text: &str, offset: u32) -> Option<(TextRange, TextRange)> {
-    let parsed = wxml_syntax::parse(text);
-    if parsed.is_truncated() {
-        return None;
-    }
-    let tree = &parsed.tree;
+/// Linked-editing implementation over an already parsed tree.
+fn linked_editing_range_in(tree: &SyntaxTree, offset: u32) -> Option<(TextRange, TextRange)> {
     for id in tree.descendants(tree.root()) {
-        let kind = tree.kind(id)?;
+        let Some(kind) = tree.kind(id) else {
+            continue;
+        };
         if !matches!(kind, NodeKind::StartTag | NodeKind::EndTag) {
             continue;
         }
@@ -195,45 +275,50 @@ pub(crate) fn linked_editing_range(text: &str, offset: u32) -> Option<(TextRange
         if offset < name.start() || offset > name.end() {
             continue;
         }
-        let element = tree.parent(id)?;
+        let Some(element) = tree.parent(id) else {
+            continue;
+        };
         if tree.kind(element) != Some(NodeKind::Element) {
             continue;
         }
         let other = if kind == NodeKind::StartTag {
-            end_tag_id(tree, element)?
+            end_tag_id(tree, element)
         } else {
-            start_tag_id(tree, element)?
+            start_tag_id(tree, element)
         };
-        let other_name = tree.name_range(other)?;
-        let start_name = tree.name(id)?;
-        let end_name = tree.name(other)?;
+        let Some(other) = other else {
+            continue;
+        };
+        let Some(other_name) = tree.name_range(other) else {
+            continue;
+        };
+        let Some(start_name) = tree.name(id) else {
+            continue;
+        };
+        let Some(end_name) = tree.name(other) else {
+            continue;
+        };
         if start_name != end_name {
             continue;
         }
-        if name.start() <= other_name.start() {
-            return Some((name, other_name));
-        }
-        return Some((other_name, name));
+        return Some(if name.start() <= other_name.start() {
+            (name, other_name)
+        } else {
+            (other_name, name)
+        });
     }
     None
 }
 
-/// Returns the selection ancestor chain for `offset`, innermost first.
-///
-/// The chain is strict: equal consecutive ranges are collapsed, so an element
-/// that covers the whole document does not duplicate the document range.
-pub(crate) fn selection_chain(text: &str, offset: u32) -> Vec<TextRange> {
-    let parsed = wxml_syntax::parse(text);
-    if parsed.is_truncated() {
-        return Vec::new();
-    }
+/// Selection implementation over an already parsed tree.
+fn selection_chain_in(tree: &SyntaxTree, offset: u32) -> Vec<TextRange> {
+    let text = tree.text();
     let Ok(offset_usize) = usize::try_from(offset) else {
         return Vec::new();
     };
     if offset_usize > text.len() || !text.is_char_boundary(offset_usize) {
         return Vec::new();
     }
-    let tree = &parsed.tree;
     let mut interior: Option<(u32, NodeId)> = None;
     let mut ending: Option<(u32, NodeId)> = None;
     for (id, node) in tree.nodes() {
@@ -249,21 +334,61 @@ pub(crate) fn selection_chain(text: &str, offset: u32) -> Vec<TextRange> {
             ending = Some((id.index(), id));
         }
     }
-    let (_, mut current) = interior.or(ending).unwrap_or_else(|| (0, tree.root()));
+    // At a boundary, prefer the right-side node unless a token ending at the
+    // cursor is a descendant of it, or the right-side node is a tag delimiter
+    // and the left-side node is a content token. This keeps `x|</view>` on the
+    // text token without selecting `view` at the start of that text.
+    let deepest = match (interior, ending) {
+        (Some(interior), Some(ending)) => {
+            let interior_range = tree.text_range(interior.1);
+            let ending_range = tree.text_range(ending.1);
+            let interior_contains_ending = matches!(
+                (interior_range, ending_range),
+                (Some(interior_range), Some(ending_range))
+                    if interior_range.start() <= ending_range.start()
+                        && interior_range.end() >= ending_range.end()
+            );
+            let interior_is_tag = matches!(
+                tree.kind(interior.1),
+                Some(NodeKind::StartTag | NodeKind::EndTag)
+            );
+            let ending_is_content = matches!(
+                tree.kind(ending.1),
+                Some(
+                    NodeKind::Text
+                        | NodeKind::AttributeValue
+                        | NodeKind::Mustache
+                        | NodeKind::Comment
+                )
+            );
+            if interior_contains_ending || (interior_is_tag && ending_is_content) {
+                Some(ending)
+            } else {
+                Some(interior)
+            }
+        }
+        (interior, ending) => interior.or(ending),
+    };
+    let (_, mut current) = deepest.unwrap_or_else(|| (0, tree.root()));
     let mut chain: Vec<TextRange> = Vec::new();
     loop {
         let kind = tree.kind(current);
-        if !matches!(kind, Some(NodeKind::StartTag | NodeKind::EndTag)) {
-            if let Some(range) = tree.text_range(current) {
-                let keep = chain.last().is_none_or(|inner| {
-                    range != *inner && range.start() <= inner.start() && range.end() >= inner.end()
-                });
-                if keep {
-                    if chain.len() >= MAX_SELECTION_DEPTH {
-                        break;
-                    }
-                    chain.push(range);
+        let range = if matches!(kind, Some(NodeKind::StartTag | NodeKind::EndTag)) {
+            // Tag names are selection tokens too; the whole start/end tag is
+            // not useful because it includes attributes or the delimiter.
+            tree.name_range(current)
+        } else {
+            tree.text_range(current)
+        };
+        if let Some(range) = range {
+            let keep = chain.last().is_none_or(|inner| {
+                range != *inner && range.start() <= inner.start() && range.end() >= inner.end()
+            });
+            if keep {
+                if chain.len() >= MAX_SELECTION_DEPTH {
+                    break;
                 }
+                chain.push(range);
             }
         }
         let Some(parent) = tree.parent(current) else {
@@ -274,28 +399,27 @@ pub(crate) fn selection_chain(text: &str, offset: u32) -> Vec<TextRange> {
     chain
 }
 
-/// Builds hierarchical document symbols for every top-level element.
-pub(crate) fn document_symbols(text: &str) -> Vec<DocumentSymbol> {
-    let parsed = wxml_syntax::parse(text);
-    if parsed.is_truncated() {
-        log(format_args!(
-            "document symbols skipped: parse was truncated by a resource budget"
-        ));
-        return Vec::new();
-    }
-    let tree = &parsed.tree;
+/// Document-symbol implementation over an already parsed tree.
+fn document_symbols_in(tree: &SyntaxTree) -> Vec<DocumentSymbol> {
     let mut budget = MAX_DOCUMENT_SYMBOLS;
+    let mut truncated = false;
     let mut symbols = Vec::new();
     for node in tree.document().children() {
         let wxml_syntax::AstNode::Element(element) = node else {
             continue;
         };
-        if let Some(symbol) = element_symbol(element, 0, &mut budget) {
+        if let Some(symbol) = element_symbol(element, 0, &mut budget, &mut truncated) {
             symbols.push(symbol);
         }
         if budget == 0 {
+            truncated = true;
             break;
         }
+    }
+    if truncated {
+        log(format_args!(
+            "document symbols truncated at {MAX_DOCUMENT_SYMBOLS} symbols or {MAX_DOCUMENT_SYMBOL_DEPTH} levels"
+        ));
     }
     symbols
 }
@@ -305,8 +429,10 @@ fn element_symbol(
     element: wxml_syntax::Element<'_>,
     depth: usize,
     budget: &mut usize,
+    truncated: &mut bool,
 ) -> Option<DocumentSymbol> {
     if *budget == 0 {
+        *truncated = true;
         return None;
     }
     let name = element.name()?.to_owned();
@@ -326,13 +452,19 @@ fn element_symbol(
             let wxml_syntax::AstNode::Element(child) = node else {
                 continue;
             };
-            if let Some(symbol) = element_symbol(child, depth.saturating_add(1), budget) {
+            if let Some(symbol) = element_symbol(child, depth.saturating_add(1), budget, truncated)
+            {
                 children.push(symbol);
             }
             if *budget == 0 {
                 break;
             }
         }
+    } else if element
+        .children()
+        .any(|node| matches!(node, wxml_syntax::AstNode::Element(_)))
+    {
+        *truncated = true;
     }
     Some(DocumentSymbol {
         name,
@@ -344,36 +476,72 @@ fn element_symbol(
     })
 }
 
+/// Largest number of characters shown in an outline detail.
+const MAX_DETAIL_CHARS: usize = 120;
+
+/// Largest number of class tokens shown in an outline detail.
+const MAX_DETAIL_CLASSES: usize = 20;
+
 /// Summarizes literal `id` and `class` attributes for the outline.
+///
+/// This is a plain-text detail, not a backend reason: it is bounded locally
+/// and never logged. Control characters are dropped instead of being passed
+/// through a display sanitizer that would write user source to stderr.
 fn element_detail(element: wxml_syntax::Element<'_>) -> Option<String> {
-    let mut parts = Vec::new();
+    let mut detail = String::new();
     if let Some(id) = element
         .attribute("id")
         .and_then(wxml_syntax::Attribute::value)
         .and_then(wxml_syntax::AttributeValue::literal_text)
+        .and_then(|value| value.split_whitespace().next())
+        .and_then(clean_token)
     {
-        if !id.is_empty() {
-            parts.push(format!("#{id}"));
-        }
+        detail.push('#');
+        detail.push_str(&id);
     }
     if let Some(classes) = element
         .attribute("class")
         .and_then(wxml_syntax::Attribute::value)
         .and_then(wxml_syntax::AttributeValue::literal_text)
     {
-        let classes: Vec<String> = classes
-            .split_whitespace()
-            .map(|class| format!(".{class}"))
-            .collect();
-        if !classes.is_empty() {
-            parts.push(classes.join(" "));
+        for class in classes.split_whitespace().take(MAX_DETAIL_CLASSES) {
+            let Some(class) = clean_token(class) else {
+                continue;
+            };
+            if !detail.is_empty() {
+                detail.push(' ');
+            }
+            detail.push('.');
+            detail.push_str(&class);
         }
     }
-    if parts.is_empty() {
+    if detail.is_empty() {
+        return None;
+    }
+    detail = truncate_chars(&detail, MAX_DETAIL_CHARS);
+    Some(detail)
+}
+
+/// Removes control characters from one detail token.
+fn clean_token(token: &str) -> Option<String> {
+    let cleaned: String = token
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect();
+    if cleaned.is_empty() {
         None
     } else {
-        Some(crate::handlers::sanitized_reason(&parts.join(" ")))
+        Some(cleaned)
     }
+}
+
+/// Truncates by characters and appends an ellipsis.
+fn truncate_chars(text: &str, limit: usize) -> String {
+    let mut bounded: String = text.chars().take(limit).collect();
+    if text.chars().count() > limit {
+        bounded.push('…');
+    }
+    bounded
 }
 
 /// Reads the `textDocument.uri` of a document-only request.
@@ -382,7 +550,7 @@ fn document_uri(params: &Value) -> Option<&str> {
     crate::handlers::string(document, "uri")
 }
 
-/// Serializes a hierarchical symbol.
+/// Serializes a hierarchical symbol and all of its descendants.
 fn hierarchical_symbol(
     document: &crate::workspace::Document,
     symbol: &DocumentSymbol,
@@ -401,30 +569,32 @@ fn hierarchical_symbol(
         object.insert("detail".to_owned(), Value::String(detail.clone()));
     }
     if !symbol.children.is_empty() {
-        let children: Vec<Value> = symbol
-            .children
-            .iter()
-            .filter_map(|child| hierarchical_symbol(document, child))
-            .collect();
+        let mut children = Vec::with_capacity(symbol.children.len());
+        for child in &symbol.children {
+            children.push(hierarchical_symbol(document, child)?);
+        }
         object.insert("children".to_owned(), Value::Array(children));
     }
     Some(value)
 }
 
 /// Serializes one flat `SymbolInformation` and its descendants.
+///
+/// Returns `false` if any range cannot be represented; the caller then drops
+/// the whole result instead of returning a partial outline.
 fn flatten_symbol(
     document: &crate::workspace::Document,
     uri: &str,
     symbol: &DocumentSymbol,
     container: Option<&str>,
     output: &mut Vec<Value>,
-) {
+) -> bool {
     if output.len() >= MAX_DOCUMENT_SYMBOLS {
-        return;
+        return false;
     }
     let Some(range) = crate::handlers::source_range_value(document, SourceRange::new(symbol.range))
     else {
-        return;
+        return false;
     };
     let mut value = json!({
         "name": symbol.name,
@@ -432,20 +602,21 @@ fn flatten_symbol(
         "location": {"uri": uri, "range": range},
     });
     if let Some(container) = container {
-        if let Some(object) = value.as_object_mut() {
-            object.insert(
-                "containerName".to_owned(),
-                Value::String(container.to_owned()),
-            );
-        }
+        let Some(object) = value.as_object_mut() else {
+            return false;
+        };
+        object.insert(
+            "containerName".to_owned(),
+            Value::String(container.to_owned()),
+        );
     }
     output.push(value);
     for child in &symbol.children {
-        flatten_symbol(document, uri, child, Some(&symbol.name), output);
-        if output.len() >= MAX_DOCUMENT_SYMBOLS {
-            break;
+        if !flatten_symbol(document, uri, child, Some(&symbol.name), output) {
+            return false;
         }
     }
+    true
 }
 
 impl Server {
@@ -474,7 +645,10 @@ impl Server {
         let Some(offset) = document.offset_at(position) else {
             return vec![Outgoing::success(id, Value::Null)];
         };
-        let Some((first, second)) = linked_editing_range(document.text(), offset) else {
+        let Some(facts) = StructureFacts::parse(document.text()) else {
+            return vec![Outgoing::success(id, Value::Null)];
+        };
+        let Some((first, second)) = facts.linked_editing_range(offset) else {
             return vec![Outgoing::success(id, Value::Null)];
         };
         let first = crate::handlers::source_range_value(document, SourceRange::new(first));
@@ -507,7 +681,10 @@ impl Server {
         let Some(document) = self.workspace.get(uri) else {
             return vec![Outgoing::success(id, json!([]))];
         };
-        let folds = folding_ranges(document.text(), document.snapshot().line_index());
+        let Some(facts) = StructureFacts::parse(document.text()) else {
+            return vec![Outgoing::success(id, json!([]))];
+        };
+        let folds = facts.folding_ranges(document.snapshot().line_index());
         let values: Vec<Value> = folds
             .iter()
             .map(|fold| {
@@ -568,21 +745,28 @@ impl Server {
         let Some(document) = self.workspace.get(uri) else {
             return vec![Outgoing::success(id, Value::Null)];
         };
+        let Some(facts) = StructureFacts::parse(document.text()) else {
+            return vec![Outgoing::success(id, Value::Null)];
+        };
+        // One parse for every cursor; a bad position falls back to the
+        // document range so the result stays aligned with the request.
         let mut values = Vec::with_capacity(parsed_positions.len());
         for position in parsed_positions {
-            let Some(offset) = document.offset_at(position) else {
-                return vec![Outgoing::success(id, Value::Null)];
-            };
-            let chain = selection_chain(document.text(), offset);
-            let Some(value) = selection_value(document, &chain) else {
-                return vec![Outgoing::success(id, Value::Null)];
-            };
-            values.push(value);
+            let chain = document
+                .offset_at(position)
+                .map_or_else(Vec::new, |offset| facts.selection_chain(offset));
+            values.push(
+                selection_value(document, &chain).unwrap_or_else(|| root_selection_value(document)),
+            );
         }
         vec![Outgoing::success(id, json!(values))]
     }
 
     /// Handles `textDocument/documentSymbol`.
+    ///
+    /// E is the single owner of this outline implementation. S must reuse
+    /// [`StructureFacts::document_symbols`] and must not parse the document a
+    /// second time for its symbol queries.
     pub(crate) fn document_symbol(&self, id: Value, params: Option<Value>) -> Vec<Outgoing> {
         let Some(params) = params else {
             return vec![Outgoing::failure(
@@ -604,18 +788,38 @@ impl Server {
         let Some(document) = self.workspace.get(uri) else {
             return vec![Outgoing::success(id, json!([]))];
         };
-        let symbols = document_symbols(document.text());
-        let values: Vec<Value> = if self.client_hierarchical_symbols {
-            symbols
-                .iter()
-                .filter_map(|symbol| hierarchical_symbol(document, symbol))
-                .collect()
-        } else {
-            let mut output = Vec::new();
+        let Some(facts) = StructureFacts::parse(document.text()) else {
+            return vec![Outgoing::success(id, json!([]))];
+        };
+        let symbols = facts.document_symbols();
+        let values: Option<Vec<Value>> = if self.client.hierarchical_symbols {
+            let mut values = Vec::with_capacity(symbols.len());
+            let mut complete = true;
             for symbol in &symbols {
-                flatten_symbol(document, uri, symbol, None, &mut output);
+                if let Some(value) = hierarchical_symbol(document, symbol) {
+                    values.push(value);
+                } else {
+                    complete = false;
+                    break;
+                }
             }
-            output
+            if complete { Some(values) } else { None }
+        } else {
+            let mut values = Vec::new();
+            let mut complete = true;
+            for symbol in &symbols {
+                if !flatten_symbol(document, uri, symbol, None, &mut values) {
+                    complete = false;
+                    break;
+                }
+            }
+            if complete { Some(values) } else { None }
+        };
+        let Some(values) = values else {
+            log(format_args!(
+                "document symbols skipped: a range could not be serialized"
+            ));
+            return vec![Outgoing::success(id, json!([]))];
         };
         vec![Outgoing::success(id, json!(values))]
     }
@@ -633,6 +837,49 @@ fn selection_value(document: &crate::workspace::Document, chain: &[TextRange]) -
         parent = Some(node);
     }
     parent
+}
+
+/// Returns the whole-document selection range used for invalid positions.
+fn root_selection_value(document: &crate::workspace::Document) -> Value {
+    let end = u32::try_from(document.text().len()).unwrap_or(0);
+    let range = TextRange::new(0, end)
+        .ok()
+        .and_then(|range| crate::handlers::source_range_value(document, SourceRange::new(range)));
+    range.map_or_else(
+        || {
+            json!({
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 0},
+                }
+            })
+        },
+        |range| json!({"range": range}),
+    )
+}
+
+/// Free wrappers kept for unit tests and crate-internal consumers.
+#[allow(dead_code)] // Stable crate-internal API for S/T consumers.
+pub(crate) fn folding_ranges(text: &str, line_index: &LineIndex) -> Vec<Fold> {
+    StructureFacts::parse(text).map_or_else(Vec::new, |facts| facts.folding_ranges(line_index))
+}
+
+/// Free wrapper for linked editing.
+#[allow(dead_code)] // Stable crate-internal API for S/T consumers.
+pub(crate) fn linked_editing_range(text: &str, offset: u32) -> Option<(TextRange, TextRange)> {
+    StructureFacts::parse(text)?.linked_editing_range(offset)
+}
+
+/// Free wrapper for selection chains.
+#[allow(dead_code)] // Stable crate-internal API for S/T consumers.
+pub(crate) fn selection_chain(text: &str, offset: u32) -> Vec<TextRange> {
+    StructureFacts::parse(text).map_or_else(Vec::new, |facts| facts.selection_chain(offset))
+}
+
+/// Free wrapper for document symbols.
+#[allow(dead_code)] // Stable crate-internal API for S/T consumers.
+pub(crate) fn document_symbols(text: &str) -> Vec<DocumentSymbol> {
+    StructureFacts::parse(text).map_or_else(Vec::new, |facts| facts.document_symbols())
 }
 
 #[cfg(test)]
@@ -688,6 +935,21 @@ mod tests {
         let text = "<view>\n<text>a\nb";
         let line_index = LineIndex::new(text);
         assert!(folding_ranges(text, &line_index).is_empty());
+    }
+
+    #[test]
+    fn folds_a_multiline_self_closing_tag() {
+        let text = "<image\n  src=\"x\"\n/>";
+        let line_index = LineIndex::new(text);
+        let folds = folding_ranges(text, &line_index);
+        assert_eq!(
+            folds,
+            vec![Fold {
+                start_line: 0,
+                end_line: 2,
+                kind: "region"
+            }]
+        );
     }
 
     #[test]
@@ -792,11 +1054,45 @@ mod tests {
         let text = "<view>x</view>\n";
         assert!(selection_chain(text, u32::try_from(text.len() + 1).expect("offset")).is_empty());
         let chain = selection_chain(text, 2);
-        assert_eq!(chain.len(), 2);
+        assert_eq!(chain.len(), 3);
         assert_eq!(
-            &text[chain[1].start() as usize..chain[1].end() as usize],
+            &text[chain[0].start() as usize..chain[0].end() as usize],
+            "view"
+        );
+        assert_eq!(
+            &text[chain[2].start() as usize..chain[2].end() as usize],
             text
         );
+    }
+
+    #[test]
+    fn selection_chain_keeps_a_token_that_ends_at_the_cursor() {
+        let text = "<view>x</view>";
+        let offset = u32::try_from(text.find('x').expect("x") + 1).expect("offset");
+        let chain = selection_chain(text, offset);
+        assert_eq!(
+            &text[chain[0].start() as usize..chain[0].end() as usize],
+            "x"
+        );
+
+        let text = "<view class=\"a\">x</view>";
+        let offset = u32::try_from(text.rfind('"').expect("quote")).expect("offset");
+        let chain = selection_chain(text, offset);
+        assert_eq!(
+            &text[chain[0].start() as usize..chain[0].end() as usize],
+            "a"
+        );
+    }
+
+    #[test]
+    fn selection_chain_starts_with_a_tag_name_token() {
+        let text = "<view>x</view>";
+        let chain = selection_chain(text, 2);
+        assert_eq!(
+            &text[chain[0].start() as usize..chain[0].end() as usize],
+            "view"
+        );
+        assert_strictly_nested(&chain);
     }
 
     #[test]
@@ -820,6 +1116,26 @@ mod tests {
             assert!(child.range.start() >= view.range.start());
             assert!(child.range.end() <= view.range.end());
         }
+    }
+
+    #[test]
+    fn document_symbols_are_bounded_and_detail_is_truncated() {
+        let mut text = String::new();
+        for _ in 0..(MAX_DOCUMENT_SYMBOLS + 20) {
+            text.push_str("<view></view>");
+        }
+        let symbols = document_symbols(&text);
+        assert!(symbols.len() <= MAX_DOCUMENT_SYMBOLS, "{}", symbols.len());
+
+        let classes = (0..40)
+            .map(|index| format!("class{index}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text = format!("<view class=\"{classes}\"></view>");
+        let symbols = document_symbols(&text);
+        let detail = symbols[0].detail.as_deref().expect("detail");
+        assert!(detail.chars().count() <= MAX_DETAIL_CHARS + 1);
+        assert!(detail.starts_with(".class0"));
     }
 
     #[test]
@@ -869,6 +1185,41 @@ mod tests {
         let folds = folding_ranges(&text, &line_index);
         assert!(folds.len() <= MAX_FOLDING_RANGES, "{}", folds.len());
         assert!(!folds.is_empty());
+    }
+
+    #[test]
+    fn selection_reuses_one_parse_for_many_positions() {
+        let text = "<view><text>x</text><image src=\"a\"/></view>";
+        reset_parse_count();
+        let facts = StructureFacts::parse(text).expect("facts");
+        let offsets = [2_u32, 6, 11, 16, 25];
+        for offset in offsets {
+            assert!(!facts.selection_chain(offset).is_empty());
+        }
+        assert_eq!(parse_count(), 1);
+    }
+
+    #[test]
+    fn many_positions_stay_well_below_a_second_in_debug_builds() {
+        use std::fmt::Write as _;
+
+        let mut text = String::new();
+        for index in 0..2_000 {
+            writeln!(text, "<view id=\"v{index}\"><text>x</text></view>").expect("write");
+        }
+        let facts = StructureFacts::parse(&text).expect("facts");
+        let offsets: Vec<u32> = (0..32)
+            .map(|index| u32::try_from(index * 97 + 3).expect("offset"))
+            .collect();
+        let started = std::time::Instant::now();
+        for offset in offsets {
+            let _ = facts.selection_chain(offset);
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "selection chains took {:?}",
+            started.elapsed()
+        );
     }
 
     fn assert_strictly_nested(chain: &[TextRange]) {

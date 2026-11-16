@@ -16,11 +16,16 @@
 //! * Multiline tags that start in the middle of a line are left alone: their
 //!   continuation indentation cannot be derived safely.
 //!
-//! A start tag is only touched when it is complete (`>` or `/>` is present),
-//! every attribute range is known and every gap is ASCII whitespace. Damaged
-//! or unclosed regions therefore stay byte-for-byte unchanged while complete
-//! siblings are still formatted. Range formatting only edits start tags whose
-//! whole source range lies inside the requested range.
+//! A document with any parse error or a truncated parse is rejected as a
+//! whole: the request returns no edits and the reason is logged. This is
+//! deliberate and matches the baseline's "do not modify files with unrecovered
+//! syntax errors" rule; a formatter must not silently rewrite the valid-looking
+//! siblings of a damaged region.
+//!
+//! Only `tabSize` and `insertSpaces` are used from `FormattingOptions`.
+//! `trimTrailingWhitespace`, `insertFinalNewline` and `trimFinalNewlines` are
+//! intentionally ignored because leading/trailing text whitespace is part of
+//! WXML's rendered content.
 
 use serde_json::{Value, json};
 use wxml_syntax::parser::{NodeKind, SyntaxTree};
@@ -32,8 +37,9 @@ use crate::server::{Server, log};
 /// Largest number of edits one formatting request may produce.
 ///
 /// A request that would exceed this budget is answered with no edits instead
-/// of a partial rewrite.
-pub(crate) const MAX_FORMAT_EDITS: usize = 4_096;
+/// of a partial rewrite. The bound is intentionally generous: a typical page
+/// produces one edit per attribute gap, so this covers very large templates.
+pub(crate) const MAX_FORMAT_EDITS: usize = 16_384;
 
 /// Formatting options that affect attribute indentation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -103,13 +109,22 @@ fn format_scope(text: &str, scope: Option<TextRange>, options: FormatOptions) ->
         ));
         return Vec::new();
     }
+    if !parsed.errors.is_empty() {
+        log(format_args!(
+            "formatting skipped: document has {} parse error(s)",
+            parsed.errors.len()
+        ));
+        return Vec::new();
+    }
     let tree = &parsed.tree;
     let mut edits = Vec::new();
+    let mut skipped = 0_usize;
     for id in tree.descendants(tree.root()) {
         if tree.kind(id) != Some(NodeKind::StartTag) {
             continue;
         }
         let Some(tag) = tree.text_range(id) else {
+            skipped = skipped.saturating_add(1);
             continue;
         };
         if let Some(scope) = scope {
@@ -118,6 +133,7 @@ fn format_scope(text: &str, scope: Option<TextRange>, options: FormatOptions) ->
             }
         }
         let Some(tag_edits) = start_tag_edits(text, tree, id, options) else {
+            skipped = skipped.saturating_add(1);
             continue;
         };
         if edits.len().saturating_add(tag_edits.len()) > MAX_FORMAT_EDITS {
@@ -127,6 +143,11 @@ fn format_scope(text: &str, scope: Option<TextRange>, options: FormatOptions) ->
             return Vec::new();
         }
         edits.extend(tag_edits);
+    }
+    if skipped > 0 {
+        log(format_args!(
+            "formatting skipped {skipped} start tag(s) with unsafe layout"
+        ));
     }
     edits.sort_by_key(|edit| (edit.range.start(), edit.range.end()));
     edits
@@ -199,13 +220,16 @@ fn start_tag_edits(
         .rfind('\n')
         .map_or(0, |newline| newline.saturating_add(1));
     let line_prefix = text.get(line_start..tag.start() as usize)?;
-    let inline = !line_prefix.bytes().all(|byte| byte.is_ascii_whitespace());
+    // A BOM may precede the first tag on line 0; it is not indentation and
+    // must not make the tag look inline.
+    let indentation = line_prefix.strip_prefix('\u{feff}').unwrap_or(line_prefix);
+    let inline = !indentation.bytes().all(|byte| byte.is_ascii_whitespace());
     if multiline && inline {
         // Continuation indentation of an inline multiline tag cannot be
         // derived without guessing the surrounding layout.
         return None;
     }
-    let base = if inline { "" } else { line_prefix };
+    let base = if inline { "" } else { indentation };
     let attribute_indent = if multiline {
         let unit = options.unit();
         format!("{base}{unit}")
@@ -269,15 +293,16 @@ fn request_range(params: &Value, document: &crate::workspace::Document) -> Optio
 }
 
 /// Serializes edits for one document.
-fn edits_value(document: &crate::workspace::Document, edits: &[FormatEdit]) -> Vec<Value> {
-    edits
-        .iter()
-        .filter_map(|edit| {
-            let range =
-                crate::handlers::source_range_value(document, SourceRange::new(edit.range))?;
-            Some(json!({"range": range, "newText": edit.text}))
-        })
-        .collect()
+///
+/// Returns `None` if any edit range cannot be represented as an LSP range;
+/// the caller then returns no edits at all instead of a partial format.
+fn edits_value(document: &crate::workspace::Document, edits: &[FormatEdit]) -> Option<Vec<Value>> {
+    let mut values = Vec::with_capacity(edits.len());
+    for edit in edits {
+        let range = crate::handlers::source_range_value(document, SourceRange::new(edit.range))?;
+        values.push(json!({"range": range, "newText": edit.text}));
+    }
+    Some(values)
 }
 
 impl Server {
@@ -332,6 +357,12 @@ impl Server {
             format_document(document.text(), options)
         };
         let values = edits_value(document, &edits);
+        let Some(values) = values else {
+            log(format_args!(
+                "formatting skipped: an edit range could not be serialized"
+            ));
+            return vec![Outgoing::success(id, json!([]))];
+        };
         vec![Outgoing::success(id, json!(values))]
     }
 }
@@ -408,12 +439,41 @@ mod tests {
     }
 
     #[test]
-    fn leaves_an_unterminated_tag_and_its_siblings_alone() {
-        let text = "<view   class=\"a\"   ><text>ok</text><view class=\"x\"";
-        assert_eq!(
-            format(text),
-            "<view class=\"a\"><text>ok</text><view class=\"x\""
-        );
+    fn refuses_documents_with_parse_errors() {
+        let cases = [
+            "<view   class=\"a\"   ><text>ok</text><view class=\"x\"",
+            "<view a=\"1>",
+            "<view>{{ a</view>",
+            "<view><text>x</text></span></view>",
+            "<view><text>x</text>",
+        ];
+        for text in cases {
+            assert_eq!(format(text), text, "{text:?} must stay byte-identical");
+            let edits = format_document(text, FormatOptions::default());
+            assert_eq!(edits.len(), 0, "{text:?} produced {edits:?}");
+        }
+    }
+
+    #[test]
+    fn range_formatting_refuses_any_document_with_errors() {
+        let text = "<view   a=\"1\"   >x</view><view class=\"x\"";
+        let range = TextRange::new(0, 18).expect("range");
+        assert_eq!(format_range(text, range, FormatOptions::default()).len(), 0);
+    }
+
+    #[test]
+    fn bom_followed_by_a_multiline_tag_is_formatted() {
+        let text = "\u{feff}<view\n   class=\"a\"\n>x</view>";
+        assert_eq!(format(text), "\u{feff}<view\n  class=\"a\">x</view>");
+    }
+
+    #[test]
+    fn ignored_formatting_options_do_not_change_text_whitespace() {
+        let text = "<view   a=\"1\"   >\n  text  \n</view>";
+        let edits = format_document(text, FormatOptions::default());
+        let output = apply(text, &edits);
+        assert_eq!(output, "<view a=\"1\">\n  text  \n</view>");
+        assert!(output.ends_with("</view>"));
     }
 
     #[test]
@@ -428,8 +488,8 @@ mod tests {
             ("<view/>", "<view/>"),
             ("<view />", "<view/>"),
             ("<view\n/>", "<view/>"),
-            ("<view >", "<view>"),
-            ("<view\n>", "<view>"),
+            ("<view >x</view>", "<view>x</view>"),
+            ("<view\n>x</view>", "<view>x</view>"),
         ] {
             let first = format(text);
             assert_eq!(first, expected, "{text:?}");
@@ -606,8 +666,24 @@ mod tests {
 
     #[test]
     fn honors_tab_indentation_options() {
-        let text = "<view\n class=\"a\"\n>";
+        let text = "<view\n class=\"a\"\n>x</view>";
         let edits = format_document(text, FormatOptions::new(4, false));
-        assert_eq!(apply(text, &edits), "<view\n\tclass=\"a\">");
+        assert_eq!(apply(text, &edits), "<view\n\tclass=\"a\">x</view>");
+    }
+
+    #[test]
+    fn refuses_requests_above_the_edit_budget() {
+        let mut text = String::new();
+        for _ in 0..(MAX_FORMAT_EDITS + 10) {
+            text.push_str("<view  a=\"1\"></view>");
+        }
+        let parsed = wxml_syntax::parse(&text);
+        assert!(parsed.is_clean(), "fixture must parse cleanly");
+        let edits = format_document(&text, FormatOptions::default());
+        assert!(
+            edits.is_empty(),
+            "expected all-or-nothing refusal, got {} edits",
+            edits.len()
+        );
     }
 }
