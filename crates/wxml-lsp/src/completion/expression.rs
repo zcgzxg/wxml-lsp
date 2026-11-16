@@ -1,6 +1,5 @@
 //! Classification shared by static and Node-backed completion.
 
-use wxml_project::ProjectPath;
 use wxml_types::CompletionKind;
 
 use super::context::{Context, Site};
@@ -31,9 +30,4 @@ pub(crate) fn route(context: &Context) -> Route {
             Route::Backend(CompletionKind::ExpressionMember)
         }
     }
-}
-
-/// Returns the project path of a WXML file, when it is a project document.
-pub(crate) fn project_path(path: &str) -> Option<ProjectPath> {
-    ProjectPath::new(path).ok()
 }

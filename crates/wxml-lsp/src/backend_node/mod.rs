@@ -1,10 +1,10 @@
 //! Node + TypeScript type backend.
 //!
 //! [`NodeBackend`] implements the C0 [`wxml_types::Backend`] boundary on top of
-//! the C1.1 NDJSON JSON-RPC process. It caches one `analyze` response per
-//! view revision and all three capabilities reuse it. A miss or a transport
-//! failure starts a new session and advances the backend epoch so the LSP layer
-//! drops results from the old generation.
+//! the C1.1 NDJSON JSON-RPC process. It keeps a small LRU of `analyze`
+//! responses keyed by file and revisions; all three capabilities reuse them.
+//! A miss or a transport failure starts a new session and advances the backend
+//! epoch so the LSP layer drops results from the old generation.
 //!
 //! The process boundary is the [`NodeTransport`] trait; tests use a fake
 //! transport, while [`StdioNode`] runs `node server.js`.
@@ -56,11 +56,33 @@ struct CachedAnalysis {
     events: Vec<EventInfo>,
 }
 
+/// Number of recently analyzed views kept in memory.
+///
+/// Multi-app workspaces alternate requests between a few templates; a
+/// single-entry cache would re-run TypeScript for every switch.
+const MAX_CACHED_ANALYSES: usize = 8;
+
 #[derive(Default)]
 struct BackendState {
     transport: Option<Box<dyn NodeTransport>>,
-    cache: Option<CachedAnalysis>,
+    /// Newest first; bounded by [`MAX_CACHED_ANALYSES`].
+    cache: Vec<CachedAnalysis>,
     next_request: u64,
+}
+
+impl BackendState {
+    fn cache_get(&mut self, key: &CacheKey) -> Option<CachedAnalysis> {
+        let position = self.cache.iter().position(|cached| cached.key == *key)?;
+        let cached = self.cache.remove(position);
+        self.cache.insert(0, cached.clone());
+        Some(cached)
+    }
+
+    fn cache_store(&mut self, cached: CachedAnalysis) {
+        self.cache.retain(|entry| entry.key != cached.key);
+        self.cache.insert(0, cached);
+        self.cache.truncate(MAX_CACHED_ANALYSES);
+    }
 }
 
 type TransportFactory =
@@ -155,11 +177,9 @@ impl NodeBackend {
     fn analyze(&self, context: &RequestContext) -> Result<Arc<CachedAnalysis>, AnalysisFailure> {
         let key = self.key(context);
         {
-            let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(cached) = state.cache.as_ref() {
-                if cached.key == key {
-                    return Ok(Arc::new(cached.clone()));
-                }
+            let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if let Some(cached) = state.cache_get(&key) {
+                return Ok(Arc::new(cached));
             }
         }
 
@@ -187,7 +207,7 @@ impl NodeBackend {
                 events: Vec::new(),
             };
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-            state.cache = Some(cached.clone());
+            state.cache_store(cached.clone());
             return Ok(Arc::new(cached));
         }
         let cooldown_until = *self
@@ -223,7 +243,7 @@ impl NodeBackend {
                     fragments: BTreeMap::new(),
                     events: Vec::new(),
                 };
-                state.cache = Some(cached.clone());
+                state.cache_store(cached.clone());
                 return Ok(Arc::new(cached));
             }
             Err(error) => {
@@ -286,7 +306,7 @@ impl NodeBackend {
             fragments: built.fragments,
             events: built.events,
         };
-        state.cache = Some(cached.clone());
+        state.cache_store(cached.clone());
         self.failures.store(0, Ordering::SeqCst);
         *self
             .cooldown_until
@@ -300,7 +320,7 @@ impl NodeBackend {
         if let Some(transport) = state.transport.take() {
             transport.shutdown();
         }
-        state.cache = None;
+        state.cache.clear();
         let _ = self.epoch.fetch_add(1, Ordering::SeqCst);
         let failures = self
             .failures

@@ -683,20 +683,14 @@ fn did_save_reschedules_wxml_diagnostics() {
     session.drain_requests();
 
     // Zed sends `didSave` without `text` by default.
+    let since = session.client.received.len();
     session.save(&script, None);
     let line = session.next_request(Duration::from_secs(10));
     assert!(line.contains("ZED_SAVE"), "{line}");
 
-    let diagnostics = session
-        .client
-        .notification("textDocument/publishDiagnostics");
-    assert_eq!(diagnostics["params"]["uri"], json!(wxml));
-    assert!(
-        diagnostics["params"]["diagnostics"][0]["message"]
-            .as_str()
-            .is_some_and(|message| message.contains("ZED_SAVE")),
-        "{diagnostics}"
-    );
+    // Earlier disk diagnostics may still be queued; wait for the refreshed
+    // result rather than assuming it is the next notification.
+    session.diagnostics_after(since, &wxml, "ZED_SAVE");
 
     session.finish();
 }
@@ -1174,4 +1168,75 @@ fn invalid_initialization_options_allow_a_later_valid_initialize() {
             .count(),
         1
     );
+}
+
+#[test]
+fn shared_project_root_new_tsconfig_reaches_the_inactive_app() {
+    let project = TempProject::new("wxml-zed-new-tsconfig");
+    for app in ["a", "b"] {
+        project.write(
+            &format!("{app}/app.json"),
+            r#"{"pages":["pages/index/index"]}"#,
+        );
+        project.write(&format!("{app}/{WXML}"), "{{ user.name }}");
+        project.write(
+            &format!("{app}/{SCRIPT}"),
+            &format!(
+                "Page({{ data: {{ user: {{ name: 'ZED_{}_DISK' }} }} }});",
+                app.to_uppercase()
+            ),
+        );
+    }
+    let options = json!({"apps": [
+        {"root": "a", "projectRoot": "."},
+        {"root": "b", "projectRoot": "."},
+    ]});
+    let mut session = Session::start_with_options(&project, options);
+    let a_wxml = project.uri(&format!("a/{WXML}"));
+    let b_wxml = project.uri(&format!("b/{WXML}"));
+    for (uri, marker) in [(&b_wxml, "ZED_B_DISK"), (&a_wxml, "ZED_A_DISK")] {
+        let since = session.client.received.len();
+        session.open(uri, "wxml", "{{ user.name }}", 1);
+        session.diagnostics_after(since, uri, marker);
+    }
+    let before = session.drained_requests();
+    for app in ["a", "b"] {
+        assert!(
+            before.iter().any(|line| {
+                let request: Value = serde_json::from_str(line).expect("backend request");
+                request["params"]["scriptFileId"] == format!("{app}/{SCRIPT}")
+                    && request["params"]["project"]["compilerOptions"]
+                        .get("strict")
+                        .is_none()
+            }),
+            "app {app} unexpectedly started with strict mode"
+        );
+    }
+
+    project.write(
+        "tsconfig.base.json",
+        r#"{"compilerOptions":{"strict":true}}"#,
+    );
+    project.write("tsconfig.json", r#"{"extends":"./tsconfig.base.json"}"#);
+    let since = session.client.received.len();
+    session.watched(&[json!({"uri": project.uri("tsconfig.json"), "type": 1})]);
+    // The active app is refreshed immediately.
+    session.diagnostics_after(since, &a_wxml, "ZED_A_DISK");
+
+    // Re-opening the inactive app activates its stale project slot; it must
+    // load the newly created shared tsconfig from disk.
+    session.open(&b_wxml, "wxml", "{{ user.name }}", 2);
+    session.diagnostics_after(since, &b_wxml, "ZED_B_DISK");
+    let after = session.drained_requests();
+    for app in ["a", "b"] {
+        assert!(
+            after[before.len()..].iter().any(|line| {
+                let request: Value = serde_json::from_str(line).expect("backend request");
+                request["params"]["scriptFileId"] == format!("{app}/{SCRIPT}")
+                    && request["params"]["project"]["compilerOptions"]["strict"] == true
+            }),
+            "app {app} did not load the newly created shared tsconfig"
+        );
+    }
+    session.finish();
 }

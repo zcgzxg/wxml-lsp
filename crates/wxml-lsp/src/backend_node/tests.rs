@@ -1074,3 +1074,35 @@ fn events_alone_start_the_backend() {
     assert_eq!(result.diagnostics.len(), 1);
     assert_eq!(result.diagnostics[0].message, "Cannot find name 'onTap'");
 }
+
+#[test]
+fn alternating_views_keep_a_bounded_cache() {
+    let shared = Shared::default();
+    let backend = backend(&shared, StubHost::new(view(Vec::new())));
+    let first = context();
+    let second = RequestContext::new(
+        ProjectRevision::new(ProjectId::new("proj-other"), 1),
+        first.view_revision(),
+        first.backend_epoch(),
+        Arc::new(SourceSnapshot::new(
+            FileId::new(ProjectId::new("proj-other"), WXML).expect("file"),
+            SourceRevision::new(1),
+            SnapshotId::new(2),
+            "{{ user.name }}",
+        )),
+    )
+    .expect("second context");
+    for _ in 0..3 {
+        let _ = backend.diagnostics(DiagnosticsRequest {
+            context: first.clone(),
+        });
+        let _ = backend.diagnostics(DiagnosticsRequest {
+            context: second.clone(),
+        });
+    }
+    assert_eq!(
+        requests(&shared),
+        2,
+        "both alternating views must stay cached"
+    );
+}

@@ -44,6 +44,7 @@
 pub mod backend_node;
 pub(crate) mod completion;
 pub mod configuration;
+pub(crate) mod dependencies;
 pub(crate) mod formatting;
 pub(crate) mod handlers;
 pub(crate) mod jsonrpc;

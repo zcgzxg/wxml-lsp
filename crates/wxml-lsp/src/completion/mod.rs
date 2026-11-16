@@ -44,10 +44,7 @@ pub(crate) fn static_completion(
     // Only tag sites need `usingComponents`; attribute/value sites avoid a
     // discovery-map clone on every keystroke.
     let components = if matches!(detected.site, context::Site::Tag { .. }) {
-        let path = context.source().file().path();
-        expression::project_path(path)
-            .map(|path| server.host.view_components(&path))
-            .unwrap_or_default()
+        server.host.view_components_for(context.source().file())
     } else {
         Vec::new()
     };
