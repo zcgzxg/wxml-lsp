@@ -1,10 +1,10 @@
 # WXML 语言功能基线
 
-更新日期：2026-11-15。
+更新日期：2026-11-17。
 
 本文件是本项目 WXML 通用语言能力的自有需求基线。功能取舍、默认行为和验收条件以本文为准，不再依赖外部插件的 README、源码或本机实验目录。历史来源仅用于许可证与归属说明，见 [来源与许可证记录](provenance.md)。
 
-当前状态：截至 2026-11-16，F-01–F-04、F-06、F-07 的补全子集已实现并通过测试，实际覆盖范围与降级行为见 §3.8；其余条目仍为计划或待实现，不代表已经具备对应能力。模板类型体验的优先级与验收见[项目 README](../../README.md#31-第一优先级模板类型体验)。
+当前状态：F-01–F-04 已完成；截至 W2（`a441de9`），F-05–F-18 也已有不同程度的实现，逐项状态、证据和剩余限制见 §2.1。`已实现（受限）` 表示主路径可用且有测试，但仍有明确降级或边界；`部分实现` 表示只覆盖了基线的一部分。S 语义工具（references/rename/codeAction/semanticTokens/workspaceSymbol/inlayHint/signatureHelp/codeLens）和 Q2 性能/恢复仍未完成，不能从相邻功能推导为已完成。模板类型体验的优先级与验收见[项目 README](../../README.md#31-第一优先级模板类型体验)。
 
 ## 1. 优先级与范围
 
@@ -36,6 +36,25 @@
 | F-16 | 配置、依赖、缓存 | 解析项目根、页面/组件归属、配置变更和依赖失效；内存覆盖层优先 | 项目模型、文件监听、LSP 协调器 | 3–4 |
 | F-17 | 类型与项目上下文 | 尊重适用 `tsconfig`、路径别名、模块解析和未保存文档 | 类型后端、项目模型 | 2–4 |
 | F-18 | 多根与多项目 | 多工作区、多小程序根、多 `tsconfig` 和重启后状态隔离 | 项目模型、服务实例标识 | 3–6 |
+
+### 2.1 W2 实现状态（F-05–F-18）
+
+| 编号 | 状态 | 已实现范围 | 主要证据 | 仍待/限制 |
+| --- | --- | --- | --- | --- |
+| F-05 | 部分实现 | 数据化条件规则至少覆盖 `picker` 各 mode 和 `input` type；补全与本地诊断共用规则；未知/动态 mode 保留合法候选 | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、[full_feature_matrix.rs](../../crates/wxml-lsp/tests/full_feature_matrix.rs)（IT-03） | 未覆盖全部组件的条件属性；规则表需继续数据化扩展 |
+| F-06 | 已实现（受限） | 页面/组件自身/app `usingComponents`、本地同名覆盖、`miniprogram_npm` 本地构建、组件标签/属性/事件补全、组件 definition | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、[full_feature_matrix.rs](../../crates/wxml-lsp/tests/full_feature_matrix.rs)（IT-02） | 插件/远程组件仅在本地有可信元数据时建模；无远程下载或执行 |
+| F-07 | 已实现 | `wx:for` 作用域、表达式成员补全、事件处理函数补全；后端离线时静态通道保留 | [stdio_type_loop.rs](../../crates/wxml-lsp/tests/stdio_type_loop.rs)、[real_node.rs](../../crates/wxml-lsp/tests/real_node.rs) | 动态/不可解析类型保持降级 |
+| F-08 | 已实现（受限） | 表达式类型/JSDoc/声明归属；内置标签/属性/事件静态文档；组件属性、事件与来源 hover；不依赖 Node 的静态 hover | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、[metadata.rs](../../crates/wxml-lsp/src/metadata.rs) | 目录仍是手写子集；插件/远程组件仅显示降级说明 |
+| F-09 | 已实现（受限） | 字段/事件/组件文件/组件属性/class/本地资源/template/import/WXS 导出 definition | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[static_semantics.rs](../../crates/wxml-lsp/src/static_semantics.rs) | `references`/`rename`/`prepareRename` 属于未完成的 S 包；插件/远程目标不猜测 |
+| F-10 | 部分实现 | 未知字段/成员、绑定不兼容、picker/input mode、资源不存在、可证明 class 缺失诊断；修复后清除 | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、[styles_diagnostics.rs](../../crates/wxml-lsp/tests/styles_diagnostics.rs) | 不是完整模板语义检查；动态/不完整索引抑制猜测 |
+| F-11 | 已实现（受限） | WXSS/SCSS/CSS class 索引；同文件、`@import`/`@use`/`@forward`、app 样式、显式全局样式；`styleIsolation`；class 补全/hover/definition | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[styles.rs](../../crates/wxml-project/tests/styles.rs) | 动态插值、mixin/`@extend` 生成类不猜测；预算截断标记不完整；无 references |
+| F-12 | 已实现（受限） | 本地资源补全/documentLink/definition/存在性诊断；新增删除和 watched-file 更新；路径边界与 symlink 校验 | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[full_feature_matrix_editing.rs](../../crates/wxml-lsp/tests/full_feature_matrix_editing.rs)（IT-10） | 只处理本地资源；不访问远程 URL，不处理插件包内未落盘资源 |
+| F-13 | 部分实现 | 开始标签补全、`</` 栈补全、linkedEditingRange、Zed 括号/引号/Mustache 配对；自闭合与嵌套同名兄弟不误配 | [structural_editing.rs](../../crates/wxml-lsp/tests/structural_editing.rs)、[full_feature_matrix_editing.rs](../../crates/wxml-lsp/tests/full_feature_matrix_editing.rs)（IT-12） | 没有 LSP on-type 自动闭合；标签 rename 属于 S，未实现 |
+| F-14 | 已实现（受限） | 内置标签/属性 snippets、工作区/用户 snippets、`enabled`/`builtin` 覆盖、占位符插入安全、watched-file 热更 | [structural_editing.rs](../../crates/wxml-lsp/tests/structural_editing.rs) | 只读取 `snippetsPath` 或 `.wxml-lsp/snippets.json`；不读取 Zed 私有配置；无 marketplace 片段包 |
+| F-15 | 已实现（受限） | 保真 document/range formatting；只改开始标签内部 ASCII 空白；保留文本/注释/实体/Mustache/WXS/引号/重复属性；解析失败零编辑；CRLF/emoji/中文 | [structural_editing.rs](../../crates/wxml-lsp/tests/structural_editing.rs)、[full_feature_matrix_editing.rs](../../crates/wxml-lsp/tests/full_feature_matrix_editing.rs)（IT-11） | 不重排文本节点或整份文档缩进；多行标签中段无法安全推导时跳过 |
+| F-16 | 已实现（受限） | 显式 app registry、依赖图、overlay、缓存、watched files、tsconfig/样式/snippet 失效；无效配置保留错误状态 | [project_host.rs](../../crates/wxml-lsp/tests/project_host.rs)、[multi_app_projects.rs](../../crates/wxml-lsp/tests/multi_app_projects.rs) | 根配置只在启动时消费；无完整多 workspace 或跨 app 自动依赖图 |
+| F-17 | 已实现（受限） | Behavior/共享 data/props、复杂 props、guards/loops、JS/JSDoc、template/import/include、WXS 静态子集、未保存跨文件 overlay、Node 重启重放 | [real_node.rs](../../crates/wxml-lsp/tests/real_node.rs)、[stdio_type_loop.rs](../../crates/wxml-lsp/tests/stdio_type_loop.rs)、`backends/typescript/test/` | 模板体不逐调用实例检查；WXS 不执行；动态 Behavior/WXS/template 明确降级 |
+| F-18 | 部分实现 | 单 workspace 内显式多 app、独立 tsconfig/projectId/overlay/缓存、重启稳定身份；最长目录匹配 | [multi_app_projects.rs](../../crates/wxml-lsp/tests/multi_app_projects.rs)、[full_feature_matrix.rs](../../crates/wxml-lsp/tests/full_feature_matrix.rs)（IT-05） | 不是完整多 workspace；无根热更新；无跨 app 依赖归属推断 |
 
 ## 3. 行为细则
 
@@ -76,17 +95,17 @@
 
 ### 3.5 样式与资源（F-11–F-12）
 
-- Class 补全默认读取同名样式文件；全局样式文件必须由项目配置显式给出，不假设固定文件名一定存在。
-- class 说明来自样式声明前的块注释。`@import` 展开、预处理器和缩进式 Sass 的支持范围需单独声明；未支持时明确降级。
-- 资源链接只处理配置允许的属性名，并通过项目根和解析根计算目标。目标不存在时不生成可点击链接。
-- 路径解析必须限制在项目可解析范围内，不因绝对路径、`..` 或符号链接越出预期工作区而不提示。
+- Class 补全读取同名 WXSS/SCSS/CSS、`app.wxss`/`app.scss`、显式 `wxml.globalStyles`，并按页面/组件的 `styleIsolation` 过滤；不假设固定文件名一定存在，也不自动扫描用户目录。
+- class 说明来自样式声明前的块注释；注释掉的 selector 不算定义。W2 支持静态 `@import`/`@use`/`@forward` 链、逗号列表、复合 selector、可证明的 SCSS 嵌套/`&` 展开；动态插值、mixin/`@extend` 生成类和预算截断明确降级，不伪造完整结果。
+- 资源链接只处理可证明的本地资源属性，并通过项目根和解析根计算目标；`http(s)`/`data:`/`wxfile:`/`cloud:` 等远程值与 mustache 不变成可点击链接。目标不存在时不生成链接，并按配置发布存在性诊断。
+- 路径解析必须限制在项目可解析范围内，不因绝对路径、`..` 或符号链接越出预期工作区而不提示；W2 的资源扫描、class 数、导入深度/文件数/总字节均有独立预算。
 
 ### 3.6 编辑体验（F-13–F-15）
 
-- 闭合标签、配对高亮和成对重命名优先使用 Zed 的语法查询能力；需要跨文件或语义信息时才通过 LSP 提供编辑。
-- 编辑必须保持原文空白、注释、表达式和 `<wxs>` 内容。不能为了格式化或重命名重新打印整份文档。
-- Snippets 区分内置和用户定义。用户片段冲突时给出确定优先级；占位符顺序和最终光标位置必须有测试。
-- 格式化后置到类型闭环和常用补全之后。格式化必须幂等、保留语义，解析失败或存在未恢复语法错误时不修改文件；具体格式化器在实施时评估。
+- 闭合标签、开始标签补全和 `</` 栈候选由 LSP/语法树提供；Zed 的括号、引号、Mustache 配对继续由语言配置负责。linkedEditingRange 只返回同名标签对，不宣称 `rename`。
+- 编辑必须保持原文空白、注释、表达式和 `<wxs>` 内容。W2 格式化只改写开始标签内部的 ASCII 空白，不重新打印整份文档；文本节点、实体、属性值、引号、属性顺序和重复属性逐字保留。
+- Snippets 区分内置和用户定义。用户条目按 `id`/`label` 覆盖内置；占位符顺序、编辑后文档可重新解析和最终光标位置必须有测试。只有客户端声明 `snippetSupport` 且插入位置安全时才提供 snippet，否则回退普通候选。
+- 格式化必须幂等、保留语义，解析失败、截断或存在未恢复语法错误时返回零编辑；rangeFormatting 只处理完全落在请求范围内的开始标签。多行标签中段无法安全推导缩进时跳过，不扩大到未请求文本。
 
 ### 3.7 项目与状态（F-16–F-18）
 
@@ -94,12 +113,12 @@
 - 未保存的 WXML、脚本、导入类型和 JSON 配置优先于磁盘内容；关闭文档后回退到磁盘并产生新的内部版本。
 - 项目根、页面/组件归属和 `tsconfig` 归属必须有确定规则。多候选时不能简单选择“最近的一个”；无法确定时显式标注推断状态。
 - 依赖变化只刷新受影响的模板。旧请求、旧快照和旧后端世代的结果不得覆盖新文本。
-- 多工作区、多小程序根、多 `tsconfig` 和服务重启必须隔离；日志至少包含实例、事件和版本标识。
+- 多工作区、多小程序根、多 `tsconfig` 和服务重启必须隔离；日志至少包含实例、事件和版本标识。W2 已落实单 workspace 内的显式多 app、多 tsconfig 和重启身份；完整多 workspace 仍是后续需求，不能按已实现描述。
 - 缓存键包含文档版本、项目版本、检查视图版本和后端世代。缓存失效条件必须可测试，不能只按文件路径缓存。
 
-### 3.8 补全目录现状（Wave 5）
+### 3.8 补全目录现状（W2）
 
-Wave 5 实现了 F-01–F-04 与 F-06/F-07 的目录驱动子集；F-05 的条件属性规则尚未数据化，F-11 的 class 补全不在本次范围。标签名、属性名、枚举值和指令/事件补全是**静态、同步**的，完全在 Rust 内完成，不启动 Node；只有 Mustache 成员补全和事件处理函数值补全经过类型后端。以下目录是**有意限定的子集**，不宣称完整微信小程序组件覆盖：未收录的标签、属性照常可用于模板，只是没有静态候选。
+W2 已实现 F-01–F-04 的目录驱动补全，并把 F-05 的条件规则数据化到 `picker`/`input`；F-06/F-07 继续使用同一目录和类型后端，F-11 的 class 补全改由项目样式索引提供。标签名、属性名、枚举值和指令/事件补全是**静态、同步**的，完全在 Rust 内完成，不启动 Node；Mustache 成员补全和事件处理函数值补全经过类型后端。以下目录仍是**有意限定的子集**，不宣称完整微信小程序组件覆盖：未收录的标签、属性照常可用于模板，只是没有静态候选。W2 新增的组件属性、class、资源、WXS/template 补全见 §2.1 对应行，不在本目录逐项重复。
 
 #### 3.8.1 标签
 
@@ -168,8 +187,9 @@ Wave 5 实现了 F-01–F-04 与 F-06/F-07 的目录驱动子集；F-05 的条�
 
 #### 3.8.6 已知边界
 
-- 自定义组件标签来自页面 JSON 的 `usingComponents`（`app.json` 全局表合并，同名时页面本地项生效）。组件 JSON 目前只为属性声明解析，**组件自身 WXML 中的自定义组件尚不列出**；组件属性名也不参与属性补全。
-- 静态目录是手写受限子集，不是官方组件表的自动镜像；新增条目需同时补测试与本文档。
+- 自定义组件标签来自页面/组件自身的 `usingComponents` 与 `app.json` 全局表；同名时页面/组件本地项生效，组件自身 WXML 也参与解析，组件属性名、类型、JSDoc 与事件参与补全/hover/definition。插件或远程组件缺少本地可信元数据时明确降级，不伪造属性。
+- 静态目录仍是手写受限子集，不是官方组件表的自动镜像；新增条目需同时补测试与本文档。`picker`/`input` 之外的 mode 条件规则尚未数据化。
+- class、资源和 WXS/template 的补全使用各自的索引/静态语义，不并入本节的标签目录；它们的降级边界见 §2.1 与 [W2 证据](../evidence/full-feature-w2.md)。
 
 目录溯源：条目定义在 `crates/wxml-lsp/src/completion/catalog.rs`，取值来源与许可证说明见[来源与许可证记录](provenance.md)；目录不下载、不执行外部元数据。
 
@@ -196,7 +216,8 @@ Wave 5 实现了 F-01–F-04 与 F-06/F-07 的目录驱动子集；F-05 的条�
 - 位置相关功能覆盖中文、emoji、LF/CRLF 和文档边界。
 - 项目相关功能覆盖多根、路径别名、未保存配置和依赖变化。
 - 与已有 JS/TS 服务并存时，不重复发布无关脚本诊断，不抢占原服务职责。
-- 文档和交付说明必须区分：已实现、部分实现、明确降级、未实现。
-  - 已实现：F-01–F-07 补全；表达式成员 hover；表达式目标 definition；未知字段/成员/部分类型诊断；AC-005/006/008/012 模板类型；事件处理函数诊断/definition/补全；Zed 未保存 JS/TS 同步。
-  - 部分实现/明确降级：组件/标签 hover 仅表达式字段；definition 仅可映射表达式目标和事件处理函数；组件内 `usingComponents` 未建模；复杂守卫、复杂组件属性声明、`jsCheck` 关闭时组件绑定、插件/包组件、多根工作区。
-  - 未实现：F-08 组件属性/标签/基础组件说明 hover；F-09 组件文件/class/资源跳转；F-10 其余诊断；F-11 class/WXSS；F-12 资源路径；F-13 成对重命名；F-14 snippets；F-15 格式化；F-16 配置热更新剩余部分；F-18 多根；发布流水线。
+- 文档和交付说明必须区分：已实现、部分实现、明确降级、未实现；逐项状态和证据见 §2.1。
+  - 已实现（受限）：F-06/F-07 组件与表达式补全；F-08 表达式/标签/属性/组件 hover；F-09 字段/组件/class/资源/template/WXS definition；F-11 class 索引与导航；F-12 本地资源；F-14 snippets；F-15 保真格式化；F-16 配置/依赖/缓存；F-17 类型与项目上下文。
+  - 部分实现：F-05 条件规则（目前 `picker`/`input`）；F-10 诊断子集；F-13 无标签 rename/on-type；F-18 单 workspace 内显式多 app，非完整多 workspace。
+  - 明确降级：动态 template/WXS/Behavior、未知 spread、插件/远程组件、动态 class 插值/SCSS 生成类、索引/预算截断；模板体不逐调用实例检查，WXS 不执行。
+  - 未实现：S 语义工具（references、prepareRename/rename、codeAction、semanticTokens、workspaceSymbol、inlayHint、signatureHelp、codeLens）；Q2 性能/恢复与最终 Linux UI 验收；完整多 workspace；marketplace/远端发布/发布者签名。

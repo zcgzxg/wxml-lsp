@@ -1,6 +1,6 @@
 # 项目文档索引
 
-更新日期：2026-11-16。
+更新日期：2026-11-17。
 
 本文件说明各类文档的职责、权威来源和阅读顺序。每个事实只保留一个主要归属，其他文档通过链接引用，不重复维护。
 
@@ -17,7 +17,7 @@
 | 执行计划 | [Wave 5 并行交付计划](plans/2026-11-16-wave5-parallel-delivery.md)、[Zed 标准安装与真实项目验收计划](plans/2026-11-16-zed-standard-acceptance.md) | 并行 worktree、接口冻结、测试门禁与评审流程；Zed 标准安装和真实编辑器验收步骤 | 需求定义和最终状态 |
 | 架构决策 | [ADR 索引](adr/README.md) | 模块边界、类型检查与映射、文档同步、交付闸门等长期决策 | 日常进度 |
 | 证据 | [证据索引](evidence/README.md) | 实验环境、方法、结果、限制和最小原始数据 | 把实验结论当作已实现功能 |
-| 集成与编辑器证据 | [P7 真实集成](evidence/p7-integration.md)、[P8 Zed 扩展](evidence/p8-zed.md) | 真实 Node 端到端与 G1 门禁；Zed wasm 构建、隔离 smoke 和未验证项 | 把部分证据当作完整验收 |
+| 集成与编辑器证据 | [P7 真实集成](evidence/p7-integration.md)、[P8 Zed 扩展](evidence/p8-zed.md)、[W2 集成与 Q1 交付](evidence/full-feature-w2.md) | 真实 Node 端到端与 G1 门禁；Zed wasm 构建、隔离 smoke；W2 交叉矩阵与 Q1 本地安装器证据 | 把部分证据当作完整验收 |
 | 来源与许可证 | [来源记录](reference/provenance.md) | 外部调研对象的版本、提交、许可证和归属 | 功能需求 |
 | 工具链说明 | [.opencode/README.md](../.opencode/README.md) | 本项目 OpenCode 配置的来源、安装、更新和卸载 | 产品架构或 WXML 需求 |
 
@@ -27,10 +27,10 @@
 
 1. 阅读[项目 README](../README.md)，确认目标、范围和当前状态。
 2. 阅读本索引，了解文档归属。
-3. 需要理解架构时，按 0001 → 0005 阅读 [ADR](adr/README.md)。
+3. 需要理解架构时，按 0001 → 0007 阅读 [ADR](adr/README.md)。
 4. 实现或评审跨模块接口时，阅读 [C0 基础契约](reference/contracts.md)、[C1 类型桥契约](reference/type-bridge-c1.md) 与[模板类型诊断策略](reference/type-diagnostics.md)。
 5. 需要实现通用 WXML 功能时，阅读[功能基线](reference/wxml-language-feature-baseline.md)。
-6. 需要引用实验或集成依据时，阅读[证据索引](evidence/README.md)及 [P7 真实集成](evidence/p7-integration.md)、[P8 Zed 扩展](evidence/p8-zed.md) 记录，同时检查其限制。
+6. 需要引用实验或集成依据时，阅读[证据索引](evidence/README.md)及 [P7 真实集成](evidence/p7-integration.md)、[P8 Zed 扩展](evidence/p8-zed.md)、[W2 集成与 Q1 交付](evidence/full-feature-w2.md) 记录，同时检查其限制。
 7. 需要复用外部代码或数据时，先查[来源记录](reference/provenance.md)，再复核许可证。
 
 ## 3. 权威顺序
@@ -77,9 +77,10 @@ docs/
 │   ├── type-bridge-c1.md
 │   ├── p7-integration.md
 │   ├── p8-zed.md
+│   ├── full-feature-w2.md
 │   └── data/
 └── adr/
     ├── README.md
-    ├── 0001-*.md ... 0005-*.md
+    ├── 0001-*.md ... 0007-*.md
     └── template.md
 ```
