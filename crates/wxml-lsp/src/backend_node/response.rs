@@ -14,15 +14,34 @@ use wxml_types::{
 };
 
 use super::protocol::{PROTOCOL_VERSION, ProtocolError};
-use super::request::FragmentInfo;
+use super::request::{EventInfo, FragmentInfo};
 use crate::project_host::{PreparedView, ProjectHost};
 
-/// Reason used for fragments with C1.1 template locals.
-pub(crate) const LOCALS_REASON: &str =
-    "template locals are bound as any; loop item/index member checks deferred";
+/// Reason attached when component diagnostics were truncated.
+pub(crate) const COMPONENT_DIAGNOSTICS_TRUNCATED_REASON: &str =
+    "component diagnostics were truncated";
 
 /// Maximum definition targets returned for one request.
 pub(crate) const MAX_DEFINITION_LOCATIONS: usize = 32;
+
+/// Maximum component diagnostics accepted in one response.
+pub(crate) const MAX_COMPONENT_DIAGNOSTICS: usize = 128;
+
+/// Maximum event results accepted in one response.
+///
+/// Mirrors `MAX_PREPARED_EVENTS` on the request side; anything beyond it means
+/// the response does not match the request and is reported as partial.
+pub(crate) const MAX_EVENT_RESULTS: usize = 1024;
+
+/// Reason attached when the event result array exceeded [`MAX_EVENT_RESULTS`].
+pub(crate) const EVENT_RESULTS_TRUNCATED_REASON: &str = "event results were truncated";
+
+/// Reason attached when a result names an event that was not requested.
+pub(crate) const UNKNOWN_EVENT_RESULT_REASON: &str =
+    "a result for an event that was not requested was ignored";
+
+/// Reason attached when the requested event has no result in the response.
+pub(crate) const MISSING_EVENT_RESULT_REASON: &str = "the event handler result is missing";
 
 /// Maximum fragments accepted in one response.
 pub(crate) const MAX_RESPONSE_FRAGMENTS: usize = 4_096;
@@ -39,8 +58,9 @@ pub(crate) const RESPONSE_TRUNCATED_REASON: &str =
 
 /// One C1 response.
 #[derive(Clone, Debug)]
+#[allow(clippy::struct_excessive_bools)] // one flag per independent truncation source
 pub(crate) struct AnalyzeResponse {
-    /// Protocol version, must be 1.
+    /// Protocol version, must be 2.
     pub protocol_version: u32,
     /// Request id echoed by Node.
     pub request_id: String,
@@ -50,11 +70,22 @@ pub(crate) struct AnalyzeResponse {
     pub insertions: Vec<Insertion>,
     /// Per-fragment results.
     pub fragments: Vec<FragmentResult>,
+    /// Per-component diagnostic results.
+    pub components: Vec<ComponentResult>,
+    /// Per-event results for the events named in the request.
+    pub event_results: Vec<EventResultWire>,
     /// Diagnostics or fragments were dropped at the configured entry limits.
     ///
     /// The mapping functions downgrade every capability to `Partial` so a
     /// truncated response is never reported as a complete check.
     pub truncated: bool,
+    /// The event result array exceeded [`MAX_EVENT_RESULTS`].
+    pub events_truncated: bool,
+    /// The component diagnostic budget was exhausted.
+    ///
+    /// Tracked separately so `diagnostics()` can report a component-specific,
+    /// path-free partial reason.
+    pub components_truncated: bool,
     /// The insertion array exceeded [`MAX_RESPONSE_INSERTIONS`].
     ///
     /// Revisions cannot be validated for dropped insertions, so such a
@@ -89,9 +120,14 @@ impl<'de> Visitor<'de> for AnalyzeResponseVisitor {
         let mut states = None;
         let mut insertions = Vec::new();
         let mut fragments = Vec::new();
+        let mut components = Vec::new();
+        let mut event_results = Vec::new();
         let mut truncated = false;
+        let mut events_truncated = false;
         let mut insertions_overflow = false;
+        let mut components_truncated = false;
         let mut remaining_diagnostics = MAX_RESPONSE_DIAGNOSTICS;
+        let mut remaining_component_diagnostics = MAX_COMPONENT_DIAGNOSTICS;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "protocolVersion" => protocol_version = Some(map.next_value()?),
@@ -111,6 +147,20 @@ impl<'de> Visitor<'de> for AnalyzeResponseVisitor {
                         truncated: &mut truncated,
                     })?;
                 }
+                "components" => {
+                    components = map.next_value_seed(ComponentsSeed {
+                        remaining: &mut remaining_component_diagnostics,
+                        truncated: &mut components_truncated,
+                    })?;
+                }
+                "eventResults" => {
+                    let (items, overflow) =
+                        map.next_value_seed(CappedVecSeed::<EventResultWire, MAX_EVENT_RESULTS>(
+                            PhantomData,
+                        ))?;
+                    event_results = items;
+                    events_truncated |= overflow;
+                }
                 _ => {
                     map.next_value::<IgnoredAny>()?;
                 }
@@ -123,7 +173,11 @@ impl<'de> Visitor<'de> for AnalyzeResponseVisitor {
             states: states.ok_or_else(|| de::Error::missing_field("states"))?,
             insertions,
             fragments,
+            components,
+            event_results,
             truncated,
+            events_truncated,
+            components_truncated,
             insertions_overflow,
         })
     }
@@ -344,6 +398,158 @@ impl<'de> Visitor<'de> for DiagnosticsVisitor<'_> {
     }
 }
 
+struct ComponentsSeed<'a> {
+    remaining: &'a mut usize,
+    truncated: &'a mut bool,
+}
+
+impl<'de> DeserializeSeed<'de> for ComponentsSeed<'_> {
+    type Value = Vec<ComponentResult>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(ComponentsVisitor {
+            remaining: self.remaining,
+            truncated: self.truncated,
+        })
+    }
+}
+
+struct ComponentsVisitor<'a> {
+    remaining: &'a mut usize,
+    truncated: &'a mut bool,
+}
+
+impl<'de> Visitor<'de> for ComponentsVisitor<'_> {
+    type Value = Vec<ComponentResult>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a list of component results")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut components = Vec::new();
+        while let Some(component) = seq.next_element_seed(ComponentSeed {
+            remaining: &mut *self.remaining,
+            truncated: &mut *self.truncated,
+        })? {
+            components.push(component);
+        }
+        Ok(components)
+    }
+}
+
+struct ComponentSeed<'a> {
+    remaining: &'a mut usize,
+    truncated: &'a mut bool,
+}
+
+impl<'de> DeserializeSeed<'de> for ComponentSeed<'_> {
+    type Value = ComponentResult;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(ComponentVisitor {
+            remaining: self.remaining,
+            truncated: self.truncated,
+        })
+    }
+}
+
+struct ComponentVisitor<'a> {
+    remaining: &'a mut usize,
+    truncated: &'a mut bool,
+}
+
+impl<'de> Visitor<'de> for ComponentVisitor<'_> {
+    type Value = ComponentResult;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a component result")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut tag = None;
+        let mut diagnostics = Vec::new();
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "tag" => tag = Some(map.next_value()?),
+                "diagnostics" => {
+                    diagnostics = map.next_value_seed(ComponentDiagnosticsSeed {
+                        remaining: &mut *self.remaining,
+                        truncated: &mut *self.truncated,
+                    })?;
+                }
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(ComponentResult {
+            tag: tag.ok_or_else(|| de::Error::missing_field("tag"))?,
+            diagnostics,
+        })
+    }
+}
+
+struct ComponentDiagnosticsSeed<'a> {
+    remaining: &'a mut usize,
+    truncated: &'a mut bool,
+}
+
+impl<'de> DeserializeSeed<'de> for ComponentDiagnosticsSeed<'_> {
+    type Value = Vec<ComponentDiagnosticWire>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(ComponentDiagnosticsVisitor {
+            remaining: self.remaining,
+            truncated: self.truncated,
+        })
+    }
+}
+
+struct ComponentDiagnosticsVisitor<'a> {
+    remaining: &'a mut usize,
+    truncated: &'a mut bool,
+}
+
+impl<'de> Visitor<'de> for ComponentDiagnosticsVisitor<'_> {
+    type Value = Vec<ComponentDiagnosticWire>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a list of component diagnostics")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut diagnostics = Vec::new();
+        while let Some(diagnostic) = seq.next_element::<ComponentDiagnosticWire>()? {
+            if *self.remaining == 0 {
+                *self.truncated = true;
+                continue;
+            }
+            *self.remaining -= 1;
+            diagnostics.push(diagnostic);
+        }
+        Ok(diagnostics)
+    }
+}
+
 /// Per-capability statuses.
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct CapabilityStates {
@@ -414,6 +620,95 @@ pub(crate) struct DiagnosticWire {
     /// Attribution enum.
     #[serde(default)]
     pub attribution: String,
+}
+
+/// Diagnostics for one custom-component usage.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ComponentResult {
+    /// Component tag as written in the template.
+    #[allow(dead_code)] // protocol field; diagnostics are not attributed by tag
+    pub tag: String,
+    /// Diagnostics for this usage.
+    #[serde(default)]
+    pub diagnostics: Vec<ComponentDiagnosticWire>,
+}
+
+/// One component-level diagnostic.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ComponentDiagnosticWire {
+    /// WXML byte range; a diagnostic without one is skipped instead of
+    /// rejecting the whole response.
+    #[serde(default)]
+    pub range: Option<WireRange>,
+    /// Optional severity; anything other than `warning` is an error.
+    #[serde(default)]
+    pub severity: Option<String>,
+    /// Message.
+    #[serde(default)]
+    pub message: String,
+}
+
+/// Resolution result for one requested event binding.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EventResultWire {
+    /// Request event id, for example `e0`.
+    pub event_id: String,
+    /// Per-event status; absent means the backend did not classify it.
+    #[serde(default)]
+    pub state: Option<EventStateWire>,
+    /// Method declaration, absent when the handler does not resolve.
+    #[serde(default)]
+    pub definition: Option<DefinitionWire>,
+    /// Missing-handler diagnostic; present only for a supported event whose
+    /// handler could not be found.
+    #[serde(default)]
+    pub diagnostic: Option<ComponentDiagnosticWire>,
+    /// One-line method signature, used by event-handler hover.
+    #[serde(default)]
+    pub signature: Option<String>,
+}
+
+/// Status of one event result.
+///
+/// The protocol writes this as `{"status": ..., "reason": ...}`; a bare status
+/// string is accepted as well so an older backend keeps working.
+#[derive(Clone, Debug)]
+pub(crate) struct EventStateWire {
+    /// `supported`, `partial`, `unsupported`, `unavailable` or `disabled`.
+    pub status: String,
+    /// Optional explanation for a degraded status.
+    pub reason: Option<String>,
+}
+
+impl<'de> Deserialize<'de> for EventStateWire {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Repr {
+            /// `"state": "supported"`.
+            Name(String),
+            /// `"state": {"status": "partial", "reason": "..."}`.
+            Detail {
+                #[serde(default)]
+                status: String,
+                #[serde(default)]
+                reason: Option<String>,
+            },
+        }
+        Ok(match Repr::deserialize(deserializer)? {
+            Repr::Name(status) => Self {
+                status,
+                reason: None,
+            },
+            Repr::Detail { status, reason } => Self { status, reason },
+        })
+    }
 }
 
 /// Definition payload.
@@ -570,12 +865,16 @@ pub(crate) fn hover(
     response: &AnalyzeResponse,
     view: &PreparedView,
     request_fragments: &BTreeMap<String, FragmentInfo>,
+    request_events: &[EventInfo],
     offset: u32,
 ) -> HoverResult {
-    let status = truncated_status(
-        status_for(&response.states.hover, view, request_fragments),
-        response.truncated,
-    );
+    let status = truncated_status(status_for(&response.states.hover, view), response.truncated);
+    if let Some(info) = request_events
+        .iter()
+        .find(|info| point_in_range(info.handler_range, offset))
+    {
+        return event_hover(response, info, request_events, status);
+    }
     let mut found = None;
     for fragment in &response.fragments {
         let Some(info) = request_fragments.get(&fragment.fragment_id) else {
@@ -638,15 +937,71 @@ pub(crate) fn hover(
     }
 }
 
+/// Hovers an event handler with the signature reported by the backend.
+fn event_hover(
+    response: &AnalyzeResponse,
+    info: &EventInfo,
+    request_events: &[EventInfo],
+    mut status: CapabilityStatus,
+) -> HoverResult {
+    status = event_scope_status(response, request_events, status);
+    let Some(result) = response
+        .event_results
+        .iter()
+        .find(|result| result.event_id == info.event_id)
+    else {
+        return HoverResult {
+            contents: String::new(),
+            markup: MarkupKind::Markdown,
+            range: None,
+            status: force_partial_reason(status, MISSING_EVENT_RESULT_REASON),
+            quality: TypeQuality::Unknown,
+        };
+    };
+    status = merge_status(status, Some(&event_state_status(result.state.as_ref())));
+    let signature = result
+        .signature
+        .as_deref()
+        .map(str::trim)
+        .filter(|signature| !signature.is_empty());
+    let Some(signature) = signature else {
+        return HoverResult {
+            contents: String::new(),
+            markup: MarkupKind::Markdown,
+            range: None,
+            status,
+            quality: TypeQuality::Unknown,
+        };
+    };
+    let signature = crate::handlers::code_text(signature, 512);
+    if signature.is_empty() {
+        return HoverResult {
+            contents: String::new(),
+            markup: MarkupKind::Markdown,
+            range: None,
+            status,
+            quality: TypeQuality::Unknown,
+        };
+    }
+    let fence = fence_for(&signature);
+    HoverResult {
+        contents: format!("{fence}ts\n{signature}\n{fence}"),
+        markup: MarkupKind::Markdown,
+        range: Some(info.handler_range),
+        status,
+        quality: TypeQuality::Known,
+    }
+}
+
 /// Maps diagnostics, always keeping the P2 syntax diagnostics.
 pub(crate) fn diagnostics(
     response: &AnalyzeResponse,
     view: &PreparedView,
     snapshot: &SourceSnapshot,
-    request_fragments: &BTreeMap<String, FragmentInfo>,
+    request_events: &[EventInfo],
 ) -> DiagnosticsResult {
-    let status = truncated_status(
-        status_for(&response.states.diagnostics, view, request_fragments),
+    let mut status = truncated_status(
+        status_for(&response.states.diagnostics, view),
         response.truncated,
     );
     if matches!(status, CapabilityStatus::Disabled { .. }) {
@@ -658,6 +1013,7 @@ pub(crate) fn diagnostics(
     }
     let mut mapped = view.syntax_diagnostics.clone();
     let mut seen = HashSet::new();
+    let mut seen_messages = HashSet::new();
     for fragment in &response.fragments {
         for diagnostic in &fragment.diagnostics {
             if diagnostic.attribution == "unattributable" {
@@ -673,6 +1029,11 @@ pub(crate) fn diagnostics(
                 continue;
             };
             if seen.insert((diagnostic.code, validated.start(), validated.end())) {
+                seen_messages.insert((
+                    diagnostic.message.clone(),
+                    validated.start(),
+                    validated.end(),
+                ));
                 mapped.push(Diagnostic {
                     range: validated,
                     severity: DiagnosticSeverity::Error,
@@ -681,9 +1042,213 @@ pub(crate) fn diagnostics(
             }
         }
     }
+    for component in &response.components {
+        for diagnostic in &component.diagnostics {
+            let Some(range) = diagnostic
+                .range
+                .as_ref()
+                .and_then(|range| range.source_range())
+            else {
+                continue;
+            };
+            let Ok(text_range) = TextRange::new(range.start(), range.end()) else {
+                continue;
+            };
+            let Some(validated) = snapshot.source_range(text_range) else {
+                continue;
+            };
+            if !seen_messages.insert((
+                diagnostic.message.clone(),
+                validated.start(),
+                validated.end(),
+            )) {
+                continue;
+            }
+            mapped.push(Diagnostic {
+                range: validated,
+                severity: event_severity(diagnostic.severity.as_deref()),
+                message: diagnostic.message.clone(),
+            });
+        }
+    }
+
+    apply_event_results(
+        response,
+        request_events,
+        snapshot,
+        &mut mapped,
+        &mut seen_messages,
+        &mut status,
+    );
+    if response.components_truncated {
+        status = force_partial_reason(status, COMPONENT_DIAGNOSTICS_TRUNCATED_REASON);
+    }
     DiagnosticsResult {
         diagnostics: mapped,
         status,
+    }
+}
+
+/// Appends event-result diagnostics and folds their statuses into `status`.
+fn apply_event_results(
+    response: &AnalyzeResponse,
+    request_events: &[EventInfo],
+    snapshot: &SourceSnapshot,
+    mapped: &mut Vec<Diagnostic>,
+    seen_messages: &mut HashSet<(String, u32, u32)>,
+    status: &mut CapabilityStatus,
+) {
+    let by_id: BTreeMap<&str, &EventInfo> = request_events
+        .iter()
+        .map(|info| (info.event_id.as_str(), info))
+        .collect();
+    let mut unknown_event = false;
+    let mut answered = HashSet::with_capacity(request_events.len());
+    for result in &response.event_results {
+        if !by_id.contains_key(result.event_id.as_str()) {
+            // A result must belong to this request; anything else is not a
+            // diagnostic for this document.
+            unknown_event = true;
+            continue;
+        }
+        answered.insert(result.event_id.as_str());
+        // Merge every state before diagnostics are budgeted so a later
+        // unsupported/partial event is never hidden by truncation.
+        *status = merge_status(
+            status.clone(),
+            Some(&event_state_status(result.state.as_ref())),
+        );
+    }
+    if request_events
+        .iter()
+        .any(|info| !answered.contains(info.event_id.as_str()))
+    {
+        *status = force_partial_reason(status.clone(), MISSING_EVENT_RESULT_REASON);
+    }
+
+    let mut invalid_event_range = false;
+    let mut truncated_events = false;
+    for result in &response.event_results {
+        let Some(info) = by_id.get(result.event_id.as_str()) else {
+            continue;
+        };
+        let Some(diagnostic) = result.diagnostic.as_ref() else {
+            continue;
+        };
+        let Some(range) = diagnostic
+            .range
+            .as_ref()
+            .and_then(|range| range.source_range())
+        else {
+            invalid_event_range = true;
+            continue;
+        };
+        let Ok(text_range) = TextRange::new(range.start(), range.end()) else {
+            invalid_event_range = true;
+            continue;
+        };
+        let Some(validated) = snapshot.source_range(text_range) else {
+            invalid_event_range = true;
+            continue;
+        };
+        // Event diagnostics belong to the handler token. A backend that points
+        // elsewhere is clamped to the requested range and downgraded.
+        let contained = info.handler_range.start() <= validated.start()
+            && validated.end() <= info.handler_range.end();
+        let range = if contained {
+            validated
+        } else {
+            invalid_event_range = true;
+            info.handler_range
+        };
+        if !seen_messages.insert((diagnostic.message.clone(), range.start(), range.end())) {
+            continue;
+        }
+        if mapped.len() >= MAX_RESPONSE_DIAGNOSTICS {
+            truncated_events = true;
+            break;
+        }
+        mapped.push(Diagnostic {
+            range,
+            severity: event_severity(diagnostic.severity.as_deref()),
+            message: diagnostic.message.clone(),
+        });
+    }
+    if response.events_truncated {
+        *status = force_partial_reason(status.clone(), EVENT_RESULTS_TRUNCATED_REASON);
+    }
+    if unknown_event {
+        *status = force_partial_reason(status.clone(), UNKNOWN_EVENT_RESULT_REASON);
+    }
+    if invalid_event_range {
+        *status = force_partial_reason(
+            status.clone(),
+            "an event diagnostic range could not be mapped",
+        );
+    }
+    if truncated_events {
+        *status = force_partial_reason(status.clone(), "event diagnostics were truncated");
+    }
+}
+
+/// Maps an event or component severity string; anything but `warning` is an
+/// error.
+fn event_severity(severity: Option<&str>) -> DiagnosticSeverity {
+    if severity == Some("warning") {
+        DiagnosticSeverity::Warning
+    } else {
+        DiagnosticSeverity::Error
+    }
+}
+
+/// Applies response-level event degradations shared by hover and definition.
+fn event_scope_status(
+    response: &AnalyzeResponse,
+    request_events: &[EventInfo],
+    mut status: CapabilityStatus,
+) -> CapabilityStatus {
+    if response.events_truncated {
+        status = force_partial_reason(status, EVENT_RESULTS_TRUNCATED_REASON);
+    }
+    let requested: HashSet<&str> = request_events
+        .iter()
+        .map(|info| info.event_id.as_str())
+        .collect();
+    if response
+        .event_results
+        .iter()
+        .any(|result| !requested.contains(result.event_id.as_str()))
+    {
+        status = force_partial_reason(status, UNKNOWN_EVENT_RESULT_REASON);
+    }
+    status
+}
+
+/// Maps a reported event status onto a capability status.
+fn event_state_status(state: Option<&EventStateWire>) -> CapabilityStatus {
+    let Some(state) = state else {
+        return CapabilityStatus::Unknown {
+            reason: Some("the backend did not report an event status".to_owned()),
+        };
+    };
+    let reason = state.reason.clone().filter(|reason| !reason.is_empty());
+    match state.status.as_str() {
+        "supported" => CapabilityStatus::Supported,
+        "partial" => CapabilityStatus::Partial {
+            reason: reason.unwrap_or_else(|| "event handler analysis is partial".to_owned()),
+        },
+        "unsupported" => CapabilityStatus::Unsupported {
+            reason: reason
+                .unwrap_or_else(|| "this event binding is not analyzed by the backend".to_owned()),
+        },
+        "unavailable" => CapabilityStatus::Unavailable {
+            reason: reason
+                .unwrap_or_else(|| "the type backend could not analyze this event".to_owned()),
+        },
+        "disabled" => CapabilityStatus::Disabled {
+            reason: reason.unwrap_or_else(|| "event handler analysis is disabled".to_owned()),
+        },
+        _ => CapabilityStatus::Unknown { reason },
     }
 }
 
@@ -692,13 +1257,23 @@ pub(crate) fn definition(
     response: &AnalyzeResponse,
     view: &PreparedView,
     request_fragments: &BTreeMap<String, FragmentInfo>,
+    request_events: &[EventInfo],
     offset: u32,
     host: &dyn ProjectHost,
 ) -> DefinitionResult {
     let mut status = truncated_status(
-        status_for(&response.states.definition, view, request_fragments),
+        status_for(&response.states.definition, view),
         response.truncated,
     );
+    if let Some(info) = request_events
+        .iter()
+        .find(|info| point_in_range(info.handler_range, offset))
+    {
+        // Event offsets belong to the attribute, not to a mustache expression,
+        // so they must never fall through to fragment definitions.
+        let script_file = view.target.as_ref().map(|target| target.script_file.path());
+        return event_definition(response, request_events, info, status, script_file, host);
+    }
     let mut locations = Vec::new();
     let mut seen = HashSet::new();
     let mut dropped = false;
@@ -766,30 +1341,83 @@ pub(crate) fn definition(
     DefinitionResult { locations, status }
 }
 
-/// Returns whether any request fragment carries template locals.
-pub(crate) fn has_locals(fragments: &BTreeMap<String, FragmentInfo>) -> bool {
-    fragments
-        .values()
-        .any(|fragment| !fragment.locals.is_empty())
-}
-
-fn status_for(
-    base: &CapabilityStatus,
-    view: &PreparedView,
-    fragments: &BTreeMap<String, FragmentInfo>,
-) -> CapabilityStatus {
-    let mut status = merge_status(base.clone(), view.status_hint.as_ref());
-    if has_locals(fragments) {
-        status = match status {
-            CapabilityStatus::Disabled { .. }
-            | CapabilityStatus::Unsupported { .. }
-            | CapabilityStatus::Unavailable { .. } => status,
-            _ => CapabilityStatus::Partial {
-                reason: LOCALS_REASON.to_owned(),
-            },
+/// Maps the definition of one requested event handler.
+///
+/// The event result is authoritative: a missing definition is an empty,
+/// *answered* result, not a backend failure.
+fn event_definition(
+    response: &AnalyzeResponse,
+    request_events: &[EventInfo],
+    info: &EventInfo,
+    mut status: CapabilityStatus,
+    script_file: Option<&str>,
+    host: &dyn ProjectHost,
+) -> DefinitionResult {
+    status = event_scope_status(response, request_events, status);
+    let Some(result) = response
+        .event_results
+        .iter()
+        .find(|result| result.event_id == info.event_id)
+    else {
+        return DefinitionResult {
+            locations: Vec::new(),
+            status: force_partial_reason(status, MISSING_EVENT_RESULT_REASON),
+        };
+    };
+    status = merge_status(status, Some(&event_state_status(result.state.as_ref())));
+    let Some(definition) = result.definition.as_ref() else {
+        // Checked and answered: the handler has no declaration.
+        return DefinitionResult {
+            locations: Vec::new(),
+            status,
+        };
+    };
+    // Event definitions are `{fileId, range}` in the frozen wire contract; an
+    // explicit `kind` is still honored when a backend sends one.
+    let kind = definition.kind.as_str();
+    let unexpected_file = definition
+        .file_id
+        .as_deref()
+        .is_some_and(|file_id| script_file.is_some_and(|expected| file_id != expected));
+    if unexpected_file {
+        return DefinitionResult {
+            locations: Vec::new(),
+            status: force_partial_reason(
+                status,
+                "an event definition points at an unexpected file",
+            ),
         };
     }
-    status
+    let mapped = if kind.is_empty() || matches!(kind, "script" | "generated" | "external") {
+        definition
+            .file_id
+            .as_ref()
+            .zip(definition.range)
+            .and_then(|(file_id, range)| {
+                let path = ProjectPath::new(file_id.clone()).ok()?;
+                let file = host.file_id(&path).ok()?;
+                let range = range.source_range()?;
+                Some(SourceLocation { file, range })
+            })
+    } else {
+        None
+    };
+    let Some(location) = mapped else {
+        return DefinitionResult {
+            locations: Vec::new(),
+            status: force_partial_reason(status, "definition target could not be mapped"),
+        };
+    };
+    // One handler resolves to at most one declaration, so the shared location
+    // cap and duplicate filter are satisfied by construction.
+    DefinitionResult {
+        locations: vec![location],
+        status,
+    }
+}
+
+fn status_for(base: &CapabilityStatus, view: &PreparedView) -> CapabilityStatus {
+    merge_status(base.clone(), view.status_hint.as_ref())
 }
 
 fn merge_status(base: CapabilityStatus, hint: Option<&CapabilityStatus>) -> CapabilityStatus {
@@ -862,8 +1490,12 @@ fn quality(value: &str) -> TypeQuality {
 }
 
 #[cfg(test)]
+#[allow(clippy::assert_is_empty)]
 mod tests {
     use std::fmt::Write as _;
+    use std::sync::Arc;
+
+    use wxml_types::{FileId, ProjectId, SnapshotId, SourceRevision};
 
     use super::*;
 
@@ -872,7 +1504,7 @@ mod tests {
             "jsonrpc": "2.0",
             "id": "r1",
             "result": {
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "requestId": "r1",
                 "states": {
                     "hover": {"status": "supported"},
@@ -975,7 +1607,7 @@ mod tests {
             .expect("write");
         }
         let line = format!(
-            r#"{{"jsonrpc":"2.0","id":"r1","result":{{"protocolVersion":1,"requestId":"r1","states":{{"hover":{{"status":"supported"}},"diagnostics":{{"status":"supported"}},"definition":{{"status":"supported"}}}},"insertions":[{{"viewRevision":1}}],"fragments":[{{"fragmentId":"f0","diagnostics":[{diagnostics}]}}]}}}}"#
+            r#"{{"jsonrpc":"2.0","id":"r1","result":{{"protocolVersion":2,"requestId":"r1","states":{{"hover":{{"status":"supported"}},"diagnostics":{{"status":"supported"}},"definition":{{"status":"supported"}}}},"insertions":[{{"viewRevision":1}}],"fragments":[{{"fragmentId":"f0","diagnostics":[{diagnostics}]}}]}}}}"#
         );
         assert!(line.len() < crate::backend_node::config::DEFAULT_MAX_LINE_BYTES);
         let response = parse_line(&line, "r1", 1).expect("truncated response");
@@ -1003,7 +1635,7 @@ mod tests {
             .map(|_| serde_json::json!({"viewRevision": 1}))
             .collect::<Vec<_>>();
         let value = serde_json::json!({
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "requestId": "r1",
             "states": {
                 "hover": {"status": "supported"},
@@ -1022,7 +1654,7 @@ mod tests {
     #[test]
     fn rejects_wrong_protocol_and_revision() {
         let line = r#"{
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "requestId": "r1",
             "jsCheckApplied": "pragma",
             "states": {"hover": {"status": "supported"}, "diagnostics": {"status": "supported"}, "definition": {"status": "supported"}},
@@ -1038,10 +1670,449 @@ mod tests {
             parse(line, "r2", 7),
             Err(ProtocolError::IdMismatch)
         ));
-        let wrong = line.replace("\"protocolVersion\": 1", "\"protocolVersion\": 2");
+        let wrong = line.replace("\"protocolVersion\": 2", "\"protocolVersion\": 3");
         assert!(matches!(
             parse(&wrong, "r1", 7),
             Err(ProtocolError::Version)
         ));
+    }
+
+    #[test]
+    fn v2_reserved_response_fields_are_ignored() {
+        let line = r#"{
+            "protocolVersion": 2,
+            "requestId": "r1",
+            "states": {"hover": {"status": "supported"}, "diagnostics": {"status": "supported"}, "definition": {"status": "supported"}},
+            "insertions": [{"viewRevision": 7, "backendFileVersion": 1}],
+            "fragments": [{"fragmentId": "f0", "eventResults": [{"eventId": "e0"}]}],
+            "eventResults": [{"eventId": "e0", "state": "supported"}],
+            "components": [{"tag": "card", "diagnostics": []}]
+        }"#;
+        let response = parse(line, "r1", 7).expect("v2 response");
+        assert_eq!(response.fragments.len(), 1);
+        assert_eq!(response.fragments[0].fragment_id, "f0");
+        assert_eq!(response.components.len(), 1);
+        assert_eq!(response.components[0].tag, "card");
+    }
+
+    fn envelope_with_components(components: &serde_json::Value) -> String {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "r1",
+            "result": {
+                "protocolVersion": 2,
+                "requestId": "r1",
+                "states": {
+                    "hover": {"status": "supported"},
+                    "diagnostics": {"status": "supported"},
+                    "definition": {"status": "supported"}
+                },
+                "insertions": [{"viewRevision": 1}],
+                "fragments": [],
+                "components": components
+            }
+        })
+        .to_string()
+    }
+
+    fn prepared_view() -> PreparedView {
+        PreparedView {
+            view_id: "pages/index/index.wxml:1".to_owned(),
+            target: None,
+            files: Arc::from(Vec::new()),
+            compiler_options: serde_json::Map::new(),
+            fragments: Arc::from(Vec::new()),
+            components: Arc::from(Vec::new()),
+            events: Arc::from(Vec::new()),
+            project_root: std::path::PathBuf::new(),
+            syntax_diagnostics: Vec::new(),
+            status_hint: None,
+        }
+    }
+
+    fn snapshot() -> SourceSnapshot {
+        SourceSnapshot::new(
+            FileId::new(ProjectId::new("p"), "pages/index/index.wxml").expect("file"),
+            SourceRevision::new(1),
+            SnapshotId::new(1),
+            "{{ user.name }}",
+        )
+    }
+
+    #[test]
+    fn component_diagnostics_are_mapped_with_severity() {
+        let line = envelope_with_components(&serde_json::json!([
+            {
+                "tag": "card",
+                "diagnostics": [
+                    {"range": {"start": 3, "end": 8}, "message": "expects string", "severity": "error"},
+                    {"range": {"start": 3, "end": 8}, "message": "soft", "severity": "warning"}
+                ]
+            }
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("component response");
+        let result = diagnostics(&response, &prepared_view(), &snapshot(), &[]);
+        assert_eq!(result.diagnostics.len(), 2);
+        assert_eq!(result.diagnostics[0].severity, DiagnosticSeverity::Error);
+        assert_eq!(result.diagnostics[1].severity, DiagnosticSeverity::Warning);
+        assert_eq!(result.diagnostics[1].message, "soft");
+        assert!(result.status.is_supported());
+    }
+
+    #[test]
+    fn component_diagnostics_dedupe_and_drop_invalid_ranges() {
+        let line = envelope_with_components(&serde_json::json!([
+            {
+                "tag": "card",
+                "diagnostics": [
+                    {"range": {"start": 3, "end": 8}, "message": "dupe"},
+                    {"range": {"start": 3, "end": 8}, "message": "dupe"},
+                    {"range": {"start": 900, "end": 901}, "message": "outside"}
+                ]
+            }
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("component response");
+        let result = diagnostics(&response, &prepared_view(), &snapshot(), &[]);
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].message, "dupe");
+    }
+
+    #[test]
+    fn component_diagnostic_truncation_forces_partial() {
+        let entries = (0..=MAX_COMPONENT_DIAGNOSTICS)
+            .map(|_| {
+                serde_json::json!({
+                    "range": {"start": 3, "end": 8},
+                    "message": "x"
+                })
+            })
+            .collect::<Vec<_>>();
+        let line = envelope_with_components(&serde_json::json!([
+            {"tag": "card", "diagnostics": entries}
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("truncated component response");
+        assert!(response.components_truncated);
+        assert_eq!(
+            response.components[0].diagnostics.len(),
+            MAX_COMPONENT_DIAGNOSTICS
+        );
+        let result = diagnostics(&response, &prepared_view(), &snapshot(), &[]);
+        let CapabilityStatus::Partial { reason } = result.status else {
+            panic!("expected partial");
+        };
+        assert_eq!(reason, COMPONENT_DIAGNOSTICS_TRUNCATED_REASON);
+    }
+
+    fn envelope_with_events(events: &serde_json::Value) -> String {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "r1",
+            "result": {
+                "protocolVersion": 2,
+                "requestId": "r1",
+                "states": {
+                    "hover": {"status": "supported"},
+                    "diagnostics": {"status": "supported"},
+                    "definition": {"status": "supported"}
+                },
+                "insertions": [{"viewRevision": 1}],
+                "fragments": [],
+                "eventResults": events
+            }
+        })
+        .to_string()
+    }
+
+    fn event_info(event_id: &str) -> EventInfo {
+        EventInfo {
+            event_id: event_id.to_owned(),
+            attribute: "bindtap".to_owned(),
+            event: "tap".to_owned(),
+            handler: "onTap".to_owned(),
+            attribute_range: SourceRange::from_bounds(0, 15).expect("range"),
+            handler_range: SourceRange::from_bounds(2, 12).expect("range"),
+        }
+    }
+
+    #[test]
+    fn event_diagnostics_are_mapped_and_deduped() {
+        let line = envelope_with_events(&serde_json::json!([
+            {
+                "eventId": "e0",
+                "state": {"status": "supported"},
+                "diagnostic": {
+                    "range": {"start": 3, "end": 12},
+                    "severity": "error",
+                    "message": "Cannot find name 'onMissing' for event tap"
+                }
+            },
+            {
+                "eventId": "e0",
+                "state": {"status": "supported"},
+                "diagnostic": {
+                    "range": {"start": 3, "end": 12},
+                    "severity": "error",
+                    "message": "Cannot find name 'onMissing' for event tap"
+                }
+            },
+            {
+                "eventId": "e0",
+                "state": {"status": "supported"},
+                "diagnostic": {
+                    "range": {"start": 3, "end": 8},
+                    "severity": "warning",
+                    "message": "soft"
+                }
+            }
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("event response");
+        let result = diagnostics(
+            &response,
+            &prepared_view(),
+            &snapshot(),
+            &[event_info("e0")],
+        );
+        assert_eq!(result.diagnostics.len(), 2);
+        assert_eq!(result.diagnostics[0].severity, DiagnosticSeverity::Error);
+        assert_eq!(
+            result.diagnostics[0].message,
+            "Cannot find name 'onMissing' for event tap"
+        );
+        assert_eq!(result.diagnostics[1].severity, DiagnosticSeverity::Warning);
+        assert_eq!(result.diagnostics[1].message, "soft");
+        assert!(result.status.is_supported());
+    }
+
+    #[test]
+    fn event_diagnostic_with_invalid_range_is_dropped_and_partial() {
+        let line = envelope_with_events(&serde_json::json!([
+            {
+                "eventId": "e0",
+                "state": {"status": "supported"},
+                "diagnostic": {
+                    "range": {"start": 900, "end": 901},
+                    "severity": "error",
+                    "message": "outside the document"
+                }
+            }
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("event response");
+        let result = diagnostics(
+            &response,
+            &prepared_view(),
+            &snapshot(),
+            &[event_info("e0")],
+        );
+        assert!(result.diagnostics.is_empty());
+        let CapabilityStatus::Partial { reason } = result.status else {
+            panic!("expected partial");
+        };
+        assert_eq!(reason, "an event diagnostic range could not be mapped");
+    }
+
+    #[test]
+    fn partial_event_state_forces_partial_status() {
+        let line = envelope_with_events(&serde_json::json!([
+            {
+                "eventId": "e0",
+                "state": {"status": "partial", "reason": "multiple registrations"}
+            }
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("event response");
+        let result = diagnostics(
+            &response,
+            &prepared_view(),
+            &snapshot(),
+            &[event_info("e0")],
+        );
+        assert!(result.diagnostics.is_empty());
+        let CapabilityStatus::Partial { reason } = result.status else {
+            panic!("expected partial");
+        };
+        assert_eq!(reason, "multiple registrations");
+    }
+
+    #[test]
+    fn event_state_accepts_a_bare_status_string() {
+        let line = envelope_with_events(&serde_json::json!([
+            {"eventId": "e0", "state": "partial"}
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("event response");
+        let result = diagnostics(
+            &response,
+            &prepared_view(),
+            &snapshot(),
+            &[event_info("e0")],
+        );
+        let CapabilityStatus::Partial { reason } = result.status else {
+            panic!("expected partial");
+        };
+        assert_eq!(reason, "event handler analysis is partial");
+    }
+
+    #[test]
+    fn unknown_event_result_id_forces_partial_and_is_ignored() {
+        let line = envelope_with_events(&serde_json::json!([
+            {
+                "eventId": "e9",
+                "state": {"status": "supported"},
+                "diagnostic": {
+                    "range": {"start": 3, "end": 8},
+                    "severity": "error",
+                    "message": "not requested"
+                }
+            }
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("event response");
+        let result = diagnostics(
+            &response,
+            &prepared_view(),
+            &snapshot(),
+            &[event_info("e0")],
+        );
+        assert!(result.diagnostics.is_empty());
+        let CapabilityStatus::Partial { reason } = result.status else {
+            panic!("expected partial");
+        };
+        assert_eq!(reason, UNKNOWN_EVENT_RESULT_REASON);
+    }
+
+    #[test]
+    fn oversized_event_result_array_is_truncated() {
+        let entries = (0..=MAX_EVENT_RESULTS)
+            .map(|_| serde_json::json!({"eventId": "e0", "state": {"status": "supported"}}))
+            .collect::<Vec<_>>();
+        let line = envelope_with_events(&serde_json::Value::Array(entries));
+        let response = parse_line(&line, "r1", 1).expect("truncated event results");
+        assert!(response.events_truncated);
+        assert_eq!(response.event_results.len(), MAX_EVENT_RESULTS);
+        let result = diagnostics(
+            &response,
+            &prepared_view(),
+            &snapshot(),
+            &[event_info("e0")],
+        );
+        let CapabilityStatus::Partial { reason } = result.status else {
+            panic!("expected partial");
+        };
+        assert_eq!(reason, EVENT_RESULTS_TRUNCATED_REASON);
+    }
+
+    #[test]
+    fn error_severity_is_default_for_event_diagnostics() {
+        let line = envelope_with_events(&serde_json::json!([
+            {
+                "eventId": "e0",
+                "diagnostic": {"range": {"start": 3, "end": 8}, "message": "no severity"}
+            }
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("event response");
+        let result = diagnostics(
+            &response,
+            &prepared_view(),
+            &snapshot(),
+            &[event_info("e0")],
+        );
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].severity, DiagnosticSeverity::Error);
+    }
+
+    #[test]
+    fn event_diagnostic_outside_handler_range_is_clamped_and_partial() {
+        let line = envelope_with_events(&serde_json::json!([
+            {
+                "eventId": "e0",
+                "state": {"status": "supported"},
+                "diagnostic": {
+                    "range": {"start": 0, "end": 1},
+                    "severity": "error",
+                    "message": "handler is missing"
+                }
+            }
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("event response");
+        let result = diagnostics(
+            &response,
+            &prepared_view(),
+            &snapshot(),
+            &[event_info("e0")],
+        );
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(
+            result.diagnostics[0].range,
+            SourceRange::from_bounds(2, 12).expect("clamped range")
+        );
+        let CapabilityStatus::Partial { reason } = result.status else {
+            panic!("expected partial");
+        };
+        assert_eq!(reason, "an event diagnostic range could not be mapped");
+    }
+
+    #[test]
+    fn missing_event_result_for_a_requested_event_forces_partial() {
+        let line = envelope_with_events(&serde_json::json!([
+            {"eventId": "e0", "state": {"status": "supported"}}
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("event response");
+        let result = diagnostics(
+            &response,
+            &prepared_view(),
+            &snapshot(),
+            &[event_info("e0"), event_info("e1")],
+        );
+        assert!(result.diagnostics.is_empty());
+        let CapabilityStatus::Partial { reason } = result.status else {
+            panic!("expected partial");
+        };
+        assert_eq!(reason, MISSING_EVENT_RESULT_REASON);
+    }
+
+    #[test]
+    fn event_hover_reports_the_signature_at_the_handler_range() {
+        let line = envelope_with_events(&serde_json::json!([
+            {
+                "eventId": "e0",
+                "state": {"status": "supported"},
+                "signature": "onTap(event: { detail: { x: number } })"
+            }
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("event response");
+        let result = hover(
+            &response,
+            &prepared_view(),
+            &BTreeMap::new(),
+            &[event_info("e0")],
+            4,
+        );
+        assert!(result.status.is_supported());
+        assert_eq!(result.quality, TypeQuality::Known);
+        assert_eq!(
+            result.range,
+            Some(SourceRange::from_bounds(2, 12).expect("handler range"))
+        );
+        assert!(
+            result
+                .contents
+                .contains("onTap(event: { detail: { x: number } })")
+        );
+    }
+
+    #[test]
+    fn event_hover_without_a_result_forces_partial() {
+        let line = envelope_with_events(&serde_json::json!([]));
+        let response = parse_line(&line, "r1", 1).expect("event response");
+        let result = hover(
+            &response,
+            &prepared_view(),
+            &BTreeMap::new(),
+            &[event_info("e0")],
+            4,
+        );
+        assert!(result.contents.is_empty());
+        assert_eq!(result.range, None);
+        let CapabilityStatus::Partial { reason } = result.status else {
+            panic!("expected partial");
+        };
+        assert_eq!(reason, MISSING_EVENT_RESULT_REASON);
     }
 }

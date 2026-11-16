@@ -1,6 +1,6 @@
 //! Protocol state machine and stdio event loop.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, BufReader};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
@@ -104,6 +104,13 @@ pub(crate) struct Server {
     pub(crate) stop: bool,
     /// Set by `shutdown`.
     pub(crate) clean_shutdown: bool,
+    /// Whether the client declared dynamic watched-file registrations.
+    pub(crate) client_watched_files: bool,
+    /// Synthetic (non-project) documents the client opened as WXML.
+    ///
+    /// Their route is `Unknown`, so the URI extension alone cannot tell a
+    /// template from another language (for example `untitled:` buffers).
+    pub(crate) synthetic_templates: HashSet<String>,
 }
 
 impl Server {
@@ -141,6 +148,8 @@ impl Server {
             dirty: VecDeque::new(),
             stop: false,
             clean_shutdown: false,
+            client_watched_files: false,
+            synthetic_templates: HashSet::new(),
         }
     }
 
@@ -175,7 +184,7 @@ impl Server {
             Incoming::Notification { method, params } => self.on_notification(&method, params),
             Incoming::Response { .. } => {
                 log(format_args!(
-                    "ignoring a response from the client (no server requests are outstanding)"
+                    "ignoring a response to a server-initiated request"
                 ));
                 Vec::new()
             }
@@ -200,10 +209,11 @@ impl Server {
             log(format_args!("dropping a result for an unknown request"));
             return Vec::new();
         };
-        let outgoing = if done.kind == JobKind::Hover {
-            self.hover_done(inflight.id, done, &epoch)
-        } else {
-            self.definition_done(inflight.id, done, &epoch)
+        let outgoing = match done.kind {
+            JobKind::Hover => self.hover_done(inflight.id, done, &epoch),
+            JobKind::Definition => self.definition_done(inflight.id, done, &epoch),
+            JobKind::Completion(_) => self.completion_done(inflight.id, done, &epoch),
+            JobKind::Diagnostics => Vec::new(),
         };
         self.retry_pending_diagnostics_with_epoch(&epoch);
         outgoing
@@ -472,8 +482,9 @@ mod tests {
     use serde_json::json;
     use wxml_text::{Position, SourceRange};
     use wxml_types::{
-        BackendCapabilities, BackendError, BackendId, CapabilityStatus, DefinitionResult,
-        Diagnostic, DiagnosticSeverity, DiagnosticsResult, FileId, HoverResult, MarkupKind,
+        BackendCapabilities, BackendError, BackendId, CapabilityStatus, CompletionItem,
+        CompletionItemKind, CompletionKind, CompletionResult, DefinitionResult, Diagnostic,
+        DiagnosticSeverity, DiagnosticsResult, FileId, HoverResult, InsertTextFormat, MarkupKind,
         MockBackend, ProjectId, SourceLocation, TypeQuality,
     };
 
@@ -659,6 +670,78 @@ mod tests {
     }
 
     #[test]
+    fn completion_results_map_items_and_stale_ones_are_dropped() {
+        let capabilities = BackendCapabilities {
+            completion: CapabilityStatus::Supported,
+            ..MockBackend::new().capabilities()
+        };
+        let (mut server, dispatch) = setup_with(capabilities);
+        initialize(&mut server);
+        open_document(&mut server, "<view>{{ user.na }}</view>", 1);
+        dispatch.take();
+
+        server.handle_incoming(request(
+            json!("c1"),
+            "textDocument/completion",
+            hover_params((0, 16)),
+        ));
+        let jobs = dispatch.take();
+        assert_eq!(jobs.len(), 1);
+        let completion = CompletionResult {
+            items: vec![CompletionItem {
+                label: "name".to_owned(),
+                kind: CompletionItemKind::Property,
+                detail: Some("string".to_owned()),
+                documentation: Some("The user name.".to_owned()),
+                insert_text: "name".to_owned(),
+                insert_text_format: InsertTextFormat::PlainText,
+                replace: SourceRange::from_bounds(14, 16).expect("range"),
+                sort_text: Some("m_name".to_owned()),
+                filter_text: None,
+            }],
+            status: CapabilityStatus::Supported,
+            truncated: false,
+        };
+        let outgoing = only(server.handle_work(WorkDone {
+            key: jobs[0].key.clone(),
+            kind: JobKind::Completion(CompletionKind::ExpressionMember),
+            stamp: jobs[0].stamp.clone(),
+            cancelled: false,
+            outcome: Ok(Outcome::Completion(Box::new(completion.clone()))),
+        }));
+        let response = result(&outgoing);
+        assert_eq!(response["isIncomplete"], json!(false));
+        assert_eq!(response["items"][0]["label"], json!("name"));
+        assert_eq!(
+            response["items"][0]["textEdit"]["range"]["start"],
+            json!({"line": 0, "character": 14})
+        );
+        assert_eq!(
+            response["items"][0]["textEdit"]["range"]["end"],
+            json!({"line": 0, "character": 16})
+        );
+        assert_eq!(response["items"][0]["sortText"], json!("m_name"));
+
+        server.handle_incoming(request(
+            json!("c2"),
+            "textDocument/completion",
+            hover_params((0, 16)),
+        ));
+        let jobs = dispatch.take();
+        assert_eq!(jobs.len(), 1);
+        let mut stale = jobs[0].stamp.clone();
+        stale.epoch = epoch().next();
+        let outgoing = only(server.handle_work(WorkDone {
+            key: jobs[0].key.clone(),
+            kind: JobKind::Completion(CompletionKind::ExpressionMember),
+            stamp: stale,
+            cancelled: false,
+            outcome: Ok(Outcome::Completion(Box::new(completion))),
+        }));
+        assert_eq!(result(&outgoing)["items"], json!([]));
+    }
+
+    #[test]
     fn initialize_reports_backend_capabilities() {
         let (mut server, _) = setup();
         let outgoing = only(server.handle_incoming(request(json!(1), "initialize", json!({}))));
@@ -674,6 +757,10 @@ mod tests {
         assert_eq!(
             result["capabilities"]["textDocumentSync"]["change"],
             json!(2)
+        );
+        assert_eq!(
+            result["capabilities"]["textDocumentSync"]["save"]["includeText"],
+            json!(false)
         );
         assert_eq!(result["capabilities"]["positionEncoding"], json!("utf-16"));
         assert_eq!(result["capabilities"]["hoverProvider"], json!(true));
@@ -1505,6 +1592,153 @@ mod tests {
     fn scheduling_diagnostics_for_unknown_documents_is_a_noop() {
         let (mut server, dispatch) = setup();
         assert!(server.schedule_diagnostics(URI).is_empty());
+        assert!(dispatch.take().is_empty());
+    }
+
+    #[test]
+    fn initialized_emits_no_registration_without_a_project() {
+        let (mut server, dispatch) = setup();
+        initialize(&mut server);
+        assert!(
+            server
+                .handle_incoming(notification("initialized", json!({})))
+                .is_empty()
+        );
+        assert!(dispatch.take().is_empty());
+    }
+
+    #[test]
+    fn malformed_save_and_watched_file_notifications_are_ignored() {
+        let (mut server, dispatch) = setup();
+        initialize(&mut server);
+        open_document(&mut server, "abc", 1);
+        dispatch.take();
+        let malformed = [
+            notification("textDocument/didSave", json!(null)),
+            notification("textDocument/didSave", json!({})),
+            notification("textDocument/didSave", json!({"textDocument": {}})),
+            notification("textDocument/didSave", json!({"textDocument": {"uri": 1}})),
+            notification("workspace/didChangeWatchedFiles", json!(null)),
+            notification("workspace/didChangeWatchedFiles", json!({})),
+            notification("workspace/didChangeWatchedFiles", json!({"changes": {}})),
+            notification(
+                "workspace/didChangeWatchedFiles",
+                json!({"changes": [null, {"uri": 1}, {"uri": URI}, {"type": 2}]}),
+            ),
+            Incoming::Notification {
+                method: "textDocument/didSave".to_owned(),
+                params: None,
+            },
+            Incoming::Notification {
+                method: "workspace/didChangeWatchedFiles".to_owned(),
+                params: None,
+            },
+        ];
+        for incoming in malformed {
+            assert!(server.handle_incoming(incoming).is_empty());
+        }
+        assert!(dispatch.take().is_empty());
+    }
+
+    #[test]
+    fn did_save_for_a_synthetic_wxml_document_schedules_diagnostics() {
+        let (mut server, dispatch) = setup();
+        initialize(&mut server);
+        open_document(&mut server, "{{ user.name }}", 1);
+        dispatch.take();
+
+        let outgoing = server.handle_incoming(notification(
+            "textDocument/didSave",
+            json!({"textDocument": {"uri": URI}}),
+        ));
+        assert!(outgoing.is_empty());
+        let jobs = dispatch.take();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].kind, JobKind::Diagnostics);
+        assert!(jobs[0].key.is_none());
+    }
+
+    #[test]
+    fn did_save_with_text_refreshes_and_reschedules() {
+        let (mut server, dispatch) = setup();
+        initialize(&mut server);
+        open_document(&mut server, "{{ user.name }}", 1);
+        dispatch.take();
+
+        let outgoing = server.handle_incoming(notification(
+            "textDocument/didSave",
+            json!({"textDocument": {"uri": URI}, "text": "{{ user.age }}"}),
+        ));
+        assert!(outgoing.is_empty());
+        let jobs = dispatch.take();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].kind, JobKind::Diagnostics);
+    }
+
+    #[test]
+    fn untitled_wxml_documents_schedule_but_other_untitled_documents_do_not() {
+        let (mut server, dispatch) = setup();
+        initialize(&mut server);
+        server.handle_incoming(notification(
+            "textDocument/didOpen",
+            json!({"textDocument": {
+                "uri": "untitled:Untitled-1",
+                "languageId": "wxml",
+                "version": 1,
+                "text": "<view>{{ user.name }}</view>",
+            }}),
+        ));
+        assert_eq!(dispatch.take().len(), 1);
+
+        server.handle_incoming(notification(
+            "textDocument/didOpen",
+            json!({"textDocument": {
+                "uri": "untitled:Untitled-2",
+                "languageId": "plaintext",
+                "version": 1,
+                "text": "not a template",
+            }}),
+        ));
+        assert!(dispatch.take().is_empty());
+
+        let outgoing = only(server.handle_incoming(notification(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": "untitled:Untitled-1"}}),
+        )));
+        let Outgoing::Notification { method, params } = outgoing else {
+            panic!("expected notification");
+        };
+        assert_eq!(method, "textDocument/publishDiagnostics");
+        assert_eq!(params["uri"], json!("untitled:Untitled-1"));
+        assert_eq!(params["diagnostics"], json!([]));
+    }
+
+    #[test]
+    fn point_requests_for_non_wxml_documents_return_null() {
+        let capabilities = BackendCapabilities {
+            definition: CapabilityStatus::Supported,
+            ..MockBackend::new().capabilities()
+        };
+        let (mut server, dispatch) = setup_with(capabilities);
+        initialize(&mut server);
+        let uri = "file:///scripts/a.ts";
+        server.handle_incoming(notification(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": uri, "languageId": "typescript", "version": 1, "text": "const x = 1;"}}),
+        ));
+        dispatch.take();
+
+        for method in ["textDocument/hover", "textDocument/definition"] {
+            let outgoing = only(server.handle_incoming(request(
+                json!(8),
+                method,
+                json!({
+                    "textDocument": {"uri": uri},
+                    "position": {"line": 0, "character": 6},
+                }),
+            )));
+            assert_eq!(result(&outgoing), &json!(null), "{method}");
+        }
         assert!(dispatch.take().is_empty());
     }
 

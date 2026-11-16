@@ -9,6 +9,7 @@ import {
   RequestError,
   SERVER_LIMITS,
   toCompilerOptions,
+  totalBytes,
   validateRequest,
 } from "../src/protocol.ts";
 import { fileIdOf, inspectLayout, inspectRequest, runRequest, runScenario, type RunConfig } from "../src/run.ts";
@@ -19,7 +20,7 @@ const config: RunConfig = { backendDir: BACKEND_DIR, samplesDir: SAMPLES_DIR };
 test("the request carries files, fragments, options, policy and owner", () => {
   const spec = scenarioById("alias-project");
   const request = inspectRequest(spec, "in-place-shadow", config);
-  assert.equal(request.protocolVersion, 1);
+  assert.equal(request.protocolVersion, 2);
   assert.equal(request.view.owner.kind, "page");
   assert.equal(request.view.owner.fileId, "index.ts");
   assert.ok(request.view.viewId.length > 0);
@@ -46,6 +47,187 @@ test("the request carries files, fragments, options, policy and owner", () => {
   assert.ok(fragment.fragmentRevision >= 1);
   assert.ok(fragment.wxmlRange.end > fragment.wxmlRange.start);
   assert.equal(request.limits?.maxFiles, DEFAULT_LIMITS.maxFiles);
+});
+
+test("protocol v2 accepts optional bindings, guards, components and events", () => {
+  const request = inspectRequest(scenarioById("alias-project"), "in-place-shadow", config);
+  assert.equal(request.protocolVersion, 2);
+  request.fragments[0]!.bindings = [
+    {
+      name: "item",
+      role: "item",
+      sourceExpr: "groups",
+      sourceRange: { start: 0, end: 6 },
+    },
+  ];
+  request.fragments[0]!.guards = [
+    {
+      conditions: [{ branch: "if", exprText: "state.ready", range: { start: 0, end: 11 } }],
+      selected: 0,
+    },
+  ];
+  request.components = [
+    {
+      tag: "card",
+      componentFileId: "components/card/card.ts",
+      attributes: [
+        {
+          name: "title",
+          valueKind: "mustache",
+          exprText: "pageTitle",
+          exprRange: { start: 0, end: 9 },
+          attributeRange: { start: 0, end: 20 },
+        },
+      ],
+    },
+  ];
+  request.events = [
+    {
+      eventId: "e0",
+      attribute: "bind:tap",
+      event: "tap",
+      handler: "onCardTap",
+      attributeRange: { start: 0, end: 14 },
+      handlerRange: { start: 10, end: 19 },
+    },
+  ];
+  assert.doesNotThrow(() => validateRequest(request));
+});
+
+test("protocol v2 rejects malformed structured bindings", () => {
+  const request = inspectRequest(scenarioById("alias-project"), "in-place-shadow", config);
+  request.fragments[0]!.bindings = [
+    {
+      name: "item",
+      role: "element" as unknown as "item",
+      sourceExpr: "groups",
+      sourceRange: { start: 0, end: 6 },
+    },
+  ];
+  assert.throws(
+    () => validateRequest(request),
+    (error: unknown) => error instanceof RequestError && error.code === "bad-fragment",
+  );
+  request.fragments[0]!.bindings = [
+    {
+      name: "item",
+      role: "item",
+      sourceExpr: "groups",
+      sourceRange: { start: 6, end: 0 },
+    },
+  ];
+  assert.throws(
+    () => validateRequest(request),
+    (error: unknown) => error instanceof RequestError && error.code === "bad-fragment",
+  );
+});
+
+test("protocol v2 accepts a same-name nested binding chain", () => {
+  const request = inspectRequest(scenarioById("alias-project"), "in-place-shadow", config);
+  const range = { start: 0, end: 1 };
+  request.fragments[0]!.bindings = [
+    { name: "item", role: "item", sourceExpr: "groups", sourceRange: range },
+    { name: "index", role: "index", sourceExpr: "groups", sourceRange: range },
+    { name: "item", role: "item", sourceExpr: "item.members", sourceRange: range },
+    { name: "index", role: "index", sourceExpr: "item.members", sourceRange: range },
+  ];
+  assert.doesNotThrow(
+    () => validateRequest(request),
+    "an inner loop may shadow an outer name: the chain encodes nesting, not uniqueness",
+  );
+});
+
+test("protocol v2 rejects a duplicate binding name inside one nesting level", () => {
+  const request = inspectRequest(scenarioById("alias-project"), "in-place-shadow", config);
+  const range = { start: 0, end: 1 };
+  request.fragments[0]!.bindings = [
+    { name: "item", role: "item", sourceExpr: "groups", sourceRange: range },
+    { name: "item", role: "index", sourceExpr: "groups", sourceRange: range },
+  ];
+  assert.throws(
+    () => validateRequest(request),
+    (error: unknown) => error instanceof RequestError && error.code === "bad-fragment",
+  );
+});
+
+test("protocol v2 bounds guard chains and their conditions", () => {
+  const request = inspectRequest(scenarioById("alias-project"), "in-place-shadow", config);
+  const condition = (index: number) => ({
+    branch: "if" as const,
+    exprText: `c${index}`,
+    range: { start: 0, end: 2 },
+  });
+  request.fragments[0]!.guards = Array.from({ length: 33 }, () => ({ conditions: [condition(0)], selected: 0 }));
+  assert.throws(
+    () => validateRequest(request),
+    (error: unknown) =>
+      error instanceof RequestError && error.code === "bad-fragment" && /guard chains exceed the limit/.test(error.message),
+  );
+
+  request.fragments[0]!.guards = [
+    { conditions: Array.from({ length: 65 }, (_, index) => condition(index)), selected: 0 },
+  ];
+  assert.throws(
+    () => validateRequest(request),
+    (error: unknown) =>
+      error instanceof RequestError && error.code === "bad-fragment" && /guard conditions exceed the limit/.test(error.message),
+  );
+});
+
+test("v2 structured payloads count against the request byte budget", () => {
+  const base = inspectRequest(scenarioById("alias-project"), "in-place-shadow", config);
+  // A limit just above the file + fragment text: any v2 payload must exceed it.
+  const limit = totalBytes(base.files, base.fragments) + 64;
+  const request = (mutate: (request: ReturnType<typeof inspectRequest>) => void) => {
+    const next = inspectRequest(scenarioById("alias-project"), "in-place-shadow", config);
+    mutate(next);
+    return { ...next, limits: { ...DEFAULT_LIMITS, maxTotalBytes: limit } };
+  };
+  const tooManyBytes = (error: unknown) =>
+    error instanceof RequestError && error.code === "too-many-bytes";
+
+  const withBindings = request((next) => {
+    next.fragments[0]!.bindings = [
+      { name: "item", role: "item", sourceExpr: "x".repeat(4096), sourceRange: { start: 0, end: 1 } },
+    ];
+  });
+  assert.throws(() => validateRequest(withBindings), tooManyBytes, "bindings[].sourceExpr is counted");
+
+  const withGuards = request((next) => {
+    next.fragments[0]!.guards = [
+      { conditions: [{ branch: "if", exprText: "y".repeat(4096), range: { start: 0, end: 1 } }], selected: 0 },
+    ];
+  });
+  assert.throws(() => validateRequest(withGuards), tooManyBytes, "guards[].conditions[].exprText is counted");
+
+  const withComponents = request((next) => {
+    next.components = [
+      {
+        tag: "card",
+        componentFileId: "card.ts",
+        attributes: [
+          {
+            name: "title",
+            valueKind: "mustache",
+            exprText: "z".repeat(4096),
+            exprRange: { start: 0, end: 1 },
+            attributeRange: { start: 0, end: 1 },
+          },
+        ],
+      },
+    ];
+  });
+  assert.throws(
+    () => validateRequest(withComponents),
+    tooManyBytes,
+    "components[].attributes[].exprText is counted",
+  );
+
+  // The same payloads pass once the budget is the default: only the byte count
+  // changed, not the structural validation.
+  assert.doesNotThrow(() => validateRequest({ ...withBindings, limits: { ...DEFAULT_LIMITS } }));
+  assert.doesNotThrow(() => validateRequest({ ...withGuards, limits: { ...DEFAULT_LIMITS } }));
+  assert.doesNotThrow(() => validateRequest({ ...withComponents, limits: { ...DEFAULT_LIMITS } }));
 });
 
 test("the option digest is independent of the checkout path", () => {
@@ -177,7 +359,7 @@ test("enum values and the protocol version are validated", () => {
   }
   assert.doesNotThrow(() => validateRequest(withOptions({ target: "ES2020", jsx: "react-jsx" }) as typeof request));
   assert.throws(
-    () => validateRequest({ ...request, protocolVersion: 2 }),
+    () => validateRequest({ ...request, protocolVersion: 3 }),
     (error: unknown) => error instanceof RequestError && error.code === "bad-protocol",
   );
 });
@@ -213,7 +395,7 @@ test("the C1 response is assembled from the run", () => {
   const spec = scenarioById("page-basic");
   const request = inspectRequest(spec, "in-place-shadow", config);
   const run = runScenario(spec, "in-place-shadow", config);
-  assert.equal(run.response.protocolVersion, 1);
+  assert.equal(run.response.protocolVersion, 2);
   assert.equal(run.response.requestId, request.requestId);
   assert.deepEqual(run.response.states, run.states);
   assert.equal(run.response.moduleKind.before, "script");

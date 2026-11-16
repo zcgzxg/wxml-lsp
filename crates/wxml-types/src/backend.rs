@@ -175,6 +175,121 @@ pub struct DefinitionResult {
     pub status: CapabilityStatus,
 }
 
+/// Maximum number of completion items a backend may return for one request.
+pub const MAX_COMPLETION_ITEMS: usize = 256;
+
+/// The syntactic context a completion request was issued in.
+///
+/// The LSP layer derives the context from the parsed template; a backend only
+/// validates that the requested kind is one it supports.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CompletionKind {
+    /// An element name after `<` or inside `</`.
+    Tag,
+    /// An attribute name inside an open tag.
+    AttributeName,
+    /// An enumeration value for the attribute under the cursor.
+    AttributeValue,
+    /// A member after `.` inside a mustache expression.
+    ExpressionMember,
+    /// A handler name inside an event attribute value.
+    EventHandler,
+}
+
+impl CompletionKind {
+    /// Returns the stable lower-case name used by the C1 protocol.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Tag => "tag",
+            Self::AttributeName => "attributeName",
+            Self::AttributeValue => "attributeValue",
+            Self::ExpressionMember => "expressionMember",
+            Self::EventHandler => "eventHandler",
+        }
+    }
+}
+
+/// Editor presentation category of a [`CompletionItem`].
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum CompletionItemKind {
+    /// A WXML element name.
+    Tag,
+    /// An attribute name.
+    Attribute,
+    /// A literal attribute value.
+    Value,
+    /// A data or type member.
+    Property,
+    /// A script method or event handler.
+    Method,
+    /// An event or directive name.
+    Event,
+    /// A reserved word such as `true` or `null`.
+    Keyword,
+}
+
+/// How a completion item is inserted into the document.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
+pub enum InsertTextFormat {
+    /// `insert_text` is inserted literally.
+    #[default]
+    PlainText,
+    /// `insert_text` follows the LSP snippet grammar.
+    Snippet,
+}
+
+/// A completion query for one byte offset in a template.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompletionRequest {
+    /// Versions and source snapshot the query depends on.
+    pub context: RequestContext,
+    /// UTF-8 byte offset; it must be on a character boundary.
+    pub offset: u32,
+    /// The syntactic context the offset sits in.
+    pub kind: CompletionKind,
+}
+
+/// One completion candidate in original-template coordinates.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompletionItem {
+    /// Text shown in the editor list.
+    pub label: String,
+    /// Presentation category.
+    pub kind: CompletionItemKind,
+    /// Short type or signature shown next to the label.
+    pub detail: Option<String>,
+    /// Long documentation shown in the detail pane.
+    pub documentation: Option<String>,
+    /// Text inserted or used to replace [`Self::replace`].
+    pub insert_text: String,
+    /// Interpretation of [`Self::insert_text`].
+    pub insert_text_format: InsertTextFormat,
+    /// Byte range replaced by this item; must be a valid source range.
+    pub replace: SourceRange,
+    /// Stable sort key; [`None`] keeps the backend order.
+    pub sort_text: Option<String>,
+    /// Text the editor matches typed prefixes against.
+    pub filter_text: Option<String>,
+}
+
+/// Completion items plus the status of the query.
+///
+/// Empty plus [`CapabilityStatus::Supported`] means "checked, and there is
+/// nothing to suggest". Empty plus `Unsupported`/`Unavailable` means the
+/// backend could not answer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompletionResult {
+    /// Candidates in the backend's preferred order.
+    pub items: Vec<CompletionItem>,
+    /// Completeness and availability of the query.
+    pub status: CapabilityStatus,
+    /// `true` when [`MAX_COMPLETION_ITEMS`] cut the candidate list short.
+    pub truncated: bool,
+}
+
 /// Feature flags and per-feature support advertised by a backend.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BackendCapabilities {
@@ -184,8 +299,10 @@ pub struct BackendCapabilities {
     pub diagnostics: CapabilityStatus,
     /// Support for [`Backend::definition`].
     pub definition: CapabilityStatus,
-    /// Completion support; the field exists before the method, which lands in
-    /// C1.
+    /// Support for [`Backend::completion`].
+    ///
+    /// Static template completion does not go through the backend; this flag
+    /// only covers expression-member and event-handler completion.
     pub completion: CapabilityStatus,
 }
 
@@ -238,6 +355,21 @@ pub trait Backend: Send + Sync {
             status: CapabilityStatus::Unsupported {
                 reason: "definition is not implemented".to_owned(),
             },
+        })
+    }
+
+    /// Returns completion candidates for `request`.
+    ///
+    /// The default implementation reports the feature as unsupported, so a
+    /// backend keeps working until it opts in. Static template completion does
+    /// not go through this method.
+    fn completion(&self, _request: CompletionRequest) -> Result<CompletionResult, BackendError> {
+        Ok(CompletionResult {
+            items: Vec::new(),
+            status: CapabilityStatus::Unsupported {
+                reason: "completion is not implemented".to_owned(),
+            },
+            truncated: false,
         })
     }
 
@@ -485,6 +617,62 @@ mod tests {
             .expect("default implementation succeeds");
         assert_eq!(result.locations, Vec::new());
         assert!(!result.status.is_supported());
+    }
+
+    #[test]
+    fn completion_defaults_to_unsupported_rather_than_empty_success() {
+        let result = BareBackend
+            .completion(CompletionRequest {
+                context: context(),
+                offset: 0,
+                kind: CompletionKind::ExpressionMember,
+            })
+            .expect("default implementation succeeds");
+        assert_eq!(result.items, Vec::new());
+        assert!(!result.status.is_supported());
+        assert_eq!(
+            result.status.reason(),
+            Some("completion is not implemented")
+        );
+        assert!(!result.truncated);
+    }
+
+    #[test]
+    fn completion_dtos_keep_labels_ranges_and_formats() {
+        let item = CompletionItem {
+            label: "name".to_owned(),
+            kind: CompletionItemKind::Property,
+            detail: Some("string".to_owned()),
+            documentation: Some("The user's display name.".to_owned()),
+            insert_text: "name".to_owned(),
+            insert_text_format: InsertTextFormat::PlainText,
+            replace: range(7, 11),
+            sort_text: Some("0".to_owned()),
+            filter_text: Some("name".to_owned()),
+        };
+        let result = CompletionResult {
+            items: vec![item],
+            status: CapabilityStatus::Supported,
+            truncated: false,
+        };
+        assert_eq!(result.items.len(), 1);
+        let item = &result.items[0];
+        assert_eq!(item.label, "name");
+        assert_eq!(item.kind, CompletionItemKind::Property);
+        assert_eq!(item.insert_text_format, InsertTextFormat::PlainText);
+        assert_eq!(item.replace.start(), 7);
+        assert_eq!(item.replace.end(), 11);
+        assert!(result.status.is_supported());
+        assert_eq!(MAX_COMPLETION_ITEMS, 256);
+        assert_eq!(CompletionKind::Tag.as_str(), "tag");
+        assert_eq!(CompletionKind::AttributeName.as_str(), "attributeName");
+        assert_eq!(CompletionKind::AttributeValue.as_str(), "attributeValue");
+        assert_eq!(
+            CompletionKind::ExpressionMember.as_str(),
+            "expressionMember"
+        );
+        assert_eq!(CompletionKind::EventHandler.as_str(), "eventHandler");
+        assert_eq!(InsertTextFormat::default(), InsertTextFormat::PlainText);
     }
 
     #[test]

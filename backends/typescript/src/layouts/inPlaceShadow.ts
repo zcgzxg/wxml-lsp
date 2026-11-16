@@ -10,9 +10,10 @@
 
 import ts from "typescript";
 import { memberMap, type Registration } from "../ast.ts";
-import { planFragments } from "../fragments.ts";
-import { localDeclarations, uniqueLocals } from "./locals.ts";
+import { planFragments, PROPS_PREFIX, ROOT_PREFIX } from "../fragments.ts";
+import { indentLines, localHelpers, renderFragmentScope } from "./locals.ts";
 import { buildSegments } from "./segments.ts";
+import { rewriteExpression } from "../rewrite.ts";
 import { PROPS_TYPE_NAME, PROPS_VALUE_NAME, renderPropsType, renderPropsValue, type RenderedMember } from "../propsOverlay.ts";
 import { assemble, type Piece } from "../text.ts";
 import type {
@@ -96,14 +97,13 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
   const overlayNames = new Set(overlayProperties.map((property) => property.name));
   const drafts = planFragments(context.fragments, {
     propertyOverlay: overlayNames,
-    rootPrefix: "__wxml_root.",
+    rootPrefix: ROOT_PREFIX,
   });
-  const localNames = uniqueLocals(drafts.map((draft) => draft.locals));
 
+  const syntax = context.isJavaScript ? "js" : "ts";
   const body = new Pieces();
   const marks: Array<{ member: RenderedMember; renderedStart: number }> = [];
   body.text(`\n    ${IN_PLACE_PROBE}() {\n`);
-  body.append(localDeclarations(localNames, BODY_INDENT, context.isJavaScript ? "js" : "ts"));
   body.text(`${BODY_INDENT}const ${ROOT_NAME} = this.data;\n`);
   const rootExpressionOffset = body.length - "this.data;\n".length;
   if (overlayProperties.length > 0) {
@@ -112,16 +112,31 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
       for (const member of rendered.members) marks.push({ member, renderedStart: body.length + member.offset });
       body.text(`${rendered.text}\n`);
     }
-    const value = renderPropsValue(overlayProperties, BODY_INDENT, context.isJavaScript ? "js" : "ts");
+    const value = renderPropsValue(overlayProperties, BODY_INDENT, syntax);
     for (const member of value.members) marks.push({ member, renderedStart: body.length + member.offset });
     body.text(`${value.text}\n`);
   }
-  body.text(`${BODY_INDENT}return [\n`);
-  const mountOffsets = new Map<string, number>();
+  // The helper types are only needed when a `wx:for` source has to be typed; they
+  // are declared once per probe, after the root, because they depend on nothing.
+  const typedBindings = drafts.some((draft) => draft.bindings.length > 0);
+  const helpers = localHelpers(syntax);
+  if (typedBindings && helpers.length > 0) body.text(`${indentLines(helpers, BODY_INDENT)}\n`);
+
+  let unresolvedBindings = 0;
+  let unresolvedGuards = 0;
   for (const draft of drafts) {
-    body.text(`${BODY_INDENT}  `);
+    const scope = renderFragmentScope(draft, {
+      indent: BODY_INDENT,
+      syntax,
+      rewriteSource: (sourceExpr, outerNames) => rewriteInScope(overlayNames, sourceExpr, outerNames),
+      rewriteCondition: (exprText) =>
+        rewriteInScope(overlayNames, exprText, new Set(draft.bindings.length > 0 ? draft.bindings.map((b) => b.name) : draft.locals)),
+    });
+    unresolvedBindings += scope.unresolvedBindings;
+    unresolvedGuards += scope.unresolvedGuards;
+    body.text(scope.open);
+    body.text(scope.mountIndent);
     const mountId = `${draft.fragmentId}#0`;
-    mountOffsets.set(mountId, body.length);
     body.append([
       {
         kind: "fragment",
@@ -132,9 +147,10 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
         targetOffset: draft.targetOffset,
       },
     ]);
-    body.text(`,\n`);
+    body.text(`;\n`);
+    body.text(scope.close);
   }
-  body.text(`${BODY_INDENT}];\n${METHOD_INDENT}},\n  `);
+  body.text(`${METHOD_INDENT}},\n  `);
 
   const placement = probePlacement(registration);
   if ("problem" in placement) {
@@ -213,6 +229,8 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
     root: draft.root,
     target: draft.target,
     locals: draft.locals,
+    bindings: draft.bindings,
+    guards: draft.guards,
     localRoot: draft.localRoot,
     mounts: assembled.mounts
       .filter((mount) => mount.fragmentId === draft.fragmentId)
@@ -246,10 +264,19 @@ export function buildInPlaceShadow(context: LayoutContext): LayoutBuild {
       : []),
   ];
 
+  if (unresolvedBindings > 0 || unresolvedGuards > 0) {
+    buildStatus = "partial";
+    const unresolvedReason = "some template bindings or guards could not be resolved and were not checked";
+    reason = reason ? `${reason}; ${unresolvedReason}` : unresolvedReason;
+    notes.push("unresolved `wx:for` bindings or `wx:if` guards are mounted as `any`/unnarrowed and not checked");
+  }
+
   return {
     layout: "in-place-shadow",
     buildStatus,
     ...(reason ? { reason } : {}),
+    unresolvedBindings,
+    unresolvedGuards,
     files: [{ path: context.scriptPath, text: assembled.text }],
     queryFile: context.scriptPath,
     insertions: assembled.insertions,
@@ -304,6 +331,24 @@ function byteRangeOfNode(
   const start = Buffer.byteLength(text.slice(0, node.getStart()), "utf8");
   const end = Buffer.byteLength(text.slice(0, node.getEnd()), "utf8");
   return { file, start, end };
+}
+
+/** Rewrite a template sub-expression against `this.data` (and the props overlay). */
+function rewriteInScope(
+  overlay: ReadonlySet<string>,
+  exprText: string,
+  locals: ReadonlySet<string>,
+): string | undefined {
+  try {
+    return rewriteExpression(exprText, undefined, {
+      rootPrefix: ROOT_PREFIX,
+      propsPrefix: PROPS_PREFIX,
+      propertyOverlay: overlay,
+      locals,
+    }).text;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Offset of the first piece that starts with `needle` (no text search). */

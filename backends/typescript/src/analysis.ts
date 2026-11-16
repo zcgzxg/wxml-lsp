@@ -20,6 +20,8 @@ import {
   VirtualProject,
 } from "./compiler.ts";
 import { classifyDataRoot } from "./dataroot.ts";
+import { collectComponentDiagnostics } from "./componentBindings.ts";
+import { collectEventResults } from "./events.ts";
 import { locateExpression } from "./fragments.ts";
 import { buildInPlaceShadow } from "./layouts/inPlaceShadow.ts";
 import { buildSymbolBridge } from "./layouts/symbolBridge.ts";
@@ -83,6 +85,10 @@ export interface AnalysisResponseInput {
   moduleAfter: "script" | "module" | "unknown";
   suppressedDiagnostics: number;
   suppressedDetails: Array<{ code: number; message: string }>;
+  /** Custom-component binding results (protocol v2). */
+  components?: AnalyzeResponse["components"];
+  /** Event handler resolutions (protocol v2). */
+  eventResults?: AnalyzeResponse["eventResults"];
 }
 
 /** Assemble the C1 response (diagnostics publish WXML bytes only). */
@@ -163,6 +169,8 @@ export function toAnalyzeResponse(input: AnalysisResponseInput): AnalyzeResponse
     fragments,
     moduleKind: { before: input.moduleBefore, after: input.moduleAfter },
     suppressed: { count: input.suppressedDiagnostics, details: input.suppressedDetails },
+    ...(input.components && input.components.length > 0 ? { components: input.components } : {}),
+    ...(input.eventResults && input.eventResults.length > 0 ? { eventResults: input.eventResults } : {}),
   };
 }
 
@@ -338,6 +346,8 @@ export interface AnalysisResult {
   hovers: AnalysisQuery[];
   diagnostics: DiagnosticObservation[];
   definitions: AnalysisDefinition[];
+  /** Event handler resolutions (protocol v2). */
+  eventResults: AnalyzeResponse["eventResults"];
   suppressedDiagnostics: number;
   suppressedDetails: Array<{ code: number; message: string }>;
   probeProblems: string[];
@@ -393,7 +403,14 @@ export function analyze(request: AnalyzeRequest, config: AnalysisConfig): Analys
     rootDeclarationSpans,
   } = view;
 
-  if (build.fragments.length === 0) {
+  // A template without mustaches can still have component bindings (literal or
+  // boolean attributes) and event handlers; only a request with none of the
+  // three can skip the whole pipeline.
+  if (
+    build.fragments.length === 0 &&
+    (request.components?.length ?? 0) === 0 &&
+    (request.events?.length ?? 0) === 0
+  ) {
     const states = finishedStates({
       build,
       policy: request.policy.jsCheck,
@@ -401,7 +418,6 @@ export function analyze(request: AnalyzeRequest, config: AnalysisConfig): Analys
       introduced: [],
       noCheck: view.pragmaNoCheck,
       droppedDefinitions: 0,
-      hasLocals: request.fragments.some((fragment) => (fragment.locals?.length ?? 0) > 0),
       unmappedDiagnostics: 0,
       missing: 0,
       unexpected: 0,
@@ -437,6 +453,7 @@ export function analyze(request: AnalyzeRequest, config: AnalysisConfig): Analys
       hovers: [],
       diagnostics: [],
       definitions: [],
+      eventResults: [],
       suppressedDiagnostics: 0,
       suppressedDetails: [],
       probeProblems: [],
@@ -465,22 +482,46 @@ export function analyze(request: AnalyzeRequest, config: AnalysisConfig): Analys
   const introduced = diagnosticsOff
     ? []
     : introducedDiagnostics(project, build, scriptPath, scriptText, baselineDiagnostics);
+  const components = diagnosticsOff
+    ? { results: [], skipped: 0, skippedDetails: [] }
+    : collectComponentDiagnostics({ request, build, project });
+  // Event resolution is AST-only: it does not depend on the derived view or on
+  // the JavaScript check policy, and it must not disturb fragment results.
+  const events = collectEventResults(request, view);
   const shadowFingerprint = thisFingerprintAtOffsets(project, scriptPath, build.edits, baselineFingerprint.offsets);
   const perturbsUserTypes =
     shadowFingerprint !== undefined && !sameFingerprint(baselineFingerprint.types, shadowFingerprint.types);
-  const hasLocals = request.fragments.some((fragment) => (fragment.locals?.length ?? 0) > 0);
-  const states = finishedStates({
+  let states = finishedStates({
     build,
     policy: request.policy.jsCheck,
     probeProblems,
     introduced,
     noCheck: view.pragmaNoCheck,
     droppedDefinitions: definitions.dropped,
-    hasLocals,
     unmappedDiagnostics: unmapped,
     missing: 0,
     unexpected: 0,
   });
+  if (components.skipped > 0) {
+    // Component bindings that were not checked are a coverage gap, not a clean
+    // check: keep Disabled/Unsupported and make anything else Partial. Up to
+    // three `tag.attribute` pairs make the reason actionable.
+    const detail =
+      components.skippedDetails.length > 0 ? ` (${components.skippedDetails.join(", ")})` : "";
+    states = {
+      ...states,
+      diagnostics: coverPartial(
+        states.diagnostics,
+        `some component bindings could not be resolved and were not checked${detail}`,
+      ),
+    };
+  }
+  if (events.skipped > 0) {
+    states = {
+      ...states,
+      diagnostics: coverPartial(states.diagnostics, eventCoverageReason(events.skippedDetails)),
+    };
+  }
 
   const insertions = evidenceInsertions(build, request);
   const mounts = evidenceMounts(build, request);
@@ -498,6 +539,8 @@ export function analyze(request: AnalyzeRequest, config: AnalysisConfig): Analys
     moduleAfter: build.moduleAfter,
     suppressedDiagnostics: suppressed,
     suppressedDetails,
+    ...(components.results.length > 0 ? { components: components.results } : {}),
+    ...(events.results.length > 0 ? { eventResults: events.results } : {}),
   });
 
   return {
@@ -515,6 +558,7 @@ export function analyze(request: AnalyzeRequest, config: AnalysisConfig): Analys
     hovers,
     diagnostics: mapped,
     definitions: definitions.observations,
+    eventResults: events.results,
     suppressedDiagnostics: suppressed,
     suppressedDetails,
     probeProblems,
@@ -605,7 +649,6 @@ interface StateInput {
   introduced: Array<{ code: number; message: string }>;
   noCheck: boolean;
   droppedDefinitions: number;
-  hasLocals: boolean;
   /** In-mount diagnostics that could not be attributed to any WXML source span. */
   unmappedDiagnostics: number;
   missing: number;
@@ -671,16 +714,19 @@ function computeStates(input: StateInput, missing: number, unexpected: number): 
     if (hover.status === "supported") hover = gate;
     definition = gate;
   }
-  if (input.hasLocals) {
-    const reason = "template locals are bound as any; loop item/index member checks deferred";
-    hover = mergeLocal(hover, reason);
-    // An explicit `off` keeps diagnostics disabled; the reason still records why
-    // the local fragment is only partially covered.
-    diagnostics =
-      diagnostics.status === "disabled"
-        ? { status: "disabled", reason: [diagnostics.reason, reason].filter(Boolean).join("; ") }
-        : mergeLocal(diagnostics, reason);
-    definition = mergeLocal(definition, reason);
+  if ((input.build.unresolvedBindings ?? 0) + (input.build.unresolvedGuards ?? 0) > 0) {
+    // A layout that reported unresolved bindings/guards must never claim
+    // Supported. Layouts already downgrade their own `buildStatus`, so this only
+    // catches an inconsistent report without duplicating the reason.
+    if (input.build.buildStatus === "supported") {
+      const unresolvedReason = "some template bindings or guards could not be resolved and were not checked";
+      hover = mergeLocal(hover, unresolvedReason);
+      diagnostics =
+        diagnostics.status === "disabled"
+          ? { status: "disabled", reason: [diagnostics.reason, unresolvedReason].filter(Boolean).join("; ") }
+          : mergeLocal(diagnostics, unresolvedReason);
+      definition = mergeLocal(definition, unresolvedReason);
+    }
   }
   if (input.droppedDefinitions > 0) {
     definition = mergeLocal(
@@ -709,6 +755,23 @@ function mergeLocal(state: CapabilityState, reason: string): CapabilityState {
   if (state.status === "unsupported" || state.status === "unavailable") return state;
   const merged = [state.reason, reason].filter(Boolean).join("; ");
   return { status: "partial", reason: merged };
+}
+
+/**
+ * Downgrade a diagnostics state for partial coverage.
+ *
+ * `disabled`/`unsupported`/`unavailable` already publish nothing, so they are
+ * left alone; anything else becomes Partial with the coverage reason.
+ */
+function coverPartial(state: CapabilityState, reason: string): CapabilityState {
+  if (state.status === "disabled" || state.status === "unsupported" || state.status === "unavailable") return state;
+  return mergeLocal(state, reason);
+}
+
+/** Coverage reason for events that could not be resolved (never per-event noise). */
+function eventCoverageReason(details: string[]): string {
+  const suffix = details.length > 0 ? ` (${details.join(", ")})` : "";
+  return `some event handlers could not be resolved and were not checked${suffix}`;
 }
 
 function checkOffReason(policy: "inherit" | "pragma" | "off", noCheck: boolean): string {

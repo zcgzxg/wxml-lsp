@@ -4,7 +4,7 @@
 
 本文件是本项目 WXML 通用语言能力的自有需求基线。功能取舍、默认行为和验收条件以本文为准，不再依赖外部插件的 README、源码或本机实验目录。历史来源仅用于许可证与归属说明，见 [来源与许可证记录](provenance.md)。
 
-当前状态：本文全部条目均为计划或待实现，不代表已经具备对应能力。模板类型体验的优先级与验收见[项目 README](../../README.md#31-第一优先级模板类型体验)。
+当前状态：截至 2026-11-16，F-01–F-04、F-06、F-07 的补全子集已实现并通过测试，实际覆盖范围与降级行为见 §3.8；其余条目仍为计划或待实现，不代表已经具备对应能力。模板类型体验的优先级与验收见[项目 README](../../README.md#31-第一优先级模板类型体验)。
 
 ## 1. 优先级与范围
 
@@ -97,6 +97,82 @@
 - 多工作区、多小程序根、多 `tsconfig` 和服务重启必须隔离；日志至少包含实例、事件和版本标识。
 - 缓存键包含文档版本、项目版本、检查视图版本和后端世代。缓存失效条件必须可测试，不能只按文件路径缓存。
 
+### 3.8 补全目录现状（Wave 5）
+
+Wave 5 实现了 F-01–F-04 与 F-06/F-07 的目录驱动子集；F-05 的条件属性规则尚未数据化，F-11 的 class 补全不在本次范围。标签名、属性名、枚举值和指令/事件补全是**静态、同步**的，完全在 Rust 内完成，不启动 Node；只有 Mustache 成员补全和事件处理函数值补全经过类型后端。以下目录是**有意限定的子集**，不宣称完整微信小程序组件覆盖：未收录的标签、属性照常可用于模板，只是没有静态候选。
+
+#### 3.8.1 标签
+
+| 标签 | 专属属性（全局属性、指令、事件同时可用） | 枚举值属性 |
+| --- | --- | --- |
+| `view` | `hover-class` `hover-stop-propagation` `hover-start-time` `hover-stay-time` | `hover-stop-propagation` |
+| `text` | `selectable` `user-select` `space` `decode` | `space` |
+| `button` | `type` `size` `plain` `disabled` `loading` `form-type` `open-type` `hover-class` | `type` `size` `form-type` `open-type` |
+| `image` | `src` `mode` `lazy-load` `binderror` `bindload` | `mode` |
+| `input` | `type` `value` `placeholder` `disabled` `maxlength` `focus` `confirm-type` `password` | `type` `confirm-type` |
+| `picker` | `mode` `range` `range-key` `value` `start` `end` `bindchange` `bindcancel` | `mode` |
+| `scroll-view` | `scroll-x` `scroll-y` `enable-flex` `scroll-top` `scroll-left` `enable-back-to-top` `bindscroll` `bindscrolltolower` | `scroll-y` |
+| `swiper` | `indicator-dots` `autoplay` `interval` `duration` `circular` `vertical` `bindchange` | `indicator-dots` `autoplay` `circular` |
+| `navigator` | `url` `open-type` `delta` `hover-class` | `open-type` |
+| `textarea` | `value` `placeholder` `maxlength` `auto-height` `disabled` | `auto-height` |
+| `form` | `bindsubmit` `bindreset` | — |
+| `label` | `for` | — |
+| `checkbox` | `value` `checked` `disabled` | `checked` |
+| `radio` | `value` `checked` `disabled` | `checked` |
+| `template` | `is` `data` | — |
+| `block` `swiper-item` | — | — |
+| `wxs` | `module` `src` | — |
+
+全局属性：`id` `class` `style` `hidden`。补全候选按当前标签、全局属性、指令、事件分组排序；已输入前缀大小写不敏感匹配，不覆盖光标后的文本。
+
+#### 3.8.2 指令与事件
+
+- 指令：`wx:if` `wx:elif` `wx:else` `wx:for` `wx:for-item` `wx:for-index` `wx:key`。
+- 固定事件属性：`bindtap` `catchtap` `bind:tap` `catch:tap` `capture-bind:tap` `capture-catch:tap` `mut-bind:tap` `bindinput` `bindchange` `bindconfirm` `bindsubmit` `bindreset` `bindscroll` `bindload` `binderror` `bindtouchstart` `bindtouchmove` `bindtouchend`。
+- 由事件名生成的绑定属性：仅当前缀为空或已是事件前缀时，为下列事件名生成 `bind<name>`、`catch<name>`、`bind:<name>` 三种写法：空前缀下便于发现事件，输入事件前缀后则只保留匹配项。事件名：`tap` `longpress` `longtap` `touchstart` `touchmove` `touchend` `touchcancel` `input` `change` `confirm` `blur` `focus` `submit` `reset` `scroll` `scrolltoupper` `scrolltolower` `load` `error` `message` `animationstart` `animationiteration` `animationend` `transitionend`。
+- 闭合标签补全（`</`）只来自当前未闭合元素栈：`<view><text></` 给出 `view`、`text`，不给出其他标签。
+
+#### 3.8.3 枚举值
+
+| 标签.属性 | 候选值 |
+| --- | --- |
+| `view.hover-stop-propagation` | `true` `false` |
+| `text.space` | `ensp` `emsp` `nbsp` |
+| `button.type` | `default` `primary` `warn` |
+| `button.size` | `default` `mini` |
+| `button.form-type` | `submit` `reset` |
+| `button.open-type` | `contact` `share` `getPhoneNumber` `getUserInfo` `openSetting` `feedback` |
+| `image.mode` | `scaleToFill` `aspectFit` `aspectFill` `widthFix` `heightFix` `center` `top` `bottom` `left` `right` |
+| `input.type` | `text` `number` `idcard` `digit` `safe-password` `nickname` |
+| `input.confirm-type` | `send` `search` `next` `go` `done` |
+| `picker.mode` | `selector` `multiSelector` `time` `date` `region` |
+| `scroll-view.scroll-y` | `true` `false` |
+| `swiper.indicator-dots` `autoplay` `circular` | `true` `false` |
+| `navigator.open-type` | `navigate` `redirect` `switchTab` `reLaunch` `navigateBack` `exit` |
+| `textarea.auto-height` | `true` `false` |
+| `checkbox.checked` `radio.checked` | `true` `false` |
+
+值补全只对表内属性生效，候选按已输入前缀做 ASCII 大小写不敏感匹配；表外属性不产生值候选。
+
+#### 3.8.4 Node 后端补全
+
+- Mustache 成员补全：`{{ user.na }}` 经 C1 虚拟文件布局复用 TypeScript `getCompletionsAtPosition`，候选来自页面/组件真实类型。
+- 事件处理函数值补全：`bindtap="on"` 枚举 Page 选项上的顶层函数，或 Component `methods` 的成员；注册容器名（`data`、`properties`、`methods` 等）不进入候选。路由规则：属性名以 `bind`、`catch`、`capture-bind`、`capture-catch`、`mut-bind` 开头且后缀为 `:` 或小写字母/事件名时按事件值处理，因此目录中未逐一列出的 `bindcancel`、`bindcolumnchange` 等也能得到方法补全；`binding-mode` 之类普通属性不受影响。
+- 后端不可用、未实现、超时或不支持时返回空列表并记录日志，不返回协议错误，也不影响静态补全。
+
+#### 3.8.5 替换范围、触发与能力声明
+
+- 所有候选项都带精确 `textEdit`：标签名和属性名只替换已输入 token；引号内的值只替换值前缀（保留引号）；未加引号的值插入带引号的字面量。不整行替换。
+- 在纯文本、HTML 注释、`<wxs>` 元素体和 Mustache 字符串字面量内不产生补全；非模板文档（`.ts`、`.json` 等）经项目路由判定后直接返回空列表。
+- `initialize` 无条件声明 `completionProvider`，`resolveProvider: false`，触发字符为 `<`、空格、`:`、`"`、`'`、`.`、`{`、`=`；结果 `isIncomplete: false`，单次最多 256 项。参数缺失或结构非法返回 LSP `-32602`。
+
+#### 3.8.6 已知边界
+
+- 自定义组件标签来自页面 JSON 的 `usingComponents`（`app.json` 全局表合并，同名时页面本地项生效）。组件 JSON 目前只为属性声明解析，**组件自身 WXML 中的自定义组件尚不列出**；组件属性名也不参与属性补全。
+- 静态目录是手写受限子集，不是官方组件表的自动镜像；新增条目需同时补测试与本文档。
+
+目录溯源：条目定义在 `crates/wxml-lsp/src/completion/catalog.rs`，取值来源与许可证说明见[来源与许可证记录](provenance.md)；目录不下载、不执行外部元数据。
+
 ## 4. 数据来源与元数据规则
 
 允许的数据来源：
@@ -120,4 +196,7 @@
 - 位置相关功能覆盖中文、emoji、LF/CRLF 和文档边界。
 - 项目相关功能覆盖多根、路径别名、未保存配置和依赖变化。
 - 与已有 JS/TS 服务并存时，不重复发布无关脚本诊断，不抢占原服务职责。
-- 文档和交付说明必须区分：已实现、部分实现、明确降级、未实现。当前全部为未实现。
+- 文档和交付说明必须区分：已实现、部分实现、明确降级、未实现。
+  - 已实现：F-01–F-07 补全；表达式成员 hover；表达式目标 definition；未知字段/成员/部分类型诊断；AC-005/006/008/012 模板类型；事件处理函数诊断/definition/补全；Zed 未保存 JS/TS 同步。
+  - 部分实现/明确降级：组件/标签 hover 仅表达式字段；definition 仅可映射表达式目标和事件处理函数；组件内 `usingComponents` 未建模；复杂守卫、复杂组件属性声明、`jsCheck` 关闭时组件绑定、插件/包组件、多根工作区。
+  - 未实现：F-08 组件属性/标签/基础组件说明 hover；F-09 组件文件/class/资源跳转；F-10 其余诊断；F-11 class/WXSS；F-12 资源路径；F-13 成对重命名；F-14 snippets；F-15 格式化；F-16 配置热更新剩余部分；F-18 多根；发布流水线。

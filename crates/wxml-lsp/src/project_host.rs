@@ -21,11 +21,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError, RwLock};
 
 use thiserror::Error;
-use wxml_project::{Page, Project, ProjectPath, SourceFile, SourceKind, SourceLimits, UriError};
+use wxml_project::{
+    ComponentTargetKind, Page, Project, ProjectPath, SourceFile, SourceKind, SourceLimits, UriError,
+};
 use wxml_syntax::{ParseErrorKind, ParseResult};
 use wxml_types::{
-    CapabilityStatus, CheckFragment, Diagnostic, DiagnosticSeverity, FileId, ProjectId,
-    ProjectRevision, RootKind, SourceSnapshot, TemplateAnalyzer, UnsupportedKind, ViewRevision,
+    CapabilityStatus, CheckFragment, ComponentUsage, Diagnostic, DiagnosticSeverity, EventHandler,
+    FileId, ProjectId, ProjectRevision, RootKind, SourceSnapshot, TemplateAnalyzer,
+    UnsupportedKind, ViewRevision,
 };
 
 /// Marker used by the synthetic host and the synthetic workspace project.
@@ -70,6 +73,17 @@ const SUPPORTED_COMPILER_OPTIONS: [&str; 31] = [
     "typeRoots",
     "rootDir",
 ];
+
+/// One custom component registered by the current view's `usingComponents`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ViewComponent {
+    /// Tag name used in the template (for example `my-card`).
+    pub name: String,
+    /// Raw `usingComponents` specifier.
+    pub specifier: String,
+    /// Resolved component WXML path, when discovery could resolve it.
+    pub component: Option<ProjectPath>,
+}
 
 /// Why a host operation could not be completed.
 #[derive(Clone, Debug, Eq, PartialEq, Error)]
@@ -154,6 +168,39 @@ pub struct HostUpdate {
     pub project_revision: Option<ProjectRevision>,
 }
 
+/// One `workspace/didChangeWatchedFiles` entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WatchedFileChange {
+    /// Client URI of the changed file.
+    pub uri: String,
+    /// What happened to the file.
+    pub kind: WatchedChangeKind,
+}
+
+/// LSP `FileChangeType` values understood by this server.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WatchedChangeKind {
+    /// The file was created (`1`).
+    Created,
+    /// The file changed (`2`).
+    Changed,
+    /// The file was deleted (`3`).
+    Deleted,
+}
+
+impl WatchedChangeKind {
+    /// Maps the numeric LSP `FileChangeType` to a kind.
+    #[must_use]
+    pub const fn from_lsp(value: i64) -> Option<Self> {
+        match value {
+            1 => Some(Self::Created),
+            2 => Some(Self::Changed),
+            3 => Some(Self::Deleted),
+            _ => None,
+        }
+    }
+}
+
 /// One source file sent to the type backend.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedFile {
@@ -169,6 +216,13 @@ pub struct PreparedFile {
     pub source_revision: u64,
 }
 
+/// Maximum static event handlers forwarded to a type backend for one view.
+///
+/// Mirrors the C1 event budget: a large template must not turn into an
+/// unbounded request or diagnostics list. Truncation is reported as a
+/// [`CapabilityStatus::Partial`] hint.
+pub const MAX_PREPARED_EVENTS: usize = 1024;
+
 /// Everything a type backend needs for one WXML snapshot.
 #[derive(Clone, Debug)]
 pub struct PreparedView {
@@ -182,6 +236,10 @@ pub struct PreparedView {
     pub compiler_options: serde_json::Map<String, serde_json::Value>,
     /// Template fragments in source order.
     pub fragments: Arc<[CheckFragment]>,
+    /// Custom-component usages with resolved local component scripts.
+    pub components: Arc<[ComponentUsage]>,
+    /// Static event handlers in source order, capped at [`MAX_PREPARED_EVENTS`].
+    pub events: Arc<[EventHandler]>,
     /// Absolute project root. Never sent to an LSP client.
     pub project_root: PathBuf,
     /// Parser and template-analyzer diagnostics that must be published even
@@ -199,6 +257,10 @@ pub trait ProjectHost: Send + Sync {
     fn project_id(&self) -> ProjectId;
     /// Returns the current project revision.
     fn project_revision(&self) -> ProjectRevision;
+    /// Returns whether a project root is currently loaded.
+    fn is_project_open(&self) -> bool {
+        false
+    }
     /// Maps a client URI to a project-relative path.
     fn path_for_uri(&self, uri: &str) -> Result<ProjectPath, HostError>;
     /// Maps a file identity back to a client URI.
@@ -215,6 +277,17 @@ pub trait ProjectHost: Send + Sync {
     fn change_document(&self, change: ChangeDocument) -> Result<HostUpdate, HostError>;
     /// Removes an overlay when the client closes a document.
     fn close_document(&self, uri: &str) -> Result<HostUpdate, HostError>;
+    /// Handles `textDocument/didSave` for a script or JSON document.
+    fn save_document(&self, _uri: &str) -> Result<HostUpdate, HostError> {
+        Ok(HostUpdate::default())
+    }
+    /// Handles `workspace/didChangeWatchedFiles`.
+    fn watched_files_changed(
+        &self,
+        _changes: &[WatchedFileChange],
+    ) -> Result<HostUpdate, HostError> {
+        Ok(HostUpdate::default())
+    }
     /// Stores the current WXML snapshot and advances its view revision.
     fn set_wxml_snapshot(&self, file: FileId, snapshot: Arc<SourceSnapshot>);
     /// Removes a WXML snapshot and advances its view revision.
@@ -226,6 +299,15 @@ pub trait ProjectHost: Send + Sync {
     /// This is used to convert byte ranges in definition targets to LSP
     /// positions without opening the target document.
     fn file_text(&self, file: &FileId) -> Option<Arc<str>>;
+    /// Returns the custom components registered for one WXML template.
+    ///
+    /// Local page/component `usingComponents` shadow global ones. A host with
+    /// no project (or an unknown template) returns an empty list; static
+    /// completion then simply omits custom component tags.
+    fn view_components(&self, _wxml: &ProjectPath) -> Vec<ViewComponent> {
+        Vec::new()
+    }
+
     /// Prepares the analysis inputs for a WXML snapshot.
     fn analysis(&self, snapshot: &SourceSnapshot) -> Result<PreparedView, HostError>;
 }
@@ -302,6 +384,8 @@ struct ViewState {
     script: Option<ProjectPath>,
     script_file: Option<FileId>,
     view_revision: ViewRevision,
+    /// Local `usingComponents` entries: display tag to component base path.
+    components: BTreeMap<String, ProjectPath>,
 }
 
 #[derive(Debug)]
@@ -406,6 +490,10 @@ impl ProjectHost for ProjectState {
         self.read().project_revision.clone()
     }
 
+    fn is_project_open(&self) -> bool {
+        self.read().project.is_some()
+    }
+
     fn path_for_uri(&self, uri: &str) -> Result<ProjectPath, HostError> {
         let state = self.read();
         let project = state.project.as_ref().ok_or(HostError::NoProject)?;
@@ -467,42 +555,18 @@ impl ProjectHost for ProjectState {
     }
 
     fn close_document(&self, uri: &str) -> Result<HostUpdate, HostError> {
-        let mut state = self.write();
-        let path = {
-            let project = state.project.as_mut().ok_or(HostError::NoProject)?;
-            let path = project.path_from_uri(uri).map_err(map_uri_error)?;
-            project.remove_overlay(&path);
-            if path
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
-            {
-                project.rediscover();
-            }
-            path
-        };
-        let is_json = path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"));
-        if is_json {
-            let project_id = state.project_id.clone();
-            let mut next_view_revision = state.next_view_revision;
-            let views = {
-                let project = state.project.as_ref().ok_or(HostError::NoProject)?;
-                build_views(project, &project_id, &mut next_view_revision)
-            };
-            state.views = views;
-            state.next_view_revision = next_view_revision;
-        }
-        let dirty = if is_json {
-            state.views.keys().cloned().collect()
-        } else {
-            dirty_scripts(&state, &path)
-        };
-        let revision = bump_project_revision(&mut state);
-        Ok(HostUpdate {
-            dirty_views: dirty,
-            project_revision: Some(revision),
-        })
+        self.close_overlay(uri)
+    }
+
+    fn save_document(&self, uri: &str) -> Result<HostUpdate, HostError> {
+        self.save_overlay(uri)
+    }
+
+    fn watched_files_changed(
+        &self,
+        changes: &[WatchedFileChange],
+    ) -> Result<HostUpdate, HostError> {
+        self.watched_changes(changes)
     }
 
     fn set_wxml_snapshot(&self, file: FileId, snapshot: Arc<SourceSnapshot>) {
@@ -539,6 +603,34 @@ impl ProjectHost for ProjectState {
         project.read(&path).ok().map(Arc::from)
     }
 
+    fn view_components(&self, wxml: &ProjectPath) -> Vec<ViewComponent> {
+        let state = self.read();
+        let Some(project) = state.project.as_ref() else {
+            return Vec::new();
+        };
+        // Discovery records `usingComponents` for pages; component JSON is
+        // parsed for properties only, so a component's own WXML has no static
+        // component list yet.
+        let Some(config) = project
+            .pages()
+            .iter()
+            .find(|page| page.wxml == *wxml)
+            .map(|page| &page.config)
+        else {
+            return Vec::new();
+        };
+        let mut components: Vec<ViewComponent> = config
+            .iter()
+            .map(|(name, usage)| ViewComponent {
+                name: name.clone(),
+                specifier: usage.specifier.clone(),
+                component: usage.component.clone(),
+            })
+            .collect();
+        components.sort_by(|left, right| left.name.cmp(&right.name));
+        components
+    }
+
     #[allow(clippy::too_many_lines)] // one linear P7-1 pipeline
     fn analysis(&self, snapshot: &SourceSnapshot) -> Result<PreparedView, HostError> {
         let parsed = wxml_syntax::parse(snapshot.text());
@@ -569,7 +661,10 @@ impl ProjectHost for ProjectState {
         };
 
         let owner = view.owner;
-        let analysis = TemplateAnalyzer::new(owner, snapshot.revision()).analyze(&parsed.tree);
+        let view_components = view.components.clone();
+        let analysis = TemplateAnalyzer::new(owner, snapshot.revision())
+            .with_component_tags(view_components.keys().cloned())
+            .analyze(&parsed.tree);
         let mut hint = None;
         if analysis.truncated {
             merge_hint(
@@ -602,6 +697,9 @@ impl ProjectHost for ProjectState {
             }
         }
         for feature in &analysis.unsupported {
+            if is_silent_unsupported(feature.kind()) {
+                continue;
+            }
             let severity = match feature.kind() {
                 UnsupportedKind::FragmentLimit
                 | UnsupportedKind::MalformedExpression
@@ -617,7 +715,11 @@ impl ProjectHost for ProjectState {
                 },
             );
         }
-        if !analysis.unsupported.is_empty() {
+        if analysis
+            .unsupported
+            .iter()
+            .any(|feature| !is_silent_unsupported(feature.kind()))
+        {
             merge_hint(
                 &mut hint,
                 CapabilityStatus::Partial {
@@ -626,6 +728,8 @@ impl ProjectHost for ProjectState {
             );
         }
 
+        let events = prepared_events(analysis.events, &mut hint);
+
         let Some(script) = view.script.as_ref() else {
             return Ok(PreparedView {
                 view_id: format!("{}:0", path.as_str()),
@@ -633,6 +737,8 @@ impl ProjectHost for ProjectState {
                 files: Arc::from(Vec::new()),
                 compiler_options: serde_json::Map::new(),
                 fragments: Arc::from(analysis.fragments),
+                components: Arc::from(Vec::new()),
+                events,
                 project_root: project.root().to_path_buf(),
                 syntax_diagnostics: syntax,
                 status_hint: Some(CapabilityStatus::Unsupported {
@@ -643,6 +749,8 @@ impl ProjectHost for ProjectState {
         let script_file = view.script_file.clone();
         let view_revision = view.view_revision;
         let project_id = state.project_id.clone();
+        let components =
+            resolve_components(project, &project_id, &view_components, analysis.components);
 
         // The read guard intentionally spans source collection. Caching the
         // SourceSet and shortening this lock is deferred (P7 security M6).
@@ -724,20 +832,6 @@ impl ProjectHost for ProjectState {
                 },
             );
         }
-        if analysis
-            .fragments
-            .iter()
-            .any(|fragment| !fragment.locals.is_empty())
-        {
-            merge_hint(
-                &mut hint,
-                CapabilityStatus::Partial {
-                    reason:
-                        "template locals are bound as any; loop item/index member checks deferred"
-                            .to_owned(),
-                },
-            );
-        }
 
         Ok(PreparedView {
             view_id: format!("{}:{}", path.as_str(), view_revision.get()),
@@ -745,6 +839,8 @@ impl ProjectHost for ProjectState {
             files: Arc::from(files),
             compiler_options,
             fragments: Arc::from(analysis.fragments),
+            components: Arc::from(components),
+            events,
             project_root: project.root().to_path_buf(),
             syntax_diagnostics: syntax,
             status_hint: hint,
@@ -754,53 +850,272 @@ impl ProjectHost for ProjectState {
 
 impl ProjectState {
     /// Applies a script or JSON overlay and reports affected views.
+    ///
+    /// Non-config JSON (for example `package.json`) and scripts in excluded
+    /// directories are tracked by the workspace only, so they never change
+    /// project state or the revision.
     fn overlay_update(&self, uri: &str, text: &str) -> Result<HostUpdate, HostError> {
         let mut state = self.write();
-        let revision = state.next_overlay_revision.saturating_add(1);
-        state.next_overlay_revision = revision;
         let path = {
-            let project = state.project.as_mut().ok_or(HostError::NoProject)?;
-            let path = project.path_from_uri(uri).map_err(map_uri_error)?;
-            let extension = path
-                .extension()
-                .map(str::to_ascii_lowercase)
-                .unwrap_or_default();
-            if extension == "wxml" {
+            let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+            project.path_from_uri(uri).map_err(map_uri_error)?
+        };
+        let is_json = {
+            let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+            if !project.accepts_overlay(&path) {
                 return Ok(HostUpdate::default());
             }
+            project.accepts_json_overlay(&path)
+        };
+        let revision = state.next_overlay_revision.saturating_add(1);
+        state.next_overlay_revision = revision;
+        {
+            let project = state.project.as_mut().ok_or(HostError::NoProject)?;
             project
                 .set_overlay(&path, text.to_owned(), revision)
                 .map_err(|_| HostError::Read)?;
-            if extension == "json" {
+            if is_json {
                 // Full rediscovery per JSON overlay is intentional for
                 // correctness; incremental discovery is deferred (M6).
                 project.rediscover();
             }
-            path
-        };
-        let is_json = path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"));
-        if is_json {
-            let project_id = state.project_id.clone();
-            let mut next_view_revision = state.next_view_revision;
-            let views = {
-                let project = state.project.as_ref().ok_or(HostError::NoProject)?;
-                build_views(project, &project_id, &mut next_view_revision)
-            };
-            state.views = views;
-            state.next_view_revision = next_view_revision;
         }
-        let dirty = if is_json {
-            state.views.keys().cloned().collect()
-        } else {
-            dirty_scripts(&state, &path)
-        };
+        if is_json {
+            rebuild_views(&mut state)?;
+        }
+        let mut dirty = dirty_after(&state, &path, is_json);
+        if !is_json && dirty.is_empty() {
+            // The script owns no view, but every project source feeds the type
+            // backend, so an imported module can change any view's results.
+            // Re-analyze all views instead of leaving diagnostics stale.
+            dirty = state.views.keys().cloned().collect();
+        }
         let project_revision = bump_project_revision(&mut state);
         Ok(HostUpdate {
             dirty_views: dirty,
             project_revision: Some(project_revision),
         })
+    }
+
+    /// Removes an overlay when the client closes a tracked document.
+    fn close_overlay(&self, uri: &str) -> Result<HostUpdate, HostError> {
+        let mut state = self.write();
+        let path = {
+            let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+            project.path_from_uri(uri).map_err(map_uri_error)?
+        };
+        let is_json = {
+            let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+            if !project.accepts_overlay(&path) {
+                return Ok(HostUpdate::default());
+            }
+            project.accepts_json_overlay(&path)
+        };
+        {
+            let project = state.project.as_mut().ok_or(HostError::NoProject)?;
+            project.remove_overlay(&path);
+            if is_json {
+                project.rediscover();
+            }
+        }
+        if is_json {
+            rebuild_views(&mut state)?;
+        }
+        let mut dirty = dirty_after(&state, &path, is_json);
+        if !is_json && dirty.is_empty() {
+            dirty = state.views.keys().cloned().collect();
+        }
+        let revision = bump_project_revision(&mut state);
+        Ok(HostUpdate {
+            dirty_views: dirty,
+            project_revision: Some(revision),
+        })
+    }
+
+    /// Handles a saved script/JSON document.
+    ///
+    /// Overlays are kept because the client still holds the buffer; only the
+    /// project state that depends on the saved file is refreshed.
+    fn save_overlay(&self, uri: &str) -> Result<HostUpdate, HostError> {
+        let mut state = self.write();
+        let path = {
+            let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+            project.path_from_uri(uri).map_err(map_uri_error)?
+        };
+        let is_json = {
+            let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+            if project.accepts_overlay(&path) {
+                project.accepts_json_overlay(&path)
+            } else if project.is_project_json(&path) {
+                // A JSON file that discovery has not seen yet (for example a
+                // page config created after startup) still affects
+                // discovery when saved.
+                true
+            } else {
+                return Ok(HostUpdate::default());
+            }
+        };
+        if is_json {
+            let project = state.project.as_mut().ok_or(HostError::NoProject)?;
+            project.rediscover();
+            rebuild_views(&mut state)?;
+            let dirty = state.views.keys().cloned().collect();
+            let revision = bump_project_revision(&mut state);
+            return Ok(HostUpdate {
+                dirty_views: dirty,
+                project_revision: Some(revision),
+            });
+        }
+        let dirty = dirty_scripts(&state, &path);
+        if dirty.is_empty() {
+            // The saved script does not own a discovered view, so nothing
+            // observable changed.
+            return Ok(HostUpdate::default());
+        }
+        let revision = bump_project_revision(&mut state);
+        Ok(HostUpdate {
+            dirty_views: dirty,
+            project_revision: Some(revision),
+        })
+    }
+
+    /// Applies `workspace/didChangeWatchedFiles`.
+    ///
+    /// Discovery runs at most once per notification and the project revision
+    /// advances at most once. Paths outside the root, excluded scripts and
+    /// irrelevant extensions are ignored.
+    fn watched_changes(&self, changes: &[WatchedFileChange]) -> Result<HostUpdate, HostError> {
+        let mut state = self.write();
+        if state.project.is_none() {
+            return Ok(HostUpdate::default());
+        }
+        let mut json_changes: Vec<ProjectPath> = Vec::new();
+        let mut script_changes: Vec<(ProjectPath, WatchedChangeKind)> = Vec::new();
+        let mut wxml_need_rediscovery = false;
+        let mut ignored = 0_usize;
+        for change in changes {
+            let Ok(path) = state
+                .project
+                .as_ref()
+                .ok_or(HostError::NoProject)?
+                .path_from_uri(&change.uri)
+            else {
+                ignored = ignored.saturating_add(1);
+                continue;
+            };
+            let (is_json, is_script, is_discovery_json) = {
+                let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+                let is_json = project.accepts_json_overlay(&path);
+                let is_script = project.accepts_script_overlay(&path);
+                (
+                    is_json,
+                    is_script,
+                    !is_json && project.is_project_json(&path),
+                )
+            };
+            if is_json || is_discovery_json {
+                json_changes.push(path);
+            } else if is_script {
+                script_changes.push((path, change.kind));
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("wxml"))
+            {
+                // Created/deleted templates change discovery inputs; changed
+                // templates are re-read when their view is next analyzed.
+                if matches!(
+                    change.kind,
+                    WatchedChangeKind::Created | WatchedChangeKind::Deleted
+                ) {
+                    wxml_need_rediscovery = true;
+                }
+            } else {
+                ignored = ignored.saturating_add(1);
+            }
+        }
+        if json_changes.is_empty() && script_changes.is_empty() && !wxml_need_rediscovery {
+            if ignored > 0 {
+                crate::server::log(format_args!(
+                    "ignoring {ignored} watched file change(s) that do not affect analysis"
+                ));
+            }
+            return Ok(HostUpdate::default());
+        }
+
+        let scripts_need_rediscovery = script_changes.iter().any(|(_, kind)| {
+            matches!(
+                kind,
+                WatchedChangeKind::Created | WatchedChangeKind::Deleted
+            )
+        });
+        let rediscover =
+            !json_changes.is_empty() || scripts_need_rediscovery || wxml_need_rediscovery;
+        {
+            let project = state.project.as_mut().ok_or(HostError::NoProject)?;
+            for path in &json_changes {
+                project.remove_overlay(path);
+            }
+            for (path, _) in &script_changes {
+                project.remove_overlay(path);
+            }
+            if rediscover {
+                project.rediscover();
+            }
+        }
+        if rediscover {
+            rebuild_views(&mut state)?;
+        }
+
+        let mut dirty = Vec::new();
+        if rediscover {
+            dirty.extend(state.views.keys().cloned());
+        } else {
+            for (path, _) in &script_changes {
+                merge_paths(&mut dirty, dirty_scripts(&state, path));
+            }
+            if !script_changes.is_empty() && dirty.is_empty() {
+                // Imported scripts can affect every view's type results.
+                dirty.extend(state.views.keys().cloned());
+            }
+        }
+        dirty.sort();
+        dirty.dedup();
+        let revision = bump_project_revision(&mut state);
+        Ok(HostUpdate {
+            dirty_views: dirty,
+            project_revision: Some(revision),
+        })
+    }
+}
+
+/// Rebuilds the view table after rediscovery.
+fn rebuild_views(state: &mut State) -> Result<(), HostError> {
+    let project_id = state.project_id.clone();
+    let mut next_view_revision = state.next_view_revision;
+    let views = {
+        let project = state.project.as_ref().ok_or(HostError::NoProject)?;
+        build_views(project, &project_id, &mut next_view_revision)
+    };
+    state.views = views;
+    state.next_view_revision = next_view_revision;
+    Ok(())
+}
+
+/// Views affected by one overlay path.
+fn dirty_after(state: &State, path: &ProjectPath, is_json: bool) -> Vec<ProjectPath> {
+    if is_json {
+        state.views.keys().cloned().collect()
+    } else {
+        dirty_scripts(state, path)
+    }
+}
+
+/// Appends paths that are not already present.
+fn merge_paths(target: &mut Vec<ProjectPath>, paths: Vec<ProjectPath>) {
+    for path in paths {
+        if !target.contains(&path) {
+            target.push(path);
+        }
     }
 }
 
@@ -870,6 +1185,7 @@ fn insert_view<T>(
             script,
             script_file,
             view_revision: revision,
+            components: entry.components(),
         },
     );
 }
@@ -877,6 +1193,8 @@ fn insert_view<T>(
 trait ViewEntry {
     fn wxml(&self) -> &ProjectPath;
     fn script(&self) -> Option<&ProjectPath>;
+    /// Local `usingComponents` entries: display tag to component base path.
+    fn components(&self) -> BTreeMap<String, ProjectPath>;
 }
 
 impl ViewEntry for Page {
@@ -886,6 +1204,21 @@ impl ViewEntry for Page {
 
     fn script(&self) -> Option<&ProjectPath> {
         self.script.as_ref()
+    }
+
+    fn components(&self) -> BTreeMap<String, ProjectPath> {
+        // `PageConfig::iter` already lets page-local entries shadow globals;
+        // only local components have a project path to resolve.
+        self.config
+            .iter()
+            .filter(|(_, component)| component.kind == ComponentTargetKind::Local)
+            .filter_map(|(name, component)| {
+                component
+                    .component
+                    .as_ref()
+                    .map(|path| (name.clone(), path.clone()))
+            })
+            .collect()
     }
 }
 
@@ -897,6 +1230,38 @@ impl ViewEntry for wxml_project::Component {
     fn script(&self) -> Option<&ProjectPath> {
         self.script.as_ref()
     }
+
+    fn components(&self) -> BTreeMap<String, ProjectPath> {
+        // `wxml-project` does not expose a `PageConfig` for components, so
+        // component-internal `usingComponents` cannot be resolved here yet.
+        BTreeMap::new()
+    }
+}
+
+/// Resolves template component usages against the project's component table.
+///
+/// Usages whose tag is not a local component, whose component was not
+/// discovered or whose component has no script keep `component_file = None`.
+fn resolve_components(
+    project: &Project,
+    project_id: &ProjectId,
+    view_components: &BTreeMap<String, ProjectPath>,
+    usages: Vec<ComponentUsage>,
+) -> Vec<ComponentUsage> {
+    usages
+        .into_iter()
+        .map(|mut usage| {
+            if let Some(base) = view_components.get(&usage.tag) {
+                if let Some(script) = project
+                    .component(base)
+                    .and_then(|component| component.script.as_ref())
+                {
+                    usage.component_file = FileId::new(project_id.clone(), script.as_str()).ok();
+                }
+            }
+            usage
+        })
+        .collect()
 }
 
 fn dirty_scripts(state: &State, script: &ProjectPath) -> Vec<ProjectPath> {
@@ -1062,6 +1427,8 @@ fn syntax_only_view(
         files: Arc::from(Vec::new()),
         compiler_options: serde_json::Map::new(),
         fragments: Arc::from(Vec::new()),
+        components: Arc::from(Vec::new()),
+        events: Arc::from(Vec::new()),
         project_root: PathBuf::new(),
         syntax_diagnostics: syntax,
         status_hint: Some(CapabilityStatus::Unsupported {
@@ -1074,6 +1441,41 @@ fn push_diagnostic(diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic) {
     if diagnostics.len() < 512 {
         diagnostics.push(diagnostic);
     }
+}
+
+/// Returns `true` for unsupported records that must stay silent.
+///
+/// Dynamic, empty and non-identifier event handlers are valid WXML that simply
+/// cannot be resolved statically. They are recorded for callers and for the
+/// status of the event chain, but publishing a diagnostic for each one would
+/// add noise to every template that uses them, and they must not degrade a
+/// check that otherwise ran completely.
+const fn is_silent_unsupported(kind: UnsupportedKind) -> bool {
+    matches!(
+        kind,
+        UnsupportedKind::DynamicEvent | UnsupportedKind::EmptyEvent | UnsupportedKind::InvalidEvent
+    )
+}
+
+/// Caps the event list and records why later bindings were dropped.
+///
+/// The prepared view is what the request and the response mapping agree on, so
+/// the cap lives here: ids are assigned from this list and anything beyond it
+/// is never requested.
+fn prepared_events(
+    mut events: Vec<EventHandler>,
+    hint: &mut Option<CapabilityStatus>,
+) -> Arc<[EventHandler]> {
+    if events.len() > MAX_PREPARED_EVENTS {
+        events.truncate(MAX_PREPARED_EVENTS);
+        merge_hint(
+            hint,
+            CapabilityStatus::Partial {
+                reason: "event binding limit reached; later handlers were skipped".to_owned(),
+            },
+        );
+    }
+    Arc::from(events)
 }
 
 fn merge_hint(hint: &mut Option<CapabilityStatus>, candidate: CapabilityStatus) {
@@ -1184,7 +1586,25 @@ fn filter_compiler_options(
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write as _;
+
     use super::*;
+    use wxml_types::{SnapshotId, SourceRevision};
+
+    #[test]
+    fn using_components_are_exposed_for_a_page() {
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/completion-components");
+        let state = ProjectState::new();
+        state
+            .open_root(Some(&format!("file://{}", root.display())))
+            .expect("open fixture");
+        let path = ProjectPath::new("index.wxml").expect("path");
+        let components = state.view_components(&path);
+        let names: Vec<_> = components.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, vec!["local-badge", "my-card"]);
+        assert!(components.iter().any(|entry| entry.component.is_some()));
+    }
 
     #[test]
     fn project_id_does_not_contain_the_root_path() {
@@ -1301,6 +1721,112 @@ mod tests {
         assert_eq!(script_kind(&path), "d.ts");
         let path = ProjectPath::new("a.mts").expect("path");
         assert_eq!(script_kind(&path), "ts");
+    }
+
+    #[test]
+    fn pages_resolve_local_using_components_to_component_scripts() {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/component-basic");
+        let root = std::fs::canonicalize(root).expect("fixture root");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open project");
+        let path = ProjectPath::new("pages/index/index.wxml").expect("path");
+        let file = host.file_id(&path).expect("file id");
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(1),
+            r#"<card title="{{ pageTitle }}" />"#,
+        ));
+        let view = host.analysis(&snapshot).expect("analysis");
+        assert_eq!(view.components.len(), 1);
+        let usage = &view.components[0];
+        assert_eq!(usage.tag, "card");
+        assert_eq!(usage.attributes.len(), 1);
+        assert_eq!(usage.attributes[0].name, "title");
+        let component_file = usage.component_file.as_ref().expect("component file");
+        assert_eq!(component_file.path(), "components/card/card.ts");
+    }
+
+    #[test]
+    fn analysis_exposes_static_events_and_filters_dynamic_handlers() {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/component-basic");
+        let root = std::fs::canonicalize(root).expect("fixture root");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open project");
+        let path = ProjectPath::new("pages/index/index.wxml").expect("path");
+        let file = host.file_id(&path).expect("file id");
+        let text =
+            r#"<view bindtap="onTap" catch:tap="{{ dynamic }}" bind:touchstart="item.onTap" />"#;
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(2),
+            text,
+        ));
+        let view = host.analysis(&snapshot).expect("analysis");
+        assert_eq!(view.events.len(), 1);
+        let event = &view.events[0];
+        assert_eq!(event.attribute, "bindtap");
+        assert_eq!(event.event, "tap");
+        assert_eq!(event.handler, "onTap");
+        assert_eq!(
+            text.get(
+                usize::try_from(event.handler_range.start()).expect("start")
+                    ..usize::try_from(event.handler_range.end()).expect("end")
+            ),
+            Some("onTap")
+        );
+        assert_eq!(
+            text.get(
+                usize::try_from(event.attribute_range.start()).expect("start")
+                    ..usize::try_from(event.attribute_range.end()).expect("end")
+            ),
+            Some(r#"bindtap="onTap""#)
+        );
+        assert!(
+            view.syntax_diagnostics.is_empty(),
+            "event handlers must not publish noise: {:?}",
+            view.syntax_diagnostics
+        );
+        assert!(
+            view.status_hint.is_none(),
+            "silent event forms must not degrade the check: {:?}",
+            view.status_hint
+        );
+    }
+
+    #[test]
+    fn analysis_caps_prepared_events_and_merges_a_partial_hint() {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/component-basic");
+        let root = std::fs::canonicalize(root).expect("fixture root");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open project");
+        let path = ProjectPath::new("pages/index/index.wxml").expect("path");
+        let file = host.file_id(&path).expect("file id");
+        let mut text = String::from("<view>");
+        for index in 0..=MAX_PREPARED_EVENTS {
+            write!(text, "<view bindtap=\"onTap{index}\" />").expect("write");
+        }
+        text.push_str("</view>");
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(3),
+            text,
+        ));
+        let view = host.analysis(&snapshot).expect("analysis");
+        assert_eq!(view.events.len(), MAX_PREPARED_EVENTS);
+        assert_eq!(view.events[0].handler, "onTap0");
+        let Some(CapabilityStatus::Partial { reason }) = view.status_hint else {
+            panic!("expected a partial hint, got {:?}", view.status_hint);
+        };
+        assert!(reason.contains("event binding limit"), "{reason}");
     }
 
     #[test]

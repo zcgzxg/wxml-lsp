@@ -5,14 +5,24 @@
  * explicit file snapshot, the effective compiler options resolved by the project
  * layer, the fragments to mount, and the policy. Node must not read project
  * sources from disk and must not invent compiler options.
+ *
+ * Protocol v2 adds the optional structured `bindings`/`guards` fragment inputs,
+ * top-level `components`/`events` inputs, and reserves a `complete` method. Phase
+ * 0 freezes only these shapes; `complete` is handled by a later worktree.
  */
 
 import path from "node:path";
 import ts from "typescript";
 import { describeExpression, identifierOffset, isBindingIdentifier } from "./expression.ts";
-import type { CapabilityStates, InsertionRecord, JsCheckMode, MountRecord } from "./types.ts";
+import type {
+  CapabilityState,
+  CapabilityStates,
+  InsertionRecord,
+  JsCheckMode,
+  MountRecord,
+} from "./types.ts";
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export const DEFAULT_LIMITS: RequestLimits = {
   maxFiles: 512,
@@ -52,11 +62,89 @@ export interface RequestFragment {
    * when it appears here; expression text is never rewritten.
    */
   locals?: string[];
+  /**
+   * Structured `wx:for` bindings (protocol v2). Optional during the transition;
+   * `locals` stays the authoritative name list until the template worktree
+   * fills this in.
+   */
+  bindings?: RequestLocalBinding[];
+  /** Enclosing `wx:if`/`wx:elif`/`wx:else` chains, outermost first (protocol v2). */
+  guards?: RequestGuardChain[];
   /** Byte range of `exprText` in the WXML document. */
   wxmlRange: { start: number; end: number };
   fragmentRevision: number;
   /** Which registration owns the root. */
   root: "page" | "component";
+}
+
+/** Template role of one structured `wx:for` binding. */
+export type LocalRole = "item" | "index";
+
+/** One `wx:for` binding in scope at a fragment (protocol v2). */
+export interface RequestLocalBinding {
+  /** Binding name as written, for example `item` or `row`. */
+  name: string;
+  role: LocalRole;
+  /** Exact `wx:for` expression text that produced the binding. */
+  sourceExpr: string;
+  /** Byte range of the `wx:for` expression in the WXML document. */
+  sourceRange: { start: number; end: number };
+}
+
+/** Branch kind inside a `wx:if`/`wx:elif`/`wx:else` chain. */
+export type GuardBranch = "if" | "elif" | "else";
+
+/** One condition of a `wx:if`/`wx:elif`/`wx:else` chain (protocol v2). */
+export interface RequestGuardCondition {
+  branch: GuardBranch;
+  /** Condition expression text without `{{` and `}}`. */
+  exprText: string;
+  /** Byte range of the condition expression in the WXML document. */
+  range: { start: number; end: number };
+}
+
+/** Every condition of one conditional chain, in source order (protocol v2). */
+export interface RequestGuardChain {
+  conditions: RequestGuardCondition[];
+  /** Selected branch index; `conditions.length` means `wx:else`. */
+  selected: number;
+}
+
+/** How the value of a custom-component attribute is written. */
+export type AttributeValueKind = "literal" | "mustache" | "mixed" | "boolean";
+
+/** One attribute on a custom-component usage (protocol v2). */
+export interface RequestComponentAttribute {
+  name: string;
+  valueKind: AttributeValueKind;
+  /** Sole mustache expression text for `mustache` values. */
+  exprText?: string;
+  exprRange?: { start: number; end: number };
+  /** Byte range of the whole attribute. */
+  attributeRange: { start: number; end: number };
+}
+
+/** One custom-component usage in the template (protocol v2). */
+export interface RequestComponentUsage {
+  tag: string;
+  /** Resolved local component script, when `usingComponents` points at one. */
+  componentFileId?: string;
+  attributes: RequestComponentAttribute[];
+}
+
+/** One statically bound event handler (protocol v2). */
+export interface RequestEvent {
+  eventId: string;
+  /** Raw attribute name, for example `bind:tap`. */
+  attribute: string;
+  /** Normalized event name, for example `tap`. */
+  event: string;
+  /** Static handler name as written, trimmed. */
+  handler: string;
+  /** Byte range of the whole attribute. */
+  attributeRange: { start: number; end: number };
+  /** Byte range of the handler token only. */
+  handlerRange: { start: number; end: number };
 }
 
 export type TargetName = "ES2020" | "ES2022" | "ESNext";
@@ -168,6 +256,16 @@ export interface AnalyzeRequest {
   files: RequestFile[];
   /** Fragments mounted by Node; this is an input, not the response list. */
   fragments: RequestFragment[];
+  /**
+   * Custom-component usages in the template (protocol v2). Optional: a request
+   * without component data is still valid and produces no component results.
+   */
+  components?: RequestComponentUsage[];
+  /**
+   * Static event bindings in the template (protocol v2). Optional, like
+   * `components`.
+   */
+  events?: RequestEvent[];
   policy: {
     jsCheck: JsCheckMode;
     /** C1.1 only supports the declaration overlay; `off` is rejected explicitly. */
@@ -177,10 +275,103 @@ export interface AnalyzeRequest {
   limits?: Partial<RequestLimits>;
 }
 
+/** Completion kinds that the Node backend answers (static completion is in Rust). */
+export type CompletionRequestKind = "expressionMember" | "eventHandler";
+
+/** `complete` request: AnalyzeRequest plus query point. */
+export interface CompleteRequest extends AnalyzeRequest {
+  /** UTF-8 byte offset in the WXML document. */
+  offset: number;
+  kind: CompletionRequestKind;
+  /** Identifier/value prefix immediately before `offset` (debug + filtering). */
+  prefix: string;
+}
+
+export interface CompleteItem {
+  label: string;
+  kind: "tag" | "attribute" | "value" | "property" | "method" | "event" | "keyword";
+  detail?: string;
+  documentation?: string;
+  insertText: string;
+  /** WXML byte range replaced by the edit; must be a precise token range. */
+  replace: { start: number; end: number };
+  sortText?: string;
+}
+
+export interface CompleteResponse {
+  protocolVersion: number;
+  requestId: string;
+  state: CapabilityState;
+  truncated: boolean;
+  items: CompleteItem[];
+}
+
+export const COMPLETION_KINDS: ReadonlySet<CompletionRequestKind> = new Set<CompletionRequestKind>([
+  "expressionMember",
+  "eventHandler",
+]);
+
+/** Upper bound for the debug-only prefix (UTF-16 code units). */
+export const MAX_COMPLETION_PREFIX = 256;
+
+/**
+ * Validate a `complete` request.
+ *
+ * Runs the shared `analyze` shape checks first, then the query point. The WXML
+ * document is not part of `files[]`, so `offset` is not range-checked here; an
+ * out-of-range point simply yields an empty list later.
+ */
+export function validateCompleteRequest(request: CompleteRequest): void {
+  validateRequest(request as AnalyzeRequest);
+  if (typeof request !== "object" || request === null) {
+    throw new RequestError("bad-params", "request must be an object");
+  }
+  if (!Number.isInteger(request.offset) || request.offset < 0) {
+    throw new RequestError("bad-params", "offset must be a non-negative integer");
+  }
+  if (typeof request.kind !== "string" || !COMPLETION_KINDS.has(request.kind)) {
+    throw new RequestError("bad-params", `unknown completion kind: ${String(request.kind)}`);
+  }
+  if (typeof request.prefix !== "string") {
+    throw new RequestError("bad-params", "prefix must be a string");
+  }
+  if (request.prefix.length > MAX_COMPLETION_PREFIX) {
+    throw new RequestError("bad-limit", `prefix has ${request.prefix.length} characters, limit ${MAX_COMPLETION_PREFIX}`);
+  }
+}
+
 export interface RegistrationInfo {
   kind: "page" | "component";
   count: number;
   topLevel: boolean | null;
+}
+
+/** Per-event capability status; mirrors the six C0 states minus `unknown`. */
+export type EventStateStatus = "supported" | "partial" | "unsupported" | "unavailable" | "disabled";
+
+export interface EventState {
+  status: EventStateStatus;
+  reason?: string;
+}
+
+/**
+ * Resolution of one statically bound event handler (protocol v2).
+ *
+ * `definition.fileId` and `diagnostic.range` are WXML/script coordinates: the
+ * script file id is echoed from the request and the range is a UTF-8 byte range
+ * in that script, so no absolute path is ever published.
+ */
+export interface EventResult {
+  eventId: string;
+  state: EventState;
+  definition?: { fileId: string; range: { start: number; end: number } };
+  /** Bounded one-line member snippet (method declaration or function property). */
+  signature?: string;
+  diagnostic?: {
+    range: { start: number; end: number };
+    severity: "error" | "warning";
+    message: string;
+  };
 }
 
 /** Response envelope. The harness fills the query results in `ScenarioRun`. */
@@ -219,6 +410,23 @@ export interface AnalyzeResponse {
   }>;
   moduleKind: { before: "script" | "module" | "unknown"; after: "script" | "module" | "unknown" };
   suppressed: { count: number; details: Array<{ code: number; message: string }> };
+  /**
+   * Custom-component property binding results (protocol v2). Present only when at
+   * least one usage was checked; each diagnostic carries a WXML byte range.
+   */
+  components?: Array<{
+    tag: string;
+    diagnostics: Array<{
+      range: { start: number; end: number };
+      severity: "error" | "warning";
+      message: string;
+    }>;
+  }>;
+  /**
+   * Event handler resolutions (protocol v2). Present only when the request
+   * carried `events`; one entry per accepted event, in request order.
+   */
+  eventResults?: EventResult[];
 }
 
 export type RequestErrorCode =
@@ -258,17 +466,86 @@ export class RequestError extends Error {
   }
 }
 
-export function totalBytes(files: RequestFile[], fragments: RequestFragment[] = []): number {
+/**
+ * Total payload bytes of a request.
+ *
+ * Every v2 string payload counts, not just file text and fragment expressions:
+ * `bindings[].sourceExpr`, `guards[].conditions[].exprText`,
+ * `components[].attributes[].exprText` and every `events[]` string are untrusted
+ * input and are re-emitted into the derived view, so they must be bounded by the
+ * same budget. Entries are read defensively because this runs before the
+ * detailed validators.
+ */
+export function totalBytes(
+  files: RequestFile[],
+  fragments: RequestFragment[] = [],
+  components: RequestComponentUsage[] = [],
+  events: RequestEvent[] = [],
+): number {
   const fileBytes = files.reduce((sum, file) => sum + Buffer.byteLength(file.text, "utf8"), 0);
-  const fragmentBytes = fragments.reduce(
-    (sum, fragment) =>
-      sum +
-      (fragment && typeof fragment === "object" && typeof fragment.exprText === "string"
-        ? Buffer.byteLength(fragment.exprText, "utf8")
-        : 0),
+  const fragmentBytes = fragments.reduce((sum, fragment) => sum + fragmentPayloadBytes(fragment), 0);
+  const componentBytes = (Array.isArray(components) ? components : []).reduce(
+    (sum, usage) => sum + componentPayloadBytes(usage),
     0,
   );
-  return fileBytes + fragmentBytes;
+  const eventBytes = (Array.isArray(events) ? events : []).reduce(
+    (sum, event) => sum + eventPayloadBytes(event),
+    0,
+  );
+  return fileBytes + fragmentBytes + componentBytes + eventBytes;
+}
+
+/** UTF-8 bytes of a string field; `0` for anything else. */
+function payloadBytes(value: unknown): number {
+  return typeof value === "string" ? Buffer.byteLength(value, "utf8") : 0;
+}
+
+/** `exprText` plus every structured binding/guard payload of one fragment. */
+function fragmentPayloadBytes(fragment: unknown): number {
+  if (!fragment || typeof fragment !== "object") return 0;
+  const entry = fragment as Partial<RequestFragment>;
+  let bytes = payloadBytes(entry.exprText);
+  const bindings: unknown = entry.bindings;
+  if (Array.isArray(bindings)) {
+    for (const binding of bindings) {
+      bytes += payloadBytes((binding as { sourceExpr?: unknown } | null)?.sourceExpr);
+    }
+  }
+  const guards: unknown = entry.guards;
+  if (Array.isArray(guards)) {
+    for (const chain of guards) {
+      const conditions: unknown = (chain as { conditions?: unknown } | null)?.conditions;
+      if (!Array.isArray(conditions)) continue;
+      for (const condition of conditions) {
+        bytes += payloadBytes((condition as { exprText?: unknown } | null)?.exprText);
+      }
+    }
+  }
+  return bytes;
+}
+
+/** Every bound attribute expression of one component usage. */
+function componentPayloadBytes(usage: unknown): number {
+  if (!usage || typeof usage !== "object") return 0;
+  const attributes: unknown = (usage as { attributes?: unknown }).attributes;
+  if (!Array.isArray(attributes)) return 0;
+  let bytes = 0;
+  for (const attribute of attributes) {
+    bytes += payloadBytes((attribute as { exprText?: unknown } | null)?.exprText);
+  }
+  return bytes;
+}
+
+/** Every string field of one event binding. */
+function eventPayloadBytes(event: unknown): number {
+  if (!event || typeof event !== "object") return 0;
+  const entry = event as Partial<RequestEvent>;
+  return (
+    payloadBytes(entry.eventId) +
+    payloadBytes(entry.attribute) +
+    payloadBytes(entry.event) +
+    payloadBytes(entry.handler)
+  );
 }
 
 /** Enforce input bounds before any parsing or language-service work. */
@@ -353,7 +630,7 @@ export function validateRequest(request: AnalyzeRequest): void {
   if (request.files.length > effective.maxFiles) {
     throw new RequestError("too-many-files", `request has ${request.files.length} files, limit ${effective.maxFiles}`);
   }
-  const bytes = totalBytes(request.files, request.fragments);
+  const bytes = totalBytes(request.files, request.fragments, request.components, request.events);
   if (bytes > effective.maxTotalBytes) {
     throw new RequestError("too-many-bytes", `request has ${bytes} bytes, limit ${effective.maxTotalBytes}`);
   }
@@ -365,6 +642,8 @@ export function validateRequest(request: AnalyzeRequest): void {
   }
   validateCompilerOptions(request.project.compilerOptions);
   validateFragments(request.fragments);
+  validateComponents(request.components);
+  validateEvents(request.events);
 }
 
 /** Validate the C1.1 fragment inputs (shape, ids, target, locals). */
@@ -433,6 +712,210 @@ export function validateFragments(fragments: RequestFragment[]): void {
         }
         seen.add(local);
       }
+    }
+    validateLocalBindings(id, fragment.bindings);
+    validateGuardChains(id, fragment.guards);
+  }
+}
+
+const LOCAL_ROLES = new Set(["item", "index"]);
+const GUARD_BRANCHES = new Set(["if", "elif", "else"]);
+const ATTRIBUTE_VALUE_KINDS = new Set(["literal", "mustache", "mixed", "boolean"]);
+
+/** Upper bound on one fragment's `wx:for` chain (far above real nesting). */
+const MAX_LOCAL_BINDINGS = 64;
+/** Upper bound on nested conditional chains per fragment. */
+const MAX_GUARD_CHAINS = 32;
+/** Upper bound on conditions in one conditional chain. */
+const MAX_GUARD_CONDITIONS = 64;
+
+/** True for a non-negative byte range with `start <= end`. */
+function isSourceRange(value: unknown): value is { start: number; end: number } {
+  if (typeof value !== "object" || value === null) return false;
+  const start = (value as { start?: unknown }).start;
+  const end = (value as { end?: unknown }).end;
+  return (
+    typeof start === "number" &&
+    typeof end === "number" &&
+    Number.isInteger(start) &&
+    Number.isInteger(end) &&
+    start >= 0 &&
+    end >= start
+  );
+}
+
+/**
+ * Validate optional protocol v2 structured `wx:for` bindings.
+ *
+ * `bindings` is the full nesting chain, outermost first, `item` then `index` per
+ * level. A name may therefore legitimately repeat across levels (an inner loop
+ * shadows an outer one); only a duplicate inside the *same* level is an error.
+ * The level simulation mirrors `groupLocalLevels` so the validator and the
+ * generator agree on what a chain means.
+ */
+function validateLocalBindings(id: string, bindings: RequestLocalBinding[] | undefined): void {
+  if (bindings === undefined) return;
+  if (!Array.isArray(bindings)) {
+    throw new RequestError("bad-fragment", `fragment ${id}: bindings must be an array`);
+  }
+  if (bindings.length > MAX_LOCAL_BINDINGS) {
+    throw new RequestError(
+      "bad-fragment",
+      `fragment ${id}: ${bindings.length} bindings exceed the limit of ${MAX_LOCAL_BINDINGS}`,
+    );
+  }
+  const levels: Array<{ item?: string; index?: string }> = [];
+  for (const binding of bindings) {
+    if (typeof binding !== "object" || binding === null) {
+      throw new RequestError("bad-fragment", `fragment ${id}: bindings entries must be objects`);
+    }
+    if (typeof binding.name !== "string" || !isBindingIdentifier(binding.name)) {
+      throw new RequestError("bad-fragment", `fragment ${id}: binding name is not a valid identifier`);
+    }
+    if (typeof binding.role !== "string" || !LOCAL_ROLES.has(binding.role)) {
+      throw new RequestError("bad-fragment", `fragment ${id}: binding ${binding.name} has an unknown role`);
+    }
+    if (typeof binding.sourceExpr !== "string" || binding.sourceExpr.length === 0) {
+      throw new RequestError("bad-fragment", `fragment ${id}: binding ${binding.name} has an empty sourceExpr`);
+    }
+    if (!isSourceRange(binding.sourceRange)) {
+      throw new RequestError("bad-fragment", `fragment ${id}: binding ${binding.name} has an invalid sourceRange`);
+    }
+    const current = levels[levels.length - 1];
+    if (binding.role === "item") {
+      if (current && current.item === undefined) {
+        if (current.index === binding.name) {
+          throw new RequestError(
+            "bad-fragment",
+            `fragment ${id}: duplicate binding ${binding.name} at one nesting level`,
+          );
+        }
+        current.item = binding.name;
+      } else {
+        levels.push({ item: binding.name });
+      }
+      continue;
+    }
+    if (!current) {
+      levels.push({ index: binding.name });
+      continue;
+    }
+    if (current.index === undefined) {
+      if (current.item === binding.name) {
+        throw new RequestError(
+          "bad-fragment",
+          `fragment ${id}: duplicate binding ${binding.name} at one nesting level`,
+        );
+      }
+      current.index = binding.name;
+    }
+    // An extra index at a level that already has one is ignored by
+    // `groupLocalLevels`; it is not a name collision, so it is not rejected.
+  }
+}
+
+/** Validate optional protocol v2 conditional chains. */
+function validateGuardChains(id: string, guards: RequestGuardChain[] | undefined): void {
+  if (guards === undefined) return;
+  if (!Array.isArray(guards)) {
+    throw new RequestError("bad-fragment", `fragment ${id}: guards must be an array`);
+  }
+  if (guards.length > MAX_GUARD_CHAINS) {
+    throw new RequestError(
+      "bad-fragment",
+      `fragment ${id}: ${guards.length} guard chains exceed the limit of ${MAX_GUARD_CHAINS}`,
+    );
+  }
+  for (const chain of guards) {
+    if (typeof chain !== "object" || chain === null || !Array.isArray(chain.conditions)) {
+      throw new RequestError("bad-fragment", `fragment ${id}: guard chain has no conditions array`);
+    }
+    if (chain.conditions.length > MAX_GUARD_CONDITIONS) {
+      throw new RequestError(
+        "bad-fragment",
+        `fragment ${id}: ${chain.conditions.length} guard conditions exceed the limit of ${MAX_GUARD_CONDITIONS}`,
+      );
+    }
+    if (
+      !Number.isInteger(chain.selected) ||
+      chain.selected < 0 ||
+      chain.selected > chain.conditions.length
+    ) {
+      throw new RequestError("bad-fragment", `fragment ${id}: guard chain has an invalid selected index`);
+    }
+    for (const condition of chain.conditions) {
+      if (typeof condition !== "object" || condition === null) {
+        throw new RequestError("bad-fragment", `fragment ${id}: guard conditions must be objects`);
+      }
+      if (typeof condition.branch !== "string" || !GUARD_BRANCHES.has(condition.branch)) {
+        throw new RequestError("bad-fragment", `fragment ${id}: guard condition has an unknown branch`);
+      }
+      if (typeof condition.exprText !== "string" || condition.exprText.length === 0) {
+        throw new RequestError("bad-fragment", `fragment ${id}: guard condition has an empty exprText`);
+      }
+      if (!isSourceRange(condition.range)) {
+        throw new RequestError("bad-fragment", `fragment ${id}: guard condition has an invalid range`);
+      }
+    }
+  }
+}
+
+/** Validate optional protocol v2 custom-component usages. */
+function validateComponents(components: RequestComponentUsage[] | undefined): void {
+  if (components === undefined) return;
+  if (!Array.isArray(components)) {
+    throw new RequestError("bad-params", "request.components must be an array");
+  }
+  for (const usage of components) {
+    if (typeof usage !== "object" || usage === null) {
+      throw new RequestError("bad-params", "components[] entries must be objects");
+    }
+    if (typeof usage.tag !== "string" || usage.tag.length === 0) {
+      throw new RequestError("bad-params", "components[].tag is required");
+    }
+    if (usage.componentFileId !== undefined && (typeof usage.componentFileId !== "string" || usage.componentFileId.length === 0)) {
+      throw new RequestError("bad-params", `components[${usage.tag}].componentFileId must be a non-empty string`);
+    }
+    if (!Array.isArray(usage.attributes)) {
+      throw new RequestError("bad-params", `components[${usage.tag}].attributes must be an array`);
+    }
+    for (const attribute of usage.attributes) {
+      if (typeof attribute !== "object" || attribute === null || typeof attribute.name !== "string" || attribute.name.length === 0) {
+        throw new RequestError("bad-params", `components[${usage.tag}].attributes[].name is required`);
+      }
+      if (typeof attribute.valueKind !== "string" || !ATTRIBUTE_VALUE_KINDS.has(attribute.valueKind)) {
+        throw new RequestError("bad-params", `components[${usage.tag}].${attribute.name} has an unknown valueKind`);
+      }
+      if (attribute.exprText !== undefined && typeof attribute.exprText !== "string") {
+        throw new RequestError("bad-params", `components[${usage.tag}].${attribute.name}.exprText must be a string`);
+      }
+      if (attribute.exprRange !== undefined && !isSourceRange(attribute.exprRange)) {
+        throw new RequestError("bad-params", `components[${usage.tag}].${attribute.name} has an invalid exprRange`);
+      }
+      if (!isSourceRange(attribute.attributeRange)) {
+        throw new RequestError("bad-params", `components[${usage.tag}].${attribute.name} has an invalid attributeRange`);
+      }
+    }
+  }
+}
+
+/** Validate optional protocol v2 static event bindings. */
+function validateEvents(events: RequestEvent[] | undefined): void {
+  if (events === undefined) return;
+  if (!Array.isArray(events)) {
+    throw new RequestError("bad-params", "request.events must be an array");
+  }
+  for (const event of events) {
+    if (typeof event !== "object" || event === null) {
+      throw new RequestError("bad-params", "events[] entries must be objects");
+    }
+    for (const key of ["eventId", "attribute", "event", "handler"] as const) {
+      if (typeof event[key] !== "string" || event[key].length === 0) {
+        throw new RequestError("bad-params", `events[].${key} is required`);
+      }
+    }
+    if (!isSourceRange(event.attributeRange) || !isSourceRange(event.handlerRange)) {
+      throw new RequestError("bad-params", `events[${event.eventId}] has an invalid range`);
     }
   }
 }

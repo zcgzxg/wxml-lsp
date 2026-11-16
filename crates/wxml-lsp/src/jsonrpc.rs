@@ -233,8 +233,8 @@ pub(crate) enum Incoming {
         /// Raw parameters, when present and not `null`.
         params: Option<Value>,
     },
-    /// A response. This server does not send requests, so responses are only
-    /// logged by the caller.
+    /// A response. This server only uses responses for its own requests
+    /// (currently capability registration), so the caller logs and ignores it.
     Response {
         /// The id of the request this answers.
         id: Value,
@@ -389,6 +389,15 @@ pub(crate) enum Outgoing {
         /// JSON parameters.
         params: Value,
     },
+    /// A server-initiated request, answered later by the client.
+    Request {
+        /// Server-supplied id, echoed by the client response.
+        id: Value,
+        /// Method name.
+        method: String,
+        /// JSON parameters.
+        params: Value,
+    },
 }
 
 /// The result or error of a response.
@@ -437,6 +446,15 @@ impl Outgoing {
         }
     }
 
+    /// Builds a server-initiated request.
+    pub(crate) fn request(id: Value, method: impl Into<String>, params: Value) -> Self {
+        Self::Request {
+            id,
+            method: method.into(),
+            params,
+        }
+    }
+
     /// Converts the message into its JSON representation.
     pub(crate) fn into_value(self) -> Value {
         match self {
@@ -454,6 +472,12 @@ impl Outgoing {
             }),
             Self::Notification { method, params } => json!({
                 "jsonrpc": "2.0",
+                "method": method,
+                "params": params,
+            }),
+            Self::Request { id, method, params } => json!({
+                "jsonrpc": "2.0",
+                "id": id,
                 "method": method,
                 "params": params,
             }),
@@ -723,6 +747,25 @@ mod tests {
         let expected_header = format!("Content-Length: {}\r\n\r\n", expected_body.len());
         assert!(output.starts_with(expected_header.as_bytes()));
         assert_eq!(&output[expected_header.len()..], expected_body.as_slice());
+    }
+
+    #[test]
+    fn serializes_server_requests() {
+        let request = Outgoing::request(
+            json!("wxml-lsp-watch"),
+            "client/registerCapability",
+            json!({"registrations": []}),
+        )
+        .into_value();
+        assert_eq!(
+            request,
+            json!({
+                "jsonrpc": "2.0",
+                "id": "wxml-lsp-watch",
+                "method": "client/registerCapability",
+                "params": {"registrations": []},
+            })
+        );
     }
 
     #[test]

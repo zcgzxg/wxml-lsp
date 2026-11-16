@@ -14,6 +14,28 @@ use wxml_types::{CapabilityStatus, DiagnosticSeverity, TypeQuality};
 
 use crate::workspace::{ContentChange, Document};
 
+/// Returns `true` when `uri` names a WXML template for this server.
+///
+/// A project host answers exactly; without one (synthetic documents) the URI
+/// extension is the only signal available. Non-template documents must never
+/// schedule analysis jobs or publish diagnostics.
+pub(crate) fn template_document(server: &crate::server::Server, uri: &str) -> bool {
+    match server.host.route(uri) {
+        crate::project_host::DocumentRoute::Wxml(_) => true,
+        crate::project_host::DocumentRoute::Script(_)
+        | crate::project_host::DocumentRoute::Json(_) => false,
+        crate::project_host::DocumentRoute::Unknown => {
+            server.synthetic_templates.contains(uri)
+                || uri
+                    .split(['?', '#'])
+                    .next()
+                    .unwrap_or(uri)
+                    .to_ascii_lowercase()
+                    .ends_with(".wxml")
+        }
+    }
+}
+
 /// Largest accepted number of edits in one `didChange`.
 const MAX_CONTENT_CHANGES: usize = 256;
 

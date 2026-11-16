@@ -31,7 +31,7 @@ test("analyze returns hover, diagnostic and definition for a page", () => {
   const result = analyze(request, analysisConfig);
   assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.equal(result.response.protocolVersion, 1);
+  assert.equal(result.response.protocolVersion, 2);
   assert.equal(result.response.requestId, request.requestId);
 
   const title = result.response.fragments.find((entry) => entry.fragmentId === "title");
@@ -109,7 +109,7 @@ test("locals mount the expression without a root prefix", () => {
   assert.equal(result.states.hover.status, "partial");
   assert.equal(result.states.diagnostics.status, "partial");
   assert.equal(result.states.definition.status, "partial");
-  assert.match(result.states.hover.reason ?? "", /template locals are bound as any/);
+  assert.match(result.states.hover.reason ?? "", /could not be resolved and were not checked/);
 });
 
 test("component locals keep overlay definitions mapped to the original script", () => {
@@ -191,7 +191,6 @@ test("an unmapped in-mount diagnostic downgrades diagnostics, not hover", () => 
     introduced: [],
     noCheck: false,
     droppedDefinitions: 0,
-    hasLocals: false,
     unmappedDiagnostics: 2,
     missing: 0,
     unexpected: 0,
@@ -210,7 +209,6 @@ test("a dropped definition downgrades only the definition capability", () => {
     introduced: [],
     noCheck: false,
     droppedDefinitions: 1,
-    hasLocals: false,
     unmappedDiagnostics: 0,
     missing: 0,
     unexpected: 0,
@@ -261,7 +259,7 @@ test("a missing snapshot file is Unavailable, never read from disk", () => {
 
 test("a malformed request is rejected before analysis", () => {
   const request = pageBasicRequest();
-  request.protocolVersion = 2;
+  request.protocolVersion = 3;
   assert.throws(
     () => validateRequest(request),
     (error: unknown) => error instanceof RequestError && error.code === "bad-protocol",

@@ -38,8 +38,17 @@ export interface FragmentDraft {
   segments: Segment[];
   /** Byte range of `expr` in the original WXML text. */
   source: SourceByteRange;
-  /** Template scope bindings from the request. */
+  /**
+   * Template scope binding names from the request (`locals` list form).
+   *
+   * Kept for compatibility: `bindings` is the structured form that carries the
+   * `wx:for` source expression, while `locals` is only a derived name list.
+   */
   locals: string[];
+  /** Structured `wx:for` bindings, outermost first (protocol v2). */
+  bindings: RequestLocalBinding[];
+  /** Enclosing `wx:if`/`wx:elif`/`wx:else` chains, outermost first (protocol v2). */
+  guards: RequestGuardChain[];
   /** First free root identifier (`user.name` -> `user`). */
   root: string;
   /** True when every free root is a template local (no root prefix). */
@@ -105,8 +114,12 @@ export interface FragmentRecord {
   expr: string;
   root: string;
   target: string;
-  /** Template scope bindings from the request. */
+  /** Template scope bindings from the request (`locals` list form). */
   locals: string[];
+  /** Structured `wx:for` bindings, outermost first. */
+  bindings: RequestLocalBinding[];
+  /** Enclosing conditional chains, outermost first. */
+  guards: RequestGuardChain[];
   /** True when every free root is a template local (no root prefix). */
   localRoot: boolean;
   mounts: MountRecord[];
@@ -204,7 +217,7 @@ export interface ExpectedDiagnostic {
 /** How JavaScript checking is enabled for a scenario. */
 export type JsCheckMode = "inherit" | "pragma" | "off";
 
-import type { AnalyzeResponse, RequestCompilerOptions } from "./protocol.ts";
+import type { AnalyzeResponse, RequestCompilerOptions, RequestGuardChain, RequestLocalBinding } from "./protocol.ts";
 
 export interface RunOverrides {
   /** Replace the script text (simulates an unsaved editor buffer). */
@@ -327,6 +340,14 @@ export interface LayoutBuild {
   /** Overall ability to mount and check the scenario. */
   buildStatus: CapabilityStatus;
   reason?: string;
+  /**
+   * Bindings whose `wx:for` source expression could not be rewritten (or only
+   * the compatibility `locals` name list was available). They are declared as
+   * `any` and must downgrade the diagnostics state to Partial.
+   */
+  unresolvedBindings?: number;
+  /** Guard conditions that could not be rewritten; they do not narrow. */
+  unresolvedGuards?: number;
   files: Array<{ path: string; text: string }>;
   /** File that hosts the mounted fragments (the script for A, the check file for B). */
   queryFile: string;

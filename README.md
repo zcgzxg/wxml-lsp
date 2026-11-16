@@ -4,7 +4,7 @@
 
 架构决策于 2026-11-15 整理至 [ADR 索引](docs/adr/README.md)，包含模块边界、类型检查与源码映射、文档同步及并行交付方案。架构边界以有效 ADR 为准；`accepted` 不表示功能已实现，实际进度与证据仍见本文。
 
-本文记录已确认的需求、方案评审结果、实验依据和后续计划。项目用于个人在 Zed 中开发微信小程序；当前已完成 Rust workspace、WXML 语法/项目模型、C0/C1 契约、类型桥（候选 A）、Node 类型后端、模板语义、LSP、Zed 扩展代码及真实 Node 端到端（G1）；剩余主要是 Wave 4 类型能力、Zed 标准 Dev Extension 安装与实机观感验收。
+本文记录已确认的需求、方案评审结果、实验依据和后续计划。项目用于个人在 Zed 中开发微信小程序；当前已完成 Rust workspace、WXML 语法/项目模型、C0/C1 契约、类型桥（候选 A）、Node 类型后端、模板语义（typed `wx:for`、条件窄化、组件属性绑定）、LSP（hover/definition/诊断/补全/事件链路）、Zed 扩展及真实 Node/真实 Zed 同步验证；剩余主要是 F-08+ 其余语言能力、Zed 标准 Dev Extension 安装与实机观感验收、发布流水线。
 
 文档入口：[文档索引](docs/README.md) · [WXML 语言功能基线](docs/reference/wxml-language-feature-baseline.md) · [证据索引](docs/evidence/README.md) · [来源与许可证记录](docs/reference/provenance.md)。
 
@@ -14,12 +14,12 @@
 
 | 组件 | 位置 | 当前内容 |
 | --- | --- | --- |
-| Rust workspace | `crates/` | `wxml-text`（UTF-8 字节 ↔ UTF-16 位置、行索引）、`wxml-syntax`（容错 lexer/parser、Mustache Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、app 发现、tsconfig、sources）、`wxml-types`（C0 契约、模板语义、`wx:for` 作用域、后端接口与 mock）、`wxml-lsp`（JSON-RPC、ProjectHost、Node 后端、hover/diagnostics/definition、版本屏障/缓存/超时/重启）、`wxml-fixtures`（schema v2 校验） |
+| Rust workspace | `crates/` | `wxml-text`（UTF-8 字节 ↔ UTF-16 位置、行索引）、`wxml-syntax`（容错 lexer/parser、Mustache Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、app 发现、tsconfig、sources）、`wxml-types`（C0 契约、模板语义、`wx:for` 作用域、后端接口与 mock）、`wxml-lsp`（JSON-RPC、ProjectHost、Node 后端、hover/diagnostics/definition、静态与后端补全、版本屏障/缓存/超时/重启）、`wxml-fixtures`（schema v2 校验） |
 | Node 类型后端 | `backends/typescript/` | C1.1 类型桥；固定 `typescript@6.0.3`、`miniprogram-api-typings@5.3.1`；要求 Node >= 24；内存原位 shadow，不写业务文件 |
 | Zed 扩展 | `editors/zed/` | 本地 Dev Extension，id `wxml-lsp`、名称 `WXML LSP`（避免与 Marketplace 上仅 grammar 的 `wxml` 扩展冲突）；WXML 语言配置、tree-sitter 查询、`wasm32-wasip2`；真实 grammar 已用 wasi-sdk 34 构建（约 23,806 B）；从 `WXML_LSP_BIN` 绝对路径启动 `wxml-lsp --stdio` |
 | 样本与证据 | `tests/fixtures/`、`docs/evidence/` | AC-001..AC-013 样本与 schema 校验；类型桥、P7/P8 与 G1 证据记录 |
 
-当前状态快照（2026-11-16）：workspace `625 passed / 6 ignored / 26 suites`；`editors/zed` `22 passed`；`wasm32-wasip2` debug `7,633,946 B`、release `238,792 B`。6 个 ignored 是需显式开启的真实 Node 门禁（`WXML_TEST_NODE=1`）。
+当前状态快照（2026-11-16）：workspace `754 passed / 15 ignored / 28 suites`；`editors/zed` `25 passed`；`wasm32-wasip2` release `238,792 B`（debug 历史构建 `7,633,946 B`）。15 个 ignored 包括需显式开启的真实 Node 门禁（`WXML_TEST_NODE=1`）与 Wave 5 真实 Node 验收。
 
 ### 0.2 验证命令
 
@@ -84,11 +84,11 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test real_node -- --ignored
 
 ### 0.4 已知限制
 
-- Wave 4 尚未完成：完整 `wx:for` 元素类型、条件窄化、多视图/项目别名、反向编辑等对应 AC-005/006/008/012；含 locals 的片段当前为 `Partial`，元素类型按 `any` 处理。
+- Wave 5 已完成 typed `wx:for`、条件窄化、多视图/项目别名、自定义组件属性绑定和事件处理函数链路，AC-005/006/008/012 已完成；剩余限制包括反向编辑、组件内 `usingComponents` 建模、复杂守卫/组件属性声明降级。
 - Zed 扩展已完成代码评审、host 测试、wasm 构建和真实 `tree-sitter-wxml` grammar 构建（wasi-sdk 34，约 23,806 B）；早期隔离 smoke 用临时 HTML grammar，最终隔离测试已加载真实 grammar、注册 WXML、启动真实 LSP、显示 `user.nmae` 诊断。本机主 Zed 已通过手工 dev symlink/index 重启加载扩展，在 `tests/fixtures/page-basic` 中启动 `wxml-lsp --stdio` 与 Node 后端，并显示 `user.nmae` 红色诊断。**标准 UI `zed: install dev extension` 安装、hover/definition 内容与真实 grammar 查询观感尚未确认**；未做 Windows/macOS 实机验证。
-- G0/G2 仅部分通过；G1 真实 Node 端到端通过（5 + 1 个显式门禁测试）。KDE EIS 权限弹窗阻断了自动化鼠标/键盘验证。
+- G0/G2 仅部分通过；G1 真实 Node 端到端通过（`stdio_type_loop` 5、`real_node` 3、`wave5_acceptance` 7 个显式门禁测试）。KDE EIS 权限弹窗阻断了自动化鼠标/键盘验证。
 - 未发布：扩展 id 为 `wxml-lsp`、名称 `WXML LSP`（避免与 Marketplace 上仅 grammar 的 `wxml` 扩展冲突）；没有 marketplace 发布、服务器自动下载或安装流水线。
-- Zed 只把 WXML buffer 交给 `wxml-lsp`；未保存的 JS/TS 修改不会实时反映到 WXML，保存后的下一次分析才会读取磁盘内容。
+- Zed 扩展已注册 WXML、JavaScript、TypeScript、TSX、JSON（不含 JSX），同一 `wxml-lsp` 进程接收关联文档的 `didOpen`/`didChange`/`didSave`。2026-11-16 隔离 Xvfb smoke 已验证：未保存的 TS 字段类型修改会实时反映到 WXML hover；保存后 `didSave` 刷新诊断；无关 TS 脚本只触发一次诊断刷新、不改变 WXML 类型结果；服务端动态注册并接收 `workspace/didChangeWatchedFiles`。标准 UI 安装、definition 跳转和服务重启恢复仍未验收。
 
 ## 1. 项目目标
 
@@ -212,6 +212,18 @@ Component({
 
 历史调研对象使用了多套语言配置和多个格式化后端；这些兼容项不自动成为本项目必须完整复刻的要求。
 
+### 3.4 补全（Wave 5）
+
+补全分两条路径，目录与边界以[功能基线 §3.8](docs/reference/wxml-language-feature-baseline.md#38-补全目录现状wave-5)为准：
+
+- **静态、同步（不启动 Node）**：`<` 后的标签（基础组件 + 当前页面 `usingComponents`）；`</` 后仅当前未闭合元素栈内的标签；开始标签内的属性名（标签属性 + `id`/`class`/`style`/`hidden` + `wx:` 指令 + 常用事件绑定）；引号内枚举属性值（如 `button type`、`picker mode`、`input type`、`image mode`、`navigator open-type`）；事件属性名（`bindtap`、`catchtap`、`bind:tap`、`capture-bind:tap`、`mut-bind:tap` 等）。
+- **依赖类型后端**：`{{ user.na }}` 的表达式成员补全复用 C1 虚拟文件布局与 TypeScript `getCompletionsAtPosition`；`bindtap="on"` 枚举 Page 顶层方法与 Component `methods`。后端不可用、超时或不支持时静默降级为**空列表**，不报协议错误。
+- **替换范围**：仅替换已输入 token——标签名/属性名替换 token，引号内的值只替换值前缀（引号保留），未加引号的值插入带引号的字面量；不做整行替换。
+- **不产生补全**：纯文本、HTML 注释、`<wxs>` 元素体、Mustache 字符串字面量内。
+- **能力声明**：`completionProvider` 无条件声明，`resolveProvider: false`，触发字符 `<`、空格、`:`、`"`、`'`、`.`、`{`、`=`；`isIncomplete: false`，单次最多 256 项；参数非法返回 `-32602`。
+
+自定义组件目前只在页面 WXML 中列出（页面 `usingComponents` 与 `app.json` 合并，本地同名优先）；组件自身 WXML 中的自定义组件、组件属性名尚未参与补全。目录是受限子集，不宣称完整小程序覆盖。
+
 ## 4. 方案评审结论
 
 ### 4.1 保留的判断
@@ -278,7 +290,7 @@ Rust WXML Language Server
 
 计划让同一 WXML 服务也接收相关 JavaScript、TypeScript 文档的打开、修改、关闭事件；不替代用户已有的 JS/TS 主服务，不重复发布无关的脚本诊断。内存覆盖层优先于磁盘内容，并在依赖变化时刷新关联 WXML。
 
-还需在 Zed 中验证：服务器实例复用、同一项目文档归属、多服务并存以及更新顺序。
+2026-11-16 已在 Zed 1.28.1 验证：服务器实例复用（一个进程持有 WXML/JSON/TS 多文档）、同一项目文档归属、与内置 JS/TS 服务并存、`didSave` 与 watched-files 的更新顺序；详见 [p8-zed.md](docs/evidence/p8-zed.md) 第 7、12 节。
 
 ### 5.4 其他技术选择
 
@@ -374,41 +386,41 @@ docs/                         # 参考、ADR、证据
 
 ### 阶段 3：Zed 本地端到端验证
 
-- [ ] 创建自用 Dev Extension，从明确的本地路径启动服务。
-- [ ] 在真实 WXML 文档中验证 hover 和错误标注。
-- [ ] 让相关 JS/TS 文档变更进入同一服务的内存覆盖层。
-- [ ] 保留已有 JS/TS 服务，验证并存行为与实例归属。
+- [x] 创建自用 Dev Extension，从明确的本地路径启动服务。
+- [x] 在真实 WXML 文档中验证 hover 和错误标注。
+- [x] 让相关 JS/TS 文档变更进入同一服务的内存覆盖层。
+- [x] 保留已有 JS/TS 服务，验证并存行为与实例归属。
 - [ ] 验证未保存的 `data`/`properties` 字段类型和说明（含其引用的跨文件类型）、脚本及模板修改能够正确传播。
 - [ ] 记录响应时间、诊断误报、错误消失和服务重启后的恢复情况。
 
 产出：可本地安装、可评审的最小验证版及实际测试记录。
 
-状态（2026-11-16）：扩展代码、host 测试、wasm 构建和真实 grammar 构建完成；隔离用户目录 smoke 已加载真实 grammar、启动真实 `wxml-lsp` 并显示 `user.nmae` 诊断；主 Zed 已放入手工 dev symlink/index 并重启加载，`page-basic` 窗口中启动了 `wxml-lsp` 与 Node 后端，`user.nmae` 显示红色诊断和语法着色。标准 UI 安装、hover/definition 内容、未保存 JS 同步和并存行为仍未验收，因此上述项不勾选。
+状态（2026-11-16）：扩展代码、host 测试、wasm 构建和真实 grammar 构建完成；隔离用户目录 smoke 已加载真实 grammar、启动真实 `wxml-lsp` 并显示 `user.nmae` 诊断；主 Zed 已放入手工 dev symlink/index 并重启加载，`page-basic` 窗口中启动了 `wxml-lsp` 与 Node 后端，`user.nmae` 显示红色诊断和语法着色。隔离 Xvfb D6 smoke（证据见 [p8-zed.md](docs/evidence/p8-zed.md) 第 12 节）确认：五语言注册共享单进程，未保存 TS 类型修改使 WXML hover 在 `string`/`number` 间切换，`ctrl+s` 触发 `didSave` 并刷新 WXML 诊断，无关 TS 脚本只触发诊断刷新、不改变类型结果；Zed 内置 TS 服务与本服务同时运行。未保存 `data` 字段类型已验收，但跨文件类型/模板修改的编辑器内传播、连续键入的响应时间、definition 跳转、服务重启恢复和标准 UI 安装仍未验收，因此第 5、6 项不勾选。
 
 ### 阶段 4：完整模板作用域与项目类型
 
 - [ ] 完善表达式语法、重写和源码映射，移除原型阶段的受限假设。
-- [ ] 支持 `wx:for-item/index`、嵌套遮蔽及作用域恢复。
-- [ ] 支持条件分支、可空和判别联合的适用窄化规则。
+- [x] 支持 `wx:for-item/index`、嵌套遮蔽及作用域恢复。
+- [x] 支持条件分支、可空和判别联合的适用窄化规则。
 - [ ] 完善 `tsconfig` 项目归属、路径别名、导入、依赖图和缓存失效。
 - [ ] 补充符合项目实际写法的 Behavior、共享数据和复杂类型样本。
-- [ ] 增加成员补全、定义跳转和自定义组件属性绑定检查。
+- [x] 增加成员补全、定义跳转和自定义组件属性绑定检查。
 
 产出：围绕实际小程序项目验收的模板类型功能。
 
-状态（2026-11-16）：`wx:for` 仅传递 locals 名称并以 `any` 绑定；条件窄化、多视图归属、补全和反向编辑未实现；definition 已支持可映射目标。AC-005/006/008/012 仍未完成。
+状态（2026-11-16）：`wx:for` 已支持嵌套 typed locals、元素/索引类型和作用域恢复；条件窄化、多视图/路径别名、组件属性绑定、成员补全和事件链路已实现；反向编辑未实现。AC-005/006/008/012 已完成。`tsconfig` 依赖图仍有限，Behavior/共享数据样本和表达式重写/源码映射的剩余受限假设未完成。
 
 ### 阶段 5：补齐常用 WXML 功能
 
-- [ ] 内置标签、属性、值、指令和事件补全及文档。
-- [ ] `usingComponents` 解析和自定义组件信息。
+- [x] 内置标签、属性、值、指令和事件补全及文档。
+- [x] `usingComponents` 解析和自定义组件信息。
 - [ ] 事件函数、class、资源路径的补全与导航。
 - [ ] 闭合标签、标签配对和 snippets。
 - [ ] 按需求补充样式索引和格式化，不引入无关兼容层。
 
 产出：日常可用的自用 WXML 工具。
 
-状态（2026-11-16）：基础 hover、diagnostics 和 definition 已可用；补全、事件/class/资源导航、snippets、格式化和样式索引尚未实现。
+状态（2026-11-16）：F-01–F-07 补全（标签/属性/枚举值/指令/事件/自定义组件/表达式成员）、基础 hover/diagnostics/definition、事件处理函数诊断/definition/补全已完成；class/WXSS、资源路径、snippets、格式化、语义高亮、重命名和样式索引尚未实现。事件函数补全和导航已完成，但同一复选框中的 class/资源路径导航未完成，因此第 3 项保持未勾选。
 
 ### 阶段 6：优化与可选后端替换
 
@@ -425,18 +437,18 @@ docs/                         # 参考、ADR、证据
 
 以下清单指首个可在 Zed 中评审的类型版本，预计在上述阶段 3 完成时验收；不表示仅完成阶段 1 的样本整理即可满足。
 
-- [ ] 普通 `Page({...})` 的 `data`、`Component({...})` 的 `data`/`properties` 无需改写即可关联模板数据。
-- [ ] 悬停 `user.name`、`title` 得到实际类型及该字段的说明。
-- [ ] 不存在字段被准确标记，合法表达式不被误报。
-- [ ] 中文、emoji、不同换行格式下位置正确。
+- [x] 普通 `Page({...})` 的 `data`、`Component({...})` 的 `data`/`properties` 无需改写即可关联模板数据。
+- [x] 悬停 `user.name`、`title` 得到实际类型及该字段的说明。
+- [x] 不存在字段被准确标记，合法表达式不被误报。
+- [x] 中文、emoji、不同换行格式下位置正确。
 - [ ] 未保存的 `data`/`properties` 字段类型和说明（含引用的跨文件类型）变更能够更新到模板。
-- [ ] 错误修复后旧诊断及时清除。
-- [ ] 最小循环与条件样本中的类型正确；尚不支持的情况明确记录。
-- [ ] 虚拟文件与辅助代码不污染业务源码或磁盘项目。
-- [ ] 与已有 JS/TS 服务并存，不重复发布无关脚本诊断。
-- [ ] 文档明确区分已支持、降级与待实现情况。
+- [x] 错误修复后旧诊断及时清除。
+- [x] 最小循环与条件样本中的类型正确；尚不支持的情况明确记录。
+- [x] 虚拟文件与辅助代码不污染业务源码或磁盘项目。
+- [x] 与已有 JS/TS 服务并存，不重复发布无关脚本诊断。
+- [x] 文档明确区分已支持、降级与待实现情况。
 
-状态（2026-11-16）：G1 在 LSP 层通过 AC-001/002/003/011/013，覆盖上表前四项以及“错误修复后旧诊断清除”；虚拟文件不写业务源码也已有测试。未保存 JS 同步、循环/条件类型和 Zed 内可评审仍未完成，因此不整体勾选。
+状态（2026-11-16）：G1 在 LSP 层通过 AC-001/002/003/011/013，AC-005/006/008/012 已完成；未保存 TS `data` 字段类型同步已由隔离 Zed smoke 验证，保存后诊断刷新。跨文件未保存类型传播、标准 UI 安装、日常观感、definition 跳转、服务重启恢复和 Windows/macOS 实机仍未验收，因此第 5 项和整体清单不勾选。
 
 ## 9. 需求与来源索引
 
@@ -448,8 +460,8 @@ docs/                         # 参考、ADR、证据
 
 快照：2026-11-16。P0–P8 与 G1 已实现并通过代码门禁；CRLF 样本由 `.gitattributes` 保护。文档与本地 Zed 安装状态见后续提交。
 
-- 已完成：C0/C1 契约；`wxml-text`、`wxml-syntax`（容错 lexer/parser、表达式 Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、app 发现、tsconfig、sources）、`wxml-types`（类型契约、模板语义、`wx:for` 作用域/事件/不支持形式）、`wxml-lsp`（JSON-RPC、真实 Project/FileId、Node 后端、hover/diagnostics/definition、版本屏障/缓存/超时/重启）、Node 类型桥与后端、P8 Zed 扩展；G1 真实 Node 端到端 5 + 1 个显式门禁测试。
-- 验证：workspace `625 passed / 6 ignored / 26 suites`；`editors/zed` `22 passed`；wasm debug `7,633,946 B`、release `238,792 B`；真实 grammar 约 `23,806 B`（gitignored）。
-- 部分完成：Zed 扩展代码、wasm 构建和真实 `tree-sitter-wxml` grammar 构建通过；隔离 smoke 注册 WXML、启动真实 LSP 并显示精确诊断；主 Zed 已通过手工 dev symlink/index 重启加载，`page-basic` 窗口启动 `wxml-lsp` 与 Node 后端，显示 `user.nmae` 红色诊断和语法着色。标准 UI `zed: install dev extension`、hover/definition 内容、真实 grammar 查询观感、Windows/macOS 实机、G0/G2 完整验收仍未完成。
-- 未完成：完整 `wx:for` 元素类型、条件窄化、多视图/项目别名、补全/反向编辑等 Wave 4+ 能力（AC-005/006/008/012）；未保存 JS/TS 实时同步；发布/自动下载流水线。
-- 后续工作的优先级：先在 Zed 中完成标准安装与日常观感验收，再补 Wave 4 类型能力。
+- 已完成：C0/C1 契约；`wxml-text`、`wxml-syntax`（容错 lexer/parser、表达式 Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、app 发现、tsconfig、sources）、`wxml-types`（类型契约、typed `wx:for`/条件窄化/组件绑定/事件语义）、`wxml-lsp`（JSON-RPC、真实 Project/FileId、Node 后端、hover/diagnostics/definition/completion/事件链路、版本屏障/缓存/超时/重启）、Node 类型桥与后端、P8 Zed 扩展。Wave 5 已完成 F-01–F-07 补全、AC-005/006/008/012、事件处理函数诊断/definition/补全、Zed 多语言未保存同步；真实 Node `stdio_type_loop` 5、`real_node` 3、`wave5_acceptance` 7。
+- 验证：workspace `754 passed / 15 ignored / 28 suites`；Node `271 passed`；`editors/zed` `25 passed`；wasm32-wasip2 release `238,792 B`（debug 历史构建 `7,633,946 B`）；真实 grammar 约 `23,806 B`（gitignored）。
+- 部分完成：Zed 扩展代码、wasm 构建和真实 `tree-sitter-wxml` grammar 构建通过；隔离 Xvfb smoke 已验证 WXML/JavaScript/TypeScript/TSX/JSON 共享单进程、未保存 TS 类型实时影响 WXML hover、`didSave` 刷新诊断、无关脚本不改变 WXML、动态注册 `workspace/didChangeWatchedFiles`。标准 UI `zed: install dev extension`、hover/definition 内容、真实 grammar 查询观感、Windows/macOS 实机、服务重启恢复、G0/G2 完整验收仍未完成。
+- 未完成：反向编辑；F-08+ 其余能力（class/WXSS、资源路径、snippets、格式化、语义高亮、重命名）；多根工作区；发布/自动下载流水线；原生 TypeScript 后端替换/去 Node 决策；标准 UI 安装、日常观感和 Windows/macOS 实机验收。
+- 后续工作的优先级：先在 Zed 中完成标准安装与真实项目观感验收，再评估 F-08+ 与发布流水线。

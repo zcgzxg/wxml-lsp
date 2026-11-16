@@ -27,13 +27,15 @@ pub mod status;
 pub mod template;
 
 pub use backend::{
-    Backend, BackendCapabilities, BackendError, DefinitionRequest, DefinitionResult, Diagnostic,
+    Backend, BackendCapabilities, BackendError, CompletionItem, CompletionItemKind, CompletionKind,
+    CompletionRequest, CompletionResult, DefinitionRequest, DefinitionResult, Diagnostic,
     DiagnosticSeverity, DiagnosticsRequest, DiagnosticsResult, HoverRequest, HoverResult,
-    MarkupKind, SourceLocation, TypeQuality,
+    InsertTextFormat, MAX_COMPLETION_ITEMS, MarkupKind, SourceLocation, TypeQuality,
 };
 pub use check::{
-    CheckFragment, EventBindingKind, EventHandler, RootKind, TemplateAnalysis, UnsupportedFeature,
-    UnsupportedKind,
+    AttributeValueKind, CheckFragment, ComponentAttribute, ComponentUsage, EventBindingKind,
+    EventHandler, GuardBranch, GuardChain, GuardCondition, LocalBinding, LocalRole, RootKind,
+    TemplateAnalysis, UnsupportedFeature, UnsupportedKind,
 };
 pub use context::{ContextError, RequestContext, SourceSnapshot};
 pub use contract::{
@@ -42,4 +44,7 @@ pub use contract::{
 };
 pub use mock::{BackendCall, MockBackend};
 pub use status::CapabilityStatus;
-pub use template::{MAX_FRAGMENTS, TemplateAnalyzer, analyze_template};
+pub use template::{
+    MAX_BINDINGS, MAX_COMPONENTS, MAX_FRAGMENTS, MAX_GUARD_CHAINS, MAX_GUARD_CONDITIONS,
+    TemplateAnalyzer, analyze_template,
+};

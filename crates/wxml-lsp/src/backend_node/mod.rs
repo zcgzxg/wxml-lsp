@@ -9,6 +9,7 @@
 //! The process boundary is the [`NodeTransport`] trait; tests use a fake
 //! transport, while [`StdioNode`] runs `node server.js`.
 
+pub mod completion;
 pub mod config;
 pub mod process;
 pub mod protocol;
@@ -23,13 +24,13 @@ use std::time::{Duration, Instant};
 
 use wxml_types::{
     Backend, BackendCapabilities, BackendEpoch, BackendError, BackendId, CapabilityStatus,
-    DefinitionRequest, DefinitionResult, DiagnosticsRequest, DiagnosticsResult, FileId,
-    HoverRequest, HoverResult, MarkupKind, ProjectRevision, RequestContext, SourceRevision,
-    TypeQuality, ViewRevision,
+    CompletionItem, CompletionRequest, CompletionResult, DefinitionRequest, DefinitionResult,
+    DiagnosticsRequest, DiagnosticsResult, FileId, HoverRequest, HoverResult, MarkupKind,
+    ProjectRevision, RequestContext, SourceRevision, TypeQuality, ViewRevision,
 };
 
 use crate::project_host::{PreparedView, ProjectHost};
-use request::FragmentInfo;
+use request::{EventInfo, FragmentInfo};
 use response::AnalyzeResponse;
 
 pub use config::{JsCheckMode, NodeBackendConfig, RequestLimits, Typings};
@@ -52,6 +53,7 @@ struct CachedAnalysis {
     view: Arc<PreparedView>,
     response: Option<Arc<AnalyzeResponse>>,
     fragments: BTreeMap<String, FragmentInfo>,
+    events: Vec<EventInfo>,
 }
 
 #[derive(Default)]
@@ -174,12 +176,15 @@ impl NodeBackend {
             }
         };
 
-        if view.target.is_none() || view.fragments.is_empty() {
+        if view.target.is_none()
+            || (view.fragments.is_empty() && view.components.is_empty() && view.events.is_empty())
+        {
             let cached = CachedAnalysis {
                 key,
                 view,
                 response: None,
                 fragments: BTreeMap::new(),
+                events: Vec::new(),
             };
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.cache = Some(cached.clone());
@@ -216,6 +221,7 @@ impl NodeBackend {
                     view,
                     response: None,
                     fragments: BTreeMap::new(),
+                    events: Vec::new(),
                 };
                 state.cache = Some(cached.clone());
                 return Ok(Arc::new(cached));
@@ -278,6 +284,7 @@ impl NodeBackend {
             view,
             response: Some(Arc::new(response)),
             fragments: built.fragments,
+            events: built.events,
         };
         state.cache = Some(cached.clone());
         self.failures.store(0, Ordering::SeqCst);
@@ -313,6 +320,60 @@ impl NodeBackend {
             .clone()
             .unwrap_or(CapabilityStatus::Supported)
     }
+}
+
+/// Empty result carrying the reason a completion query could not run.
+const fn degraded(status: CapabilityStatus) -> CompletionResult {
+    CompletionResult {
+        items: Vec::<CompletionItem>::new(),
+        status,
+        truncated: false,
+    }
+}
+
+/// Maps a transport error to a degraded capability status.
+fn unavailable(error: &NodeTransportError) -> CapabilityStatus {
+    CapabilityStatus::Unavailable {
+        reason: match error {
+            NodeTransportError::NotConfigured => "type backend is not configured".to_owned(),
+            NodeTransportError::Timeout => "type backend timed out".to_owned(),
+            _ => "type backend is unavailable".to_owned(),
+        },
+    }
+}
+
+/// Maximum bytes of hint text sent for a completion prefix.
+const MAX_COMPLETION_PREFIX_BYTES: usize = 256;
+
+/// Identifier prefix immediately before `offset` (bounded to 256 bytes).
+fn completion_prefix(text: &str, offset: u32) -> String {
+    let Ok(offset) = usize::try_from(offset) else {
+        return String::new();
+    };
+    let Some(head) = text.get(..offset) else {
+        return String::new();
+    };
+    let bytes = head.as_bytes();
+    let mut start = bytes.len();
+    while start > 0 {
+        let byte = bytes[start - 1];
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'$' | b'-' | b':') {
+            start -= 1;
+        } else {
+            break;
+        }
+    }
+    let token = head.get(start..).unwrap_or_default();
+    if token.len() <= MAX_COMPLETION_PREFIX_BYTES {
+        return token.to_owned();
+    }
+    // Keep the tail: the replacement range is derived from this prefix, so
+    // dropping the *end* of the token would move the edit away from the cursor.
+    let mut cut = token.len() - MAX_COMPLETION_PREFIX_BYTES;
+    while cut < token.len() && !token.is_char_boundary(cut) {
+        cut += 1;
+    }
+    token.get(cut..).unwrap_or_default().to_owned()
 }
 
 fn map_transport_error(error: &NodeTransportError) -> BackendError {
@@ -352,6 +413,7 @@ impl Backend for NodeBackend {
                 response,
                 &cached.view,
                 &cached.fragments,
+                &cached.events,
                 request.offset,
             ))
         } else {
@@ -373,7 +435,7 @@ impl Backend for NodeBackend {
                         response,
                         &cached.view,
                         request.context.source(),
-                        &cached.fragments,
+                        &cached.events,
                     ))
                 } else {
                     Ok(DiagnosticsResult {
@@ -415,6 +477,7 @@ impl Backend for NodeBackend {
                 response,
                 &cached.view,
                 &cached.fragments,
+                &cached.events,
                 request.offset,
                 self.host.as_ref(),
             ))
@@ -426,14 +489,122 @@ impl Backend for NodeBackend {
         }
     }
 
+    #[allow(clippy::significant_drop_tightening, clippy::too_many_lines)] // one linear query
+    fn completion(&self, request: CompletionRequest) -> Result<CompletionResult, BackendError> {
+        let view = match self.host.analysis(request.context.source()) {
+            Ok(view) => Arc::new(view),
+            Err(error) => {
+                crate::server::log(format_args!("completion view unavailable: {error}"));
+                return Ok(degraded(CapabilityStatus::Unavailable {
+                    reason: "no project view for this document".to_owned(),
+                }));
+            }
+        };
+        if view.target.is_none() {
+            return Ok(degraded(CapabilityStatus::Unsupported {
+                reason: "template has no page or component script".to_owned(),
+            }));
+        }
+        let cooldown_until = *self
+            .cooldown_until
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if cooldown_until.is_some_and(|until| Instant::now() < until) {
+            return Ok(degraded(CapabilityStatus::Unavailable {
+                reason: "type backend is cooling down after repeated failures".to_owned(),
+            }));
+        }
+        let text = request.context.source().text();
+        let offset = request
+            .offset
+            .min(u32::try_from(text.len()).unwrap_or(u32::MAX));
+        let prefix = completion_prefix(text, offset);
+
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.next_request = state.next_request.saturating_add(1);
+        let request_id = format!(
+            "{}:{}:{}",
+            view.view_id,
+            self.epoch.load(Ordering::SeqCst),
+            state.next_request
+        );
+        let line = match request::build_completion(
+            &view,
+            &request.context,
+            &self.config,
+            &request_id,
+            offset,
+            request.kind,
+            &prefix,
+        ) {
+            Ok(Some(line)) => line,
+            Ok(None) => {
+                return Ok(degraded(CapabilityStatus::Unsupported {
+                    reason: "no script is available for this view".to_owned(),
+                }));
+            }
+            Err(error) => {
+                self.invalidate(&mut state);
+                return Ok(degraded(CapabilityStatus::Unknown {
+                    reason: Some(format!("completion protocol error: {error}")),
+                }));
+            }
+        };
+        if state.transport.is_none() {
+            match (self.factory)() {
+                Ok(transport) => state.transport = Some(transport),
+                Err(error) => {
+                    self.invalidate(&mut state);
+                    return Ok(degraded(unavailable(&error)));
+                }
+            }
+        }
+        let Some(transport) = state.transport.as_ref() else {
+            return Ok(degraded(CapabilityStatus::Unavailable {
+                reason: "node transport is not running".to_owned(),
+            }));
+        };
+        let response = match transport.request(&line, self.config.timeout) {
+            Ok(line) => line,
+            Err(error) => {
+                self.invalidate(&mut state);
+                return Ok(degraded(unavailable(&error)));
+            }
+        };
+        let value = match protocol::parse_response(&response, &request_id) {
+            Ok(value) => value,
+            Err(error) => {
+                self.invalidate(&mut state);
+                return Ok(degraded(CapabilityStatus::Unknown {
+                    reason: Some(format!("completion protocol error: {error}")),
+                }));
+            }
+        };
+        let text_len = u32::try_from(text.len()).unwrap_or(u32::MAX);
+        match completion::parse(value, &request_id, text_len) {
+            Ok(result) => {
+                self.failures.store(0, Ordering::SeqCst);
+                *self
+                    .cooldown_until
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = None;
+                Ok(result)
+            }
+            Err(error) => {
+                self.invalidate(&mut state);
+                Ok(degraded(CapabilityStatus::Unknown {
+                    reason: Some(format!("completion protocol error: {error}")),
+                }))
+            }
+        }
+    }
+
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities {
             hover: CapabilityStatus::Supported,
             diagnostics: CapabilityStatus::Supported,
             definition: CapabilityStatus::Supported,
-            completion: CapabilityStatus::Unsupported {
-                reason: "completion is not implemented".to_owned(),
-            },
+            completion: CapabilityStatus::Supported,
         }
     }
 }

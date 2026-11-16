@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 use wxml_text::SourceRange;
-use wxml_types::{CheckFragment, RequestContext};
+use wxml_types::{
+    CheckFragment, CompletionKind, ComponentAttribute, ComponentUsage, EventHandler, GuardChain,
+    LocalBinding, RequestContext,
+};
 
 use super::config::NodeBackendConfig;
 use super::protocol::{PROTOCOL_VERSION, ProtocolError};
@@ -21,8 +24,25 @@ pub(crate) struct FragmentInfo {
     pub target_range: Option<SourceRange>,
     /// Byte range of the whole mustache expression in the WXML source.
     pub expr_range: SourceRange,
-    /// Template bindings (C1.1 `locals`).
-    pub locals: Vec<String>,
+    /// Structured `wx:for` bindings in scope at the fragment.
+    pub bindings: Vec<LocalBinding>,
+}
+
+/// Where one requested event handler lives in the WXML source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct EventInfo {
+    /// Request event id, `e0`, `e1`, ... in source order.
+    pub event_id: String,
+    /// Raw attribute name, for example `bind:tap`.
+    pub attribute: String,
+    /// Normalized event name, for example `tap`.
+    pub event: String,
+    /// Static handler name as written, trimmed.
+    pub handler: String,
+    /// Byte range of the whole attribute in the WXML source.
+    pub attribute_range: SourceRange,
+    /// Byte range of the handler token in the WXML source.
+    pub handler_range: SourceRange,
 }
 
 /// A serialized C1 request plus the metadata needed to map the response.
@@ -34,6 +54,8 @@ pub(crate) struct BuiltRequest {
     pub request_id: String,
     /// Per-fragment target metadata.
     pub fragments: BTreeMap<String, FragmentInfo>,
+    /// Requested events in the same order as their `e0`, `e1`, ... ids.
+    pub events: Vec<EventInfo>,
 }
 
 /// Builds the request for one view.
@@ -69,27 +91,16 @@ pub(crate) fn build(
                 target: selected.clone(),
                 target_range,
                 expr_range: fragment.wxml_range,
-                locals: fragment.locals.clone(),
+                bindings: fragment.bindings.clone(),
             },
         );
-        let mut value = json!({
-            "fragmentId": fragment.fragment_id,
-            "exprText": fragment.expr_text,
-            "locals": fragment.locals,
-            "wxmlRange": {
-                "start": fragment.wxml_range.start(),
-                "end": fragment.wxml_range.end(),
-            },
-            "fragmentRevision": fragment.fragment_revision,
-            "root": fragment.root.as_str(),
-        });
-        if let Some(selected) = selected {
-            if let Some(object) = value.as_object_mut() {
-                object.insert("target".to_owned(), Value::String(selected));
-            }
-        }
-        fragments.push(value);
+        fragments.push(fragment_value(fragment, selected.as_deref()));
     }
+
+    let components: Vec<Value> = view.components.iter().map(component_value).collect();
+
+    let events = event_infos(&view.events);
+    let event_values: Vec<Value> = events.iter().map(event_value).collect();
 
     let files: Vec<Value> = view
         .files
@@ -132,6 +143,9 @@ pub(crate) fn build(
         "scriptFileId": target.script_file.path(),
         "files": files,
         "fragments": fragments,
+        // Protocol v2 optional inputs.
+        "components": components,
+        "events": event_values,
         "policy": {
             "jsCheck": config.js_check.as_str(),
             "propertiesOverlay": "declaration",
@@ -148,7 +162,161 @@ pub(crate) fn build(
         line,
         request_id,
         fragments: infos,
+        events,
     }))
+}
+
+/// Serializes one fragment for the protocol v2 `analyze` request.
+///
+/// `bindings` is sent as-is (full chain, duplicates included). `locals` is
+/// kept for C1.1 clients: it derives first-occurrence binding names, while the
+/// backend resolves types from the full chain.
+fn fragment_value(fragment: &CheckFragment, selected: Option<&str>) -> Value {
+    let mut value = json!({
+        "fragmentId": fragment.fragment_id,
+        "exprText": fragment.expr_text,
+        "locals": effective_locals(&fragment.bindings),
+        "bindings": fragment
+            .bindings
+            .iter()
+            .map(local_binding_value)
+            .collect::<Vec<Value>>(),
+        "guards": fragment
+            .guards
+            .iter()
+            .map(guard_chain_value)
+            .collect::<Vec<Value>>(),
+        "wxmlRange": {
+            "start": fragment.wxml_range.start(),
+            "end": fragment.wxml_range.end(),
+        },
+        "fragmentRevision": fragment.fragment_revision,
+        "root": fragment.root.as_str(),
+    });
+    if let Some(selected) = selected {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("target".to_owned(), Value::String(selected.to_owned()));
+        }
+    }
+    value
+}
+
+/// Serializes one structured template binding for protocol v2.
+fn local_binding_value(binding: &LocalBinding) -> Value {
+    json!({
+        "name": binding.name,
+        "role": binding.role.as_str(),
+        "sourceExpr": binding.source_expr,
+        "sourceRange": {
+            "start": binding.source_range.start(),
+            "end": binding.source_range.end(),
+        },
+    })
+}
+
+/// Serializes one `wx:if`/`wx:elif`/`wx:else` chain for protocol v2.
+fn guard_chain_value(chain: &GuardChain) -> Value {
+    let conditions = chain
+        .conditions
+        .iter()
+        .map(|condition| {
+            json!({
+                "branch": condition.branch.as_str(),
+                "exprText": condition.expr_text,
+                "range": {
+                    "start": condition.range.start(),
+                    "end": condition.range.end(),
+                },
+            })
+        })
+        .collect::<Vec<Value>>();
+    json!({
+        "conditions": conditions,
+        "selected": chain.selected,
+    })
+}
+
+/// Returns the effective binding names in scope, one per name and in order.
+fn effective_locals(bindings: &[LocalBinding]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        if !names.iter().any(|name| name == &binding.name) {
+            names.push(binding.name.clone());
+        }
+    }
+    names
+}
+
+/// Serializes one custom-component usage for protocol v2.
+fn component_value(usage: &ComponentUsage) -> Value {
+    let mut value = json!({
+        "tag": usage.tag,
+        "attributes": usage
+            .attributes
+            .iter()
+            .map(component_attribute_value)
+            .collect::<Vec<Value>>(),
+    });
+    if let Some(file) = usage.component_file.as_ref() {
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "componentFileId".to_owned(),
+                Value::String(file.path().to_owned()),
+            );
+        }
+    }
+    value
+}
+
+/// Serializes one component attribute; `exprText`/`exprRange` are optional.
+fn component_attribute_value(attribute: &ComponentAttribute) -> Value {
+    let mut value = json!({
+        "name": attribute.name,
+        "valueKind": attribute.value_kind.as_str(),
+        "attributeRange": byte_range(attribute.attribute_range),
+    });
+    if let Some(object) = value.as_object_mut() {
+        if let Some(expr_text) = attribute.expr_text.as_ref() {
+            object.insert("exprText".to_owned(), Value::String(expr_text.clone()));
+        }
+        if let Some(range) = attribute.expr_range {
+            object.insert("exprRange".to_owned(), byte_range(range));
+        }
+    }
+    value
+}
+
+/// Assigns stable ids `e0`, `e1`, ... and keeps the ranges for response mapping.
+fn event_infos(events: &[EventHandler]) -> Vec<EventInfo> {
+    events
+        .iter()
+        .enumerate()
+        .map(|(index, event)| EventInfo {
+            event_id: format!("e{index}"),
+            attribute: event.attribute.clone(),
+            event: event.event.clone(),
+            handler: event.handler.clone(),
+            attribute_range: event.attribute_range,
+            handler_range: event.handler_range,
+        })
+        .collect()
+}
+
+/// Serializes one static event binding for protocol v2.
+fn event_value(info: &EventInfo) -> Value {
+    json!({
+        "eventId": info.event_id,
+        "attribute": info.attribute,
+        "event": info.event,
+        "handler": info.handler,
+        "attributeRange": byte_range(info.attribute_range),
+        "handlerRange": byte_range(info.handler_range),
+    })
+}
+
+/// Serializes a byte range in the protocol `{start,end}` shape.
+fn byte_range(range: SourceRange) -> Value {
+    json!({"start": range.start(), "end": range.end()})
 }
 
 /// Selects the P6 target or the default right-value identifier.
@@ -259,14 +427,159 @@ fn is_keyword(text: &str) -> bool {
     )
 }
 
+/// Returns the `{{ ...` expression start and the text up to `offset`.
+fn expression_prefix(text: &str, offset: u32) -> (u32, String) {
+    const MAX_EXPRESSION_BYTES: usize = 4_096;
+    let end = usize::try_from(offset)
+        .unwrap_or(text.len())
+        .min(text.len());
+    let head = text.get(..end).unwrap_or_default();
+    let mut start = head.rfind("{{").map_or(end, |index| index + 2);
+    // Only the tail of a very long, unclosed expression can affect member
+    // completion; keep the request bounded and start on a char boundary.
+    if end.saturating_sub(start) > MAX_EXPRESSION_BYTES {
+        let mut clipped = end - MAX_EXPRESSION_BYTES;
+        while clipped < end && !text.is_char_boundary(clipped) {
+            clipped += 1;
+        }
+        start = clipped;
+    }
+    let expression = head.get(start..).unwrap_or_default();
+    if expression.is_empty() {
+        // Protocol v2 rejects empty `exprText`; one space trims to an empty
+        // expression in Node and keeps the range self-consistent.
+        (u32::try_from(start).unwrap_or(offset), " ".to_owned())
+    } else {
+        (
+            u32::try_from(start).unwrap_or(offset),
+            expression.to_owned(),
+        )
+    }
+}
+
+/// Builds a protocol v2 `complete` request line.
+///
+/// The expression prefix is taken from the snapshot rather than the analyzer
+/// fragment, because a fragment may omit a trailing `.` and an empty mustache
+/// has no fragment at all. Node then synthesizes a parseable expression.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_completion(
+    view: &PreparedView,
+    context: &RequestContext,
+    config: &NodeBackendConfig,
+    request_id: &str,
+    offset: u32,
+    kind: CompletionKind,
+    prefix: &str,
+) -> Result<Option<String>, ProtocolError> {
+    let Some(target) = view.target.as_ref() else {
+        return Ok(None);
+    };
+    let script_path = target.script_file.path();
+    if !view
+        .files
+        .iter()
+        .any(|file| file.path.as_str() == script_path)
+    {
+        return Ok(None);
+    }
+
+    let template = context.source().text();
+    let (expression_start, expr_text) = expression_prefix(template, offset);
+    let analyzer_fragment = view.fragments.iter().find(|fragment| {
+        fragment.wxml_range.start() <= offset && offset <= fragment.wxml_range.end()
+    });
+    let bindings = analyzer_fragment.map_or_else(Vec::new, |fragment| fragment.bindings.clone());
+    let guards = analyzer_fragment.map_or_else(Vec::new, |fragment| fragment.guards.clone());
+    let locals = effective_locals(&bindings);
+    let fragment_revision = analyzer_fragment.map_or(1, |fragment| fragment.fragment_revision);
+    let range_end = expression_start
+        .checked_add(u32::try_from(expr_text.len()).unwrap_or(0))
+        .unwrap_or(offset);
+    // Event-handler completion never mounts a fragment; keep the request
+    // minimal so template text is not sent for a pure script query.
+    let fragments: Vec<Value> = if matches!(kind, CompletionKind::ExpressionMember) {
+        vec![json!({
+            "fragmentId": "complete-0",
+            "exprText": expr_text,
+            "locals": locals,
+            "bindings": bindings.iter().map(local_binding_value).collect::<Vec<Value>>(),
+            "guards": guards.iter().map(guard_chain_value).collect::<Vec<Value>>(),
+            "wxmlRange": {"start": expression_start, "end": range_end},
+            "fragmentRevision": fragment_revision,
+            "root": target.owner.as_str(),
+        })]
+    } else {
+        Vec::new()
+    };
+    let files: Vec<Value> = view
+        .files
+        .iter()
+        .map(|file| {
+            json!({
+                "fileId": file.file.path(),
+                "path": file.path.as_str(),
+                "kind": file.kind,
+                "text": file.text.as_ref(),
+                "sourceRevision": file.source_revision,
+            })
+        })
+        .collect();
+
+    let params = json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "requestId": request_id,
+        "analysisStamp": {
+            "snapshotId": context.source().snapshot().get(),
+            "projectRevision": context.project_revision().get(),
+            "viewRevision": context.view_revision().get(),
+            "backendEpoch": context.backend_epoch().get(),
+        },
+        "view": {
+            "viewId": view.view_id,
+            "owner": {
+                "kind": target.owner.as_str(),
+                "fileId": target.script_file.path(),
+            },
+        },
+        "project": {
+            "projectRoot": view.project_root.to_string_lossy(),
+            "compilerOptions": Value::Object(view.compiler_options.clone()),
+            "typings": {
+                "package": config.typings.package,
+                "version": config.typings.version,
+            },
+        },
+        "scriptFileId": target.script_file.path(),
+        "files": files,
+        "fragments": fragments,
+        "components": Vec::<Value>::new(),
+        "events": Vec::<Value>::new(),
+        "policy": {
+            "jsCheck": config.js_check.as_str(),
+            "propertiesOverlay": "declaration",
+        },
+        "limits": {
+            "maxFiles": config.limits.max_files,
+            "maxTotalBytes": config.limits.max_total_bytes,
+            "maxFragments": config.limits.max_fragments,
+        },
+        "offset": offset,
+        "kind": kind.as_str(),
+        "prefix": prefix,
+    });
+    super::protocol::request_line(request_id, "complete", Some(&params)).map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
     use wxml_types::{
-        BackendEpoch, BackendId, CheckFragment, FileId, ProjectId, ProjectRevision, RootKind,
-        SnapshotId, SourceRevision, SourceSnapshot, ViewRevision,
+        AttributeValueKind, BackendEpoch, BackendId, CheckFragment, ComponentAttribute,
+        ComponentUsage, EventBindingKind, EventHandler, FileId, ProjectId, ProjectRevision,
+        RootKind, SnapshotId, SourceRevision, SourceSnapshot, ViewRevision,
     };
 
     use super::*;
@@ -277,7 +590,8 @@ mod tests {
             fragment_id: "f0".to_owned(),
             expr_text: expr.to_owned(),
             target: None,
-            locals: Vec::new(),
+            bindings: Vec::new(),
+            guards: Vec::new(),
             wxml_range: SourceRange::from_bounds(
                 start,
                 start + u32::try_from(expr.len()).expect("len"),
@@ -309,6 +623,8 @@ mod tests {
             }]),
             compiler_options: serde_json::Map::new(),
             fragments: Arc::from(vec![fragment]),
+            components: Arc::from(Vec::new()),
+            events: Arc::from(Vec::new()),
             project_root: PathBuf::from("/tmp/project"),
             syntax_diagnostics: Vec::new(),
             status_hint: None,
@@ -389,11 +705,269 @@ mod tests {
         let value: Value = serde_json::from_str(&request.line).expect("json");
         assert_eq!(value["method"], "analyze");
         let params = &value["params"];
-        assert_eq!(params["protocolVersion"], 1);
+        assert_eq!(params["protocolVersion"], 2);
         assert_eq!(params["view"]["owner"]["kind"], "page");
         assert_eq!(params["files"][0]["fileId"], "pages/index/index.ts");
         assert_eq!(params["fragments"][0]["wxmlRange"]["start"], 10);
         assert_eq!(params["fragments"][0]["target"], "name");
+        assert!(
+            params["fragments"][0]["bindings"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        );
+        assert!(
+            params["fragments"][0]["guards"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        );
+        assert!(params["components"].as_array().is_some_and(Vec::is_empty));
+        assert!(params["events"].as_array().is_some_and(Vec::is_empty));
         assert_eq!(params["policy"]["propertiesOverlay"], "declaration");
+    }
+
+    #[test]
+    fn serializes_v2_bindings_and_guard_chains() {
+        let mut fragment = fragment("item.name", 10);
+        fragment.bindings = vec![
+            LocalBinding {
+                name: "item".to_owned(),
+                role: wxml_types::LocalRole::Item,
+                source_expr: "groups".to_owned(),
+                source_range: SourceRange::from_bounds(100, 106).expect("range"),
+            },
+            LocalBinding {
+                name: "index".to_owned(),
+                role: wxml_types::LocalRole::Index,
+                source_expr: "groups".to_owned(),
+                source_range: SourceRange::from_bounds(100, 106).expect("range"),
+            },
+        ];
+        fragment.guards = vec![GuardChain {
+            conditions: vec![wxml_types::GuardCondition {
+                branch: wxml_types::GuardBranch::If,
+                expr_text: "state.ready".to_owned(),
+                range: SourceRange::from_bounds(200, 211).expect("range"),
+            }],
+            selected: 0,
+        }];
+        let view = view(fragment);
+        let request = build(
+            &view,
+            &context(),
+            &NodeBackendConfig::default(),
+            "req".to_owned(),
+        )
+        .expect("request")
+        .expect("some");
+        let value: Value = serde_json::from_str(&request.line).expect("json");
+        let params = &value["params"];
+        assert_eq!(params["protocolVersion"], 2);
+        assert_eq!(params["fragments"][0]["locals"], json!(["item", "index"]));
+        assert_eq!(params["fragments"][0]["bindings"][0]["name"], "item");
+        assert_eq!(params["fragments"][0]["bindings"][0]["role"], "item");
+        assert_eq!(
+            params["fragments"][0]["bindings"][0]["sourceExpr"],
+            "groups"
+        );
+        assert_eq!(
+            params["fragments"][0]["bindings"][0]["sourceRange"]["start"],
+            100
+        );
+        assert_eq!(params["fragments"][0]["bindings"][1]["role"], "index");
+        assert_eq!(
+            params["fragments"][0]["guards"][0]["conditions"][0]["branch"],
+            "if"
+        );
+        assert_eq!(
+            params["fragments"][0]["guards"][0]["conditions"][0]["exprText"],
+            "state.ready"
+        );
+        assert_eq!(params["fragments"][0]["guards"][0]["selected"], 0);
+        assert_eq!(
+            params["fragments"][0]["guards"][0]["conditions"][0]["range"]["end"],
+            211
+        );
+    }
+
+    #[test]
+    fn shadowed_loop_bindings_keep_the_full_chain() {
+        let range = |start: u32, end: u32| SourceRange::from_bounds(start, end).expect("range");
+        let mut fragment = fragment("item.name", 10);
+        fragment.bindings = vec![
+            LocalBinding {
+                name: "item".to_owned(),
+                role: wxml_types::LocalRole::Item,
+                source_expr: "groups".to_owned(),
+                source_range: range(100, 106),
+            },
+            LocalBinding {
+                name: "itemIndex".to_owned(),
+                role: wxml_types::LocalRole::Index,
+                source_expr: "groups".to_owned(),
+                source_range: range(100, 106),
+            },
+            LocalBinding {
+                name: "item".to_owned(),
+                role: wxml_types::LocalRole::Item,
+                source_expr: "item.members".to_owned(),
+                source_range: range(120, 132),
+            },
+            LocalBinding {
+                name: "index".to_owned(),
+                role: wxml_types::LocalRole::Index,
+                source_expr: "item.members".to_owned(),
+                source_range: range(120, 132),
+            },
+        ];
+        let view = view(fragment);
+        let request = build(
+            &view,
+            &context(),
+            &NodeBackendConfig::default(),
+            "req".to_owned(),
+        )
+        .expect("request")
+        .expect("some");
+        let value: Value = serde_json::from_str(&request.line).expect("json");
+        let params = &value["params"];
+        // `locals` keeps only the first occurrence of each name.
+        assert_eq!(
+            params["fragments"][0]["locals"],
+            json!(["item", "itemIndex", "index"])
+        );
+        // `bindings` keeps the full outermost-to-innermost chain, duplicates
+        // included, so the backend can resolve the shadowing inner loop.
+        let bindings = params["fragments"][0]["bindings"]
+            .as_array()
+            .expect("bindings");
+        assert_eq!(bindings.len(), 4);
+        assert_eq!(bindings[0]["sourceExpr"], "groups");
+        assert_eq!(bindings[1]["role"], "index");
+        assert_eq!(bindings[2]["name"], "item");
+        assert_eq!(bindings[2]["sourceExpr"], "item.members");
+        assert_eq!(bindings[3]["role"], "index");
+        assert_eq!(bindings[3]["sourceExpr"], "item.members");
+    }
+
+    #[test]
+    fn serializes_components_with_component_file_and_attributes() {
+        let mut view = view(fragment("item.name", 10));
+        let project = ProjectId::new("proj-test");
+        view.components = Arc::from(vec![ComponentUsage {
+            tag: "card".to_owned(),
+            component_file: Some(
+                FileId::new(project, "components/card/card.ts").expect("component file"),
+            ),
+            attributes: vec![
+                ComponentAttribute {
+                    name: "title".to_owned(),
+                    value_kind: AttributeValueKind::Mustache,
+                    expr_text: Some("pageTitle".to_owned()),
+                    expr_range: Some(SourceRange::from_bounds(30, 39).expect("expr range")),
+                    attribute_range: SourceRange::from_bounds(20, 41).expect("attribute range"),
+                },
+                ComponentAttribute {
+                    name: "disabled".to_owned(),
+                    value_kind: AttributeValueKind::Boolean,
+                    expr_text: None,
+                    expr_range: None,
+                    attribute_range: SourceRange::from_bounds(42, 50).expect("attribute range"),
+                },
+            ],
+        }]);
+        let request = build(
+            &view,
+            &context(),
+            &NodeBackendConfig::default(),
+            "req".to_owned(),
+        )
+        .expect("request")
+        .expect("some");
+        let value: Value = serde_json::from_str(&request.line).expect("json");
+        let component = &value["params"]["components"][0];
+        assert_eq!(component["tag"], "card");
+        assert_eq!(component["componentFileId"], "components/card/card.ts");
+        assert_eq!(component["attributes"][0]["name"], "title");
+        assert_eq!(component["attributes"][0]["valueKind"], "mustache");
+        assert_eq!(component["attributes"][0]["exprText"], "pageTitle");
+        assert_eq!(component["attributes"][0]["exprRange"]["start"], 30);
+        assert_eq!(component["attributes"][0]["exprRange"]["end"], 39);
+        assert_eq!(component["attributes"][0]["attributeRange"]["start"], 20);
+        assert_eq!(component["attributes"][1]["valueKind"], "boolean");
+        assert!(component["attributes"][1].get("exprText").is_none());
+        assert!(component["attributes"][1].get("exprRange").is_none());
+    }
+
+    #[test]
+    fn serializes_events_with_stable_ids_and_byte_ranges() {
+        let mut view = view(fragment("item.name", 10));
+        let range = |start: u32, end: u32| SourceRange::from_bounds(start, end).expect("range");
+        view.events = Arc::from(vec![
+            EventHandler {
+                attribute: "bind:tap".to_owned(),
+                binding: EventBindingKind::Bind,
+                event: "tap".to_owned(),
+                handler: "onTap".to_owned(),
+                range: range(20, 34),
+                attribute_range: range(20, 34),
+                handler_range: range(30, 35),
+            },
+            EventHandler {
+                attribute: "catch:touchstart".to_owned(),
+                binding: EventBindingKind::CaptureCatch,
+                event: "touchstart".to_owned(),
+                handler: "onTouch".to_owned(),
+                range: range(40, 65),
+                attribute_range: range(40, 65),
+                handler_range: range(59, 66),
+            },
+        ]);
+        let request = build(
+            &view,
+            &context(),
+            &NodeBackendConfig::default(),
+            "req".to_owned(),
+        )
+        .expect("request")
+        .expect("some");
+        assert_eq!(request.events.len(), 2);
+        assert_eq!(request.events[0].event_id, "e0");
+        assert_eq!(request.events[0].handler_range, range(30, 35));
+        assert_eq!(request.events[1].event_id, "e1");
+        let value: Value = serde_json::from_str(&request.line).expect("json");
+        let events = value["params"]["events"].as_array().expect("events");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["eventId"], "e0");
+        assert_eq!(events[0]["attribute"], "bind:tap");
+        assert_eq!(events[0]["event"], "tap");
+        assert_eq!(events[0]["handler"], "onTap");
+        assert_eq!(events[0]["attributeRange"]["start"], 20);
+        assert_eq!(events[0]["attributeRange"]["end"], 34);
+        assert_eq!(events[0]["handlerRange"]["start"], 30);
+        assert_eq!(events[0]["handlerRange"]["end"], 35);
+        assert_eq!(events[1]["eventId"], "e1");
+        assert_eq!(events[1]["handler"], "onTouch");
+    }
+
+    #[test]
+    fn components_without_a_script_omit_the_file_id() {
+        let mut view = view(fragment("item.name", 10));
+        view.components = Arc::from(vec![ComponentUsage {
+            tag: "card".to_owned(),
+            component_file: None,
+            attributes: Vec::new(),
+        }]);
+        let request = build(
+            &view,
+            &context(),
+            &NodeBackendConfig::default(),
+            "req".to_owned(),
+        )
+        .expect("request")
+        .expect("some");
+        let value: Value = serde_json::from_str(&request.line).expect("json");
+        let component = &value["params"]["components"][0];
+        assert_eq!(component["tag"], "card");
+        assert!(component.get("componentFileId").is_none());
     }
 }

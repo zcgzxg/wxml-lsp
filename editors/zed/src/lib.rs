@@ -530,6 +530,153 @@ mod tests {
         assert_eq!(env_lookup(&env, "MISSING"), None);
     }
 
+    /// Languages the `wxml-lsp` server is registered for, in manifest order.
+    /// JSX is deliberately absent: `wxml-lsp` handles WXML templates plus the
+    /// JavaScript/TypeScript/JSON files they import, not JSX.
+    const EXPECTED_LANGUAGES: [&str; 5] = ["WXML", "JavaScript", "TypeScript", "TSX", "JSON"];
+
+    /// Language id each registered language maps to in the LSP protocol.
+    const EXPECTED_LANGUAGE_IDS: [(&str, &str); 5] = [
+        ("WXML", "wxml"),
+        ("JavaScript", "javascript"),
+        ("TypeScript", "typescript"),
+        ("TSX", "typescriptreact"),
+        ("JSON", "json"),
+    ];
+
+    const MANIFEST: &str = include_str!("../extension.toml");
+    const WXML_LANGUAGE_CONFIG: &str = include_str!("../languages/wxml/config.toml");
+
+    /// Returns the non-comment, non-blank lines of `[section]` in `text`.
+    ///
+    /// This is a deliberately small hand-written reader: the manifest is a
+    /// flat file whose only nested data is a table header, so a real TOML
+    /// dependency is not worth it just to lock the contract.
+    fn section_lines<'a>(text: &'a str, section: &str) -> Vec<&'a str> {
+        let header = format!("[{section}]");
+        let mut in_section = false;
+        let mut lines = Vec::new();
+        for raw in text.lines() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if line.starts_with('[') {
+                in_section = line == header;
+                continue;
+            }
+            if in_section {
+                lines.push(line);
+            }
+        }
+        lines
+    }
+
+    /// Extracts every double-quoted string from `text`, honouring `\"` and `\\`.
+    fn quoted_strings(text: &str) -> Vec<String> {
+        let mut strings = Vec::new();
+        let mut chars = text.chars();
+        while let Some(ch) = chars.next() {
+            if ch != '"' {
+                continue;
+            }
+            let mut value = String::new();
+            while let Some(ch) = chars.next() {
+                match ch {
+                    '\\' => {
+                        if let Some(escaped) = chars.next() {
+                            value.push(escaped);
+                        }
+                    }
+                    '"' => break,
+                    _ => value.push(ch),
+                }
+            }
+            strings.push(value);
+        }
+        strings
+    }
+
+    /// Reads `key = [ ... ]` (single- or multi-line) as ordered strings.
+    fn string_array(section: &str, key: &str, text: &str) -> Vec<String> {
+        let assignment = format!("{key} =");
+        let mut body = String::new();
+        let mut collecting = false;
+        for line in section_lines(text, section) {
+            if collecting {
+                body.push_str(line);
+                body.push('\n');
+            } else if line.starts_with(&assignment) {
+                collecting = true;
+                body.push_str(line);
+                body.push('\n');
+            }
+            if collecting && line.contains(']') {
+                break;
+            }
+        }
+        assert!(collecting, "section [{section}] has no `{key}` array");
+        quoted_strings(&body)
+    }
+
+    #[test]
+    fn manifest_registers_the_five_languages_in_order_without_jsx() {
+        let languages = string_array("language_servers.wxml-lsp", "languages", MANIFEST);
+
+        assert_eq!(languages, EXPECTED_LANGUAGES);
+        assert!(
+            !MANIFEST.to_ascii_lowercase().contains("jsx"),
+            "manifest must not register JSX"
+        );
+    }
+
+    #[test]
+    fn manifest_language_ids_map_every_registered_language() {
+        let ids = section_lines(MANIFEST, "language_servers.wxml-lsp.language_ids");
+
+        let mut mapped = Vec::new();
+        for line in &ids {
+            let (key, value) = line
+                .split_once('=')
+                .unwrap_or_else(|| panic!("malformed language_ids entry `{line}`"));
+            let key = quoted_strings(key);
+            let value = quoted_strings(value);
+            assert_eq!(key.len(), 1, "malformed language_ids key in `{line}`");
+            assert_eq!(value.len(), 1, "malformed language_ids value in `{line}`");
+            mapped.push((key[0].clone(), value[0].clone()));
+        }
+
+        let mut expected: Vec<(String, String)> = EXPECTED_LANGUAGE_IDS
+            .iter()
+            .map(|(name, id)| ((*name).to_owned(), (*id).to_owned()))
+            .collect();
+        expected.sort();
+        let mut mapped_sorted = mapped.clone();
+        mapped_sorted.sort();
+        assert_eq!(mapped_sorted, expected);
+        assert_eq!(mapped.len(), 5, "language_ids must not carry duplicates");
+    }
+
+    #[test]
+    fn wxml_language_config_keeps_its_grammar_and_path_suffix() {
+        fn has_line(text: &str, expected: &str) -> bool {
+            text.lines().map(str::trim).any(|line| line == expected)
+        }
+
+        assert!(
+            has_line(WXML_LANGUAGE_CONFIG, r#"name = "WXML""#),
+            "languages/wxml/config.toml must keep its language name"
+        );
+        assert!(
+            has_line(WXML_LANGUAGE_CONFIG, r#"grammar = "wxml""#),
+            "languages/wxml/config.toml must keep the wxml grammar"
+        );
+        assert!(
+            has_line(WXML_LANGUAGE_CONFIG, r#"path_suffixes = ["wxml"]"#),
+            "languages/wxml/config.toml must keep the wxml path suffix"
+        );
+    }
+
     #[test]
     fn forwards_only_documented_backend_variables() {
         let env = vec![

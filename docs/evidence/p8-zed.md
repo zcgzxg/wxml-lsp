@@ -26,12 +26,15 @@
   编译，约 23,806 B），扩展 id 改为 `wxml-lsp` 后不再被 Marketplace 的
   `wxml` 扩展覆盖。隔离 Zed 已注册 WXML、启动真实 `wxml-lsp --stdio` 并显示
   `user.nmae` 诊断；第二次启动日志稳定，无卸载/重启。
+- 2026-11-16 的隔离 Xvfb D6 smoke（第 12 节）进一步确认：`wxml-lsp` 以五语言
+  注册同时持有 WXML/JSON/TS 文档；未保存的 TS 字段类型修改会实时反映到 WXML
+  `hover`；`ctrl+s` 到达 `didSave` 后刷新 WXML 诊断；无关 TS 脚本不干扰 WXML。
 - 本机主 Zed 用户数据目录也已放入手工 dev symlink/index
   （`extensions/installed/wxml-lsp -> <repo>/editors/zed`，`index.json` 中
   `dev=true`）。主 Zed 已重启加载扩展；在 `tests/fixtures/page-basic`
   工作区打开页面后，Zed 启动了 `wxml-lsp --stdio` 和 Node 后端，
-  `user.nmae` 显示红色诊断，WXML 语法着色可见。标准 UI 安装、hover/definition
-  内容仍未经人工确认。G0/G2 仅部分通过，本记录不声称完整通过。
+  `user.nmae` 显示红色诊断，WXML 语法着色可见。标准 UI 安装仍未确认，
+  定义跳转与服务重启恢复也未做真实编辑器验收。G0/G2 仅部分通过，本记录不声称完整通过。
 
 ## 2. 环境
 
@@ -132,13 +135,14 @@ dev 扩展）冲突；该命名不影响本记录的验证结果。
 | 真实 grammar 构建 | wasi-sdk 34 `clang --target=wasm32-wasip1 -Os -fPIC -shared` | 通过；`editors/zed/grammars/wxml.wasm` 约 23,806 B（gitignored） |
 | 扩展 id/name | `editors/zed/extension.toml` | `id = "wxml-lsp"`、`name = "WXML LSP"`；避免 Marketplace 的 `wxml` 扩展自动更新覆盖本地 dev 扩展 |
 | 查询语法/节点名 | `tree-sitter 0.25.8` 加载 grammar，样本解析后 `Query::new` | 四份查询全部通过；样本命中：highlights 77、brackets 27、indents 11、injections 5 |
-| 路径 helper 单测 | `cargo test --locked` | 22 passed；按 `Os::Windows`/`Os::Linux`/`Os::Mac` 参数化，覆盖盘符、UNC、POSIX、`/C:/...` 的 Windows 拒绝与 POSIX 接受、混合分隔符、尾部分隔符、空格、相对路径、`..`、空值、无 `WXML_LSP_BIN`、无效路径不回退、`which` 异常返回 |
+| 路径 helper + manifest 契约单测 | `cargo test --locked` | 25 passed（新增 3 项：五语言注册顺序、language_ids、WXML config 不变）；按 `Os::Windows`/`Os::Linux`/`Os::Mac` 参数化，覆盖盘符、UNC、POSIX、`/C:/...` 的 Windows 拒绝与 POSIX 接受、混合分隔符、尾部分隔符、空格、相对路径、`..`、空值、无 `WXML_LSP_BIN`、无效路径不回退、`which` 异常返回 |
 | 格式 | `cargo fmt --all -- --check` | 通过 |
 | 编译 | `cargo check --all-targets --locked` | 通过 |
 | wasm check | `cargo check --target wasm32-wasip2 --locked` | 通过 |
 | Lint | `cargo clippy --all-targets --locked -- -D warnings` | 通过，无告警 |
 | wasm debug 构建 | `cargo build --target wasm32-wasip2 --locked` | 通过；`zed_wxml.wasm` 7,633,946 B（7.3 MiB） |
 | wasm release 构建 | `cargo build --target wasm32-wasip2 --release --locked` | 通过；`zed_wxml.wasm` 238,792 B（233.2 KiB） |
+| D6 真实编辑器 smoke | 隔离 Xvfb + Zed 1.28.1；未保存 `index.ts` 类型在 string/number 间切换时 WXML hover 跟随；`ctrl+s` 触发 `didSave` | 通过（第 12 节；截图与 JSON-RPC 日志在仓库外） |
 
 ## 6. 未验证项
 
@@ -148,8 +152,8 @@ dev 扩展）冲突；该命名不影响本记录的验证结果。
 | Zed 内语法高亮/括号/缩进/注入 | 早期 smoke 用临时 HTML grammar；最终隔离测试已加载真实 `tree-sitter-wxml` grammar。主 Zed 中 WXML 语法着色可见，括号/缩进/注入观感仍未逐项验收 |
 | grammar 的 Zed/wasi-sdk 构建 | 已用 wasi-sdk 34 在 host 侧编译真实 grammar（约 23,806 B）；未在 Zed 内触发自动 grammar 构建 |
 | `wxml-lsp` initialize | **已由 Zed 1.28.1 启动**：日志显示 `starting language server process ... args: ["--stdio"]`，工作目录为测试项目页面目录（`.../pages/index`）；未逐项核对 `initializationOptions`/`workspace/configuration` |
-| 诊断、悬停、定义 | 诊断已在隔离 smoke 中显示（`user.nmae` 精确下划线）；主 Zed 重载后的悬停/定义仍未可视化确认，LSP 层由 G1 覆盖 |
-| Spike S1 运行时复测 | 本节结论来自 Zed 1.28.1 的 buffer 注册行为，本次未做运行时抓包复测 |
+| 诊断、悬停、定义 | 诊断已在隔离 smoke 中显示（`user.nmae` 精确下划线）；D6 已确认 WXML hover 内容随未保存 TS 类型变化（第 12 节）；definition 仍由 G1/集成测试覆盖，未做真实编辑器跳转验收 |
+| Spike S1 运行时复测 | 已完成：2026-11-16 抓包复测见第 7 节，按键级验证见第 12 节 |
 | 多 worktree/远程项目 | 未测 |
 | Windows/macOS 实机 | 未测；Windows 路径只用字符串单测覆盖 |
 
@@ -170,7 +174,7 @@ dev 扩展）冲突；该命名不影响本记录的验证结果。
 - 使用 `zed 1.28.1 --user-data-dir /tmp/opencode/zed-user`，项目 `/tmp/opencode/zed-project`（`page-basic` 样本）；`WXML_LSP_BIN=<repo>/target/release/wxml-lsp`（绝对路径），Node 后端指向本仓库 `backends/typescript/dist/server.js`。
 - 扩展 id 改为 `wxml-lsp` 后，不再被 Marketplace 的 `wxml` 扩展覆盖。
 - 结果：Zed 状态栏显示 `WXML`；第二次启动日志稳定为 `starting language server process. binary path: <repo>/target/release/wxml-lsp, working directory: .../pages/index, args: ["--stdio"]`，无卸载/重启；`user.nmae` 行出现诊断下划线，状态栏显示 1 条诊断。
-- 未确认：悬停内容、定义跳转、真实 grammar 高亮观感、标准 `zed: install dev extension` 流程。KDE 的 EIS 合成输入权限弹窗阻断了自动化鼠标/键盘，未继续强行操作。
+- 当时未确认悬停内容；后续 D6 已在隔离 Xvfb 中确认（第 12 节）。定义跳转、标准 `zed: install dev extension` 流程仍未验收。
 - 结论：**语言服务器启动与诊断链路已在 Zed 内实际跑通**；G0/G2 仍只算部分通过。
 
 ### 6.2 主 Zed 手工 dev 安装状态（2026-11-16）
@@ -185,26 +189,40 @@ dev 扩展）冲突；该命名不影响本记录的验证结果。
   `node -- backends/typescript/dist/server.js`。
 - 主 Zed 中 `user.nmae` 显示红色诊断下划线和文件树错误标记，WXML 语法着色可见。
 - 这不是标准 UI `zed: install dev extension` 流程；标准流程仍未确认。
-- 仍待确认：hover/definition 内容、真实 grammar 查询观感、诊断刷新和服务
-  重启恢复。
+- hover 内容已在 D6（第 12 节）确认；definition 内容、诊断刷新时序和服务重启
+  恢复仍未做真实编辑器逐项验收。
 
-## 7. Spike S1 结论与复测清单
+## 7. Spike S1/D1：多语言共享进程与通知转发（2026-11-16 运行时复测）
 
-结论（Zed 1.28.1）：Zed 只把 WXML buffer 注册给 `wxml-lsp`；
-JavaScript/TypeScript/JSON 的 `didOpen`/`didChange` 不会转发给该服务器。
-因此未保存的 JS 修改不会实时反映到 WXML 分析；保存后，下一次分析重新收集
-脚本时会读取磁盘上的新内容并生效。不存在“必须等到 project reload”的限制。
+### 7.1 方法
 
-本结论未做运行时抓包复测。后续升级 Zed 后可用以下清单复核：
+- 隔离实例：`zed --foreground --user-data-dir /tmp/opencode/wave5/zed-spike/data -n ...`，
+  不复用主 Zed 用户数据；settings 开启 `trust_all_worktrees`、关闭自动保存与遥测。
+- 扩展副本：`/tmp/opencode/wave5/zed-spike/ext`（`languages = ["WXML", "JavaScript",
+  "TypeScript", "TSX", "JSON"]`，language_ids 为 `wxml`/`javascript`/`typescript`/
+  `typescriptreact`/`json`）。
+- 抓包代理：`/tmp/opencode/wxml-lsp-log.py`（转发到本 worktree
+  `target/debug/wxml-lsp`，把 JSON-RPC 方法、URI、languageId 记录到
+  `/tmp/opencode/wave5/zed-spike/rpc.log`），并在 `initialized` 后注入一次
+  `client/registerCapability` 以验证客户端支持。
+- 同一代理进程内观察到下列消息（`pgrep` 去重确认只有一个服务器进程）。所有
+  临时文件都在仓库外，未写入项目目录。
 
-- [ ] `wxml-lsp` 是否收到 `page.js` 的 `textDocument/didOpen`
-      （预期：否）。
-- [ ] 修改 `page.js` 但不保存时，是否收到 `didChange`（预期：否）。
-- [ ] 保存 `page.js` 后，下一次 WXML 分析是否看到新内容（预期：是）。
-- [ ] `page.json` 的 `didOpen`/`didChange` 是否转发（预期：否）。
-- [ ] `workspace/configuration` 请求是否得到 Zed 响应。
-- [ ] `initializationOptions = {}` 是否被接受，日志是否有协议错误。
-- [ ] JS/TS 主语言服务是否仍正常工作（不应被本扩展影响）。
+### 7.2 结论
+
+1. 一个 `[language_servers.wxml-lsp]` 配置下的多语言只启动一个进程；WXML 与 JS
+   的 `didOpen` 进入同一进程（`lang=wxml`、`lang=javascript`）。
+2. Zed 1.28.1 转发关联语言的 `didOpen`（带正确 languageId）；`didChange`/
+   `didSave`/`didClose` 走同一 buffer 注册链路（源码 `lsp_store.rs` 已核对；
+   按键级运行时验证见第 12 节 D6）。
+3. initialize 客户端能力：`workspace.didChangeWatchedFiles.dynamicRegistration=true`、
+   `relativePatternSupport=true`、`textDocument.synchronization.dynamicRegistration=true`、
+   `didSave=true`。
+4. 客户端接受服务端 `client/registerCapability`（响应无错误），并实际投递
+   `workspace/didChangeWatchedFiles`（外部修改 `utils/other.js`、
+   `pages/index/index.json` 均以 `type: 2` 到达）。
+5. `workspace/didChangeConfiguration` 通知也会到达。
+6. 结论：D1 通过，继续 D2-D6。
 
 ## 8. 关键输出摘录
 
@@ -291,6 +309,111 @@ grammar 路径依赖执行；未把验证器或依赖复制进仓库。
 - P8 代码门禁不要求构建 TypeScript 后端；本地安装已构建
   `backends/typescript/dist/server.js` 供 Zed 使用，但这不属于 P8 门禁证据。
   无 `WXML_TYPE_BACKEND` 时服务降级为语法能力，不能据此判断类型功能。
-- S1 运行时行为尚未抓包复测；Zed 升级后应重新确认。
+- S1/D1 已在 Zed 1.28.1 上抓包复测（第 7 节），D6 又做了按键级验证（第 12 节）；
+  Zed 升级后应重新确认协议行为。
+- `didSave` 依赖服务端在 `initialize` 声明 `textDocumentSync.save`；本次已补
+  `save.includeText=false`，升级 Zed 或调整初始化能力后需回归。
+- watched files 依赖客户端动态注册；1.28.1 支持并已验证，不支持时回退到 `didSave`。
+- 纯 `.js` 页面在 tsconfig 未开 `allowJs` 时后端拒绝类型检查（既有行为）；本次
+  smoke 使用 `.ts` 页面脚本。连续键入时诊断队列可能滞后数十秒，粘贴/低频编辑无明显延迟。
 - 本记录只构成 G0/G2 的部分证据（扩展加载、语言注册、服务器启动和诊断链路），
   不构成完整 G0/G2 验收，也不替代 P7 的 `wxml-lsp` 集成证据。
+
+## 12. D6：真实 Zed 多文档未保存修改 smoke（2026-11-16）
+
+结论：通过。五语言注册只启动一个 `wxml-lsp` 进程；未保存的 `index.ts` 字段类型在
+`string`/`number` 间切换时，WXML `hover` 同步变化；`ctrl+s` 到达 `didSave` 后刷新
+WXML 诊断；无关 `utils/other.ts` 的未保存修改不触发 WXML 重新分析。证据截图在
+`/tmp/opencode/wave5/zed-d6/`（`e2-unsaved-string.png`、`e5-number-final.png`、
+`e4-unrelated.png`），原始 JSON-RPC 日志为
+`/tmp/opencode/wave5/zed-spike/rpc.log`；均为仓库外临时证据。
+
+### 12.1 环境与启动
+
+- Zed 1.28.1（`e8bc16a`），隔离 Xvfb `:99`（1600x1000，X11 + llvmpipe，无窗口
+  管理器），用户数据目录 `/tmp/opencode/wave5/zed-d6/data`；不接触主 Zed 桌面。
+- 扩展：`/tmp/opencode/wave5/zed-d6/ext`（本 worktree 最终五语言 `extension.toml`、
+  release wasm 238,792 B、真实 WXML grammar）。启动参数：
+  `ZED_ALLOW_EMULATED_GPU=1 zed --foreground --user-data-dir ... -n proj
+  index.wxml index.ts utils/other.ts index.json`。
+- 项目：`app.json`、`pages/index/index.{wxml,ts,json}`、`utils/other.ts`、
+  `components/card/*`、`tsconfig.json`（baseUrl + `@/*`）。`index.wxml` 为
+  `<view class="page">{{user.name}}<card title="t"></card></view>`。
+- 服务器仍通过 `WXML_LSP_BIN` 指向的代理启动（代理转发到本 worktree
+  `target/debug/wxml-lsp`，只记录 JSON-RPC，不修改消息；抓包注入已关闭）。
+
+### 12.2 注册与多文档归属
+
+同一进程的日志摘录：
+
+```text
+C>S initialize ... didChangeWatchedFiles={"dynamicRegistration": true, "relativePatternSupport": true}
+                      sync={"dynamicRegistration": true, "didSave": true} root=.../proj
+S>C client/registerCapability {"registrations":[{"id":"wxml-lsp-watch",
+      "method":"workspace/didChangeWatchedFiles","registerOptions":{"watchers":[
+      {"globPattern":"**/*.wxml","kind":7}, ... {"globPattern":"**/*.wxss","kind":7}]}}]}
+C>S <response id='wxml-lsp-watch' err=False>
+C>S textDocument/didOpen .../pages/index/index.wxml lang=wxml version=0 len=63
+C>S textDocument/didOpen .../pages/index/index.json lang=json version=0 len=58
+C>S textDocument/didOpen .../utils/other.ts lang=typescript version=0 len=41
+C>S textDocument/didOpen .../pages/index/index.ts lang=typescript version=0 len=50
+```
+
+即：一个进程同时持有 WXML/JSON/TS 文档；客户端接受服务端动态注册；
+`workspace/didChangeConfiguration` 也会到达（仅记录）。
+
+### 12.3 未保存类型修改 → WXML hover
+
+1. 初始磁盘 `index.ts` 为 `name: 42`，WXML hover 为 `(property) name: number`。
+2. 在 `index.ts` 全选粘贴 `Page({ data: { user: { name: 'Alice', age: 30 } } });`，
+   **不保存**。日志只有 `didChange ... version=1 changes=1`（一次编辑事件，无
+   `didSave`）；WXML 诊断重新发布 `count=0`；切到 WXML hover 显示
+   `(property) name: string`（截图 `e2-unsaved-string.png`，`index.ts` 标签带未保存圆点）。
+3. `ctrl+s`：日志出现 `workspace/didChangeWatchedFiles(index.ts type 2)` 与
+   `textDocument/didSave uri=...index.ts hasText=False len=0`，1.6 s 后
+   `publishDiagnostics ...index.wxml count=0`（磁盘 54 B，截图 `e3-saved.png`）。
+4. 再次在 `index.ts` 不保存改为 `name: 42`（`didChange version=3`），WXML hover
+   变为 `(property) name: number`（截图 `e5-number-final.png`）。
+
+这验证了 AC-004（未保存 overlay 进入 WXML 分析）和 AC-010 的多文档部分
+（WXML + 两个 TS + JSON 共享一个服务器实例）。
+
+### 12.4 didSave 能力缺口与修复
+
+第一次 D6（修复前）按 `ctrl+s` 只看到 `workspace/didChangeWatchedFiles`，没有
+`didSave`。对照 Zed 1.28.1 源码 `lsp_store.rs::did_save_include_text_for_buffer`：
+客户端只有在服务端 `initialize` 声明 `textDocumentSync.save` 时才发送 `didSave`。
+修复：`initialize_result.textDocumentSync` 增加 `"save": {"includeText": false}`，
+并新增初始化结果断言（`server.rs`、`tests/lsp.rs`）。修复后第 12.3 节第 3 步
+首次看到 `didSave`。`includeText=false` 时处理器以当前打开 buffer 文本为准
+（仅在 buffer 不存在时才使用 `params.text`）。保存同时触发的 watched-files
+事件会跳过仍打开的 URI，因此 `didSave` 与 watched-files 双到不会互相覆盖，
+也不会把未保存内容回退成磁盘文本。
+
+### 12.5 无关脚本隔离
+
+向 `utils/other.ts` 不保存粘贴 `export const unrelated = { flag: false };`
+后，最终二进制记录到一次 `didChange`（`version=1`）和一次
+`index.wxml publishDiagnostics count=0`，WXML hover 仍为
+`(property) name: number`（截图 `e6-unrelated.png`）。类型后端把项目内所有脚本
+作为同一程序，因此非归属脚本的变更会保守地重跑全部视图诊断；诊断内容不受
+污染，未保存的 `index.ts` overlay 仍优先于磁盘文本。
+
+### 12.6 JSON 保存与 rediscovery
+
+保存 `index.json`（先 `{}`，后 `{"usingComponents":{"card":"../../components/card/card"}}`）
+均产生 `didSave` 和随后的 `index.wxml publishDiagnostics count=0`，说明配置 JSON
+保存会触发项目 rediscovery/视图重建。该样本没有未知组件诊断，无法用诊断差证明
+`usingComponents` 生效；界面左下角 `1` 是 Zed 自带 TypeScript 服务的
+`Cannot find name 'Page'`，不是 `wxml-lsp` 诊断。
+
+### 12.7 限制与观察
+
+- 该 fixture 使用 `.ts` 页面脚本；纯 `.js` 页面在 tsconfig 未开 `allowJs` 时后端
+  报 `script is not part of the program`（既有后端行为，不属于本次改动）。
+- 连续键入 45 个字符会产生 45 次 `didChange`，诊断队列约 26–35 s 才稳定；粘贴
+  （单次 `didChange`）响应即时。真实键入的响应时间仍需单独观测。
+- 非页面脚本（如 `utils/other.ts`）的变更会让全部视图重跑诊断（保守策略）：
+  诊断内容不变，但会产生一次额外 `publishDiagnostics`。
+- 标准 UI `zed: install dev extension`、与编辑器内置 JS/TS 服务的显式归属/重启用例
+  仍未验收；本 smoke 只证明两者可同时运行（内置 TS 诊断未被抑制）。

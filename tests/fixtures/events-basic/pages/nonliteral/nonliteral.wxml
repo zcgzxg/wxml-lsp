@@ -1,0 +1,3 @@
+<view class="nonliteral">
+  <button bindtap="onNonLiteralTap">非字面量注册的处理函数</button>
+</view>

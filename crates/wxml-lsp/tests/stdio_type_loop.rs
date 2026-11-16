@@ -173,10 +173,7 @@ impl Session {
         self.send(&json!({"jsonrpc": "2.0", "method": method, "params": params}));
     }
 
-    fn recv(&mut self) -> Value {
-        if let Some(value) = self.pending.pop_front() {
-            return value;
-        }
+    fn recv(&self) -> Value {
         match self.messages.recv_timeout(REQUEST_TIMEOUT) {
             Ok(value) => value,
             Err(error) => panic!(

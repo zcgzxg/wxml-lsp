@@ -16,7 +16,7 @@
 6. 请求/响应模型：`files[]`、`fragments[]`、`compilerOptions`、`policy`、`viewId`/owner、输入上限（§6）。
 7. 消息可见性、ABI 保留名、版本锁定（§7–§9）。
 
-未冻结：P6 完整模板作用域（`wx:for` 元素类型/窄化，Wave 4）、补全与反向编辑、Zed 同步（P8）。
+未冻结：反向编辑、组件内 `usingComponents` 建模、多根工作区、发布流水线。P6 完整模板作用域（`wx:for` 元素/索引类型、条件窄化）、补全和 Zed 多语言同步已在 Wave 5 实现，接口见 §6 的 protocol v2 增量。
 
 ## 1. 布局 A（唯一）
 
@@ -232,7 +232,7 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
 
 ```jsonc
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "requestId": "pages/index:view-7",
   "analysisStamp": { "snapshotId": 3, "projectRevision": 5, "viewRevision": 7, "backendEpoch": 2 },
   "view": {
@@ -276,7 +276,7 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
 - `strict:false` 或 `noImplicitThis:false` 会让 `this.data` 退化为 `any`：派生视图必须由探针健康门报 `Unavailable`（本契约不通过强制 `noImplicitThis` 掩盖项目选项）。
 - `fragments[]` 是 Rust 侧的挂载输入；`fragmentId` 是稳定身份，响应逐片段结果按它回显（不得用表达式文本代替）。同一 `exprText` 可有多个 `fragmentId`。
 - **C1.1 增量字段（可选，向后兼容）**：`target` 是希望 hover/诊断的目标标识符（必须是 `exprText` 中按完整标识符边界可定位的 token；缺省为表达式的右值标识符，例如 `user.nmae` → `nmae`、`user` → `user`）。`locals` 是模板作用域绑定名（如 `wx:for` 的 `item`/`index`）：其中的根标识符**不加** `__wxml_root.`/`__wxml_props_*` 前缀。Node 在挂载时必须按 TypeScript 表达式语义重写**每个自由根标识符**，不能只处理表达式首个 token：括号、一元、二元、条件、索引、调用和对象字面量都要正确处理；属性名（`.name`、`{ key: … }` 的 key）、字符串/注释、局部绑定和全局内建名不得加前缀。无法安全挂载的形状必须返回结构化 `bad-fragment`，不得发布假诊断或假 `Supported`。`target` 找不到、`locals` 重复/为空/非标识符/保留名 → `bad-fragment`。`locals` 可以合法覆盖 `Math` 等全局内建名，此时不得按全局名跳过。默认 target 按**最右值标识符的原始偏移**定位（`a.a` 指向第二个 `a`、`user.user` 指向第二个 `user`），不得用 `indexOf` 取首个同名 token。包装必须精确覆盖整个 `exprText`（恰好一个 `const __wxml_expr = (…);` 语句，且括号内 AST 结束位置等于 `exprText.length`），多余语句/括号逃逸 → `bad-fragment`。`satisfies`、任意 TypeNode、`new` 表达式等不安全形状 → `bad-fragment`。表达式遍历深度 > 256 或节点数 > 10,000 → `bad-fragment`，不得以 `RangeError`/`-32603` 结束。
-- **Wave 2 locals 限制**：P6 当前只提供绑定名，P5 以 `any` 绑定；含非空 `locals` 的片段，其 hover/diagnostics/definition 必须报 `Partial`（reason 说明 “template locals are bound as any; loop item/index member checks deferred”），不得把空诊断展示为检查通过。例外：`jsCheck:off`/`@ts-nocheck` 优先，diagnostics 保持 `Disabled`，hover/definition 仍 `Partial`。`wx:for` 元素类型与 AC-005 完整检查延期 Wave 4/C1.2（`locals` 可扩展为带 `from`/`iteration` 的对象，向后兼容）；P6 不应发送无标识符的纯字面量片段。
+- **Wave 5 结构化模板作用域**：protocol v2 的 `bindings[]` 携带完整嵌套链（外层到内层，每层 item/index），`sourceExpr`/`sourceRange` 指向产生绑定的 `wx:for` 表达式；Node 解析数组/元组/Record 的元素与索引类型，无法解析时降级 `any` 并报 `Partial`。`locals[]` 保留为兼容字段，由 bindings 名称派生。`guards[]` 携带 `wx:if/elif/else` 链和选中分支，Node 用合成 `if/else` 块完成窄化；复杂或不可解析守卫降级 `Partial`，不得伪造类型。反向编辑仍未实现。
 - 容器字段（`viewId`/`owner`/`analysisStamp`）参与日志、缓存键与发布屏障。
 
 ### 6.2 输入上限
@@ -297,7 +297,7 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
 
 ```jsonc
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "requestId": "pages/index:view-7",
   "jsCheckApplied": "inherit",
   "registration": { "kind": "page", "count": 1, "topLevel": true },
@@ -341,9 +341,11 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
 
 | method | params | result |
 | --- | --- | --- |
-| `ping` | — | `{ "ok": true, "protocolVersion": 1, "backendVersion": "0.1.0" }` |
+| `ping` | — | `{ "ok": true, "protocolVersion": 2, "backendVersion": "0.1.0" }` |
 | `analyze` | C1 `AnalyzeRequest` | C1 `AnalyzeResponse` |
 | `shutdown` | — | `{ "ok": true }`，随后进程退出；之后不再处理新请求 |
+
+协议 v2 在 `analyze` 上预留可选输入：`fragments[].bindings`、`fragments[].guards`、顶层 `components` 与 `events`；缺少这些字段时行为与 v1 相同，响应中的 `eventResults`/`components` 当前被 Rust 侧忽略。`complete` 方法在 v2 中保留给补全 worktree，Phase 0 的 Node 服务端不处理它。
 
 错误码：parse error `-32700`、invalid request `-32600`、method not found `-32601`、
 invalid params `-32602`（`data.code` 为 `bad-protocol`/`bad-params`/`bad-limit`/`bad-option`/
@@ -383,7 +385,7 @@ invalid params `-32602`（`data.code` 为 `bad-protocol`/`bad-params`/`bad-limit
 | --- | --- |
 | AC-004 `properties` 未保存 overlay | 已测 `data` 跨文件 overlay；`properties` overlay 的未保存同步延期 |
 | AC-007 runner 断言（JS 策略组合逐项） | 已测 `off`/`pragma`/`@ts-nocheck`/`checkJs:true`；完整 runner 断言延期 |
-| AC-008 路径别名 / 多视图 | `alias-project` 已验证 `extends` + `paths`；**同一脚本的多视图隔离未测**（延期） |
+| AC-008 路径别名 / 多视图 | `alias-project` 已验证 `extends` + `paths` 的 hover 与 definition；`multi-view` 已验证不同页面/组件脚本的视图隔离与交错请求互不污染（当前发现模型是 1 WXML ↔ 1 脚本，同一脚本映射多个视图不在模型内，未验证） |
 | 多注册/封装注册合并规则 | `Partial` + 计数 + 首个注册（§5.2） |
 | `data` 简写/`data: importedData` | 简写为 `Unsupported`；imported 值按表达式处理 |
 | 补全替换范围 / 反向编辑 | `deferred-to-C1`（AC-012） |
@@ -392,8 +394,17 @@ invalid params `-32602`（`data.code` 为 `bad-protocol`/`bad-params`/`bad-limit
 | harness 读取 tsconfig | `src/run.ts` 用 `ts.sys` 读取样例 tsconfig，模拟 P3；生产 Node 只能接收请求里的 `compilerOptions`，不得读 tsconfig |
 | 请求声明上限 | 已加服务端上限（§6.2），调用方只能收紧 |
 | 分片身份 | `fragmentId` 全链路携带；`mountId` 由其派生；重复 id → `bad-fragment` |
-| 模板 locals | C1.1 只携带名字；Node 以 `any` 绑定（`TypeQuality::Any`），具体类型由 P6 后续提供 |
+| 模板 locals / 守卫 | 协议 v2 携带 `bindings`（item/index 名称、角色、源表达式与范围）和 `guards`；数组/元组/`ReadonlyArray` 取元素类型、`Record`/对象取值类型与键类型，`wx:if/elif/else` 由 TypeScript 控制流窄化；`any`/`unknown`/无法解析时降级而不误报 |
 | stdio 后端 | `src/server.ts` / `dist/server.js`；NDJSON JSON-RPC；20 MiB 行上限；`npm run build` 产出 `dist/server.js` |
+
+验证（WT-B，2026-11-16）：
+
+```bash
+(cd backends/typescript && npm ci && npm run build)
+WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored
+```
+
+该 runner 覆盖 AC-005 `wx:for` locals 类型化、AC-006 条件窄化、AC-008 多视图隔离与 `@models/*` 别名 hover/definition、AC-012 组件属性绑定诊断；不含补全与事件处理函数（分别由 WT-A/WT-C 验证）。它被 `#[ignore]` 保护，常规门禁只编译不执行，因此“已验证”指上述显式真机门禁，而不是 `cargo test` 默认路径。
 
 ## 11. 变更记录
 
@@ -408,3 +419,4 @@ invalid params `-32602`（`data.code` 为 `bad-protocol`/`bad-params`/`bad-limit
 | 2026-11-15 | P5 HIGH 修复：表达式发射改为递增 source/mounted 游标（不再 `slice(0,from)`/每片 reduce），roots 用 Set。性能回归固定为 9k roots、padding 在 roots 之前的最坏排列，阈值 1 MiB <300 ms、4 MiB <600 ms（旧 O(n²) 同排列约 4.2 s / 15.6 s）。越界/非字符/小数边界严格 `unattributable`，target 不在 span 内改用最大重叠段。错误消息截断到 120 字符 + 总长度；`locals` 可覆盖全局名；`maxTotalBytes` 计入 fragments；深度从根起算；heredoc 包装精确校验。 |
 | 2026-11-15 | P5 第 1 轮修复：`insertions[]` 填 `viewRevision`/`backendFileVersion`；`locals` 根偏移与 dropped definition 状态修正；`target` 默认右值标识符；`locals` 保留字校验；运行时依赖移入 `dependencies`；stdio 行上限 20 MiB（请求上限仍 16 MiB）；`ping` 回传协议/后端版本。第 2 轮补充：Node 必须重写表达式中的每个自由根标识符（括号/一元/二元/条件/索引），不能只前缀首个 token；`wxmlRange` 长度必须等于 `exprText` UTF-8 字节数 |
 | 2026-11-15 | P5 MEDIUM 修复：默认 target 使用最右值 token 的原始偏移（重复名 `a.a`/`user.user`）；包装只接受精确覆盖整个表达式的单个 ParenthesizedExpression（拒绝 `); (` 注入）；跨合成间隙诊断裁剪到 target/最大重叠原文段，无法归属时 diagnostics 至少 `Partial`；拒绝 `satisfies`/TypeNode/`new`；表达式深度/节点上限并捕获 RangeError |
+| 2026-11-16 | **WT-B（Wave 5）**：`wx:for` locals 升级为 `bindings` 并解析元素/索引类型，`wx:if/elif/else` 增加 `guards` 窄化；删除“template locals are bound as any”降级；新增 `tests/fixtures/{loop-scope,conditional-union,component-bindings,multi-view,alias-project}` 的 `wave5_acceptance` 真机 runner；多视图隔离（不同脚本、交错请求）与 `@models/*` 别名 definition 验证，详见 §10 验证说明 |
