@@ -109,7 +109,7 @@ test("locals mount the expression without a root prefix", () => {
   assert.equal(result.states.hover.status, "partial");
   assert.equal(result.states.diagnostics.status, "partial");
   assert.equal(result.states.definition.status, "partial");
-  assert.match(result.states.hover.reason ?? "", /template locals are bound as any/);
+  assert.match(result.states.hover.reason ?? "", /could not be resolved and were not checked/);
 });
 
 test("component locals keep overlay definitions mapped to the original script", () => {
@@ -191,7 +191,6 @@ test("an unmapped in-mount diagnostic downgrades diagnostics, not hover", () => 
     introduced: [],
     noCheck: false,
     droppedDefinitions: 0,
-    hasLocals: false,
     unmappedDiagnostics: 2,
     missing: 0,
     unexpected: 0,
@@ -210,7 +209,6 @@ test("a dropped definition downgrades only the definition capability", () => {
     introduced: [],
     noCheck: false,
     droppedDefinitions: 1,
-    hasLocals: false,
     unmappedDiagnostics: 0,
     missing: 0,
     unexpected: 0,

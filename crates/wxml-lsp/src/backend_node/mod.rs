@@ -174,7 +174,7 @@ impl NodeBackend {
             }
         };
 
-        if view.target.is_none() || view.fragments.is_empty() {
+        if view.target.is_none() || (view.fragments.is_empty() && view.components.is_empty()) {
             let cached = CachedAnalysis {
                 key,
                 view,
@@ -373,7 +373,6 @@ impl Backend for NodeBackend {
                         response,
                         &cached.view,
                         request.context.source(),
-                        &cached.fragments,
                     ))
                 } else {
                     Ok(DiagnosticsResult {

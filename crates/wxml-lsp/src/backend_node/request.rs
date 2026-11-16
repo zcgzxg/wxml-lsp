@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 use wxml_text::SourceRange;
-use wxml_types::{CheckFragment, GuardChain, LocalBinding, RequestContext};
+use wxml_types::{
+    CheckFragment, ComponentAttribute, ComponentUsage, GuardChain, LocalBinding, RequestContext,
+};
 
 use super::config::NodeBackendConfig;
 use super::protocol::{PROTOCOL_VERSION, ProtocolError};
@@ -21,8 +23,8 @@ pub(crate) struct FragmentInfo {
     pub target_range: Option<SourceRange>,
     /// Byte range of the whole mustache expression in the WXML source.
     pub expr_range: SourceRange,
-    /// Template bindings (C1.1 `locals`).
-    pub locals: Vec<String>,
+    /// Structured `wx:for` bindings in scope at the fragment.
+    pub bindings: Vec<LocalBinding>,
 }
 
 /// A serialized C1 request plus the metadata needed to map the response.
@@ -69,11 +71,13 @@ pub(crate) fn build(
                 target: selected.clone(),
                 target_range,
                 expr_range: fragment.wxml_range,
-                locals: fragment.locals.clone(),
+                bindings: fragment.bindings.clone(),
             },
         );
         fragments.push(fragment_value(fragment, selected.as_deref()));
     }
+
+    let components: Vec<Value> = view.components.iter().map(component_value).collect();
 
     let files: Vec<Value> = view
         .files
@@ -116,9 +120,9 @@ pub(crate) fn build(
         "scriptFileId": target.script_file.path(),
         "files": files,
         "fragments": fragments,
-        // Protocol v2 optional inputs. Phase 0 sends empty arrays; WT-B and
-        // WT-C fill them from the prepared view.
-        "components": Vec::<Value>::new(),
+        // Protocol v2 optional inputs. Events are filled by the events
+        // worktree; components come from the prepared view.
+        "components": components,
         "events": Vec::<Value>::new(),
         "policy": {
             "jsCheck": config.js_check.as_str(),
@@ -140,11 +144,15 @@ pub(crate) fn build(
 }
 
 /// Serializes one fragment for the protocol v2 `analyze` request.
+///
+/// `bindings` is sent as-is (full chain, duplicates included). `locals` is
+/// kept for C1.1 clients: it derives first-occurrence binding names, while the
+/// backend resolves types from the full chain.
 fn fragment_value(fragment: &CheckFragment, selected: Option<&str>) -> Value {
     let mut value = json!({
         "fragmentId": fragment.fragment_id,
         "exprText": fragment.expr_text,
-        "locals": fragment.locals,
+        "locals": effective_locals(&fragment.bindings),
         "bindings": fragment
             .bindings
             .iter()
@@ -203,6 +211,61 @@ fn guard_chain_value(chain: &GuardChain) -> Value {
         "conditions": conditions,
         "selected": chain.selected,
     })
+}
+
+/// Returns the effective binding names in scope, one per name and in order.
+fn effective_locals(bindings: &[LocalBinding]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        if !names.iter().any(|name| name == &binding.name) {
+            names.push(binding.name.clone());
+        }
+    }
+    names
+}
+
+/// Serializes one custom-component usage for protocol v2.
+fn component_value(usage: &ComponentUsage) -> Value {
+    let mut value = json!({
+        "tag": usage.tag,
+        "attributes": usage
+            .attributes
+            .iter()
+            .map(component_attribute_value)
+            .collect::<Vec<Value>>(),
+    });
+    if let Some(file) = usage.component_file.as_ref() {
+        if let Some(object) = value.as_object_mut() {
+            object.insert(
+                "componentFileId".to_owned(),
+                Value::String(file.path().to_owned()),
+            );
+        }
+    }
+    value
+}
+
+/// Serializes one component attribute; `exprText`/`exprRange` are optional.
+fn component_attribute_value(attribute: &ComponentAttribute) -> Value {
+    let mut value = json!({
+        "name": attribute.name,
+        "valueKind": attribute.value_kind.as_str(),
+        "attributeRange": byte_range(attribute.attribute_range),
+    });
+    if let Some(object) = value.as_object_mut() {
+        if let Some(expr_text) = attribute.expr_text.as_ref() {
+            object.insert("exprText".to_owned(), Value::String(expr_text.clone()));
+        }
+        if let Some(range) = attribute.expr_range {
+            object.insert("exprRange".to_owned(), byte_range(range));
+        }
+    }
+    value
+}
+
+/// Serializes a byte range in the protocol `{start,end}` shape.
+fn byte_range(range: SourceRange) -> Value {
+    json!({"start": range.start(), "end": range.end()})
 }
 
 /// Selects the P6 target or the default right-value identifier.
@@ -319,8 +382,9 @@ mod tests {
     use std::sync::Arc;
 
     use wxml_types::{
-        BackendEpoch, BackendId, CheckFragment, FileId, ProjectId, ProjectRevision, RootKind,
-        SnapshotId, SourceRevision, SourceSnapshot, ViewRevision,
+        AttributeValueKind, BackendEpoch, BackendId, CheckFragment, ComponentAttribute,
+        ComponentUsage, FileId, ProjectId, ProjectRevision, RootKind, SnapshotId, SourceRevision,
+        SourceSnapshot, ViewRevision,
     };
 
     use super::*;
@@ -331,7 +395,6 @@ mod tests {
             fragment_id: "f0".to_owned(),
             expr_text: expr.to_owned(),
             target: None,
-            locals: Vec::new(),
             bindings: Vec::new(),
             guards: Vec::new(),
             wxml_range: SourceRange::from_bounds(
@@ -365,6 +428,7 @@ mod tests {
             }]),
             compiler_options: serde_json::Map::new(),
             fragments: Arc::from(vec![fragment]),
+            components: Arc::from(Vec::new()),
             project_root: PathBuf::from("/tmp/project"),
             syntax_diagnostics: Vec::new(),
             status_hint: None,
@@ -468,7 +532,6 @@ mod tests {
     #[test]
     fn serializes_v2_bindings_and_guard_chains() {
         let mut fragment = fragment("item.name", 10);
-        fragment.locals = vec!["item".to_owned(), "index".to_owned()];
         fragment.bindings = vec![
             LocalBinding {
                 name: "item".to_owned(),
@@ -503,6 +566,7 @@ mod tests {
         let value: Value = serde_json::from_str(&request.line).expect("json");
         let params = &value["params"];
         assert_eq!(params["protocolVersion"], 2);
+        assert_eq!(params["fragments"][0]["locals"], json!(["item", "index"]));
         assert_eq!(params["fragments"][0]["bindings"][0]["name"], "item");
         assert_eq!(params["fragments"][0]["bindings"][0]["role"], "item");
         assert_eq!(
@@ -527,5 +591,136 @@ mod tests {
             params["fragments"][0]["guards"][0]["conditions"][0]["range"]["end"],
             211
         );
+    }
+
+    #[test]
+    fn shadowed_loop_bindings_keep_the_full_chain() {
+        let range = |start: u32, end: u32| SourceRange::from_bounds(start, end).expect("range");
+        let mut fragment = fragment("item.name", 10);
+        fragment.bindings = vec![
+            LocalBinding {
+                name: "item".to_owned(),
+                role: wxml_types::LocalRole::Item,
+                source_expr: "groups".to_owned(),
+                source_range: range(100, 106),
+            },
+            LocalBinding {
+                name: "itemIndex".to_owned(),
+                role: wxml_types::LocalRole::Index,
+                source_expr: "groups".to_owned(),
+                source_range: range(100, 106),
+            },
+            LocalBinding {
+                name: "item".to_owned(),
+                role: wxml_types::LocalRole::Item,
+                source_expr: "item.members".to_owned(),
+                source_range: range(120, 132),
+            },
+            LocalBinding {
+                name: "index".to_owned(),
+                role: wxml_types::LocalRole::Index,
+                source_expr: "item.members".to_owned(),
+                source_range: range(120, 132),
+            },
+        ];
+        let view = view(fragment);
+        let request = build(
+            &view,
+            &context(),
+            &NodeBackendConfig::default(),
+            "req".to_owned(),
+        )
+        .expect("request")
+        .expect("some");
+        let value: Value = serde_json::from_str(&request.line).expect("json");
+        let params = &value["params"];
+        // `locals` keeps only the first occurrence of each name.
+        assert_eq!(
+            params["fragments"][0]["locals"],
+            json!(["item", "itemIndex", "index"])
+        );
+        // `bindings` keeps the full outermost-to-innermost chain, duplicates
+        // included, so the backend can resolve the shadowing inner loop.
+        let bindings = params["fragments"][0]["bindings"]
+            .as_array()
+            .expect("bindings");
+        assert_eq!(bindings.len(), 4);
+        assert_eq!(bindings[0]["sourceExpr"], "groups");
+        assert_eq!(bindings[1]["role"], "index");
+        assert_eq!(bindings[2]["name"], "item");
+        assert_eq!(bindings[2]["sourceExpr"], "item.members");
+        assert_eq!(bindings[3]["role"], "index");
+        assert_eq!(bindings[3]["sourceExpr"], "item.members");
+    }
+
+    #[test]
+    fn serializes_components_with_component_file_and_attributes() {
+        let mut view = view(fragment("item.name", 10));
+        let project = ProjectId::new("proj-test");
+        view.components = Arc::from(vec![ComponentUsage {
+            tag: "card".to_owned(),
+            component_file: Some(
+                FileId::new(project, "components/card/card.ts").expect("component file"),
+            ),
+            attributes: vec![
+                ComponentAttribute {
+                    name: "title".to_owned(),
+                    value_kind: AttributeValueKind::Mustache,
+                    expr_text: Some("pageTitle".to_owned()),
+                    expr_range: Some(SourceRange::from_bounds(30, 39).expect("expr range")),
+                    attribute_range: SourceRange::from_bounds(20, 41).expect("attribute range"),
+                },
+                ComponentAttribute {
+                    name: "disabled".to_owned(),
+                    value_kind: AttributeValueKind::Boolean,
+                    expr_text: None,
+                    expr_range: None,
+                    attribute_range: SourceRange::from_bounds(42, 50).expect("attribute range"),
+                },
+            ],
+        }]);
+        let request = build(
+            &view,
+            &context(),
+            &NodeBackendConfig::default(),
+            "req".to_owned(),
+        )
+        .expect("request")
+        .expect("some");
+        let value: Value = serde_json::from_str(&request.line).expect("json");
+        let component = &value["params"]["components"][0];
+        assert_eq!(component["tag"], "card");
+        assert_eq!(component["componentFileId"], "components/card/card.ts");
+        assert_eq!(component["attributes"][0]["name"], "title");
+        assert_eq!(component["attributes"][0]["valueKind"], "mustache");
+        assert_eq!(component["attributes"][0]["exprText"], "pageTitle");
+        assert_eq!(component["attributes"][0]["exprRange"]["start"], 30);
+        assert_eq!(component["attributes"][0]["exprRange"]["end"], 39);
+        assert_eq!(component["attributes"][0]["attributeRange"]["start"], 20);
+        assert_eq!(component["attributes"][1]["valueKind"], "boolean");
+        assert!(component["attributes"][1].get("exprText").is_none());
+        assert!(component["attributes"][1].get("exprRange").is_none());
+    }
+
+    #[test]
+    fn components_without_a_script_omit_the_file_id() {
+        let mut view = view(fragment("item.name", 10));
+        view.components = Arc::from(vec![ComponentUsage {
+            tag: "card".to_owned(),
+            component_file: None,
+            attributes: Vec::new(),
+        }]);
+        let request = build(
+            &view,
+            &context(),
+            &NodeBackendConfig::default(),
+            "req".to_owned(),
+        )
+        .expect("request")
+        .expect("some");
+        let value: Value = serde_json::from_str(&request.line).expect("json");
+        let component = &value["params"]["components"][0];
+        assert_eq!(component["tag"], "card");
+        assert!(component.get("componentFileId").is_none());
     }
 }

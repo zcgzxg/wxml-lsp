@@ -34,6 +34,11 @@ export function planFragments(requestFragments: RequestFragment[], options: Frag
     const expr = fragment.exprText;
     const fragmentId = fragment.fragmentId;
     const locals = fragment.locals ?? [];
+    const bindings = fragment.bindings ?? [];
+    const guards = fragment.guards ?? [];
+    // Structured bindings are authoritative; the name list stays the fallback for
+    // requests built before the template analysis emitted `bindings`.
+    const localNames = bindings.length > 0 ? new Set(bindings.map((binding) => binding.name)) : new Set(locals);
     const defaultTarget = fragment.target === undefined ? rightmostIdentifierToken(expr) : undefined;
     if (fragment.target === undefined && defaultTarget === undefined) {
       throw new RequestError(
@@ -46,7 +51,7 @@ export function planFragments(requestFragments: RequestFragment[], options: Frag
       rootPrefix: options.rootPrefix,
       propsPrefix,
       propertyOverlay: options.propertyOverlay,
-      locals: new Set(locals),
+      locals: localNames,
     });
     const segments = rewritten.segments.map((segment) => ({
       ...segment,
@@ -68,6 +73,8 @@ export function planFragments(requestFragments: RequestFragment[], options: Frag
       segments,
       source: { start: fragment.wxmlRange.start, end: fragment.wxmlRange.end },
       locals,
+      bindings,
+      guards,
       root: rewritten.roots[0] ?? expr,
       localRoot: rewritten.localRoot,
     };

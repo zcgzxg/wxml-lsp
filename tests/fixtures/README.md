@@ -225,6 +225,25 @@ query、expect、diagnostic 对象只允许文档列出的字段；未知字段�
 | AC-012 | `component-bindings` | 组件属性绑定、事件绑定、definition |
 | AC-013 | `component-basic`、`component-properties` | `properties` 的 `type`/`optionalTypes`/JSDoc，未声明属性不伪造 |
 
+### 7.1 运行时验收（WT-B 样本）
+
+§7 的编号对应描述的是样本目标；结构校验只执行 `cargo test -p wxml-fixtures`，不做类型分析。`loop-scope`、`conditional-union`、`component-bindings`、`multi-view`、`alias-project` 的类型行为由真实 Node runner 执行：
+
+```bash
+(cd backends/typescript && npm ci && npm run build)
+WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored
+```
+
+| 样本 | runner 覆盖的行为 |
+| --- | --- |
+| `loop-scope` | 8 条 hover：外层 `itemIndex` 为 number，`item.name`/`item.title` 为 string；内层默认 `index` 为 number、`item.name` 为 string；退出内层后恢复 `item.title`；`groupMap` 的 `index` 为 string；循环外 `{{ item }}` 在 `item` 上报错；`itemIndex` hover 不带文档 |
+| `conditional-union` | 3 条 hover 验证 `wx:elif`/`wx:else` 与真值窄化；`state.user.age` 在 `age` 上报错；守卫外 `maybeUser` 报 null 错误，守卫内通过 |
+| `component-bindings` | 2 条属性绑定 hover（`pageTitle` string、`total` number）；`title="{{ total }}"` 在 `total` 上报 number 不兼容；事件 marker 属于 WT-C，runner 明确跳过 |
+| `multi-view` | 7 条 hover 分别命中 card/badge/a/b 自己的声明与 JSDoc；`card.wxml` 的 `user.nmae` 只在该文件报错；同时打开两个页面、card 组件和两个脚本时互不污染 |
+| `alias-project` | `@models/*` 别名下 `user.name` hover 为 string；`user.nmae` 在 `nmae` 报错；definition 跨别名解析到 `models/user.ts` 的 `name` |
+
+该 runner 被 `#[ignore]` 保护，默认门禁只编译不执行；它只覆盖 WT-B 的 AC-005/006/008/012，不覆盖补全与事件处理函数。
+
 延期断言（P6/P7 runner，不是当前校验器）：
 
 - AC-007 的“不重复发布 JS/TS 主服务已报告的诊断”；

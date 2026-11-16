@@ -385,7 +385,7 @@ invalid params `-32602`（`data.code` 为 `bad-protocol`/`bad-params`/`bad-limit
 | --- | --- |
 | AC-004 `properties` 未保存 overlay | 已测 `data` 跨文件 overlay；`properties` overlay 的未保存同步延期 |
 | AC-007 runner 断言（JS 策略组合逐项） | 已测 `off`/`pragma`/`@ts-nocheck`/`checkJs:true`；完整 runner 断言延期 |
-| AC-008 路径别名 / 多视图 | `alias-project` 已验证 `extends` + `paths`；**同一脚本的多视图隔离未测**（延期） |
+| AC-008 路径别名 / 多视图 | `alias-project` 已验证 `extends` + `paths` 的 hover 与 definition；`multi-view` 已验证不同页面/组件脚本的视图隔离与交错请求互不污染（当前发现模型是 1 WXML ↔ 1 脚本，同一脚本映射多个视图不在模型内，未验证） |
 | 多注册/封装注册合并规则 | `Partial` + 计数 + 首个注册（§5.2） |
 | `data` 简写/`data: importedData` | 简写为 `Unsupported`；imported 值按表达式处理 |
 | 补全替换范围 / 反向编辑 | `deferred-to-C1`（AC-012） |
@@ -394,8 +394,17 @@ invalid params `-32602`（`data.code` 为 `bad-protocol`/`bad-params`/`bad-limit
 | harness 读取 tsconfig | `src/run.ts` 用 `ts.sys` 读取样例 tsconfig，模拟 P3；生产 Node 只能接收请求里的 `compilerOptions`，不得读 tsconfig |
 | 请求声明上限 | 已加服务端上限（§6.2），调用方只能收紧 |
 | 分片身份 | `fragmentId` 全链路携带；`mountId` 由其派生；重复 id → `bad-fragment` |
-| 模板 locals | C1.1 只携带名字；Node 以 `any` 绑定（`TypeQuality::Any`），具体类型由 P6 后续提供 |
+| 模板 locals / 守卫 | 协议 v2 携带 `bindings`（item/index 名称、角色、源表达式与范围）和 `guards`；数组/元组/`ReadonlyArray` 取元素类型、`Record`/对象取值类型与键类型，`wx:if/elif/else` 由 TypeScript 控制流窄化；`any`/`unknown`/无法解析时降级而不误报 |
 | stdio 后端 | `src/server.ts` / `dist/server.js`；NDJSON JSON-RPC；20 MiB 行上限；`npm run build` 产出 `dist/server.js` |
+
+验证（WT-B，2026-11-16）：
+
+```bash
+(cd backends/typescript && npm ci && npm run build)
+WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored
+```
+
+该 runner 覆盖 AC-005 `wx:for` locals 类型化、AC-006 条件窄化、AC-008 多视图隔离与 `@models/*` 别名 hover/definition、AC-012 组件属性绑定诊断；不含补全与事件处理函数（分别由 WT-A/WT-C 验证）。它被 `#[ignore]` 保护，常规门禁只编译不执行，因此“已验证”指上述显式真机门禁，而不是 `cargo test` 默认路径。
 
 ## 11. 变更记录
 
@@ -410,3 +419,4 @@ invalid params `-32602`（`data.code` 为 `bad-protocol`/`bad-params`/`bad-limit
 | 2026-11-15 | P5 HIGH 修复：表达式发射改为递增 source/mounted 游标（不再 `slice(0,from)`/每片 reduce），roots 用 Set。性能回归固定为 9k roots、padding 在 roots 之前的最坏排列，阈值 1 MiB <300 ms、4 MiB <600 ms（旧 O(n²) 同排列约 4.2 s / 15.6 s）。越界/非字符/小数边界严格 `unattributable`，target 不在 span 内改用最大重叠段。错误消息截断到 120 字符 + 总长度；`locals` 可覆盖全局名；`maxTotalBytes` 计入 fragments；深度从根起算；heredoc 包装精确校验。 |
 | 2026-11-15 | P5 第 1 轮修复：`insertions[]` 填 `viewRevision`/`backendFileVersion`；`locals` 根偏移与 dropped definition 状态修正；`target` 默认右值标识符；`locals` 保留字校验；运行时依赖移入 `dependencies`；stdio 行上限 20 MiB（请求上限仍 16 MiB）；`ping` 回传协议/后端版本。第 2 轮补充：Node 必须重写表达式中的每个自由根标识符（括号/一元/二元/条件/索引），不能只前缀首个 token；`wxmlRange` 长度必须等于 `exprText` UTF-8 字节数 |
 | 2026-11-15 | P5 MEDIUM 修复：默认 target 使用最右值 token 的原始偏移（重复名 `a.a`/`user.user`）；包装只接受精确覆盖整个表达式的单个 ParenthesizedExpression（拒绝 `); (` 注入）；跨合成间隙诊断裁剪到 target/最大重叠原文段，无法归属时 diagnostics 至少 `Partial`；拒绝 `satisfies`/TypeNode/`new`；表达式深度/节点上限并捕获 RangeError |
+| 2026-11-16 | **WT-B（Wave 5）**：`wx:for` locals 升级为 `bindings` 并解析元素/索引类型，`wx:if/elif/else` 增加 `guards` 窄化；删除“template locals are bound as any”降级；新增 `tests/fixtures/{loop-scope,conditional-union,component-bindings,multi-view,alias-project}` 的 `wave5_acceptance` 真机 runner；多视图隔离（不同脚本、交错请求）与 `@models/*` 别名 definition 验证，详见 §10 验证说明 |

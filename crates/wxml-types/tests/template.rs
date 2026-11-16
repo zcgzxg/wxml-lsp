@@ -4,8 +4,8 @@
 
 use wxml_syntax::{SyntaxTree, parse};
 use wxml_types::{
-    CheckFragment, EventBindingKind, MAX_FRAGMENTS, RootKind, SourceRevision, TemplateAnalysis,
-    TemplateAnalyzer, UnsupportedFeature, UnsupportedKind, analyze_template,
+    CheckFragment, EventBindingKind, MAX_BINDINGS, MAX_FRAGMENTS, RootKind, SourceRevision,
+    TemplateAnalysis, TemplateAnalyzer, UnsupportedFeature, UnsupportedKind, analyze_template,
 };
 
 const REVISION: u64 = 7;
@@ -30,7 +30,13 @@ fn fragment<'a>(
 }
 
 fn locals(fragment: &CheckFragment) -> Vec<&str> {
-    fragment.locals.iter().map(String::as_str).collect()
+    let mut names = Vec::new();
+    for binding in &fragment.bindings {
+        if !names.contains(&binding.name.as_str()) {
+            names.push(binding.name.as_str());
+        }
+    }
+    names
 }
 
 fn slice<'a>(tree: &'a SyntaxTree, fragment: &CheckFragment) -> &'a str {
@@ -69,7 +75,6 @@ fn extracts_root_member_access() {
     assert_eq!(fragment.fragment_id, "f0");
     assert_eq!(fragment.expr_text, "user.name");
     assert_eq!(fragment.target.as_deref(), Some("name"));
-    assert!(fragment.locals.is_empty());
     assert!(fragment.bindings.is_empty());
     assert!(fragment.guards.is_empty());
     assert_eq!(fragment.root, RootKind::Page);
@@ -108,7 +113,7 @@ fn default_for_bindings_apply_to_attributes_and_content() {
     assert_eq!(analysis.fragments.len(), 4);
 
     let items = fragment(&analysis, "items", 0);
-    assert!(items.locals.is_empty());
+    assert!(items.bindings.is_empty());
     assert_eq!(items.target.as_deref(), Some("items"));
 
     let visible = fragment(&analysis, "item.visible", 0);
@@ -129,7 +134,7 @@ fn custom_for_bindings_replace_defaults() {
     let source = r#"<view wx:for="{{ rows }}" wx:for-item="row" wx:for-index="i">{{ row.name }} {{ i }}</view>"#;
     let (analysis, _) = analyze(source);
     assert_eq!(analysis.fragments.len(), 3);
-    assert!(fragment(&analysis, "rows", 0).locals.is_empty());
+    assert!(fragment(&analysis, "rows", 0).bindings.is_empty());
     assert_eq!(locals(fragment(&analysis, "row.name", 0)), vec!["row", "i"]);
     assert_eq!(locals(fragment(&analysis, "i", 0)), vec!["row", "i"]);
 }
@@ -140,7 +145,7 @@ fn nested_loops_shadow_and_deduplicate_locals() {
     let (analysis, _) = analyze(source);
     assert_eq!(analysis.fragments.len(), 5);
 
-    assert!(fragment(&analysis, "outer", 0).locals.is_empty());
+    assert!(fragment(&analysis, "outer", 0).bindings.is_empty());
     assert_eq!(
         locals(fragment(&analysis, "item.name", 0)),
         vec!["item", "index"]
@@ -153,15 +158,15 @@ fn nested_loops_shadow_and_deduplicate_locals() {
     assert_eq!(locals(inner), vec!["item", "index"]);
     assert_eq!(
         inner
-            .locals
+            .bindings
             .iter()
-            .filter(|name| name.as_str() == "item")
+            .filter(|binding| binding.name == "item")
             .count(),
-        1,
-        "shadowed item must appear once"
+        2,
+        "full chain keeps both the outer and the shadowing inner item"
     );
     assert!(
-        fragment(&analysis, "item.name", 2).locals.is_empty(),
+        fragment(&analysis, "item.name", 2).bindings.is_empty(),
         "bindings must be popped after the loop"
     );
 }
@@ -178,7 +183,7 @@ fn condition_chain_fragments_do_not_change_scope() {
         analysis
             .fragments
             .iter()
-            .all(|fragment| fragment.locals.is_empty())
+            .all(|fragment| fragment.bindings.is_empty())
     );
 }
 
@@ -363,7 +368,7 @@ fn fragment_ids_follow_source_order_even_when_wx_for_is_later() {
     assert_eq!(by_expr("b").fragment_id, "f1");
     assert_eq!(by_expr("c").fragment_id, "f2");
     assert!(
-        by_expr("b").locals.is_empty(),
+        by_expr("b").bindings.is_empty(),
         "wx:for uses the outer scope"
     );
     assert_eq!(locals(by_expr("a")), vec!["item", "index"]);
@@ -459,7 +464,7 @@ fn components_accept_page_and_component_roots_without_changing_fragments() {
 fn custom_nested_bindings_accumulate_outer_to_inner() {
     let source = r#"<view wx:for="{{ outer }}" wx:for-item="row" wx:for-index="i"><text wx:for="{{ row.children }}">{{ item }}</text></view>"#;
     let (analysis, _) = analyze(source);
-    assert!(fragment(&analysis, "outer", 0).locals.is_empty());
+    assert!(fragment(&analysis, "outer", 0).bindings.is_empty());
     assert_eq!(
         locals(fragment(&analysis, "row.children", 0)),
         vec!["row", "i"]
@@ -521,15 +526,22 @@ fn top_level_mustaches_are_analyzed() {
     assert_eq!(analysis.fragments.len(), 1);
     assert_eq!(analysis.fragments[0].expr_text, "user.name");
     assert_eq!(analysis.fragments[0].target.as_deref(), Some("name"));
-    assert!(analysis.fragments[0].locals.is_empty());
+    assert!(analysis.fragments[0].bindings.is_empty());
 }
 
 #[test]
-fn identical_item_and_index_names_are_deduplicated() {
+fn colliding_item_and_index_names_are_made_distinct() {
     let source =
         r#"<view wx:for="{{ items }}" wx:for-item="value" wx:for-index="value">{{ value }}</view>"#;
     let (analysis, _) = analyze(source);
-    assert_eq!(locals(fragment(&analysis, "value", 0)), vec!["value"]);
+    assert_eq!(
+        locals(fragment(&analysis, "value", 0)),
+        vec!["value", "index"]
+    );
+    assert_eq!(
+        unsupported_count(&analysis, UnsupportedKind::DynamicForBinding),
+        1
+    );
 }
 
 #[test]
@@ -563,7 +575,7 @@ fn fragment_budget_truncates_and_marks_analysis() {
 }
 
 #[test]
-fn deep_scopes_hit_the_fragment_cap_with_bounded_work() {
+fn deep_scopes_stop_at_the_binding_cap_with_bounded_work() {
     let mut source = String::new();
     for level in 0..256 {
         source.push_str("<view wx:for=\"{{ xs }}\" wx:for-item=\"item");
@@ -580,24 +592,26 @@ fn deep_scopes_hit_the_fragment_cap_with_bounded_work() {
     let start = std::time::Instant::now();
     let (analysis, _) = analyze(&source);
     let elapsed = start.elapsed();
-    assert_eq!(analysis.fragments.len(), MAX_FRAGMENTS);
-    assert!(analysis.truncated);
+    // Node rejects a request whose fragment bindings exceed `MAX_BINDINGS`,
+    // which would invalidate the whole document, so the analyzer stops first.
+    assert!(analysis.fragments.len() < MAX_FRAGMENTS);
+    assert!(!analysis.truncated);
     assert_eq!(
         unsupported_count(&analysis, UnsupportedKind::FragmentLimit),
         1
     );
+    let deepest = analysis
+        .fragments
+        .iter()
+        .map(|fragment| fragment.bindings.len())
+        .max()
+        .unwrap_or(0);
+    assert_eq!(deepest, MAX_BINDINGS);
     assert!(
         analysis
             .fragments
             .iter()
-            .all(|fragment| fragment.locals.len() <= 512)
-    );
-    assert!(
-        analysis
-            .fragments
-            .iter()
-            .any(|fragment| fragment.locals.len() > 256),
-        "the cap should be reached deep in the scope stack"
+            .all(|fragment| fragment.bindings.len() <= MAX_BINDINGS)
     );
     // Generous debug bound; the previous implementation took seconds and
     // gigabytes for a smaller input.

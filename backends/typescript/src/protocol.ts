@@ -311,6 +311,18 @@ export interface AnalyzeResponse {
   }>;
   moduleKind: { before: "script" | "module" | "unknown"; after: "script" | "module" | "unknown" };
   suppressed: { count: number; details: Array<{ code: number; message: string }> };
+  /**
+   * Custom-component property binding results (protocol v2). Present only when at
+   * least one usage was checked; each diagnostic carries a WXML byte range.
+   */
+  components?: Array<{
+    tag: string;
+    diagnostics: Array<{
+      range: { start: number; end: number };
+      severity: "error" | "warning";
+      message: string;
+    }>;
+  }>;
 }
 
 export type RequestErrorCode =
@@ -350,17 +362,68 @@ export class RequestError extends Error {
   }
 }
 
-export function totalBytes(files: RequestFile[], fragments: RequestFragment[] = []): number {
+/**
+ * Total payload bytes of a request.
+ *
+ * Every v2 string payload counts, not just file text and fragment expressions:
+ * `bindings[].sourceExpr`, `guards[].conditions[].exprText` and
+ * `components[].attributes[].exprText` are untrusted input and are re-emitted
+ * into the derived view, so they must be bounded by the same budget. Entries are
+ * read defensively because this runs before the detailed validators.
+ */
+export function totalBytes(
+  files: RequestFile[],
+  fragments: RequestFragment[] = [],
+  components: RequestComponentUsage[] = [],
+): number {
   const fileBytes = files.reduce((sum, file) => sum + Buffer.byteLength(file.text, "utf8"), 0);
-  const fragmentBytes = fragments.reduce(
-    (sum, fragment) =>
-      sum +
-      (fragment && typeof fragment === "object" && typeof fragment.exprText === "string"
-        ? Buffer.byteLength(fragment.exprText, "utf8")
-        : 0),
+  const fragmentBytes = fragments.reduce((sum, fragment) => sum + fragmentPayloadBytes(fragment), 0);
+  const componentBytes = (Array.isArray(components) ? components : []).reduce(
+    (sum, usage) => sum + componentPayloadBytes(usage),
     0,
   );
-  return fileBytes + fragmentBytes;
+  return fileBytes + fragmentBytes + componentBytes;
+}
+
+/** UTF-8 bytes of a string field; `0` for anything else. */
+function payloadBytes(value: unknown): number {
+  return typeof value === "string" ? Buffer.byteLength(value, "utf8") : 0;
+}
+
+/** `exprText` plus every structured binding/guard payload of one fragment. */
+function fragmentPayloadBytes(fragment: unknown): number {
+  if (!fragment || typeof fragment !== "object") return 0;
+  const entry = fragment as Partial<RequestFragment>;
+  let bytes = payloadBytes(entry.exprText);
+  const bindings: unknown = entry.bindings;
+  if (Array.isArray(bindings)) {
+    for (const binding of bindings) {
+      bytes += payloadBytes((binding as { sourceExpr?: unknown } | null)?.sourceExpr);
+    }
+  }
+  const guards: unknown = entry.guards;
+  if (Array.isArray(guards)) {
+    for (const chain of guards) {
+      const conditions: unknown = (chain as { conditions?: unknown } | null)?.conditions;
+      if (!Array.isArray(conditions)) continue;
+      for (const condition of conditions) {
+        bytes += payloadBytes((condition as { exprText?: unknown } | null)?.exprText);
+      }
+    }
+  }
+  return bytes;
+}
+
+/** Every bound attribute expression of one component usage. */
+function componentPayloadBytes(usage: unknown): number {
+  if (!usage || typeof usage !== "object") return 0;
+  const attributes: unknown = (usage as { attributes?: unknown }).attributes;
+  if (!Array.isArray(attributes)) return 0;
+  let bytes = 0;
+  for (const attribute of attributes) {
+    bytes += payloadBytes((attribute as { exprText?: unknown } | null)?.exprText);
+  }
+  return bytes;
 }
 
 /** Enforce input bounds before any parsing or language-service work. */
@@ -445,7 +508,7 @@ export function validateRequest(request: AnalyzeRequest): void {
   if (request.files.length > effective.maxFiles) {
     throw new RequestError("too-many-files", `request has ${request.files.length} files, limit ${effective.maxFiles}`);
   }
-  const bytes = totalBytes(request.files, request.fragments);
+  const bytes = totalBytes(request.files, request.fragments, request.components);
   if (bytes > effective.maxTotalBytes) {
     throw new RequestError("too-many-bytes", `request has ${bytes} bytes, limit ${effective.maxTotalBytes}`);
   }
@@ -537,6 +600,13 @@ const LOCAL_ROLES = new Set(["item", "index"]);
 const GUARD_BRANCHES = new Set(["if", "elif", "else"]);
 const ATTRIBUTE_VALUE_KINDS = new Set(["literal", "mustache", "mixed", "boolean"]);
 
+/** Upper bound on one fragment's `wx:for` chain (far above real nesting). */
+const MAX_LOCAL_BINDINGS = 64;
+/** Upper bound on nested conditional chains per fragment. */
+const MAX_GUARD_CHAINS = 32;
+/** Upper bound on conditions in one conditional chain. */
+const MAX_GUARD_CONDITIONS = 64;
+
 /** True for a non-negative byte range with `start <= end`. */
 function isSourceRange(value: unknown): value is { start: number; end: number } {
   if (typeof value !== "object" || value === null) return false;
@@ -552,13 +622,27 @@ function isSourceRange(value: unknown): value is { start: number; end: number } 
   );
 }
 
-/** Validate optional protocol v2 structured `wx:for` bindings. */
+/**
+ * Validate optional protocol v2 structured `wx:for` bindings.
+ *
+ * `bindings` is the full nesting chain, outermost first, `item` then `index` per
+ * level. A name may therefore legitimately repeat across levels (an inner loop
+ * shadows an outer one); only a duplicate inside the *same* level is an error.
+ * The level simulation mirrors `groupLocalLevels` so the validator and the
+ * generator agree on what a chain means.
+ */
 function validateLocalBindings(id: string, bindings: RequestLocalBinding[] | undefined): void {
   if (bindings === undefined) return;
   if (!Array.isArray(bindings)) {
     throw new RequestError("bad-fragment", `fragment ${id}: bindings must be an array`);
   }
-  const seen = new Set<string>();
+  if (bindings.length > MAX_LOCAL_BINDINGS) {
+    throw new RequestError(
+      "bad-fragment",
+      `fragment ${id}: ${bindings.length} bindings exceed the limit of ${MAX_LOCAL_BINDINGS}`,
+    );
+  }
+  const levels: Array<{ item?: string; index?: string }> = [];
   for (const binding of bindings) {
     if (typeof binding !== "object" || binding === null) {
       throw new RequestError("bad-fragment", `fragment ${id}: bindings entries must be objects`);
@@ -566,10 +650,6 @@ function validateLocalBindings(id: string, bindings: RequestLocalBinding[] | und
     if (typeof binding.name !== "string" || !isBindingIdentifier(binding.name)) {
       throw new RequestError("bad-fragment", `fragment ${id}: binding name is not a valid identifier`);
     }
-    if (seen.has(binding.name)) {
-      throw new RequestError("bad-fragment", `fragment ${id}: duplicate binding ${binding.name}`);
-    }
-    seen.add(binding.name);
     if (typeof binding.role !== "string" || !LOCAL_ROLES.has(binding.role)) {
       throw new RequestError("bad-fragment", `fragment ${id}: binding ${binding.name} has an unknown role`);
     }
@@ -579,6 +659,36 @@ function validateLocalBindings(id: string, bindings: RequestLocalBinding[] | und
     if (!isSourceRange(binding.sourceRange)) {
       throw new RequestError("bad-fragment", `fragment ${id}: binding ${binding.name} has an invalid sourceRange`);
     }
+    const current = levels[levels.length - 1];
+    if (binding.role === "item") {
+      if (current && current.item === undefined) {
+        if (current.index === binding.name) {
+          throw new RequestError(
+            "bad-fragment",
+            `fragment ${id}: duplicate binding ${binding.name} at one nesting level`,
+          );
+        }
+        current.item = binding.name;
+      } else {
+        levels.push({ item: binding.name });
+      }
+      continue;
+    }
+    if (!current) {
+      levels.push({ index: binding.name });
+      continue;
+    }
+    if (current.index === undefined) {
+      if (current.item === binding.name) {
+        throw new RequestError(
+          "bad-fragment",
+          `fragment ${id}: duplicate binding ${binding.name} at one nesting level`,
+        );
+      }
+      current.index = binding.name;
+    }
+    // An extra index at a level that already has one is ignored by
+    // `groupLocalLevels`; it is not a name collision, so it is not rejected.
   }
 }
 
@@ -588,9 +698,21 @@ function validateGuardChains(id: string, guards: RequestGuardChain[] | undefined
   if (!Array.isArray(guards)) {
     throw new RequestError("bad-fragment", `fragment ${id}: guards must be an array`);
   }
+  if (guards.length > MAX_GUARD_CHAINS) {
+    throw new RequestError(
+      "bad-fragment",
+      `fragment ${id}: ${guards.length} guard chains exceed the limit of ${MAX_GUARD_CHAINS}`,
+    );
+  }
   for (const chain of guards) {
     if (typeof chain !== "object" || chain === null || !Array.isArray(chain.conditions)) {
       throw new RequestError("bad-fragment", `fragment ${id}: guard chain has no conditions array`);
+    }
+    if (chain.conditions.length > MAX_GUARD_CONDITIONS) {
+      throw new RequestError(
+        "bad-fragment",
+        `fragment ${id}: ${chain.conditions.length} guard conditions exceed the limit of ${MAX_GUARD_CONDITIONS}`,
+      );
     }
     if (
       !Number.isInteger(chain.selected) ||

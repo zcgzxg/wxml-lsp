@@ -127,6 +127,7 @@ export function serve(options: ServerOptions): Promise<void> {
           } catch (error) {
             if (!hasId) return;
             if (error instanceof RequestError) {
+              log(`analyze request rejected: ${error.code}: ${error.message}`);
               writeError(id, -32602, "Invalid params", { code: error.code, message: error.message });
             } else if (error instanceof TypeError) {
               writeError(id, -32602, "Invalid params", { code: "bad-params" });
@@ -141,6 +142,7 @@ export function serve(options: ServerOptions): Promise<void> {
           } catch (error) {
             if (!hasId) return;
             if (error instanceof RequestError) {
+              log(`analyze failed with request error: ${error.code}: ${error.message}`);
               writeError(id, -32602, "Invalid params", { code: error.code, message: error.message });
             } else {
               log(`analyze failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}`);

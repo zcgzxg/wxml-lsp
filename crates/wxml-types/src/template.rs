@@ -2,9 +2,10 @@
 //!
 //! The analyzer walks the `wxml-syntax` AST in source order and produces:
 //!
-//! - [`CheckFragment`]s for every data mustache, with the current `wx:for`
-//!   bindings in `locals`; `bindings` and `guards` are reserved for the
-//!   structured template worktree and stay empty here;
+//! - [`CheckFragment`]s for every data mustache, with the `wx:for` bindings and
+//!   `wx:if` guard chains that are in scope at the mustache;
+//! - [`ComponentUsage`]s for elements whose tag is a configured custom
+//!   component;
 //! - [`EventHandler`]s for static event bindings;
 //! - [`UnsupportedFeature`]s for dynamic events, unresolved expressions and
 //!   template forms that this phase does not analyze.
@@ -17,17 +18,22 @@
 //! - Default bindings are `item` and `index`; `wx:for-item` and
 //!   `wx:for-index` replace them. Nested loops shadow outer bindings and the
 //!   bindings are popped when the element ends.
-//! - `wx:if`/`wx:elif`/`wx:else` expressions are analyzed without changing the
-//!   scope. Narrowing is left to the type backend.
+//! - A `wx:for` whose value is not exactly one parseable mustache binds
+//!   nothing and records [`UnsupportedKind::DynamicForBinding`]; no type is
+//!   guessed.
+//! - Siblings form `wx:if`/`wx:elif`/`wx:else` chains. Text, whitespace,
+//!   comments and mustaches between elements do not break a chain, but any
+//!   other element does. A chain whose condition is dynamic or unparseable is
+//!   not attached to any fragment at all.
 //! - `wx:key` is not a data expression.
 //! - `wxs`, `template`, `import` and `include` are reported and their content
 //!   is not analyzed. These names are matched exactly; `<WXS>` is an ordinary
 //!   element name, matching the syntax crate's raw-text rule.
 //!
 //! Fragment ids are assigned after traversal in source-range order (`f0`,
-//! `f1`, ...), so they stay stable even though `wx:for` is analyzed before
-//! other attributes. Identical expressions in different places remain separate
-//! fragments.
+//! `f1`, ...), so they stay stable even though `wx:for` and guard attributes
+//! are analyzed before other attributes. Identical expressions in different
+//! places remain separate fragments.
 //!
 //! At most [`MAX_FRAGMENTS`] fragments are produced for one document. Beyond
 //! that the analyzer records [`UnsupportedKind::FragmentLimit`], sets
@@ -50,8 +56,9 @@ use wxml_syntax::{
 use wxml_text::{SourceRange, TextRange};
 
 use crate::check::{
-    CheckFragment, EventBindingKind, EventHandler, RootKind, TemplateAnalysis, UnsupportedFeature,
-    UnsupportedKind,
+    AttributeValueKind, CheckFragment, ComponentAttribute, ComponentUsage, EventBindingKind,
+    EventHandler, GuardBranch, GuardChain, GuardCondition, LocalBinding, LocalRole, RootKind,
+    TemplateAnalysis, UnsupportedFeature, UnsupportedKind,
 };
 use crate::contract::SourceRevision;
 
@@ -64,21 +71,58 @@ use crate::contract::SourceRevision;
 /// must not present it as complete.
 pub const MAX_FRAGMENTS: usize = 2048;
 
+/// Maximum `wx:for` bindings (one nesting chain) sent for one fragment.
+///
+/// Mirrors `MAX_LOCAL_BINDINGS` in `backends/typescript/src/protocol.ts`.
+pub const MAX_BINDINGS: usize = 64;
+
+/// Maximum conditions in one `wx:if`/`wx:elif`/`wx:else` chain.
+///
+/// Mirrors `MAX_GUARD_CONDITIONS` in `backends/typescript/src/protocol.ts`.
+pub const MAX_GUARD_CONDITIONS: usize = 64;
+
+/// Maximum nested guard chains applied to one fragment.
+///
+/// Mirrors `MAX_GUARD_CHAINS` in `backends/typescript/src/protocol.ts`.
+pub const MAX_GUARD_CHAINS: usize = 32;
+
+/// Maximum custom-component usages collected for one document.
+///
+/// The request byte budget also bounds the attributes of these usages.
+pub const MAX_COMPONENTS: usize = 512;
+
 /// Reusable configuration for template analysis.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TemplateAnalyzer {
     root: RootKind,
     source_revision: SourceRevision,
+    component_tags: HashSet<String>,
 }
 
 impl TemplateAnalyzer {
     /// Creates an analyzer for one page/component root and source revision.
+    ///
+    /// No custom-component tags are configured; use
+    /// [`TemplateAnalyzer::with_component_tags`] to collect
+    /// [`ComponentUsage`]s for `usingComponents` entries.
     #[must_use]
-    pub const fn new(root: RootKind, source_revision: SourceRevision) -> Self {
+    pub fn new(root: RootKind, source_revision: SourceRevision) -> Self {
         Self {
             root,
             source_revision,
+            component_tags: HashSet::new(),
         }
+    }
+
+    /// Configures the custom-component tags for this analyzer.
+    ///
+    /// Elements whose name is exactly one of `tags` produce a
+    /// [`ComponentUsage`]. Tag matching is case-sensitive and does not include
+    /// built-in WXML components.
+    #[must_use]
+    pub fn with_component_tags(mut self, tags: impl IntoIterator<Item = String>) -> Self {
+        self.component_tags = tags.into_iter().collect();
+        self
     }
 
     /// Returns the configured root kind.
@@ -96,20 +140,25 @@ impl TemplateAnalyzer {
     /// Analyzes a parsed template.
     ///
     /// This is a pure function of the tree and configuration: analyzing the
-    /// same tree twice produces the same fragments, events and unsupported
-    /// records. Fragment output is capped at [`MAX_FRAGMENTS`]; check
-    /// [`TemplateAnalysis::truncated`] before treating the result as complete.
+    /// same tree twice produces the same fragments, components, events and
+    /// unsupported records. Fragment output is capped at [`MAX_FRAGMENTS`];
+    /// check [`TemplateAnalysis::truncated`] before treating the result as
+    /// complete.
     #[must_use]
     pub fn analyze(&self, tree: &SyntaxTree) -> TemplateAnalysis {
         Engine {
             tree,
             root: self.root,
             revision: self.source_revision.get(),
-            locals: Vec::new(),
+            component_tags: &self.component_tags,
+            bindings: Vec::new(),
+            guards: Vec::new(),
             fragments: Vec::new(),
+            components: Vec::new(),
             events: Vec::new(),
             unsupported: Vec::new(),
             truncated: false,
+            components_truncated: false,
         }
         .run()
     }
@@ -129,19 +178,33 @@ struct Engine<'a> {
     tree: &'a SyntaxTree,
     root: RootKind,
     revision: u64,
-    locals: Vec<String>,
+    component_tags: &'a HashSet<String>,
+    bindings: Vec<LocalBinding>,
+    guards: Vec<GuardChain>,
     fragments: Vec<CheckFragment>,
+    components: Vec<ComponentUsage>,
     events: Vec<EventHandler>,
     unsupported: Vec<UnsupportedFeature>,
     truncated: bool,
+    components_truncated: bool,
+}
+
+/// State of one `wx:if`/`wx:elif`/`wx:else` chain while its siblings are
+/// visited.
+enum ChainState {
+    /// No chain is open.
+    Empty,
+    /// A chain is open and its conditions are known.
+    Resolved(GuardChain),
+    /// A chain is open but its condition is dynamic or unparseable, so no
+    /// guard is attached to any sibling of it.
+    Unresolvable,
 }
 
 impl<'a> Engine<'a> {
     fn run(mut self) -> TemplateAnalysis {
-        let document = self.tree.document();
-        for node in document.children() {
-            self.analyze_node(node);
-        }
+        let children: Vec<AstNode<'a>> = self.tree.document().children().collect();
+        self.analyze_children(&children);
         self.finish()
     }
 
@@ -153,30 +216,155 @@ impl<'a> Engine<'a> {
         }
         TemplateAnalysis {
             fragments: self.fragments,
+            components: self.components,
             events: self.events,
             unsupported: self.unsupported,
             truncated: self.truncated,
         }
     }
 
+    /// Visits a container's children as a sibling sequence.
+    ///
+    /// Only elements interact with `wx:if` chains; text, comments and
+    /// mustaches are analyzed in place and leave the open chain untouched.
+    fn analyze_children(&mut self, children: &[AstNode<'a>]) {
+        let mut state = ChainState::Empty;
+        for node in children {
+            let AstNode::Element(element) = *node else {
+                self.analyze_node(*node);
+                continue;
+            };
+            let selected = self.select_guard(&mut state, element);
+            self.analyze_element(element, selected);
+        }
+    }
+
+    /// Advances the sibling guard chain for `element` and returns the chain the
+    /// element's own content belongs to, if any.
+    fn select_guard(&mut self, state: &mut ChainState, element: Element<'a>) -> Option<GuardChain> {
+        match guard_branch(element) {
+            Some(GuardBranch::If) => {
+                let Some(condition) = self.guard_condition(element, GuardBranch::If) else {
+                    self.record_guard_condition(element, GuardBranch::If);
+                    *state = ChainState::Unresolvable;
+                    return None;
+                };
+                let chain = GuardChain {
+                    conditions: vec![condition],
+                    selected: 0,
+                };
+                *state = ChainState::Resolved(chain.clone());
+                Some(chain)
+            }
+            Some(GuardBranch::Elif) => {
+                let ChainState::Resolved(chain) = state else {
+                    *state = ChainState::Unresolvable;
+                    return None;
+                };
+                if chain.conditions.len() >= MAX_GUARD_CONDITIONS {
+                    self.record(UnsupportedKind::FragmentLimit, element.text_range());
+                    *state = ChainState::Unresolvable;
+                    return None;
+                }
+                let Some(condition) = self.guard_condition(element, GuardBranch::Elif) else {
+                    self.record_guard_condition(element, GuardBranch::Elif);
+                    *state = ChainState::Unresolvable;
+                    return None;
+                };
+                chain.conditions.push(condition);
+                chain.selected = chain.conditions.len().saturating_sub(1);
+                Some(chain.clone())
+            }
+            Some(GuardBranch::Else) => {
+                // An `wx:else` has no expression and always closes the chain,
+                // even when the preceding conditions were unresolvable.
+                let selected = match state {
+                    ChainState::Resolved(chain) => {
+                        chain.selected = chain.conditions.len();
+                        Some(chain.clone())
+                    }
+                    _ => None,
+                };
+                *state = ChainState::Empty;
+                selected
+            }
+            None => {
+                *state = ChainState::Empty;
+                None
+            }
+        }
+    }
+
+    /// Records that a conditional chain could not be parsed.
+    ///
+    /// The element keeps its fragments, but they are analyzed without
+    /// narrowing; the record downgrades the view to `Partial` so a missing
+    /// guard is never reported as a clean check.
+    fn record_guard_condition(&mut self, element: Element<'a>, branch: GuardBranch) {
+        if let Some(attribute) = guard_attribute(element, branch) {
+            self.record(UnsupportedKind::MalformedExpression, attribute.text_range());
+        }
+    }
+
     fn analyze_node(&mut self, node: AstNode<'a>) {
         match node {
-            AstNode::Element(element) => self.analyze_element(element),
+            AstNode::Element(element) => self.analyze_element(element, None),
             AstNode::Mustache(mustache) => self.analyze_mustache(mustache),
             _ => {}
         }
     }
 
-    fn analyze_element(&mut self, element: Element<'a>) {
+    fn analyze_element(&mut self, element: Element<'a>, guard: Option<GuardChain>) {
         let name = element.name().unwrap_or_default();
         if let Some(kind) = unsupported_element(name) {
             self.record(kind, element.text_range());
+            return;
+        }
+        if self.guards.len() >= MAX_GUARD_CHAINS {
+            self.record(UnsupportedKind::FragmentLimit, element.text_range());
             return;
         }
         let attributes: Vec<Attribute<'a>> = element.attributes().collect();
         let has_for = attributes
             .iter()
             .any(|attribute| attribute.name() == Some("wx:for"));
+
+        if let Some(attribute) = attributes
+            .iter()
+            .copied()
+            .find(|attribute| attribute.name() == Some("wx:for"))
+        {
+            // The loop expression belongs to the enclosing scope.
+            self.analyze_attribute(attribute);
+        }
+        let bindings = if has_for {
+            self.loop_bindings(&attributes)
+        } else {
+            Vec::new()
+        };
+        if self.bindings.len().saturating_add(bindings.len()) > MAX_BINDINGS {
+            // Node rejects an oversized chain, which would fail the whole
+            // document, so stop before emitting one.
+            self.record(UnsupportedKind::FragmentLimit, element.text_range());
+            return;
+        }
+        let pushed_bindings = bindings.len();
+        for binding in bindings {
+            self.bindings.push(binding);
+        }
+
+        // Guard expressions are conditions of the branch, not fragments inside
+        // it, so they are analyzed before the chain is pushed.
+        for branch in [GuardBranch::If, GuardBranch::Elif] {
+            if let Some(attribute) = guard_attribute(element, branch) {
+                self.analyze_attribute(attribute);
+            }
+        }
+
+        let pushed_guard = guard.is_some();
+        if let Some(guard) = guard {
+            self.guards.push(guard);
+        }
 
         if !has_for {
             for binding_attribute in ["wx:for-item", "wx:for-index"] {
@@ -195,26 +383,19 @@ impl<'a> Engine<'a> {
             }
         }
 
-        if has_for {
-            // The loop expression belongs to the enclosing scope.
-            for attribute in &attributes {
-                if attribute.name() == Some("wx:for") {
-                    self.analyze_attribute(*attribute);
-                }
-            }
-            let item = self.for_binding_name(&attributes, "wx:for-item", "item");
-            let index = self.for_binding_name(&attributes, "wx:for-index", "index");
-            self.locals.push(item);
-            self.locals.push(index);
-        }
-
         for attribute in &attributes {
             let Some(attribute_name) = attribute.name() else {
                 continue;
             };
             if matches!(
                 attribute_name,
-                "wx:for" | "wx:for-item" | "wx:for-index" | "wx:key"
+                "wx:for"
+                    | "wx:for-item"
+                    | "wx:for-index"
+                    | "wx:key"
+                    | "wx:if"
+                    | "wx:elif"
+                    | "wx:else"
             ) {
                 continue;
             }
@@ -227,13 +408,21 @@ impl<'a> Engine<'a> {
             }
         }
 
-        for child in element.children() {
-            self.analyze_node(child);
+        if self.components.len() < MAX_COMPONENTS {
+            self.collect_component(name, &attributes);
+        } else if !self.components_truncated && self.component_tags.contains(name) {
+            self.components_truncated = true;
+            self.record(UnsupportedKind::FragmentLimit, element.text_range());
         }
 
-        if has_for {
-            self.locals.pop();
-            self.locals.pop();
+        let children: Vec<AstNode<'a>> = element.children().collect();
+        self.analyze_children(&children);
+
+        if pushed_guard {
+            self.guards.pop();
+        }
+        for _ in 0..pushed_bindings {
+            self.bindings.pop();
         }
     }
 
@@ -351,18 +540,76 @@ impl<'a> Engine<'a> {
             return;
         };
         let target = target_of(expr, self.tree.text());
-        let locals = self.locals_snapshot();
+        let bindings = self.bindings_snapshot();
+        let guards = self.guards.clone();
         self.fragments.push(CheckFragment {
             fragment_id: String::new(),
             expr_text: expr_text.to_owned(),
             target,
-            locals,
-            bindings: Vec::new(),
-            guards: Vec::new(),
+            bindings,
+            guards,
             wxml_range,
             fragment_revision: self.revision,
             root: self.root,
         });
+    }
+
+    /// Builds the item/index bindings for one `wx:for` element.
+    ///
+    /// Returns an empty list and records [`UnsupportedKind::DynamicForBinding`]
+    /// when the loop value is not exactly one parseable mustache, so no type is
+    /// guessed.
+    fn loop_bindings(&mut self, attributes: &[Attribute<'a>]) -> Vec<LocalBinding> {
+        let Some(attribute) = attributes
+            .iter()
+            .copied()
+            .find(|attribute| attribute.name() == Some("wx:for"))
+        else {
+            return Vec::new();
+        };
+        let Some(value) = attribute.value() else {
+            self.record(UnsupportedKind::DynamicForBinding, attribute.text_range());
+            return Vec::new();
+        };
+        let Some((expr_text, inner)) = single_mustache_source(value) else {
+            self.record(UnsupportedKind::DynamicForBinding, attribute.text_range());
+            return Vec::new();
+        };
+        let Some(source_range) = self.source_range(inner) else {
+            self.record(UnsupportedKind::DynamicForBinding, attribute.text_range());
+            return Vec::new();
+        };
+        let mut item = self.for_binding_name(attributes, "wx:for-item", "item");
+        let mut index = self.for_binding_name(attributes, "wx:for-index", "index");
+        if item == index {
+            // Node's level validator rejects a duplicate item/index pair, so
+            // make the names distinct instead of losing the whole document.
+            let range = attributes
+                .iter()
+                .copied()
+                .find(|candidate| candidate.name() == Some("wx:for-index"))
+                .map_or_else(|| attribute.text_range(), Attribute::text_range);
+            self.record(UnsupportedKind::DynamicForBinding, range);
+            if item == "index" {
+                "item".clone_into(&mut item);
+            } else {
+                "index".clone_into(&mut index);
+            }
+        }
+        vec![
+            LocalBinding {
+                name: item,
+                role: LocalRole::Item,
+                source_expr: expr_text.to_owned(),
+                source_range,
+            },
+            LocalBinding {
+                name: index,
+                role: LocalRole::Index,
+                source_expr: expr_text.to_owned(),
+                source_range,
+            },
+        ]
     }
 
     fn for_binding_name(
@@ -390,15 +637,92 @@ impl<'a> Engine<'a> {
         default.to_owned()
     }
 
-    fn locals_snapshot(&self) -> Vec<String> {
-        let mut seen = HashSet::with_capacity(self.locals.len());
-        let mut unique = Vec::with_capacity(self.locals.len());
-        for name in &self.locals {
-            if seen.insert(name.as_str()) {
-                unique.push(name.clone());
+    /// Returns the full binding stack for one fragment.
+    ///
+    /// The stack is ordered outermost to innermost, with each `wx:for` level
+    /// contributing its item followed by its index. Duplicate names are kept:
+    /// the backend resolves the chain level by level, with inner declarations
+    /// shadowing outer ones, because an inner `source_expr` may depend on the
+    /// outer binding it shadows. Effective, deduplicated names are derived
+    /// separately when serializing the legacy `locals` field.
+    fn bindings_snapshot(&self) -> Vec<LocalBinding> {
+        self.bindings.clone()
+    }
+
+    /// Returns one guard condition from the element's `wx:if`/`wx:elif` value.
+    ///
+    /// Returns `None` when the value is not exactly one closed, complete and
+    /// parseable mustache; the whole chain is then treated as unresolvable.
+    fn guard_condition(&self, element: Element<'a>, branch: GuardBranch) -> Option<GuardCondition> {
+        let attribute = guard_attribute(element, branch)?;
+        let value = attribute.value()?;
+        let (expr_text, inner) = single_mustache_source(value)?;
+        let range = self.source_range(inner)?;
+        Some(GuardCondition {
+            branch,
+            expr_text: expr_text.to_owned(),
+            range,
+        })
+    }
+
+    /// Collects one custom-component usage when `tag` is configured.
+    fn collect_component(&mut self, tag: &str, attributes: &[Attribute<'a>]) {
+        if !self.component_tags.contains(tag) {
+            return;
+        }
+        let mut collected = Vec::new();
+        for attribute in attributes {
+            let Some(name) = attribute.name() else {
+                continue;
+            };
+            if is_component_ignored_attribute(name) {
+                continue;
+            }
+            if let Some(attribute) = self.component_attribute(*attribute) {
+                collected.push(attribute);
             }
         }
-        unique
+        self.components.push(ComponentUsage {
+            tag: tag.to_owned(),
+            component_file: None,
+            attributes: collected,
+        });
+    }
+
+    /// Classifies one attribute of a custom component.
+    fn component_attribute(&self, attribute: Attribute<'a>) -> Option<ComponentAttribute> {
+        let name = attribute.name()?.to_owned();
+        let attribute_range = self.source_range(attribute.text_range())?;
+        let Some(value) = attribute.value() else {
+            return Some(ComponentAttribute {
+                name,
+                value_kind: AttributeValueKind::Boolean,
+                expr_text: None,
+                expr_range: None,
+                attribute_range,
+            });
+        };
+        let (value_kind, expr_text, expr_range) = if value.literal_text().is_some() {
+            (AttributeValueKind::Literal, None, None)
+        } else {
+            match single_mustache(value) {
+                Some(mustache) if mustache_covers_value(mustache, value) => (
+                    AttributeValueKind::Mustache,
+                    Some(mustache.expr_source().to_owned()),
+                    mustache
+                        .inner_range()
+                        .and_then(|range| self.source_range(range)),
+                ),
+                _ => (AttributeValueKind::Mixed, None, None),
+            }
+        };
+        Some(ComponentAttribute {
+            name,
+            value_kind,
+            expr_text,
+            expr_range,
+            attribute_range,
+        })
     }
 
     fn record(&mut self, kind: UnsupportedKind, range: TextRange) {
@@ -428,6 +752,84 @@ fn unsupported_element(name: &str) -> Option<UnsupportedKind> {
         "include" => Some(UnsupportedKind::Include),
         _ => None,
     }
+}
+
+/// Returns the guard branch an element starts, when it has one.
+fn guard_branch(element: Element<'_>) -> Option<GuardBranch> {
+    if element.attribute("wx:if").is_some() {
+        Some(GuardBranch::If)
+    } else if element.attribute("wx:elif").is_some() {
+        Some(GuardBranch::Elif)
+    } else if element.attribute("wx:else").is_some() {
+        Some(GuardBranch::Else)
+    } else {
+        None
+    }
+}
+
+/// Returns the attribute carrying `branch`'s condition expression.
+fn guard_attribute(element: Element<'_>, branch: GuardBranch) -> Option<Attribute<'_>> {
+    let name = match branch {
+        GuardBranch::If => "wx:if",
+        GuardBranch::Elif => "wx:elif",
+        GuardBranch::Else => return None,
+    };
+    element.attribute(name)
+}
+
+/// Returns the value's only child when it is a mustache.
+fn single_mustache(value: AttributeValue<'_>) -> Option<Mustache<'_>> {
+    let mut children = value.children();
+    let AstNode::Mustache(mustache) = children.next()? else {
+        return None;
+    };
+    children.next().is_none().then_some(mustache)
+}
+
+/// Returns the expression text and inner range of a value that is exactly one
+/// closed, complete and parseable mustache.
+fn single_mustache_source(value: AttributeValue<'_>) -> Option<(&str, TextRange)> {
+    let mustache = single_mustache(value)?;
+    if !mustache.is_closed() {
+        return None;
+    }
+    let inner = mustache.inner_range()?;
+    let expr_text = mustache.expr_source();
+    if expr_text.trim().is_empty() || !expression_text_is_complete(expr_text) {
+        return None;
+    }
+    let expr = mustache.expr()?;
+    if expr.walk().any(Expr::is_missing) || expr.range() != inner {
+        return None;
+    }
+    Some((expr_text, inner))
+}
+
+/// Returns `true` when the mustache covers the value between its quotes.
+fn mustache_covers_value(mustache: Mustache<'_>, value: AttributeValue<'_>) -> bool {
+    let range = value.text_range();
+    let quote = u32::from(value.is_quoted());
+    let Some(start) = range.start().checked_add(quote) else {
+        return false;
+    };
+    let Some(end) = range.end().checked_sub(quote) else {
+        return false;
+    };
+    let mustache = mustache.text_range();
+    mustache.start() == start && mustache.end() == end
+}
+
+/// Returns `true` for attributes that a custom component never sees as
+/// properties: `wx:*` directives, event bindings and `slot`.
+fn is_component_ignored_attribute(name: &str) -> bool {
+    name.starts_with("wx:")
+        || name == "slot"
+        || event_attribute(name).is_some()
+        || is_empty_event_attribute(name)
+        || matches!(
+            name,
+            "bind" | "catch" | "capture-bind" | "capture-catch" | "mut-bind"
+        )
 }
 
 const COLON_EVENT_PREFIXES: [(&str, EventBindingKind); 5] = [
@@ -477,8 +879,74 @@ fn is_empty_event_attribute(name: &str) -> bool {
     )
 }
 
+/// Names that Node refuses as template locals.
+///
+/// Mirrors `RESERVED_WORDS` in `backends/typescript/src/expression.ts`
+/// (ECMAScript keywords, strict reserved words, `eval`/`arguments`, and the
+/// global value names `undefined`/`NaN`/`Infinity`). Builtin globals such as
+/// `Math` are intentionally absent: a template local may shadow them.
+/// Rejecting a name here degrades to the default loop names instead of sending
+/// a request that Node rejects as a whole.
+const RESERVED_BINDING_NAMES: [&str; 51] = [
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "enum",
+    "export",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "import",
+    "in",
+    "instanceof",
+    "new",
+    "null",
+    "return",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield",
+    "let",
+    "static",
+    "implements",
+    "interface",
+    "package",
+    "private",
+    "protected",
+    "public",
+    "await",
+    "eval",
+    "arguments",
+    "undefined",
+    "NaN",
+    "Infinity",
+];
+
 /// Returns `true` when a `wx:for` binding name is a valid, non-empty identifier
-/// of at most 64 bytes.
+/// of at most 64 bytes that Node can use as a template local.
+///
+/// Rejects keywords, strict reserved words, global values and the
+/// `__wxml_`/`__WxmlProps_` bridge prefixes, matching Node's
+/// `isBindingIdentifier`.
 fn valid_binding_name(name: &str) -> bool {
     if name.is_empty() || name.len() > 64 {
         return false;
@@ -491,6 +959,9 @@ fn valid_binding_name(name: &str) -> bool {
         return false;
     }
     chars.all(|c| c.is_alphanumeric() || c == '_' || c == '$')
+        && !RESERVED_BINDING_NAMES.contains(&name)
+        && !name.starts_with("__wxml_")
+        && !name.starts_with("__WxmlProps_")
 }
 
 /// Returns the preferred target token for an expression.
@@ -571,13 +1042,43 @@ fn identifier_text(source: &str, range: TextRange) -> Option<String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::assert_is_empty)]
 mod tests {
     use super::{
-        event_attribute, expression_text_is_complete, is_empty_event_attribute, target_of,
-        unsupported_element, valid_binding_name,
+        TemplateAnalysis, TemplateAnalyzer, event_attribute, expression_text_is_complete,
+        is_empty_event_attribute, target_of, unsupported_element, valid_binding_name,
     };
-    use crate::check::{EventBindingKind, UnsupportedKind};
+    use crate::check::{
+        AttributeValueKind, EventBindingKind, GuardBranch, LocalRole, RootKind, UnsupportedKind,
+    };
+    use crate::contract::SourceRevision;
     use wxml_syntax::expr::parse_expression;
+
+    const REVISION: u64 = 1;
+
+    fn analyze(source: &str) -> (TemplateAnalysis, wxml_syntax::SyntaxTree) {
+        let parsed = wxml_syntax::parse(source);
+        let analysis = TemplateAnalyzer::new(RootKind::Page, SourceRevision::new(REVISION))
+            .analyze(&parsed.tree);
+        (analysis, parsed.tree)
+    }
+
+    fn analyze_with_tags(
+        source: &str,
+        tags: &[&str],
+    ) -> (TemplateAnalysis, wxml_syntax::SyntaxTree) {
+        let parsed = wxml_syntax::parse(source);
+        let analysis = TemplateAnalyzer::new(RootKind::Page, SourceRevision::new(REVISION))
+            .with_component_tags(tags.iter().map(|tag| (*tag).to_owned()))
+            .analyze(&parsed.tree);
+        (analysis, parsed.tree)
+    }
+
+    fn text(tree: &wxml_syntax::SyntaxTree, range: wxml_text::SourceRange) -> &str {
+        let start = usize::try_from(range.start()).expect("range start");
+        let end = usize::try_from(range.end()).expect("range end");
+        &tree.text()[start..end]
+    }
 
     #[test]
     fn event_attributes_cover_compact_and_colon_forms() {
@@ -614,6 +1115,23 @@ mod tests {
         let long = "a".repeat(65);
         for name in ["", "1item", "a b", "item.name", "a-b", long.as_str()] {
             assert!(!valid_binding_name(name), "name {name:?}");
+        }
+        for name in [
+            "class",
+            "let",
+            "undefined",
+            "NaN",
+            "Infinity",
+            "eval",
+            "arguments",
+            "__wxml_root",
+            "__WxmlProps_card",
+        ] {
+            assert!(!valid_binding_name(name), "reserved name {name:?}");
+        }
+        // Globals are legal loop names: the rewriter lets a local shadow them.
+        for name in ["Math", "console", "parseInt", "Number"] {
+            assert!(valid_binding_name(name), "global name {name:?}");
         }
     }
 
@@ -685,5 +1203,303 @@ mod tests {
                 "expression {source:?}"
             );
         }
+    }
+
+    #[test]
+    fn loop_bindings_record_roles_and_the_source_expression() {
+        let source = r#"<view wx:for="{{ groups }}">{{ item.name }} {{ index }}</view>"#;
+        let (analysis, tree) = analyze(source);
+        let fragment = analysis
+            .fragments
+            .iter()
+            .find(|fragment| fragment.expr_text == "item.name")
+            .expect("item.name fragment");
+        assert_eq!(fragment.bindings.len(), 2);
+        let item = &fragment.bindings[0];
+        assert_eq!(item.name, "item");
+        assert_eq!(item.role, LocalRole::Item);
+        assert_eq!(item.source_expr, "groups");
+        assert_eq!(text(&tree, item.source_range), "groups");
+        let index = &fragment.bindings[1];
+        assert_eq!(index.name, "index");
+        assert_eq!(index.role, LocalRole::Index);
+        assert_eq!(index.source_expr, "groups");
+        assert_eq!(index.source_range, item.source_range);
+    }
+
+    fn loop_binding_names<'a>(
+        analysis: &'a TemplateAnalysis,
+        expr: &str,
+    ) -> Vec<(&'a str, LocalRole)> {
+        let fragment = analysis
+            .fragments
+            .iter()
+            .find(|fragment| fragment.expr_text == expr)
+            .unwrap_or_else(|| panic!("missing fragment {expr}"));
+        fragment
+            .bindings
+            .iter()
+            .map(|binding| (binding.name.as_str(), binding.role))
+            .collect()
+    }
+
+    #[test]
+    fn reserved_loop_item_names_fall_back_to_item() {
+        let source = r#"<view wx:for="{{ items }}" wx:for-item="class">{{ item }}</view>"#;
+        let (analysis, _) = analyze(source);
+        assert_eq!(
+            loop_binding_names(&analysis, "item"),
+            vec![("item", LocalRole::Item), ("index", LocalRole::Index)]
+        );
+        assert!(
+            analysis
+                .unsupported
+                .iter()
+                .any(|feature| feature.kind() == UnsupportedKind::DynamicForBinding)
+        );
+    }
+
+    #[test]
+    fn bridge_reserved_loop_names_fall_back_to_defaults() {
+        let source = r#"<view wx:for="{{ items }}" wx:for-item="__wxml_root">{{ item }}</view>"#;
+        let (analysis, _) = analyze(source);
+        assert_eq!(
+            loop_binding_names(&analysis, "item"),
+            vec![("item", LocalRole::Item), ("index", LocalRole::Index)]
+        );
+        assert!(
+            analysis
+                .unsupported
+                .iter()
+                .any(|feature| feature.kind() == UnsupportedKind::DynamicForBinding)
+        );
+    }
+
+    #[test]
+    fn colliding_loop_binding_names_are_made_distinct() {
+        let source =
+            r#"<view wx:for="{{ items }}" wx:for-item="x" wx:for-index="x">{{ x }}</view>"#;
+        let (analysis, _) = analyze(source);
+        assert_eq!(
+            loop_binding_names(&analysis, "x"),
+            vec![("x", LocalRole::Item), ("index", LocalRole::Index)]
+        );
+        let collisions = analysis
+            .unsupported
+            .iter()
+            .filter(|feature| feature.kind() == UnsupportedKind::DynamicForBinding)
+            .count();
+        assert_eq!(collisions, 1);
+    }
+
+    #[test]
+    fn custom_loop_names_replace_the_defaults() {
+        let (analysis, _) = analyze(
+            r#"<view wx:for="{{ rows }}" wx:for-item="row" wx:for-index="i">{{ row.name }}</view>"#,
+        );
+        let fragment = analysis
+            .fragments
+            .iter()
+            .find(|fragment| fragment.expr_text == "row.name")
+            .expect("row.name fragment");
+        let names: Vec<(&str, LocalRole)> = fragment
+            .bindings
+            .iter()
+            .map(|binding| (binding.name.as_str(), binding.role))
+            .collect();
+        assert_eq!(
+            names,
+            vec![("row", LocalRole::Item), ("i", LocalRole::Index)]
+        );
+    }
+
+    #[test]
+    fn nested_loop_bindings_shadow_and_pop() {
+        let source = r#"<view wx:for="{{ outer }}">{{ item.name }}<text wx:for="{{ item.children }}">{{ item.name }}</text></view>{{ item.name }}"#;
+        let (analysis, _) = analyze(source);
+        let occurrences: Vec<&crate::check::CheckFragment> = analysis
+            .fragments
+            .iter()
+            .filter(|fragment| fragment.expr_text == "item.name")
+            .collect();
+        assert_eq!(occurrences.len(), 3);
+
+        let outer = occurrences[0];
+        assert_eq!(outer.bindings.len(), 2);
+        assert_eq!(outer.bindings[0].source_expr, "outer");
+
+        let inner = occurrences[1];
+        assert_eq!(
+            inner.bindings.len(),
+            4,
+            "full chain keeps the shadowed outer item"
+        );
+        let chain: Vec<(&str, LocalRole, &str)> = inner
+            .bindings
+            .iter()
+            .map(|binding| {
+                (
+                    binding.name.as_str(),
+                    binding.role,
+                    binding.source_expr.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            chain,
+            vec![
+                ("item", LocalRole::Item, "outer"),
+                ("index", LocalRole::Index, "outer"),
+                ("item", LocalRole::Item, "item.children"),
+                ("index", LocalRole::Index, "item.children"),
+            ]
+        );
+
+        assert!(
+            occurrences[2].bindings.is_empty(),
+            "bindings pop after loop"
+        );
+    }
+
+    #[test]
+    fn guard_chains_select_if_elif_and_else() {
+        let source = r#"<view wx:if="{{ state.loading }}">A{{ a }}</view><view wx:elif="{{ state.ready }}">B{{ b }}</view><view wx:else>C{{ c }}</view>"#;
+        let (analysis, _) = analyze(source);
+        let by_expr = |expr: &str| {
+            analysis
+                .fragments
+                .iter()
+                .find(|fragment| fragment.expr_text == expr)
+                .unwrap_or_else(|| panic!("missing {expr}"))
+        };
+
+        let if_fragment = by_expr("a");
+        assert_eq!(if_fragment.guards.len(), 1);
+        assert_eq!(if_fragment.guards[0].conditions.len(), 1);
+        assert_eq!(if_fragment.guards[0].selected, 0);
+        assert_eq!(if_fragment.guards[0].conditions[0].branch, GuardBranch::If);
+        assert_eq!(
+            if_fragment.guards[0].conditions[0].expr_text,
+            "state.loading"
+        );
+
+        let elif_fragment = by_expr("b");
+        assert_eq!(elif_fragment.guards[0].conditions.len(), 2);
+        assert_eq!(elif_fragment.guards[0].selected, 1);
+        assert_eq!(
+            elif_fragment.guards[0].conditions[1].branch,
+            GuardBranch::Elif
+        );
+
+        let else_fragment = by_expr("c");
+        assert_eq!(else_fragment.guards[0].conditions.len(), 2);
+        assert_eq!(
+            else_fragment.guards[0].selected,
+            else_fragment.guards[0].conditions.len()
+        );
+    }
+
+    #[test]
+    fn nested_guard_chains_stack_outermost_first() {
+        let source =
+            r#"<view wx:if="{{ outer }}"><text wx:if="{{ inner }}">{{ value }}</text></view>"#;
+        let (analysis, _) = analyze(source);
+        let fragment = analysis
+            .fragments
+            .iter()
+            .find(|fragment| fragment.expr_text == "value")
+            .expect("value fragment");
+        assert_eq!(fragment.guards.len(), 2);
+        assert_eq!(fragment.guards[0].conditions[0].expr_text, "outer");
+        assert_eq!(fragment.guards[1].conditions[0].expr_text, "inner");
+    }
+
+    #[test]
+    fn unresolvable_nested_loops_do_not_pop_outer_bindings() {
+        let source = r#"<view wx:for="{{ outer }}"><text wx:for="{{ a }}{{ b }}">{{ item.name }}</text></view>"#;
+        let (analysis, _) = analyze(source);
+        let fragment = analysis
+            .fragments
+            .iter()
+            .find(|fragment| fragment.expr_text == "item.name")
+            .expect("item.name fragment");
+        assert_eq!(fragment.bindings.len(), 2);
+        assert_eq!(fragment.bindings[0].name, "item");
+        assert_eq!(fragment.bindings[0].source_expr, "outer");
+        assert!(
+            analysis
+                .unsupported
+                .iter()
+                .any(|feature| feature.kind() == UnsupportedKind::DynamicForBinding)
+        );
+    }
+
+    #[test]
+    fn unresolvable_guards_attach_no_chain() {
+        let source =
+            r#"<view wx:if="{{ a + }}">{{ x }}</view><view wx:elif="{{ b }}">{{ y }}</view>"#;
+        let (analysis, _) = analyze(source);
+        assert!(!analysis.fragments.is_empty());
+        for fragment in &analysis.fragments {
+            assert!(
+                fragment.guards.is_empty(),
+                "unexpected guard on {:?}",
+                fragment.expr_text
+            );
+        }
+    }
+
+    #[test]
+    fn component_attributes_are_classified_by_value_shape() {
+        let source = r#"<card title="hello" count="{{ total }}" mixed="a{{ b }}" disabled wx:if="{{ ok }}" bindtap="onTap" catch:tap="onCatch" slot="x" />"#;
+        let (analysis, tree) = analyze_with_tags(source, &["card"]);
+        assert_eq!(analysis.components.len(), 1);
+        let usage = &analysis.components[0];
+        assert_eq!(usage.tag, "card");
+        assert_eq!(usage.component_file, None);
+        let names: Vec<&str> = usage
+            .attributes
+            .iter()
+            .map(|attribute| attribute.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["title", "count", "mixed", "disabled"]);
+
+        let title = &usage.attributes[0];
+        assert_eq!(title.value_kind, AttributeValueKind::Literal);
+        assert_eq!(title.expr_text, None);
+        assert_eq!(title.expr_range, None);
+        assert_eq!(text(&tree, title.attribute_range), r#"title="hello""#);
+
+        let count = &usage.attributes[1];
+        assert_eq!(count.value_kind, AttributeValueKind::Mustache);
+        assert_eq!(count.expr_text.as_deref(), Some("total"));
+        assert_eq!(
+            count.expr_range.map(|range| text(&tree, range)),
+            Some("total")
+        );
+
+        let mixed = &usage.attributes[2];
+        assert_eq!(mixed.value_kind, AttributeValueKind::Mixed);
+        assert_eq!(mixed.expr_text, None);
+        assert_eq!(mixed.expr_range, None);
+
+        let disabled = &usage.attributes[3];
+        assert_eq!(disabled.value_kind, AttributeValueKind::Boolean);
+        assert_eq!(disabled.expr_range, None);
+        assert_eq!(text(&tree, disabled.attribute_range), "disabled");
+
+        // Component attribute mustaches are still fragments.
+        assert!(
+            analysis
+                .fragments
+                .iter()
+                .any(|fragment| fragment.expr_text == "total")
+        );
+    }
+
+    #[test]
+    fn unknown_tags_do_not_produce_component_usages() {
+        let (analysis, _) = analyze_with_tags(r#"<view title="x" />"#, &["card"]);
+        assert!(analysis.components.is_empty());
     }
 }

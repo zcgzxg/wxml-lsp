@@ -6,7 +6,11 @@ interface User {
 type State =
   | { kind: 'loading' }
   | { kind: 'ready'; user: User }
-  | { kind: 'error'; /** 错误码 */ code: number };
+  | {
+      kind: 'error';
+      /** 错误码 */
+      code: number;
+    };
 
 Page({
   data: {

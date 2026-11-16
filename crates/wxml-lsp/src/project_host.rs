@@ -21,11 +21,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, PoisonError, RwLock};
 
 use thiserror::Error;
-use wxml_project::{Page, Project, ProjectPath, SourceFile, SourceKind, SourceLimits, UriError};
+use wxml_project::{
+    ComponentTargetKind, Page, Project, ProjectPath, SourceFile, SourceKind, SourceLimits, UriError,
+};
 use wxml_syntax::{ParseErrorKind, ParseResult};
 use wxml_types::{
-    CapabilityStatus, CheckFragment, Diagnostic, DiagnosticSeverity, FileId, ProjectId,
-    ProjectRevision, RootKind, SourceSnapshot, TemplateAnalyzer, UnsupportedKind, ViewRevision,
+    CapabilityStatus, CheckFragment, ComponentUsage, Diagnostic, DiagnosticSeverity, FileId,
+    ProjectId, ProjectRevision, RootKind, SourceSnapshot, TemplateAnalyzer, UnsupportedKind,
+    ViewRevision,
 };
 
 /// Marker used by the synthetic host and the synthetic workspace project.
@@ -182,6 +185,8 @@ pub struct PreparedView {
     pub compiler_options: serde_json::Map<String, serde_json::Value>,
     /// Template fragments in source order.
     pub fragments: Arc<[CheckFragment]>,
+    /// Custom-component usages with resolved local component scripts.
+    pub components: Arc<[ComponentUsage]>,
     /// Absolute project root. Never sent to an LSP client.
     pub project_root: PathBuf,
     /// Parser and template-analyzer diagnostics that must be published even
@@ -302,6 +307,8 @@ struct ViewState {
     script: Option<ProjectPath>,
     script_file: Option<FileId>,
     view_revision: ViewRevision,
+    /// Local `usingComponents` entries: display tag to component base path.
+    components: BTreeMap<String, ProjectPath>,
 }
 
 #[derive(Debug)]
@@ -569,7 +576,10 @@ impl ProjectHost for ProjectState {
         };
 
         let owner = view.owner;
-        let analysis = TemplateAnalyzer::new(owner, snapshot.revision()).analyze(&parsed.tree);
+        let view_components = view.components.clone();
+        let analysis = TemplateAnalyzer::new(owner, snapshot.revision())
+            .with_component_tags(view_components.keys().cloned())
+            .analyze(&parsed.tree);
         let mut hint = None;
         if analysis.truncated {
             merge_hint(
@@ -633,6 +643,7 @@ impl ProjectHost for ProjectState {
                 files: Arc::from(Vec::new()),
                 compiler_options: serde_json::Map::new(),
                 fragments: Arc::from(analysis.fragments),
+                components: Arc::from(Vec::new()),
                 project_root: project.root().to_path_buf(),
                 syntax_diagnostics: syntax,
                 status_hint: Some(CapabilityStatus::Unsupported {
@@ -643,6 +654,8 @@ impl ProjectHost for ProjectState {
         let script_file = view.script_file.clone();
         let view_revision = view.view_revision;
         let project_id = state.project_id.clone();
+        let components =
+            resolve_components(project, &project_id, &view_components, analysis.components);
 
         // The read guard intentionally spans source collection. Caching the
         // SourceSet and shortening this lock is deferred (P7 security M6).
@@ -724,20 +737,6 @@ impl ProjectHost for ProjectState {
                 },
             );
         }
-        if analysis
-            .fragments
-            .iter()
-            .any(|fragment| !fragment.locals.is_empty())
-        {
-            merge_hint(
-                &mut hint,
-                CapabilityStatus::Partial {
-                    reason:
-                        "template locals are bound as any; loop item/index member checks deferred"
-                            .to_owned(),
-                },
-            );
-        }
 
         Ok(PreparedView {
             view_id: format!("{}:{}", path.as_str(), view_revision.get()),
@@ -745,6 +744,7 @@ impl ProjectHost for ProjectState {
             files: Arc::from(files),
             compiler_options,
             fragments: Arc::from(analysis.fragments),
+            components: Arc::from(components),
             project_root: project.root().to_path_buf(),
             syntax_diagnostics: syntax,
             status_hint: hint,
@@ -870,6 +870,7 @@ fn insert_view<T>(
             script,
             script_file,
             view_revision: revision,
+            components: entry.components(),
         },
     );
 }
@@ -877,6 +878,8 @@ fn insert_view<T>(
 trait ViewEntry {
     fn wxml(&self) -> &ProjectPath;
     fn script(&self) -> Option<&ProjectPath>;
+    /// Local `usingComponents` entries: display tag to component base path.
+    fn components(&self) -> BTreeMap<String, ProjectPath>;
 }
 
 impl ViewEntry for Page {
@@ -886,6 +889,21 @@ impl ViewEntry for Page {
 
     fn script(&self) -> Option<&ProjectPath> {
         self.script.as_ref()
+    }
+
+    fn components(&self) -> BTreeMap<String, ProjectPath> {
+        // `PageConfig::iter` already lets page-local entries shadow globals;
+        // only local components have a project path to resolve.
+        self.config
+            .iter()
+            .filter(|(_, component)| component.kind == ComponentTargetKind::Local)
+            .filter_map(|(name, component)| {
+                component
+                    .component
+                    .as_ref()
+                    .map(|path| (name.clone(), path.clone()))
+            })
+            .collect()
     }
 }
 
@@ -897,6 +915,38 @@ impl ViewEntry for wxml_project::Component {
     fn script(&self) -> Option<&ProjectPath> {
         self.script.as_ref()
     }
+
+    fn components(&self) -> BTreeMap<String, ProjectPath> {
+        // `wxml-project` does not expose a `PageConfig` for components, so
+        // component-internal `usingComponents` cannot be resolved here yet.
+        BTreeMap::new()
+    }
+}
+
+/// Resolves template component usages against the project's component table.
+///
+/// Usages whose tag is not a local component, whose component was not
+/// discovered or whose component has no script keep `component_file = None`.
+fn resolve_components(
+    project: &Project,
+    project_id: &ProjectId,
+    view_components: &BTreeMap<String, ProjectPath>,
+    usages: Vec<ComponentUsage>,
+) -> Vec<ComponentUsage> {
+    usages
+        .into_iter()
+        .map(|mut usage| {
+            if let Some(base) = view_components.get(&usage.tag) {
+                if let Some(script) = project
+                    .component(base)
+                    .and_then(|component| component.script.as_ref())
+                {
+                    usage.component_file = FileId::new(project_id.clone(), script.as_str()).ok();
+                }
+            }
+            usage
+        })
+        .collect()
 }
 
 fn dirty_scripts(state: &State, script: &ProjectPath) -> Vec<ProjectPath> {
@@ -1062,6 +1112,7 @@ fn syntax_only_view(
         files: Arc::from(Vec::new()),
         compiler_options: serde_json::Map::new(),
         fragments: Arc::from(Vec::new()),
+        components: Arc::from(Vec::new()),
         project_root: PathBuf::new(),
         syntax_diagnostics: syntax,
         status_hint: Some(CapabilityStatus::Unsupported {
@@ -1185,6 +1236,7 @@ fn filter_compiler_options(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wxml_types::{SnapshotId, SourceRevision};
 
     #[test]
     fn project_id_does_not_contain_the_root_path() {
@@ -1301,6 +1353,32 @@ mod tests {
         assert_eq!(script_kind(&path), "d.ts");
         let path = ProjectPath::new("a.mts").expect("path");
         assert_eq!(script_kind(&path), "ts");
+    }
+
+    #[test]
+    fn pages_resolve_local_using_components_to_component_scripts() {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/component-basic");
+        let root = std::fs::canonicalize(root).expect("fixture root");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open project");
+        let path = ProjectPath::new("pages/index/index.wxml").expect("path");
+        let file = host.file_id(&path).expect("file id");
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(1),
+            r#"<card title="{{ pageTitle }}" />"#,
+        ));
+        let view = host.analysis(&snapshot).expect("analysis");
+        assert_eq!(view.components.len(), 1);
+        let usage = &view.components[0];
+        assert_eq!(usage.tag, "card");
+        assert_eq!(usage.attributes.len(), 1);
+        assert_eq!(usage.attributes[0].name, "title");
+        let component_file = usage.component_file.as_ref().expect("component file");
+        assert_eq!(component_file.path(), "components/card/card.ts");
     }
 
     #[test]

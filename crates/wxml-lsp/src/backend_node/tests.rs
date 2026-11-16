@@ -8,9 +8,9 @@ use serde_json::{Value, json};
 use wxml_text::SourceRange;
 use wxml_types::{
     Backend, BackendEpoch, BackendId, CheckFragment, DefinitionRequest, Diagnostic,
-    DiagnosticSeverity, DiagnosticsRequest, FileId, HoverRequest, MarkupKind, ProjectId,
-    ProjectRevision, RequestContext, RootKind, SnapshotId, SourceRevision, SourceSnapshot,
-    TypeQuality, ViewRevision,
+    DiagnosticSeverity, DiagnosticsRequest, FileId, HoverRequest, LocalBinding, LocalRole,
+    MarkupKind, ProjectId, ProjectRevision, RequestContext, RootKind, SnapshotId, SourceRevision,
+    SourceSnapshot, TypeQuality, ViewRevision,
 };
 
 use super::config::NodeBackendConfig;
@@ -33,13 +33,12 @@ fn file(path: &str) -> FileId {
     FileId::new(project(), path).expect("file")
 }
 
-fn fragment(locals: Vec<String>) -> CheckFragment {
+fn fragment(bindings: Vec<LocalBinding>) -> CheckFragment {
     CheckFragment {
         fragment_id: "f0".to_owned(),
         expr_text: "user.name".to_owned(),
         target: Some("name".to_owned()),
-        locals,
-        bindings: Vec::new(),
+        bindings,
         guards: Vec::new(),
         wxml_range: SourceRange::from_bounds(3, 12).expect("range"),
         fragment_revision: 1,
@@ -47,8 +46,8 @@ fn fragment(locals: Vec<String>) -> CheckFragment {
     }
 }
 
-fn view_without_target(locals: Vec<String>) -> PreparedView {
-    let mut prepared = view(locals);
+fn view_without_target(bindings: Vec<LocalBinding>) -> PreparedView {
+    let mut prepared = view(bindings);
     prepared.target = None;
     prepared.status_hint = Some(CapabilityStatus::Unsupported {
         reason: "no project view".to_owned(),
@@ -56,7 +55,7 @@ fn view_without_target(locals: Vec<String>) -> PreparedView {
     prepared
 }
 
-fn view(locals: Vec<String>) -> PreparedView {
+fn view(bindings: Vec<LocalBinding>) -> PreparedView {
     let script = file(SCRIPT);
     PreparedView {
         view_id: "pages/index/index.wxml:1".to_owned(),
@@ -75,7 +74,8 @@ fn view(locals: Vec<String>) -> PreparedView {
             source_revision: 1,
         }]),
         compiler_options: serde_json::Map::new(),
-        fragments: Arc::from(vec![fragment(locals)]),
+        fragments: Arc::from(vec![fragment(bindings)]),
+        components: Arc::from(Vec::new()),
         project_root: std::path::PathBuf::from("/tmp/project"),
         syntax_diagnostics: Vec::new(),
         status_hint: None,
@@ -553,36 +553,44 @@ fn zero_fragments_do_not_start_node() {
 }
 
 #[test]
-fn locals_make_every_capability_partial() {
+fn bindings_do_not_force_partial_status() {
     let shared = Shared::default();
-    let backend = backend(&shared, StubHost::new(view(vec!["item".to_owned()])));
+    let bindings = vec![
+        LocalBinding {
+            name: "item".to_owned(),
+            role: LocalRole::Item,
+            source_expr: "groups".to_owned(),
+            source_range: SourceRange::from_bounds(100, 106).expect("range"),
+        },
+        LocalBinding {
+            name: "index".to_owned(),
+            role: LocalRole::Index,
+            source_expr: "groups".to_owned(),
+            source_range: SourceRange::from_bounds(100, 106).expect("range"),
+        },
+    ];
+    let backend = backend(&shared, StubHost::new(view(bindings)));
     let context = context();
     let diagnostics = backend
         .diagnostics(DiagnosticsRequest {
             context: context.clone(),
         })
         .expect("diagnostics");
-    assert!(matches!(
-        diagnostics.status,
-        CapabilityStatus::Partial { .. }
-    ));
+    assert!(diagnostics.status.is_supported());
     let hover = backend
         .hover(HoverRequest {
             context: context.clone(),
             offset: 10,
         })
         .expect("hover");
-    assert!(matches!(hover.status, CapabilityStatus::Partial { .. }));
+    assert!(hover.status.is_supported());
     let definition = backend
         .definition(DefinitionRequest {
             context,
             offset: 10,
         })
         .expect("definition");
-    assert!(matches!(
-        definition.status,
-        CapabilityStatus::Partial { .. }
-    ));
+    assert!(definition.status.is_supported());
 }
 
 fn many_definitions(shared: &Shared, host: StubHost, distinct: bool) -> NodeBackend {

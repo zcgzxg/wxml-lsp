@@ -2,9 +2,9 @@
 //!
 //! These types describe the template fragments that the engine sends to a type
 //! backend. They deliberately contain only data: expression text, the preferred
-//! target token, the template-scope bindings, the original WXML byte range and
-//! identity/version fields. The backend decides how to prefix roots and what
-//! types the expression has.
+//! target token, the template-scope bindings, the enclosing `wx:if` guard
+//! chains, the original WXML byte range and identity/version fields. The
+//! backend decides how to prefix roots and what types the expression has.
 //!
 //! Fragment ids are assigned by [`crate::template`] in source order (`f0`,
 //! `f1`, ...). They do not depend on expression text, so the same expression
@@ -174,12 +174,12 @@ pub struct ComponentUsage {
 /// One expression that a type backend should analyze.
 ///
 /// `wxml_range` covers the trimmed expression inside `{{ ... }}`. `expr_text` is
-/// exactly the same source slice; `locals` lists the template bindings that were
-/// in scope at the mustache so the backend can avoid rooting them.
+/// exactly the same source slice; `bindings` lists the `wx:for` bindings that
+/// were in scope at the mustache so the backend can avoid rooting them.
 ///
-/// `bindings` and `guards` are the structured successors of `locals` and the
-/// future `wx:if` narrowing input. They are present so the C1 protocol and the
-/// backends agree on the shape before the template analyzer fills them.
+/// `guards` describes the enclosing `wx:if`/`wx:elif`/`wx:else` chains. Both
+/// fields are plain data: the template analyzer fills them, the C1 protocol
+/// forwards them and the backend decides how they narrow types.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CheckFragment {
     /// Stable fragment identity within this template revision, for example
@@ -191,11 +191,13 @@ pub struct CheckFragment {
     /// `user.name`. `None` lets the backend use its default (the first
     /// identifier).
     pub target: Option<String>,
-    /// Template binding names in scope, outermost first and deduplicated.
+    /// Structured `wx:for` bindings in scope, outermost first, item then index
+    /// for each loop level.
     ///
-    /// Kept for C1.1 compatibility; [`Self::bindings`] is the structured form.
-    pub locals: Vec<String>,
-    /// Structured `wx:for` bindings in scope, outermost first.
+    /// Duplicate names are kept: an inner level may shadow an outer binding
+    /// that its `source_expr` still depends on, so a backend must resolve the
+    /// chain in order with inner declarations winning. Consumers that need
+    /// effective names must dedupe by name.
     pub bindings: Vec<LocalBinding>,
     /// Enclosing `wx:if`/`wx:elif`/`wx:else` chains, outermost first.
     pub guards: Vec<GuardChain>,
@@ -442,6 +444,8 @@ impl UnsupportedFeature {
 pub struct TemplateAnalysis {
     /// Fragments in source order with ids `f0`, `f1`, ...
     pub fragments: Vec<CheckFragment>,
+    /// Custom-component usages in traversal order.
+    pub components: Vec<ComponentUsage>,
     /// Static event handlers in traversal order.
     pub events: Vec<EventHandler>,
     /// Constructs that were skipped, in traversal order.
@@ -458,11 +462,12 @@ pub struct TemplateAnalysis {
 }
 
 impl TemplateAnalysis {
-    /// Returns `true` when the template produced no fragments, events or
-    /// unsupported records.
+    /// Returns `true` when the template produced no fragments, component
+    /// usages, events or unsupported records.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.fragments.is_empty()
+            && self.components.is_empty()
             && self.events.is_empty()
             && self.unsupported.is_empty()
             && !self.truncated

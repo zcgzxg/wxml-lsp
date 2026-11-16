@@ -17,12 +17,15 @@ use super::protocol::{PROTOCOL_VERSION, ProtocolError};
 use super::request::FragmentInfo;
 use crate::project_host::{PreparedView, ProjectHost};
 
-/// Reason used for fragments with C1.1 template locals.
-pub(crate) const LOCALS_REASON: &str =
-    "template locals are bound as any; loop item/index member checks deferred";
+/// Reason attached when component diagnostics were truncated.
+pub(crate) const COMPONENT_DIAGNOSTICS_TRUNCATED_REASON: &str =
+    "component diagnostics were truncated";
 
 /// Maximum definition targets returned for one request.
 pub(crate) const MAX_DEFINITION_LOCATIONS: usize = 32;
+
+/// Maximum component diagnostics accepted in one response.
+pub(crate) const MAX_COMPONENT_DIAGNOSTICS: usize = 128;
 
 /// Maximum fragments accepted in one response.
 pub(crate) const MAX_RESPONSE_FRAGMENTS: usize = 4_096;
@@ -50,11 +53,18 @@ pub(crate) struct AnalyzeResponse {
     pub insertions: Vec<Insertion>,
     /// Per-fragment results.
     pub fragments: Vec<FragmentResult>,
+    /// Per-component diagnostic results.
+    pub components: Vec<ComponentResult>,
     /// Diagnostics or fragments were dropped at the configured entry limits.
     ///
     /// The mapping functions downgrade every capability to `Partial` so a
     /// truncated response is never reported as a complete check.
     pub truncated: bool,
+    /// The component diagnostic budget was exhausted.
+    ///
+    /// Tracked separately so `diagnostics()` can report a component-specific,
+    /// path-free partial reason.
+    pub components_truncated: bool,
     /// The insertion array exceeded [`MAX_RESPONSE_INSERTIONS`].
     ///
     /// Revisions cannot be validated for dropped insertions, so such a
@@ -89,9 +99,12 @@ impl<'de> Visitor<'de> for AnalyzeResponseVisitor {
         let mut states = None;
         let mut insertions = Vec::new();
         let mut fragments = Vec::new();
+        let mut components = Vec::new();
         let mut truncated = false;
         let mut insertions_overflow = false;
+        let mut components_truncated = false;
         let mut remaining_diagnostics = MAX_RESPONSE_DIAGNOSTICS;
+        let mut remaining_component_diagnostics = MAX_COMPONENT_DIAGNOSTICS;
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
                 "protocolVersion" => protocol_version = Some(map.next_value()?),
@@ -111,6 +124,12 @@ impl<'de> Visitor<'de> for AnalyzeResponseVisitor {
                         truncated: &mut truncated,
                     })?;
                 }
+                "components" => {
+                    components = map.next_value_seed(ComponentsSeed {
+                        remaining: &mut remaining_component_diagnostics,
+                        truncated: &mut components_truncated,
+                    })?;
+                }
                 _ => {
                     map.next_value::<IgnoredAny>()?;
                 }
@@ -123,7 +142,9 @@ impl<'de> Visitor<'de> for AnalyzeResponseVisitor {
             states: states.ok_or_else(|| de::Error::missing_field("states"))?,
             insertions,
             fragments,
+            components,
             truncated,
+            components_truncated,
             insertions_overflow,
         })
     }
@@ -344,6 +365,158 @@ impl<'de> Visitor<'de> for DiagnosticsVisitor<'_> {
     }
 }
 
+struct ComponentsSeed<'a> {
+    remaining: &'a mut usize,
+    truncated: &'a mut bool,
+}
+
+impl<'de> DeserializeSeed<'de> for ComponentsSeed<'_> {
+    type Value = Vec<ComponentResult>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(ComponentsVisitor {
+            remaining: self.remaining,
+            truncated: self.truncated,
+        })
+    }
+}
+
+struct ComponentsVisitor<'a> {
+    remaining: &'a mut usize,
+    truncated: &'a mut bool,
+}
+
+impl<'de> Visitor<'de> for ComponentsVisitor<'_> {
+    type Value = Vec<ComponentResult>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a list of component results")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut components = Vec::new();
+        while let Some(component) = seq.next_element_seed(ComponentSeed {
+            remaining: &mut *self.remaining,
+            truncated: &mut *self.truncated,
+        })? {
+            components.push(component);
+        }
+        Ok(components)
+    }
+}
+
+struct ComponentSeed<'a> {
+    remaining: &'a mut usize,
+    truncated: &'a mut bool,
+}
+
+impl<'de> DeserializeSeed<'de> for ComponentSeed<'_> {
+    type Value = ComponentResult;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_map(ComponentVisitor {
+            remaining: self.remaining,
+            truncated: self.truncated,
+        })
+    }
+}
+
+struct ComponentVisitor<'a> {
+    remaining: &'a mut usize,
+    truncated: &'a mut bool,
+}
+
+impl<'de> Visitor<'de> for ComponentVisitor<'_> {
+    type Value = ComponentResult;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a component result")
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut tag = None;
+        let mut diagnostics = Vec::new();
+        while let Some(key) = map.next_key::<String>()? {
+            match key.as_str() {
+                "tag" => tag = Some(map.next_value()?),
+                "diagnostics" => {
+                    diagnostics = map.next_value_seed(ComponentDiagnosticsSeed {
+                        remaining: &mut *self.remaining,
+                        truncated: &mut *self.truncated,
+                    })?;
+                }
+                _ => {
+                    map.next_value::<IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(ComponentResult {
+            tag: tag.ok_or_else(|| de::Error::missing_field("tag"))?,
+            diagnostics,
+        })
+    }
+}
+
+struct ComponentDiagnosticsSeed<'a> {
+    remaining: &'a mut usize,
+    truncated: &'a mut bool,
+}
+
+impl<'de> DeserializeSeed<'de> for ComponentDiagnosticsSeed<'_> {
+    type Value = Vec<ComponentDiagnosticWire>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        deserializer.deserialize_seq(ComponentDiagnosticsVisitor {
+            remaining: self.remaining,
+            truncated: self.truncated,
+        })
+    }
+}
+
+struct ComponentDiagnosticsVisitor<'a> {
+    remaining: &'a mut usize,
+    truncated: &'a mut bool,
+}
+
+impl<'de> Visitor<'de> for ComponentDiagnosticsVisitor<'_> {
+    type Value = Vec<ComponentDiagnosticWire>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("a list of component diagnostics")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut diagnostics = Vec::new();
+        while let Some(diagnostic) = seq.next_element::<ComponentDiagnosticWire>()? {
+            if *self.remaining == 0 {
+                *self.truncated = true;
+                continue;
+            }
+            *self.remaining -= 1;
+            diagnostics.push(diagnostic);
+        }
+        Ok(diagnostics)
+    }
+}
+
 /// Per-capability statuses.
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct CapabilityStates {
@@ -414,6 +587,34 @@ pub(crate) struct DiagnosticWire {
     /// Attribution enum.
     #[serde(default)]
     pub attribution: String,
+}
+
+/// Diagnostics for one custom-component usage.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ComponentResult {
+    /// Component tag as written in the template.
+    #[allow(dead_code)] // protocol field; diagnostics are not attributed by tag
+    pub tag: String,
+    /// Diagnostics for this usage.
+    #[serde(default)]
+    pub diagnostics: Vec<ComponentDiagnosticWire>,
+}
+
+/// One component-level diagnostic.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ComponentDiagnosticWire {
+    /// WXML byte range; a diagnostic without one is skipped instead of
+    /// rejecting the whole response.
+    #[serde(default)]
+    pub range: Option<WireRange>,
+    /// Optional severity; anything other than `warning` is an error.
+    #[serde(default)]
+    pub severity: Option<String>,
+    /// Message.
+    #[serde(default)]
+    pub message: String,
 }
 
 /// Definition payload.
@@ -572,10 +773,7 @@ pub(crate) fn hover(
     request_fragments: &BTreeMap<String, FragmentInfo>,
     offset: u32,
 ) -> HoverResult {
-    let status = truncated_status(
-        status_for(&response.states.hover, view, request_fragments),
-        response.truncated,
-    );
+    let status = truncated_status(status_for(&response.states.hover, view), response.truncated);
     let mut found = None;
     for fragment in &response.fragments {
         let Some(info) = request_fragments.get(&fragment.fragment_id) else {
@@ -643,10 +841,9 @@ pub(crate) fn diagnostics(
     response: &AnalyzeResponse,
     view: &PreparedView,
     snapshot: &SourceSnapshot,
-    request_fragments: &BTreeMap<String, FragmentInfo>,
 ) -> DiagnosticsResult {
     let status = truncated_status(
-        status_for(&response.states.diagnostics, view, request_fragments),
+        status_for(&response.states.diagnostics, view),
         response.truncated,
     );
     if matches!(status, CapabilityStatus::Disabled { .. }) {
@@ -658,6 +855,7 @@ pub(crate) fn diagnostics(
     }
     let mut mapped = view.syntax_diagnostics.clone();
     let mut seen = HashSet::new();
+    let mut seen_messages = HashSet::new();
     for fragment in &response.fragments {
         for diagnostic in &fragment.diagnostics {
             if diagnostic.attribution == "unattributable" {
@@ -673,6 +871,11 @@ pub(crate) fn diagnostics(
                 continue;
             };
             if seen.insert((diagnostic.code, validated.start(), validated.end())) {
+                seen_messages.insert((
+                    diagnostic.message.clone(),
+                    validated.start(),
+                    validated.end(),
+                ));
                 mapped.push(Diagnostic {
                     range: validated,
                     severity: DiagnosticSeverity::Error,
@@ -681,6 +884,44 @@ pub(crate) fn diagnostics(
             }
         }
     }
+    for component in &response.components {
+        for diagnostic in &component.diagnostics {
+            let Some(range) = diagnostic
+                .range
+                .as_ref()
+                .and_then(|range| range.source_range())
+            else {
+                continue;
+            };
+            let Ok(text_range) = TextRange::new(range.start(), range.end()) else {
+                continue;
+            };
+            let Some(validated) = snapshot.source_range(text_range) else {
+                continue;
+            };
+            if !seen_messages.insert((
+                diagnostic.message.clone(),
+                validated.start(),
+                validated.end(),
+            )) {
+                continue;
+            }
+            mapped.push(Diagnostic {
+                range: validated,
+                severity: if diagnostic.severity.as_deref() == Some("warning") {
+                    DiagnosticSeverity::Warning
+                } else {
+                    DiagnosticSeverity::Error
+                },
+                message: diagnostic.message.clone(),
+            });
+        }
+    }
+    let status = if response.components_truncated {
+        force_partial_reason(status, COMPONENT_DIAGNOSTICS_TRUNCATED_REASON)
+    } else {
+        status
+    };
     DiagnosticsResult {
         diagnostics: mapped,
         status,
@@ -696,7 +937,7 @@ pub(crate) fn definition(
     host: &dyn ProjectHost,
 ) -> DefinitionResult {
     let mut status = truncated_status(
-        status_for(&response.states.definition, view, request_fragments),
+        status_for(&response.states.definition, view),
         response.truncated,
     );
     let mut locations = Vec::new();
@@ -766,30 +1007,8 @@ pub(crate) fn definition(
     DefinitionResult { locations, status }
 }
 
-/// Returns whether any request fragment carries template locals.
-pub(crate) fn has_locals(fragments: &BTreeMap<String, FragmentInfo>) -> bool {
-    fragments
-        .values()
-        .any(|fragment| !fragment.locals.is_empty())
-}
-
-fn status_for(
-    base: &CapabilityStatus,
-    view: &PreparedView,
-    fragments: &BTreeMap<String, FragmentInfo>,
-) -> CapabilityStatus {
-    let mut status = merge_status(base.clone(), view.status_hint.as_ref());
-    if has_locals(fragments) {
-        status = match status {
-            CapabilityStatus::Disabled { .. }
-            | CapabilityStatus::Unsupported { .. }
-            | CapabilityStatus::Unavailable { .. } => status,
-            _ => CapabilityStatus::Partial {
-                reason: LOCALS_REASON.to_owned(),
-            },
-        };
-    }
-    status
+fn status_for(base: &CapabilityStatus, view: &PreparedView) -> CapabilityStatus {
+    merge_status(base.clone(), view.status_hint.as_ref())
 }
 
 fn merge_status(base: CapabilityStatus, hint: Option<&CapabilityStatus>) -> CapabilityStatus {
@@ -864,6 +1083,9 @@ fn quality(value: &str) -> TypeQuality {
 #[cfg(test)]
 mod tests {
     use std::fmt::Write as _;
+    use std::sync::Arc;
+
+    use wxml_types::{FileId, ProjectId, SnapshotId, SourceRevision};
 
     use super::*;
 
@@ -1059,5 +1281,114 @@ mod tests {
         let response = parse(line, "r1", 7).expect("v2 response");
         assert_eq!(response.fragments.len(), 1);
         assert_eq!(response.fragments[0].fragment_id, "f0");
+        assert_eq!(response.components.len(), 1);
+        assert_eq!(response.components[0].tag, "card");
+    }
+
+    fn envelope_with_components(components: &serde_json::Value) -> String {
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": "r1",
+            "result": {
+                "protocolVersion": 2,
+                "requestId": "r1",
+                "states": {
+                    "hover": {"status": "supported"},
+                    "diagnostics": {"status": "supported"},
+                    "definition": {"status": "supported"}
+                },
+                "insertions": [{"viewRevision": 1}],
+                "fragments": [],
+                "components": components
+            }
+        })
+        .to_string()
+    }
+
+    fn prepared_view() -> PreparedView {
+        PreparedView {
+            view_id: "pages/index/index.wxml:1".to_owned(),
+            target: None,
+            files: Arc::from(Vec::new()),
+            compiler_options: serde_json::Map::new(),
+            fragments: Arc::from(Vec::new()),
+            components: Arc::from(Vec::new()),
+            project_root: std::path::PathBuf::new(),
+            syntax_diagnostics: Vec::new(),
+            status_hint: None,
+        }
+    }
+
+    fn snapshot() -> SourceSnapshot {
+        SourceSnapshot::new(
+            FileId::new(ProjectId::new("p"), "pages/index/index.wxml").expect("file"),
+            SourceRevision::new(1),
+            SnapshotId::new(1),
+            "{{ user.name }}",
+        )
+    }
+
+    #[test]
+    fn component_diagnostics_are_mapped_with_severity() {
+        let line = envelope_with_components(&serde_json::json!([
+            {
+                "tag": "card",
+                "diagnostics": [
+                    {"range": {"start": 3, "end": 8}, "message": "expects string", "severity": "error"},
+                    {"range": {"start": 3, "end": 8}, "message": "soft", "severity": "warning"}
+                ]
+            }
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("component response");
+        let result = diagnostics(&response, &prepared_view(), &snapshot());
+        assert_eq!(result.diagnostics.len(), 2);
+        assert_eq!(result.diagnostics[0].severity, DiagnosticSeverity::Error);
+        assert_eq!(result.diagnostics[1].severity, DiagnosticSeverity::Warning);
+        assert_eq!(result.diagnostics[1].message, "soft");
+        assert!(result.status.is_supported());
+    }
+
+    #[test]
+    fn component_diagnostics_dedupe_and_drop_invalid_ranges() {
+        let line = envelope_with_components(&serde_json::json!([
+            {
+                "tag": "card",
+                "diagnostics": [
+                    {"range": {"start": 3, "end": 8}, "message": "dupe"},
+                    {"range": {"start": 3, "end": 8}, "message": "dupe"},
+                    {"range": {"start": 900, "end": 901}, "message": "outside"}
+                ]
+            }
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("component response");
+        let result = diagnostics(&response, &prepared_view(), &snapshot());
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].message, "dupe");
+    }
+
+    #[test]
+    fn component_diagnostic_truncation_forces_partial() {
+        let entries = (0..=MAX_COMPONENT_DIAGNOSTICS)
+            .map(|_| {
+                serde_json::json!({
+                    "range": {"start": 3, "end": 8},
+                    "message": "x"
+                })
+            })
+            .collect::<Vec<_>>();
+        let line = envelope_with_components(&serde_json::json!([
+            {"tag": "card", "diagnostics": entries}
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("truncated component response");
+        assert!(response.components_truncated);
+        assert_eq!(
+            response.components[0].diagnostics.len(),
+            MAX_COMPONENT_DIAGNOSTICS
+        );
+        let result = diagnostics(&response, &prepared_view(), &snapshot());
+        let CapabilityStatus::Partial { reason } = result.status else {
+            panic!("expected partial");
+        };
+        assert_eq!(reason, COMPONENT_DIAGNOSTICS_TRUNCATED_REASON);
     }
 }
