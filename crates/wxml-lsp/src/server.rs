@@ -9,7 +9,9 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::thread;
 
 use thiserror::Error;
-use wxml_types::{Backend, BackendCapabilities, BackendEpoch, BackendId, CapabilityStatus};
+use wxml_types::{
+    Backend, BackendCapabilities, BackendEpoch, BackendId, CapabilityStatus, Diagnostic,
+};
 
 use crate::jsonrpc::{self, FrameError, Incoming, Outgoing, RequestKey};
 use crate::project_host::{NullHost, ProjectHost};
@@ -117,6 +119,22 @@ pub(crate) struct Server {
     /// Their route is `Unknown`, so the URI extension alone cannot tell a
     /// template from another language (for example `untitled:` buffers).
     pub(crate) synthetic_templates: HashSet<String>,
+    /// Last backend diagnostics for one document, keyed by client URI.
+    ///
+    /// Style changes refresh only the local diagnostics; the cached backend
+    /// set is re-published with them when the document snapshot is unchanged.
+    pub(crate) backend_diagnostics: HashMap<String, CachedDiagnostics>,
+}
+
+/// Backend diagnostics cached for local style refreshes.
+#[derive(Clone, Debug)]
+pub(crate) struct CachedDiagnostics {
+    /// Full analysis stamp the result belongs to.
+    pub(crate) stamp: crate::workspace::AnalysisStamp,
+    /// Backend diagnostics without local style/resource diagnostics.
+    pub(crate) diagnostics: Vec<Diagnostic>,
+    /// Backend check status.
+    pub(crate) status: CapabilityStatus,
 }
 
 impl Server {
@@ -157,6 +175,7 @@ impl Server {
             clean_shutdown: false,
             client_watched_files: false,
             synthetic_templates: HashSet::new(),
+            backend_diagnostics: HashMap::new(),
         }
     }
 
@@ -1217,6 +1236,7 @@ mod tests {
                     range: SourceRange::from_bounds(3, 7).expect("range"),
                     severity: DiagnosticSeverity::Error,
                     message: "bad".to_owned(),
+                    code: None,
                 }],
                 status: CapabilityStatus::Supported,
             },
@@ -1251,6 +1271,7 @@ mod tests {
                     range: SourceRange::from_bounds(0, 1).expect("range"),
                     severity: DiagnosticSeverity::Error,
                     message: dirty,
+                    code: None,
                 }],
                 status: CapabilityStatus::Supported,
             },
@@ -2224,6 +2245,7 @@ mod tests {
                     range: SourceRange::from_bounds(0, 1).expect("range"),
                     severity: DiagnosticSeverity::Error,
                     message: "syntax".to_owned(),
+                    code: None,
                 }],
                 status: CapabilityStatus::Unavailable {
                     reason: "type backend unavailable".to_owned(),

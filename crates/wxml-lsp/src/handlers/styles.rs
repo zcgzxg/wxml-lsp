@@ -168,18 +168,20 @@ fn class_hover_value(
     for definition in definitions.iter().take(MAX_HOVER_DEFINITIONS) {
         let mut location = format!(
             "`{}` ({})",
-            markdown_escape(definition.file.as_str()),
+            markdown_escape(definition.file().as_str()),
             markdown_escape(&scope_label(definition))
         );
-        if let Some((line, column)) = targets.position(&definition.file, definition.range.start()) {
+        if let Some((line, column)) =
+            targets.position(definition.file(), definition.range().start())
+        {
             let _ = write!(location, ":{line}:{column}");
         }
         lines.push(format!("- {location}"));
         lines.push(format!(
             "  selector `{}`",
-            markdown_escape(&definition.selector)
+            markdown_escape(definition.selector())
         ));
-        if let Some(comment) = definition.comment.as_ref() {
+        if let Some(comment) = definition.comment() {
             lines.push(format!(
                 "  {}",
                 markdown_escape(&code_text(comment, MAX_HOVER_COMMENT_BYTES))
@@ -247,7 +249,7 @@ fn local_definition_locations(
             .into_iter()
             .take(MAX_LOCAL_DEFINITIONS)
         {
-            if let Some(location) = targets.location(&definition.file, definition.range) {
+            if let Some(location) = targets.location(definition.file(), definition.range()) {
                 locations.push(location);
             }
         }
@@ -258,6 +260,9 @@ fn local_definition_locations(
     let ResourceResolution::File(target) = resolution else {
         return Some(empty_links());
     };
+    if !site.kind.accepts(&target) {
+        return Some(empty_links());
+    }
     let mut targets = Targets::new(server);
     let Ok(offset) = SourceRange::from_bounds(0, 0) else {
         return Some(empty_links());
@@ -339,10 +344,10 @@ impl Server {
         let mut seen = HashSet::new();
         let mut truncated = false;
         for (order, class) in facts.classes.iter().enumerate() {
-            if !seen.insert(class.name.as_str()) {
+            if !seen.insert(class.name()) {
                 continue;
             }
-            if site.existing.contains(&class.name) || !class.name.starts_with(&site.prefix) {
+            if site.existing.contains(class.name()) || !class.name().starts_with(&site.prefix) {
                 continue;
             }
             if items.len() >= wxml_types::MAX_COMPLETION_ITEMS {
@@ -350,17 +355,17 @@ impl Server {
                 break;
             }
             let mut item = json!({
-                "label": class.name,
+                "label": class.name(),
                 "kind": 7,
-                "detail": format!("{} ({})", class.file.as_str(), scope_label(class)),
-                "filterText": class.name,
-                "sortText": format!("{order:04}_{}", class.name),
+                "detail": format!("{} ({})", class.file().as_str(), scope_label(class)),
+                "filterText": class.name(),
+                "sortText": format!("{order:010}_{}", class.name()),
                 "textEdit": {
                     "range": replace,
-                    "newText": class.name,
+                    "newText": class.name(),
                 },
             });
-            if let Some(comment) = class.comment.as_ref() {
+            if let Some(comment) = class.comment() {
                 if let Some(object) = item.as_object_mut() {
                     object.insert(
                         "documentation".to_owned(),
@@ -388,9 +393,7 @@ impl Server {
         let Site::AttributeValue { tag, attribute, .. } = &detected.site else {
             return None;
         };
-        if !styles::is_resource_attribute(tag, attribute) {
-            return None;
-        }
+        let kind = styles::resource_attribute(tag, attribute)?;
         let (value, quote) = styles::value_bounds(text, offset, detected)?;
         let value_start = usize::try_from(value.start()).ok()?;
         let cursor = usize::try_from(offset).ok()?;
@@ -402,6 +405,10 @@ impl Server {
         let replace = source_range_value(document, SourceRange::new(value))?;
         let mut items = Vec::new();
         for candidate in &candidates.items {
+            if candidate.kind == wxml_project::ResourceKind::File && !kind.accepts(&candidate.path)
+            {
+                continue;
+            }
             if let Some(quote) = quote {
                 if candidate
                     .insert
@@ -418,14 +425,14 @@ impl Server {
             } else {
                 format!("\"{}\"", candidate.insert)
             };
-            let (kind, category) = match candidate.kind {
+            let (item_kind, category) = match candidate.kind {
                 wxml_project::ResourceKind::Directory => (19, 0),
                 wxml_project::ResourceKind::File => (17, 1),
             };
             items.push(json!({
                 "label": candidate.label,
-                "kind": kind,
-                "detail": if category == 0 { "Directory" } else { "File" },
+                "kind": item_kind,
+                "detail": if category == 0 { "Directory" } else { kind.label() },
                 "filterText": candidate.label,
                 "sortText": format!("{category}_{}", candidate.label),
                 "textEdit": {
@@ -478,12 +485,21 @@ impl Server {
         let text = document.text();
         let mut links = Vec::new();
         let mut seen = HashSet::new();
-        for site in styles::resource_sites(text) {
+        let mut resolutions = 0_usize;
+        for site in styles::resource_sites(text, styles::MAX_WXML_RESOURCE_SITES) {
+            if resolutions >= styles::MAX_RESOURCE_RESOLUTIONS {
+                log(format_args!("document link resolution budget reached"));
+                break;
+            }
+            resolutions = resolutions.saturating_add(1);
             let Some(ResourceResolution::File(target)) =
                 self.host.resource_resolution(&path, &site.text)
             else {
                 continue;
             };
+            if !site.kind.accepts(&target) {
+                continue;
+            }
             let Ok(file) = self.host.file_id(&target) else {
                 continue;
             };

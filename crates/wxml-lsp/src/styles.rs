@@ -12,6 +12,88 @@ use wxml_text::TextRange;
 
 use crate::completion::context::{Context as Detected, Site};
 
+/// Maximum resource attribute sites inspected for one document.
+pub(crate) const MAX_WXML_RESOURCE_SITES: usize = 4096;
+
+/// Maximum class attribute sites inspected for one document.
+pub(crate) const MAX_WXML_CLASS_SITES: usize = 4096;
+
+/// Maximum static runs or class tokens inspected for one value.
+const MAX_STATIC_RUNS: usize = 4096;
+const MAX_CLASS_TOKENS_PER_RUN: usize = 4096;
+
+/// Maximum resource host resolutions performed for one request.
+pub(crate) const MAX_RESOURCE_RESOLUTIONS: usize = 2048;
+
+/// Maximum resource value bytes inspected for one attribute.
+const MAX_RESOURCE_VALUE_BYTES: usize = 1024;
+
+/// Resource kind for tag/attribute-driven path handling.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ResourceKind {
+    /// Image/font asset.
+    Image,
+    /// Video asset.
+    Video,
+    /// Audio asset.
+    Audio,
+    /// WXS script.
+    Wxs,
+    /// WXML import/include target.
+    Template,
+    /// A local file without a narrower type.
+    Any,
+}
+
+impl ResourceKind {
+    /// Returns whether a file extension is acceptable for this kind.
+    pub(crate) fn accepts(self, path: &wxml_project::ProjectPath) -> bool {
+        let Some(extension) = path.extension() else {
+            return true;
+        };
+        let extension = extension.to_ascii_lowercase();
+        match self {
+            Self::Image => matches!(
+                extension.as_str(),
+                "png"
+                    | "jpg"
+                    | "jpeg"
+                    | "gif"
+                    | "svg"
+                    | "webp"
+                    | "bmp"
+                    | "ico"
+                    | "avif"
+                    | "heic"
+                    | "heif"
+            ),
+            Self::Video => matches!(
+                extension.as_str(),
+                "mp4" | "mov" | "m4v" | "webm" | "avi" | "mkv"
+            ),
+            Self::Audio => matches!(
+                extension.as_str(),
+                "mp3" | "wav" | "aac" | "m4a" | "ogg" | "flac" | "wma"
+            ),
+            Self::Wxs => extension == "wxs",
+            Self::Template => extension == "wxml",
+            Self::Any => true,
+        }
+    }
+
+    /// Human-readable detail for completion.
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::Image => "Image",
+            Self::Video => "Video",
+            Self::Audio => "Audio",
+            Self::Wxs => "WXS script",
+            Self::Template => "WXML template",
+            Self::Any => "File",
+        }
+    }
+}
+
 /// One literal class token under the cursor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct ClassSite {
@@ -43,6 +125,8 @@ pub(crate) struct ResourceSite {
     pub(crate) tag: String,
     /// Attribute name.
     pub(crate) attribute: String,
+    /// Tag/attribute resource kind.
+    pub(crate) kind: ResourceKind,
     /// Trimmed value range (without quotes and surrounding whitespace).
     pub(crate) value: TextRange,
     /// Trimmed value text.
@@ -137,8 +221,13 @@ fn class_token_at(text: &str, range: TextRange, offset: u32) -> Option<(TextRang
 /// treated as a class.
 pub(crate) fn class_site_at(text: &str, offset: u32) -> Option<ClassSite> {
     let parsed = wxml_syntax::parse(text);
+    let mut inspected = 0_usize;
     for element in parsed.tree.document().elements() {
         for attribute in element.attributes() {
+            inspected = inspected.saturating_add(1);
+            if inspected > MAX_WXML_CLASS_SITES {
+                return None;
+            }
             if attribute.name() != Some("class") {
                 continue;
             }
@@ -156,15 +245,10 @@ pub(crate) fn class_site_at(text: &str, offset: u32) -> Option<ClassSite> {
             let cursor = usize::try_from(offset).ok()?;
             let run = static_runs(text, start, end)
                 .into_iter()
-                .find(|run| run.start <= cursor && cursor <= run.end)?;
+                .find(|run| run.start <= cursor && cursor < run.end)?;
             let run = TextRange::new(u32::try_from(run.start).ok()?, u32::try_from(run.end).ok()?)
                 .ok()?;
-            let Some((token, name)) = class_token_at(text, run, offset) else {
-                return Some(ClassSite {
-                    token: TextRange::new(offset, offset).ok()?,
-                    name: String::new(),
-                });
-            };
+            let (token, name) = class_token_at(text, run, offset)?;
             return Some(ClassSite {
                 token,
                 name: name.to_owned(),
@@ -239,14 +323,22 @@ pub(crate) fn class_completion_site(
     .ok()?;
     let prefix = text.get(token_start..cursor)?.to_owned();
     let mut existing = BTreeSet::new();
+    let mut inspected_tokens = 0_usize;
     for run in &runs {
-        for (start, end) in class_tokens_in_run(text, run) {
+        for (start, end) in class_tokens_in_run(text, run, MAX_CLASS_TOKENS_PER_RUN) {
+            inspected_tokens = inspected_tokens.saturating_add(1);
+            if inspected_tokens > MAX_WXML_CLASS_SITES {
+                break;
+            }
             if start == token_start && end == token_end {
                 continue;
             }
             if let Some(name) = text.get(start..end) {
                 existing.insert(name.to_owned());
             }
+        }
+        if inspected_tokens > MAX_WXML_CLASS_SITES {
+            break;
         }
     }
     Some(ClassCompletionSite {
@@ -259,11 +351,11 @@ pub(crate) fn class_completion_site(
 }
 
 /// Splits one static value run into whitespace-separated class tokens.
-fn class_tokens_in_run(text: &str, run: &Range<usize>) -> Vec<(usize, usize)> {
+fn class_tokens_in_run(text: &str, run: &Range<usize>, limit: usize) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();
     let mut tokens = Vec::new();
     let mut index = run.start;
-    while index < run.end {
+    while index < run.end && tokens.len() < limit {
         while index < run.end && bytes[index].is_ascii_whitespace() {
             index += 1;
         }
@@ -287,7 +379,7 @@ fn static_runs(text: &str, start: usize, end: usize) -> Vec<Range<usize>> {
     let mut index = start;
     while index < end {
         if bytes.get(index) == Some(&b'{') && bytes.get(index + 1) == Some(&b'{') {
-            if run_start < index {
+            if run_start < index && runs.len() < MAX_STATIC_RUNS {
                 runs.push(run_start..index);
             }
             let Some(close) = text
@@ -303,7 +395,7 @@ fn static_runs(text: &str, start: usize, end: usize) -> Vec<Range<usize>> {
         }
         index += 1;
     }
-    if run_start < end {
+    if run_start < end && runs.len() < MAX_STATIC_RUNS {
         runs.push(run_start..end);
     }
     runs
@@ -347,29 +439,58 @@ fn attribute_value_end(
     }
 }
 
-/// Returns whether an attribute is a local resource path by this index.
+/// Returns the resource kind for a built-in tag/attribute pair.
 ///
-/// Only values that resolve to existing files become links, so a custom
-/// component's `src`/`url` is as safe as an `image` tag's.
-pub(crate) fn is_resource_attribute(_tag: &str, attribute: &str) -> bool {
-    matches!(attribute, "src" | "poster" | "background" | "url" | "image")
+/// `navigator url` is a route, not a file, and is deliberately absent. Custom
+/// components are not guessed from an attribute name.
+pub(crate) fn resource_attribute(tag: &str, attribute: &str) -> Option<ResourceKind> {
+    match (tag, attribute) {
+        ("image" | "cover-image", "src" | "url")
+        | ("video" | "live-player" | "live-pusher", "poster")
+        | ("view" | "page-meta", "background") => Some(ResourceKind::Image),
+        ("video" | "live-player" | "live-pusher", "src") => Some(ResourceKind::Video),
+        ("audio", "src") => Some(ResourceKind::Audio),
+        ("wxs", "src") => Some(ResourceKind::Wxs),
+        ("import" | "include", "src") => Some(ResourceKind::Template),
+        ("web-view", "src") => Some(ResourceKind::Any),
+        _ => None,
+    }
 }
 
-/// Returns every literal resource value in a document.
-pub(crate) fn resource_sites(text: &str) -> Vec<ResourceSite> {
+/// Returns whether a value is path-like enough for a missing-file diagnostic.
+///
+/// `background` may contain a color (`red`) or a gradient expression; only
+/// values with a separator, extension or relative/root prefix are treated as
+/// provable local paths.
+pub(crate) fn looks_like_path(value: &str) -> bool {
+    let value = value.trim();
+    value.starts_with('/')
+        || value.starts_with('.')
+        || value.contains('/')
+        || value.contains('.')
+        || value.contains('\\')
+}
+
+/// Returns every literal resource value in a document, bounded by `limit`.
+pub(crate) fn resource_sites(text: &str, limit: usize) -> Vec<ResourceSite> {
     let parsed = wxml_syntax::parse(text);
     let mut sites = Vec::new();
+    let mut inspected = 0_usize;
     for element in parsed.tree.document().elements() {
         let Some(tag) = element.name() else {
             continue;
         };
         for attribute in element.attributes() {
+            inspected = inspected.saturating_add(1);
+            if inspected > limit {
+                return sites;
+            }
             let Some(name) = attribute.name() else {
                 continue;
             };
-            if !is_resource_attribute(tag, name) {
+            let Some(kind) = resource_attribute(tag, name) else {
                 continue;
-            }
+            };
             let Some(value) = attribute.value() else {
                 continue;
             };
@@ -382,9 +503,13 @@ pub(crate) fn resource_sites(text: &str) -> Vec<ResourceSite> {
             let Some((range, trimmed)) = trimmed_value(text, inner) else {
                 continue;
             };
+            if trimmed.len() > MAX_RESOURCE_VALUE_BYTES {
+                continue;
+            }
             sites.push(ResourceSite {
                 tag: tag.to_owned(),
                 attribute: name.to_owned(),
+                kind,
                 value: range,
                 text: trimmed,
             });
@@ -395,9 +520,102 @@ pub(crate) fn resource_sites(text: &str) -> Vec<ResourceSite> {
 
 /// Finds the literal resource value at `offset`.
 pub(crate) fn resource_site_at(text: &str, offset: u32) -> Option<ResourceSite> {
-    resource_sites(text)
-        .into_iter()
-        .find(|site| offset >= site.value.start() && offset <= site.value.end())
+    let parsed = wxml_syntax::parse(text);
+    let mut inspected = 0_usize;
+    for element in parsed.tree.document().elements() {
+        let Some(tag) = element.name() else {
+            continue;
+        };
+        for attribute in element.attributes() {
+            inspected = inspected.saturating_add(1);
+            if inspected > MAX_WXML_RESOURCE_SITES {
+                return None;
+            }
+            let Some(name) = attribute.name() else {
+                continue;
+            };
+            let Some(kind) = resource_attribute(tag, name) else {
+                continue;
+            };
+            let Some(value) = attribute.value() else {
+                continue;
+            };
+            if value.literal_text().is_none() {
+                continue;
+            }
+            let Some(inner) = inner_value_range(value) else {
+                continue;
+            };
+            let Some((range, trimmed)) = trimmed_value(text, inner) else {
+                continue;
+            };
+            if trimmed.len() > MAX_RESOURCE_VALUE_BYTES {
+                continue;
+            }
+            if offset >= range.start() && offset <= range.end() {
+                return Some(ResourceSite {
+                    tag: tag.to_owned(),
+                    attribute: name.to_owned(),
+                    kind,
+                    value: range,
+                    text: trimmed,
+                });
+            }
+        }
+    }
+    None
+}
+
+/// Finds every static class token in a document for diagnostics.
+pub(crate) fn class_tokens(text: &str) -> Vec<ClassSite> {
+    let parsed = wxml_syntax::parse(text);
+    let mut tokens = Vec::new();
+    let mut inspected = 0_usize;
+    let mut token_budget = MAX_WXML_CLASS_SITES;
+    for element in parsed.tree.document().elements() {
+        for attribute in element.attributes() {
+            inspected = inspected.saturating_add(1);
+            if inspected > MAX_WXML_CLASS_SITES {
+                return tokens;
+            }
+            if attribute.name() != Some("class") {
+                continue;
+            }
+            let Some(value) = attribute.value() else {
+                continue;
+            };
+            let Some(inner) = inner_value_range(value) else {
+                continue;
+            };
+            let start = usize::try_from(inner.start()).unwrap_or(0);
+            let end = usize::try_from(inner.end()).unwrap_or(0);
+            for run in static_runs(text, start, end) {
+                if token_budget == 0 {
+                    return tokens;
+                }
+                for (token_start, token_end) in class_tokens_in_run(text, &run, token_budget) {
+                    let (Ok(start), Ok(end)) =
+                        (u32::try_from(token_start), u32::try_from(token_end))
+                    else {
+                        continue;
+                    };
+                    let Ok(token) = TextRange::new(start, end) else {
+                        continue;
+                    };
+                    if let Some(name) = text.get(token_start..token_end) {
+                        if !name.is_empty() {
+                            tokens.push(ClassSite {
+                                token,
+                                name: name.to_owned(),
+                            });
+                            token_budget = token_budget.saturating_sub(1);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    tokens
 }
 
 /// Returns the inner value range for tests and range checks.
@@ -492,8 +710,8 @@ mod tests {
 
     #[test]
     fn resource_sites_are_literal_and_trimmed() {
-        let text = "<image src=\" images/logo.png \" /><video poster='p.png' src='v.mp4'/><view url=\"a\"/>";
-        let sites = resource_sites(text);
+        let text = "<image src=\" images/logo.png \" /><video poster='p.png' src='v.mp4'/><view background=\"bg.png\"/><navigator url=\"a\"/><my-card src=\"c.png\"/>";
+        let sites = resource_sites(text, MAX_WXML_RESOURCE_SITES);
         assert_eq!(sites.len(), 4);
         assert_eq!(sites[0].text, "images/logo.png");
         assert_eq!(
@@ -502,13 +720,69 @@ mod tests {
         );
         assert_eq!(sites[1].text, "p.png");
         assert_eq!(sites[2].text, "v.mp4");
-        assert_eq!(sites[3].text, "a");
+        assert_eq!(sites[3].text, "bg.png");
+        assert!(
+            sites
+                .iter()
+                .all(|site| site.kind != ResourceKind::Any || site.text != "a")
+        );
+    }
+
+    #[test]
+    fn resource_sites_and_class_tokens_are_bounded() {
+        let text = "<image src=\"a.png\"/>".repeat(100);
+        assert_eq!(resource_sites(&text, 10).len(), 10);
+        let text = "<view class=\"a b c\"/>".repeat(100);
+        assert_eq!(class_tokens(&text).len(), 300);
+    }
+
+    #[test]
+    fn resource_attributes_are_tag_specific() {
+        assert_eq!(
+            resource_attribute("image", "src"),
+            Some(ResourceKind::Image)
+        );
+        assert_eq!(
+            resource_attribute("video", "poster"),
+            Some(ResourceKind::Image)
+        );
+        assert_eq!(
+            resource_attribute("video", "src"),
+            Some(ResourceKind::Video)
+        );
+        assert_eq!(
+            resource_attribute("audio", "src"),
+            Some(ResourceKind::Audio)
+        );
+        assert_eq!(resource_attribute("wxs", "src"), Some(ResourceKind::Wxs));
+        assert_eq!(
+            resource_attribute("import", "src"),
+            Some(ResourceKind::Template)
+        );
+        assert_eq!(resource_attribute("navigator", "url"), None);
+        assert_eq!(resource_attribute("my-card", "src"), None);
+        assert_eq!(resource_attribute("view", "url"), None);
+    }
+
+    #[test]
+    fn resource_kinds_filter_extensions() {
+        use wxml_project::ProjectPath;
+        let path = |raw: &str| ProjectPath::new(raw).expect("path");
+        assert!(ResourceKind::Image.accepts(&path("a.png")));
+        assert!(!ResourceKind::Image.accepts(&path("a.ts")));
+        assert!(ResourceKind::Video.accepts(&path("a.mp4")));
+        assert!(ResourceKind::Audio.accepts(&path("a.mp3")));
+        assert!(ResourceKind::Wxs.accepts(&path("a.wxs")));
+        assert!(!ResourceKind::Wxs.accepts(&path("a.ts")));
+        assert!(ResourceKind::Template.accepts(&path("a.wxml")));
+        assert!(!ResourceKind::Template.accepts(&path("a.wxss")));
+        assert!(ResourceKind::Any.accepts(&path("a.ts")));
     }
 
     #[test]
     fn dynamic_resource_values_are_not_sites() {
         let text = "<image src=\"{{url}}\"/><image src=\"a/{{name}}.png\"/>";
-        assert_eq!(resource_sites(text), Vec::new());
+        assert_eq!(resource_sites(text, MAX_WXML_RESOURCE_SITES), Vec::new());
     }
 
     #[test]
@@ -550,6 +824,6 @@ mod tests {
     #[test]
     fn comments_and_other_attributes_are_not_resource_sites() {
         let text = "<view class=\"a.png\" title=\"b.png\"><!-- <image src=\"c.png\"/> --></view>";
-        assert_eq!(resource_sites(text), Vec::new());
+        assert_eq!(resource_sites(text, MAX_WXML_RESOURCE_SITES), Vec::new());
     }
 }

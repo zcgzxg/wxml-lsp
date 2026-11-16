@@ -12,8 +12,8 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::Project;
 use crate::files::{self, PathError, ProjectPath};
+use crate::{Project, ProjectSnapshot};
 
 /// Longest accepted resource specifier.
 pub const MAX_RESOURCE_SPECIFIER_BYTES: usize = 1024;
@@ -23,6 +23,9 @@ pub const MAX_RESOURCE_CANDIDATES: usize = 256;
 
 /// Maximum directory entries examined for one completion.
 pub const MAX_RESOURCE_SCAN_ENTRIES: usize = 4096;
+
+/// Maximum symlink statistics performed for one completion.
+pub const MAX_RESOURCE_STATS: usize = 2048;
 
 /// Whether a candidate is a file or a directory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -122,6 +125,21 @@ impl Project {
     /// Resolves one WXML resource value to a local file or directory.
     #[must_use]
     pub fn resolve_resource(&self, wxml: &ProjectPath, specifier: &str) -> ResourceResolution {
+        self.snapshot().resolve_resource(wxml, specifier)
+    }
+
+    /// Lists one directory for resource completion.
+    #[must_use]
+    #[allow(clippy::too_many_lines)] // one bounded directory scan
+    pub fn resource_candidates(&self, wxml: &ProjectPath, prefix: &str) -> ResourceCandidates {
+        self.snapshot().resource_candidates(wxml, prefix)
+    }
+}
+
+impl ProjectSnapshot {
+    /// Resolves one WXML resource value to a local file or directory.
+    #[must_use]
+    pub fn resolve_resource(&self, wxml: &ProjectPath, specifier: &str) -> ResourceResolution {
         let specifier = specifier.trim();
         if specifier.is_empty() {
             return ResourceResolution::Invalid;
@@ -135,19 +153,33 @@ impl Project {
         if specifier.contains("{{") || specifier.contains("}}") {
             return ResourceResolution::Dynamic;
         }
-        if specifier.contains('?') || specifier.contains('#') {
-            return ResourceResolution::Invalid;
-        }
         if is_remote_specifier(specifier) {
             return ResourceResolution::Remote;
         }
+        if specifier.contains('?') || specifier.contains('#') {
+            return ResourceResolution::Invalid;
+        }
         let target = if is_file_uri(specifier) {
-            match self.path_from_uri(specifier) {
+            match files::project_path_from_uri(&self.root, specifier) {
                 Ok(path) => path,
                 Err(_) => return ResourceResolution::OutsideRoot,
             }
         } else {
-            match self.resolve_app_specifier(wxml, specifier) {
+            let Some(decoded) = decode_percent_specifier(specifier) else {
+                return ResourceResolution::Invalid;
+            };
+            if decoded.len() > MAX_RESOURCE_SPECIFIER_BYTES
+                || is_remote_specifier(&decoded)
+                || decoded.contains('?')
+                || decoded.contains('#')
+            {
+                return if is_remote_specifier(&decoded) {
+                    ResourceResolution::Remote
+                } else {
+                    ResourceResolution::Invalid
+                };
+            }
+            match self.resolve_app_specifier(wxml, &decoded) {
                 Ok(path) => path,
                 Err(PathError::EscapesRoot | PathError::ParentComponent | PathError::Absolute) => {
                     return ResourceResolution::OutsideRoot;
@@ -158,11 +190,14 @@ impl Project {
         if !self.contains_source(&target) {
             return ResourceResolution::OutsideRoot;
         }
-        if files::is_file(self.root(), &target) {
+        if !self.target_stays_in_source(&target) {
+            return ResourceResolution::OutsideRoot;
+        }
+        if files::is_file(&self.root, &target) {
             ResourceResolution::File(target)
-        } else if files::is_dir(self.root(), &target) {
+        } else if files::is_dir(&self.root, &target) {
             ResourceResolution::Directory(target)
-        } else if files::escapes_root(self.root(), &target) {
+        } else if files::escapes_root(&self.root, &target) {
             ResourceResolution::OutsideRoot
         } else {
             ResourceResolution::Missing
@@ -173,9 +208,10 @@ impl Project {
     ///
     /// `prefix` is the text typed since the attribute value start. It may be
     /// empty, relative (`../shared/lo`), root-relative (`/images/lo`) or a
-    /// partial file name. Only entries whose canonical path stays inside the
-    /// project root are returned.
+    /// partial file name. The scan is bounded by entry and stat budgets; when
+    /// a budget is reached the result is marked truncated.
     #[must_use]
+    #[allow(clippy::too_many_lines)] // one bounded directory scan
     pub fn resource_candidates(&self, wxml: &ProjectPath, prefix: &str) -> ResourceCandidates {
         let mut result = ResourceCandidates::default();
         let prefix = prefix.trim();
@@ -190,7 +226,17 @@ impl Project {
         {
             return result;
         }
-        let normalized = prefix.replace('\\', "/");
+        let Some(decoded) = decode_percent_specifier(prefix) else {
+            return result;
+        };
+        if decoded.len() > MAX_RESOURCE_SPECIFIER_BYTES
+            || is_remote_specifier(&decoded)
+            || decoded.contains('?')
+            || decoded.contains('#')
+        {
+            return result;
+        }
+        let normalized = decoded.replace('\\', "/");
         let (directory_prefix, file_prefix) = normalized
             .rfind('/')
             .map_or(("", normalized.as_str()), |position| {
@@ -201,25 +247,34 @@ impl Project {
         else {
             return result;
         };
-        let root = self.root();
         let Ok(canonical) = std::fs::canonicalize(&directory) else {
             return result;
         };
-        if !path_within(root, &canonical) || !canonical.is_dir() {
+        if !path_within(&self.root, &canonical) || !canonical.is_dir() {
             return result;
+        }
+        if let Some(source_root) = self.source_root.as_ref() {
+            let source = files::absolute_path(&self.root, source_root);
+            if !canonical.starts_with(&source) {
+                return result;
+            }
         }
         let Ok(entries) = std::fs::read_dir(&canonical) else {
             return result;
         };
         let mut scanned = 0_usize;
+        let mut stats = 0_usize;
         let mut seen = std::collections::BTreeSet::new();
         for entry in entries {
             scanned += 1;
-            if scanned > MAX_RESOURCE_SCAN_ENTRIES {
+            if scanned > MAX_RESOURCE_SCAN_ENTRIES || stats > MAX_RESOURCE_STATS {
                 result.truncated = true;
                 break;
             }
             let Ok(entry) = entry else {
+                continue;
+            };
+            let Ok(file_type) = entry.file_type() else {
                 continue;
             };
             let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
@@ -234,17 +289,48 @@ impl Project {
             let Some(project_path) = join_project_path(relative_directory.as_ref(), &name) else {
                 continue;
             };
-            let is_file = files::is_file(root, &project_path);
-            let is_dir = files::is_dir(root, &project_path);
-            let (kind, label) = if is_dir {
-                (ResourceKind::Directory, format!("{name}/"))
-            } else if is_file {
-                (ResourceKind::File, name.clone())
+            if crate::sources::has_excluded_component(&project_path) {
+                continue;
+            }
+            let kind = if file_type.is_symlink() {
+                stats = stats.saturating_add(2);
+                let Ok(target) = std::fs::canonicalize(entry.path()) else {
+                    continue;
+                };
+                if !path_within(&self.root, &target) {
+                    continue;
+                }
+                if let Some(source_root) = self.source_root.as_ref() {
+                    let source_abs = files::absolute_path(&self.root, source_root);
+                    if !target.starts_with(&source_abs) {
+                        continue;
+                    }
+                }
+                if target.is_dir() {
+                    ResourceKind::Directory
+                } else if target.is_file() {
+                    ResourceKind::File
+                } else {
+                    continue;
+                }
+            } else if file_type.is_dir() {
+                ResourceKind::Directory
+            } else if file_type.is_file() {
+                ResourceKind::File
             } else {
                 continue;
             };
+            let label = if kind == ResourceKind::Directory {
+                format!("{name}/")
+            } else {
+                name.clone()
+            };
             let insert = format!("{directory_prefix}{name}");
-            let insert = if is_dir { format!("{insert}/") } else { insert };
+            let insert = if kind == ResourceKind::Directory {
+                format!("{insert}/")
+            } else {
+                insert
+            };
             result.items.push(ResourceCandidate {
                 path: project_path,
                 label,
@@ -275,35 +361,48 @@ impl Project {
         wxml: &ProjectPath,
         directory_prefix: &str,
     ) -> Option<(PathBuf, Option<ProjectPath>)> {
-        let root = self.root();
+        let root = &self.root;
         if directory_prefix.is_empty() {
             let relative = wxml.parent();
-            let base = relative.as_ref().map_or_else(
-                || root.to_path_buf(),
-                |parent| files::absolute_path(root, parent),
-            );
+            let base = relative
+                .as_ref()
+                .map_or_else(|| root.clone(), |parent| files::absolute_path(root, parent));
             return Some((base, relative));
         }
         if directory_prefix.starts_with('/') {
-            let app = self.source_root();
-            let rest = directory_prefix.trim_matches('/');
-            let base = app
-                .as_ref()
-                .map_or_else(|| root.to_path_buf(), |app| files::absolute_path(root, app));
-            if rest.is_empty() {
-                return Some((base, app.cloned()));
-            }
-            let relative = app.as_ref().map_or_else(
-                || ProjectPath::new(rest).ok(),
-                |app| ProjectPath::new(format!("{}/{rest}", app.as_str())).ok(),
+            let app = self.source_root.as_ref();
+            let rest = directory_prefix.trim_start_matches('/');
+            let relative = if rest.is_empty() {
+                app.cloned()
+            } else {
+                let path = ProjectPath::resolve(app, rest).ok()?;
+                if !self.contains_source(&path) {
+                    return None;
+                }
+                Some(path)
+            };
+            let base = relative.as_ref().map_or_else(
+                || root.clone(),
+                |relative| files::absolute_path(root, relative),
             );
-            return Some((base.join(rest), relative));
+            return Some((base, relative));
         }
         let path = ProjectPath::resolve(wxml.parent().as_ref(), directory_prefix).ok()?;
         if !self.contains_source(&path) {
             return None;
         }
         Some((files::absolute_path(root, &path), Some(path)))
+    }
+
+    /// Returns whether a canonical target stays below the app source root.
+    fn target_stays_in_source(&self, path: &ProjectPath) -> bool {
+        let Some(source_root) = self.source_root.as_ref() else {
+            return true;
+        };
+        let Ok(target) = std::fs::canonicalize(files::absolute_path(&self.root, path)) else {
+            return true;
+        };
+        target.starts_with(files::absolute_path(&self.root, source_root))
     }
 
     /// Resolves a relative or root-relative resource specifier.
@@ -319,15 +418,53 @@ impl Project {
         if let Some(rest) = trimmed.strip_prefix('/') {
             let rest = rest.trim_start_matches('/');
             if rest.is_empty() {
-                return self.source_root().cloned().ok_or(PathError::Empty);
+                return self.source_root.clone().ok_or(PathError::Empty);
             }
-            let joined = self.source_root().as_ref().map_or_else(
-                || rest.to_owned(),
-                |root| format!("{}/{rest}", root.as_str()),
+            return self.source_root.as_ref().map_or_else(
+                || ProjectPath::resolve(None, rest),
+                |root| ProjectPath::resolve(Some(root), rest),
             );
-            return ProjectPath::new(joined);
         }
         ProjectPath::resolve(wxml.parent().as_ref(), trimmed)
+    }
+}
+
+/// Decodes percent escapes in a local resource specifier.
+///
+/// Returns `None` for malformed escapes, NUL/control characters or invalid
+/// UTF-8. `file:` URIs use the normal file-URI decoder instead.
+fn decode_percent_specifier(specifier: &str) -> Option<String> {
+    if !specifier.contains('%') {
+        return Some(specifier.to_owned());
+    }
+    let bytes = specifier.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0_usize;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = hex_value(*bytes.get(index + 1)?)?;
+            let low = hex_value(*bytes.get(index + 2)?)?;
+            output.push((high << 4) | low);
+            index += 3;
+        } else {
+            output.push(bytes[index]);
+            index += 1;
+        }
+    }
+    let decoded = String::from_utf8(output).ok()?;
+    if decoded.contains('\0') || decoded.chars().any(char::is_control) {
+        return None;
+    }
+    Some(decoded)
+}
+
+/// Returns the numeric value of one ASCII hex digit.
+const fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -342,19 +479,6 @@ fn join_project_path(directory: Option<&ProjectPath>, name: &str) -> Option<Proj
 /// Returns whether `candidate` is `root` or below it.
 fn path_within(root: &Path, candidate: &Path) -> bool {
     candidate.starts_with(root)
-}
-
-/// Reads a file's local resource target for tests without exposing host paths.
-#[must_use]
-pub fn resource_target(
-    project: &Project,
-    wxml: &ProjectPath,
-    specifier: &str,
-) -> Option<ProjectPath> {
-    match project.resolve_resource(wxml, specifier) {
-        ResourceResolution::File(path) => Some(path),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

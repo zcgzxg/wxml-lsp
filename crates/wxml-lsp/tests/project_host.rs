@@ -748,15 +748,19 @@ fn watched_style_files_invalidate_views_but_other_files_are_ignored() {
             watched("file:///etc/passwd", WatchedChangeKind::Changed),
         ])
         .expect("watched style and ignored files");
-    assert!(update.project_revision.is_some());
+    assert!(update.project_revision.is_none());
+    assert!(
+        update.dirty_views.is_empty(),
+        "style changes must not start type jobs"
+    );
     assert!(
         update
-            .dirty_views
+            .style_views
             .iter()
             .any(|path| path.as_str() == "pages/index/index.wxml"),
         "{update:?}"
     );
-    assert_ne!(host.project_revision(), before_revision);
+    assert_eq!(host.project_revision(), before_revision);
 
     let project = fixture();
     project.write("package.json", r#"{"name":"fixture"}"#);

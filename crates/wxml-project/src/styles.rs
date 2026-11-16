@@ -24,13 +24,14 @@
 mod parse;
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::mem::size_of;
 use std::sync::Arc;
 
 use wxml_text::SourceRange;
 
-use crate::Project;
 use crate::files::{self, FileError, ProjectPath};
 use crate::resources::is_remote_specifier;
+use crate::{Project, ProjectSnapshot};
 
 pub use parse::parse_style_sheet;
 
@@ -61,11 +62,20 @@ pub const MAX_CLASS_NAME_BYTES: usize = 128;
 /// Longest documentation comment kept for a class.
 pub const MAX_DOC_COMMENT_BYTES: usize = 512;
 
+/// Maximum static imports kept for one sheet.
+pub const MAX_STYLE_IMPORTS_PER_SHEET: usize = 512;
+
+/// Maximum bytes kept from one import specifier.
+pub const MAX_IMPORT_SPECIFIER_BYTES: usize = 1024;
+
+/// Maximum imports resolved for one view chain.
+pub const MAX_STYLE_IMPORTS_PER_VIEW: usize = 1024;
+
+/// Maximum estimated structure bytes kept in the sheet cache.
+pub const MAX_CACHED_STYLE_BYTES: usize = 16 * 1024 * 1024;
+
 /// Number of parsed sheets kept before the cache is cleared.
 pub const MAX_CACHED_SHEETS: usize = 256;
-
-/// Maximum parsed bytes kept in the sheet cache.
-pub const MAX_CACHED_STYLE_BYTES: usize = 32 * 1024 * 1024;
 
 /// Budgets for one style index.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -124,6 +134,77 @@ impl StyleScope {
     }
 }
 
+/// Mini Program style isolation for one page/component.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum StyleIsolation {
+    /// Component style is isolated from app/page styles.
+    Isolated,
+    /// App styles apply to the component; page styles are unknown.
+    ApplyShared,
+    /// App/page and component styles may interact; page styles are unknown.
+    Shared,
+    /// Page style is isolated from app styles.
+    PageIsolated,
+    /// Page applies app styles and is shared with components.
+    PageApplyShared,
+    /// Page and components share styles.
+    PageShared,
+    /// The raw value is missing or not understood.
+    Unknown,
+}
+
+impl StyleIsolation {
+    /// Parses the raw JSON value for a page or component.
+    #[must_use]
+    pub fn from_config(raw: Option<&str>, add_global_class: bool, component: bool) -> Self {
+        let normalized = raw.map(|value| value.trim().to_ascii_lowercase());
+        match (component, normalized.as_deref()) {
+            (true, None) if add_global_class => Self::ApplyShared,
+            (true, Some("isolated") | None) => Self::Isolated,
+            (true, Some("apply-shared")) => Self::ApplyShared,
+            (true, Some("shared")) => Self::Shared,
+            (false, Some("page-isolated")) => Self::PageIsolated,
+            (false, Some("page-apply-shared")) => Self::PageApplyShared,
+            (false, Some("page-shared") | None) => Self::PageShared,
+            (_, Some(_)) => Self::Unknown,
+        }
+    }
+
+    /// Returns whether app/configured global styles apply to this view.
+    #[must_use]
+    pub const fn app_styles_apply(self) -> bool {
+        matches!(
+            self,
+            Self::ApplyShared
+                | Self::Shared
+                | Self::PageApplyShared
+                | Self::PageShared
+                | Self::Unknown
+        )
+    }
+
+    /// Returns whether styles from an unknown enclosing page may still apply.
+    #[must_use]
+    pub const fn enclosing_page_unknown(self) -> bool {
+        matches!(self, Self::ApplyShared | Self::Shared | Self::Unknown)
+    }
+
+    /// Returns a stable label for diagnostics/hover.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Isolated => "isolated",
+            Self::ApplyShared => "apply-shared",
+            Self::Shared => "shared",
+            Self::PageIsolated => "page-isolated",
+            Self::PageApplyShared => "page-apply-shared",
+            Self::PageShared => "page-shared",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// File format of one style source.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 #[non_exhaustive]
@@ -141,12 +222,15 @@ pub enum StyleFileKind {
 pub struct ClassToken {
     /// Class name without the leading dot.
     pub name: String,
-    /// UTF-8 byte range of the class name (or `&` concatenation) in the file.
+    /// UTF-8 byte range of the replaceable class-name source fragment.
     pub range: SourceRange,
     /// Effective selector after conservative SCSS nesting expansion.
     pub selector: String,
     /// Block comment immediately before the enclosing rule, when present.
     pub comment: Option<String>,
+    /// `false` for `&` concatenations whose full name is generated from a
+    /// parent selector; the range is then only the suffix fragment.
+    pub rename_safe: bool,
 }
 
 /// How one style import was classified.
@@ -157,6 +241,8 @@ pub enum StyleImportKind {
     Local,
     /// A remote URL that is never fetched.
     Remote,
+    /// A Sass built-in module such as `sass:math`; it cannot contain classes.
+    Builtin,
 }
 
 /// One static `@import`/`@use`/`@forward` statement.
@@ -190,6 +276,8 @@ pub enum StyleIssueKind {
     DynamicConstruct,
     /// A file could not be read.
     ReadError,
+    /// The source contains an unterminated string or similar syntax damage.
+    Malformed,
 }
 
 /// One recoverable style-index problem.
@@ -209,7 +297,7 @@ impl StyleIssue {
         Self {
             file: file.clone(),
             kind,
-            message: message.into(),
+            message: files::truncate_owned(message.into(), files::MAX_MESSAGE_BYTES),
         }
     }
 }
@@ -219,8 +307,9 @@ impl StyleIssue {
 pub struct StyleSheet {
     /// Project-relative path.
     pub path: ProjectPath,
-    /// Classes in source order.
-    pub classes: Vec<ClassToken>,
+    /// Classes in source order. Tokens are shared by every view that reads
+    /// this sheet.
+    pub classes: Vec<Arc<ClassToken>>,
     /// Static imports in source order.
     pub imports: Vec<StyleImport>,
     /// Recoverable parse/read problems.
@@ -229,8 +318,10 @@ pub struct StyleSheet {
     pub complete: bool,
     /// First reason the sheet is incomplete.
     pub reason: Option<String>,
-    /// Number of bytes parsed.
+    /// Number of source bytes parsed.
     pub bytes: usize,
+    /// Estimated heap bytes held by classes, selectors, comments and imports.
+    pub estimated_bytes: usize,
 }
 
 impl StyleSheet {
@@ -244,6 +335,7 @@ impl StyleSheet {
             complete: true,
             reason: None,
             bytes: 0,
+            estimated_bytes: 0,
         }
     }
 
@@ -272,16 +364,10 @@ pub struct StyleFileInfo {
 /// One class definition with view-level precedence information.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ClassDefinition {
-    /// Class name without the leading dot.
-    pub name: String,
-    /// Defining file.
-    pub file: ProjectPath,
-    /// UTF-8 byte range of the class token in the defining file.
-    pub range: SourceRange,
-    /// Effective selector.
-    pub selector: String,
-    /// Documentation comment, when present.
-    pub comment: Option<String>,
+    /// Shared parsed class token.
+    pub token: Arc<ClassToken>,
+    /// Defining file. The path is shared by every definition in that file.
+    pub file: Arc<ProjectPath>,
     /// Application scope.
     pub scope: StyleScope,
     /// `true` when the definition came through an import.
@@ -290,11 +376,55 @@ pub struct ClassDefinition {
     pub order: u32,
 }
 
+impl ClassDefinition {
+    /// Class name without the leading dot.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.token.name
+    }
+
+    /// UTF-8 byte range of the replaceable source fragment.
+    #[must_use]
+    pub fn range(&self) -> SourceRange {
+        self.token.range
+    }
+
+    /// Effective selector.
+    #[must_use]
+    pub fn selector(&self) -> &str {
+        &self.token.selector
+    }
+
+    /// Documentation comment, when present.
+    #[must_use]
+    pub fn comment(&self) -> Option<&str> {
+        self.token.comment.as_deref()
+    }
+
+    /// Whether the range is a complete, directly replaceable class name.
+    #[must_use]
+    pub fn rename_safe(&self) -> bool {
+        self.token.rename_safe
+    }
+
+    /// Defining file.
+    #[must_use]
+    pub fn file(&self) -> &ProjectPath {
+        &self.file
+    }
+}
+
 /// Merged class facts for one WXML view.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StyleViewFacts {
     /// Owning template path.
     pub view: ProjectPath,
+    /// Project identity supplied by the host, when available.
+    pub project_id: Option<String>,
+    /// Page/component/unknown scope of the view.
+    pub scope: StyleScope,
+    /// Effective style isolation.
+    pub isolation: StyleIsolation,
     /// Style files in chain order.
     pub files: Vec<StyleFileInfo>,
     /// Class definitions in precedence order.
@@ -318,14 +448,14 @@ impl StyleViewFacts {
         let mut definitions: Vec<&ClassDefinition> = self
             .classes
             .iter()
-            .filter(|class| class.name == name)
+            .filter(|class| class.name() == name)
             .collect();
         definitions.sort_by(|left, right| {
             scope_rank(left.scope)
                 .cmp(&scope_rank(right.scope))
                 .then_with(|| right.order.cmp(&left.order))
-                .then_with(|| left.file.cmp(&right.file))
-                .then_with(|| left.range.cmp(&right.range))
+                .then_with(|| left.file().cmp(right.file()))
+                .then_with(|| left.range().cmp(&right.range()))
         });
         definitions
     }
@@ -341,17 +471,19 @@ impl StyleViewFacts {
         &'a self,
         file: &'a ProjectPath,
     ) -> impl Iterator<Item = &'a ClassDefinition> {
-        self.classes.iter().filter(move |class| &class.file == file)
+        self.classes
+            .iter()
+            .filter(move |class| class.file() == file)
     }
 
-    /// Returns unique class names in precedence order.
+    /// Returns unique class names in style-chain order.
     #[must_use]
     pub fn class_names(&self) -> Vec<&str> {
         let mut seen = BTreeSet::new();
         let mut names = Vec::new();
         for class in &self.classes {
-            if seen.insert(class.name.as_str()) {
-                names.push(class.name.as_str());
+            if seen.insert(class.name()) {
+                names.push(class.name());
             }
         }
         names
@@ -361,6 +493,16 @@ impl StyleViewFacts {
     #[must_use]
     pub const fn is_complete(&self) -> bool {
         self.complete
+    }
+
+    /// Estimated heap bytes used by this view's shared references.
+    #[must_use]
+    pub fn estimated_bytes(&self) -> usize {
+        self.classes
+            .len()
+            .saturating_mul(size_of::<ClassDefinition>())
+            .saturating_add(self.files.len().saturating_mul(size_of::<StyleFileInfo>()))
+            .saturating_add(self.classes.len().saturating_mul(8))
     }
 }
 
@@ -403,6 +545,23 @@ impl Project {
     #[must_use]
     pub fn is_style_path(path: &ProjectPath) -> bool {
         is_style_path(path) && !crate::sources::has_excluded_component(path)
+    }
+
+    /// Returns the discovered style scope for a WXML view.
+    #[must_use]
+    pub fn style_scope(&self, view: &ProjectPath) -> StyleScope {
+        view_scope(self, view)
+    }
+
+    /// Returns the effective style isolation for a WXML view.
+    ///
+    /// The value comes from page/component JSON discovered at open/rediscover
+    /// time. Isolation configured only in a script `Component({options})` is
+    /// not interpreted; callers see the JSON/default value.
+    #[must_use]
+    pub fn style_isolation(&self, view: &ProjectPath) -> StyleIsolation {
+        let scope = self.style_scope(view);
+        view_isolation(self, view, scope)
     }
 }
 
@@ -458,7 +617,7 @@ impl StyleIndex {
         let Some(sheet) = self.sheets.remove(path) else {
             return false;
         };
-        self.cached_bytes = self.cached_bytes.saturating_sub(sheet.bytes);
+        self.cached_bytes = self.cached_bytes.saturating_sub(sheet.estimated_bytes);
         true
     }
 
@@ -474,27 +633,36 @@ impl StyleIndex {
         self.sheets.len()
     }
 
+    /// Returns the estimated structural bytes held by cached sheets.
+    #[must_use]
+    pub const fn cached_estimated_bytes(&self) -> usize {
+        self.cached_bytes
+    }
+
     /// Parses and caches one style file.
     ///
     /// Missing files produce an incomplete sheet with a read issue; callers
-    /// normally check existence first.
-    pub fn sheet(&mut self, project: &Project, path: &ProjectPath) -> Arc<StyleSheet> {
+    /// normally check existence first. A sheet whose estimated structure cost
+    /// exceeds the cache budget is returned but not retained.
+    pub fn sheet(&mut self, project: &ProjectSnapshot, path: &ProjectPath) -> Arc<StyleSheet> {
         if let Some(sheet) = self.sheets.get(path) {
             return Arc::clone(sheet);
         }
         let sheet = Arc::new(self.parse(project, path));
         if self.sheets.len() >= MAX_CACHED_SHEETS
-            || self.cached_bytes.saturating_add(sheet.bytes) > MAX_CACHED_STYLE_BYTES
+            || self.cached_bytes.saturating_add(sheet.estimated_bytes) > MAX_CACHED_STYLE_BYTES
         {
             self.invalidate_all();
         }
-        self.cached_bytes = self.cached_bytes.saturating_add(sheet.bytes);
-        self.sheets.insert(path.clone(), Arc::clone(&sheet));
+        if sheet.estimated_bytes <= MAX_CACHED_STYLE_BYTES {
+            self.cached_bytes = self.cached_bytes.saturating_add(sheet.estimated_bytes);
+            self.sheets.insert(path.clone(), Arc::clone(&sheet));
+        }
         sheet
     }
 
     /// Parses one file without touching the cache.
-    fn parse(&self, project: &Project, path: &ProjectPath) -> StyleSheet {
+    fn parse(&self, project: &ProjectSnapshot, path: &ProjectPath) -> StyleSheet {
         let mut sheet = StyleSheet::new(path);
         match project.read_optional(path) {
             Ok(Some(text)) => {
@@ -558,14 +726,15 @@ impl StyleIndex {
                 sheet.reason = Some("style file could not be read".to_owned());
             }
         }
+        sheet.estimated_bytes = estimate_sheet_bytes(&sheet);
         sheet
     }
 
     /// Builds the class facts that apply to one WXML view.
     ///
-    /// The chain is: the view's own `wxss`/`scss`, `app.wxss`/`app.scss` next
-    /// to `app.json`, then every explicitly configured global style. Static
-    /// imports are expanded depth-first in source order.
+    /// This convenience form captures a project snapshot for library callers.
+    /// Hosts should capture the snapshot themselves and call
+    /// [`StyleIndex::view_facts_for`] outside their state lock.
     pub fn view_facts(
         &mut self,
         project: &Project,
@@ -573,7 +742,22 @@ impl StyleIndex {
         config: &StyleConfig,
     ) -> StyleViewFacts {
         let scope = view_scope(project, view);
-        let roots = style_roots(project, view, scope, config);
+        let isolation = view_isolation(project, view, scope);
+        let snapshot = project.snapshot();
+        self.view_facts_for(&snapshot, view, scope, isolation, config, None)
+    }
+
+    /// Builds class facts from a snapshot and explicit view identity.
+    pub fn view_facts_for(
+        &mut self,
+        project: &ProjectSnapshot,
+        view: &ProjectPath,
+        scope: StyleScope,
+        isolation: StyleIsolation,
+        config: &StyleConfig,
+        project_id: Option<&str>,
+    ) -> StyleViewFacts {
+        let roots = style_roots(project, view, scope, isolation, config);
         let limits = self.limits;
         let mut collector = Collector {
             index: self,
@@ -585,14 +769,32 @@ impl StyleIndex {
             stack: Vec::new(),
             visited: BTreeSet::new(),
             total_bytes: 0,
+            imports_seen: 0,
             complete: true,
             reason: None,
         };
+        if matches!(scope, StyleScope::Unknown) {
+            collector.mark_incomplete(
+                "template is not a discovered page/component; enclosing page styles are unknown",
+            );
+        }
+        if isolation.enclosing_page_unknown() && !matches!(scope, StyleScope::Unknown) {
+            collector.mark_incomplete(format!(
+                "style isolation `{}` may include unknown enclosing page styles",
+                isolation.label()
+            ));
+        }
+        if matches!(isolation, StyleIsolation::Unknown) {
+            collector.mark_incomplete("styleIsolation value is not understood");
+        }
         for root in roots {
             collector.collect(&root.path, root.scope, true, 0, None);
         }
         StyleViewFacts {
             view: view.clone(),
+            project_id: project_id.map(str::to_owned),
+            scope,
+            isolation,
             files: collector.files,
             classes: collector.classes,
             issues: collector.issues,
@@ -600,6 +802,24 @@ impl StyleIndex {
             reason: collector.reason,
         }
     }
+}
+
+/// Returns the estimated heap cost of one parsed sheet.
+fn estimate_sheet_bytes(sheet: &StyleSheet) -> usize {
+    let mut total = sheet.bytes;
+    for class in &sheet.classes {
+        total = total
+            .saturating_add(size_of::<ClassToken>())
+            .saturating_add(class.name.len())
+            .saturating_add(class.selector.len())
+            .saturating_add(class.comment.as_ref().map_or(0, String::len));
+    }
+    for import in &sheet.imports {
+        total = total
+            .saturating_add(size_of::<StyleImport>())
+            .saturating_add(import.specifier.len());
+    }
+    total
 }
 
 /// One chain root before parsing.
@@ -610,17 +830,26 @@ struct RootStyle {
 
 /// Builds chain roots for one view.
 fn style_roots(
-    project: &Project,
+    project: &ProjectSnapshot,
     view: &ProjectPath,
     scope: StyleScope,
+    isolation: StyleIsolation,
     config: &StyleConfig,
 ) -> Vec<RootStyle> {
     let mut roots = Vec::new();
     let mut seen = BTreeSet::new();
     let mut push = |path: ProjectPath, scope: StyleScope| {
-        if !is_style_path(&path) || !exists(project, &path) || !seen.insert(path.clone()) {
+        if !is_style_path(&path) || seen.contains(&path) {
             return;
         }
+        // Keep an escaping root in the chain so `sheet` reports EscapesRoot
+        // and the facts cannot claim completeness.
+        let exists = exists(project, &path);
+        let escapes = files::escapes_root(project.root(), &path);
+        if !exists && !escapes {
+            return;
+        }
+        seen.insert(path.clone());
         roots.push(RootStyle { path, scope });
     };
     for extension in ["wxss", "scss"] {
@@ -628,19 +857,21 @@ fn style_roots(
             push(path, scope);
         }
     }
-    for name in ["app.wxss", "app.scss"] {
-        if let Some(path) = app_style_path(project, name) {
-            push(path, StyleScope::AppGlobal);
+    if isolation.app_styles_apply() {
+        for name in ["app.wxss", "app.scss"] {
+            if let Some(path) = app_style_path(project, name) {
+                push(path, StyleScope::AppGlobal);
+            }
         }
-    }
-    for path in &config.global_styles {
-        push(path.clone(), StyleScope::ConfiguredGlobal);
+        for path in &config.global_styles {
+            push(path.clone(), StyleScope::ConfiguredGlobal);
+        }
     }
     roots
 }
 
 /// Returns the app-root-relative style path for a fixed file name.
-fn app_style_path(project: &Project, name: &str) -> Option<ProjectPath> {
+fn app_style_path(project: &ProjectSnapshot, name: &str) -> Option<ProjectPath> {
     project.source_root().map_or_else(
         || ProjectPath::new(name).ok(),
         |root| ProjectPath::new(format!("{}/{name}", root.as_str())).ok(),
@@ -662,6 +893,35 @@ fn view_scope(project: &Project, view: &ProjectPath) -> StyleScope {
     }
 }
 
+/// Reads isolation from the discovered page/component configuration.
+fn view_isolation(project: &Project, view: &ProjectPath, scope: StyleScope) -> StyleIsolation {
+    match scope {
+        StyleScope::Page => project
+            .pages()
+            .iter()
+            .find(|page| &page.wxml == view)
+            .map_or(StyleIsolation::Unknown, |page| {
+                StyleIsolation::from_config(
+                    page.config.style_isolation.as_deref(),
+                    page.config.add_global_class,
+                    false,
+                )
+            }),
+        StyleScope::Component => project
+            .components()
+            .iter()
+            .find(|component| &component.wxml == view)
+            .map_or(StyleIsolation::Unknown, |component| {
+                StyleIsolation::from_config(
+                    component.style_isolation.as_deref(),
+                    component.add_global_class,
+                    true,
+                )
+            }),
+        _ => StyleIsolation::Unknown,
+    }
+}
+
 /// Cascade priority of a scope; lower ranks override higher ranks.
 const fn scope_rank(scope: StyleScope) -> u8 {
     match scope {
@@ -671,9 +931,9 @@ const fn scope_rank(scope: StyleScope) -> u8 {
     }
 }
 
-/// Returns whether a style file exists on disk or in the overlay.
-fn exists(project: &Project, path: &ProjectPath) -> bool {
-    project.overlay().contains(path) || files::is_file(project.root(), path)
+/// Returns whether a style file exists on disk or in the snapshot overlay.
+fn exists(project: &ProjectSnapshot, path: &ProjectPath) -> bool {
+    project.has_overlay(path) || files::is_file(project.root(), path)
 }
 
 /// Returns the format of a style path.
@@ -689,7 +949,7 @@ fn style_file_kind(path: &ProjectPath) -> Option<StyleFileKind> {
 /// Accumulates one view's import chain.
 struct Collector<'a> {
     index: &'a mut StyleIndex,
-    project: &'a Project,
+    project: &'a ProjectSnapshot,
     limits: StyleLimits,
     files: Vec<StyleFileInfo>,
     classes: Vec<ClassDefinition>,
@@ -697,6 +957,7 @@ struct Collector<'a> {
     stack: Vec<ProjectPath>,
     visited: BTreeSet<ProjectPath>,
     total_bytes: usize,
+    imports_seen: usize,
     complete: bool,
     reason: Option<String>,
 }
@@ -778,6 +1039,7 @@ impl Collector<'_> {
                 imported_from: imported_from.cloned(),
             });
         }
+        let file = Arc::new(path.clone());
 
         self.stack.push(path.clone());
         let mut class_index = 0_usize;
@@ -804,11 +1066,8 @@ impl Collector<'_> {
             class_index += 1;
             let order = u32::try_from(self.classes.len()).unwrap_or(u32::MAX);
             self.classes.push(ClassDefinition {
-                name: class.name.clone(),
-                file: path.clone(),
-                range: class.range,
-                selector: class.selector.clone(),
-                comment: class.comment.clone(),
+                token: Arc::clone(class),
+                file: Arc::clone(&file),
                 scope,
                 imported: !is_root,
                 order,
@@ -825,6 +1084,22 @@ impl Collector<'_> {
         scope: StyleScope,
         depth: usize,
     ) {
+        if matches!(import.kind, StyleImportKind::Builtin) {
+            return;
+        }
+        if self.files.len() >= self.limits.max_files
+            || self.total_bytes >= self.limits.max_total_bytes
+            || self.imports_seen >= MAX_STYLE_IMPORTS_PER_VIEW
+        {
+            self.mark_incomplete("style import budget reached");
+            self.issue(
+                from,
+                StyleIssueKind::Truncated,
+                "style import budget reached",
+            );
+            return;
+        }
+        self.imports_seen = self.imports_seen.saturating_add(1);
         match import.kind {
             StyleImportKind::Remote => {
                 self.mark_incomplete("remote style import is not fetched");
@@ -866,6 +1141,7 @@ impl Collector<'_> {
                     );
                 }
             },
+            StyleImportKind::Builtin => {}
         }
     }
 }
@@ -879,7 +1155,7 @@ enum ImportTarget {
 }
 
 /// Resolves an import to an existing local style file.
-fn resolve_import(project: &Project, from: &ProjectPath, specifier: &str) -> ImportTarget {
+fn resolve_import(project: &ProjectSnapshot, from: &ProjectPath, specifier: &str) -> ImportTarget {
     if is_remote_specifier(specifier) {
         return ImportTarget::Remote;
     }
@@ -904,7 +1180,7 @@ fn resolve_import(project: &Project, from: &ProjectPath, specifier: &str) -> Imp
     let Ok(path) = resolved else {
         return ImportTarget::Escapes;
     };
-    if !project_contains(project, &path) {
+    if !project.contains_source(&path) {
         return ImportTarget::Escapes;
     }
     for candidate in import_candidates(&path, from) {
@@ -913,11 +1189,6 @@ fn resolve_import(project: &Project, from: &ProjectPath, specifier: &str) -> Imp
         }
     }
     ImportTarget::Missing
-}
-
-/// Returns whether the project owns a style path.
-fn project_contains(project: &Project, path: &ProjectPath) -> bool {
-    project.contains_source(path)
 }
 
 /// Builds deterministic import candidates for one specifier path.
@@ -970,21 +1241,35 @@ fn push_issue(issues: &mut Vec<StyleIssue>, issue: StyleIssue) {
 
 /// Optional style/resource existence diagnostics.
 ///
-/// The default is disabled. [`StyleDiagnosticsPolicy::enabled`] is intended for
-/// a caller that has a complete index; undefined classes are never reported
-/// from a partial index and remote/dynamic resource values are never reported
-/// as missing.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// The conservative default enables only provable missing local resources and
+/// leaves class diagnostics off. Undefined classes are never reported from a
+/// partial index; remote/dynamic resource values are never reported as
+/// missing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StyleDiagnosticsPolicy {
-    /// Whether diagnostics may be produced.
-    pub enabled: bool,
+    /// Report resource attributes whose local target does not exist.
+    pub resources: bool,
+    /// Report static class tokens missing from a complete style index.
+    pub classes: bool,
+}
+
+impl Default for StyleDiagnosticsPolicy {
+    fn default() -> Self {
+        Self {
+            resources: true,
+            classes: false,
+        }
+    }
 }
 
 impl StyleDiagnosticsPolicy {
-    /// Creates an enabled policy.
+    /// Creates a policy with both diagnostic families enabled.
     #[must_use]
     pub const fn enabled() -> Self {
-        Self { enabled: true }
+        Self {
+            resources: true,
+            classes: true,
+        }
     }
 
     /// Returns class names used by the template but not defined by the index.
@@ -994,15 +1279,16 @@ impl StyleDiagnosticsPolicy {
     /// skipped rather than guessed.
     #[must_use]
     pub fn undefined_classes(&self, facts: &StyleViewFacts, used: &[String]) -> Vec<String> {
-        if !self.enabled || !facts.complete {
+        if !self.classes || !facts.complete {
             return Vec::new();
         }
+        let defined: BTreeSet<&str> = facts.classes.iter().map(ClassDefinition::name).collect();
         let mut undefined = BTreeSet::new();
         for name in used {
             if !is_static_class_name(name) {
                 continue;
             }
-            if facts.primary(name).is_none() {
+            if !defined.contains(name.as_str()) {
                 undefined.insert(name.clone());
             }
         }
@@ -1020,7 +1306,7 @@ impl StyleDiagnosticsPolicy {
         wxml: &ProjectPath,
         used: &[String],
     ) -> Vec<String> {
-        if !self.enabled {
+        if !self.resources {
             return Vec::new();
         }
         let mut missing = BTreeSet::new();
@@ -1090,5 +1376,13 @@ mod tests {
 
         let exact = import_candidates(&path("shared/theme.scss"), &from_wxss);
         assert_eq!(exact, vec![path("shared/theme.scss")]);
+    }
+
+    #[test]
+    fn sheet_estimate_counts_structure_not_only_source() {
+        let text = ".a { /* long comment */ }\n.b, .c { color: red; }\n";
+        let sheet = parse_style_sheet(&path("a.scss"), text, 100);
+        assert!(sheet.estimated_bytes > sheet.bytes);
+        assert!(sheet.estimated_bytes > text.len());
     }
 }

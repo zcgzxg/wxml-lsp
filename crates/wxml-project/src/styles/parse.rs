@@ -6,11 +6,14 @@
 //! (interpolation, mixins, `@extend`, `@include`, control directives) sets the
 //! incomplete flag instead of being guessed.
 
+use std::sync::Arc;
+
 use wxml_text::SourceRange;
 
 use super::{
-    ClassToken, MAX_CLASS_NAME_BYTES, MAX_DOC_COMMENT_BYTES, MAX_STYLE_ISSUES, StyleImport,
-    StyleImportKind, StyleIssue, StyleIssueKind, StyleSheet,
+    ClassToken, MAX_CLASS_NAME_BYTES, MAX_DOC_COMMENT_BYTES, MAX_IMPORT_SPECIFIER_BYTES,
+    MAX_STYLE_IMPORTS_PER_SHEET, MAX_STYLE_ISSUES, StyleImport, StyleImportKind, StyleIssue,
+    StyleIssueKind, StyleSheet,
 };
 use crate::files::ProjectPath;
 
@@ -42,6 +45,7 @@ pub fn parse_style_sheet(path: &ProjectPath, text: &str, max_classes: usize) -> 
     };
     parser.run();
     parser.sheet.bytes = text.len();
+    parser.sheet.estimated_bytes = super::estimate_sheet_bytes(&parser.sheet);
     parser.sheet
 }
 
@@ -134,7 +138,18 @@ impl Parser<'_> {
                         .map_or(len, |offset| index + offset + 1);
                 }
                 b'\'' | b'"' => {
-                    index = skip_string(self.bytes, index, len).unwrap_or(len);
+                    if let Some(next) = skip_string(self.bytes, index, len) {
+                        index = next;
+                    } else {
+                        self.mark_incomplete("unterminated style string");
+                        self.issue(
+                            StyleIssueKind::Malformed,
+                            "unterminated style string; the remainder of the line was skipped",
+                        );
+                        index = self.text[index..]
+                            .find('\n')
+                            .map_or(len, |offset| index + offset + 1);
+                    }
                 }
                 b'#' if self.bytes.get(index + 1) == Some(&b'{') => {
                     self.mark_incomplete("dynamic SCSS interpolation is not expanded");
@@ -161,6 +176,7 @@ impl Parser<'_> {
                     if self.frames.pop().is_none() {
                         // Unbalanced input: ignore the stray brace.
                     }
+                    self.pending_comment = None;
                     self.prelude_start = index + 1;
                     index += 1;
                 }
@@ -229,7 +245,8 @@ impl Parser<'_> {
     fn handle_at_statement(&mut self, statement: &str, offset: usize) {
         let name = at_rule_name(statement).to_ascii_lowercase();
         match name.as_str() {
-            "import" | "use" | "forward" => self.parse_imports(statement, offset),
+            "import" => self.parse_imports(statement, offset, false),
+            "use" | "forward" => self.parse_imports(statement, offset, true),
             "extend" => {
                 self.mark_incomplete("SCSS @extend is not expanded");
                 self.issue(
@@ -249,7 +266,7 @@ impl Parser<'_> {
     }
 
     /// Extracts quoted or `url()` specifiers from an import statement.
-    fn parse_imports(&mut self, statement: &str, offset: usize) {
+    fn parse_imports(&mut self, statement: &str, offset: usize, single: bool) {
         let bytes = statement.as_bytes();
         let mut index = 0_usize;
         let mut found = false;
@@ -275,6 +292,9 @@ impl Parser<'_> {
                     let specifier = &statement[start..end];
                     self.push_import(specifier, offset + start, offset + end);
                     found = true;
+                    if single {
+                        return;
+                    }
                     index = end + 1;
                 }
                 b'u' | b'U'
@@ -320,13 +340,31 @@ impl Parser<'_> {
         if trimmed.is_empty() {
             return;
         }
+        if trimmed.len() > MAX_IMPORT_SPECIFIER_BYTES {
+            self.mark_incomplete("style import specifier is too long");
+            self.issue(
+                StyleIssueKind::Truncated,
+                "style import specifier exceeds the index limit",
+            );
+            return;
+        }
+        if self.sheet.imports.len() >= MAX_STYLE_IMPORTS_PER_SHEET {
+            self.mark_incomplete("style import budget reached");
+            self.issue(StyleIssueKind::Truncated, "style import budget reached");
+            return;
+        }
         let (Some(start), Some(end)) = (u32::try_from(start).ok(), u32::try_from(end).ok()) else {
             return;
         };
         let Ok(range) = SourceRange::from_bounds(start, end) else {
             return;
         };
-        let kind = if crate::resources::is_remote_specifier(trimmed) {
+        let kind = if trimmed
+            .get(..5)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("sass:"))
+        {
+            StyleImportKind::Builtin
+        } else if crate::resources::is_remote_specifier(trimmed) {
             StyleImportKind::Remote
         } else {
             StyleImportKind::Local
@@ -491,7 +529,7 @@ impl Parser<'_> {
             self.issue(StyleIssueKind::Truncated, "class budget reached");
             return;
         }
-        self.sheet.classes.push(token);
+        self.sheet.classes.push(Arc::new(token));
     }
 }
 
@@ -530,35 +568,74 @@ fn expand_selector(
 }
 
 /// Expands `&` occurrences against parent selectors with a bounded product.
+///
+/// Only top-level `&` characters are replaced; ampersands inside strings,
+/// comments, attribute selectors or pseudo arguments stay literal.
 fn expand_parent_references(selector: &str, base: &[String]) -> Vec<String> {
-    let mut expanded = vec![selector.to_owned()];
-    let mut guard = 0_usize;
-    while expanded.iter().any(|item| item.contains('&')) && guard < MAX_SELECTOR_EXPANSIONS {
-        guard += 1;
+    let positions = top_level_ampersands(selector);
+    if positions.is_empty() {
+        return vec![normalize_selector(selector)];
+    }
+    let mut results = vec![String::new()];
+    let mut last = 0_usize;
+    for position in positions {
+        let Some(text) = selector.get(last..position) else {
+            return Vec::new();
+        };
         let mut next = Vec::new();
-        for item in &expanded {
-            if let Some(position) = item.find('&') {
-                for parent in base {
-                    let mut replaced = item.clone();
-                    replaced.replace_range(position..=position, parent);
-                    next.push(normalize_selector(&replaced));
-                    if next.len() >= MAX_SELECTOR_EXPANSIONS {
-                        break;
-                    }
+        for prefix in &results {
+            for parent in base {
+                if next.len() >= MAX_SELECTOR_EXPANSIONS {
+                    break;
                 }
-            } else {
-                next.push(item.clone());
+                next.push(format!("{prefix}{text}{parent}"));
             }
             if next.len() >= MAX_SELECTOR_EXPANSIONS {
                 break;
             }
         }
-        expanded = next;
+        results = next;
+        last = position + 1;
     }
-    expanded
+    if let Some(tail) = selector.get(last..) {
+        for result in &mut results {
+            result.push_str(tail);
+        }
+    }
+    results
         .into_iter()
-        .map(|item| truncate_selector(&item))
+        .map(|item| truncate_selector(&normalize_selector(&item)))
         .collect()
+}
+
+/// Returns byte positions of `&` outside strings, comments, brackets and
+/// parentheses.
+fn top_level_ampersands(selector: &str) -> Vec<usize> {
+    let bytes = selector.as_bytes();
+    let mut positions = Vec::new();
+    let mut index = 0_usize;
+    let mut paren_depth = 0_usize;
+    let mut bracket_depth = 0_usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' | b'"' => {
+                index = skip_string(bytes, index, bytes.len()).unwrap_or(bytes.len());
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                index = selector[index + 2..]
+                    .find("*/")
+                    .map_or(bytes.len(), |position| index + 2 + position + 2);
+            }
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'&' if paren_depth == 0 && bracket_depth == 0 => positions.push(index),
+            _ => {}
+        }
+        index += 1;
+    }
+    positions
 }
 
 /// Scans one selector item for literal class tokens.
@@ -583,7 +660,15 @@ fn scan_selector_classes(
                     .map_or(bytes.len(), |position| index + 2 + position + 2);
             }
             b'\'' | b'"' => {
-                index = skip_string(bytes, index, bytes.len()).unwrap_or(bytes.len());
+                if let Some(next) = skip_string(bytes, index, bytes.len()) {
+                    index = next;
+                } else {
+                    if sheet.complete {
+                        sheet.complete = false;
+                        sheet.reason = Some("unterminated style string".to_owned());
+                    }
+                    return;
+                }
             }
             b'\\' => {
                 // Escaped identifiers are not normalized; skip the escape.
@@ -651,6 +736,7 @@ fn scan_selector_classes(
                     range,
                     selector: display.to_owned(),
                     comment: None,
+                    rename_safe: true,
                 });
                 index = end;
             }
@@ -668,8 +754,12 @@ fn scan_selector_classes(
                 if at_compound_start && end > suffix_start {
                     let suffix = &selector[suffix_start..end];
                     if let Some(names) = composite_names(base, suffix) {
+                        let mut range_start = suffix_start;
+                        while range_start < end && matches!(bytes[range_start], b'-' | b'_') {
+                            range_start += 1;
+                        }
                         let (Some(range_start), Some(range_end)) = (
-                            u32::try_from(offset + index).ok(),
+                            u32::try_from(offset + range_start).ok(),
                             u32::try_from(offset + end).ok(),
                         ) else {
                             index = end;
@@ -682,6 +772,7 @@ fn scan_selector_classes(
                                     range,
                                     selector: display.to_owned(),
                                     comment: None,
+                                    rename_safe: false,
                                 });
                             }
                         }
@@ -720,30 +811,7 @@ fn composite_names(base: &[String], suffix: &str) -> Option<Vec<String>> {
 /// Returns whether a selector contains `&` outside strings, comments,
 /// parentheses and attribute selectors.
 fn contains_top_level_ampersand(selector: &str) -> bool {
-    let bytes = selector.as_bytes();
-    let mut index = 0_usize;
-    let mut paren_depth = 0_usize;
-    let mut bracket_depth = 0_usize;
-    while index < bytes.len() {
-        match bytes[index] {
-            b'\'' | b'"' => {
-                index = skip_string(bytes, index, bytes.len()).unwrap_or(bytes.len());
-            }
-            b'/' if bytes.get(index + 1) == Some(&b'*') => {
-                index = selector[index + 2..]
-                    .find("*/")
-                    .map_or(bytes.len(), |position| index + 2 + position + 2);
-            }
-            b'(' => paren_depth += 1,
-            b')' => paren_depth = paren_depth.saturating_sub(1),
-            b'[' => bracket_depth += 1,
-            b']' => bracket_depth = bracket_depth.saturating_sub(1),
-            b'&' if paren_depth == 0 && bracket_depth == 0 => return true,
-            _ => {}
-        }
-        index += 1;
-    }
-    false
+    !top_level_ampersands(selector).is_empty()
 }
 
 /// Splits a selector list at top-level commas.
@@ -1050,6 +1118,112 @@ mod tests {
         let sheet = parse("@中文 { .inside { } }\n.after { }\n");
         assert!(names(&sheet).contains(&"after"), "{:?}", names(&sheet));
         assert!(!sheet.complete);
+    }
+
+    #[test]
+    fn use_with_only_imports_the_module() {
+        let sheet = parse(
+            r#"
+@use "theme" with ($primary: "body");
+@use "sass:math";
+@forward "tokens" show $spacing;
+"#,
+        );
+        let imports: Vec<_> = sheet
+            .imports
+            .iter()
+            .map(|import| (import.specifier.as_str(), import.kind))
+            .collect();
+        assert_eq!(
+            imports,
+            vec![
+                ("theme", StyleImportKind::Local),
+                ("sass:math", StyleImportKind::Builtin),
+                ("tokens", StyleImportKind::Local),
+            ]
+        );
+        assert!(sheet.complete);
+    }
+
+    #[test]
+    fn ampersand_composite_ranges_cover_only_the_suffix() {
+        let text = ".card { &-header { } &:hover { } &[title=\"a&b\"] { } }";
+        let sheet = parse(text);
+        let header = sheet
+            .classes
+            .iter()
+            .find(|class| class.name == "card-header")
+            .expect("composite class");
+        assert!(!header.rename_safe);
+        assert_eq!(
+            &text[header.range.start() as usize..header.range.end() as usize],
+            "header"
+        );
+        let hover = sheet
+            .classes
+            .iter()
+            .find(|class| class.name == "card:hover")
+            .unwrap_or_else(|| {
+                sheet
+                    .classes
+                    .iter()
+                    .find(|class| class.name == "card")
+                    .expect("card")
+            });
+        assert!(!hover.selector.contains("a.cardb"), "{}", hover.selector);
+    }
+
+    #[test]
+    fn unterminated_strings_mark_incomplete_and_recover_at_newline() {
+        let sheet = parse(".a { content: \"oops\n } .b { }\n.c { }");
+        assert!(!sheet.complete);
+        assert!(
+            sheet
+                .issues
+                .iter()
+                .any(|issue| issue.kind == StyleIssueKind::Malformed)
+        );
+        assert!(names(&sheet).contains(&"c"), "{:?}", names(&sheet));
+    }
+
+    #[test]
+    fn trailing_comment_does_not_document_the_next_rule() {
+        let sheet = parse(".a { color: red; /* note */ }\n.b { }");
+        assert_eq!(sheet.classes[0].comment, None);
+        assert_eq!(sheet.classes[1].comment, None);
+    }
+
+    #[test]
+    fn rejects_import_specifiers_above_the_limit() {
+        let long = "x".repeat(MAX_IMPORT_SPECIFIER_BYTES + 1);
+        let sheet = parse(&format!("@import \"{long}\";\n.a {{ }}\n"));
+        assert_eq!(sheet.imports, Vec::new());
+        assert!(!sheet.complete);
+        assert!(
+            sheet
+                .issues
+                .iter()
+                .any(|issue| issue.kind == StyleIssueKind::Truncated)
+        );
+        assert!(names(&sheet).contains(&"a"));
+    }
+
+    #[test]
+    fn caps_imports_and_specifier_length() {
+        let mut text = String::new();
+        for index in 0..(MAX_STYLE_IMPORTS_PER_SHEET + 2) {
+            use std::fmt::Write as _;
+            writeln!(text, "@import \"m{index}\";").expect("import");
+        }
+        let sheet = parse(&text);
+        assert_eq!(sheet.imports.len(), MAX_STYLE_IMPORTS_PER_SHEET);
+        assert!(!sheet.complete);
+        assert!(
+            sheet
+                .issues
+                .iter()
+                .any(|issue| issue.kind == StyleIssueKind::Truncated)
+        );
     }
 
     #[test]

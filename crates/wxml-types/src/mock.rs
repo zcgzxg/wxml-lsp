@@ -292,6 +292,7 @@ mod tests {
             range: range(20, 24),
             severity: crate::backend::DiagnosticSeverity::Error,
             message: "Property 'nmae' does not exist".to_owned(),
+            code: None,
         }
     }
 

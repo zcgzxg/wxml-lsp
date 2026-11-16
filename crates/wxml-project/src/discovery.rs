@@ -126,6 +126,10 @@ pub struct PageConfig {
     pub global: Arc<BTreeMap<String, UsingComponent>>,
     /// Page/component-local `usingComponents`; these shadow global entries.
     pub local: BTreeMap<String, UsingComponent>,
+    /// Raw `styleIsolation` value from page/component JSON.
+    pub style_isolation: Option<String>,
+    /// Raw `addGlobalClass` flag from component JSON.
+    pub add_global_class: bool,
 }
 
 impl PageConfig {
@@ -175,6 +179,10 @@ pub struct Component {
     pub json: Option<ProjectPath>,
     /// `properties` roots extracted from the script.
     pub properties: Vec<DataRoot>,
+    /// Raw `styleIsolation` value from component JSON.
+    pub style_isolation: Option<String>,
+    /// Raw `addGlobalClass` flag from component JSON.
+    pub add_global_class: bool,
 }
 
 /// Severity-free category of one discovery issue.
@@ -426,6 +434,8 @@ fn parse_page_config_in(
         value: PageConfig {
             global: Arc::new(BTreeMap::new()),
             local: using_components,
+            style_isolation: raw.style_isolation,
+            add_global_class: raw.add_global_class.unwrap_or(false),
         },
         issues,
     })
@@ -803,6 +813,10 @@ struct RawSubPackage {
 struct RawPageConfig {
     #[serde(default)]
     using_components: BTreeMap<String, String>,
+    #[serde(default)]
+    style_isolation: Option<String>,
+    #[serde(default)]
+    add_global_class: Option<bool>,
 }
 
 /// Parses JSON, stripping an optional byte-order mark.
@@ -990,7 +1004,7 @@ fn build_page(
         ));
     }
 
-    let (json, local) = load_page_local(
+    let (json, local, style_isolation, add_global_class) = load_page_local(
         context,
         &base,
         reported_missing,
@@ -1001,6 +1015,8 @@ fn build_page(
     let config = PageConfig {
         global: Arc::clone(context.global_components),
         local,
+        style_isolation,
+        add_global_class,
     };
 
     Some(Page {
@@ -1023,20 +1039,27 @@ fn load_page_local(
     issues: &mut Issues,
     local_budget: &mut usize,
     local_truncated: &mut bool,
-) -> (Option<ProjectPath>, BTreeMap<String, UsingComponent>) {
+) -> (
+    Option<ProjectPath>,
+    BTreeMap<String, UsingComponent>,
+    Option<String>,
+    bool,
+) {
     let root = context.root;
     let overlay = context.overlay;
     let Ok(candidate) = base.with_extension("json") else {
-        return (None, BTreeMap::new());
+        return (None, BTreeMap::new(), None, false);
     };
     if *local_budget == 0 {
         let json = exists(root, overlay, &candidate).then_some(candidate);
         if json.is_some() {
-            // The file may contain local components we deliberately do not
-            // parse; report a single project-level truncation marker.
+            // The file may contain local components or isolation settings we
+            // deliberately do not parse; report a single project-level marker
+            // and keep the style chain partial.
             *local_truncated = true;
+            return (json, BTreeMap::new(), Some("unknown".to_owned()), false);
         }
-        return (json, BTreeMap::new());
+        return (json, BTreeMap::new(), None, false);
     }
     let attempt = if context.budget.exhausted() {
         None
@@ -1046,7 +1069,8 @@ fn load_page_local(
     if !charge_json_attempt(context.budget, attempt) {
         context.budget.report(issues, &candidate);
         let json = exists(root, overlay, &candidate).then_some(candidate);
-        return (json, BTreeMap::new());
+        let isolation = json.as_ref().map(|_| "unknown".to_owned());
+        return (json, BTreeMap::new(), isolation, false);
     }
     match overlay.read_text(root, &candidate) {
         Ok(Some(text)) => {
@@ -1054,12 +1078,19 @@ fn load_page_local(
                 let extra = text.len() - attempt.unwrap_or(0);
                 if !context.budget.consume(extra) {
                     context.budget.report(issues, &candidate);
-                    return (Some(candidate), BTreeMap::new());
+                    return (
+                        Some(candidate),
+                        BTreeMap::new(),
+                        Some("unknown".to_owned()),
+                        false,
+                    );
                 }
             }
             match parse_page_config_in(&candidate, &text, context.source.parent().as_ref()) {
                 Ok(parsed) => {
                     issues.extend(parsed.issues);
+                    let style_isolation = parsed.value.style_isolation;
+                    let add_global_class = parsed.value.add_global_class;
                     let mut local = parsed.value.local;
                     let page_cap_hit = local.len() > MAX_PAGE_LOCAL_COMPONENTS;
                     if page_cap_hit {
@@ -1082,7 +1113,7 @@ fn load_page_local(
                         reported_missing,
                         issues,
                     );
-                    (Some(candidate), local)
+                    (Some(candidate), local, style_isolation, add_global_class)
                 }
                 Err(error) => {
                     issues.push(issue(
@@ -1090,11 +1121,16 @@ fn load_page_local(
                         DiscoveryIssueKind::InvalidConfig,
                         error.to_string(),
                     ));
-                    (Some(candidate), BTreeMap::new())
+                    (
+                        Some(candidate),
+                        BTreeMap::new(),
+                        Some("unknown".to_owned()),
+                        false,
+                    )
                 }
             }
         }
-        Ok(None) => (None, BTreeMap::new()),
+        Ok(None) => (None, BTreeMap::new(), None, false),
         Err(error) => {
             context.budget.truncated = true;
             context.budget.report(issues, &candidate);
@@ -1103,7 +1139,12 @@ fn load_page_local(
                 DiscoveryIssueKind::UnreadableFile,
                 error.to_string(),
             ));
-            (Some(candidate), BTreeMap::new())
+            (
+                Some(candidate),
+                BTreeMap::new(),
+                Some("unknown".to_owned()),
+                false,
+            )
         }
     }
 }
@@ -1241,7 +1282,8 @@ fn visit_component(
         ));
     }
 
-    let json = load_component_json(context, base, depth, pending, reported_missing, issues);
+    let (json, style_isolation, add_global_class) =
+        load_component_json(context, base, depth, pending, reported_missing, issues);
     let properties =
         component_properties(root, overlay, script.script.as_ref(), issues, script_budget);
 
@@ -1251,6 +1293,8 @@ fn visit_component(
         script: script.script,
         json,
         properties,
+        style_isolation,
+        add_global_class,
     })
 }
 
@@ -1262,10 +1306,12 @@ fn load_component_json(
     pending: &mut PendingComponents,
     reported_missing: &mut BTreeSet<ProjectPath>,
     issues: &mut Issues,
-) -> Option<ProjectPath> {
+) -> (Option<ProjectPath>, Option<String>, bool) {
     let root = context.root;
     let overlay = context.overlay;
-    let candidate = base.with_extension("json").ok()?;
+    let Ok(candidate) = base.with_extension("json") else {
+        return (None, None, false);
+    };
     let attempt = if context.budget.exhausted() {
         None
     } else {
@@ -1273,7 +1319,11 @@ fn load_component_json(
     };
     if !charge_json_attempt(context.budget, attempt) {
         context.budget.report(issues, &candidate);
-        return exists(root, overlay, &candidate).then_some(candidate);
+        return (
+            exists(root, overlay, &candidate).then_some(candidate),
+            None,
+            false,
+        );
     }
     match overlay.read_text(root, &candidate) {
         Ok(Some(text)) => {
@@ -1281,11 +1331,16 @@ fn load_component_json(
                 let extra = text.len() - attempt.unwrap_or(0);
                 if !context.budget.consume(extra) {
                     context.budget.report(issues, &candidate);
-                    return Some(candidate);
+                    return (Some(candidate), Some("unknown".to_owned()), false);
                 }
             }
+            let mut parsed_style = (None, false);
             match parse_page_config_in(&candidate, &text, context.source.parent().as_ref()) {
                 Ok(parsed) => {
+                    parsed_style = (
+                        parsed.value.style_isolation.clone(),
+                        parsed.value.add_global_class,
+                    );
                     issues.extend(parsed.issues);
                     report_missing_components(
                         root,
@@ -1303,9 +1358,9 @@ fn load_component_json(
                     error.to_string(),
                 )),
             }
-            Some(candidate)
+            (Some(candidate), parsed_style.0, parsed_style.1)
         }
-        Ok(None) => None,
+        Ok(None) => (None, None, false),
         Err(error) => {
             context.budget.truncated = true;
             context.budget.report(issues, &candidate);
@@ -1314,7 +1369,7 @@ fn load_component_json(
                 DiscoveryIssueKind::UnreadableFile,
                 error.to_string(),
             ));
-            Some(candidate)
+            (Some(candidate), None, false)
         }
     }
 }

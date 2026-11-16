@@ -80,11 +80,12 @@ fn fixture() -> TempProject {
     project.write("pages/index/index.ts", "Page({})");
     project.write("images/logo.png", "png");
     project.write("images/my logo.png", "png");
+    project.write("styles/extra.wxss", ".configured { color: gray; }\n");
     project
 }
 
 const fn wxml_text() -> &'static str {
-    "<!-- 中文 -->\r\n<view class=\"card \">\r\n  <image src=\"../../images/logo.png\" />\r\n  <image src=\"../../images/my logo.png\" />\r\n  <image src=\"../../images/lo\" />\r\n  <image src=\"https://example.com/a.png\" />\r\n  <image src=\"../../images/missing.png\" />\r\n</view>\r\n"
+    "<!-- 😀 中文 -->\r\n<view class=\"card \">\r\n  <image src=\"../../images/logo.png\" />\r\n  <image src=\"../../images/my logo.png\" />\r\n  <image src=\"../../images/lo\" />\r\n  <image src=\"https://example.com/a.png\" />\r\n  <image src=\"../../images/missing.png\" />\r\n  <navigator url=\"../../images/logo.png\" />\r\n</view>\r\n"
 }
 
 fn completion_offset(text: &str) -> usize {
@@ -238,7 +239,13 @@ fn class_completion_hover_and_definition_use_project_styles() {
         request(
             1,
             "initialize",
-            json!({"rootUri": project.root_uri(), "capabilities": {}}),
+            json!({
+                "rootUri": project.root_uri(),
+                "capabilities": {},
+                "initializationOptions": {
+                    "wxml": {"globalStyles": ["styles/extra.wxss"]}
+                },
+            }),
         ),
         notification("initialized", json!({})),
         notification(
@@ -279,6 +286,7 @@ fn class_completion_hover_and_definition_use_project_styles() {
     assert!(labels.contains(&"card-header".to_owned()), "{labels:?}");
     assert!(labels.contains(&"shared".to_owned()), "{labels:?}");
     assert!(labels.contains(&"app-global".to_owned()), "{labels:?}");
+    assert!(labels.contains(&"configured".to_owned()), "{labels:?}");
     assert!(
         !labels.contains(&"card".to_owned()),
         "existing class: {labels:?}"
@@ -482,6 +490,10 @@ fn unsaved_style_overlays_and_watched_files_refresh_classes() {
                     "text": ".unsaved { color: red; }\n",
                 }
             }),
+        ),
+        notification(
+            "workspace/didChangeWatchedFiles",
+            json!({"changes": [{"uri": style_uri, "type": 2}]}),
         ),
         response(
             21,
