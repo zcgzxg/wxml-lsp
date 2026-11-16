@@ -786,11 +786,20 @@ fn unconfigured_backend_returns_unavailable_without_spawning() {
 }
 
 #[test]
-fn capabilities_are_three_supported_features() {
+fn capabilities_are_four_supported_features() {
     let backend = backend(&Shared::default(), StubHost::new(view(Vec::new())));
     let capabilities = backend.capabilities();
     assert!(capabilities.hover.is_supported());
     assert!(capabilities.diagnostics.is_supported());
     assert!(capabilities.definition.is_supported());
-    assert!(!capabilities.completion.is_supported());
+    assert!(capabilities.completion.is_supported());
+}
+
+#[test]
+fn completion_prefix_keeps_the_tail_of_a_long_token() {
+    let text = format!("{}onTap", "a".repeat(300));
+    let prefix = completion_prefix(&text, u32::try_from(text.len()).expect("offset"));
+    assert_eq!(prefix.len(), 256);
+    assert!(prefix.ends_with("onTap"));
+    assert!(text.ends_with(&prefix));
 }
