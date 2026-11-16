@@ -133,24 +133,6 @@ fn empty_list() -> Value {
     })
 }
 
-/// True when `uri` is a WXML template in this server's routing model.
-///
-/// A project host answers exactly; without one (synthetic documents) the URI
-/// extension is the only signal available.
-fn template_document(server: &Server, uri: &str) -> bool {
-    match server.host.route(uri) {
-        crate::project_host::DocumentRoute::Wxml(_) => true,
-        crate::project_host::DocumentRoute::Script(_)
-        | crate::project_host::DocumentRoute::Json(_) => false,
-        crate::project_host::DocumentRoute::Unknown => uri
-            .split(['?', '#'])
-            .next()
-            .unwrap_or(uri)
-            .to_ascii_lowercase()
-            .ends_with(".wxml"),
-    }
-}
-
 /// Short message for a full or stopped dispatch queue.
 const fn submit_message(error: SubmitError) -> &'static str {
     match error {
@@ -183,7 +165,7 @@ impl Server {
         };
         // Completion is a template feature only; scripts and JSON files are
         // routed elsewhere and must not be treated as WXML text.
-        if !template_document(self, uri) {
+        if !crate::handlers::template_document(self, uri) {
             return vec![Outgoing::success(id, empty_list())];
         }
         let Some(offset) = document.offset_at(position) else {

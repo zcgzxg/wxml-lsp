@@ -14,7 +14,11 @@ repository = "https://github.com/BlockLune/tree-sitter-wxml"
 rev = "1cc1761c8c11cacab5516dbe64e20ee689aa4428"
 
 [language_servers.wxml-lsp]
-languages = ["WXML"]
+languages = ["WXML", "JavaScript", "TypeScript", "TSX", "JSON"]
 
 [language_servers.wxml-lsp.language_ids]
 "WXML" = "wxml"
+"JavaScript" = "javascript"
+"TypeScript" = "typescript"
+"TSX" = "typescriptreact"
+"JSON" = "json"

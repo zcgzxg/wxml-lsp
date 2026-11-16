@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use wxml_lsp::project_host::{
-    ChangeDocument, DocumentRoute, HostError, OpenDocument, ProjectHost, ProjectState,
+    ChangeDocument, DocumentRoute, HostError, HostUpdate, OpenDocument, ProjectHost, ProjectState,
+    WatchedChangeKind, WatchedFileChange,
 };
 use wxml_types::{CapabilityStatus, FileId, ProjectId, SnapshotId, SourceRevision, SourceSnapshot};
 
@@ -367,4 +368,405 @@ fn root_and_uri_helpers_do_not_expose_host_paths_in_ids() {
         host.uri_for(&FileId::new(id, "pages/index/index.wxml").expect("file"))
             .is_some()
     );
+}
+
+fn project_path(raw: &str) -> wxml_project::ProjectPath {
+    wxml_project::ProjectPath::new(raw).expect("project path")
+}
+
+fn opened(uri: &str, text: &str) -> OpenDocument {
+    OpenDocument {
+        uri: uri.to_owned(),
+        text: text.to_owned(),
+        version: Some(1),
+    }
+}
+
+fn watched(uri: &str, kind: WatchedChangeKind) -> WatchedFileChange {
+    WatchedFileChange {
+        uri: uri.to_owned(),
+        kind,
+    }
+}
+
+#[test]
+fn unreferenced_project_json_overlay_is_ignored() {
+    let project = fixture();
+    project.write("package.json", r#"{"name":"fixture"}"#);
+    let host = host_with(&project);
+    let path = project_path("package.json");
+    let file = host.file_id(&path).expect("file");
+    let before_revision = host.project_revision();
+    let before_text = host.file_text(&file).expect("disk text");
+
+    let update = host
+        .open_document(opened(
+            &project.uri("package.json"),
+            r#"{"name":"overlay"}"#,
+        ))
+        .expect("open overlay");
+
+    assert_eq!(update, HostUpdate::default());
+    assert_eq!(host.project_revision(), before_revision);
+    assert_eq!(host.file_text(&file), Some(before_text));
+    assert!(
+        host.file_text(&file)
+            .is_some_and(|text| text.contains("fixture"))
+    );
+}
+
+#[test]
+fn excluded_directory_script_overlay_is_ignored() {
+    let project = fixture();
+    project.write("node_modules/pkg/index.js", "module.exports = 1;\n");
+    let host = host_with(&project);
+    let path = project_path("node_modules/pkg/index.js");
+    let file = host.file_id(&path).expect("file");
+    let before_revision = host.project_revision();
+    let before_text = host.file_text(&file).expect("disk text");
+
+    let update = host
+        .open_document(opened(
+            &project.uri("node_modules/pkg/index.js"),
+            "module.exports = 2;\n",
+        ))
+        .expect("open overlay");
+
+    assert_eq!(update, HostUpdate::default());
+    assert_eq!(host.project_revision(), before_revision);
+    assert_eq!(host.file_text(&file), Some(before_text));
+}
+
+#[test]
+fn documents_outside_the_project_root_are_rejected() {
+    let project = fixture();
+    let host = host_with(&project);
+    assert_eq!(
+        host.open_document(opened("file:///etc/evil.ts", "export const x = 1;")),
+        Err(HostError::InvalidUri)
+    );
+    assert_eq!(
+        host.save_document("file:///etc/evil.ts"),
+        Err(HostError::InvalidUri)
+    );
+    assert_eq!(host.route("file:///etc/evil.ts"), DocumentRoute::Unknown);
+}
+
+#[test]
+fn script_overlay_reaches_the_owning_view_analysis() {
+    let project = fixture();
+    let host = host_with(&project);
+    let wxml = project_path("pages/index/index.wxml");
+    let file = host.file_id(&wxml).expect("file");
+    let before_view = host.view_for(&wxml).expect("view").view_revision;
+
+    let update = host
+        .open_document(opened(
+            &project.uri("pages/index/index.ts"),
+            "Page({ data: { user: { name: 'AC004_OVERLAY' as const } } });",
+        ))
+        .expect("open overlay");
+
+    assert!(
+        update
+            .dirty_views
+            .iter()
+            .any(|path| path.as_str() == "pages/index/index.wxml")
+    );
+    assert!(update.project_revision.is_some());
+
+    let snapshot = Arc::new(SourceSnapshot::new(
+        file.clone(),
+        SourceRevision::new(1),
+        SnapshotId::new(11),
+        r#"<view class="page">{{ user.name }}</view>"#,
+    ));
+    host.set_wxml_snapshot(file, Arc::clone(&snapshot));
+    assert!(
+        host.view_for(&wxml).expect("view").view_revision > before_view,
+        "the WXML view revision must advance after a save/didChange snapshot"
+    );
+
+    let view = host.analysis(&snapshot).expect("analysis");
+    let script = view
+        .files
+        .iter()
+        .find(|file| file.path.as_str() == "pages/index/index.ts")
+        .expect("owning script");
+    assert!(script.text.contains("AC004_OVERLAY"));
+}
+
+#[test]
+fn save_document_tracks_owning_views_only() {
+    let project = fixture();
+    let host = host_with(&project);
+    let before_revision = host.project_revision();
+
+    let update = host
+        .save_document(&project.uri("pages/index/index.ts"))
+        .expect("save owning script");
+    assert!(
+        update
+            .dirty_views
+            .iter()
+            .any(|path| path.as_str() == "pages/index/index.wxml")
+    );
+    assert!(update.project_revision.is_some());
+    assert_ne!(host.project_revision(), before_revision);
+
+    let before_revision = host.project_revision();
+    let update = host
+        .save_document(&project.uri("models/user.ts"))
+        .expect("save unreferenced script");
+    assert!(update.dirty_views.is_empty());
+    assert!(update.project_revision.is_none());
+    assert_eq!(host.project_revision(), before_revision);
+}
+
+#[test]
+fn non_owning_script_overlays_reanalyze_every_view() {
+    let project = fixture();
+    let host = host_with(&project);
+    let before = host.project_revision();
+
+    let update = host
+        .open_document(opened(
+            &project.uri("models/user.ts"),
+            "export interface User { name: 'ZED_OVERLAY' }",
+        ))
+        .expect("open non-owning overlay");
+    assert!(
+        update
+            .dirty_views
+            .iter()
+            .any(|path| path.as_str() == "pages/index/index.wxml"),
+        "an imported module can change any view's type results"
+    );
+    assert!(update.project_revision.is_some());
+    assert_ne!(host.project_revision(), before);
+
+    let before = host.project_revision();
+    let update = host
+        .close_document(&project.uri("models/user.ts"))
+        .expect("close non-owning overlay");
+    assert!(!update.dirty_views.is_empty());
+    assert!(update.project_revision.is_some());
+    assert_ne!(host.project_revision(), before);
+}
+
+#[test]
+fn a_page_json_created_after_startup_is_discovered_by_a_watched_event() {
+    let project = TempProject::new();
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/other/other"],"usingComponents":{}}"#,
+    );
+    project.write("pages/other/other.wxml", "<view>{{ other }}</view>");
+    project.write("pages/other/other.ts", "Page({ data: { other: 1 } });");
+    let host = host_with(&project);
+    project.write("pages/other/other.json", r#"{"usingComponents":{}}"#);
+
+    let update = host
+        .watched_files_changed(&[watched(
+            &project.uri("pages/other/other.json"),
+            WatchedChangeKind::Created,
+        )])
+        .expect("watched created page config");
+    assert!(update.project_revision.is_some());
+    assert!(
+        update
+            .dirty_views
+            .iter()
+            .any(|path| path.as_str() == "pages/other/other.wxml")
+    );
+
+    // The config is now part of discovery and accepts unsaved overlays.
+    let update = host
+        .open_document(opened(
+            &project.uri("pages/other/other.json"),
+            r#"{"usingComponents":{"x":"/x"}}"#,
+        ))
+        .expect("open discovered page config");
+    assert!(update.project_revision.is_some());
+}
+
+#[test]
+fn tsconfig_extends_files_accept_overlays() {
+    let project = TempProject::new();
+    project.write("app.json", r#"{"pages":[],"usingComponents":{}}"#);
+    project.write(
+        "tsconfig.base.json",
+        r#"{"compilerOptions":{"strict":true}}"#,
+    );
+    project.write("tsconfig.json", r#"{"extends":"./tsconfig.base.json"}"#);
+    let host = host_with(&project);
+
+    let update = host
+        .open_document(opened(
+            &project.uri("tsconfig.base.json"),
+            r#"{"compilerOptions":{"strict":false}}"#,
+        ))
+        .expect("open parent config overlay");
+    assert!(update.project_revision.is_some());
+}
+
+#[test]
+fn saving_app_json_rediscovers_and_dirties_every_view() {
+    let project = fixture();
+    project.write("pages/other/other.wxml", "<view>{{ other }}</view>");
+    project.write("pages/other/other.ts", "Page({ data: { other: 1 } });");
+    let host = host_with(&project);
+    let other = project_path("pages/other/other.wxml");
+    assert!(host.view_for(&other).is_err(), "not discovered before save");
+
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index","pages/other/other"]}"#,
+    );
+    let update = host
+        .save_document(&project.uri("app.json"))
+        .expect("save app.json");
+
+    assert!(host.view_for(&other).is_ok(), "save must rediscover pages");
+    assert!(
+        update
+            .dirty_views
+            .iter()
+            .any(|path| path.as_str() == "pages/index/index.wxml")
+    );
+    assert!(update.dirty_views.iter().any(|path| path == &other));
+    assert!(update.project_revision.is_some());
+}
+
+#[test]
+fn watched_app_json_change_rediscovers_and_drops_the_overlay() {
+    let project = fixture();
+    project.write("pages/third/third.wxml", "<view>{{ third }}</view>");
+    project.write("pages/third/third.ts", "Page({ data: { third: 1 } });");
+    project.write("pages/overlay/overlay.wxml", "<view>{{ overlay }}</view>");
+    project.write(
+        "pages/overlay/overlay.ts",
+        "Page({ data: { overlay: 1 } });",
+    );
+    let host = host_with(&project);
+    let stale = project_path("pages/overlay/overlay.wxml");
+    let fresh = project_path("pages/third/third.wxml");
+
+    let update = host
+        .open_document(opened(
+            &project.uri("app.json"),
+            r#"{"pages":["pages/index/index","pages/overlay/overlay"]}"#,
+        ))
+        .expect("open overlay");
+    assert!(update.dirty_views.iter().any(|path| path == &stale));
+    assert!(host.view_for(&stale).is_ok());
+
+    project.write(
+        "app.json",
+        r#"{"pages":["pages/index/index","pages/third/third"]}"#,
+    );
+    let update = host
+        .watched_files_changed(&[watched(
+            &project.uri("app.json"),
+            WatchedChangeKind::Changed,
+        )])
+        .expect("watched app.json");
+
+    assert!(
+        host.view_for(&fresh).is_ok(),
+        "disk change must be picked up"
+    );
+    assert!(
+        host.view_for(&stale).is_err(),
+        "stale overlay must be dropped"
+    );
+    assert!(
+        update
+            .dirty_views
+            .iter()
+            .any(|path| path.as_str() == "pages/index/index.wxml")
+    );
+    assert!(update.dirty_views.iter().any(|path| path == &fresh));
+    assert!(update.project_revision.is_some());
+}
+
+#[test]
+fn watched_script_deletion_clears_page_script_and_view_target() {
+    let project = fixture();
+    let host = host_with(&project);
+    let wxml = project_path("pages/index/index.wxml");
+    assert!(host.view_for(&wxml).is_ok());
+
+    std::fs::remove_file(project.root.join("pages/index/index.ts")).expect("remove script");
+    let update = host
+        .watched_files_changed(&[watched(
+            &project.uri("pages/index/index.ts"),
+            WatchedChangeKind::Deleted,
+        )])
+        .expect("watched deletion");
+
+    assert!(matches!(
+        host.view_for(&wxml),
+        Err(HostError::Unsupported { .. })
+    ));
+    assert!(update.project_revision.is_some());
+    assert!(update.dirty_views.iter().any(|path| path == &wxml));
+}
+
+#[test]
+fn watched_script_change_dirties_exactly_its_views() {
+    let project = fixture();
+    let host = host_with(&project);
+    let update = host
+        .watched_files_changed(&[watched(
+            &project.uri("pages/index/index.ts"),
+            WatchedChangeKind::Changed,
+        )])
+        .expect("watched change");
+    assert_eq!(
+        update.dirty_views,
+        vec![project_path("pages/index/index.wxml")]
+    );
+    assert!(update.project_revision.is_some());
+}
+
+#[test]
+fn watched_other_files_and_outside_roots_are_ignored() {
+    let project = fixture();
+    project.write("pages/index/index.wxss", "view { color: red; }");
+    project.write("package.json", r#"{"name":"fixture"}"#);
+    let host = host_with(&project);
+    let before_revision = host.project_revision();
+
+    let update = host
+        .watched_files_changed(&[
+            watched(
+                &project.uri("pages/index/index.wxss"),
+                WatchedChangeKind::Changed,
+            ),
+            watched(&project.uri("package.json"), WatchedChangeKind::Changed),
+            watched("file:///etc/passwd", WatchedChangeKind::Changed),
+        ])
+        .expect("watched ignored files");
+
+    assert_eq!(update, HostUpdate::default());
+    assert_eq!(host.project_revision(), before_revision);
+}
+
+#[test]
+fn watched_kind_maps_lsp_type_numbers() {
+    assert_eq!(
+        WatchedChangeKind::from_lsp(1),
+        Some(WatchedChangeKind::Created)
+    );
+    assert_eq!(
+        WatchedChangeKind::from_lsp(2),
+        Some(WatchedChangeKind::Changed)
+    );
+    assert_eq!(
+        WatchedChangeKind::from_lsp(3),
+        Some(WatchedChangeKind::Deleted)
+    );
+    assert_eq!(WatchedChangeKind::from_lsp(0), None);
+    assert_eq!(WatchedChangeKind::from_lsp(4), None);
 }

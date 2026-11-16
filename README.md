@@ -88,7 +88,7 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test real_node -- --ignored
 - Zed 扩展已完成代码评审、host 测试、wasm 构建和真实 `tree-sitter-wxml` grammar 构建（wasi-sdk 34，约 23,806 B）；早期隔离 smoke 用临时 HTML grammar，最终隔离测试已加载真实 grammar、注册 WXML、启动真实 LSP、显示 `user.nmae` 诊断。本机主 Zed 已通过手工 dev symlink/index 重启加载扩展，在 `tests/fixtures/page-basic` 中启动 `wxml-lsp --stdio` 与 Node 后端，并显示 `user.nmae` 红色诊断。**标准 UI `zed: install dev extension` 安装、hover/definition 内容与真实 grammar 查询观感尚未确认**；未做 Windows/macOS 实机验证。
 - G0/G2 仅部分通过；G1 真实 Node 端到端通过（5 + 1 个显式门禁测试）。KDE EIS 权限弹窗阻断了自动化鼠标/键盘验证。
 - 未发布：扩展 id 为 `wxml-lsp`、名称 `WXML LSP`（避免与 Marketplace 上仅 grammar 的 `wxml` 扩展冲突）；没有 marketplace 发布、服务器自动下载或安装流水线。
-- Zed 只把 WXML buffer 交给 `wxml-lsp`；未保存的 JS/TS 修改不会实时反映到 WXML，保存后的下一次分析才会读取磁盘内容。
+- Zed 扩展已注册 WXML、JavaScript、TypeScript、TSX、JSON（不含 JSX），同一 `wxml-lsp` 进程接收关联文档的 `didOpen`/`didChange`/`didSave`。2026-11-16 隔离 Xvfb smoke 已验证：未保存的 TS 字段类型修改会实时反映到 WXML hover；保存后 `didSave` 刷新诊断；无关 TS 脚本只触发一次诊断刷新、不改变 WXML 类型结果；服务端动态注册并接收 `workspace/didChangeWatchedFiles`。标准 UI 安装、definition 跳转和服务重启恢复仍未验收。
 
 ## 1. 项目目标
 
@@ -290,7 +290,7 @@ Rust WXML Language Server
 
 计划让同一 WXML 服务也接收相关 JavaScript、TypeScript 文档的打开、修改、关闭事件；不替代用户已有的 JS/TS 主服务，不重复发布无关的脚本诊断。内存覆盖层优先于磁盘内容，并在依赖变化时刷新关联 WXML。
 
-还需在 Zed 中验证：服务器实例复用、同一项目文档归属、多服务并存以及更新顺序。
+2026-11-16 已在 Zed 1.28.1 验证：服务器实例复用（一个进程持有 WXML/JSON/TS 多文档）、同一项目文档归属、与内置 JS/TS 服务并存、`didSave` 与 watched-files 的更新顺序；详见 [p8-zed.md](docs/evidence/p8-zed.md) 第 7、12 节。
 
 ### 5.4 其他技术选择
 
@@ -386,16 +386,16 @@ docs/                         # 参考、ADR、证据
 
 ### 阶段 3：Zed 本地端到端验证
 
-- [ ] 创建自用 Dev Extension，从明确的本地路径启动服务。
-- [ ] 在真实 WXML 文档中验证 hover 和错误标注。
-- [ ] 让相关 JS/TS 文档变更进入同一服务的内存覆盖层。
-- [ ] 保留已有 JS/TS 服务，验证并存行为与实例归属。
+- [x] 创建自用 Dev Extension，从明确的本地路径启动服务。
+- [x] 在真实 WXML 文档中验证 hover 和错误标注。
+- [x] 让相关 JS/TS 文档变更进入同一服务的内存覆盖层。
+- [x] 保留已有 JS/TS 服务，验证并存行为与实例归属。
 - [ ] 验证未保存的 `data`/`properties` 字段类型和说明（含其引用的跨文件类型）、脚本及模板修改能够正确传播。
 - [ ] 记录响应时间、诊断误报、错误消失和服务重启后的恢复情况。
 
 产出：可本地安装、可评审的最小验证版及实际测试记录。
 
-状态（2026-11-16）：扩展代码、host 测试、wasm 构建和真实 grammar 构建完成；隔离用户目录 smoke 已加载真实 grammar、启动真实 `wxml-lsp` 并显示 `user.nmae` 诊断；主 Zed 已放入手工 dev symlink/index 并重启加载，`page-basic` 窗口中启动了 `wxml-lsp` 与 Node 后端，`user.nmae` 显示红色诊断和语法着色。标准 UI 安装、hover/definition 内容、未保存 JS 同步和并存行为仍未验收，因此上述项不勾选。
+状态（2026-11-16）：扩展代码、host 测试、wasm 构建和真实 grammar 构建完成；隔离用户目录 smoke 已加载真实 grammar、启动真实 `wxml-lsp` 并显示 `user.nmae` 诊断；主 Zed 已放入手工 dev symlink/index 并重启加载，`page-basic` 窗口中启动了 `wxml-lsp` 与 Node 后端，`user.nmae` 显示红色诊断和语法着色。隔离 Xvfb D6 smoke（证据见 [p8-zed.md](docs/evidence/p8-zed.md) 第 12 节）确认：五语言注册共享单进程，未保存 TS 类型修改使 WXML hover 在 `string`/`number` 间切换，`ctrl+s` 触发 `didSave` 并刷新 WXML 诊断，无关 TS 脚本只触发诊断刷新、不改变类型结果；Zed 内置 TS 服务与本服务同时运行。未保存 `data` 字段类型已验收，但跨文件类型/模板修改的编辑器内传播、连续键入的响应时间、definition 跳转、服务重启恢复和标准 UI 安装仍未验收，因此第 5、6 项不勾选。
 
 ### 阶段 4：完整模板作用域与项目类型
 
