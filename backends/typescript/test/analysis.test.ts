@@ -47,6 +47,22 @@ test("analyze returns hover, diagnostic and definition for a page", () => {
   assert.deepEqual(name?.definition?.range, { start: 136, end: 140 });
 });
 
+test("a page route may be registered with Component instead of Page", () => {
+  const request = pageBasicRequest();
+  const script = request.files.find((file) => file.fileId === request.scriptFileId);
+  assert.ok(script);
+  script.text = `Component({ data: { title: "首页" }, methods: {} })`;
+  request.fragments = [fragment({ exprText: "title" })];
+
+  const result = analyze(request, analysisConfig);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  assert.equal(result.response.registration.kind, "component");
+  assert.equal(result.response.registration.count, 1);
+  const title = result.response.fragments.find((entry) => entry.fragmentId === "f0");
+  assert.equal(title?.hover?.typeOnly, "string");
+});
+
 test("analyze uses the unsaved file text from the request (no disk read)", () => {
   const request = pageBasicRequest();
   const script = request.files.find((file) => file.fileId === request.scriptFileId);

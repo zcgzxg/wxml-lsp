@@ -251,8 +251,15 @@ export function buildView(request: AnalyzeRequest, config: AnalysisConfig): Prep
   const sourceFile = parseSource(scriptText, scriptPath);
   const scan = findRegistrations(sourceFile);
   const wantedKind = registration.kind;
-  const registrations = scan.registrations.filter((candidate) => candidate.kind === wantedKind);
+  let registrations = scan.registrations.filter((candidate) => candidate.kind === wantedKind);
+  // A page route may be registered with `Component` instead of `Page` (a
+  // supported Mini Program pattern). Prefer `Page` when both exist, but do not
+  // reject a page solely because its module uses the component registrar.
+  if (registrations.length === 0 && wantedKind === "page") {
+    registrations = scan.registrations.filter((candidate) => candidate.kind === "component");
+  }
   const found = registrations[0];
+  registration.kind = found ? found.kind : wantedKind;
   registration.count = registrations.length;
   registration.topLevel = found ? found.topLevel : null;
   const propertyScan = scanDeclaredProperties(found?.options);
