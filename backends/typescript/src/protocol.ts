@@ -458,7 +458,7 @@ export type RequestErrorCode =
  * `min(request, ceiling)` so a caller cannot widen the bound.
  */
 export const SERVER_LIMITS: RequestLimits = {
-  maxFiles: 1024,
+  maxFiles: 2048,
   maxTotalBytes: 16 * 1024 * 1024,
   maxFragments: 4096,
 };

@@ -84,7 +84,7 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test real_node -- --ignored
 
 ### 0.4 已知限制
 
-- Wave 5 已完成 typed `wx:for`、条件窄化、多视图/项目别名、自定义组件属性绑定和事件处理函数链路，AC-005/006/008/012 已完成；页面路由没有 `Page` 注册时会回退到 `Component` 注册（真实 TS 项目已验证）。hover 按光标所在标识符返回类型和文档，不再固定使用表达式最右标识符；工作区根不是小程序根时会自动发现嵌套 `app.json`（monorepo 场景），多个小程序按当前文档所属的 app 根选择；源文件预算为 1024 个文件 / 16 MiB，连续 hover 的待处理队列上限为 128。剩余限制包括反向编辑、组件内 `usingComponents` 建模、复杂守卫/组件属性声明降级。
+- Wave 5 已完成 typed `wx:for`、条件窄化、多视图/项目别名、自定义组件属性绑定和事件处理函数链路，AC-005/006/008/012 已完成；页面路由没有 `Page` 注册时会回退到 `Component` 注册（真实 TS 项目已验证）。hover 按光标所在标识符返回类型和文档，不再固定使用表达式最右标识符；工作区根不是小程序根时会自动发现嵌套 `app.json`（monorepo 场景），多个小程序按当前文档所属的 app 根选择；源文件预算为 2048 个文件 / 16 MiB，连续 hover 的待处理队列上限为 128。剩余限制包括反向编辑、组件内 `usingComponents` 建模、复杂守卫/组件属性声明降级。
 - Zed 扩展已完成代码评审、host 测试、wasm 构建和真实 `tree-sitter-wxml` grammar 构建（wasi-sdk 34，约 23,806 B）。2026-11-16 已在隔离 user-data-dir 中通过命令面板实际执行 `zed: install dev extension`：安装目录为指向 `editors/zed` 的 symlink，`index.json` 中 `dev=true`，扩展加载并启动 release `wxml-lsp --stdio` 与 Node 后端。干净 fixture 的 `title`/`user.name` hover、definition、标签/属性/事件/成员补全、未知成员诊断和重启恢复均已实际执行并核对内容；真实 TS/JS 项目观感已记录。**Windows/macOS 实机、真实主桌面 Wayland 观感和连续键入延迟仍未验收**；证据见 [P8 第 13 节](docs/evidence/p8-zed.md)。
 - G0/G2 已在隔离 Xvfb 中完成标准安装、扩展加载、五语言注册、LSP/Node 启动、hover/definition/completion/diagnostics 和重启恢复；Windows/macOS、真实主桌面 Wayland 观感和连续键入延迟未验收，完整 G0/G2 矩阵仍不整体勾选。G1 真实 Node 端到端通过（`stdio_type_loop` 5、`real_node` 3、`wave5_acceptance` 7 个显式门禁测试）。
 - 未发布：扩展 id 为 `wxml-lsp`、名称 `WXML LSP`（避免与 Marketplace 上仅 grammar 的 `wxml` 扩展冲突）；没有 marketplace 发布、服务器自动下载或安装流水线。

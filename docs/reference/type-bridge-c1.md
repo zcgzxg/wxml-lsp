@@ -271,7 +271,7 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
       "fragmentRevision": 1, "root": "page" }
   ],
   "policy": { "jsCheck": "inherit", "propertiesOverlay": "declaration" },
-  "limits": { "maxFiles": 1024, "maxTotalBytes": 16777216, "maxFragments": 2048 }
+  "limits": { "maxFiles": 2048, "maxTotalBytes": 16777216, "maxFragments": 2048 }
 }
 ```
 
@@ -290,7 +290,7 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
 
 | 上限 | 默认值 | 服务端上限 |
 | --- | --- | --- |
-| `maxFiles` | 1024 | 1024 |
+| `maxFiles` | 2048 | 2048 |
 | `maxTotalBytes` | 16 MiB（`files[].text` + `fragments[].exprText` UTF-8） | 16 MiB（同左） |
 | `maxFragments` | 2048 | 4096 |
 
@@ -431,4 +431,4 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored
 | 2026-11-15 | P5 MEDIUM 修复：默认 target 使用最右值 token 的原始偏移（重复名 `a.a`/`user.user`）；包装只接受精确覆盖整个表达式的单个 ParenthesizedExpression（拒绝 `); (` 注入）；跨合成间隙诊断裁剪到 target/最大重叠原文段，无法归属时 diagnostics 至少 `Partial`；拒绝 `satisfies`/TypeNode/`new`；表达式深度/节点上限并捕获 RangeError |
 | 2026-11-16 | **WT-B（Wave 5）**：`wx:for` locals 升级为 `bindings` 并解析元素/索引类型，`wx:if/elif/else` 增加 `guards` 窄化；删除“template locals are bound as any”降级；新增 `tests/fixtures/{loop-scope,conditional-union,component-bindings,multi-view,alias-project}` 的 `wave5_acceptance` 真机 runner；多视图隔离（不同脚本、交错请求）与 `@models/*` 别名 definition 验证，详见 §10 验证说明 |
 | 2026-11-16 | **Zed 验收修复**：页面视图没有 `Page` 注册时回退到首个 `Component` 注册，并把 `registration.kind` 置为 `component`；真实 TS 项目 `jielong-team-doc` 的 `Component` 页面已验证 hover/definition，Node 单测覆盖 `Component` 注册页面 |
-| 2026-11-16 | **hover 与真实项目修复**：analyze 响应的 `fragments[].hovers[]` 为表达式中每个标识符返回 hover 候选，Rust 按光标选择；工作区根无 `app.json` 时自动发现嵌套 app 根（深度 6、4096 目录、跳过依赖/构建目录），多个候选项按当前文档 URI 所属根选择；声明属性全部走 `properties` overlay，不再依赖 `hasOptionalTypes`；源文件预算提升到 1024 / 16 MiB；待处理任务队列 32 → 128，避免连续 hover 报 Busy |
+| 2026-11-16 | **hover 与真实项目修复**：analyze 响应的 `fragments[].hovers[]` 为表达式中每个标识符返回 hover 候选，Rust 按光标选择；工作区根无 `app.json` 时自动发现嵌套 app 根（深度 6、4096 目录、跳过依赖/构建目录），多个候选项按当前文档 URI 所属根选择；声明属性全部走 `properties` overlay，不再依赖 `hasOptionalTypes`；源文件预算提升到 2048 / 16 MiB；待处理任务队列 32 → 128，避免连续 hover 报 Busy |

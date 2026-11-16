@@ -1461,7 +1461,7 @@ fn limit_request_files(
     script: &ProjectPath,
     hint: &mut Option<CapabilityStatus>,
 ) {
-    const MAX_FILES: usize = 1024;
+    const MAX_FILES: usize = 2048;
     const MAX_BYTES: usize = 16 * 1024 * 1024;
     if let Some(position) = files.iter().position(|file| file.path == *script) {
         if position > 0 {
@@ -1943,7 +1943,7 @@ mod tests {
         let project = ProjectId::new("p");
         let script = ProjectPath::new("late.ts").expect("script");
         let mut files = Vec::new();
-        for index in 0..1100 {
+        for index in 0..2100 {
             let path = ProjectPath::new(format!("f{index}.ts")).expect("path");
             files.push(PreparedFile {
                 file: FileId::new(project.clone(), path.as_str()).expect("file"),
@@ -1962,7 +1962,7 @@ mod tests {
         });
         let mut hint = None;
         limit_request_files(&mut files, &script, &mut hint);
-        assert_eq!(files.len(), 1024);
+        assert_eq!(files.len(), 2048);
         assert_eq!(files[0].path, script);
         assert!(matches!(hint, Some(CapabilityStatus::Partial { .. })));
     }

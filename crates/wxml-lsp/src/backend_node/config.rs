@@ -42,7 +42,7 @@ pub struct RequestLimits {
 impl Default for RequestLimits {
     fn default() -> Self {
         Self {
-            max_files: 1024,
+            max_files: 2048,
             max_total_bytes: 16 * 1024 * 1024,
             max_fragments: 2048,
         }

@@ -96,7 +96,7 @@ pub struct SourceLimits {
 impl Default for SourceLimits {
     fn default() -> Self {
         Self {
-            max_files: 1024,
+            max_files: 2048,
             max_total_bytes: 16 * 1024 * 1024,
             max_file_bytes: 16 * 1024 * 1024,
         }
@@ -615,7 +615,7 @@ mod tests {
     #[test]
     fn default_limits_match_the_documented_values() {
         let limits = SourceLimits::default();
-        assert_eq!(limits.max_files, 1024);
+        assert_eq!(limits.max_files, 2048);
         assert_eq!(limits.max_total_bytes, 16 * 1024 * 1024);
         assert_eq!(limits.max_file_bytes, 16 * 1024 * 1024);
     }
