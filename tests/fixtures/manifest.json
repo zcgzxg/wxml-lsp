@@ -235,6 +235,33 @@
       }
     },
     {
+      "id": "events-basic",
+      "kind": "fixture",
+      "acs": [
+        "AC-012"
+      ],
+      "root": "events-basic",
+      "positive": [
+        "{{ label }}",
+        "{{ title }}",
+        "{{ firstLabel }}"
+      ],
+      "negative": [
+        "bindtap=\"missingHandler\"",
+        "bindtap=\"missingWidgetHandler\""
+      ],
+      "coverage": {
+        "definition": "covered",
+        "partial": "multiple Page registrations stay Partial without a missing-handler diagnostic; a non-literal root stays Unsupported",
+        "edits": "deferred-to-C1"
+      },
+      "expected": {
+        "hover": "expected/hover.json",
+        "diagnostics": "expected/diagnostics.json",
+        "definition": "expected/definition.json"
+      }
+    },
+    {
       "id": "component-properties",
       "kind": "fixture",
       "acs": [

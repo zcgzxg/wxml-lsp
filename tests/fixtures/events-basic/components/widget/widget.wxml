@@ -1,0 +1,6 @@
+<view class="widget">
+  <text>{{ title }}</text>
+  <button bindtap="onWidgetTap">组件方法</button>
+  <button bindtap="onWidgetArrow">组件箭头方法</button>
+  <button bindtap="missingWidgetHandler">缺失组件处理函数</button>
+</view>

@@ -21,6 +21,7 @@ import {
 } from "./compiler.ts";
 import { classifyDataRoot } from "./dataroot.ts";
 import { collectComponentDiagnostics } from "./componentBindings.ts";
+import { collectEventResults } from "./events.ts";
 import { locateExpression } from "./fragments.ts";
 import { buildInPlaceShadow } from "./layouts/inPlaceShadow.ts";
 import { buildSymbolBridge } from "./layouts/symbolBridge.ts";
@@ -86,6 +87,8 @@ export interface AnalysisResponseInput {
   suppressedDetails: Array<{ code: number; message: string }>;
   /** Custom-component binding results (protocol v2). */
   components?: AnalyzeResponse["components"];
+  /** Event handler resolutions (protocol v2). */
+  eventResults?: AnalyzeResponse["eventResults"];
 }
 
 /** Assemble the C1 response (diagnostics publish WXML bytes only). */
@@ -167,6 +170,7 @@ export function toAnalyzeResponse(input: AnalysisResponseInput): AnalyzeResponse
     moduleKind: { before: input.moduleBefore, after: input.moduleAfter },
     suppressed: { count: input.suppressedDiagnostics, details: input.suppressedDetails },
     ...(input.components && input.components.length > 0 ? { components: input.components } : {}),
+    ...(input.eventResults && input.eventResults.length > 0 ? { eventResults: input.eventResults } : {}),
   };
 }
 
@@ -342,6 +346,8 @@ export interface AnalysisResult {
   hovers: AnalysisQuery[];
   diagnostics: DiagnosticObservation[];
   definitions: AnalysisDefinition[];
+  /** Event handler resolutions (protocol v2). */
+  eventResults: AnalyzeResponse["eventResults"];
   suppressedDiagnostics: number;
   suppressedDetails: Array<{ code: number; message: string }>;
   probeProblems: string[];
@@ -397,9 +403,14 @@ export function analyze(request: AnalyzeRequest, config: AnalysisConfig): Analys
     rootDeclarationSpans,
   } = view;
 
-  // A template without mustaches still has component bindings (literal/boolean
-  // attributes); only a request with neither can skip the whole pipeline.
-  if (build.fragments.length === 0 && (request.components?.length ?? 0) === 0) {
+  // A template without mustaches can still have component bindings (literal or
+  // boolean attributes) and event handlers; only a request with none of the
+  // three can skip the whole pipeline.
+  if (
+    build.fragments.length === 0 &&
+    (request.components?.length ?? 0) === 0 &&
+    (request.events?.length ?? 0) === 0
+  ) {
     const states = finishedStates({
       build,
       policy: request.policy.jsCheck,
@@ -442,6 +453,7 @@ export function analyze(request: AnalyzeRequest, config: AnalysisConfig): Analys
       hovers: [],
       diagnostics: [],
       definitions: [],
+      eventResults: [],
       suppressedDiagnostics: 0,
       suppressedDetails: [],
       probeProblems: [],
@@ -473,6 +485,9 @@ export function analyze(request: AnalyzeRequest, config: AnalysisConfig): Analys
   const components = diagnosticsOff
     ? { results: [], skipped: 0, skippedDetails: [] }
     : collectComponentDiagnostics({ request, build, project });
+  // Event resolution is AST-only: it does not depend on the derived view or on
+  // the JavaScript check policy, and it must not disturb fragment results.
+  const events = collectEventResults(request, view);
   const shadowFingerprint = thisFingerprintAtOffsets(project, scriptPath, build.edits, baselineFingerprint.offsets);
   const perturbsUserTypes =
     shadowFingerprint !== undefined && !sameFingerprint(baselineFingerprint.types, shadowFingerprint.types);
@@ -501,6 +516,12 @@ export function analyze(request: AnalyzeRequest, config: AnalysisConfig): Analys
       ),
     };
   }
+  if (events.skipped > 0) {
+    states = {
+      ...states,
+      diagnostics: coverPartial(states.diagnostics, eventCoverageReason(events.skippedDetails)),
+    };
+  }
 
   const insertions = evidenceInsertions(build, request);
   const mounts = evidenceMounts(build, request);
@@ -519,6 +540,7 @@ export function analyze(request: AnalyzeRequest, config: AnalysisConfig): Analys
     suppressedDiagnostics: suppressed,
     suppressedDetails,
     ...(components.results.length > 0 ? { components: components.results } : {}),
+    ...(events.results.length > 0 ? { eventResults: events.results } : {}),
   });
 
   return {
@@ -536,6 +558,7 @@ export function analyze(request: AnalyzeRequest, config: AnalysisConfig): Analys
     hovers,
     diagnostics: mapped,
     definitions: definitions.observations,
+    eventResults: events.results,
     suppressedDiagnostics: suppressed,
     suppressedDetails,
     probeProblems,
@@ -743,6 +766,12 @@ function mergeLocal(state: CapabilityState, reason: string): CapabilityState {
 function coverPartial(state: CapabilityState, reason: string): CapabilityState {
   if (state.status === "disabled" || state.status === "unsupported" || state.status === "unavailable") return state;
   return mergeLocal(state, reason);
+}
+
+/** Coverage reason for events that could not be resolved (never per-event noise). */
+function eventCoverageReason(details: string[]): string {
+  const suffix = details.length > 0 ? ` (${details.join(", ")})` : "";
+  return `some event handlers could not be resolved and were not checked${suffix}`;
 }
 
 function checkOffReason(policy: "inherit" | "pragma" | "off", noCheck: boolean): string {

@@ -1,0 +1,10 @@
+{
+  "pages": [
+    "pages/index/index",
+    "pages/multi/multi",
+    "pages/nonliteral/nonliteral"
+  ],
+  "window": {
+    "navigationBarTitleText": "事件处理函数样本"
+  }
+}

@@ -346,6 +346,34 @@ export interface RegistrationInfo {
   topLevel: boolean | null;
 }
 
+/** Per-event capability status; mirrors the six C0 states minus `unknown`. */
+export type EventStateStatus = "supported" | "partial" | "unsupported" | "unavailable" | "disabled";
+
+export interface EventState {
+  status: EventStateStatus;
+  reason?: string;
+}
+
+/**
+ * Resolution of one statically bound event handler (protocol v2).
+ *
+ * `definition.fileId` and `diagnostic.range` are WXML/script coordinates: the
+ * script file id is echoed from the request and the range is a UTF-8 byte range
+ * in that script, so no absolute path is ever published.
+ */
+export interface EventResult {
+  eventId: string;
+  state: EventState;
+  definition?: { fileId: string; range: { start: number; end: number } };
+  /** Bounded one-line member snippet (method declaration or function property). */
+  signature?: string;
+  diagnostic?: {
+    range: { start: number; end: number };
+    severity: "error" | "warning";
+    message: string;
+  };
+}
+
 /** Response envelope. The harness fills the query results in `ScenarioRun`. */
 export interface AnalyzeResponse {
   protocolVersion: number;
@@ -394,6 +422,11 @@ export interface AnalyzeResponse {
       message: string;
     }>;
   }>;
+  /**
+   * Event handler resolutions (protocol v2). Present only when the request
+   * carried `events`; one entry per accepted event, in request order.
+   */
+  eventResults?: EventResult[];
 }
 
 export type RequestErrorCode =
@@ -437,15 +470,17 @@ export class RequestError extends Error {
  * Total payload bytes of a request.
  *
  * Every v2 string payload counts, not just file text and fragment expressions:
- * `bindings[].sourceExpr`, `guards[].conditions[].exprText` and
- * `components[].attributes[].exprText` are untrusted input and are re-emitted
- * into the derived view, so they must be bounded by the same budget. Entries are
- * read defensively because this runs before the detailed validators.
+ * `bindings[].sourceExpr`, `guards[].conditions[].exprText`,
+ * `components[].attributes[].exprText` and every `events[]` string are untrusted
+ * input and are re-emitted into the derived view, so they must be bounded by the
+ * same budget. Entries are read defensively because this runs before the
+ * detailed validators.
  */
 export function totalBytes(
   files: RequestFile[],
   fragments: RequestFragment[] = [],
   components: RequestComponentUsage[] = [],
+  events: RequestEvent[] = [],
 ): number {
   const fileBytes = files.reduce((sum, file) => sum + Buffer.byteLength(file.text, "utf8"), 0);
   const fragmentBytes = fragments.reduce((sum, fragment) => sum + fragmentPayloadBytes(fragment), 0);
@@ -453,7 +488,11 @@ export function totalBytes(
     (sum, usage) => sum + componentPayloadBytes(usage),
     0,
   );
-  return fileBytes + fragmentBytes + componentBytes;
+  const eventBytes = (Array.isArray(events) ? events : []).reduce(
+    (sum, event) => sum + eventPayloadBytes(event),
+    0,
+  );
+  return fileBytes + fragmentBytes + componentBytes + eventBytes;
 }
 
 /** UTF-8 bytes of a string field; `0` for anything else. */
@@ -495,6 +534,18 @@ function componentPayloadBytes(usage: unknown): number {
     bytes += payloadBytes((attribute as { exprText?: unknown } | null)?.exprText);
   }
   return bytes;
+}
+
+/** Every string field of one event binding. */
+function eventPayloadBytes(event: unknown): number {
+  if (!event || typeof event !== "object") return 0;
+  const entry = event as Partial<RequestEvent>;
+  return (
+    payloadBytes(entry.eventId) +
+    payloadBytes(entry.attribute) +
+    payloadBytes(entry.event) +
+    payloadBytes(entry.handler)
+  );
 }
 
 /** Enforce input bounds before any parsing or language-service work. */
@@ -579,7 +630,7 @@ export function validateRequest(request: AnalyzeRequest): void {
   if (request.files.length > effective.maxFiles) {
     throw new RequestError("too-many-files", `request has ${request.files.length} files, limit ${effective.maxFiles}`);
   }
-  const bytes = totalBytes(request.files, request.fragments, request.components);
+  const bytes = totalBytes(request.files, request.fragments, request.components, request.events);
   if (bytes > effective.maxTotalBytes) {
     throw new RequestError("too-many-bytes", `request has ${bytes} bytes, limit ${effective.maxTotalBytes}`);
   }

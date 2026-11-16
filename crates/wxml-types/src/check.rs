@@ -242,7 +242,9 @@ impl EventBindingKind {
 /// A statically bound event handler.
 ///
 /// Dynamic handlers (`bindtap="{{ handler }}"`) are reported as
-/// [`UnsupportedKind::DynamicEvent`] instead of an `EventHandler`.
+/// [`UnsupportedKind::DynamicEvent`] instead of an `EventHandler`, and handlers
+/// that are not plain method names (`item.onTap`) as
+/// [`UnsupportedKind::InvalidEvent`].
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventHandler {
     /// Raw attribute name, for example `capture-bind:tap`.
@@ -281,6 +283,9 @@ pub enum UnsupportedKind {
     DynamicEvent,
     /// An event binding has no non-empty static handler name.
     EmptyEvent,
+    /// An event handler is not a plain static method name, for example
+    /// `item.onTap` or `onTap()`.
+    InvalidEvent,
     /// A `wx:for-item`/`wx:for-index` value is dynamic or empty.
     DynamicForBinding,
     /// The expression tree contains missing nodes or unconsumed tokens.
@@ -304,6 +309,7 @@ impl UnsupportedKind {
             Self::Include => "template includes are not analyzed in this phase",
             Self::DynamicEvent => "dynamic event handlers are not analyzed",
             Self::EmptyEvent => "event binding has no static handler",
+            Self::InvalidEvent => "event handler is not a static method name",
             Self::DynamicForBinding => "wx:for binding names must be static and non-empty",
             Self::MalformedExpression => "expression could not be parsed completely",
             Self::EmptyExpression => "mustache contains no expression",
@@ -351,6 +357,11 @@ pub enum UnsupportedFeature {
         /// Byte range of the event attribute.
         range: SourceRange,
     },
+    /// An event handler is not a plain static method name.
+    InvalidEvent {
+        /// Byte range of the attribute value.
+        range: SourceRange,
+    },
     /// A `wx:for-item`/`wx:for-index` value is dynamic or empty.
     DynamicForBinding {
         /// Byte range of the binding attribute.
@@ -389,6 +400,7 @@ impl UnsupportedFeature {
             UnsupportedKind::Include => Self::Include { range },
             UnsupportedKind::DynamicEvent => Self::DynamicEvent { range },
             UnsupportedKind::EmptyEvent => Self::EmptyEvent { range },
+            UnsupportedKind::InvalidEvent => Self::InvalidEvent { range },
             UnsupportedKind::DynamicForBinding => Self::DynamicForBinding { range },
             UnsupportedKind::MalformedExpression => Self::MalformedExpression { range },
             UnsupportedKind::EmptyExpression => Self::EmptyExpression { range },
@@ -407,6 +419,7 @@ impl UnsupportedFeature {
             Self::Include { .. } => UnsupportedKind::Include,
             Self::DynamicEvent { .. } => UnsupportedKind::DynamicEvent,
             Self::EmptyEvent { .. } => UnsupportedKind::EmptyEvent,
+            Self::InvalidEvent { .. } => UnsupportedKind::InvalidEvent,
             Self::DynamicForBinding { .. } => UnsupportedKind::DynamicForBinding,
             Self::MalformedExpression { .. } => UnsupportedKind::MalformedExpression,
             Self::EmptyExpression { .. } => UnsupportedKind::EmptyExpression,
@@ -425,6 +438,7 @@ impl UnsupportedFeature {
             | Self::Include { range }
             | Self::DynamicEvent { range }
             | Self::EmptyEvent { range }
+            | Self::InvalidEvent { range }
             | Self::DynamicForBinding { range }
             | Self::MalformedExpression { range }
             | Self::EmptyExpression { range }

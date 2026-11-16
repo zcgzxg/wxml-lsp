@@ -459,6 +459,10 @@ impl<'a> Engine<'a> {
             self.record(UnsupportedKind::EmptyEvent, attribute.text_range());
             return;
         }
+        if !is_static_handler_name(handler) {
+            self.record(UnsupportedKind::InvalidEvent, value.text_range());
+            return;
+        }
         let Some(range) = self.source_range(attribute.text_range()) else {
             return;
         };
@@ -877,6 +881,34 @@ fn is_empty_event_attribute(name: &str) -> bool {
         name,
         "bind:" | "catch:" | "capture-bind:" | "capture-catch:" | "mut-bind:"
     )
+}
+
+/// Maximum byte length of a static event handler name.
+///
+/// The name becomes a virtual method lookup in the script, so the request must
+/// stay bounded even for hostile templates.
+const MAX_HANDLER_NAME_BYTES: usize = 256;
+
+/// Returns `true` when `handler` is a plain static method name.
+///
+/// Event handlers are resolved as property names on the page/component
+/// object, so only a single identifier is meaningful: `item.onTap`, `onTap()`
+/// and `a b` are member expressions or code, not method names, and are
+/// reported as [`UnsupportedKind::InvalidEvent`] instead of a false "unknown
+/// handler" diagnostic. Unicode identifiers, `_` and `$` are accepted, matching
+/// `isIdentifierText` in `backends/typescript/src/events.ts`.
+fn is_static_handler_name(handler: &str) -> bool {
+    if handler.is_empty() || handler.len() > MAX_HANDLER_NAME_BYTES {
+        return false;
+    }
+    let mut characters = handler.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    if !(first.is_alphabetic() || first == '_' || first == '$') {
+        return false;
+    }
+    characters.all(|character| character.is_alphanumeric() || character == '_' || character == '$')
 }
 
 /// Names that Node refuses as template locals.
@@ -1501,5 +1533,108 @@ mod tests {
     fn unknown_tags_do_not_produce_component_usages() {
         let (analysis, _) = analyze_with_tags(r#"<view title="x" />"#, &["card"]);
         assert!(analysis.components.is_empty());
+    }
+
+    #[test]
+    fn event_bindings_record_prefix_event_and_exact_ranges() {
+        for (attribute, binding, event) in [
+            ("bindtap", EventBindingKind::Bind, "tap"),
+            ("catchtap", EventBindingKind::Catch, "tap"),
+            ("bind:tap", EventBindingKind::Bind, "tap"),
+            ("catch:tap", EventBindingKind::Catch, "tap"),
+            ("capture-bind:tap", EventBindingKind::CaptureBind, "tap"),
+            ("capture-catch:tap", EventBindingKind::CaptureCatch, "tap"),
+            ("mut-bind:tap", EventBindingKind::MutBind, "tap"),
+        ] {
+            let source = format!(r#"<view {attribute}="onTap" />"#);
+            let (analysis, tree) = analyze(&source);
+            assert!(
+                analysis.unsupported.is_empty(),
+                "{attribute}: {:?}",
+                analysis.unsupported
+            );
+            let handler = analysis
+                .events
+                .first()
+                .unwrap_or_else(|| panic!("no event for {attribute}"));
+            assert_eq!(handler.attribute, attribute);
+            assert_eq!(handler.binding, binding, "attribute {attribute}");
+            assert_eq!(handler.event, event, "attribute {attribute}");
+            assert_eq!(handler.handler, "onTap");
+
+            let start = u32::try_from(source.find(attribute).expect("attribute offset"))
+                .expect("u32 offset");
+            let name_len = u32::try_from(attribute.len()).expect("name length");
+            // `=` plus the two quotes plus the five handler bytes.
+            let attribute_range = wxml_text::SourceRange::from_bounds(start, start + name_len + 8)
+                .expect("attribute range");
+            assert_eq!(handler.attribute_range, attribute_range);
+            assert_eq!(handler.range, attribute_range);
+            let handler_range =
+                wxml_text::SourceRange::from_bounds(start + name_len + 2, start + name_len + 7)
+                    .expect("handler range");
+            assert_eq!(handler.handler_range, handler_range);
+            assert_eq!(
+                text(&tree, handler.attribute_range),
+                format!(r#"{attribute}="onTap""#)
+            );
+            assert_eq!(text(&tree, handler.handler_range), "onTap");
+        }
+    }
+
+    #[test]
+    fn event_handler_range_trims_surrounding_whitespace() {
+        let source = "<view bindtap=\"  onTap\t\" />";
+        let (analysis, tree) = analyze(source);
+        let handler = analysis.events.first().expect("event");
+        assert_eq!(handler.handler, "onTap");
+        assert_eq!(text(&tree, handler.handler_range), "onTap");
+        // The whole attribute keeps the quotes and the surrounding spaces.
+        assert_eq!(
+            text(&tree, handler.attribute_range),
+            "bindtap=\"  onTap\t\""
+        );
+    }
+
+    #[test]
+    fn dynamic_empty_and_invalid_event_handlers_are_unsupported() {
+        for (value, kind) in [
+            ("{{ handler }}", UnsupportedKind::DynamicEvent),
+            ("on{{ prefix }}", UnsupportedKind::DynamicEvent),
+            ("", UnsupportedKind::EmptyEvent),
+            ("   ", UnsupportedKind::EmptyEvent),
+            ("item.onTap", UnsupportedKind::InvalidEvent),
+            ("onTap()", UnsupportedKind::InvalidEvent),
+            ("on Tap", UnsupportedKind::InvalidEvent),
+            ("1onTap", UnsupportedKind::InvalidEvent),
+            ("on-Tap", UnsupportedKind::InvalidEvent),
+            ("this.onTap", UnsupportedKind::InvalidEvent),
+        ] {
+            let source = format!(r#"<view bindtap="{value}" />"#);
+            let (analysis, _) = analyze(&source);
+            assert!(analysis.events.is_empty(), "value {value:?}");
+            assert_eq!(
+                analysis.unsupported.len(),
+                1,
+                "value {value:?}: {:?}",
+                analysis.unsupported
+            );
+            assert_eq!(analysis.unsupported[0].kind(), kind, "value {value:?}");
+        }
+    }
+
+    #[test]
+    fn unicode_and_underscore_event_handlers_are_accepted() {
+        for handler in ["_onTap", "$tap", "on_tap2", "处理点击"] {
+            let source = format!(r#"<view bindtap="{handler}" />"#);
+            let (analysis, tree) = analyze(&source);
+            assert!(analysis.unsupported.is_empty(), "handler {handler:?}");
+            let event = analysis
+                .events
+                .first()
+                .unwrap_or_else(|| panic!("no event for {handler:?}"));
+            assert_eq!(event.handler, handler);
+            assert_eq!(text(&tree, event.handler_range), handler);
+        }
     }
 }

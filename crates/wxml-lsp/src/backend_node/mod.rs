@@ -30,7 +30,7 @@ use wxml_types::{
 };
 
 use crate::project_host::{PreparedView, ProjectHost};
-use request::FragmentInfo;
+use request::{EventInfo, FragmentInfo};
 use response::AnalyzeResponse;
 
 pub use config::{JsCheckMode, NodeBackendConfig, RequestLimits, Typings};
@@ -53,6 +53,7 @@ struct CachedAnalysis {
     view: Arc<PreparedView>,
     response: Option<Arc<AnalyzeResponse>>,
     fragments: BTreeMap<String, FragmentInfo>,
+    events: Vec<EventInfo>,
 }
 
 #[derive(Default)]
@@ -175,12 +176,15 @@ impl NodeBackend {
             }
         };
 
-        if view.target.is_none() || (view.fragments.is_empty() && view.components.is_empty()) {
+        if view.target.is_none()
+            || (view.fragments.is_empty() && view.components.is_empty() && view.events.is_empty())
+        {
             let cached = CachedAnalysis {
                 key,
                 view,
                 response: None,
                 fragments: BTreeMap::new(),
+                events: Vec::new(),
             };
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
             state.cache = Some(cached.clone());
@@ -217,6 +221,7 @@ impl NodeBackend {
                     view,
                     response: None,
                     fragments: BTreeMap::new(),
+                    events: Vec::new(),
                 };
                 state.cache = Some(cached.clone());
                 return Ok(Arc::new(cached));
@@ -279,6 +284,7 @@ impl NodeBackend {
             view,
             response: Some(Arc::new(response)),
             fragments: built.fragments,
+            events: built.events,
         };
         state.cache = Some(cached.clone());
         self.failures.store(0, Ordering::SeqCst);
@@ -407,6 +413,7 @@ impl Backend for NodeBackend {
                 response,
                 &cached.view,
                 &cached.fragments,
+                &cached.events,
                 request.offset,
             ))
         } else {
@@ -428,6 +435,7 @@ impl Backend for NodeBackend {
                         response,
                         &cached.view,
                         request.context.source(),
+                        &cached.events,
                     ))
                 } else {
                     Ok(DiagnosticsResult {
@@ -469,6 +477,7 @@ impl Backend for NodeBackend {
                 response,
                 &cached.view,
                 &cached.fragments,
+                &cached.events,
                 request.offset,
                 self.host.as_ref(),
             ))

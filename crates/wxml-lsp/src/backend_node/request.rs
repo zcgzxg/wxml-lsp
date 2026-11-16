@@ -5,8 +5,8 @@ use std::collections::BTreeMap;
 use serde_json::{Value, json};
 use wxml_text::SourceRange;
 use wxml_types::{
-    CheckFragment, CompletionKind, ComponentAttribute, ComponentUsage, GuardChain, LocalBinding,
-    RequestContext,
+    CheckFragment, CompletionKind, ComponentAttribute, ComponentUsage, EventHandler, GuardChain,
+    LocalBinding, RequestContext,
 };
 
 use super::config::NodeBackendConfig;
@@ -28,6 +28,23 @@ pub(crate) struct FragmentInfo {
     pub bindings: Vec<LocalBinding>,
 }
 
+/// Where one requested event handler lives in the WXML source.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct EventInfo {
+    /// Request event id, `e0`, `e1`, ... in source order.
+    pub event_id: String,
+    /// Raw attribute name, for example `bind:tap`.
+    pub attribute: String,
+    /// Normalized event name, for example `tap`.
+    pub event: String,
+    /// Static handler name as written, trimmed.
+    pub handler: String,
+    /// Byte range of the whole attribute in the WXML source.
+    pub attribute_range: SourceRange,
+    /// Byte range of the handler token in the WXML source.
+    pub handler_range: SourceRange,
+}
+
 /// A serialized C1 request plus the metadata needed to map the response.
 #[derive(Clone, Debug)]
 pub(crate) struct BuiltRequest {
@@ -37,6 +54,8 @@ pub(crate) struct BuiltRequest {
     pub request_id: String,
     /// Per-fragment target metadata.
     pub fragments: BTreeMap<String, FragmentInfo>,
+    /// Requested events in the same order as their `e0`, `e1`, ... ids.
+    pub events: Vec<EventInfo>,
 }
 
 /// Builds the request for one view.
@@ -80,6 +99,9 @@ pub(crate) fn build(
 
     let components: Vec<Value> = view.components.iter().map(component_value).collect();
 
+    let events = event_infos(&view.events);
+    let event_values: Vec<Value> = events.iter().map(event_value).collect();
+
     let files: Vec<Value> = view
         .files
         .iter()
@@ -121,10 +143,9 @@ pub(crate) fn build(
         "scriptFileId": target.script_file.path(),
         "files": files,
         "fragments": fragments,
-        // Protocol v2 optional inputs. Events are filled by the events
-        // worktree; components come from the prepared view.
+        // Protocol v2 optional inputs.
         "components": components,
-        "events": Vec::<Value>::new(),
+        "events": event_values,
         "policy": {
             "jsCheck": config.js_check.as_str(),
             "propertiesOverlay": "declaration",
@@ -141,6 +162,7 @@ pub(crate) fn build(
         line,
         request_id,
         fragments: infos,
+        events,
     }))
 }
 
@@ -262,6 +284,34 @@ fn component_attribute_value(attribute: &ComponentAttribute) -> Value {
         }
     }
     value
+}
+
+/// Assigns stable ids `e0`, `e1`, ... and keeps the ranges for response mapping.
+fn event_infos(events: &[EventHandler]) -> Vec<EventInfo> {
+    events
+        .iter()
+        .enumerate()
+        .map(|(index, event)| EventInfo {
+            event_id: format!("e{index}"),
+            attribute: event.attribute.clone(),
+            event: event.event.clone(),
+            handler: event.handler.clone(),
+            attribute_range: event.attribute_range,
+            handler_range: event.handler_range,
+        })
+        .collect()
+}
+
+/// Serializes one static event binding for protocol v2.
+fn event_value(info: &EventInfo) -> Value {
+    json!({
+        "eventId": info.event_id,
+        "attribute": info.attribute,
+        "event": info.event,
+        "handler": info.handler,
+        "attributeRange": byte_range(info.attribute_range),
+        "handlerRange": byte_range(info.handler_range),
+    })
 }
 
 /// Serializes a byte range in the protocol `{start,end}` shape.
@@ -528,8 +578,8 @@ mod tests {
 
     use wxml_types::{
         AttributeValueKind, BackendEpoch, BackendId, CheckFragment, ComponentAttribute,
-        ComponentUsage, FileId, ProjectId, ProjectRevision, RootKind, SnapshotId, SourceRevision,
-        SourceSnapshot, ViewRevision,
+        ComponentUsage, EventBindingKind, EventHandler, FileId, ProjectId, ProjectRevision,
+        RootKind, SnapshotId, SourceRevision, SourceSnapshot, ViewRevision,
     };
 
     use super::*;
@@ -574,6 +624,7 @@ mod tests {
             compiler_options: serde_json::Map::new(),
             fragments: Arc::from(vec![fragment]),
             components: Arc::from(Vec::new()),
+            events: Arc::from(Vec::new()),
             project_root: PathBuf::from("/tmp/project"),
             syntax_diagnostics: Vec::new(),
             status_hint: None,
@@ -845,6 +896,57 @@ mod tests {
         assert_eq!(component["attributes"][1]["valueKind"], "boolean");
         assert!(component["attributes"][1].get("exprText").is_none());
         assert!(component["attributes"][1].get("exprRange").is_none());
+    }
+
+    #[test]
+    fn serializes_events_with_stable_ids_and_byte_ranges() {
+        let mut view = view(fragment("item.name", 10));
+        let range = |start: u32, end: u32| SourceRange::from_bounds(start, end).expect("range");
+        view.events = Arc::from(vec![
+            EventHandler {
+                attribute: "bind:tap".to_owned(),
+                binding: EventBindingKind::Bind,
+                event: "tap".to_owned(),
+                handler: "onTap".to_owned(),
+                range: range(20, 34),
+                attribute_range: range(20, 34),
+                handler_range: range(30, 35),
+            },
+            EventHandler {
+                attribute: "catch:touchstart".to_owned(),
+                binding: EventBindingKind::CaptureCatch,
+                event: "touchstart".to_owned(),
+                handler: "onTouch".to_owned(),
+                range: range(40, 65),
+                attribute_range: range(40, 65),
+                handler_range: range(59, 66),
+            },
+        ]);
+        let request = build(
+            &view,
+            &context(),
+            &NodeBackendConfig::default(),
+            "req".to_owned(),
+        )
+        .expect("request")
+        .expect("some");
+        assert_eq!(request.events.len(), 2);
+        assert_eq!(request.events[0].event_id, "e0");
+        assert_eq!(request.events[0].handler_range, range(30, 35));
+        assert_eq!(request.events[1].event_id, "e1");
+        let value: Value = serde_json::from_str(&request.line).expect("json");
+        let events = value["params"]["events"].as_array().expect("events");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["eventId"], "e0");
+        assert_eq!(events[0]["attribute"], "bind:tap");
+        assert_eq!(events[0]["event"], "tap");
+        assert_eq!(events[0]["handler"], "onTap");
+        assert_eq!(events[0]["attributeRange"]["start"], 20);
+        assert_eq!(events[0]["attributeRange"]["end"], 34);
+        assert_eq!(events[0]["handlerRange"]["start"], 30);
+        assert_eq!(events[0]["handlerRange"]["end"], 35);
+        assert_eq!(events[1]["eventId"], "e1");
+        assert_eq!(events[1]["handler"], "onTouch");
     }
 
     #[test]

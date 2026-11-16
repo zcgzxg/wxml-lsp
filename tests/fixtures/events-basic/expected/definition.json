@@ -1,0 +1,82 @@
+{
+  "queries": [
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "bindtap=\"onShorthandTap\"",
+      "target": "onShorthandTap",
+      "expect": { "file": "pages/index/index.ts", "target": "onShorthandTap" }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "catchtap=\"onFunctionTap\"",
+      "target": "onFunctionTap",
+      "expect": { "file": "pages/index/index.ts", "target": "onFunctionTap" }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "bind:tap=\"onArrowTap\"",
+      "target": "onArrowTap",
+      "expect": { "file": "pages/index/index.ts", "target": "onArrowTap" }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "capture-bind:tap=\"onCaptureTap\"",
+      "target": "onCaptureTap",
+      "expect": { "file": "pages/index/index.ts", "target": "onCaptureTap" }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "capture-catch:tap=\"onCaptureCatchTap\"",
+      "target": "onCaptureCatchTap",
+      "expect": { "file": "pages/index/index.ts", "target": "onCaptureCatchTap" }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "mut-bind:tap=\"onMutTap\"",
+      "target": "onMutTap",
+      "expect": { "file": "pages/index/index.ts", "target": "onMutTap" }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "catch:tap=\"onCatchTap\"",
+      "target": "onCatchTap",
+      "expect": { "file": "pages/index/index.ts", "target": "onCatchTap" }
+    },
+    {
+      "file": "pages/index/index.wxml",
+      "marker": "bindtap=\"missingHandler\"",
+      "target": "missingHandler",
+      "expect": null
+    },
+    {
+      "file": "components/widget/widget.wxml",
+      "marker": "bindtap=\"onWidgetTap\"",
+      "target": "onWidgetTap",
+      "expect": { "file": "components/widget/widget.ts", "target": "onWidgetTap" }
+    },
+    {
+      "file": "components/widget/widget.wxml",
+      "marker": "bindtap=\"onWidgetArrow\"",
+      "target": "onWidgetArrow",
+      "expect": { "file": "components/widget/widget.ts", "target": "onWidgetArrow" }
+    },
+    {
+      "file": "components/widget/widget.wxml",
+      "marker": "bindtap=\"missingWidgetHandler\"",
+      "target": "missingWidgetHandler",
+      "expect": null
+    },
+    {
+      "file": "pages/multi/multi.wxml",
+      "marker": "bindtap=\"onSecondTap\"",
+      "target": "onSecondTap",
+      "expect": null
+    },
+    {
+      "file": "pages/nonliteral/nonliteral.wxml",
+      "marker": "bindtap=\"onNonLiteralTap\"",
+      "target": "onNonLiteralTap",
+      "expect": null
+    }
+  ]
+}
