@@ -40,7 +40,7 @@ pub(crate) const RESPONSE_TRUNCATED_REASON: &str =
 /// One C1 response.
 #[derive(Clone, Debug)]
 pub(crate) struct AnalyzeResponse {
-    /// Protocol version, must be 1.
+    /// Protocol version, must be 2.
     pub protocol_version: u32,
     /// Request id echoed by Node.
     pub request_id: String,
@@ -872,7 +872,7 @@ mod tests {
             "jsonrpc": "2.0",
             "id": "r1",
             "result": {
-                "protocolVersion": 1,
+                "protocolVersion": 2,
                 "requestId": "r1",
                 "states": {
                     "hover": {"status": "supported"},
@@ -975,7 +975,7 @@ mod tests {
             .expect("write");
         }
         let line = format!(
-            r#"{{"jsonrpc":"2.0","id":"r1","result":{{"protocolVersion":1,"requestId":"r1","states":{{"hover":{{"status":"supported"}},"diagnostics":{{"status":"supported"}},"definition":{{"status":"supported"}}}},"insertions":[{{"viewRevision":1}}],"fragments":[{{"fragmentId":"f0","diagnostics":[{diagnostics}]}}]}}}}"#
+            r#"{{"jsonrpc":"2.0","id":"r1","result":{{"protocolVersion":2,"requestId":"r1","states":{{"hover":{{"status":"supported"}},"diagnostics":{{"status":"supported"}},"definition":{{"status":"supported"}}}},"insertions":[{{"viewRevision":1}}],"fragments":[{{"fragmentId":"f0","diagnostics":[{diagnostics}]}}]}}}}"#
         );
         assert!(line.len() < crate::backend_node::config::DEFAULT_MAX_LINE_BYTES);
         let response = parse_line(&line, "r1", 1).expect("truncated response");
@@ -1003,7 +1003,7 @@ mod tests {
             .map(|_| serde_json::json!({"viewRevision": 1}))
             .collect::<Vec<_>>();
         let value = serde_json::json!({
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "requestId": "r1",
             "states": {
                 "hover": {"status": "supported"},
@@ -1022,7 +1022,7 @@ mod tests {
     #[test]
     fn rejects_wrong_protocol_and_revision() {
         let line = r#"{
-            "protocolVersion": 1,
+            "protocolVersion": 2,
             "requestId": "r1",
             "jsCheckApplied": "pragma",
             "states": {"hover": {"status": "supported"}, "diagnostics": {"status": "supported"}, "definition": {"status": "supported"}},
@@ -1038,10 +1038,26 @@ mod tests {
             parse(line, "r2", 7),
             Err(ProtocolError::IdMismatch)
         ));
-        let wrong = line.replace("\"protocolVersion\": 1", "\"protocolVersion\": 2");
+        let wrong = line.replace("\"protocolVersion\": 2", "\"protocolVersion\": 3");
         assert!(matches!(
             parse(&wrong, "r1", 7),
             Err(ProtocolError::Version)
         ));
+    }
+
+    #[test]
+    fn v2_reserved_response_fields_are_ignored() {
+        let line = r#"{
+            "protocolVersion": 2,
+            "requestId": "r1",
+            "states": {"hover": {"status": "supported"}, "diagnostics": {"status": "supported"}, "definition": {"status": "supported"}},
+            "insertions": [{"viewRevision": 7, "backendFileVersion": 1}],
+            "fragments": [{"fragmentId": "f0", "eventResults": [{"eventId": "e0"}]}],
+            "eventResults": [{"eventId": "e0", "state": "supported"}],
+            "components": [{"tag": "card", "diagnostics": []}]
+        }"#;
+        let response = parse(line, "r1", 7).expect("v2 response");
+        assert_eq!(response.fragments.len(), 1);
+        assert_eq!(response.fragments[0].fragment_id, "f0");
     }
 }

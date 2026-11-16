@@ -232,7 +232,7 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
 
 ```jsonc
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "requestId": "pages/index:view-7",
   "analysisStamp": { "snapshotId": 3, "projectRevision": 5, "viewRevision": 7, "backendEpoch": 2 },
   "view": {
@@ -297,7 +297,7 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
 
 ```jsonc
 {
-  "protocolVersion": 1,
+  "protocolVersion": 2,
   "requestId": "pages/index:view-7",
   "jsCheckApplied": "inherit",
   "registration": { "kind": "page", "count": 1, "topLevel": true },
@@ -341,9 +341,11 @@ reason = "<n> <page|component> registrations; the probe mounts the first one"
 
 | method | params | result |
 | --- | --- | --- |
-| `ping` | — | `{ "ok": true, "protocolVersion": 1, "backendVersion": "0.1.0" }` |
+| `ping` | — | `{ "ok": true, "protocolVersion": 2, "backendVersion": "0.1.0" }` |
 | `analyze` | C1 `AnalyzeRequest` | C1 `AnalyzeResponse` |
 | `shutdown` | — | `{ "ok": true }`，随后进程退出；之后不再处理新请求 |
+
+协议 v2 在 `analyze` 上预留可选输入：`fragments[].bindings`、`fragments[].guards`、顶层 `components` 与 `events`；缺少这些字段时行为与 v1 相同，响应中的 `eventResults`/`components` 当前被 Rust 侧忽略。`complete` 方法在 v2 中保留给补全 worktree，Phase 0 的 Node 服务端不处理它。
 
 错误码：parse error `-32700`、invalid request `-32600`、method not found `-32601`、
 invalid params `-32602`（`data.code` 为 `bad-protocol`/`bad-params`/`bad-limit`/`bad-option`/

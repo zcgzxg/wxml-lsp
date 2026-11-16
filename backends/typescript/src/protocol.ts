@@ -5,6 +5,10 @@
  * explicit file snapshot, the effective compiler options resolved by the project
  * layer, the fragments to mount, and the policy. Node must not read project
  * sources from disk and must not invent compiler options.
+ *
+ * Protocol v2 adds the optional structured `bindings`/`guards` fragment inputs,
+ * top-level `components`/`events` inputs, and reserves a `complete` method. Phase
+ * 0 freezes only these shapes; `complete` is handled by a later worktree.
  */
 
 import path from "node:path";
@@ -12,7 +16,7 @@ import ts from "typescript";
 import { describeExpression, identifierOffset, isBindingIdentifier } from "./expression.ts";
 import type { CapabilityStates, InsertionRecord, JsCheckMode, MountRecord } from "./types.ts";
 
-export const PROTOCOL_VERSION = 1;
+export const PROTOCOL_VERSION = 2;
 
 export const DEFAULT_LIMITS: RequestLimits = {
   maxFiles: 512,
@@ -52,11 +56,89 @@ export interface RequestFragment {
    * when it appears here; expression text is never rewritten.
    */
   locals?: string[];
+  /**
+   * Structured `wx:for` bindings (protocol v2). Optional during the transition;
+   * `locals` stays the authoritative name list until the template worktree
+   * fills this in.
+   */
+  bindings?: RequestLocalBinding[];
+  /** Enclosing `wx:if`/`wx:elif`/`wx:else` chains, outermost first (protocol v2). */
+  guards?: RequestGuardChain[];
   /** Byte range of `exprText` in the WXML document. */
   wxmlRange: { start: number; end: number };
   fragmentRevision: number;
   /** Which registration owns the root. */
   root: "page" | "component";
+}
+
+/** Template role of one structured `wx:for` binding. */
+export type LocalRole = "item" | "index";
+
+/** One `wx:for` binding in scope at a fragment (protocol v2). */
+export interface RequestLocalBinding {
+  /** Binding name as written, for example `item` or `row`. */
+  name: string;
+  role: LocalRole;
+  /** Exact `wx:for` expression text that produced the binding. */
+  sourceExpr: string;
+  /** Byte range of the `wx:for` expression in the WXML document. */
+  sourceRange: { start: number; end: number };
+}
+
+/** Branch kind inside a `wx:if`/`wx:elif`/`wx:else` chain. */
+export type GuardBranch = "if" | "elif" | "else";
+
+/** One condition of a `wx:if`/`wx:elif`/`wx:else` chain (protocol v2). */
+export interface RequestGuardCondition {
+  branch: GuardBranch;
+  /** Condition expression text without `{{` and `}}`. */
+  exprText: string;
+  /** Byte range of the condition expression in the WXML document. */
+  range: { start: number; end: number };
+}
+
+/** Every condition of one conditional chain, in source order (protocol v2). */
+export interface RequestGuardChain {
+  conditions: RequestGuardCondition[];
+  /** Selected branch index; `conditions.length` means `wx:else`. */
+  selected: number;
+}
+
+/** How the value of a custom-component attribute is written. */
+export type AttributeValueKind = "literal" | "mustache" | "mixed" | "boolean";
+
+/** One attribute on a custom-component usage (protocol v2). */
+export interface RequestComponentAttribute {
+  name: string;
+  valueKind: AttributeValueKind;
+  /** Sole mustache expression text for `mustache` values. */
+  exprText?: string;
+  exprRange?: { start: number; end: number };
+  /** Byte range of the whole attribute. */
+  attributeRange: { start: number; end: number };
+}
+
+/** One custom-component usage in the template (protocol v2). */
+export interface RequestComponentUsage {
+  tag: string;
+  /** Resolved local component script, when `usingComponents` points at one. */
+  componentFileId?: string;
+  attributes: RequestComponentAttribute[];
+}
+
+/** One statically bound event handler (protocol v2). */
+export interface RequestEvent {
+  eventId: string;
+  /** Raw attribute name, for example `bind:tap`. */
+  attribute: string;
+  /** Normalized event name, for example `tap`. */
+  event: string;
+  /** Static handler name as written, trimmed. */
+  handler: string;
+  /** Byte range of the whole attribute. */
+  attributeRange: { start: number; end: number };
+  /** Byte range of the handler token only. */
+  handlerRange: { start: number; end: number };
 }
 
 export type TargetName = "ES2020" | "ES2022" | "ESNext";
@@ -168,6 +250,16 @@ export interface AnalyzeRequest {
   files: RequestFile[];
   /** Fragments mounted by Node; this is an input, not the response list. */
   fragments: RequestFragment[];
+  /**
+   * Custom-component usages in the template (protocol v2). Optional: a request
+   * without component data is still valid and produces no component results.
+   */
+  components?: RequestComponentUsage[];
+  /**
+   * Static event bindings in the template (protocol v2). Optional, like
+   * `components`.
+   */
+  events?: RequestEvent[];
   policy: {
     jsCheck: JsCheckMode;
     /** C1.1 only supports the declaration overlay; `off` is rejected explicitly. */
@@ -365,6 +457,8 @@ export function validateRequest(request: AnalyzeRequest): void {
   }
   validateCompilerOptions(request.project.compilerOptions);
   validateFragments(request.fragments);
+  validateComponents(request.components);
+  validateEvents(request.events);
 }
 
 /** Validate the C1.1 fragment inputs (shape, ids, target, locals). */
@@ -433,6 +527,151 @@ export function validateFragments(fragments: RequestFragment[]): void {
         }
         seen.add(local);
       }
+    }
+    validateLocalBindings(id, fragment.bindings);
+    validateGuardChains(id, fragment.guards);
+  }
+}
+
+const LOCAL_ROLES = new Set(["item", "index"]);
+const GUARD_BRANCHES = new Set(["if", "elif", "else"]);
+const ATTRIBUTE_VALUE_KINDS = new Set(["literal", "mustache", "mixed", "boolean"]);
+
+/** True for a non-negative byte range with `start <= end`. */
+function isSourceRange(value: unknown): value is { start: number; end: number } {
+  if (typeof value !== "object" || value === null) return false;
+  const start = (value as { start?: unknown }).start;
+  const end = (value as { end?: unknown }).end;
+  return (
+    typeof start === "number" &&
+    typeof end === "number" &&
+    Number.isInteger(start) &&
+    Number.isInteger(end) &&
+    start >= 0 &&
+    end >= start
+  );
+}
+
+/** Validate optional protocol v2 structured `wx:for` bindings. */
+function validateLocalBindings(id: string, bindings: RequestLocalBinding[] | undefined): void {
+  if (bindings === undefined) return;
+  if (!Array.isArray(bindings)) {
+    throw new RequestError("bad-fragment", `fragment ${id}: bindings must be an array`);
+  }
+  const seen = new Set<string>();
+  for (const binding of bindings) {
+    if (typeof binding !== "object" || binding === null) {
+      throw new RequestError("bad-fragment", `fragment ${id}: bindings entries must be objects`);
+    }
+    if (typeof binding.name !== "string" || !isBindingIdentifier(binding.name)) {
+      throw new RequestError("bad-fragment", `fragment ${id}: binding name is not a valid identifier`);
+    }
+    if (seen.has(binding.name)) {
+      throw new RequestError("bad-fragment", `fragment ${id}: duplicate binding ${binding.name}`);
+    }
+    seen.add(binding.name);
+    if (typeof binding.role !== "string" || !LOCAL_ROLES.has(binding.role)) {
+      throw new RequestError("bad-fragment", `fragment ${id}: binding ${binding.name} has an unknown role`);
+    }
+    if (typeof binding.sourceExpr !== "string" || binding.sourceExpr.length === 0) {
+      throw new RequestError("bad-fragment", `fragment ${id}: binding ${binding.name} has an empty sourceExpr`);
+    }
+    if (!isSourceRange(binding.sourceRange)) {
+      throw new RequestError("bad-fragment", `fragment ${id}: binding ${binding.name} has an invalid sourceRange`);
+    }
+  }
+}
+
+/** Validate optional protocol v2 conditional chains. */
+function validateGuardChains(id: string, guards: RequestGuardChain[] | undefined): void {
+  if (guards === undefined) return;
+  if (!Array.isArray(guards)) {
+    throw new RequestError("bad-fragment", `fragment ${id}: guards must be an array`);
+  }
+  for (const chain of guards) {
+    if (typeof chain !== "object" || chain === null || !Array.isArray(chain.conditions)) {
+      throw new RequestError("bad-fragment", `fragment ${id}: guard chain has no conditions array`);
+    }
+    if (
+      !Number.isInteger(chain.selected) ||
+      chain.selected < 0 ||
+      chain.selected > chain.conditions.length
+    ) {
+      throw new RequestError("bad-fragment", `fragment ${id}: guard chain has an invalid selected index`);
+    }
+    for (const condition of chain.conditions) {
+      if (typeof condition !== "object" || condition === null) {
+        throw new RequestError("bad-fragment", `fragment ${id}: guard conditions must be objects`);
+      }
+      if (typeof condition.branch !== "string" || !GUARD_BRANCHES.has(condition.branch)) {
+        throw new RequestError("bad-fragment", `fragment ${id}: guard condition has an unknown branch`);
+      }
+      if (typeof condition.exprText !== "string" || condition.exprText.length === 0) {
+        throw new RequestError("bad-fragment", `fragment ${id}: guard condition has an empty exprText`);
+      }
+      if (!isSourceRange(condition.range)) {
+        throw new RequestError("bad-fragment", `fragment ${id}: guard condition has an invalid range`);
+      }
+    }
+  }
+}
+
+/** Validate optional protocol v2 custom-component usages. */
+function validateComponents(components: RequestComponentUsage[] | undefined): void {
+  if (components === undefined) return;
+  if (!Array.isArray(components)) {
+    throw new RequestError("bad-params", "request.components must be an array");
+  }
+  for (const usage of components) {
+    if (typeof usage !== "object" || usage === null) {
+      throw new RequestError("bad-params", "components[] entries must be objects");
+    }
+    if (typeof usage.tag !== "string" || usage.tag.length === 0) {
+      throw new RequestError("bad-params", "components[].tag is required");
+    }
+    if (usage.componentFileId !== undefined && (typeof usage.componentFileId !== "string" || usage.componentFileId.length === 0)) {
+      throw new RequestError("bad-params", `components[${usage.tag}].componentFileId must be a non-empty string`);
+    }
+    if (!Array.isArray(usage.attributes)) {
+      throw new RequestError("bad-params", `components[${usage.tag}].attributes must be an array`);
+    }
+    for (const attribute of usage.attributes) {
+      if (typeof attribute !== "object" || attribute === null || typeof attribute.name !== "string" || attribute.name.length === 0) {
+        throw new RequestError("bad-params", `components[${usage.tag}].attributes[].name is required`);
+      }
+      if (typeof attribute.valueKind !== "string" || !ATTRIBUTE_VALUE_KINDS.has(attribute.valueKind)) {
+        throw new RequestError("bad-params", `components[${usage.tag}].${attribute.name} has an unknown valueKind`);
+      }
+      if (attribute.exprText !== undefined && typeof attribute.exprText !== "string") {
+        throw new RequestError("bad-params", `components[${usage.tag}].${attribute.name}.exprText must be a string`);
+      }
+      if (attribute.exprRange !== undefined && !isSourceRange(attribute.exprRange)) {
+        throw new RequestError("bad-params", `components[${usage.tag}].${attribute.name} has an invalid exprRange`);
+      }
+      if (!isSourceRange(attribute.attributeRange)) {
+        throw new RequestError("bad-params", `components[${usage.tag}].${attribute.name} has an invalid attributeRange`);
+      }
+    }
+  }
+}
+
+/** Validate optional protocol v2 static event bindings. */
+function validateEvents(events: RequestEvent[] | undefined): void {
+  if (events === undefined) return;
+  if (!Array.isArray(events)) {
+    throw new RequestError("bad-params", "request.events must be an array");
+  }
+  for (const event of events) {
+    if (typeof event !== "object" || event === null) {
+      throw new RequestError("bad-params", "events[] entries must be objects");
+    }
+    for (const key of ["eventId", "attribute", "event", "handler"] as const) {
+      if (typeof event[key] !== "string" || event[key].length === 0) {
+        throw new RequestError("bad-params", `events[].${key} is required`);
+      }
+    }
+    if (!isSourceRange(event.attributeRange) || !isSourceRange(event.handlerRange)) {
+      throw new RequestError("bad-params", `events[${event.eventId}] has an invalid range`);
     }
   }
 }

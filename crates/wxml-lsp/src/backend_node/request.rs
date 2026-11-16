@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 use wxml_text::SourceRange;
-use wxml_types::{CheckFragment, RequestContext};
+use wxml_types::{CheckFragment, GuardChain, LocalBinding, RequestContext};
 
 use super::config::NodeBackendConfig;
 use super::protocol::{PROTOCOL_VERSION, ProtocolError};
@@ -72,23 +72,7 @@ pub(crate) fn build(
                 locals: fragment.locals.clone(),
             },
         );
-        let mut value = json!({
-            "fragmentId": fragment.fragment_id,
-            "exprText": fragment.expr_text,
-            "locals": fragment.locals,
-            "wxmlRange": {
-                "start": fragment.wxml_range.start(),
-                "end": fragment.wxml_range.end(),
-            },
-            "fragmentRevision": fragment.fragment_revision,
-            "root": fragment.root.as_str(),
-        });
-        if let Some(selected) = selected {
-            if let Some(object) = value.as_object_mut() {
-                object.insert("target".to_owned(), Value::String(selected));
-            }
-        }
-        fragments.push(value);
+        fragments.push(fragment_value(fragment, selected.as_deref()));
     }
 
     let files: Vec<Value> = view
@@ -132,6 +116,10 @@ pub(crate) fn build(
         "scriptFileId": target.script_file.path(),
         "files": files,
         "fragments": fragments,
+        // Protocol v2 optional inputs. Phase 0 sends empty arrays; WT-B and
+        // WT-C fill them from the prepared view.
+        "components": Vec::<Value>::new(),
+        "events": Vec::<Value>::new(),
         "policy": {
             "jsCheck": config.js_check.as_str(),
             "propertiesOverlay": "declaration",
@@ -149,6 +137,72 @@ pub(crate) fn build(
         request_id,
         fragments: infos,
     }))
+}
+
+/// Serializes one fragment for the protocol v2 `analyze` request.
+fn fragment_value(fragment: &CheckFragment, selected: Option<&str>) -> Value {
+    let mut value = json!({
+        "fragmentId": fragment.fragment_id,
+        "exprText": fragment.expr_text,
+        "locals": fragment.locals,
+        "bindings": fragment
+            .bindings
+            .iter()
+            .map(local_binding_value)
+            .collect::<Vec<Value>>(),
+        "guards": fragment
+            .guards
+            .iter()
+            .map(guard_chain_value)
+            .collect::<Vec<Value>>(),
+        "wxmlRange": {
+            "start": fragment.wxml_range.start(),
+            "end": fragment.wxml_range.end(),
+        },
+        "fragmentRevision": fragment.fragment_revision,
+        "root": fragment.root.as_str(),
+    });
+    if let Some(selected) = selected {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("target".to_owned(), Value::String(selected.to_owned()));
+        }
+    }
+    value
+}
+
+/// Serializes one structured template binding for protocol v2.
+fn local_binding_value(binding: &LocalBinding) -> Value {
+    json!({
+        "name": binding.name,
+        "role": binding.role.as_str(),
+        "sourceExpr": binding.source_expr,
+        "sourceRange": {
+            "start": binding.source_range.start(),
+            "end": binding.source_range.end(),
+        },
+    })
+}
+
+/// Serializes one `wx:if`/`wx:elif`/`wx:else` chain for protocol v2.
+fn guard_chain_value(chain: &GuardChain) -> Value {
+    let conditions = chain
+        .conditions
+        .iter()
+        .map(|condition| {
+            json!({
+                "branch": condition.branch.as_str(),
+                "exprText": condition.expr_text,
+                "range": {
+                    "start": condition.range.start(),
+                    "end": condition.range.end(),
+                },
+            })
+        })
+        .collect::<Vec<Value>>();
+    json!({
+        "conditions": conditions,
+        "selected": chain.selected,
+    })
 }
 
 /// Selects the P6 target or the default right-value identifier.
@@ -278,6 +332,8 @@ mod tests {
             expr_text: expr.to_owned(),
             target: None,
             locals: Vec::new(),
+            bindings: Vec::new(),
+            guards: Vec::new(),
             wxml_range: SourceRange::from_bounds(
                 start,
                 start + u32::try_from(expr.len()).expect("len"),
@@ -389,11 +445,87 @@ mod tests {
         let value: Value = serde_json::from_str(&request.line).expect("json");
         assert_eq!(value["method"], "analyze");
         let params = &value["params"];
-        assert_eq!(params["protocolVersion"], 1);
+        assert_eq!(params["protocolVersion"], 2);
         assert_eq!(params["view"]["owner"]["kind"], "page");
         assert_eq!(params["files"][0]["fileId"], "pages/index/index.ts");
         assert_eq!(params["fragments"][0]["wxmlRange"]["start"], 10);
         assert_eq!(params["fragments"][0]["target"], "name");
+        assert!(
+            params["fragments"][0]["bindings"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        );
+        assert!(
+            params["fragments"][0]["guards"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        );
+        assert!(params["components"].as_array().is_some_and(Vec::is_empty));
+        assert!(params["events"].as_array().is_some_and(Vec::is_empty));
         assert_eq!(params["policy"]["propertiesOverlay"], "declaration");
+    }
+
+    #[test]
+    fn serializes_v2_bindings_and_guard_chains() {
+        let mut fragment = fragment("item.name", 10);
+        fragment.locals = vec!["item".to_owned(), "index".to_owned()];
+        fragment.bindings = vec![
+            LocalBinding {
+                name: "item".to_owned(),
+                role: wxml_types::LocalRole::Item,
+                source_expr: "groups".to_owned(),
+                source_range: SourceRange::from_bounds(100, 106).expect("range"),
+            },
+            LocalBinding {
+                name: "index".to_owned(),
+                role: wxml_types::LocalRole::Index,
+                source_expr: "groups".to_owned(),
+                source_range: SourceRange::from_bounds(100, 106).expect("range"),
+            },
+        ];
+        fragment.guards = vec![GuardChain {
+            conditions: vec![wxml_types::GuardCondition {
+                branch: wxml_types::GuardBranch::If,
+                expr_text: "state.ready".to_owned(),
+                range: SourceRange::from_bounds(200, 211).expect("range"),
+            }],
+            selected: 0,
+        }];
+        let view = view(fragment);
+        let request = build(
+            &view,
+            &context(),
+            &NodeBackendConfig::default(),
+            "req".to_owned(),
+        )
+        .expect("request")
+        .expect("some");
+        let value: Value = serde_json::from_str(&request.line).expect("json");
+        let params = &value["params"];
+        assert_eq!(params["protocolVersion"], 2);
+        assert_eq!(params["fragments"][0]["bindings"][0]["name"], "item");
+        assert_eq!(params["fragments"][0]["bindings"][0]["role"], "item");
+        assert_eq!(
+            params["fragments"][0]["bindings"][0]["sourceExpr"],
+            "groups"
+        );
+        assert_eq!(
+            params["fragments"][0]["bindings"][0]["sourceRange"]["start"],
+            100
+        );
+        assert_eq!(params["fragments"][0]["bindings"][1]["role"], "index");
+        assert_eq!(
+            params["fragments"][0]["guards"][0]["conditions"][0]["branch"],
+            "if"
+        );
+        assert_eq!(
+            params["fragments"][0]["guards"][0]["conditions"][0]["exprText"],
+            "state.ready"
+        );
+        assert_eq!(params["fragments"][0]["guards"][0]["selected"], 0);
+        assert_eq!(
+            params["fragments"][0]["guards"][0]["conditions"][0]["range"]["end"],
+            211
+        );
     }
 }

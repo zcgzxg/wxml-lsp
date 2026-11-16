@@ -27,13 +27,15 @@ pub mod status;
 pub mod template;
 
 pub use backend::{
-    Backend, BackendCapabilities, BackendError, DefinitionRequest, DefinitionResult, Diagnostic,
+    Backend, BackendCapabilities, BackendError, CompletionItem, CompletionItemKind, CompletionKind,
+    CompletionRequest, CompletionResult, DefinitionRequest, DefinitionResult, Diagnostic,
     DiagnosticSeverity, DiagnosticsRequest, DiagnosticsResult, HoverRequest, HoverResult,
-    MarkupKind, SourceLocation, TypeQuality,
+    InsertTextFormat, MAX_COMPLETION_ITEMS, MarkupKind, SourceLocation, TypeQuality,
 };
 pub use check::{
-    CheckFragment, EventBindingKind, EventHandler, RootKind, TemplateAnalysis, UnsupportedFeature,
-    UnsupportedKind,
+    AttributeValueKind, CheckFragment, ComponentAttribute, ComponentUsage, EventBindingKind,
+    EventHandler, GuardBranch, GuardChain, GuardCondition, LocalBinding, LocalRole, RootKind,
+    TemplateAnalysis, UnsupportedFeature, UnsupportedKind,
 };
 pub use context::{ContextError, RequestContext, SourceSnapshot};
 pub use contract::{
