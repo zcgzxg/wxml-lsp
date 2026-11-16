@@ -1,0 +1,3 @@
+<view>
+  <inner-badge label="child" />
+</view>

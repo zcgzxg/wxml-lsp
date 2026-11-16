@@ -514,6 +514,7 @@ impl Server {
             Some(_) => {}
             None => diagnostics.push(failure_diagnostic()),
         }
+        diagnostics.extend(super::mode_diagnostics::diagnostics(document));
         let params = json!({
             "uri": document.uri(),
             "version": document.client_version().get(),

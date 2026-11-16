@@ -64,8 +64,12 @@ fn initialize_result(server: &Server) -> Value {
                 // instead of asking the client to resend its text.
                 "save": { "includeText": false },
             },
-            "hoverProvider": server.capabilities.hover.is_supported(),
-            "definitionProvider": server.capabilities.definition.is_supported(),
+            // Static tag/attribute documentation and component definitions
+            // work without a backend; a real Node backend adds expression
+            // hover and symbol definitions.
+            "hoverProvider": true,
+            "definitionProvider": server.host.is_project_open()
+                || server.capabilities.definition.is_supported(),
             // Static template completion is always available; the flag only
             // covers Node-backed expression/event queries.
             "completionProvider": {

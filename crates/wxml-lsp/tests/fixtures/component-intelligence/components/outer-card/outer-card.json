@@ -1,0 +1,7 @@
+{
+  "component": true,
+  "usingComponents": {
+    "inner-badge": "../inner-badge/inner-badge",
+    "shared-card": "../page-card/page-card"
+  }
+}

@@ -22,7 +22,8 @@ use std::sync::{Arc, PoisonError, RwLock};
 
 use thiserror::Error;
 use wxml_project::{
-    ComponentTargetKind, Page, Project, ProjectPath, SourceFile, SourceKind, SourceLimits, UriError,
+    ComponentPropertyFacts, ComponentTargetKind, Page, Project, ProjectPath, SourceFile,
+    SourceKind, SourceLimits, UriError,
 };
 use wxml_syntax::{ParseErrorKind, ParseResult};
 use wxml_types::{
@@ -79,6 +80,32 @@ const SUPPORTED_COMPILER_OPTIONS: [&str; 33] = [
     "outDir",
 ];
 
+/// Where a custom component tag is registered.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ComponentOrigin {
+    /// Global `app.json` `usingComponents`.
+    App {
+        /// Project-relative `app.json` path.
+        file: ProjectPath,
+    },
+    /// Page- or component-local `usingComponents`.
+    Local {
+        /// Project-relative page/component JSON path, when it exists.
+        file: Option<ProjectPath>,
+    },
+}
+
+impl ComponentOrigin {
+    /// Returns the project-relative declaration file, if any.
+    #[must_use]
+    pub const fn file(&self) -> Option<&ProjectPath> {
+        match self {
+            Self::App { file } => Some(file),
+            Self::Local { file } => file.as_ref(),
+        }
+    }
+}
+
 /// One custom component registered by the current view's `usingComponents`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ViewComponent {
@@ -86,8 +113,37 @@ pub struct ViewComponent {
     pub name: String,
     /// Raw `usingComponents` specifier.
     pub specifier: String,
-    /// Resolved component WXML path, when discovery could resolve it.
+    /// Form of the specifier (local, plugin or package).
+    pub kind: ComponentTargetKind,
+    /// Resolved component base path, when the specifier is local.
     pub component: Option<ProjectPath>,
+    /// Existing component WXML, when discovery found the local target.
+    pub wxml: Option<ProjectPath>,
+    /// Existing component JSON, when discovery found the local target.
+    pub json: Option<ProjectPath>,
+    /// Statically declared component properties and their coverage.
+    pub property_facts: ComponentPropertyFacts,
+    /// Page/component-local or global registration source.
+    pub origin: ComponentOrigin,
+}
+
+impl ViewComponent {
+    /// Applies live property facts without erasing a known discovery list.
+    ///
+    /// An incomplete, empty extraction keeps the previously known declarations
+    /// and records the reason; a complete result, or any result that found at
+    /// least one property, replaces the snapshot.
+    pub(crate) fn apply_live_facts(&mut self, facts: ComponentPropertyFacts) {
+        if !facts.complete
+            && facts.properties.is_empty()
+            && !self.property_facts.properties.is_empty()
+        {
+            self.property_facts.complete = false;
+            self.property_facts.reason = facts.reason;
+            return;
+        }
+        self.property_facts = facts;
+    }
 }
 
 /// Why a host operation could not be completed.
@@ -353,6 +409,25 @@ pub trait ProjectHost: Send + Sync {
             .map_or_else(Vec::new, |path| self.view_components(&path))
     }
 
+    /// Returns current component properties for one registered tag.
+    ///
+    /// Unlike [`Self::view_components`] this reads the effective script text
+    /// (overlay first), so an unsaved `properties` edit is reflected in static
+    /// completion, hover and definition. The default returns nothing.
+    fn component_properties(
+        &self,
+        _wxml: &ProjectPath,
+        _tag: &str,
+    ) -> Option<ComponentPropertyFacts> {
+        None
+    }
+
+    /// Project-bound variant of [`Self::component_properties`].
+    fn component_properties_for(&self, file: &FileId, tag: &str) -> Option<ComponentPropertyFacts> {
+        let path = ProjectPath::new(file.path()).ok()?;
+        self.component_properties(&path, tag)
+    }
+
     /// Prepares the analysis inputs for a WXML snapshot.
     fn analysis(&self, snapshot: &SourceSnapshot) -> Result<PreparedView, HostError>;
 }
@@ -480,6 +555,8 @@ struct State {
     snapshots: HashMap<FileId, Arc<SourceSnapshot>>,
     /// Authoritative unsaved text keyed by client URI.
     overlays: BTreeMap<String, (String, u64)>,
+    /// Parsed component properties keyed by project and script revision.
+    property_cache: BTreeMap<(ProjectId, ProjectPath), (u64, ComponentPropertyFacts)>,
     next_view_revision: u64,
     next_overlay_revision: u64,
     next_file_version: u64,
@@ -513,6 +590,7 @@ impl ProjectState {
                 active_project: None,
                 snapshots: HashMap::new(),
                 overlays: BTreeMap::new(),
+                property_cache: BTreeMap::new(),
                 next_view_revision: 1,
                 next_overlay_revision: 1,
                 next_file_version: 1,
@@ -553,6 +631,7 @@ impl ProjectState {
         state.next_view_revision = 1;
         state.next_overlay_revision = 1;
         state.next_file_version = 1;
+        state.property_cache.clear();
         let Some(uri) = root_uri else {
             if !options.apps.is_empty() {
                 return Err(ConfigurationError::MissingWorkspace.into());
@@ -772,6 +851,22 @@ impl ProjectHost for ProjectState {
         view_components_in_slot(&state, file.project(), &path)
     }
 
+    fn component_properties(
+        &self,
+        wxml: &ProjectPath,
+        tag: &str,
+    ) -> Option<ComponentPropertyFacts> {
+        let state = self.read();
+        let project = active_project_id(&state)?.clone();
+        drop(state);
+        self.component_properties_in(&project, wxml, tag)
+    }
+
+    fn component_properties_for(&self, file: &FileId, tag: &str) -> Option<ComponentPropertyFacts> {
+        let path = ProjectPath::new(file.path()).ok()?;
+        self.component_properties_in(file.project(), &path, tag)
+    }
+
     #[allow(clippy::too_many_lines)] // one linear analysis pipeline
     fn analysis(&self, snapshot: &SourceSnapshot) -> Result<PreparedView, HostError> {
         let Ok(path) = ProjectPath::new(snapshot.file().path()) else {
@@ -905,6 +1000,59 @@ impl ProjectHost for ProjectState {
 }
 
 impl ProjectState {
+    /// Resolves component properties inside one app, honoring its overlay.
+    fn component_properties_in(
+        &self,
+        project_id: &ProjectId,
+        wxml: &ProjectPath,
+        tag: &str,
+    ) -> Option<ComponentPropertyFacts> {
+        let mut state = self.write();
+        let (script, revision, discovery_facts) = {
+            let slot = state.projects.get(project_id)?;
+            let project = &slot.project;
+            let config = if let Some(page) = project.pages().iter().find(|page| page.wxml == *wxml)
+            {
+                &page.config
+            } else if let Some(component) = project
+                .components()
+                .iter()
+                .find(|component| component.wxml == *wxml)
+            {
+                &component.config
+            } else {
+                return None;
+            };
+            let usage = config.get(tag)?;
+            if usage.kind == ComponentTargetKind::Plugin {
+                return None;
+            }
+            let base = usage.component.as_ref()?;
+            let component = project.component(base)?;
+            let script = component.script.as_ref()?.clone();
+            let Some(revision) = project.overlay().revision(&script) else {
+                return Some(component.property_facts.clone());
+            };
+            (script, revision, component.property_facts.clone())
+        };
+        let key = (project_id.clone(), script.clone());
+        if let Some((cached_revision, facts)) = state.property_cache.get(&key) {
+            if *cached_revision == revision {
+                return Some(facts.clone());
+            }
+        }
+        let text = {
+            let slot = state.projects.get(project_id)?;
+            slot.project.read(&script).ok()?
+        };
+        let roots = wxml_project::extract_data_roots(&script, &text);
+        let facts = wxml_project::extract_component_property_facts(&roots);
+        if facts.complete || !facts.properties.is_empty() || discovery_facts.properties.is_empty() {
+            state.property_cache.insert(key, (revision, facts.clone()));
+        }
+        Some(facts)
+    }
+
     /// Applies a script or JSON overlay and reports affected views.
     ///
     /// Non-config JSON (for example `package.json`) and scripts in excluded
@@ -945,6 +1093,9 @@ impl ProjectState {
             }
         }
         let mut dirty = before;
+        state
+            .property_cache
+            .remove(&(project.clone(), path.clone()));
         if is_json {
             rebuild_slot_views(&mut state, &project);
             dirty.extend(dirty_for_source(&state, &project, &path));
@@ -985,9 +1136,14 @@ impl ProjectState {
             }
         }
         let mut dirty = before;
+        state
+            .property_cache
+            .remove(&(project.clone(), path.clone()));
         if is_json {
             rebuild_slot_views(&mut state, &project);
             dirty.extend(dirty_for_source(&state, &project, &path));
+        } else {
+            let _ = refresh_component_script_facts(&mut state, &project, &path);
         }
         let dirty = mark_views_dirty(&mut state, &project, dirty);
         let project_revision = bump_slot_revision(&mut state, &project);
@@ -1035,6 +1191,12 @@ impl ProjectState {
                 dirty_views: dirty,
                 project_revision: Some(project_revision),
             });
+        }
+        let refreshed = refresh_component_script_facts(&mut state, &project, &path);
+        if refreshed {
+            crate::server::log(format_args!(
+                "refreshed component property facts for a saved script"
+            ));
         }
         let dirty = state
             .projects
@@ -1154,6 +1316,9 @@ impl ProjectState {
             if let Some(slot) = state.projects.get_mut(&project) {
                 slot.project.remove_overlay(path);
             }
+        }
+        for (path, _, _) in &script_paths {
+            let _ = refresh_component_script_facts(&mut state, &project, path);
         }
         if !json_paths.is_empty() || full_refresh {
             if let Some(slot) = state.projects.get_mut(&project) {
@@ -1459,17 +1624,25 @@ impl ViewEntry for Page {
     fn components(&self) -> BTreeMap<String, ProjectPath> {
         // `PageConfig::iter` already lets page-local entries shadow globals;
         // only local components have a project path to resolve.
-        self.config
-            .iter()
-            .filter(|(_, component)| component.kind == ComponentTargetKind::Local)
-            .filter_map(|(name, component)| {
-                component
-                    .component
-                    .as_ref()
-                    .map(|path| (name.clone(), path.clone()))
-            })
-            .collect()
+        local_component_paths(&self.config)
     }
+}
+
+/// Returns effective local component targets for one page/component config.
+fn local_component_paths(config: &wxml_project::PageConfig) -> BTreeMap<String, ProjectPath> {
+    config
+        .iter()
+        .filter(|(_, component)| {
+            component.kind == ComponentTargetKind::Local
+                || component.kind == ComponentTargetKind::Package
+        })
+        .filter_map(|(name, component)| {
+            component
+                .component
+                .as_ref()
+                .map(|path| (name.clone(), path.clone()))
+        })
+        .collect()
 }
 
 impl ViewEntry for wxml_project::Component {
@@ -1482,9 +1655,7 @@ impl ViewEntry for wxml_project::Component {
     }
 
     fn components(&self) -> BTreeMap<String, ProjectPath> {
-        // `wxml-project` does not expose a `PageConfig` for components, so
-        // component-internal `usingComponents` cannot be resolved here yet.
-        BTreeMap::new()
+        local_component_paths(&self.config)
     }
 }
 
@@ -1543,6 +1714,24 @@ fn dirty_for_source(state: &State, project: &ProjectId, source: &ProjectPath) ->
     slot.dependencies
         .affected(source)
         .unwrap_or_else(|| slot.views.keys().cloned().collect())
+}
+
+/// Refreshes discovered property facts for one component script.
+fn refresh_component_script_facts(
+    state: &mut State,
+    project: &ProjectId,
+    script: &ProjectPath,
+) -> bool {
+    let refreshed = state
+        .projects
+        .get_mut(project)
+        .is_some_and(|slot| slot.project.refresh_component_properties(script));
+    if refreshed {
+        state
+            .property_cache
+            .remove(&(project.clone(), script.clone()));
+    }
+    refreshed
 }
 
 /// Returns all views of one loaded project.
@@ -1663,21 +1852,53 @@ fn view_components_in_slot(
     let Some(slot) = state.projects.get(project) else {
         return Vec::new();
     };
-    let Some(config) = slot
-        .project
-        .pages()
-        .iter()
-        .find(|page| page.wxml == *wxml)
-        .map(|page| &page.config)
-    else {
-        return Vec::new();
-    };
+    let (config, local_file) =
+        if let Some(page) = slot.project.pages().iter().find(|page| page.wxml == *wxml) {
+            (&page.config, page.json.clone())
+        } else if let Some(component) = slot
+            .project
+            .components()
+            .iter()
+            .find(|component| component.wxml == *wxml)
+        {
+            (&component.config, component.json.clone())
+        } else {
+            return Vec::new();
+        };
+    let app_json = slot.project.app_json().clone();
     let mut components: Vec<ViewComponent> = config
         .iter()
-        .map(|(name, usage)| ViewComponent {
-            name: name.clone(),
-            specifier: usage.specifier.clone(),
-            component: usage.component.clone(),
+        .map(|(name, usage)| {
+            let discovered = usage
+                .component
+                .as_ref()
+                .and_then(|base| slot.project.component(base));
+            let origin = if config.local.contains_key(name) {
+                ComponentOrigin::Local {
+                    file: local_file.clone(),
+                }
+            } else {
+                ComponentOrigin::App {
+                    file: app_json.clone(),
+                }
+            };
+            ViewComponent {
+                name: name.clone(),
+                specifier: usage.specifier.clone(),
+                kind: usage.kind,
+                component: usage.component.clone(),
+                wxml: discovered.map(|component| component.wxml.clone()),
+                json: discovered.and_then(|component| component.json.clone()),
+                property_facts: discovered.map_or_else(
+                    || ComponentPropertyFacts {
+                        properties: Vec::new(),
+                        complete: false,
+                        reason: Some("component metadata is unavailable"),
+                    },
+                    |component| component.property_facts.clone(),
+                ),
+                origin,
+            }
         })
         .collect();
     components.sort_by(|left, right| left.name.cmp(&right.name));
@@ -2303,6 +2524,138 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one end-to-end host scenario
+    fn components_expose_their_own_using_components_and_local_overrides() {
+        let root =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/component-intelligence");
+        let state = ProjectState::new();
+        state
+            .open_root(Some(&format!("file://{}", root.display())))
+            .expect("open fixture");
+
+        let page = ProjectPath::new("pages/index/index.wxml").expect("page");
+        let components = state.view_components(&page);
+        let shared = components
+            .iter()
+            .find(|component| component.name == "shared-card")
+            .expect("shared card");
+        assert_eq!(
+            shared.wxml.as_ref().map(ProjectPath::as_str),
+            Some("components/page-card/page-card.wxml"),
+            "the page-local entry must shadow the app entry"
+        );
+        assert_eq!(
+            shared.origin.file().map(ProjectPath::as_str),
+            Some("pages/index/index.json")
+        );
+        assert!(
+            shared
+                .property_facts
+                .properties
+                .iter()
+                .any(|property| property.name == "pageOnly")
+        );
+        let remote = components
+            .iter()
+            .find(|component| component.name == "remote-card")
+            .expect("plugin component");
+        assert_eq!(remote.kind, ComponentTargetKind::Plugin);
+        assert!(remote.wxml.is_none());
+        assert_eq!(remote.property_facts.properties.len(), 0);
+
+        let own = ProjectPath::new("components/outer-card/outer-card.wxml").expect("component");
+        let inner = state
+            .view_components(&own)
+            .into_iter()
+            .find(|component| component.name == "inner-badge")
+            .expect("component-own usingComponents");
+        assert_eq!(
+            inner.wxml.as_ref().map(ProjectPath::as_str),
+            Some("components/inner-badge/inner-badge.wxml")
+        );
+        assert_eq!(
+            inner.origin.file().map(ProjectPath::as_str),
+            Some("components/outer-card/outer-card.json")
+        );
+        assert!(
+            inner
+                .property_facts
+                .properties
+                .iter()
+                .any(|property| property.name == "label")
+        );
+        let own_shared = state
+            .view_components(&own)
+            .into_iter()
+            .find(|component| component.name == "shared-card")
+            .expect("component-local override");
+        assert_eq!(
+            own_shared.wxml.as_ref().map(ProjectPath::as_str),
+            Some("components/page-card/page-card.wxml")
+        );
+        assert_eq!(
+            own_shared.origin.file().map(ProjectPath::as_str),
+            Some("components/outer-card/outer-card.json")
+        );
+
+        let script = ProjectPath::new("components/outer-card/outer-card.ts").expect("script");
+        let uri = format!("file://{}/{}", root.display(), script.as_str());
+        let update = state
+            .open_document(OpenDocument {
+                uri,
+                text: "Component({ properties: { freshCount: { type: Number } } });".to_owned(),
+                version: Some(2),
+            })
+            .expect("script overlay");
+        assert!(
+            update
+                .dirty_views
+                .contains(&ProjectPath::new("pages/index/index.wxml").expect("page")),
+            "a component script change must dirty its callers: {:?}",
+            update.dirty_views
+        );
+        assert!(
+            update.dirty_views.contains(
+                &ProjectPath::new("components/outer-card/outer-card.wxml").expect("view")
+            ),
+            "the owning component view must stay dirty: {:?}",
+            update.dirty_views
+        );
+        let properties = state
+            .component_properties(&page, "outer-card")
+            .expect("live properties");
+        assert_eq!(properties.properties.len(), 1);
+        assert_eq!(properties.properties[0].name, "freshCount");
+        assert_eq!(properties.properties[0].type_text, "number");
+        assert!(properties.complete);
+
+        let inner_script =
+            ProjectPath::new("components/inner-badge/inner-badge.ts").expect("inner script");
+        let inner_uri = format!("file://{}/{}", root.display(), inner_script.as_str());
+        let update = state
+            .open_document(OpenDocument {
+                uri: inner_uri,
+                text: "Component({ properties: { freshLabel: { type: String } } });".to_owned(),
+                version: Some(3),
+            })
+            .expect("nested script overlay");
+        assert!(
+            update
+                .dirty_views
+                .contains(&ProjectPath::new("pages/index/index.wxml").expect("page")),
+            "nested component changes must propagate recursively: {:?}",
+            update.dirty_views
+        );
+        assert!(
+            update.dirty_views.contains(
+                &ProjectPath::new("components/outer-card/outer-card.wxml").expect("outer")
+            ),
+            "the direct component user must be dirty: {:?}",
+            update.dirty_views
+        );
+    }
+
+    #[test]
     fn nested_app_root_requires_explicit_configuration() {
         let base = std::env::var_os("TMPDIR")
             .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
@@ -2701,6 +3054,142 @@ mod tests {
             panic!("expected a partial hint, got {:?}", view.status_hint);
         };
         assert!(reason.contains("event binding limit"), "{reason}");
+    }
+
+    #[test]
+    fn component_facts_refresh_after_save_close_and_watched_changes() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-component-refresh-{stamp}"));
+        std::fs::create_dir_all(root.join("components/card")).expect("component dir");
+        std::fs::create_dir_all(root.join("pages/index")).expect("page dir");
+        std::fs::write(
+            root.join("app.json"),
+            r#"{"pages":["pages/index/index"],"usingComponents":{"card":"/components/card/card"}}"#,
+        )
+        .expect("app");
+        std::fs::write(root.join("pages/index/index.wxml"), "<card />").expect("page");
+        std::fs::write(root.join("pages/index/index.ts"), "Page({});").expect("page script");
+        std::fs::write(root.join("components/card/card.wxml"), "<view/>").expect("card wxml");
+        std::fs::write(
+            root.join("components/card/card.ts"),
+            "Component({ properties: { oldProp: { type: String } } });",
+        )
+        .expect("card script");
+        let state = ProjectState::new();
+        state
+            .open_root(Some(&format!("file://{}", root.display())))
+            .expect("open");
+        let page = ProjectPath::new("pages/index/index.wxml").expect("page path");
+        let script = ProjectPath::new("components/card/card.ts").expect("script path");
+        let script_uri = format!("file://{}/{}", root.display(), script.as_str());
+
+        state
+            .open_document(OpenDocument {
+                uri: script_uri.clone(),
+                text: "Component({ properties: { newProp: { type: Number } } });".to_owned(),
+                version: Some(2),
+            })
+            .expect("overlay");
+        let facts = state
+            .component_properties(&page, "card")
+            .expect("overlay facts");
+        assert_eq!(facts.properties[0].name, "newProp");
+
+        state.save_document(&script_uri).expect("save");
+        std::fs::write(
+            root.join("components/card/card.ts"),
+            "Component({ properties: { newProp: { type: Number } } });",
+        )
+        .expect("save disk");
+        state.close_document(&script_uri).expect("close");
+        let facts = state
+            .component_properties(&page, "card")
+            .expect("saved facts");
+        assert_eq!(facts.properties[0].name, "newProp");
+        assert_eq!(facts.properties[0].script, script);
+
+        std::fs::write(
+            root.join("components/card/card.ts"),
+            "Component({ properties: { watchedProp: { type: Boolean } } });",
+        )
+        .expect("watched disk");
+        let update = state
+            .watched_files_changed(&[WatchedFileChange {
+                uri: script_uri.clone(),
+                kind: WatchedChangeKind::Changed,
+            }])
+            .expect("watched");
+        assert!(
+            update
+                .dirty_views
+                .contains(&ProjectPath::new("pages/index/index.wxml").expect("page")),
+            "watched component script must dirty callers: {:?}",
+            update.dirty_views
+        );
+        let facts = state
+            .component_properties(&page, "card")
+            .expect("watched facts");
+        assert_eq!(facts.properties[0].name, "watchedProp");
+
+        std::fs::remove_file(root.join("components/card/card.ts")).expect("delete script");
+        state
+            .watched_files_changed(&[WatchedFileChange {
+                uri: script_uri,
+                kind: WatchedChangeKind::Deleted,
+            }])
+            .expect("deleted");
+        let facts = state.component_properties(&page, "card");
+        assert!(facts.is_none_or(|facts| facts.properties.is_empty()));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn live_component_facts_do_not_erase_known_properties_when_incomplete() {
+        let mut component = ViewComponent {
+            name: "card".to_owned(),
+            specifier: "./card".to_owned(),
+            kind: ComponentTargetKind::Local,
+            component: Some(ProjectPath::new("card").expect("path")),
+            wxml: Some(ProjectPath::new("card.wxml").expect("path")),
+            json: None,
+            property_facts: ComponentPropertyFacts {
+                properties: vec![wxml_project::ComponentProperty {
+                    name: "title".to_owned(),
+                    type_text: "string".to_owned(),
+                    default_text: None,
+                    documentation: None,
+                    script: ProjectPath::new("card.ts").expect("path"),
+                    range: wxml_text::TextRange::new(0, 5).expect("range"),
+                }],
+                complete: true,
+                reason: None,
+            },
+            origin: ComponentOrigin::Local { file: None },
+        };
+        component.apply_live_facts(ComponentPropertyFacts {
+            properties: Vec::new(),
+            complete: false,
+            reason: Some("properties object is malformed"),
+        });
+        assert_eq!(component.property_facts.properties.len(), 1);
+        assert!(!component.property_facts.complete);
+        assert_eq!(
+            component.property_facts.reason,
+            Some("properties object is malformed")
+        );
+
+        component.apply_live_facts(ComponentPropertyFacts {
+            properties: Vec::new(),
+            complete: true,
+            reason: None,
+        });
+        assert_eq!(component.property_facts.properties.len(), 0);
+        assert!(component.property_facts.complete);
     }
 
     #[test]

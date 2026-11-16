@@ -65,19 +65,57 @@ impl DependencyIndex {
 
         // A page/component `usingComponents` entry links the calling view to
         // the resolved component properties. Component templates are not
-        // added: changing them only affects their own view.
+        // added: changing them only affects their own view. Nested component
+        // usages propagate to every transitive caller so an inner component
+        // script also invalidates the page that renders the outer one.
+        let mut base_by_wxml: BTreeMap<ProjectPath, ProjectPath> = BTreeMap::new();
+        let mut users_by_base: BTreeMap<ProjectPath, BTreeSet<ProjectPath>> = BTreeMap::new();
         for page in project.pages() {
             for (_, usage) in page.config.iter() {
                 let Some(base) = usage.component.as_ref() else {
                     continue;
                 };
-                if let Some(component) = project.component(base) {
-                    if let Some(script) = &component.script {
-                        index.add(script, &page.wxml);
+                base_by_wxml.insert(page.wxml.clone(), base.clone());
+                users_by_base
+                    .entry(base.clone())
+                    .or_default()
+                    .insert(page.wxml.clone());
+            }
+        }
+        for component in project.components() {
+            for (_, usage) in component.config.iter() {
+                let Some(base) = usage.component.as_ref() else {
+                    continue;
+                };
+                base_by_wxml.insert(component.wxml.clone(), base.clone());
+                users_by_base
+                    .entry(base.clone())
+                    .or_default()
+                    .insert(component.wxml.clone());
+            }
+        }
+        for (base, direct) in &users_by_base {
+            let mut pending: Vec<ProjectPath> = direct.iter().cloned().collect();
+            let mut affected = BTreeSet::new();
+            while let Some(view) = pending.pop() {
+                if !affected.insert(view.clone()) {
+                    continue;
+                }
+                if let Some(parent_base) = base_by_wxml.get(&view) {
+                    if let Some(parents) = users_by_base.get(parent_base) {
+                        pending.extend(parents.iter().cloned());
                     }
-                    if let Some(json) = &component.json {
-                        index.add(json, &page.wxml);
-                    }
+                }
+            }
+            let Some(component) = project.component(base) else {
+                continue;
+            };
+            for source in [component.script.as_ref(), component.json.as_ref()]
+                .into_iter()
+                .flatten()
+            {
+                for view in &affected {
+                    index.add(source, view);
                 }
             }
         }

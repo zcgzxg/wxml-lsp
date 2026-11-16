@@ -513,6 +513,7 @@ mod tests {
 
     use super::*;
     use crate::jsonrpc::ResponseOutcome;
+    use crate::project_host::ProjectState;
     use crate::scheduler::{JobKind, Outcome};
 
     const URI: &str = "file:///pages/index/index.wxml";
@@ -1032,7 +1033,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_hover_is_not_registered() {
+    fn unsupported_hover_returns_null_instead_of_an_error() {
         let mut capabilities = MockBackend::new().capabilities();
         capabilities.hover = CapabilityStatus::Unsupported {
             reason: "no hover".to_owned(),
@@ -1045,14 +1046,11 @@ mod tests {
             "textDocument/hover",
             hover_params((0, 1)),
         )));
-        assert_eq!(
-            error_code(&outgoing),
-            jsonrpc::error_codes::METHOD_NOT_FOUND
-        );
+        assert_eq!(result(&outgoing), &json!(null));
     }
 
     #[test]
-    fn definition_is_method_not_found_when_unsupported() {
+    fn unsupported_definition_returns_null_instead_of_an_error() {
         let (mut server, _) = setup();
         initialize(&mut server);
         open_document(&mut server, "abc", 1);
@@ -1061,10 +1059,87 @@ mod tests {
             "textDocument/definition",
             hover_params((0, 1)),
         )));
-        assert_eq!(
-            error_code(&outgoing),
-            jsonrpc::error_codes::METHOD_NOT_FOUND
+        assert_eq!(result(&outgoing), &json!(null));
+    }
+
+    #[test]
+    fn static_tag_hover_works_when_backend_hover_is_unsupported() {
+        let mut capabilities = MockBackend::new().capabilities();
+        capabilities.hover = CapabilityStatus::Unsupported {
+            reason: "no hover".to_owned(),
+        };
+        let (mut server, dispatch) = setup_with(capabilities);
+        initialize(&mut server);
+        open_document(&mut server, "<view />", 1);
+        dispatch.take();
+        let outgoing = only(server.handle_incoming(request(
+            json!(43),
+            "textDocument/hover",
+            hover_params((0, 2)),
+        )));
+        let result = result(&outgoing);
+        assert_eq!(result["contents"]["kind"], json!("markdown"));
+        assert!(
+            result["contents"]["value"]
+                .as_str()
+                .is_some_and(|value| value.contains("Block container")),
+            "{result}"
         );
+        assert!(dispatch.take().is_empty());
+    }
+
+    #[test]
+    fn static_component_definition_works_when_backend_definition_is_unsupported() {
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/component-intelligence");
+        let uri = format!("file://{}/pages/index/index.wxml", root.display());
+        let host = Arc::new(ProjectState::new());
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            Arc::new(MockBackend::new()),
+            MockBackend::new().capabilities(),
+            dispatch.clone(),
+            host,
+        );
+        let outgoing = only(server.handle_incoming(request(
+            json!(1),
+            "initialize",
+            json!({"rootUri": format!("file://{}", root.display())}),
+        )));
+        assert_eq!(
+            result(&outgoing)["capabilities"]["definitionProvider"].as_bool(),
+            Some(true)
+        );
+        server.handle_incoming(notification("initialized", json!({})));
+        server.handle_incoming(notification(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "wxml",
+                    "version": 1,
+                    "text": "<outer-card />",
+                },
+            }),
+        ));
+        dispatch.take();
+        let outgoing = only(server.handle_incoming(request(
+            json!(2),
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": 3},
+            }),
+        )));
+        let locations = result(&outgoing).as_array().expect("locations");
+        assert_eq!(locations.len(), 1, "{outgoing:?}");
+        assert!(
+            locations[0]["uri"]
+                .as_str()
+                .is_some_and(|uri| uri.ends_with("components/outer-card/outer-card.wxml")),
+            "{outgoing:?}"
+        );
+        assert!(dispatch.take().is_empty());
     }
 
     #[test]
@@ -2436,10 +2511,7 @@ mod tests {
             "textDocument/hover",
             hover_params((0, 0)),
         )));
-        assert_eq!(
-            error_code(&outgoing),
-            jsonrpc::error_codes::METHOD_NOT_FOUND
-        );
+        assert_eq!(result(&outgoing), &json!(null));
     }
 
     #[test]

@@ -32,7 +32,11 @@ pub use files::{
     FileError, FileKey, PathError, ProjectPath, UriError, read_file, root_path_from_uri,
 };
 pub use overlay::{Overlay, OverlayError};
-pub use script::{DataRoot, DataRootKind, ScriptResolution, extract_data_roots, resolve_script};
+pub use script::{
+    ComponentProperty, ComponentPropertyFacts, DataRoot, DataRootKind, ScriptResolution,
+    extract_component_properties, extract_component_property_facts, extract_data_roots,
+    resolve_script,
+};
 pub use sources::{SourceFile, SourceIssue, SourceIssueKind, SourceKind, SourceLimits, SourceSet};
 
 /// Why a project could not be opened.
@@ -330,6 +334,50 @@ impl Project {
         Ok(extract_data_roots(script, &text))
     }
 
+    /// Refreshes one component's `properties` facts from effective text.
+    ///
+    /// This is the targeted alternative to [`Project::rediscover`] for a saved,
+    /// closed or externally modified component script. Only the component whose
+    /// `script` matches is touched; its raw data roots and the derived
+    /// [`ComponentPropertyFacts`] are replaced. A missing or unreadable script
+    /// clears the facts and records an incomplete reason.
+    ///
+    /// Returns `false` when `script` is not the script of a discovered
+    /// component.
+    pub fn refresh_component_properties(&mut self, script: &ProjectPath) -> bool {
+        let Some(index) = self
+            .discovery
+            .components
+            .iter()
+            .position(|component| component.script.as_ref() == Some(script))
+        else {
+            return false;
+        };
+        let (properties, facts) = match self.read_optional(script) {
+            Ok(Some(text)) => {
+                let roots = extract_data_roots(script, &text);
+                let facts = extract_component_property_facts(&roots);
+                let properties = roots
+                    .into_iter()
+                    .filter(|root| root.kind == DataRootKind::ComponentProperties)
+                    .collect();
+                (properties, facts)
+            }
+            Ok(None) | Err(_) => (
+                Vec::new(),
+                ComponentPropertyFacts {
+                    properties: Vec::new(),
+                    complete: false,
+                    reason: Some("component script is unavailable"),
+                },
+            ),
+        };
+        let component = &mut self.discovery.components[index];
+        component.properties = properties;
+        component.property_facts = facts;
+        true
+    }
+
     /// Converts a `file://` URI into a project-relative path.
     ///
     /// # Errors
@@ -382,6 +430,79 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+
+    #[test]
+    fn refreshes_one_component_property_snapshot_from_effective_text() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-refresh-component-{stamp}"));
+        std::fs::create_dir_all(root.join("components/card")).expect("create card");
+        std::fs::write(
+            root.join("app.json"),
+            r#"{"pages":[],"usingComponents":{"card":"/components/card/card"}}"#,
+        )
+        .expect("app");
+        std::fs::write(root.join("components/card/card.wxml"), "<view/>").expect("wxml");
+        std::fs::write(
+            root.join("components/card/card.ts"),
+            "Component({ properties: { oldProp: { type: String } } });",
+        )
+        .expect("script");
+        let mut project = Project::open(root.clone()).expect("open");
+        let script = ProjectPath::new("components/card/card.ts").expect("script path");
+        assert!(project.refresh_component_properties(&script));
+
+        project
+            .set_overlay(
+                &script,
+                "Component({\n  properties: {\n    /** new */\n    newProp: { type: Number },\n  },\n});",
+                2,
+            )
+            .expect("overlay");
+        assert!(project.refresh_component_properties(&script));
+        let facts = &project
+            .components()
+            .iter()
+            .find(|component| component.id.as_str() == "components/card/card")
+            .expect("component")
+            .property_facts;
+        assert_eq!(facts.properties.len(), 1);
+        assert_eq!(facts.properties[0].name, "newProp");
+        assert_eq!(facts.properties[0].type_text, "number");
+        assert!(facts.complete);
+
+        project.remove_overlay(&script);
+        std::fs::write(
+            root.join("components/card/card.ts"),
+            "Component({ properties: { diskProp: { type: Boolean } } });",
+        )
+        .expect("disk update");
+        assert!(project.refresh_component_properties(&script));
+        let facts = &project
+            .components()
+            .iter()
+            .find(|component| component.id.as_str() == "components/card/card")
+            .expect("component")
+            .property_facts;
+        assert_eq!(facts.properties[0].name, "diskProp");
+
+        std::fs::remove_file(root.join("components/card/card.ts")).expect("delete script");
+        assert!(project.refresh_component_properties(&script));
+        let facts = &project
+            .components()
+            .iter()
+            .find(|component| component.id.as_str() == "components/card/card")
+            .expect("component")
+            .property_facts;
+        assert_eq!(facts.properties.len(), 0);
+        assert!(!facts.complete);
+        assert_eq!(facts.reason, Some("component script is unavailable"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn exposes_fixed_project_paths() {

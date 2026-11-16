@@ -48,6 +48,7 @@ pub(crate) mod dependencies;
 pub(crate) mod formatting;
 pub(crate) mod handlers;
 pub(crate) mod jsonrpc;
+pub(crate) mod metadata;
 pub mod project_host;
 pub(crate) mod scheduler;
 pub(crate) mod server;

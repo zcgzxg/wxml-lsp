@@ -10,6 +10,7 @@
 pub(crate) mod catalog;
 pub(crate) mod context;
 pub(crate) mod expression;
+pub(crate) mod rules;
 pub(crate) mod snippets;
 pub(crate) mod static_items;
 pub(crate) mod user_snippets;
@@ -41,13 +42,29 @@ pub(crate) fn static_completion(
     context: &wxml_types::RequestContext,
     detected: &Detected,
 ) -> CompletionResult {
-    // Only tag sites need `usingComponents`; attribute/value sites avoid a
-    // discovery-map clone on every keystroke.
-    let components = if matches!(detected.site, context::Site::Tag { .. }) {
-        server.host.view_components_for(context.source().file())
+    // Tag and attribute-name sites need `usingComponents` (custom component
+    // tags and their property names); value sites avoid a discovery lookup on
+    // every keystroke.
+    let wants_components = match &detected.site {
+        context::Site::Tag { .. } => true,
+        context::Site::AttributeName { tag, .. } => catalog::tag(tag).is_none(),
+        context::Site::AttributeValue { .. } | context::Site::Mustache => false,
+    };
+    let file = context.source().file();
+    let mut components = if wants_components {
+        server.host.view_components_for(file)
     } else {
         Vec::new()
     };
+    if let context::Site::AttributeName { tag, .. } = &detected.site {
+        // Discovery may predate an unsaved component script edit; refresh the
+        // one tag being completed from the effective script text.
+        if let Some(component) = components.iter_mut().find(|entry| entry.name == *tag) {
+            if let Some(facts) = server.host.component_properties_for(file, tag) {
+                component.apply_live_facts(facts);
+            }
+        }
+    }
     let text = context.source().text();
     let snippet = server.client.snippets.then(|| {
         (

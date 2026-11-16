@@ -121,6 +121,28 @@ impl ProjectPath {
         Self::new(path)
     }
 
+    /// Returns a copy with `extension` appended to the final name.
+    ///
+    /// Unlike [`ProjectPath::with_extension`], a base whose last component
+    /// already contains a dot keeps it: `card.v2` becomes `card.v2.wxml`.
+    /// Page/component routes use this form because the route is the full base
+    /// name, not a filename with an extension.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`PathError::InvalidExtension`] for an empty extension or one
+    /// containing a path separator or NUL.
+    pub fn with_appended_extension(&self, extension: &str) -> Result<Self, PathError> {
+        if extension.is_empty()
+            || extension.contains('/')
+            || extension.contains('\\')
+            || extension.contains('\0')
+        {
+            return Err(PathError::InvalidExtension);
+        }
+        Self::new(format!("{}.{}", self.0, extension))
+    }
+
     /// Resolves a path specifier against a base directory.
     ///
     /// A specifier starting with `/` is resolved against the project root and
@@ -897,6 +919,13 @@ mod tests {
                 .expect("valid")
                 .as_str(),
             "pages/index/index.ts"
+        );
+        assert_eq!(
+            path("components/card.v2")
+                .with_appended_extension("wxml")
+                .expect("valid")
+                .as_str(),
+            "components/card.v2.wxml"
         );
         assert_eq!(
             path("a").with_extension("a/b"),
