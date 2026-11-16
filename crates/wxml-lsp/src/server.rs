@@ -80,6 +80,10 @@ pub(crate) struct Inflight {
 }
 
 /// One connected client.
+///
+/// The boolean fields are independent protocol flags; grouping them into a
+/// bitflag or options struct would make each read less direct.
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct Server {
     /// Open documents.
     pub(crate) workspace: Workspace,
@@ -112,6 +116,12 @@ pub(crate) struct Server {
     pub(crate) clean_shutdown: bool,
     /// Whether the client declared dynamic watched-file registrations.
     pub(crate) client_watched_files: bool,
+    /// Whether the client accepts LSP snippets
+    /// (`textDocument.completion.completionItem.snippetSupport`).
+    pub(crate) client_snippets: bool,
+    /// Whether the client accepts hierarchical `DocumentSymbol` results
+    /// (`textDocument.documentSymbol.hierarchicalDocumentSymbolSupport`).
+    pub(crate) client_hierarchical_symbols: bool,
     /// Synthetic (non-project) documents the client opened as WXML.
     ///
     /// Their route is `Unknown`, so the URI extension alone cannot tell a
@@ -156,6 +166,8 @@ impl Server {
             stop: false,
             clean_shutdown: false,
             client_watched_files: false,
+            client_snippets: false,
+            client_hierarchical_symbols: false,
             synthetic_templates: HashSet::new(),
         }
     }
@@ -1550,8 +1562,11 @@ mod tests {
     fn unknown_methods_and_client_responses_are_handled() {
         let (mut server, _) = setup();
         initialize(&mut server);
-        let outgoing =
-            only(server.handle_incoming(request(json!(16), "textDocument/formatting", json!({}))));
+        let outgoing = only(server.handle_incoming(request(
+            json!(16),
+            "textDocument/documentColor",
+            json!({}),
+        )));
         assert_eq!(
             error_code(&outgoing),
             jsonrpc::error_codes::METHOD_NOT_FOUND

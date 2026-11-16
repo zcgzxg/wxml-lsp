@@ -25,6 +25,20 @@ fn requested_root(params: Option<&Value>) -> Option<&str> {
         .as_str()
 }
 
+/// Reads one boolean capability nested under `capabilities`.
+fn client_capability(params: Option<&Value>, path: &[&str]) -> bool {
+    let Some(mut value) = params.and_then(|params| params.get("capabilities")) else {
+        return false;
+    };
+    for key in path {
+        let Some(next) = value.get(*key) else {
+            return false;
+        };
+        value = next;
+    }
+    value.as_bool().unwrap_or(false)
+}
+
 /// Builds the `InitializeResult`.
 fn initialize_result(server: &Server) -> Value {
     json!({
@@ -47,6 +61,14 @@ fn initialize_result(server: &Server) -> Value {
                 "triggerCharacters": ["<", " ", ":", "\"", "'", ".", "{", "="],
                 "resolveProvider": false,
             },
+            // Formatting and structure are answered locally from the WXML
+            // syntax tree, so they stay available when Node is offline.
+            "documentFormattingProvider": true,
+            "documentRangeFormattingProvider": true,
+            "linkedEditingRangeProvider": true,
+            "foldingRangeProvider": true,
+            "selectionRangeProvider": true,
+            "documentSymbolProvider": true,
         },
         "serverInfo": {
             "name": "wxml-lsp",
@@ -98,6 +120,12 @@ impl Server {
             "textDocument/hover" => self.hover(id, params),
             "textDocument/definition" => self.definition(id, params),
             "textDocument/completion" => self.completion(id, params),
+            "textDocument/formatting" => self.formatting(id, params),
+            "textDocument/rangeFormatting" => self.range_formatting(id, params),
+            "textDocument/linkedEditingRange" => self.linked_editing(id, params),
+            "textDocument/foldingRange" => self.folding_range(id, params),
+            "textDocument/selectionRange" => self.selection_range(id, params),
+            "textDocument/documentSymbol" => self.document_symbol(id, params),
             other => {
                 log(format_args!(
                     "unknown request method `{}`",
@@ -174,6 +202,23 @@ impl Server {
             .and_then(|watched| watched.get("dynamicRegistration"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        self.client_snippets = client_capability(
+            params,
+            &[
+                "textDocument",
+                "completion",
+                "completionItem",
+                "snippetSupport",
+            ],
+        );
+        self.client_hierarchical_symbols = client_capability(
+            params,
+            &[
+                "textDocument",
+                "documentSymbol",
+                "hierarchicalDocumentSymbolSupport",
+            ],
+        );
         let root = requested_root(params);
         match self.host.open_root(root) {
             Ok(()) => {

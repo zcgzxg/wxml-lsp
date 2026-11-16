@@ -10,6 +10,7 @@
 pub(crate) mod catalog;
 pub(crate) mod context;
 pub(crate) mod expression;
+pub(crate) mod snippets;
 pub(crate) mod static_items;
 
 use std::sync::Arc;
@@ -49,7 +50,12 @@ pub(crate) fn static_completion(
     } else {
         Vec::new()
     };
-    let (items, truncated) = static_items::items(detected, &components);
+    let text = context.source().text();
+    let snippet_env = server
+        .client_snippets
+        .then(|| snippets::SnippetEnv::new(text, detected.replace.start()));
+    let (items, truncated) =
+        static_items::items_with_snippets(detected, &components, snippet_env.as_ref());
     CompletionResult {
         items,
         status: CapabilityStatus::Supported,

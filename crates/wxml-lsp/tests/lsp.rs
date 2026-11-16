@@ -355,7 +355,7 @@ fn unknown_methods_and_malformed_json_are_reported() {
     let mut client = Client::start();
     client.initialize();
 
-    client.request(json!(2), "textDocument/formatting", json!({}));
+    client.request(json!(2), "textDocument/documentColor", json!({}));
     let error = client.recv_response(&json!(2));
     assert_eq!(error["error"]["code"], json!(-32601));
 
