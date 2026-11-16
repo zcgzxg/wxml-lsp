@@ -674,6 +674,15 @@ impl ProjectStyleCache {
         self.fact_bytes = 0;
     }
 
+    /// Removes one cached view and updates the budget counters.
+    fn remove_fact(&mut self, view: &ProjectPath) {
+        if let Some(previous) = self.facts.remove(view) {
+            self.fact_classes = self.fact_classes.saturating_sub(previous.classes.len());
+            self.fact_bytes = self.fact_bytes.saturating_sub(previous.estimated_bytes());
+        }
+        self.order.retain(|entry| entry != view);
+    }
+
     /// Inserts one view's facts within the cache budgets.
     fn insert(&mut self, view: ProjectPath, facts: Arc<StyleViewFacts>) {
         if let Some(previous) = self.facts.remove(&view) {
@@ -735,13 +744,25 @@ impl StyleStore {
         self.order.clear();
     }
 
-    /// Drops one project's cache.
-    /// Invalidates one changed style file and every class-fact view.
-    fn invalidate_path(&mut self, project_id: &ProjectId, path: &ProjectPath) {
-        if let Some(cache) = self.projects.get_mut(project_id) {
-            cache.index.invalidate(path);
-            cache.clear_facts();
+    /// Invalidates one changed style file and the cached facts that used it.
+    ///
+    /// Returns the views whose facts were dropped, so callers can republish
+    /// only affected templates instead of broadcasting every open WXML view.
+    fn invalidate_path(&mut self, project_id: &ProjectId, path: &ProjectPath) -> Vec<ProjectPath> {
+        let Some(cache) = self.projects.get_mut(project_id) else {
+            return Vec::new();
+        };
+        cache.index.invalidate(path);
+        let affected: Vec<ProjectPath> = cache
+            .facts
+            .iter()
+            .filter(|(_, facts)| facts.files.iter().any(|file| &file.path == path))
+            .map(|(view, _)| view.clone())
+            .collect();
+        for view in &affected {
+            cache.remove_fact(view);
         }
+        affected
     }
 
     /// Drops class facts after discovery/configuration changed.
@@ -1577,15 +1598,13 @@ impl ProjectState {
         state
             .property_cache
             .remove(&(project.clone(), path.clone()));
-        if is_json {
+        let style_views = if is_json {
             rebuild_slot_views(&mut state, &project);
             dirty.extend(dirty_for_source(&state, &project, &path));
             self.styles().clear_facts(&project);
-        } else if is_style {
-            self.styles().invalidate_path(&project, &path);
-        }
-        let style_views = if is_style || is_json {
             all_slot_views(&state, &project)
+        } else if is_style {
+            self.styles().invalidate_path(&project, &path)
         } else {
             Vec::new()
         };
@@ -1641,18 +1660,15 @@ impl ProjectState {
         state
             .property_cache
             .remove(&(project.clone(), path.clone()));
-        if is_json {
+        let style_views = if is_json {
             rebuild_slot_views(&mut state, &project);
             dirty.extend(dirty_for_source(&state, &project, &path));
             self.styles().clear_facts(&project);
+            all_slot_views(&state, &project)
         } else if is_style {
-            self.styles().invalidate_path(&project, &path);
+            self.styles().invalidate_path(&project, &path)
         } else {
             let _ = refresh_component_script_facts(&mut state, &project, &path);
-        }
-        let style_views = if is_style || is_json {
-            all_slot_views(&state, &project)
-        } else {
             Vec::new()
         };
         if is_style {
@@ -1693,8 +1709,7 @@ impl ProjectState {
         }
         bump_file_version(&mut state, &project, &path);
         if is_style {
-            self.styles().invalidate_path(&project, &path);
-            let style_views = all_slot_views(&state, &project);
+            let style_views = self.styles().invalidate_path(&project, &path);
             return Ok(HostUpdate {
                 dirty_views: Vec::new(),
                 style_views,
@@ -1864,10 +1879,9 @@ impl ProjectState {
         for (path, _, _) in &script_paths {
             let _ = refresh_component_script_facts(&mut state, &project, path);
         }
-        if !style_paths.is_empty() || !resource_paths.is_empty() {
-            for (path, _, _) in style_paths.iter().chain(resource_paths.iter()) {
-                self.styles().invalidate_path(&project, path);
-            }
+        let mut affected_styles = std::collections::BTreeSet::new();
+        for (path, _, _) in &style_paths {
+            affected_styles.extend(self.styles().invalidate_path(&project, path));
         }
         if !json_paths.is_empty() || full_refresh {
             if let Some(slot) = state.projects.get_mut(&project) {
@@ -1894,9 +1908,11 @@ impl ProjectState {
         {
             bump_file_version(&mut state, &project, path);
         }
-        let style_views = if style_paths.is_empty() && resource_paths.is_empty() {
-            Vec::new()
+        let style_views = if resource_paths.is_empty() {
+            affected_styles.into_iter().collect()
         } else {
+            // Any template can reference a changed local asset; only open
+            // templates have published diagnostics, so this stays bounded.
             all_slot_views(&state, &project)
         };
         let dirty = mark_views_dirty(&mut state, &project, dirty);
@@ -3792,6 +3808,69 @@ mod tests {
         );
         assert!(third.primary("b").is_some());
         assert!(third.primary("a").is_none());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn style_edits_republish_only_views_whose_chain_changed() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-style-affected-{stamp}"));
+        std::fs::create_dir_all(root.join("pages/a")).expect("a dir");
+        std::fs::create_dir_all(root.join("pages/b")).expect("b dir");
+        std::fs::write(
+            root.join("app.json"),
+            r#"{"pages":["pages/a/index","pages/b/index"]}"#,
+        )
+        .expect("app json");
+        std::fs::write(root.join("app.wxss"), ".global { color: black; }\n").expect("app style");
+        for page in ["a", "b"] {
+            std::fs::write(
+                root.join(format!("pages/{page}/index.wxml")),
+                format!(r#"<view class="{page}"/>"#),
+            )
+            .expect("wxml");
+            std::fs::write(root.join(format!("pages/{page}/index.ts")), "Page({})")
+                .expect("script");
+            std::fs::write(
+                root.join(format!("pages/{page}/index.wxss")),
+                format!(".{page} {{ color: red; }}\n"),
+            )
+            .expect("page style");
+        }
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open");
+        let a_path = ProjectPath::new("pages/a/index.wxml").expect("a path");
+        let b_path = ProjectPath::new("pages/b/index.wxml").expect("b path");
+        host.style_facts(&a_path).expect("a facts");
+        host.style_facts(&b_path).expect("b facts");
+
+        let a_style = format!("file://{}/pages/a/index.wxss", root.display());
+        let update = host
+            .open_document(OpenDocument {
+                uri: a_style,
+                text: ".a { color: blue; }\n".to_owned(),
+                version: Some(1),
+            })
+            .expect("a style overlay");
+        assert_eq!(update.style_views, vec![a_path.clone()]);
+        // The diagnostics handler rebuilds facts for the republished view.
+        host.style_facts(&a_path).expect("a facts after republish");
+
+        let app_style = format!("file://{}/app.wxss", root.display());
+        let update = host
+            .open_document(OpenDocument {
+                uri: app_style,
+                text: ".global { color: green; }\n".to_owned(),
+                version: Some(1),
+            })
+            .expect("app style overlay");
+        assert!(update.style_views.contains(&a_path));
+        assert!(update.style_views.contains(&b_path));
         let _ = std::fs::remove_dir_all(root);
     }
 

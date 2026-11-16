@@ -738,6 +738,9 @@ fn watched_style_files_invalidate_views_but_other_files_are_ignored() {
     project.write("pages/index/index.wxss", "view { color: red; }");
     project.write("package.json", r#"{"name":"fixture"}"#);
     let host = host_with(&project);
+    // Diagnostics only exist for views whose facts were already computed.
+    host.style_facts(&project_path("pages/index/index.wxml"))
+        .expect("style facts");
     let before_revision = host.project_revision();
 
     let update = host
