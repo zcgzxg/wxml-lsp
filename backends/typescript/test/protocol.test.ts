@@ -9,6 +9,7 @@ import {
   RequestError,
   SERVER_LIMITS,
   toCompilerOptions,
+  totalBytes,
   validateRequest,
 } from "../src/protocol.ts";
 import { fileIdOf, inspectLayout, inspectRequest, runRequest, runScenario, type RunConfig } from "../src/run.ts";
@@ -119,6 +120,114 @@ test("protocol v2 rejects malformed structured bindings", () => {
     () => validateRequest(request),
     (error: unknown) => error instanceof RequestError && error.code === "bad-fragment",
   );
+});
+
+test("protocol v2 accepts a same-name nested binding chain", () => {
+  const request = inspectRequest(scenarioById("alias-project"), "in-place-shadow", config);
+  const range = { start: 0, end: 1 };
+  request.fragments[0]!.bindings = [
+    { name: "item", role: "item", sourceExpr: "groups", sourceRange: range },
+    { name: "index", role: "index", sourceExpr: "groups", sourceRange: range },
+    { name: "item", role: "item", sourceExpr: "item.members", sourceRange: range },
+    { name: "index", role: "index", sourceExpr: "item.members", sourceRange: range },
+  ];
+  assert.doesNotThrow(
+    () => validateRequest(request),
+    "an inner loop may shadow an outer name: the chain encodes nesting, not uniqueness",
+  );
+});
+
+test("protocol v2 rejects a duplicate binding name inside one nesting level", () => {
+  const request = inspectRequest(scenarioById("alias-project"), "in-place-shadow", config);
+  const range = { start: 0, end: 1 };
+  request.fragments[0]!.bindings = [
+    { name: "item", role: "item", sourceExpr: "groups", sourceRange: range },
+    { name: "item", role: "index", sourceExpr: "groups", sourceRange: range },
+  ];
+  assert.throws(
+    () => validateRequest(request),
+    (error: unknown) => error instanceof RequestError && error.code === "bad-fragment",
+  );
+});
+
+test("protocol v2 bounds guard chains and their conditions", () => {
+  const request = inspectRequest(scenarioById("alias-project"), "in-place-shadow", config);
+  const condition = (index: number) => ({
+    branch: "if" as const,
+    exprText: `c${index}`,
+    range: { start: 0, end: 2 },
+  });
+  request.fragments[0]!.guards = Array.from({ length: 33 }, () => ({ conditions: [condition(0)], selected: 0 }));
+  assert.throws(
+    () => validateRequest(request),
+    (error: unknown) =>
+      error instanceof RequestError && error.code === "bad-fragment" && /guard chains exceed the limit/.test(error.message),
+  );
+
+  request.fragments[0]!.guards = [
+    { conditions: Array.from({ length: 65 }, (_, index) => condition(index)), selected: 0 },
+  ];
+  assert.throws(
+    () => validateRequest(request),
+    (error: unknown) =>
+      error instanceof RequestError && error.code === "bad-fragment" && /guard conditions exceed the limit/.test(error.message),
+  );
+});
+
+test("v2 structured payloads count against the request byte budget", () => {
+  const base = inspectRequest(scenarioById("alias-project"), "in-place-shadow", config);
+  // A limit just above the file + fragment text: any v2 payload must exceed it.
+  const limit = totalBytes(base.files, base.fragments) + 64;
+  const request = (mutate: (request: ReturnType<typeof inspectRequest>) => void) => {
+    const next = inspectRequest(scenarioById("alias-project"), "in-place-shadow", config);
+    mutate(next);
+    return { ...next, limits: { ...DEFAULT_LIMITS, maxTotalBytes: limit } };
+  };
+  const tooManyBytes = (error: unknown) =>
+    error instanceof RequestError && error.code === "too-many-bytes";
+
+  const withBindings = request((next) => {
+    next.fragments[0]!.bindings = [
+      { name: "item", role: "item", sourceExpr: "x".repeat(4096), sourceRange: { start: 0, end: 1 } },
+    ];
+  });
+  assert.throws(() => validateRequest(withBindings), tooManyBytes, "bindings[].sourceExpr is counted");
+
+  const withGuards = request((next) => {
+    next.fragments[0]!.guards = [
+      { conditions: [{ branch: "if", exprText: "y".repeat(4096), range: { start: 0, end: 1 } }], selected: 0 },
+    ];
+  });
+  assert.throws(() => validateRequest(withGuards), tooManyBytes, "guards[].conditions[].exprText is counted");
+
+  const withComponents = request((next) => {
+    next.components = [
+      {
+        tag: "card",
+        componentFileId: "card.ts",
+        attributes: [
+          {
+            name: "title",
+            valueKind: "mustache",
+            exprText: "z".repeat(4096),
+            exprRange: { start: 0, end: 1 },
+            attributeRange: { start: 0, end: 1 },
+          },
+        ],
+      },
+    ];
+  });
+  assert.throws(
+    () => validateRequest(withComponents),
+    tooManyBytes,
+    "components[].attributes[].exprText is counted",
+  );
+
+  // The same payloads pass once the budget is the default: only the byte count
+  // changed, not the structural validation.
+  assert.doesNotThrow(() => validateRequest({ ...withBindings, limits: { ...DEFAULT_LIMITS } }));
+  assert.doesNotThrow(() => validateRequest({ ...withGuards, limits: { ...DEFAULT_LIMITS } }));
+  assert.doesNotThrow(() => validateRequest({ ...withComponents, limits: { ...DEFAULT_LIMITS } }));
 });
 
 test("the option digest is independent of the checkout path", () => {

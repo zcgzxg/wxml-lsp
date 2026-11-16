@@ -15,9 +15,10 @@
 
 import path from "node:path";
 import ts from "typescript";
-import { planFragments } from "../fragments.ts";
-import { localDeclarations, uniqueLocals } from "./locals.ts";
+import { planFragments, PROPS_PREFIX } from "../fragments.ts";
+import { indentLines, localHelpers, renderFragmentScope } from "./locals.ts";
 import { buildSegments } from "./segments.ts";
+import { rewriteExpression } from "../rewrite.ts";
 import { PROPS_TYPE_NAME, renderPropsType, renderPropsValue } from "../propsOverlay.ts";
 import { assemble, type Piece } from "../text.ts";
 import type { CapabilityStatus, FragmentRecord, GeneratedDeclaration, LayoutBuild } from "../types.ts";
@@ -110,7 +111,6 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
     propertyOverlay: new Set(),
     rootPrefix: `${ROOT_VAR}.`,
   });
-  const localNames = uniqueLocals(drafts.map((draft) => draft.locals));
 
   const pieces: Piece[] = [];
   let prefixText = "// generated in-memory type-bridge view (never written to disk)\n";
@@ -136,10 +136,29 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
     pieces.push({ kind: "text", text: `${typeBlock}${value.text}\n` });
   }
   pieces.push({ kind: "text", text: `\nfunction ${CHECK_FUNCTION}() {\n` });
-  pieces.push(...localDeclarations(localNames, "  ", "ts"));
-  pieces.push({ kind: "text", text: `  return [\n` });
+  // The check file is always TypeScript, so the typed-local helpers can be used
+  // even for a JavaScript project (the anchor itself degrades to `any` there).
+  const typedBindings = drafts.some((draft) => draft.bindings.length > 0);
+  const helpers = localHelpers("ts");
+  if (typedBindings && helpers.length > 0) pieces.push({ kind: "text", text: `${indentLines(helpers, "  ")}\n` });
+
+  // Locals without a structured binding stay `any`: the compatibility `locals`
+  // list carries names only, so there is no source expression to derive a type
+  // from. `renderFragmentScope` documents that as an unresolved binding.
+  let unresolvedBindings = 0;
+  let unresolvedGuards = 0;
   for (const draft of drafts) {
-    pieces.push({ kind: "text", text: `    ` });
+    const scope = renderFragmentScope(draft, {
+      indent: "  ",
+      syntax: "ts",
+      rewriteSource: (sourceExpr, outerNames) => rewriteInCheck(sourceExpr, outerNames),
+      rewriteCondition: (exprText) =>
+        rewriteInCheck(exprText, new Set(draft.bindings.length > 0 ? draft.bindings.map((b) => b.name) : draft.locals)),
+    });
+    unresolvedBindings += scope.unresolvedBindings;
+    unresolvedGuards += scope.unresolvedGuards;
+    pieces.push({ kind: "text", text: scope.open });
+    pieces.push({ kind: "text", text: scope.mountIndent });
     pieces.push({
       kind: "fragment",
       fragmentId: draft.fragmentId,
@@ -148,9 +167,10 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
       target: draft.target,
       targetOffset: draft.targetOffset,
     });
-    pieces.push({ kind: "text", text: `,\n` });
+    pieces.push({ kind: "text", text: `;\n` });
+    pieces.push({ kind: "text", text: scope.close });
   }
-  pieces.push({ kind: "text", text: `  ];\n}\n` });
+  pieces.push({ kind: "text", text: `}\n` });
 
   const assembledCheck = assemble("", [{ id: "check-file", kind: "check-file", at: 0, pieces }], checkPath);
 
@@ -160,6 +180,8 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
     root: draft.root,
     target: draft.target,
     locals: draft.locals,
+    bindings: draft.bindings,
+    guards: draft.guards,
     localRoot: draft.localRoot,
     mounts: assembledCheck.mounts
       .filter((mount) => mount.fragmentId === draft.fragmentId)
@@ -202,10 +224,19 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
   if (!anchorInsertion) throw new Error("layout B: anchor insertion missing");
   const anchorOffset = assembledScript.text.indexOf(`const ${ROOT_VAR}`, anchorInsertion.startUtf16);
 
+  if (unresolvedBindings > 0 || unresolvedGuards > 0) {
+    buildStatus = "partial";
+    const unresolvedReason = "some template bindings or guards could not be resolved and were not checked";
+    reason = reason ? `${reason}; ${unresolvedReason}` : unresolvedReason;
+    notes.push("unresolved `wx:for` bindings or `wx:if` guards are mounted as `any`/unnarrowed and not checked");
+  }
+
   return {
     layout: "symbol-bridge",
     buildStatus,
     ...(reason ? { reason } : {}),
+    unresolvedBindings,
+    unresolvedGuards,
     files: [
       { path: context.scriptPath, text: assembledScript.text },
       { path: checkPath, text: assembledCheck.text },
@@ -241,6 +272,20 @@ export function buildSymbolBridge(context: LayoutContext): LayoutBuild {
 
 function byteOffset(text: string, utf16Index: number): number {
   return Buffer.byteLength(text.slice(0, utf16Index), "utf8");
+}
+
+/** Rewrite a template sub-expression against the exported anchor. */
+function rewriteInCheck(exprText: string, locals: ReadonlySet<string>): string | undefined {
+  try {
+    return rewriteExpression(exprText, undefined, {
+      rootPrefix: `${ROOT_VAR}.`,
+      propsPrefix: PROPS_PREFIX,
+      propertyOverlay: new Set(),
+      locals,
+    }).text;
+  } catch {
+    return undefined;
+  }
 }
 
 function optionsStart(call: ts.CallExpression): number {

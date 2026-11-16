@@ -1,6 +1,6 @@
 # 模板类型诊断策略
 
-更新日期：2026-11-15。
+更新日期：2026-11-16。
 
 本文件规定 WXML 模板在什么情况下产生诊断、什么情况下必须降级、hover 的类型与说明如何取舍，以及诊断落在哪个 token 上。它是实现目标，不代表功能已实现；实际进度与证据仍由[项目 README](../../README.md) 维护。契约定义见 [C0 基础契约](contracts.md)。
 
@@ -78,14 +78,14 @@ fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是
 | `{{ maybeUser.name }}`，位于守卫外 | 同上 | 仍诊断 `maybeUser` |
 | `{{ user.profile.name }}`，`profile?: Profile` | 可选属性 | 按实际选项诊断；未支持时 `Partial` |
 | `{{ list[0].name }}` | `list: Item[]` | `list[0]` 视为 `Item`；不做越界诊断 |
-| `wx:for` 的 `item.name` | 元素类型 | 元素类型非空；默认 `index` 为 `number` |
+| `wx:for` 的 `item.name` | 元素类型 | 元素类型非空；默认 `index` 为 `number`（`loop-scope` 已验证） |
 
 规则：
 
 - 窄化只在支持的 `wx:if`/`wx:elif`/`wx:else` 链内生效，且条件与正文使用同一访问路径。
 - 复杂布尔组合、赋值表达式、函数调用等未支持守卫返回 `Partial`，不产生猜测性错误。
 - `wx:for` 变量在循环结束后不可见；泄漏访问报“未声明名字”。
-- 对象遍历（`Record<string, T>`）时 `index` 为 `string`、`item` 为 `T`。
+- 对象遍历（`Record<string, T>`）时 `index` 为 `string`、`item` 为 `T`（`loop-scope` 已验证）。
 
 ## 6. 模板运行时转换
 
@@ -195,6 +195,15 @@ fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是
 | 未保存修改 | `unsaved-overlay`（runtime） | 不保存即更新类型与说明 |
 | 旧结果与重启 | `stale-request`（runtime） | 旧结果不发布，重启后恢复 |
 | Zed 多文档 | `zed-multi-doc`（runtime） | 事件进入正确实例，不重复诊断 |
+
+WT-B 验证（2026-11-16）：
+
+```bash
+(cd backends/typescript && npm ci && npm run build)
+WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored
+```
+
+上表中与 WT-B 相关的 `loop-scope`、`conditional-union`、`multi-view`、`alias-project`、`component-bindings` 已由该 runner 执行：`wx:for` locals 按元素/索引类型解析（嵌套、遮蔽、`wx:for-item`/`wx:for-index`、退出循环后不可见、`Record` 键为 `string`），`wx:if/elif/else` 分支窄化生效，不同页面/组件脚本的视图在交错请求下互不污染（发现模型为 1 WXML ↔ 1 脚本，同一脚本多视图不在模型内），`@models/*` hover 与 definition 可解析，组件属性绑定不匹配精确落在绑定表达式。该 runner 被 `#[ignore]` 保护（常规门禁只编译不执行），并且不覆盖补全、事件处理函数及其他未列出的 AC。
 
 ## 12. 变更规则
 

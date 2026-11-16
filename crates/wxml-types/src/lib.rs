@@ -44,4 +44,7 @@ pub use contract::{
 };
 pub use mock::{BackendCall, MockBackend};
 pub use status::CapabilityStatus;
-pub use template::{MAX_FRAGMENTS, TemplateAnalyzer, analyze_template};
+pub use template::{
+    MAX_BINDINGS, MAX_COMPONENTS, MAX_FRAGMENTS, MAX_GUARD_CHAINS, MAX_GUARD_CONDITIONS,
+    TemplateAnalyzer, analyze_template,
+};
