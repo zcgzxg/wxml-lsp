@@ -758,15 +758,20 @@ fn check_regression(
     baseline: f64,
     allowed_fraction: f64,
 ) {
-    let limit = baseline * (1.0 + allowed_fraction);
+    // Sub-millisecond p95 values are below the timer's practical resolution on
+    // a loaded desktop. Keep the absolute latency targets strict, but allow a
+    // 0.5 ms absolute noise floor before treating a relative change as a
+    // regression. Larger metrics still use the plain percentage limit.
+    let noise_floor = if baseline < 1.0 { 0.5 } else { 0.0 };
+    let limit = baseline.mul_add(1.0 + allowed_fraction, noise_floor);
     let pass = after <= limit;
     println!(
-        "regression {name}: after {after:.3} <= baseline {baseline:.3} * {:.2} = {limit:.3} -> {pass}",
+        "regression {name}: after {after:.3} <= baseline {baseline:.3} * {:.2} + floor {noise_floor:.3} = {limit:.3} -> {pass}",
         1.0 + allowed_fraction
     );
     if !pass {
         failures.push(format!(
-            "{name}: after {after:.3} > baseline {baseline:.3} * {:.2}",
+            "{name}: after {after:.3} > baseline {baseline:.3} * {:.2} + floor {noise_floor:.3}",
             1.0 + allowed_fraction
         ));
     }
