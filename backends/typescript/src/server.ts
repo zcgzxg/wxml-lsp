@@ -7,7 +7,7 @@
  * capped at 20 MiB and an oversized line is rejected without buffering it.
  */
 
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyze } from "./analysis.ts";
@@ -296,10 +296,20 @@ export function serve(options: ServerOptions): Promise<void> {
   });
 }
 
+/** Resolve the directory that holds `node_modules` in source, dist and packaged layouts. */
+export function resolveBackendDir(here: string): string {
+  for (const candidate of [path.resolve(here, ".."), here]) {
+    if (existsSync(path.join(candidate, "node_modules", "typescript"))) {
+      return candidate;
+    }
+  }
+  return path.resolve(here, "..");
+}
+
 /** CLI entry: `node dist/server.js` (stdio). */
 export async function main(): Promise<void> {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  const backendDir = path.resolve(here, "..");
+  const backendDir = resolveBackendDir(here);
   await serve({ input: process.stdin, output: process.stdout, backendDir });
   process.exit(0);
 }

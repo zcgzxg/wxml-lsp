@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { BACKEND_DIR, SAMPLES_DIR } from "../src/env.ts";
 import { inspectRequest, type RunConfig } from "../src/run.ts";
-import { MAX_LINE_BYTES } from "../src/server.ts";
+import { MAX_LINE_BYTES, resolveBackendDir } from "../src/server.ts";
 import { BACKEND_VERSION } from "../src/version.ts";
 import { scenarioById } from "../src/scenarios.ts";
 
@@ -232,6 +232,36 @@ test("ten concurrent requests are all answered on the same stream", async () => 
     }
     assert.deepEqual([...seen].sort((left, right) => left - right), ids);
   });
+});
+
+test("backend directory resolution supports source, dist and packaged layouts", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "wxml-lsp-backend-dir-"));
+  const marker = (directory: string, create: boolean): void => {
+    const modules = path.join(directory, "node_modules", "typescript");
+    if (create) mkdirSync(modules, { recursive: true });
+    else mkdirSync(directory, { recursive: true });
+  };
+  try {
+    const source = path.join(root, "src");
+    marker(root, true);
+    mkdirSync(source, { recursive: true });
+    assert.equal(resolveBackendDir(source), root);
+
+    const dist = path.join(root, "dist");
+    mkdirSync(dist, { recursive: true });
+    assert.equal(resolveBackendDir(dist), root);
+
+    const packaged = path.join(root, "package", "bin", "wxml-type-backend");
+    marker(packaged, true);
+    mkdirSync(path.join(root, "package", "bin"), { recursive: true });
+    assert.equal(resolveBackendDir(packaged), packaged);
+
+    const missing = path.join(root, "missing", "src");
+    mkdirSync(missing, { recursive: true });
+    assert.equal(resolveBackendDir(missing), path.dirname(missing));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("entry detection follows a symlinked install path", async () => {
