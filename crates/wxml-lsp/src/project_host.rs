@@ -292,6 +292,35 @@ pub struct PreparedFile {
     pub source_revision: u64,
 }
 
+/// Generated directories that S must never propose edits for.
+const EDIT_EXCLUDED_DIRECTORIES: [&str; 3] = ["generated", "__generated__", "gen"];
+
+/// Maximum project WXML files returned for one semantic query.
+const MAX_VIEW_TEMPLATES: usize = 512;
+
+/// Maximum estimated bytes of project WXML text returned for one query.
+const MAX_VIEW_TEMPLATE_BYTES: usize = 8 * 1024 * 1024;
+
+/// One WXML file of the project, with its effective text.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProjectViewTemplate {
+    /// Project-bound file identity.
+    pub file: FileId,
+    /// Overlay-first text.
+    pub text: Arc<str>,
+}
+
+/// Bounded project-wide WXML list used by references and workspace symbols.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProjectViewTemplates {
+    /// Discovered page/component templates, sorted by path.
+    pub templates: Vec<ProjectViewTemplate>,
+    /// `false` when a count/byte budget or unreadable file hid templates.
+    pub complete: bool,
+    /// Short path-free reason for an incomplete list.
+    pub reason: Option<&'static str>,
+}
+
 /// Maximum static event handlers forwarded to a type backend for one view.
 ///
 /// Mirrors the C1 event budget: a large template must not turn into an
@@ -335,6 +364,9 @@ pub struct PreparedView {
     pub syntax_diagnostics: Vec<Diagnostic>,
     /// Degradation hint produced before asking the type backend.
     pub status_hint: Option<CapabilityStatus>,
+    /// `false` when a source file/count/byte budget removed a script from
+    /// `files`; script symbol coverage can then never be complete.
+    pub source_complete: bool,
 }
 
 /// Project state and analysis inputs for one workspace root.
@@ -356,6 +388,10 @@ pub trait ProjectHost: Send + Sync {
     /// Returns whether a project root is currently loaded.
     fn is_project_open(&self) -> bool {
         false
+    }
+    /// Returns every loaded project identity (not only the active one).
+    fn project_ids(&self) -> Vec<ProjectId> {
+        vec![self.project_id()]
     }
     /// Maps a client URI to a project-relative path.
     fn path_for_uri(&self, uri: &str) -> Result<ProjectPath, HostError>;
@@ -422,6 +458,31 @@ pub trait ProjectHost: Send + Sync {
     /// This is used to convert byte ranges in definition targets to LSP
     /// positions without opening the target document.
     fn file_text(&self, file: &FileId) -> Option<Arc<str>>;
+    /// Returns every discovered WXML template of the project that owns
+    /// `file`, in path order.
+    ///
+    /// Hosts without a project return `None`. The result is bounded and says
+    /// whether it is complete; callers must not present an incomplete list as
+    /// a complete reference set.
+    fn view_templates(&self, _file: &FileId) -> Option<ProjectViewTemplates> {
+        None
+    }
+
+    /// Returns the host's content revision for a file, when it tracks one.
+    fn file_revision(&self, _file: &FileId) -> Option<u64> {
+        None
+    }
+
+    /// Returns whether `file` is an existing, writable project file that is
+    /// safe to edit.
+    ///
+    /// A host rejects package/build directories, declaration files, paths that
+    /// escape the project through a symlink and files that are not inside the
+    /// project root. Open buffers are validated separately by the workspace.
+    fn writable_target(&self, _file: &FileId) -> bool {
+        false
+    }
+
     /// Returns the custom components registered for one WXML template.
     ///
     /// Local page/component `usingComponents` shadow global ones. A host with
@@ -1069,6 +1130,15 @@ impl ProjectHost for ProjectState {
         !self.read().app_roots.is_empty()
     }
 
+    fn project_ids(&self) -> Vec<ProjectId> {
+        let state = self.read();
+        state
+            .app_roots
+            .iter()
+            .map(|app| project_id_for(&app.app_dir))
+            .collect()
+    }
+
     fn path_for_uri(&self, uri: &str) -> Result<ProjectPath, HostError> {
         let mut state = self.write();
         let (_, path) = route_project(&mut state, uri)?;
@@ -1219,6 +1289,103 @@ impl ProjectHost for ProjectState {
         let slot = state.projects.get(file.project())?;
         let path = ProjectPath::new(file.path()).ok()?;
         slot.project.read(&path).ok().map(Arc::from)
+    }
+
+    fn view_templates(&self, file: &FileId) -> Option<ProjectViewTemplates> {
+        let paths: Vec<ProjectPath> = {
+            let state = self.read();
+            let slot = state.projects.get(file.project())?;
+            slot.views
+                .keys()
+                .filter(|path| {
+                    path.extension()
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("wxml"))
+                })
+                .cloned()
+                .collect()
+        };
+        let mut templates = Vec::new();
+        let mut bytes = 0usize;
+        let mut complete = true;
+        for path in paths {
+            if templates.len() >= MAX_VIEW_TEMPLATES {
+                complete = false;
+                break;
+            }
+            let Ok(target) = FileId::new(file.project().clone(), path.as_str()) else {
+                complete = false;
+                continue;
+            };
+            let Some(text) = self.file_text(&target) else {
+                complete = false;
+                continue;
+            };
+            bytes = bytes.saturating_add(text.len());
+            if bytes > MAX_VIEW_TEMPLATE_BYTES {
+                complete = false;
+                break;
+            }
+            templates.push(ProjectViewTemplate { file: target, text });
+        }
+        templates.sort_by(|left, right| left.file.cmp(&right.file));
+        Some(ProjectViewTemplates {
+            templates,
+            complete,
+            reason: if complete {
+                None
+            } else {
+                Some("the project WXML list is incomplete")
+            },
+        })
+    }
+
+    fn file_revision(&self, file: &FileId) -> Option<u64> {
+        let state = self.read();
+        let slot = state.projects.get(file.project())?;
+        let path = ProjectPath::new(file.path()).ok()?;
+        slot.file_versions
+            .get(&path)
+            .copied()
+            .or_else(|| slot.project.overlay().revision(&path))
+            .or(Some(1))
+    }
+
+    fn writable_target(&self, file: &FileId) -> bool {
+        let root = {
+            let state = self.read();
+            let Some(slot) = state.projects.get(file.project()) else {
+                return false;
+            };
+            slot.app.project_root.clone()
+        };
+        let Ok(path) = ProjectPath::new(file.path()) else {
+            return false;
+        };
+        let lower = path.as_str().to_ascii_lowercase();
+        if lower.ends_with(".d.ts") || lower.ends_with(".d.mts") || lower.ends_with(".d.cts") {
+            return false;
+        }
+        if path.as_str().split('/').any(|component| {
+            wxml_project::sources::EXCLUDED_DIRECTORIES
+                .iter()
+                .chain(EDIT_EXCLUDED_DIRECTORIES.iter())
+                .any(|excluded| component.eq_ignore_ascii_case(excluded))
+        }) {
+            return false;
+        }
+        let absolute = root.join(path.as_str());
+        if std::fs::symlink_metadata(&absolute)
+            .map_or(true, |metadata| metadata.file_type().is_symlink())
+        {
+            return false;
+        }
+        let Ok(canonical_root) = std::fs::canonicalize(&root) else {
+            return false;
+        };
+        let Ok(canonical) = std::fs::canonicalize(&absolute) else {
+            return false;
+        };
+        canonical.starts_with(canonical_root)
     }
 
     fn view_components(&self, wxml: &ProjectPath) -> Vec<ViewComponent> {
@@ -2651,6 +2818,7 @@ fn build_prepared(
             status_hint: Some(CapabilityStatus::Unsupported {
                 reason: "page or component has no script".to_owned(),
             }),
+            source_complete: false,
         };
     };
     let script_file = view.script_file.clone();
@@ -2694,6 +2862,14 @@ fn build_prepared(
             }
         }
     }
+    let skipped_sources = sources.issues.iter().any(|issue| {
+        matches!(
+            issue.kind,
+            wxml_project::sources::SourceIssueKind::TooLarge
+                | wxml_project::sources::SourceIssueKind::Unreadable
+        )
+    });
+    let mut source_complete = !sources.truncated && !skipped_sources;
     if sources.truncated {
         merge_hint(
             &mut hint,
@@ -2701,8 +2877,16 @@ fn build_prepared(
                 reason: "project source collection was truncated".to_owned(),
             },
         );
+    } else if skipped_sources {
+        merge_hint(
+            &mut hint,
+            CapabilityStatus::Partial {
+                reason: "project source collection skipped an oversized or unreadable script"
+                    .to_owned(),
+            },
+        );
     }
-    limit_request_files(&mut files, script, &mut hint);
+    source_complete &= limit_request_files(&mut files, script, &mut hint);
     script_present = files.iter().any(|file| file.path == *script);
     if !script_present {
         merge_hint(
@@ -2759,16 +2943,19 @@ fn build_prepared(
         project_root: slot.project.root().to_path_buf(),
         syntax_diagnostics: syntax,
         status_hint: hint,
+        source_complete,
     }
 }
 /// Keeps the owning script and applies the C1 `files[]` count/byte bounds.
+/// Returns `false` when a budget removed any file.
 fn limit_request_files(
     files: &mut Vec<PreparedFile>,
     script: &ProjectPath,
     hint: &mut Option<CapabilityStatus>,
-) {
+) -> bool {
     const MAX_FILES: usize = 2048;
     const MAX_BYTES: usize = 16 * 1024 * 1024;
+    let mut complete = true;
     if let Some(position) = files.iter().position(|file| file.path == *script) {
         if position > 0 {
             let file = files.remove(position);
@@ -2776,6 +2963,7 @@ fn limit_request_files(
         }
     }
     if files.len() > MAX_FILES {
+        complete = false;
         files.truncate(MAX_FILES);
         merge_hint(
             hint,
@@ -2788,6 +2976,7 @@ fn limit_request_files(
     let mut kept = Vec::with_capacity(files.len());
     for file in files.drain(..) {
         if total.saturating_add(file.text.len()) > MAX_BYTES {
+            complete = false;
             merge_hint(
                 hint,
                 CapabilityStatus::Partial {
@@ -2800,6 +2989,7 @@ fn limit_request_files(
         kept.push(file);
     }
     *files = kept;
+    complete
 }
 
 fn prepared_file(
@@ -2923,6 +3113,7 @@ fn syntax_only_view(
         status_hint: Some(CapabilityStatus::Unsupported {
             reason: reason.to_owned(),
         }),
+        source_complete: false,
     }
 }
 
@@ -3576,7 +3767,7 @@ mod tests {
             source_revision: 1,
         });
         let mut hint = None;
-        limit_request_files(&mut files, &script, &mut hint);
+        let _ = limit_request_files(&mut files, &script, &mut hint);
         assert_eq!(files.len(), 2048);
         assert_eq!(files[0].path, script);
         assert!(matches!(hint, Some(CapabilityStatus::Partial { .. })));

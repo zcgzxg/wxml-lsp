@@ -41,6 +41,15 @@ fn client_capability(params: Option<&Value>, path: &[&str]) -> bool {
     value.as_bool().unwrap_or(false)
 }
 
+/// Reads an optional boolean client capability path.
+fn client_capability_optional(params: Option<&Value>, path: &[&str]) -> Option<bool> {
+    let mut value = params.and_then(|params| params.get("capabilities"))?;
+    for key in path {
+        value = value.get(*key)?;
+    }
+    value.as_bool()
+}
+
 /// Reads one string initialization option.
 fn initialization_string<'a>(params: Option<&'a Value>, key: &str) -> Option<&'a str> {
     params?.get("initializationOptions")?.get(key)?.as_str()
@@ -53,7 +62,7 @@ fn initialization_bool(params: Option<&Value>, key: &str) -> Option<bool> {
 
 /// Builds the `InitializeResult`.
 fn initialize_result(server: &Server) -> Value {
-    json!({
+    let mut result = json!({
         "capabilities": {
             "positionEncoding": "utf-16",
             "textDocumentSync": {
@@ -90,12 +99,49 @@ fn initialize_result(server: &Server) -> Value {
             "documentLinkProvider": {
                 "resolveProvider": false,
             },
+            // Semantic tools implemented by the S package. Only features with a
+            // real handler and failing-safe tests are advertised.
+            "referencesProvider": true,
+            "renameProvider": {"prepareProvider": true},
+            "codeActionProvider": {
+                "codeActionKinds": ["quickfix"],
+                "resolveProvider": false,
+            },
+            "semanticTokensProvider": {
+                "legend": crate::semantics::tokens::legend(),
+                "full": true,
+            },
+            "workspaceSymbolProvider": true,
+            "signatureHelpProvider": {"triggerCharacters": ["(", ","]},
+            "executeCommandProvider": {"commands": ["wxml.references"]},
         },
         "serverInfo": {
             "name": "wxml-lsp",
             "version": crate::version(),
         },
-    })
+    });
+    if let Some(capabilities) = result
+        .get_mut("capabilities")
+        .and_then(Value::as_object_mut)
+    {
+        if server.semantic_tools.inlay_hints {
+            capabilities.insert(
+                "inlayHintProvider".to_owned(),
+                json!({"resolveProvider": false}),
+            );
+        }
+        if server.semantic_tools.code_lens {
+            capabilities.insert(
+                "codeLensProvider".to_owned(),
+                json!({"resolveProvider": false}),
+            );
+        }
+        if !server.client.document_changes {
+            capabilities.remove("renameProvider");
+            capabilities.remove("codeActionProvider");
+        }
+    }
+    result
 }
 
 /// Reads optional `wxml` style settings from initialization options.
@@ -197,6 +243,16 @@ impl Server {
             "shutdown" => self.shutdown(id),
             "textDocument/hover" => self.hover(id, params),
             "textDocument/definition" => self.definition(id, params),
+            "textDocument/references" => self.references(id, params),
+            "textDocument/prepareRename" => self.prepare_rename(id, params),
+            "textDocument/rename" => self.rename(id, params),
+            "textDocument/codeAction" => self.code_action(id, params),
+            "textDocument/semanticTokens/full" => self.semantic_tokens_full(id, params),
+            "workspace/symbol" => self.workspace_symbol(id, params),
+            "textDocument/inlayHint" => self.inlay_hint(id, params),
+            "textDocument/signatureHelp" => self.signature_help(id, params),
+            "textDocument/codeLens" => self.code_lens(id, params),
+            "workspace/executeCommand" => self.execute_command(id, params),
             "textDocument/completion" => self.completion(id, params),
             "textDocument/formatting" => self.formatting(id, params),
             "textDocument/rangeFormatting" => self.range_formatting(id, params),
@@ -308,6 +364,9 @@ impl Server {
                 "hierarchicalDocumentSymbolSupport",
             ],
         );
+        self.client.document_changes =
+            client_capability_optional(params, &["workspace", "workspaceEdit", "documentChanges"])
+                .unwrap_or(false);
         let root = requested_root(params);
         let root_path = root.and_then(|uri| wxml_project::root_path_from_uri(uri).ok());
         let configured = initialization_string(params, "snippetsPath")
@@ -323,6 +382,14 @@ impl Server {
             ));
         }
         self.snippets.configure(snippets_path, snippets_enabled);
+        if let Some(semantic) = options.semantic_tools.as_ref() {
+            if let Some(enabled) = semantic.inlay_hints {
+                self.semantic_tools.inlay_hints = enabled;
+            }
+            if let Some(enabled) = semantic.code_lens {
+                self.semantic_tools.code_lens = enabled;
+            }
+        }
         match self.host.open_root_with_options(root, &options) {
             Ok(()) => {
                 if root.is_some() {

@@ -42,6 +42,10 @@ pub(crate) mod error_codes {
     pub(crate) const INTERNAL_ERROR: i64 = -32_603;
     /// The client cancelled the request.
     pub(crate) const REQUEST_CANCELLED: i64 = -32_800;
+    /// The target changed before the request could answer (`ContentModified`).
+    pub(crate) const CONTENT_MODIFIED: i64 = -32_801;
+    /// The request is valid but cannot be completed safely (`RequestFailed`).
+    pub(crate) const REQUEST_FAILED: i64 = -32_803;
     /// A request arrived before `initialize`.
     pub(crate) const SERVER_NOT_INITIALIZED: i64 = -32_002;
 }

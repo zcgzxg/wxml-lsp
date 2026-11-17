@@ -1605,6 +1605,21 @@ pub(crate) fn host_access(server: &Server) -> impl Fn(&str) -> Option<String> + 
     }
 }
 
+/// Project-bound variant of [`host_access`] for multi-app WXS resolution.
+pub(crate) fn host_access_in<'a>(
+    server: &'a Server,
+    project: &'a wxml_types::ProjectId,
+) -> impl Fn(&str) -> Option<String> + 'a {
+    move |path: &str| {
+        let path = ProjectPath::new(path).ok()?;
+        let file = server.host.file_id_in(project, &path).ok()?;
+        if let Some(document) = server.workspace.get_by_file(&file) {
+            return Some(document.snapshot().text().to_owned());
+        }
+        server.host.file_text(&file).map(|text| text.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1972,5 +1987,241 @@ module.exports = { format };</wxs>
         let wxml = r#"<template is="{{ name }}" /><wxs module="m">eval("x")</wxs>"#;
         let offset = u32::try_from(wxml.find("name").expect("name")).expect("offset");
         assert!(hover("pages/index/index.wxml", wxml, offset, &no_access).is_none());
+    }
+}
+
+/// One WXS function call signature resolved from static module facts.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct WxsCallSignature {
+    /// Rendered signature, for example `(a: any, b: number) => string`.
+    pub(crate) label: String,
+    /// Parameter labels in order.
+    pub(crate) parameters: Vec<String>,
+    /// Zero-based active parameter.
+    pub(crate) active_parameter: u32,
+    /// Member documentation, when present.
+    pub(crate) documentation: Option<String>,
+}
+
+/// Resolves signature help for a WXS static function call at `offset`.
+///
+/// Only a call whose callee is exactly `<module>.<exported function>` is
+/// answered. Page methods, dynamic exports and calls inside strings are not
+/// signature sources.
+pub(crate) fn wxs_call_signature(
+    path: &str,
+    text: &str,
+    offset: u32,
+    access: &Access<'_>,
+) -> Option<WxsCallSignature> {
+    if !has_static_constructs(text) {
+        return None;
+    }
+    let index = build_index(path, text, access);
+    if index.wxs.is_empty() {
+        return None;
+    }
+    let tree = parse(text).tree;
+    let expr = innermost_mustache_expr(&tree, offset)?;
+    let call = innermost_call(expr, offset)?;
+    let ExprKind::Call { callee, arguments } = call.kind() else {
+        return None;
+    };
+    let ExprKind::Member {
+        object, property, ..
+    } = callee.kind()
+    else {
+        return None;
+    };
+    let ExprKind::Identifier { name: root } = object.kind() else {
+        return None;
+    };
+    let ExprKind::Identifier { name: member } = property.kind() else {
+        return None;
+    };
+    let module = text.get(root.start() as usize..root.end() as usize)?;
+    let member = text.get(member.start() as usize..member.end() as usize)?;
+    let wxs = index.wxs.iter().find(|wxs| wxs.module == module)?;
+    let exported = exported_member(&wxs.summary, member)?;
+    let resolved = if exported.signature.is_none() {
+        exported
+            .alias_of
+            .and_then(|alias| {
+                wxs.summary
+                    .members
+                    .iter()
+                    .find(|candidate| !candidate.exported && candidate.name_range == alias)
+            })
+            .unwrap_or(exported)
+    } else {
+        exported
+    };
+    if !matches!(resolved.kind, wxml_types::WxsMemberKind::Function) {
+        return None;
+    }
+    let signature = resolved.signature.clone()?;
+    let parameters = signature_parameters(&signature);
+    let active_parameter = active_parameter(arguments, offset);
+    Some(WxsCallSignature {
+        label: signature,
+        parameters,
+        active_parameter,
+        documentation: (!resolved.doc.trim().is_empty()).then(|| resolved.doc.clone()),
+    })
+}
+
+fn innermost_mustache_expr(tree: &SyntaxTree, offset: u32) -> Option<&Expr> {
+    let mut found = None;
+    for (id, node) in tree.nodes() {
+        if node.kind() != wxml_syntax::NodeKind::MustacheExpr {
+            continue;
+        }
+        let range = node.text_range();
+        if range.start() <= offset
+            && offset <= range.end()
+            && found.is_none_or(|(best, _)| range.len() < best)
+        {
+            if let Some(expr) = tree.expr(id) {
+                found = Some((range.len(), expr));
+            }
+        }
+    }
+    found.map(|(_, expr)| expr)
+}
+
+fn innermost_call(expr: &Expr, offset: u32) -> Option<&Expr> {
+    let range = expr.range();
+    if !(range.start() <= offset && offset <= range.end()) {
+        return None;
+    }
+    if let ExprKind::Call { callee, arguments } = expr.kind() {
+        if let Some(inner) = innermost_call(callee, offset) {
+            return Some(inner);
+        }
+        for argument in arguments {
+            if let Some(inner) = innermost_call(argument, offset) {
+                return Some(inner);
+            }
+        }
+        Some(expr)
+    } else {
+        for child in expr.children() {
+            if let Some(inner) = innermost_call(child, offset) {
+                return Some(inner);
+            }
+        }
+        None
+    }
+}
+
+fn active_parameter(arguments: &[Expr], offset: u32) -> u32 {
+    let mut active = 0_u32;
+    for argument in arguments {
+        if argument.range().end() <= offset {
+            active = active.saturating_add(1);
+            continue;
+        }
+        if argument.range().start() <= offset {
+            break;
+        }
+        break;
+    }
+    active
+}
+
+/// Splits the outer parameter list of a rendered function signature.
+fn signature_parameters(signature: &str) -> Vec<String> {
+    let Some(open) = signature.find('(') else {
+        return Vec::new();
+    };
+    let mut depth = 0_i32;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    let mut end = None;
+    for (index, character) in signature
+        .char_indices()
+        .skip_while(|(index, _)| *index < open)
+    {
+        if let Some(active) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == active {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '\'' | '"' | '`' => quote = Some(character),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = Some(index);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let Some(end) = end else {
+        return Vec::new();
+    };
+    let inner = signature.get(open + 1..end).unwrap_or_default();
+    let mut parameters = Vec::new();
+    let mut start = 0_usize;
+    let mut depth = 0_i32;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (index, character) in inner.char_indices() {
+        if let Some(active) = quote {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == active {
+                quote = None;
+            }
+            continue;
+        }
+        match character {
+            '\'' | '"' | '`' => quote = Some(character),
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                if let Some(parameter) = inner.get(start..index).map(str::trim) {
+                    if !parameter.is_empty() {
+                        parameters.push(parameter.to_owned());
+                    }
+                }
+                start = index + character.len_utf8();
+            }
+            _ => {}
+        }
+    }
+    if let Some(parameter) = inner.get(start..).map(str::trim) {
+        if !parameter.is_empty() {
+            parameters.push(parameter.to_owned());
+        }
+    }
+    parameters
+}
+
+#[cfg(test)]
+mod semantic_call_tests {
+    use super::*;
+
+    #[test]
+    fn resolves_wxs_call_signature_in_template_definition() {
+        let text = "<wxs module=\"u\">\nfunction add(a, b) { return a + b; }\nmodule.exports = { add: add };\n</wxs>\n<template name=\"row\"><view>{{ u.add(1, 2) }}</view></template>";
+        let offset = u32::try_from(text.find("u.add(1, ").expect("call") + "u.add(1, ".len())
+            .expect("offset");
+        let access = |_: &str| None;
+        let signature =
+            wxs_call_signature("pages/index/index.wxml", text, offset, &access).expect("signature");
+        assert_eq!(signature.parameters.len(), 2);
+        assert_eq!(signature.active_parameter, 1);
+        assert!(signature.label.starts_with('('));
     }
 }

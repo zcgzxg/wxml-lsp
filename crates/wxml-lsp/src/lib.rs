@@ -51,6 +51,7 @@ pub(crate) mod jsonrpc;
 pub(crate) mod metadata;
 pub mod project_host;
 pub(crate) mod scheduler;
+pub(crate) mod semantics;
 pub(crate) mod server;
 pub(crate) mod static_semantics;
 pub(crate) mod structure;

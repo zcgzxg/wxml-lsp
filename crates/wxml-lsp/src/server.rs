@@ -82,6 +82,7 @@ pub(crate) struct Inflight {
 }
 
 /// Client capabilities that change server behavior.
+#[allow(clippy::struct_excessive_bools)] // independent protocol feature flags
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ClientFlags {
     /// The client declared dynamic watched-file registrations.
@@ -92,6 +93,8 @@ pub(crate) struct ClientFlags {
     /// The client accepts hierarchical `DocumentSymbol` results
     /// (`textDocument.documentSymbol.hierarchicalDocumentSymbolSupport`).
     pub(crate) hierarchical_symbols: bool,
+    /// The client accepts `WorkspaceEdit.documentChanges`.
+    pub(crate) document_changes: bool,
 }
 
 /// One connected client.
@@ -134,6 +137,11 @@ pub(crate) struct Server {
     /// Their route is `Unknown`, so the URI extension alone cannot tell a
     /// template from another language (for example `untitled:` buffers).
     pub(crate) synthetic_templates: HashSet<String>,
+    /// Runtime semantic-tool switches.
+    pub(crate) semantic_tools: crate::semantics::SemanticToolsConfig,
+    /// Pending references/rename/code-action intentions waiting for a
+    /// script symbol query.
+    pub(crate) semantic_pending: HashMap<RequestKey, crate::semantics::handlers::PendingSemantic>,
     /// Last backend diagnostics for one document, keyed by client URI.
     ///
     /// Style changes refresh only the local diagnostics; the cached backend
@@ -191,6 +199,8 @@ impl Server {
             client: ClientFlags::default(),
             snippets: crate::completion::user_snippets::Store::default(),
             synthetic_templates: HashSet::new(),
+            semantic_tools: crate::semantics::SemanticToolsConfig::default(),
+            semantic_pending: HashMap::new(),
             backend_diagnostics: HashMap::new(),
         }
     }
@@ -256,6 +266,7 @@ impl Server {
             JobKind::Definition => self.definition_done(inflight.id, done, &epoch),
             JobKind::Completion(_) => self.completion_done(inflight.id, done, &epoch),
             JobKind::Diagnostics => Vec::new(),
+            JobKind::Symbols { .. } => self.symbols_done(inflight.id, done, &epoch),
         };
         self.retry_pending_diagnostics_with_epoch(&epoch);
         outgoing
@@ -393,7 +404,7 @@ where
     let capabilities = safe_capabilities(&backend);
     let scheduler = Arc::new(
         Scheduler::start(Arc::clone(&backend), move |done| {
-            let _ = worker_events.send(Message::Work(done));
+            let _ = worker_events.send(Message::Work(Box::new(done)));
         })
         .map_err(ServerError::Worker)?,
     );
@@ -442,7 +453,7 @@ fn drive_loop(
                 )?;
                 break;
             }
-            Message::Work(done) => server.handle_work(done),
+            Message::Work(done) => server.handle_work(*done),
         };
         write_outgoing(writer, outgoing)?;
         if server.should_stop() {
@@ -495,7 +506,7 @@ enum Message {
     /// A frame read from the client, or the error that stopped it.
     Frame(Result<Option<Vec<u8>>, FrameError>),
     /// A finished backend job.
-    Work(WorkDone),
+    Work(Box<WorkDone>),
 }
 
 /// Writes all messages in order, aborting on the first I/O failure.

@@ -21,7 +21,7 @@ use wxml_text::SourceRange;
 use crate::context::RequestContext;
 use crate::contract::{BackendEpoch, FileId};
 use crate::status::CapabilityStatus;
-
+use crate::symbols::{SymbolRequest, SymbolResult};
 /// A failure reported by a type backend.
 ///
 /// This describes the request, not the quality of a successful check. A
@@ -376,6 +376,18 @@ pub trait Backend: Send + Sync {
             },
             truncated: false,
         })
+    }
+
+    /// Returns script symbol facts for `request`.
+    ///
+    /// The default implementation reports the feature as unsupported. A
+    /// backend that answers with an empty, complete result must have proven
+    /// that no declaration/reference exists; that is different from not
+    /// implementing the query.
+    fn symbols(&self, _request: SymbolRequest) -> Result<SymbolResult, BackendError> {
+        Ok(SymbolResult::unsupported(
+            "script symbol queries are not implemented",
+        ))
     }
 
     /// Reports which features this backend implements and how completely.

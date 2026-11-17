@@ -571,6 +571,112 @@ pub(crate) fn build_completion(
     super::protocol::request_line(request_id, "complete", Some(&params)).map(Some)
 }
 
+/// Local validation mirroring the Node validator's query bounds.
+fn valid_symbol_query(query: &wxml_types::SymbolQuery) -> bool {
+    fn segment_ok(segment: &str) -> bool {
+        !segment.is_empty()
+            && segment.len() <= wxml_types::MAX_SYMBOL_NAME_BYTES
+            && !segment
+                .chars()
+                .any(|character| character.is_whitespace() || character.is_control())
+            && !segment
+                .chars()
+                .any(|character| matches!(character, '.' | '[' | ']' | '\'' | '"' | '`'))
+    }
+    match query {
+        wxml_types::SymbolQuery::DataRoots => true,
+        wxml_types::SymbolQuery::DataPath { path } => {
+            !path.is_empty()
+                && path.len() <= wxml_types::MAX_SYMBOL_PATH
+                && path.iter().all(|segment| segment_ok(segment))
+        }
+        wxml_types::SymbolQuery::EventHandler { name } => {
+            !name.is_empty() && name.len() <= wxml_types::MAX_SYMBOL_NAME_BYTES && {
+                let mut chars = name.chars();
+                chars.next().is_some_and(|first| {
+                    (first.is_ascii_alphabetic() || matches!(first, '_' | '$'))
+                        && chars.all(|character| {
+                            character.is_ascii_alphanumeric() || matches!(character, '_' | '$')
+                        })
+                })
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Builds a protocol `symbols` request line.
+///
+/// The view supplies the same file snapshot used by `analyze`; the subject
+/// file must be one of those files so a symbol query can never resolve a path
+/// outside the current project snapshot. `Ok(None)` means the view has no
+/// usable owner or the subject is not part of it.
+pub(crate) fn build_symbols(
+    view: &PreparedView,
+    context: &RequestContext,
+    config: &NodeBackendConfig,
+    request_id: &str,
+    subject: &wxml_types::FileId,
+    query: &wxml_types::SymbolQuery,
+) -> Result<Option<String>, ProtocolError> {
+    let Some(target) = view.target.as_ref() else {
+        return Ok(None);
+    };
+    if !view.files.iter().any(|file| file.file == *subject) {
+        return Ok(None);
+    }
+    if !valid_symbol_query(query) {
+        return Ok(None);
+    }
+    let files: Vec<Value> = view
+        .files
+        .iter()
+        .map(|file| {
+            json!({
+                "fileId": file.file.path(),
+                "path": file.path.as_str(),
+                "kind": file.kind,
+                "text": file.text.as_ref(),
+                "sourceRevision": file.source_revision,
+            })
+        })
+        .collect();
+    let query = match query {
+        wxml_types::SymbolQuery::DataRoots => json!({"kind": "dataRoots"}),
+        wxml_types::SymbolQuery::DataPath { path } => {
+            json!({"kind": "dataPath", "path": path})
+        }
+        wxml_types::SymbolQuery::EventHandler { name } => {
+            json!({"kind": "eventHandler", "name": name})
+        }
+        _ => return Ok(None),
+    };
+    let params = json!({
+        "protocolVersion": PROTOCOL_VERSION,
+        "requestId": request_id,
+        "project": {
+            "projectRoot": view.project_root.to_string_lossy(),
+            "compilerOptions": Value::Object(view.compiler_options.clone()),
+            "typings": {
+                "package": config.typings.package,
+                "version": config.typings.version,
+            },
+        },
+        "files": files,
+        "subjectFileId": subject.path(),
+        "sourceComplete": view.source_complete,
+        "root": target.owner.as_str(),
+        "query": query,
+        "limits": {
+            "maxFiles": config.limits.max_files,
+            "maxTotalBytes": config.limits.max_total_bytes,
+            "maxFragments": config.limits.max_fragments,
+        },
+    });
+    let _ = context;
+    super::protocol::request_line(request_id, "symbols", Some(&params)).map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -628,6 +734,7 @@ mod tests {
             project_root: PathBuf::from("/tmp/project"),
             syntax_diagnostics: Vec::new(),
             status_hint: None,
+            source_complete: true,
         }
     }
 
@@ -969,5 +1076,26 @@ mod tests {
         let component = &value["params"]["components"][0];
         assert_eq!(component["tag"], "card");
         assert!(component.get("componentFileId").is_none());
+    }
+    #[test]
+    fn over_deep_symbol_queries_are_rejected_locally() {
+        use wxml_types::SymbolQuery;
+
+        let view = view(fragment("user.name", 10));
+        let context = context();
+        let mut path = Vec::new();
+        for index in 0..=wxml_types::MAX_SYMBOL_PATH {
+            path.push(format!("s{index}"));
+        }
+        let line = build_symbols(
+            &view,
+            &context,
+            &NodeBackendConfig::default(),
+            "r1",
+            &view.target.as_ref().expect("target").script_file,
+            &SymbolQuery::DataPath { path },
+        )
+        .expect("build");
+        assert!(line.is_none());
     }
 }

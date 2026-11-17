@@ -20,7 +20,7 @@
  */
 
 import ts from "typescript";
-import { findRegistrations, propertyName, type Registration } from "./ast.ts";
+import { findRegistrations, memberMap, propertyName, type Registration } from "./ast.ts";
 import type { PreparedView } from "./analysis.ts";
 import { parseSource } from "./compiler.ts";
 import type { AnalyzeRequest, EventResult, RequestEvent } from "./protocol.ts";
@@ -276,6 +276,62 @@ function isFunctionValue(node: ts.Expression): boolean {
 
 function pushReason(reasons: string[], reason: string): void {
   if (!reasons.includes(reason)) reasons.push(reason);
+}
+
+/* ------------------------------------------------------------------ handler facts */
+
+/** Owner layout and resolution of one statically named event handler. */
+export interface HandlerFacts {
+  state: { status: "supported" | "partial"; reason?: string };
+  /** Declaration name node of a literal function member, when found. */
+  nameNode?: ts.Node;
+  /** The name exists but its value is not a literal function. */
+  opaque: boolean;
+  /** Page/Component options object, when the registration is literal. */
+  options?: ts.ObjectLiteralExpression;
+  /** Component `methods` object literal, when present and literal. */
+  methods?: ts.ObjectLiteralExpression;
+  /** Object receiving a missing handler (`methods` or the registration options). */
+  container?: ts.ObjectLiteralExpression;
+  /** Handler names already present or explicitly opaque. */
+  taken: string[];
+}
+
+/**
+ * Resolve one handler name against the literal owner table.
+ *
+ * This is the same table that `collectEventResults` uses, so a code action and
+ * a diagnostic cannot disagree about whether a handler exists. The caller must
+ * still respect `state`: a partial table makes a missing name unprovable.
+ */
+export function handlerFacts(
+  sourceFile: ts.SourceFile,
+  kind: "page" | "component",
+  name: string,
+): HandlerFacts {
+  const scan = findRegistrations(sourceFile);
+  const matching = scan.registrations.filter((candidate) => candidate.kind === kind);
+  const owner = buildOwnerTable(kind, matching, scan.unsupportedCalls);
+  const registration = matching.length === 1 ? matching[0] : undefined;
+  const options = registration?.options;
+  let methods: ts.ObjectLiteralExpression | undefined;
+  if (kind === "component" && options) {
+    const member = memberMap(options).get("methods");
+    if (member && ts.isPropertyAssignment(member) && ts.isObjectLiteralExpression(member.initializer)) {
+      methods = member.initializer;
+    }
+  }
+  const taken = [...owner.members.keys(), ...owner.opaque];
+  const found = owner.members.get(name);
+  return {
+    state: owner.state,
+    ...(found ? { nameNode: found.nameNode } : {}),
+    opaque: owner.opaque.has(name),
+    ...(options ? { options } : {}),
+    ...(methods ? { methods } : {}),
+    ...((methods ?? options) ? { container: methods ?? options } : {}),
+    taken,
+  };
 }
 
 /* --------------------------------------------------------------------- one event */

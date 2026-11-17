@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 
 use wxml_types::{
     Backend, BackendError, CompletionKind, CompletionRequest, CompletionResult, DefinitionRequest,
-    DefinitionResult, DiagnosticsRequest, DiagnosticsResult, HoverRequest, HoverResult,
-    RequestContext,
+    DefinitionResult, DiagnosticsRequest, DiagnosticsResult, FileId, HoverRequest, HoverResult,
+    RequestContext, SymbolQuery, SymbolRequest, SymbolResult,
 };
 
 use crate::jsonrpc::RequestKey;
@@ -46,7 +46,7 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 const SHUTDOWN_POLL: Duration = Duration::from_millis(5);
 
 /// What kind of backend query a job performs.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum JobKind {
     /// A hover query that will answer a request.
     Hover,
@@ -56,6 +56,13 @@ pub(crate) enum JobKind {
     Definition,
     /// A completion query that will answer a request.
     Completion(CompletionKind),
+    /// A script symbol query used by references, rename or code actions.
+    Symbols {
+        /// Script the query is about.
+        subject: FileId,
+        /// Query identity.
+        query: SymbolQuery,
+    },
 }
 
 /// One unit of backend work.
@@ -86,6 +93,8 @@ pub(crate) enum Outcome {
     Definition(Box<DefinitionResult>),
     /// Completion candidates.
     Completion(Box<CompletionResult>),
+    /// Script symbol facts.
+    Symbols(Box<SymbolResult>),
 }
 
 /// The completed (or cancelled) result of one job.
@@ -251,7 +260,7 @@ fn worker_loop<S>(
 /// Runs one backend call, mapping a panic into an internal error so the
 /// worker survives a misbehaving backend.
 fn run(backend: &dyn Backend, job: &Job) -> Result<Outcome, BackendError> {
-    let Ok(result) = catch_unwind(std::panic::AssertUnwindSafe(|| match job.kind {
+    let Ok(result) = catch_unwind(std::panic::AssertUnwindSafe(|| match &job.kind {
         JobKind::Hover => backend
             .hover(HoverRequest {
                 context: job.context.clone(),
@@ -273,9 +282,16 @@ fn run(backend: &dyn Backend, job: &Job) -> Result<Outcome, BackendError> {
             .completion(CompletionRequest {
                 context: job.context.clone(),
                 offset: job.offset,
-                kind,
+                kind: *kind,
             })
             .map(|completion| Outcome::Completion(Box::new(completion))),
+        JobKind::Symbols { subject, query } => backend
+            .symbols(SymbolRequest {
+                context: job.context.clone(),
+                subject: subject.clone(),
+                query: query.clone(),
+            })
+            .map(|symbols| Outcome::Symbols(Box::new(symbols))),
     })) else {
         return Err(BackendError::Internal("backend panicked".to_owned()));
     };
@@ -286,7 +302,7 @@ fn run(backend: &dyn Backend, job: &Job) -> Result<Outcome, BackendError> {
 fn cancelled(job: &Job) -> WorkDone {
     WorkDone {
         key: job.key.clone(),
-        kind: job.kind,
+        kind: job.kind.clone(),
         stamp: job.stamp.clone(),
         cancelled: true,
         outcome: Err(BackendError::Cancelled),
@@ -403,11 +419,8 @@ mod tests {
                 })
                 .with_definition(DefinitionResult {
                     locations: vec![SourceLocation {
-                        file: wxml_types::FileId::new(
-                            wxml_types::ProjectId::new("lsp"),
-                            "documents/1.wxml",
-                        )
-                        .expect("file"),
+                        file: FileId::new(wxml_types::ProjectId::new("lsp"), "documents/1.wxml")
+                            .expect("file"),
                         range: SourceRange::from_bounds(0, 1).expect("range"),
                     }],
                     status: CapabilityStatus::Supported,

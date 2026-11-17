@@ -413,6 +413,7 @@ impl Server {
     }
 
     /// Validates a point request and queues its backend job.
+    #[allow(clippy::needless_pass_by_value)] // the enum is logged after being cloned into the job
     fn schedule_point(&mut self, id: Value, kind: JobKind, params: Option<Value>) -> Vec<Outgoing> {
         let Some(params) = params else {
             return vec![Outgoing::failure(
@@ -500,11 +501,11 @@ impl Server {
         );
         let job = Job {
             key: Some(key.clone()),
-            kind,
             context,
             offset,
             stamp,
             cancel,
+            kind: kind.clone(),
         };
         match self.dispatch.submit(job) {
             Ok(()) => Vec::new(),

@@ -120,6 +120,26 @@ impl StructureFacts {
         Some(Self { tree: parsed.tree })
     }
 
+    /// Wraps an already parsed tree so structural consumers do not parse twice.
+    #[must_use]
+    pub(crate) const fn from_tree(tree: SyntaxTree) -> Self {
+        Self { tree }
+    }
+
+    /// Returns the parsed source text.
+    #[must_use]
+    pub(crate) fn text(&self) -> &str {
+        self.tree.text()
+    }
+
+    /// Returns the parsed tree for structural consumers that must not parse
+    /// the document again.
+    #[must_use]
+    #[allow(dead_code)] // Stable crate-internal API for S/T consumers.
+    pub(crate) const fn tree(&self) -> &SyntaxTree {
+        &self.tree
+    }
+
     /// Returns the paired tag-name ranges for linked editing.
     #[must_use]
     #[allow(dead_code)] // Stable crate-internal API for S/T consumers.
