@@ -139,8 +139,8 @@ crates/wxml-backend-tsgo/
 
 | 契约 | 必须冻结的内容 | 验收方式 |
 | --- | --- | --- |
-| F0 原生兼容 | 精确版本/提交、平台资产、摘要、CLI 参数、API 方法/帧上限、AST schema、错误类别 | executable version + 摘要 + schema 探针；不兼容明确失败 |
-| F1 Backend 语义 | C0 DTO、snapshot/epoch、取消/超时、错误、UTF/URI、map、缓存与 invalidation | 合同测试及旧响应/句柄失效测试 |
+| F0 原生兼容 | 固定 `7.1.0-beta`（gitHead、平台资产、SRI/sha256）、CLI 参数、API 方法白名单/帧上限、AST protocol v9/header 64、错误类别；`7.0.2` 明确排除 | executable `--version` + 摘要 + schema 探针；版本/协议不符明确失败；任何 emit/build/clean/profile 方法必须拒绝 |
+| F1 Backend 语义 | C0 DTO、snapshot/epoch/handle 绑定、`closeFiles+openFiles` 更新、取消/超时、错误、UTF/URI、map、缓存与 invalidation；QuickInfo/Definition/Rename 的 Rust 组合与保守拒绝规则；hover 文档/重载、补全详情缺失的明确降级 | 合同测试、旧响应/句柄失效测试、跨快照错误解析注入、写方法拒绝与 FS fail-closed 测试 |
 | F2 测试基线 | 源测试 ID、展开参数、关键断言、fixture hash、oracle revision、允许归一化字段 | 全量映射账本与 comparator 故障注入 |
 | F3 交付 | 二进制/类型资产布局、定位/env、manifest/index schema、离线及旧包策略 | 构建/包/安装/升级/回滚合同测试 |
 
@@ -178,13 +178,20 @@ P7 串行删除旧 Node 实现与当前 TS 测试，再执行全部门禁
 
 ### P1：三路只做最小能力验证
 
-**A 原生能力**：固定候选版本，先验证稳定版是否满足，不默认选 beta；由 Rust 原型完成启动、版本/schema 检查、Content-Length、双向 FS 回调、snapshot 更新、AST 解码、checker 与实际 shadow。最小能力矩阵包含 Page/Component 原位上下文、Behavior、props 赋值判断、loops/guards、JS/JSDoc、跨文件 alias、hover 签名/文档/重载、definition、completion、references 与 rename 保守性。测 UTF-16/UTF-8、CRLF、非 BMP、转义字符串、句柄失效、超时重启、FS 访问轨迹。
+**A 原生能力（P1-A 已完成，有条件通过）**：先验证稳定版，实测 `7.0.2` 不满足 `createSnapshot`/租约/`createSourceFile`，AST protocol v5（header 44）与候选线不兼容；唯一可行候选为 `7.1.0-beta`，AST protocol v9（header 64），已固定 gitHead 与 linux-x64 SRI。独立无 Node 客户端原型已完成启动、版本/schema 检查、Content-Length、双向 FS 回调、虚拟项目 snapshot、AST 关键字段解码、类型/符号/文档/补全/引用查询。未验证项：完整 Page/Component 原位 shadow、Behavior/props/loops/guards 组合、跨文件 alias、保守 rename、完整 AST msgpack/children/binder 解码。实测风险：无 QuickInfo/Definition/Rename 直接 API；node handle 跨快照可静默错位；`emit` 默认可写宿主磁盘；未保存更新需 `closeFiles+openFiles`。证据：`docs/evidence/2026-11-17-tsgo-native-api-spike.md`。
 
 **B 测试与 oracle**：执行完整旧 TS 套件，记录直接测试/参数化展开/执行通过/跳过分别的数量；梳理每条关键断言和 fixture。历史 Node 后端在隔离基线运行，仅用于过渡期对比。原实现与预期都为空不得自动视为覆盖。
 
 **C 资产与交付**：用无 npm 的 Rust 资产工具验证一个 Linux 当前支持平台的包获取/解包/摘要/许可/标准库与小程序声明挂载，证明预置资产下离线构建和启动可行；设计 schema 升级、安装失败不切 current 及原生包间回滚。验证目标 ABI，不能只看 OS/CPU 名称。
 
 退出门禁 G1：三路全部完成并有证据。任何必需查询、AST、读策略或离线资产缺口都阻塞 P2/P3；先解决或明确修订架构，不借减少功能继续。
+
+**G1 实际状态（2026-11-17，未关闭）**：
+
+- A：有条件 PROCEED。`7.1.0-beta` 是唯一满足快照/虚拟 FS/查询/AST 的版本；`7.0.2` 明确失败。hover/definition/rename 无直接 API，需 F1 组合规则；handle 跨快照错位、`emit` 写盘、更新语义已列为必测风险。证据：`docs/evidence/2026-11-17-tsgo-native-api-spike.md`。
+- B：P0 Rust 基线绿（1297 pass/0 fail/23 ignored，36.5s；fmt/check/clippy 通过）；TS 套件 339 个展开用例，338 pass/1 fail。唯一失败是 `perf.test.ts` 全量并行下冷启动 8325.25 ms；同一测试串行隔离 3/3 绿（1058.25/1005.64/675.60 ms），已裁决采用专用串行 perf gate，阈值与测试内容不变，全量并行结果保留为环境记录。台账 274 静态/339 展开，37 个原 blocked 决策已关闭：36 个 Candidate B/symbol-bridge 为 `obsolete`，1 个 `TS-META-0027` 为 F0 version pin `rewrite`；原位 shadow 用例仍强制。证据：`docs/evidence/2026-11-17-tsgo-migration-baseline.md`、`docs/plans/2026-11-17-tsgo-test-ledger.md`、`docs/plans/tsgo-test-ledger.json`。
+- C：PARTIAL。Node 依赖面、原生入口 `lib/tsc`、7.1.0-beta/7.0.2 资产结构与 manifest v2 状态机已确认；真实 `lib/tsc` 探针由 A 完成，但无 Node 安装器、clean-env 安装和 Zed 冒烟尚未实现。证据：`docs/evidence/2026-11-17-tsgo-delivery-spike.md`。
+- 结论：P2 可以继续修订 ADR/契约与安全设计，但不得开始生产实现。A 为有条件通过，B 的测试处置与 perf gate 已裁决，C 仍为 PARTIAL；G1 未关闭。仍需维护者显式接受固定 integrity 的 7.1.0-beta、完成 C 的可执行安装器方案，并冻结 F0–F3 契约。
 
 ### P2：落地 ADR、接口与测试契约
 
@@ -281,22 +288,22 @@ G3 通过后，集成负责人记录 `FOUNDATION_BASE=<已合入 N/S/T 及相关
 | rewrite.test.ts | 24 | 字符串/注释/key 不改写、locals/global、escape 拒绝 |
 | server.test.ts | 9 | 传输、恰好一次响应、错误与 EOF 恢复 |
 | symbols.test.ts | 21 | 引用、setData/observer、完整性与编辑拒绝 |
-| 合计 | 273 | 21 个测试文件，另有 support.ts |
+| 合计 | 274 | 21 个测试文件，另有 support.ts |
 
-273 个调用＝272 个字面标题＋1 个动态标题调用；后者展开 33×2＝66 项，预计注册总数 `273−1+66＝338`。矩阵文件预计 `12+66＝78` 项。内部循环（例如 10 个 LOCAL_CASES）还要分子用例 ID，不能仅按注册数量迁移。
+274 个调用＝273 个字面标题＋1 个动态标题调用；后者展开 33×2＝66 项，实际注册总数 `274−1+66＝339`。矩阵文件 `12+66＝78` 项。内部循环（例如 10 个 LOCAL_CASES）还要分子用例 ID，不能仅按注册数量迁移。
 
-Rust workspace 有 1,319 个测试属性：src 945（74 文件）、tests 374（32 文件），包含 13 个 proptest 定义；不含 doctest、bench、workspace 外 Zed 测试，也不是编译后执行数。其中 23 个显式 ignored 均在 LSP 集成层，必须逐项安排必跑原生命令。旧 backend_node 有 100 个单元测试属性；已明确耦合的 13 个集成根文件有 111 个测试属性，不能删模块时丢弃。这两个集合不是所有受影响测试的上限。
+Rust workspace 原始 `#[test]` 属性 1,322 个（src 948/74 文件、tests 374/32 文件），编译后 1,319 个（3 个 `#[cfg(windows)]` 在 Linux 不编译），包含 13 个 proptest 定义；不含 doctest、bench、workspace 外 Zed 测试，也不是执行数。其中 23 个显式 ignored 均在 LSP 集成层，必须逐项安排必跑原生命令。旧 backend_node 有 100 个单元测试属性；已明确耦合的 13 个集成根文件有 111 个测试属性，不能删模块时丢弃。这两个集合不是所有受影响测试的上限。
 
-夹具盘点：`tests/fixtures` 136 文件（manifest 19 案例：16 实体＋unsaved-overlay/stale-request/zed-multi-doc 3 运行案例）；`crates/wxml-lsp/tests/fixtures` 43 文件；旧 samples 35 文件/28 目录，对应 33 scenario。合计 214 个磁盘文件不含内联/生成输入。树摘要算法为按相对路径排序累加 `path + NUL + raw bytes + NUL`：
+夹具盘点：`tests/fixtures` 136 文件（manifest 19 案例：16 实体＋unsaved-overlay/stale-request/zed-multi-doc 3 运行案例）；`crates/wxml-lsp/tests/fixtures` 43 文件；旧 samples 35 文件/28 目录，对应 33 scenario。合计 214 个磁盘文件不含内联/生成输入。树摘要算法（v1）为 regular files only，按 UTF-8 相对路径字节排序，累加 `relative_path_utf8 + NUL + raw_bytes + NUL`：
 
 ```text
-backends/typescript/test       2eda688d0ae0a397c5d00b10ff8462127a98612d82cde13ef0a23ebc86ada77c
-backends/typescript/samples    1e794ae8b955fb46b53fba693f41e21a8cc0b3ab17fe0f825c1830db951924a1
-tests/fixtures                6d938204752b7d7eab8384883302f727f34e555cd57ad45c518e2a694c5c83d8
-crates/wxml-lsp/tests/fixtures  eca53807ed00c553fed7de114170d030eb490172311360ebf4f4d253d5f24b37
+backends/typescript/test       630a16af41623c78f19f47bcaba1a7f1282201ac27b4414115ac0b3764afc32e
+backends/typescript/samples    00a7fa3d6962da50581c396f73c13f7ffb043efae060a0801b373928726e5c1f
+tests/fixtures                7c9ddedda18c70bc217af6b3bbd23dd22a33be9c885276cbd587adc0596f04a9
+crates/wxml-lsp/tests/fixtures  834eea4defcb7565c4b84e91a173079cf3be85201d44fb4a7a6d0a32af3da073
 ```
 
-拟建公共入口为 `crates/wxml-lsp/tests/native_parity.rs`，分区位于 `tests/native_parity/{hover_docs,definitions,completion,loops,guards_js,components,behaviors,events,project_overlay,symbols_edits,scenario_matrix,protocol_limits,messages_evidence}.rs`；纯 codec/emitter/map 测试置于实际生产模块旁。新后端 crate 的真实 native 合同测试与公共 LSP 语义矩阵分层，不能互相代替。
+拟建公共入口为 `crates/wxml-lsp/tests/native_parity.rs`，分区位于 `tests/native_parity/{hover_docs,definitions,completion,loops,guards_js,components,behaviors,events,project_overlay,symbols_edits,scenario_matrix,protocol_limits,messages_evidence,shadow_rewrite,mapping_utf16,perf_budget}.rs`；纯 codec/emitter/map 测试置于实际生产模块旁。新后端 crate 的真实 native 合同测试与公共 LSP 语义矩阵分层，不能互相代替。
 
 台账在第 6.1 节字段外还必须包含旧测试体 hash、完整标题/参数 ID、每条 assertion ID/原始 span、Rust 全限定测试 ID/子用例、比较类型（semantic_exact/safety_exact/contract_translated/mechanism_replaced/native_new_risk）、负例、RED/GREEN 原始证据、reviewer 和 native 身份。只有已审阅且门禁通过的断言可关闭；blocked 和机制替代均不可直接记“不适用”。
 
@@ -476,22 +483,16 @@ P1-C 证明旧→新的可行路径；P6/P7 用真实本地包重跑全部转换
 | 并行冲突/资源争用 | 单文件 owner、合同基线、独立 target、受限 worker/编译并发 |
 | 发布 ABI/离线/旧 schema 回归 | P1-C/P6/P7 真实包验证；不扩大未经验证的平台宣称 |
 
-当前下一步：只读架构、测试、交付与 planner 结果已汇总；在可编辑模式从 P0/P1 开始实施。原生版本、协议路径、文件访问和查询保真度都尚未获得项目级实测，不应跳过试验直接大规模翻译 TS 文件。先完成三路试验，再按依赖调度实施 worker。
+当前下一步：P2 冻结 F0–F3 契约、完成 beta 风险裁决与安全评审；随后从 P3 开始建立 Rust 原生客户端、原位 shadow 和 parity 测试骨架。未通过 G1/P2 前不得大规模翻译 TS 语义代码或删除 Node。
 
-## 12. 本轮交付边界与评估
+## 12. 执行状态、证据与边界
 
-本轮只保存架构草案和详细执行计划；未修改仓库代码，未运行构建/测试，未安装或执行候选原生二进制，未创建迁移 worktree，也未切换默认后端。正式 ADR/索引和迁移代码须在可编辑模式落地。
+正式计划与 ADR-0008 已提交到迁移 worktree 的 `b9616c5`。P0/P1 已在 `tsgo/migration` 分支执行，证据位于：
 
-规划产物验证：两个文件均已回读；Markdown fence 成对、过时占位说明已移除；TS 调用总和 273、预计展开 338、磁盘 fixture 合计 214 的算术已复核；历史计划摘要与第 1.1 节相符。最终只读 git 检查仍为同一 HEAD 与 19 个既有 dirty 路径，不能由此推断文件内容未继续变化。planner 对局部替代、FOUNDATION/INTEGRATION 基线、旧安装迁入状态机和 G5 不豁免四项修订的定点复核均通过，无新增计划阻塞。上述结果仅验证规划产物，不代替实施阶段任一 gate。
+- `docs/evidence/2026-11-17-tsgo-workspace-baseline.md`：workspace/工具链/Backend 边界基线。
+- `docs/evidence/2026-11-17-tsgo-migration-baseline.md`：Rust/TS 基线、339 个展开 TS 用例、perf 串行复跑。
+- `docs/evidence/2026-11-17-tsgo-native-api-spike.md`：原生 `--api --async`、虚拟快照、查询、AST v9、UTF、句柄/写边界实测。
+- `docs/evidence/2026-11-17-tsgo-delivery-spike.md`：无 Node 资产、安装/回滚状态机与平台事实。
+- `docs/plans/2026-11-17-tsgo-test-ledger.md` 与 `tsgo-test-ledger.json`：逐用例迁移台账、fixture v1 hash、ignored/静默跳过映射。
 
-本轮规划自评（交付文档，不是实现评分）：
-
-| 维度 | 分数 | 证据及局限 |
-| --- | ---: | --- |
-| 准确性 | 4/5 | 固定提交源码与静态测试盘点有依据，明确没有真实 native/测试结果；运行时协议兼容尚待 P1 |
-| 完整性 | 4/5 | 架构、ADR 草案、测试分区、旧安装迁入、删除次序和并行依赖均明确；逐断言机器账本在 P0/P1 生成 |
-| 清晰度 | 4/5 | 阶段/门禁/owner/状态分开；原生 codec 和多类坐标仍需结合 F0 合同阅读 |
-| 可执行性 | 4/5 | 指明模块/写范围/基线/资源/验收和 BLOCKED 处理；实际版本、资产与命令需能力试验后冻结 |
-| 精炼度 | 4/5 | 保留审计与交接清单，篇幅较长；执行者可按第 5/10 节进入具体工作包 |
-
-平均 4.0/5。按影响排序，下一步先验证原生协议/FS/查询完整性，再生成逐断言账本与 dirty 增量，最后冻结平台资产与实际命令。自检：用户应能直接审阅架构和调度计划，同时清楚看到尚无迁移完成或测试通过的声明。
+当前边界：未修改生产源码，未删除 Node，未安装或切换原生后端，未声称迁移完成。G1 仍未关闭；7.1.0-beta 需维护者显式接受并固定 integrity。P2 可继续起草/冻结 F0–F3 契约与安全设计，P3 生产骨架必须等待 beta 决策、C 的可执行安装器方案和契约评审。

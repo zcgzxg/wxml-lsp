@@ -28,10 +28,14 @@
 | 2026-11-17 | [W2 集成与 Q1 交付](full-feature-w2.md) | W2 `a441de9` / Q1 `f46dec9` | E1 | W2 固定日志 workspace 1095 passed / 20 ignored；Node 304/305，唯一失败为既有 perf 墙钟断言（高负载超时，单独重跑通过）；IT-01/02/03/05/09/10/11/12 真实 stdio 矩阵通过；Q1 `cargo test -p wxml-delivery` 通过；本地打包/安装/升级/回退存在，下载默认关闭；S/Q2 当时未完成 |
 | 2026-11-17 | [W3 语义工具与安全编辑](full-feature-w3.md) | W3 `379b097` / S `dd15bc1` | E1 | S 语义工具合入：references/rename/codeAction/semanticTokens/workspaceSymbol/inlayHint/signatureHelp/codeLens；W3 固定日志 workspace 1251 passed / 0 failed / 21 ignored（45 suites），Node 串行 326/326，`semantic_tools` 41 passed；两轮正式 Rust/安全审核均 CHANGES_REQUESTED，残余项由 `dd15bc1` 修复并由集成探针复验，未开第 3 轮；Q2 当时未完成 |
 | 2026-11-17 | [W4 最终验收与发布](full-feature-final.md) | W4 `9b804d4` / Q2 `95ebb21` | E1 | W4 Rust 1283 passed / 0 failed / 23 ignored（49 suites）；Node 串行 333/333；ignored 真实 Node/stdio/wave5/stability/performance 全部通过；性能/稳定性阈值 `pass=true`；覆盖率 lines 87.24% / functions 88.85% / regions 86.71%；cargo audit 0 vulnerabilities、deny advisories ok；Zed workspace 25 passed；最终 release 两次构建 SHA-256 `c09062b16dd6bfea4ee03f99f13665cf4858130aae83eefec9c04cd94d3815ab`，214 files，install/verify/verify-package 通过；Linux Zed 运行时冒烟通过；Q2 R2 Rust/安全 APPROVE；无 marketplace/远端发布/发布者签名 |
+| 2026-11-17 | [tsgo 迁移 workspace 基线](2026-11-17-tsgo-workspace-baseline.md) | `tsgo/migration` `b9616c5` | E1 | 记录 worktree、工具链、Backend 边界、单写者与 P2/P3 阻塞；无生产代码改动 |
+| 2026-11-17 | [tsgo 迁移测试基线](2026-11-17-tsgo-migration-baseline.md) | Rust workspace / TS 339 用例 | E1 | Rust 1297 pass/0 fail/23 ignored；TS 338/339，唯一失败为全量并行 perf 8325.25ms；isolated 串行 3/3 绿；台账 274 静态/339 展开 |
+| 2026-11-17 | [tsgo 原生 API 能力验证](2026-11-17-tsgo-native-api-spike.md) | 7.1.0-beta Linux x64 | E1 | 无 Node `--api --async`、虚拟快照、诊断/类型/符号/文档/补全/引用可用；AST v9 部分解码；无 QuickInfo/Definition/Rename 直接 API；7.0.2 排除；脚本仅在临时目录 |
+| 2026-11-17 | [tsgo 无 Node 交付验证](2026-11-17-tsgo-delivery-spike.md) | 7.1.0-beta / miniprogram-api-typings 5.3.1 | E0 | 资产身份、SRI、无 Node 入口与安装/回滚状态机设计；未下载安装，安装器与 clean-env 验收仍待执行 |
 
 ## 3. 当前门禁基线（2026-11-17，W4 最终）
 
-以下是 W4 最终快照，不替代各记录的原始结论。W2、W3、Q1 的计数只作历史，不与 W4 混用。
+以下是 W4 最终快照，不替代各记录的原始结论。W2、W3、Q1 的计数只作历史，不与 W4 混用。Rust + tsgo 迁移的 P0/P1 基线见 §3.1；该迁移尚未完成，不能把本节 W4 的 Node 结果当作原生后端结果。
 
 | 项 | 命令 | 当前结果 |
 | --- | --- | --- |
@@ -65,6 +69,20 @@ Zed 运行时冒烟。
 extension` 在最终版本上的重跑、大项目中/大语料性能、完整 G0/G2 矩阵、marketplace/远端
 release/发布者签名。W4 的 Linux Zed 冒烟是手工安装最终发布包的运行时验证，不冒充标准 UI
 安装；标准安装历史证据仍见 [p8-zed.md](p8-zed.md) 第 13 节。
+
+## 3.1 Rust + tsgo 迁移 P0/P1（2026-11-17）
+
+| 项 | 命令/范围 | 结果 |
+| --- | --- | --- |
+| Rust 基线 | `cargo test --workspace --all-features` | 1297 passed / 0 failed / 23 ignored（36.5s） |
+| Rust 静态质量 | fmt / check / clippy `-D warnings` | 通过 |
+| TS 基线 | 全量 339 展开用例 | 338 passed / 1 failed（perf 并行冷启动 8325.25ms） |
+| TS perf 隔离 | `node --test test/perf.test.ts` 串行 3 次 | 3/3 通过（1058.25 / 1005.64 / 675.60ms） |
+| 迁移台账 | 21 个测试文件 + support | 274 静态 / 339 展开；direct 240、rewrite 52、split 11、obsolete 36、blocked 0 |
+| 原生能力 | 7.1.0-beta `--api --async` | 有条件通过；AST v9 部分解码；完整 shadow/查询组合待后续 gate |
+| 无 Node 交付 | 资产/安装设计 | PARTIAL；未安装、未 clean-env 验收 |
+
+G1 尚未关闭；7.1.0-beta 的接受与 integrity 固定、可执行安装器和 F0–F3 契约冻结是 P3 前置。
 
 ## 4. 维护规则
 

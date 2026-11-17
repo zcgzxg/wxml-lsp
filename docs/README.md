@@ -14,7 +14,7 @@
 | 类型桥契约 | [C1 类型桥契约](reference/type-bridge-c1.md) | 候选 A 布局、数据根与 `properties` 覆盖、源码映射、C1 请求/响应和状态 | C0 坐标/身份/后端接口 |
 | 诊断策略 | [模板类型诊断策略](reference/type-diagnostics.md) | 严格空值、运行时转换、属性绑定、`any`/`unknown` 和未支持形式的降级规则 | 当前实现进度或测试证据 |
 | 验收样本 | [共享验收样本](../tests/fixtures/README.md) | AC-001..AC-013 的正例、反例、runtime 场景、schema v2 与校验入口 | 类型分析实现 |
-| 执行计划 | [Wave 5 并行交付计划](plans/2026-11-16-wave5-parallel-delivery.md)、[Zed 标准安装与真实项目验收计划](plans/2026-11-16-zed-standard-acceptance.md) | 并行 worktree、接口冻结、测试门禁与评审流程；Zed 标准安装和真实编辑器验收步骤 | 需求定义和最终状态 |
+| 执行计划 | [Wave 5 并行交付计划](plans/2026-11-16-wave5-parallel-delivery.md)、[Zed 标准安装与真实项目验收计划](plans/2026-11-16-zed-standard-acceptance.md)、[Rust + tsgo 去 Node 迁移](plans/2026-11-17-rust-tsgo-migration.md) | 并行 worktree、接口冻结、测试门禁与评审流程；Zed 标准安装和真实编辑器验收步骤；原生类型后端迁移阶段与 G1–G7 闸门 | 需求定义和最终状态 |
 | 架构决策 | [ADR 索引](adr/README.md) | 模块边界、类型检查与映射、文档同步、交付闸门等长期决策 | 日常进度 |
 | 证据 | [证据索引](evidence/README.md) | 实验环境、方法、结果、限制和最小原始数据 | 把实验结论当作已实现功能 |
 | 集成与编辑器证据 | [P7 真实集成](evidence/p7-integration.md)、[P8 Zed 扩展](evidence/p8-zed.md)、[W2 集成与 Q1 交付](evidence/full-feature-w2.md)、[W3 语义工具与安全编辑](evidence/full-feature-w3.md)、[W4 最终验收与发布](evidence/full-feature-final.md) | 真实 Node 端到端与 G1 门禁；Zed wasm 构建、隔离 smoke；W2 交叉矩阵与 Q1 本地安装器证据；W3 语义工具、评审修复与固定日志；W4 Q2 性能/恢复、覆盖率、安全、最终 release 与 Linux Zed 运行时冒烟 | 把部分证据当作完整验收 |
@@ -27,7 +27,7 @@
 
 1. 阅读[项目 README](../README.md)，确认目标、范围和当前状态。
 2. 阅读本索引，了解文档归属。
-3. 需要理解架构时，按 0001 → 0007 阅读 [ADR](adr/README.md)。
+3. 需要理解架构时，按 0001 → 0008 阅读 [ADR](adr/README.md)；0008 仍为 proposed。
 4. 实现或评审跨模块接口时，阅读 [C0 基础契约](reference/contracts.md)、[C1 类型桥契约](reference/type-bridge-c1.md) 与[模板类型诊断策略](reference/type-diagnostics.md)。
 5. 需要实现通用 WXML 功能时，阅读[功能基线](reference/wxml-language-feature-baseline.md)。
 6. 需要引用实验或集成依据时，阅读[证据索引](evidence/README.md)及 [P7 真实集成](evidence/p7-integration.md)、[P8 Zed 扩展](evidence/p8-zed.md)、[W2 集成与 Q1 交付](evidence/full-feature-w2.md)、[W3 语义工具与安全编辑](evidence/full-feature-w3.md)、[W4 最终验收与发布](evidence/full-feature-final.md) 记录，同时检查其限制。
@@ -83,6 +83,6 @@ docs/
 │   └── data/
 └── adr/
     ├── README.md
-    ├── 0001-*.md ... 0007-*.md
+    ├── 0001-*.md ... 0008-*.md
     └── template.md
 ```

@@ -1,7 +1,7 @@
 # ADR-0008: Rust + tsgo 类型后端，移除 Node 依赖
 
-**Date**: 2026-11-17  
-**Status**: proposed（用户已选择迁移方向；接口与能力验证完成前不升级为 accepted）  
+**Date**: 2026-11-17
+**Status**: proposed（用户已选择迁移方向；P1-A 有条件通过，7.1.0-beta 接受与 G1 收口完成前不升级为 accepted）
 **Deciders**: 项目维护者；planner、architect、Rust 测试及交付盘点参与设计
 
 本文记录已采用的迁移方向；接口与能力验证完成前保持 proposed。实施计划见 `docs/plans/2026-11-17-rust-tsgo-migration.md`。本文件不表示迁移、测试或交付已经完成。
@@ -18,9 +18,13 @@
 
 新增 `wxml-backend-tsgo` crate，内部划分 native、script、shadow、query 模块；`wxml-lsp` 仅提供 ProjectHost 输入适配。依赖保持单向，底层后端不依赖 LSP，现有 `Backend` 为对上边界。常态每个 Rust LSP 最多管理一个原生子进程，多项目通过有界 session/snapshot 管理。
 
-首选接口是同一个原生进程的 `--api --async` 双向 stdio。冻结版本后实现 Rust JSON-RPC 客户端、受限文件系统回调、必要的二进制 AST 解码、snapshot/lease/handle 生命周期与类型查询。保留现有 `wxml_types::Backend` 对上层的边界。若单进程 API 无法完整实现 hover 文档、重载、定义、引用、补全及 rename 安全语义，先阻塞迁移并修订本 ADR；只有验证同进程 LSP + API 连接确实共享快照且满足同一文件访问策略，才可作为明确批准的替代实现。不得默认改成两个独立类型图。
+首选接口是同一个原生进程的 `--api --async` 双向 stdio。冻结版本后实现 Rust JSON-RPC 客户端、受限文件系统回调、必要的二进制 AST 解码、snapshot/lease/handle 生命周期与类型查询。保留现有 `wxml_types::Backend` 对上层的边界。
 
-采用精确的原生发行版本、源码提交、API/AST schema 及平台资产摘要。先比较稳定版本与候选版本；不把调研用 `7.1.0-beta` 自动视为生产选择，不使用 `main`、`next` 或浮动版本。版本、协议与类型资产更新作为一个经过测试的变更交付。旧 Node 安装可在无 Node 条件下由受限旧 schema 读取器识别并迁入原生包；验证成功前保持旧 current 不变，原生版本之间支持校验后的回退，不自动回退激活 Node 包。
+P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、DefinitionAtPosition、Rename、SignatureHelp 等直接方法。hover 由类型字符串、文档注释与 JSDoc 组合；definition 由 `getReferencedSymbolsForNode` 加 AST 解码得到；rename 仅允许 Rust 侧基于完整符号/引用证据的保守编辑，证据不完整时拒绝，不得伪造或降级为不安全编辑。补全的详情/自动导入需 `prepareAutoImports`，其缺失部分必须在 F1 明确为可见降级还是阻塞项。若组合规则不能保持现有可观察语义，先阻塞迁移并修订本 ADR；只有验证同进程 LSP + API 连接确实共享快照且满足同一文件访问策略，才可作为明确批准的替代实现。不得默认改成两个独立类型图。
+
+原生 node handle 不携带快照身份，跨 `updateSnapshot` 可能静默解析到新 AST 的同序号节点。Rust 必须把每个 handle 绑定 `(snapshot id, file path, content hash/node id)`，跨 epoch 一律拒绝，不能缓存到下一快照。未保存内容更新必须使用同一次 `updateSnapshot` 的 `closeFiles` + `openFiles`；仅 layer/full/notification 不会刷新已打开文件。原生 API 暴露 `emit` 等写方法且实测可写宿主磁盘，客户端只允许白名单查询方法，启动时设置 `writeFile:noop`、`removeFile:noop`，读回调 fail-closed，永不启用 `--runExternalCode`；`noEmit`/no-op 不构成 OS 沙箱。
+
+采用精确的原生发行版本、源码提交、API/AST schema 及平台资产摘要。P1-A 实测稳定版 `7.0.2` 不具备 `createSnapshot`/租约/`createSourceFile`，AST protocol v5（header 44）与候选线不兼容，不能作为本架构基础；当前唯一满足快照、虚拟 FS、查询与 AST 要求的候选是 `7.1.0-beta`（gitHead `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`，AST protocol v9/header 64）。接受 beta 作为生产基线属于显式风险决策，须在 P2 由维护者确认并固定 integrity；确认前保持 proposed。`7.0.2` 不作为回退候选。不使用 `main`、`next` 或浮动版本。版本、协议与类型资产更新作为一个经过测试的变更交付；升级必须重跑 F0/F1 合同测试与 AST schema 探针。旧 Node 安装可在无 Node 条件下由受限旧 schema 读取器识别并迁入原生包；验证成功前保持旧 current 不变，原生版本之间支持校验后的回退，不自动回退激活 Node 包。
 
 现有 TS 测试按源测试、展开用例、关键断言逐项登记并迁入 Rust。迁移期允许在隔离的历史基线环境运行旧 Node 后端生成 oracle；最终构建、测试、安装包及运行过程不得依赖它。删除旧实现前必须完成全量等价、恢复、安全、性能及无 Node 交付验收；删除后再验一次。
 
@@ -89,7 +93,7 @@
 5. 新 manifest/index schema、固定原生资产、类型声明许可证和摘要验证通过；离线模式不能隐式下载。
 6. 旧 Node 默认入口、实现和当前测试删除后重新执行完整门禁；保留业务 TS/JS、`.d.ts`、fixture、字节规则和历史证据。
 
-所有项目在本草案创建时均为**待执行**。现有原生实验和旧后端测试记录只能作为历史证据，不能据此声称本 ADR 已通过验证。
+截至 2026-11-17，P1-A 已实测原生进程、虚拟快照、类型/符号/文档/补全/引用、AST 关键字段、UTF-16 坐标和进程控制；稳定版 7.0.2 已排除，7.1.0-beta 为唯一候选。完整 shadow、Behavior/props/loops/guards、保守 rename、完整 AST 解码、无 Node 安装器和 clean-env 验收仍**待执行**。现有原生实验和旧后端测试记录只能作为阶段性证据，不能据此声称本 ADR 已通过验证或迁移完成。
 
 ## 与既有 ADR 的关系
 
@@ -105,4 +109,6 @@
 - 本轮用户明确选择 Rust + tsgo、去 Node、测试迁 Rust、通过 `/orchestrate` 并行迁移。
 - `docs/adr/0001-*.md`、`0002-*.md`、`0003-*.md`、`0004-*.md`、`0005-*.md`、`0006-*.md`、`0007-*.md`。
 - `docs/evidence/2026-11-15-native-typescript-service.md`：普通虚拟 TS 文件历史试验，不是完整小程序验收。
-- Microsoft TypeScript 官方源码，调研提交 `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`：`packages/typescript/src/api/async/client.ts`、`api/options.ts`、`api/proto.generated.ts`、`tsc/internal/ipc/protocol_jsonrpc.go`、`tsc/internal/api/encoder/encoder.go`、`tsc/internal/api/callbackfs.go`。源码调研不等于二进制实测。
+- `docs/evidence/2026-11-17-tsgo-native-api-spike.md`：7.1.0-beta Linux x64 无 Node 实测，包含虚拟快照、查询、AST、UTF、handle、写路径与 7.0.2 不兼容证据。
+- `docs/evidence/2026-11-17-tsgo-migration-baseline.md`、`docs/evidence/2026-11-17-tsgo-delivery-spike.md`：P0 测试基线及 P1-C 交付盘点。
+- Microsoft TypeScript 官方源码，调研提交 `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`：`packages/typescript/src/api/async/client.ts`、`api/options.ts`、`api/proto.generated.ts`、`tsc/internal/ipc/protocol_jsonrpc.go`、`tsc/internal/api/encoder/encoder.go`、`tsc/internal/api/callbackfs.go`。源码调研与本次二进制实测相互独立；未实测的字段不得当成已验证。
