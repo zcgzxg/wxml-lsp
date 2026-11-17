@@ -264,7 +264,9 @@ export function serve(options: ServerOptions): Promise<void> {
           writeError(null, -32600, "Invalid Request", { code: "bad-limit", limit: maxLineBytes });
           continue;
         }
-        const line = Buffer.concat([...buffer, piece]);
+        // Avoid copying a complete line that arrived in one chunk: analyze
+        // requests are up to 16 MiB and `Buffer.concat` would duplicate them.
+        const line = buffer.length === 0 ? piece : Buffer.concat([...buffer, piece]);
         buffer = [];
         bufferedBytes = 0;
         flushLine(line);

@@ -1111,6 +1111,119 @@ fn alternating_views_keep_a_bounded_cache() {
     );
 }
 
+/// A context for one distinct analysis snapshot of the standard test view.
+fn revision_context(revision: u64) -> RequestContext {
+    RequestContext::new(
+        ProjectRevision::new(project(), revision),
+        ViewRevision::new(revision),
+        BackendEpoch::new(BackendId::new("node"), 1),
+        Arc::new(SourceSnapshot::new(
+            file(WXML),
+            SourceRevision::new(revision),
+            SnapshotId::new(revision),
+            "{{ user.name }}",
+        )),
+    )
+    .expect("context")
+}
+
+#[test]
+fn analysis_cache_is_bounded_and_reuses_unchanged_inputs() {
+    let shared = Shared::default();
+    let backend = backend(&shared, StubHost::new(view(Vec::new())));
+    let revisions = u64::try_from(MAX_CACHED_ANALYSES).expect("revisions") + 1;
+    for revision in 1..=revisions {
+        let context = revision_context(revision);
+        let _ = backend.diagnostics(DiagnosticsRequest { context });
+    }
+    assert_eq!(requests(&shared), MAX_CACHED_ANALYSES + 1);
+
+    let newest = revision_context(revisions);
+    let _ = backend.diagnostics(DiagnosticsRequest { context: newest });
+    assert_eq!(
+        requests(&shared),
+        MAX_CACHED_ANALYSES + 1,
+        "the newest analysis stays cached"
+    );
+
+    let oldest = revision_context(1);
+    let _ = backend.diagnostics(DiagnosticsRequest { context: oldest });
+    assert_eq!(
+        requests(&shared),
+        MAX_CACHED_ANALYSES + 2,
+        "the cache must evict the least recently used analysis"
+    );
+}
+
+#[test]
+fn project_revision_is_part_of_the_cache_key() {
+    let shared = Shared::default();
+    let backend = backend(&shared, StubHost::new(view(Vec::new())));
+    let first = context();
+    let mut second = context();
+    second = RequestContext::new(
+        ProjectRevision::new(project(), 2),
+        second.view_revision(),
+        second.backend_epoch(),
+        Arc::new(second.source().clone()),
+    )
+    .expect("second context");
+    let _ = backend.diagnostics(DiagnosticsRequest { context: first });
+    let _ = backend.diagnostics(DiagnosticsRequest { context: second });
+    assert_eq!(
+        requests(&shared),
+        2,
+        "a project revision change must bypass the cached analysis"
+    );
+}
+
+#[test]
+fn a_failed_analysis_clears_the_cache() {
+    let shared = Shared::default();
+    let attempts = Arc::new(AtomicUsize::new(0));
+    let responder_attempts = Arc::clone(&attempts);
+    let backend = backend_with(&shared, StubHost::new(view(Vec::new())), move |line| {
+        if responder_attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            Err(NodeTransportError::Timeout)
+        } else {
+            Ok(respond(line))
+        }
+    });
+    let context = context();
+    let _ = backend.diagnostics(DiagnosticsRequest {
+        context: context.clone(),
+    });
+    assert_eq!(requests(&shared), 1);
+    assert_eq!(backend.epoch().get(), 2);
+    let _ = backend.diagnostics(DiagnosticsRequest { context });
+    assert_eq!(
+        requests(&shared),
+        2,
+        "a failed generation must not serve its cached analysis"
+    );
+    assert_eq!(backend.epoch().get(), 2);
+}
+
+#[test]
+fn invalidate_clears_the_generation_and_cache() {
+    let shared = Shared::default();
+    let backend = backend(&shared, StubHost::new(view(Vec::new())));
+    let context = context();
+    let _ = backend.diagnostics(DiagnosticsRequest {
+        context: context.clone(),
+    });
+    assert_eq!(requests(&shared), 1);
+    let epoch = backend.epoch();
+    backend.invalidate();
+    assert!(backend.epoch() > epoch);
+    let _ = backend.diagnostics(DiagnosticsRequest { context });
+    assert_eq!(
+        requests(&shared),
+        2,
+        "a removed project must not be served from the old cache"
+    );
+}
+
 #[test]
 fn symbol_parameter_errors_do_not_restart_the_backend() {
     use wxml_types::{SymbolQuery, SymbolRequest};

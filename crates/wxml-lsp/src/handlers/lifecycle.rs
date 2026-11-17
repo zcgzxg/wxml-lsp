@@ -307,10 +307,10 @@ impl Server {
             "textDocument/didClose" => self.did_close(params),
             "textDocument/didSave" => self.did_save(params),
             "workspace/didChangeWatchedFiles" => self.did_change_watched_files(params),
-            "$/cancelRequest" => {
-                self.cancel_request(params.as_ref());
-                Vec::new()
+            "workspace/didChangeWorkspaceFolders" => {
+                self.did_change_workspace_folders(params.as_ref())
             }
+            "$/cancelRequest" => self.cancel_request(params.as_ref()),
             other => {
                 log(format_args!(
                     "ignoring unknown notification `{}`",
@@ -343,6 +343,7 @@ impl Server {
                 )];
             }
         };
+        self.initialization = options.clone();
         self.client.watched_files = client_capability(
             params,
             &["workspace", "didChangeWatchedFiles", "dynamicRegistration"],
@@ -368,6 +369,7 @@ impl Server {
             client_capability_optional(params, &["workspace", "workspaceEdit", "documentChanges"])
                 .unwrap_or(false);
         let root = requested_root(params);
+        self.workspace_root = root.map(str::to_owned);
         let root_path = root.and_then(|uri| wxml_project::root_path_from_uri(uri).ok());
         let configured = initialization_string(params, "snippetsPath")
             .or_else(|| initialization_string(params, "wxmlSnippetsPath"));
@@ -597,27 +599,196 @@ impl Server {
         }
     }
 
-    /// Sets the cancel flag of one in-flight request.
-    fn cancel_request(&self, params: Option<&Value>) {
+    /// Answers a cancelled request immediately and drops its queued work.
+    ///
+    /// A running backend call is synchronous and cannot be interrupted; the
+    /// shared flag makes its late result a no-op. The protocol loop must not
+    /// wait for that call to answer `$/cancelRequest`, otherwise cancellation
+    /// latency would equal the slowest backend call.
+    fn cancel_request(&mut self, params: Option<&Value>) -> Vec<Outgoing> {
         let Some(params) = params else {
             log(format_args!("ignoring $/cancelRequest without parameters"));
-            return;
+            return Vec::new();
         };
         let Some(id) = params.as_object().and_then(|object| object.get("id")) else {
             log(format_args!("ignoring $/cancelRequest without an id"));
-            return;
+            return Vec::new();
         };
         let Some(key) = RequestKey::from_id(id) else {
             log(format_args!("ignoring $/cancelRequest with an invalid id"));
-            return;
+            return Vec::new();
         };
-        match self.inflight.get(&key) {
-            Some(inflight) => {
-                inflight.cancel.store(true, Ordering::SeqCst);
-                log(format_args!("cancelling request"));
+        let Some(inflight) = self.inflight.remove(&key) else {
+            log(format_args!("ignoring cancellation of an unknown request"));
+            return Vec::new();
+        };
+        inflight.cancel.store(true, Ordering::SeqCst);
+        self.dispatch.cancel(&key);
+        log(format_args!("cancelling request"));
+        vec![Outgoing::failure(
+            inflight.id,
+            jsonrpc::error_codes::REQUEST_CANCELLED,
+            "request cancelled",
+        )]
+    }
+
+    /// Clears project-bound state when the active workspace folder is removed.
+    ///
+    /// A removed root must not keep serving cached types or diagnostics. Open
+    /// buffers stay in the workspace so a later save/close can still be
+    /// routed, but the host project is closed and every published diagnostic
+    /// for a template is cleared. Re-adding exactly one root reopens it with
+    /// the original initialization options; adding roots to a live project is
+    /// not hot-applied (the multi-root registry belongs to the project host).
+    pub(crate) fn did_change_workspace_folders(&mut self, params: Option<&Value>) -> Vec<Outgoing> {
+        let Some(event) = params
+            .and_then(|params| params.get("event"))
+            .and_then(Value::as_object)
+        else {
+            log(format_args!(
+                "ignoring didChangeWorkspaceFolders without an event"
+            ));
+            return Vec::new();
+        };
+        let added = workspace_folder_uris(event.get("added"));
+        let removed = workspace_folder_uris(event.get("removed"));
+        if removed.is_empty() {
+            if added.is_empty() {
+                log(format_args!(
+                    "ignoring an empty didChangeWorkspaceFolders event"
+                ));
+                return Vec::new();
             }
-            None => log(format_args!("ignoring cancellation of an unknown request")),
+            if added.len() == 1 && !self.host.is_project_open() {
+                return self.open_replacement_workspace(&added[0]);
+            }
+            log(format_args!(
+                "workspace folder additions are not hot-applied; restart the server to change roots"
+            ));
+            return Vec::new();
         }
+        let removes_active = self
+            .workspace_root
+            .as_deref()
+            .is_some_and(|root| removed.iter().any(|uri| same_root_uri(root, uri)));
+        if !removes_active {
+            log(format_args!(
+                "ignoring removal of a workspace folder that is not active"
+            ));
+            return Vec::new();
+        }
+        self.close_removed_workspace(&added)
+    }
+
+    /// Drops project state and clears diagnostics after a root removal.
+    fn close_removed_workspace(&mut self, added: &[String]) -> Vec<Outgoing> {
+        let mut outgoing = Vec::new();
+        let open: Vec<String> = self
+            .workspace
+            .documents()
+            .map(|document| document.uri().to_owned())
+            .collect();
+        for uri in open {
+            if template_document(self, &uri) {
+                outgoing.push(Outgoing::notification(
+                    "textDocument/publishDiagnostics",
+                    json!({"uri": uri, "diagnostics": []}),
+                ));
+            }
+        }
+        let inflight = std::mem::take(&mut self.inflight);
+        for (key, request) in inflight {
+            request.cancel.store(true, Ordering::SeqCst);
+            self.dispatch.cancel(&key);
+            outgoing.push(Outgoing::failure(
+                request.id,
+                jsonrpc::error_codes::REQUEST_CANCELLED,
+                "workspace folder was removed",
+            ));
+        }
+        for (key, _) in std::mem::take(&mut self.semantic_pending) {
+            outgoing.push(Outgoing::failure(
+                key.to_id(),
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "workspace folder was removed",
+            ));
+        }
+        for cancel in self.diagnostics_cancel.drain().map(|(_, cancel)| cancel) {
+            cancel.store(true, Ordering::SeqCst);
+        }
+        self.backend_diagnostics.clear();
+        self.dirty.clear();
+        self.debounced_diagnostics.clear();
+        self.workspace_root = None;
+        // Cached backend analyses belong to the removed project; clear them
+        // and advance the backend epoch before any later request can answer.
+        self.backend.invalidate();
+        match self.host.open_root(None) {
+            Ok(()) => {}
+            Err(error) => log(format_args!("closing the removed project failed: {error}")),
+        }
+        self.workspace
+            .set_project(self.host.project_id(), self.host.project_revision());
+        if let Some(root) = added.first() {
+            if added.len() > 1 {
+                log(format_args!(
+                    "opening only the first of {} added workspace folders; multi-root hot update is not supported",
+                    added.len()
+                ));
+            }
+            outgoing.extend(self.open_replacement_workspace(root));
+        }
+        outgoing
+    }
+
+    /// Opens one replacement root after a removal, keeping open buffers.
+    fn open_replacement_workspace(&mut self, root: &str) -> Vec<Outgoing> {
+        match self
+            .host
+            .open_root_with_options(Some(root), &self.initialization)
+        {
+            Ok(()) => {
+                self.workspace_root = Some(root.to_owned());
+                self.workspace
+                    .set_project(self.host.project_id(), self.host.project_revision());
+                log(format_args!("opened the replacement workspace folder"));
+            }
+            Err(error) => log(format_args!("opening the workspace folder failed: {error}")),
+        }
+        Vec::new()
+    }
+}
+
+/// Reads workspace-folder URIs from one `didChangeWorkspaceFolders` list.
+fn workspace_folder_uris(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map_or_else(Vec::new, |folders| {
+            folders
+                .iter()
+                .take(64)
+                .filter_map(|folder| {
+                    let uri = folder.get("uri")?.as_str()?;
+                    if uri.is_empty() || uri.len() > crate::workspace::MAX_URI_BYTES {
+                        return None;
+                    }
+                    Some(uri.to_owned())
+                })
+                .collect()
+        })
+}
+
+/// Compares root URIs without relying on the removed directory existing.
+fn same_root_uri(left: &str, right: &str) -> bool {
+    if left.trim_end_matches('/') == right.trim_end_matches('/') {
+        return true;
+    }
+    match (
+        wxml_project::root_path_from_uri(left),
+        wxml_project::root_path_from_uri(right),
+    ) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
     }
 }
 
@@ -708,7 +879,10 @@ fn watched_changes(params: &Value) -> Vec<WatchedFileChange> {
 mod tests {
     use serde_json::json;
 
-    use super::{MAX_WATCHED_CHANGES, saved_uri, style_initialization_options, watched_changes};
+    use super::{
+        MAX_WATCHED_CHANGES, same_root_uri, saved_uri, style_initialization_options,
+        watched_changes, workspace_folder_uris,
+    };
     use crate::project_host::WatchedChangeKind;
 
     #[test]
@@ -798,5 +972,31 @@ mod tests {
             .collect();
         let parsed = watched_changes(&json!({"changes": changes}));
         assert_eq!(parsed.len(), MAX_WATCHED_CHANGES);
+    }
+
+    #[test]
+    fn reads_bounded_workspace_folder_uris() {
+        let folders = workspace_folder_uris(Some(&json!([
+            {"uri": "file:///workspace/a"},
+            {"uri": "file:///workspace/b/"},
+            {"uri": 3},
+            null,
+        ])));
+        assert_eq!(folders, vec!["file:///workspace/a", "file:///workspace/b/"]);
+        assert_eq!(workspace_folder_uris(None), Vec::<String>::new());
+        assert_eq!(
+            workspace_folder_uris(Some(&json!({}))),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            workspace_folder_uris(Some(&json!([{"uri": ""}, {"uri": "x".repeat(9_000)}]))),
+            Vec::<String>::new()
+        );
+        assert!(same_root_uri("file:///workspace/", "file:///workspace"));
+        assert!(same_root_uri(
+            "file:///workspace/a%20b",
+            "file:///workspace/a%20b/"
+        ));
+        assert!(!same_root_uri("file:///workspace/a", "file:///workspace/b"));
     }
 }

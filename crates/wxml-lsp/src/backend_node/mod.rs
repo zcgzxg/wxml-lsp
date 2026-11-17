@@ -45,6 +45,7 @@ struct CacheKey {
     source_revision: SourceRevision,
     view_revision: ViewRevision,
     project_revision: ProjectRevision,
+    generation: u64,
     epoch: u64,
 }
 
@@ -69,6 +70,10 @@ struct BackendState {
     transport: Option<Box<dyn NodeTransport>>,
     /// Newest first; bounded by [`MAX_CACHED_ANALYSES`].
     cache: Vec<CachedAnalysis>,
+    /// Generation the cached entries belong to. A background invalidation can
+    /// bump the shared generation without taking this lock; the next request
+    /// clears the stale entries here.
+    cache_generation: u64,
     next_request: u64,
 }
 
@@ -103,6 +108,7 @@ pub struct NodeBackend {
     config: NodeBackendConfig,
     host: Arc<dyn ProjectHost>,
     state: Mutex<BackendState>,
+    generation: AtomicU64,
     epoch: AtomicU64,
     id: BackendId,
     factory: TransportFactory,
@@ -152,6 +158,7 @@ impl NodeBackend {
             config,
             host,
             state: Mutex::new(BackendState::default()),
+            generation: AtomicU64::new(1),
             epoch: AtomicU64::new(1),
             id: BackendId::new("node"),
             factory: Arc::new(factory),
@@ -168,6 +175,7 @@ impl NodeBackend {
             source_revision: context.source().revision(),
             view_revision: context.view_revision(),
             project_revision: context.project_revision(),
+            generation: self.generation.load(Ordering::SeqCst),
             epoch: self.epoch.load(Ordering::SeqCst),
         }
     }
@@ -180,6 +188,10 @@ impl NodeBackend {
         let key = self.key(context);
         {
             let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.cache_generation != key.generation {
+                state.cache.clear();
+                state.cache_generation = key.generation;
+            }
             if let Some(cached) = state.cache_get(&key) {
                 return Ok(Arc::new(cached));
             }
@@ -249,7 +261,7 @@ impl NodeBackend {
                 return Ok(Arc::new(cached));
             }
             Err(error) => {
-                self.invalidate(&mut state);
+                self.invalidate_generation(&mut state);
                 return Err(AnalysisFailure {
                     error: BackendError::Protocol(error.to_string()),
                     view: Some(view),
@@ -261,7 +273,7 @@ impl NodeBackend {
             match (self.factory)() {
                 Ok(transport) => state.transport = Some(transport),
                 Err(error) => {
-                    self.invalidate(&mut state);
+                    self.invalidate_generation(&mut state);
                     return Err(AnalysisFailure {
                         error: map_transport_error(&error),
                         view: Some(view),
@@ -279,7 +291,7 @@ impl NodeBackend {
         let line = match result {
             Ok(line) => line,
             Err(error) => {
-                self.invalidate(&mut state);
+                self.invalidate_generation(&mut state);
                 return Err(AnalysisFailure {
                     error: map_transport_error(&error),
                     view: Some(view),
@@ -294,7 +306,7 @@ impl NodeBackend {
                         "node C1 response rejected: {error}; line={}",
                         crate::handlers::log_safe_text(&line, 240)
                     ));
-                    self.invalidate(&mut state);
+                    self.invalidate_generation(&mut state);
                     return Err(AnalysisFailure {
                         error: BackendError::Protocol(error.to_string()),
                         view: Some(view),
@@ -318,7 +330,7 @@ impl NodeBackend {
     }
 
     /// Drops the session/cache and advances the epoch after a failure.
-    fn invalidate(&self, state: &mut BackendState) {
+    fn invalidate_generation(&self, state: &mut BackendState) {
         if let Some(transport) = state.transport.take() {
             transport.shutdown();
         }
@@ -417,6 +429,19 @@ fn map_transport_error(error: &NodeTransportError) -> BackendError {
 }
 
 impl Backend for NodeBackend {
+    fn invalidate(&self) {
+        // Never block the protocol loop on a long backend call: a generation
+        // bump makes every cached key unreachable immediately. The next
+        // analysis clears the entries under the state lock and starts a fresh
+        // Node generation. The process is reused for the replacement project.
+        let _ = self.generation.fetch_add(1, Ordering::SeqCst);
+        let _ = self.epoch.fetch_add(1, Ordering::SeqCst);
+        self.failures.store(0, Ordering::SeqCst);
+        if let Ok(mut until) = self.cooldown_until.try_lock() {
+            *until = None;
+        }
+    }
+
     fn epoch(&self) -> BackendEpoch {
         BackendEpoch::new(self.id.clone(), self.epoch.load(Ordering::SeqCst))
     }
@@ -565,7 +590,7 @@ impl Backend for NodeBackend {
                 }));
             }
             Err(error) => {
-                self.invalidate(&mut state);
+                self.invalidate_generation(&mut state);
                 return Ok(degraded(CapabilityStatus::Unknown {
                     reason: Some(format!("completion protocol error: {error}")),
                 }));
@@ -575,7 +600,7 @@ impl Backend for NodeBackend {
             match (self.factory)() {
                 Ok(transport) => state.transport = Some(transport),
                 Err(error) => {
-                    self.invalidate(&mut state);
+                    self.invalidate_generation(&mut state);
                     return Ok(degraded(unavailable(&error)));
                 }
             }
@@ -588,14 +613,14 @@ impl Backend for NodeBackend {
         let response = match transport.request(&line, self.config.timeout) {
             Ok(line) => line,
             Err(error) => {
-                self.invalidate(&mut state);
+                self.invalidate_generation(&mut state);
                 return Ok(degraded(unavailable(&error)));
             }
         };
         let value = match protocol::parse_response(&response, &request_id) {
             Ok(value) => value,
             Err(error) => {
-                self.invalidate(&mut state);
+                self.invalidate_generation(&mut state);
                 return Ok(degraded(CapabilityStatus::Unknown {
                     reason: Some(format!("completion protocol error: {error}")),
                 }));
@@ -612,7 +637,7 @@ impl Backend for NodeBackend {
                 Ok(result)
             }
             Err(error) => {
-                self.invalidate(&mut state);
+                self.invalidate_generation(&mut state);
                 Ok(degraded(CapabilityStatus::Unknown {
                     reason: Some(format!("completion protocol error: {error}")),
                 }))
@@ -689,7 +714,7 @@ impl Backend for NodeBackend {
                 ));
             }
             Err(error) => {
-                self.invalidate(&mut state);
+                self.invalidate_generation(&mut state);
                 return Err(BackendError::Protocol(format!(
                     "symbol request protocol error: {error}"
                 )));
@@ -699,7 +724,7 @@ impl Backend for NodeBackend {
             match (self.factory)() {
                 Ok(transport) => state.transport = Some(transport),
                 Err(error) => {
-                    self.invalidate(&mut state);
+                    self.invalidate_generation(&mut state);
                     return Err(map_transport_error(&error));
                 }
             }
@@ -712,7 +737,7 @@ impl Backend for NodeBackend {
         let response = match transport.request(&line, self.config.timeout) {
             Ok(response) => response,
             Err(error) => {
-                self.invalidate(&mut state);
+                self.invalidate_generation(&mut state);
                 return Err(map_transport_error(&error));
             }
         };
@@ -729,7 +754,7 @@ impl Backend for NodeBackend {
                 ));
             }
             Err(error) => {
-                self.invalidate(&mut state);
+                self.invalidate_generation(&mut state);
                 return Err(BackendError::Protocol(error.to_string()));
             }
         };
@@ -743,7 +768,7 @@ impl Backend for NodeBackend {
                 Ok(result)
             }
             Err(error) => {
-                self.invalidate(&mut state);
+                self.invalidate_generation(&mut state);
                 Err(BackendError::Protocol(error.to_string()))
             }
         }

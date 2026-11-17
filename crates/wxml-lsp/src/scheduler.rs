@@ -3,20 +3,30 @@
 //! The backend boundary is synchronous and potentially slow, so the protocol
 //! loop never calls it directly. Jobs carry the exact [`AnalysisStamp`] they
 //! were created for; the server checks that stamp before publishing a result.
-//! Cancellation is a shared atomic flag: `$/cancelRequest` sets it, and the
-//! worker checks it before and after the backend call.
+//! Cancellation is a shared atomic flag: `$/cancelRequest` sets it, the server
+//! answers immediately, and the worker checks it before and after the backend
+//! call.
 //!
-//! There is deliberately no per-request deadline yet. The synchronous
-//! [`Backend`] trait cannot be interrupted safely without leaking a thread per
-//! call, so a backend that violates its non-blocking contract stalls hover and
-//! diagnostics until it returns. Request-level timeouts and backend process
-//! isolation arrive with the C1 protocol and the real backend (P5); shutdown
-//! itself remains bounded because it detaches after two seconds.
+//! The queue is a bounded two-class priority queue:
+//!
+//! * interactive requests (hover, definition, completion, symbols) run before
+//!   queued diagnostics, so a diagnostics burst cannot make the pointer hang;
+//! * diagnostics are coalesced per document, so a burst of edits for one file
+//!   keeps at most one queued job for that file;
+//! * after [`MAX_INTERACTIVE_BURST`] interactive jobs the worker runs one
+//!   diagnostics job when any is queued, so a continuous hover stream cannot
+//!   starve diagnostics either.
+//!
+//! A synchronous [`Backend`] call cannot be interrupted without leaking a
+//! thread per call. A running TypeScript call therefore keeps the worker until
+//! it returns or its backend timeout kills the process; cancellation latency
+//! for *queued* jobs is bounded by the protocol loop, and running-call
+//! occupancy is measured separately by the Q2 benchmark.
 
+use std::collections::VecDeque;
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -30,7 +40,8 @@ use crate::jsonrpc::RequestKey;
 use crate::server::log;
 use crate::workspace::AnalysisStamp;
 
-/// Maximum number of queued jobs before the server reports itself as busy.
+/// Maximum number of queued interactive jobs before the server reports itself
+/// as busy.
 ///
 /// Pointer hovers arrive in bursts while the first analysis is still running.
 /// The queue is large enough to absorb a normal mouse sweep so the popup does
@@ -38,6 +49,17 @@ use crate::workspace::AnalysisStamp;
 /// `Arc<SourceSnapshot>`, so a burst on one revision does not multiply its
 /// text; the worst case with many documents and revisions stays bounded.
 pub(crate) const MAX_PENDING_JOBS: usize = 128;
+
+/// Maximum number of queued diagnostics jobs.
+///
+/// Diagnostics are coalesced per document, and the server debounces edits, so
+/// a normal workspace stays far below this. The separate small bound keeps
+/// diagnostics from ever occupying the interactive admission capacity.
+pub(crate) const MAX_PENDING_DIAGNOSTICS: usize = 8;
+
+/// How many interactive jobs may run before a pending diagnostics job gets a
+/// turn. Guarantees diagnostics progress under a continuous hover stream.
+pub(crate) const MAX_INTERACTIVE_BURST: usize = 8;
 
 /// How long [`Scheduler::shutdown`] waits for the worker before detaching it.
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
@@ -63,6 +85,13 @@ pub(crate) enum JobKind {
         /// Query identity.
         query: SymbolQuery,
     },
+}
+
+impl JobKind {
+    /// Returns `true` for request/response jobs that need interactive latency.
+    const fn is_interactive(&self) -> bool {
+        !matches!(self, Self::Diagnostics)
+    }
 }
 
 /// One unit of backend work.
@@ -122,23 +151,45 @@ pub(crate) enum SubmitError {
     Stopped,
 }
 
-/// Worker state behind an `Arc` so the scheduler is `Send + Sync` and can be
-/// shared with the protocol loop as a dispatcher.
+/// Bounded job queues plus the worker wake-up condition.
+struct Queue {
+    interactive: VecDeque<Box<Job>>,
+    diagnostics: VecDeque<Box<Job>>,
+    consecutive_interactive: usize,
+    stopping: bool,
+    max_interactive: usize,
+    max_diagnostics: usize,
+}
+
+impl Queue {
+    fn new(capacity: usize) -> Self {
+        let capacity = capacity.max(1);
+        Self {
+            interactive: VecDeque::new(),
+            diagnostics: VecDeque::new(),
+            consecutive_interactive: 0,
+            stopping: false,
+            max_interactive: capacity,
+            max_diagnostics: capacity.min(MAX_PENDING_DIAGNOSTICS),
+        }
+    }
+}
+
+/// Shared queue handle used by the dispatcher and the worker.
+type QueueHandle = Arc<(Mutex<Queue>, Condvar)>;
+
 struct Worker {
-    sender: SyncSender<Box<Job>>,
+    queue: QueueHandle,
     handle: JoinHandle<()>,
 }
 
-/// A thread that runs backend jobs in submission order.
+/// A thread that runs backend jobs by class and priority.
 pub(crate) struct Scheduler {
     worker: Mutex<Option<Worker>>,
-    /// Set before the sender is dropped so the worker stops after the current
-    /// backend call and queued jobs are discarded.
-    stopping: Arc<AtomicBool>,
 }
 
 impl Scheduler {
-    /// Starts the worker with [`MAX_PENDING_JOBS`] queue slots.
+    /// Starts the worker with [`MAX_PENDING_JOBS`] interactive queue slots.
     pub(crate) fn start<S>(backend: Arc<dyn Backend>, sink: S) -> std::io::Result<Self>
     where
         S: Fn(WorkDone) + Send + 'static,
@@ -146,7 +197,7 @@ impl Scheduler {
         Self::start_with_capacity(backend, MAX_PENDING_JOBS, sink)
     }
 
-    /// Starts the worker with an explicit queue capacity.
+    /// Starts the worker with an explicit interactive queue capacity.
     fn start_with_capacity<S>(
         backend: Arc<dyn Backend>,
         capacity: usize,
@@ -155,34 +206,73 @@ impl Scheduler {
     where
         S: Fn(WorkDone) + Send + 'static,
     {
-        let (sender, receiver) = mpsc::sync_channel(capacity);
-        let stopping = Arc::new(AtomicBool::new(false));
-        let worker_stopping = Arc::clone(&stopping);
+        let queue: QueueHandle = Arc::new((Mutex::new(Queue::new(capacity)), Condvar::new()));
+        let worker_queue = Arc::clone(&queue);
         let handle = thread::Builder::new()
             .name("wxml-lsp-worker".to_owned())
-            .spawn(move || worker_loop(&*backend, &receiver, &sink, &worker_stopping))?;
+            .spawn(move || worker_loop(&*backend, &worker_queue, &sink))?;
         Ok(Self {
-            worker: Mutex::new(Some(Worker { sender, handle })),
-            stopping,
+            worker: Mutex::new(Some(Worker { queue, handle })),
         })
     }
 
-    /// Queues one job, failing fast when the queue is full.
-    // The lock is held until the send completes so a concurrent shutdown
-    // cannot take the sender between the lookup and the send.
+    /// Queues one job, failing fast when its class is full.
+    ///
+    /// Diagnostics for a file that already has a queued diagnostics job
+    /// replace that job, so the newest revision is the one that runs.
+    // The outer lock is held until the inner queue lock is acquired so a
+    // concurrent shutdown cannot take the worker between lookup and insert.
     #[allow(clippy::significant_drop_tightening)]
     pub(crate) fn submit(&self, job: Job) -> Result<(), SubmitError> {
-        if self.stopping.load(Ordering::SeqCst) {
+        let mut worker = self.worker.lock().unwrap_or_else(PoisonError::into_inner);
+        let worker = worker.as_mut().ok_or(SubmitError::Stopped)?;
+        let (lock, condvar) = &*worker.queue;
+        let mut queue = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        if queue.stopping {
             return Err(SubmitError::Stopped);
         }
-        let mut guard = self.worker.lock().unwrap_or_else(PoisonError::into_inner);
-        let worker = guard.as_mut().ok_or(SubmitError::Stopped)?;
-        match worker.sender.try_send(Box::new(job)) {
-            Ok(()) => Ok(()),
-            Err(TrySendError::Full(_)) => Err(SubmitError::Busy),
-            Err(TrySendError::Disconnected(_)) => {
-                guard.take();
-                Err(SubmitError::Stopped)
+        if job.kind.is_interactive() {
+            if queue.interactive.len() >= queue.max_interactive {
+                return Err(SubmitError::Busy);
+            }
+            queue.interactive.push_back(Box::new(job));
+        } else {
+            if let Some(position) = queue
+                .diagnostics
+                .iter()
+                .position(|queued| queued.stamp.file == job.stamp.file)
+            {
+                if let Some(previous) = queue.diagnostics.remove(position) {
+                    previous.cancel.store(true, Ordering::SeqCst);
+                }
+            } else if queue.diagnostics.len() >= queue.max_diagnostics {
+                return Err(SubmitError::Busy);
+            }
+            queue.diagnostics.push_back(Box::new(job));
+        }
+        condvar.notify_one();
+        Ok(())
+    }
+
+    /// Drops a queued interactive job whose request was cancelled.
+    ///
+    /// The server has already answered the request, so no synthetic completion
+    /// is needed; a running job is handled by its shared cancel flag.
+    #[allow(clippy::significant_drop_tightening)]
+    pub(crate) fn cancel(&self, key: &RequestKey) {
+        let worker = self.worker.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(worker) = worker.as_ref() else {
+            return;
+        };
+        let (lock, _condvar) = &*worker.queue;
+        let mut queue = lock.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(position) = queue
+            .interactive
+            .iter()
+            .position(|job| job.key.as_ref() == Some(key))
+        {
+            if let Some(job) = queue.interactive.remove(position) {
+                job.cancel.store(true, Ordering::SeqCst);
             }
         }
     }
@@ -190,21 +280,27 @@ impl Scheduler {
     /// Stops the worker and waits at most [`SHUTDOWN_TIMEOUT`] for the current
     /// backend call.
     ///
-    /// Queued jobs are discarded: the stopping flag makes the worker break
-    /// before it runs the next job, and dropping the sender closes the channel.
-    /// If a backend violates the non-blocking contract, the thread is detached
-    /// instead of blocking process exit forever.
+    /// Queued jobs are discarded. If a backend violates the non-blocking
+    /// contract, the thread is detached instead of blocking process exit
+    /// forever.
     pub(crate) fn shutdown(&self) {
-        self.stopping.store(true, Ordering::SeqCst);
         let worker = self
             .worker
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
-        let Some(Worker { sender, handle }) = worker else {
+        let Some(Worker { queue, handle }) = worker else {
             return;
         };
-        drop(sender);
+        {
+            let (lock, condvar) = &*queue;
+            let mut queue = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            queue.stopping = true;
+            queue.interactive.clear();
+            queue.diagnostics.clear();
+            drop(queue);
+            condvar.notify_all();
+        }
         let deadline = Instant::now() + SHUTDOWN_TIMEOUT;
         while !handle.is_finished() {
             if Instant::now() >= deadline {
@@ -226,25 +322,44 @@ impl Drop for Scheduler {
 }
 
 /// Body of the worker thread.
-fn worker_loop<S>(
-    backend: &dyn Backend,
-    receiver: &Receiver<Box<Job>>,
-    sink: &S,
-    stopping: &AtomicBool,
-) where
+fn worker_loop<S>(backend: &dyn Backend, queue: &QueueHandle, sink: &S)
+where
     S: Fn(WorkDone),
 {
-    while let Ok(job) = receiver.recv() {
-        if stopping.load(Ordering::SeqCst) {
-            break;
-        }
+    let (lock, condvar) = &**queue;
+    loop {
+        let job = {
+            let mut state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            loop {
+                if state.stopping {
+                    return;
+                }
+                let diagnostics_turn = state.interactive.is_empty()
+                    || (state.consecutive_interactive >= MAX_INTERACTIVE_BURST
+                        && !state.diagnostics.is_empty());
+                if diagnostics_turn {
+                    if let Some(job) = state.diagnostics.pop_front() {
+                        state.consecutive_interactive = 0;
+                        break job;
+                    }
+                }
+                if let Some(job) = state.interactive.pop_front() {
+                    state.consecutive_interactive = state.consecutive_interactive.saturating_add(1);
+                    break job;
+                }
+                state = condvar.wait(state).unwrap_or_else(PoisonError::into_inner);
+            }
+        };
         if job.cancel.load(Ordering::SeqCst) {
             sink(cancelled(&job));
             continue;
         }
         let outcome = run(backend, &job);
-        if stopping.load(Ordering::SeqCst) {
-            break;
+        {
+            let state = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            if state.stopping {
+                return;
+            }
         }
         let cancelled = job.cancel.load(Ordering::SeqCst);
         sink(WorkDone {
@@ -312,7 +427,7 @@ fn cancelled(job: &Job) -> WorkDone {
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::AtomicUsize;
-    use std::sync::{Condvar, PoisonError};
+    use std::sync::{Condvar, PoisonError, mpsc};
     use std::time::Duration;
 
     use serde_json::json;
@@ -366,7 +481,7 @@ mod tests {
         }
     }
 
-    fn receive(receiver: &Receiver<WorkDone>) -> WorkDone {
+    fn receive(receiver: &mpsc::Receiver<WorkDone>) -> WorkDone {
         receiver
             .recv_timeout(Duration::from_secs(10))
             .expect("worker result")
@@ -439,16 +554,26 @@ mod tests {
             .submit(job(JobKind::Definition, Some("def"), 1))
             .expect("definition");
 
-        let diagnostics = receive(&receiver);
-        assert!(matches!(
-            diagnostics.outcome,
-            Ok(Outcome::Diagnostics(ref result)) if result.diagnostics.len() == 1
-        ));
-        let definition = receive(&receiver);
-        assert!(matches!(
-            definition.outcome,
-            Ok(Outcome::Definition(ref result)) if result.locations.len() == 1
-        ));
+        // The worker may start the first job before the second is queued, so
+        // this test only requires both classes to complete.
+        let first = receive(&receiver);
+        let second = receive(&receiver);
+        let mut saw_definition = false;
+        let mut saw_diagnostics = false;
+        for done in [first, second] {
+            match done.outcome {
+                Ok(Outcome::Definition(result)) => {
+                    assert_eq!(result.locations.len(), 1);
+                    saw_definition = true;
+                }
+                Ok(Outcome::Diagnostics(result)) => {
+                    assert_eq!(result.diagnostics.len(), 1);
+                    saw_diagnostics = true;
+                }
+                other => panic!("unexpected result: {other:?}"),
+            }
+        }
+        assert!(saw_definition && saw_diagnostics);
     }
 
     #[test]
@@ -480,10 +605,11 @@ mod tests {
         entered: mpsc::Sender<()>,
         gate: Arc<(Mutex<bool>, Condvar)>,
         calls: AtomicUsize,
+        diagnostics_calls: AtomicUsize,
     }
 
     struct Gate {
-        entered: Receiver<()>,
+        entered: mpsc::Receiver<()>,
         gate: Arc<(Mutex<bool>, Condvar)>,
     }
 
@@ -496,6 +622,7 @@ mod tests {
                     entered: entered_tx,
                     gate: Arc::clone(&gate),
                     calls: AtomicUsize::new(0),
+                    diagnostics_calls: AtomicUsize::new(0),
                 }),
                 Gate {
                     entered: entered_rx,
@@ -506,7 +633,6 @@ mod tests {
     }
 
     impl Backend for GatedBackend {
-        #[allow(clippy::significant_drop_tightening)] // the lock guards the wait
         fn epoch(&self) -> BackendEpoch {
             epoch()
         }
@@ -529,6 +655,7 @@ mod tests {
             &self,
             _request: DiagnosticsRequest,
         ) -> Result<DiagnosticsResult, BackendError> {
+            self.diagnostics_calls.fetch_add(1, Ordering::SeqCst);
             Ok(DiagnosticsResult {
                 diagnostics: Vec::new(),
                 status: CapabilityStatus::Supported,
@@ -674,6 +801,165 @@ mod tests {
             scheduler.submit(job(JobKind::Hover, Some("rejected"), 1)),
             Err(SubmitError::Busy)
         );
+        gate.release();
+    }
+
+    #[test]
+    fn diagnostics_are_coalesced_per_document() {
+        let (backend, gate) = GatedBackend::new();
+        let (sender, receiver) = mpsc::channel();
+        let scheduler = Scheduler::start(backend.clone(), move |done| {
+            let _ = sender.send(done);
+        })
+        .expect("worker");
+
+        scheduler
+            .submit(job(JobKind::Hover, Some("running"), 1))
+            .expect("running");
+        gate.wait_until_entered();
+
+        let first = job(JobKind::Diagnostics, None, 0);
+        let second = job(JobKind::Diagnostics, None, 0);
+        let first_stamp = first.stamp.clone();
+        scheduler.submit(first).expect("first diagnostics");
+        scheduler.submit(second).expect("second diagnostics");
+        gate.release();
+
+        let hover = receive(&receiver);
+        assert!(!hover.cancelled);
+        let diagnostics = receive(&receiver);
+        assert_eq!(diagnostics.kind, JobKind::Diagnostics);
+        assert_eq!(diagnostics.stamp, first_stamp);
+        assert_eq!(
+            backend.diagnostics_calls.load(Ordering::SeqCst),
+            1,
+            "the superseded queued diagnostics job must not call the backend"
+        );
+    }
+
+    #[test]
+    fn interactive_jobs_run_before_queued_diagnostics() {
+        let (backend, gate) = GatedBackend::new();
+        let (sender, receiver) = mpsc::channel();
+        let scheduler = Scheduler::start(backend, move |done| {
+            let _ = sender.send(done);
+        })
+        .expect("worker");
+
+        scheduler
+            .submit(job(JobKind::Hover, Some("running"), 1))
+            .expect("running");
+        gate.wait_until_entered();
+        scheduler
+            .submit(job(JobKind::Diagnostics, None, 0))
+            .expect("diagnostics");
+        scheduler
+            .submit(job(JobKind::Hover, Some("pointer"), 1))
+            .expect("pointer");
+        gate.release();
+
+        let first = receive(&receiver);
+        assert_eq!(first.kind, JobKind::Hover);
+        let second = receive(&receiver);
+        assert_eq!(
+            second.kind,
+            JobKind::Hover,
+            "a queued diagnostics job must not delay an interactive request"
+        );
+        let third = receive(&receiver);
+        assert_eq!(third.kind, JobKind::Diagnostics);
+    }
+
+    #[test]
+    fn a_diagnostics_job_gets_a_turn_under_a_hover_burst() {
+        let (backend, gate) = GatedBackend::new();
+        let (sender, receiver) = mpsc::channel();
+        let scheduler = Scheduler::start(backend, move |done| {
+            let _ = sender.send(done);
+        })
+        .expect("worker");
+
+        scheduler
+            .submit(job(JobKind::Hover, Some("running"), 1))
+            .expect("running");
+        gate.wait_until_entered();
+        scheduler
+            .submit(job(JobKind::Diagnostics, None, 0))
+            .expect("diagnostics");
+        for index in 0..(MAX_INTERACTIVE_BURST * 2) {
+            scheduler
+                .submit(job(JobKind::Hover, Some(&format!("hover-{index}")), 1))
+                .expect("hover");
+        }
+        gate.release();
+
+        let mut diagnostics_at = None;
+        for index in 0..(MAX_INTERACTIVE_BURST * 2 + 2) {
+            let done = receive(&receiver);
+            if done.kind == JobKind::Diagnostics {
+                diagnostics_at = Some(index);
+                break;
+            }
+        }
+        let diagnostics_at = diagnostics_at.expect("diagnostics must not be starved");
+        assert!(
+            diagnostics_at <= MAX_INTERACTIVE_BURST,
+            "diagnostics ran after {diagnostics_at} interactive jobs"
+        );
+    }
+
+    #[test]
+    fn cancel_removes_a_queued_interactive_job() {
+        let (backend, gate) = GatedBackend::new();
+        let (sender, receiver) = mpsc::channel();
+        let scheduler = Scheduler::start(backend, move |done| {
+            let _ = sender.send(done);
+        })
+        .expect("worker");
+
+        scheduler
+            .submit(job(JobKind::Hover, Some("running"), 1))
+            .expect("running");
+        gate.wait_until_entered();
+        let queued = job(JobKind::Hover, Some("queued"), 1);
+        let key = queued.key.clone().expect("key");
+        scheduler.submit(queued).expect("queued");
+        scheduler.cancel(&key);
+        gate.release();
+
+        let first = receive(&receiver);
+        assert!(!first.cancelled);
+        assert!(
+            receiver.recv_timeout(Duration::from_millis(100)).is_err(),
+            "a cancelled queued job must not run or answer"
+        );
+    }
+
+    #[test]
+    fn diagnostics_cap_keeps_interactive_admission_free() {
+        let (backend, gate) = GatedBackend::new();
+        let (sender, _receiver) = mpsc::channel();
+        let scheduler = Scheduler::start_with_capacity(backend, 2, move |done| {
+            let _ = sender.send(done);
+        })
+        .expect("worker");
+
+        scheduler
+            .submit(job(JobKind::Hover, Some("running"), 1))
+            .expect("running");
+        gate.wait_until_entered();
+        // The explicit capacity also caps diagnostics; fill it, then verify an
+        // interactive job still fits in its own class.
+        scheduler
+            .submit(job(JobKind::Diagnostics, None, 0))
+            .expect("diagnostics one");
+        let mut second = job(JobKind::Diagnostics, None, 0);
+        second.stamp.file =
+            FileId::new(wxml_types::ProjectId::new("lsp"), "documents/2.wxml").expect("file");
+        scheduler.submit(second).expect("diagnostics two");
+        scheduler
+            .submit(job(JobKind::Hover, Some("interactive"), 1))
+            .expect("interactive must not be blocked by diagnostics");
         gate.release();
     }
 }

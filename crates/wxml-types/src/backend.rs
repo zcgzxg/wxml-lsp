@@ -390,6 +390,13 @@ pub trait Backend: Send + Sync {
         ))
     }
 
+    /// Drops cached state after a project/workspace identity change.
+    ///
+    /// A backend that caches analyses must clear them and advance its epoch so
+    /// results from the removed project can never be served again. The default
+    /// is a no-op for stateless backends.
+    fn invalidate(&self) {}
+
     /// Reports which features this backend implements and how completely.
     ///
     /// The default claims nothing, so a new backend must opt in explicitly.

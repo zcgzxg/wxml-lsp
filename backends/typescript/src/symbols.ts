@@ -21,6 +21,7 @@ import path from "node:path";
 import ts from "typescript";
 import { findRegistrations, memberMap, propertyName } from "./ast.ts";
 import {
+  acquireProject,
   assertEnvironment,
   defaultReadPolicy,
   EnvironmentError,
@@ -1130,7 +1131,7 @@ export function symbols(request: SymbolsRequest, config: SymbolsConfig): Symbols
   for (const typeRoot of compilerOptions.typeRoots ?? []) {
     readPolicy.diskRoots.push(path.resolve(typeRoot));
   }
-  const project = new VirtualProject({
+  const project = acquireProject({
     rootDir: config.backendDir,
     compilerOptions,
     files: request.files.map((file) => ({

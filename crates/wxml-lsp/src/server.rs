@@ -5,14 +5,16 @@ use std::io::{self, BufReader};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
-use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
 use std::thread;
+use std::time::{Duration, Instant};
 
 use thiserror::Error;
 use wxml_types::{
     Backend, BackendCapabilities, BackendEpoch, BackendId, CapabilityStatus, Diagnostic,
 };
 
+use crate::configuration::InitializationOptions;
 use crate::jsonrpc::{self, FrameError, Incoming, Outgoing, RequestKey};
 use crate::project_host::{NullHost, ProjectHost};
 use crate::scheduler::{Job, JobKind, Scheduler, SubmitError, WorkDone};
@@ -42,11 +44,21 @@ pub enum ServerError {
 pub(crate) trait Dispatch: Send + Sync {
     /// Queues one job.
     fn submit(&self, job: Job) -> Result<(), SubmitError>;
+
+    /// Drops a queued interactive job after its request was cancelled.
+    ///
+    /// The server answers the request before calling this, so no completion is
+    /// expected. A running job is stopped by the shared cancel flag instead.
+    fn cancel(&self, _key: &RequestKey) {}
 }
 
 impl Dispatch for Scheduler {
     fn submit(&self, job: Job) -> Result<(), SubmitError> {
         Self::submit(self, job)
+    }
+
+    fn cancel(&self, key: &RequestKey) {
+        Self::cancel(self, key);
     }
 }
 
@@ -69,6 +81,20 @@ pub(crate) const EVENT_QUEUE_CAPACITY: usize = 8;
 
 /// Maximum number of pending diagnostics retried after one completed job.
 const MAX_DIAGNOSTICS_RETRIES: usize = 8;
+
+/// Default quiet period before a typed edit schedules diagnostics.
+///
+/// A burst of keystrokes therefore runs at most one backend analysis instead
+/// of one per character. Opening, saving and configuration changes bypass the
+/// debounce and schedule immediately.
+pub(crate) const DEFAULT_DIAGNOSTICS_DEBOUNCE: Duration = Duration::from_millis(120);
+
+/// Largest accepted debounce configured through
+/// `WXML_DIAGNOSTICS_DEBOUNCE_MS`.
+const MAX_DIAGNOSTICS_DEBOUNCE_MS: u64 = 5_000;
+
+/// Maximum number of documents waiting for their debounce deadline.
+pub(crate) const MAX_DEBOUNCED_DIAGNOSTICS: usize = 256;
 
 /// A request whose response has not been produced yet.
 #[derive(Clone, Debug)]
@@ -147,6 +173,15 @@ pub(crate) struct Server {
     /// Style changes refresh only the local diagnostics; the cached backend
     /// set is re-published with them when the document snapshot is unchanged.
     pub(crate) backend_diagnostics: HashMap<String, CachedDiagnostics>,
+    /// Quiet period before a typed edit schedules diagnostics.
+    pub(crate) diagnostics_debounce: Duration,
+    /// Documents waiting for their diagnostics debounce deadline.
+    pub(crate) debounced_diagnostics: HashMap<String, Instant>,
+    /// Root URI passed to `initialize`, retained for workspace removal cleanup.
+    pub(crate) workspace_root: Option<String>,
+    /// Initialization options retained for an explicit re-open after a
+    /// workspace-folder removal.
+    pub(crate) initialization: InitializationOptions,
 }
 
 /// Backend diagnostics cached for local style refreshes.
@@ -202,6 +237,10 @@ impl Server {
             semantic_tools: crate::semantics::SemanticToolsConfig::default(),
             semantic_pending: HashMap::new(),
             backend_diagnostics: HashMap::new(),
+            diagnostics_debounce: diagnostics_debounce_from_env(),
+            debounced_diagnostics: HashMap::new(),
+            workspace_root: None,
+            initialization: InitializationOptions::default(),
         }
     }
 
@@ -227,6 +266,11 @@ impl Server {
     /// Removes a document from the diagnostics retry queue.
     pub(crate) fn clear_dirty(&mut self, uri: &str) {
         self.dirty.retain(|dirty| dirty != uri);
+    }
+
+    /// Returns the earliest pending diagnostics deadline.
+    pub(crate) fn next_diagnostics_deadline(&self) -> Option<Instant> {
+        self.debounced_diagnostics.values().copied().min()
     }
 
     /// Handles one parsed client message.
@@ -427,7 +471,27 @@ fn drive_loop(
     server: &mut Server,
     writer: &mut impl io::Write,
 ) -> Result<(), ServerError> {
-    while let Ok(message) = receiver.recv() {
+    loop {
+        let wait = server.next_diagnostics_deadline().map_or_else(
+            || Duration::from_secs(3_600),
+            |deadline| {
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .max(Duration::from_millis(1))
+            },
+        );
+        let message = match receiver.recv_timeout(wait) {
+            Ok(message) => message,
+            Err(RecvTimeoutError::Timeout) => {
+                let outgoing = server.flush_due_diagnostics(Instant::now());
+                write_outgoing(writer, outgoing)?;
+                if server.should_stop() {
+                    break;
+                }
+                continue;
+            }
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
         let outgoing = match message {
             Message::Frame(Ok(None)) => break,
             Message::Frame(Ok(Some(body))) => match jsonrpc::parse(&body) {
@@ -466,6 +530,23 @@ fn drive_loop(
 /// Bounded channel used by both the reader thread and the worker.
 fn event_channel() -> (SyncSender<Message>, Receiver<Message>) {
     mpsc::sync_channel(EVENT_QUEUE_CAPACITY)
+}
+
+/// Reads the optional diagnostics debounce from the trusted environment.
+///
+/// Invalid or oversized values fall back to [`DEFAULT_DIAGNOSTICS_DEBOUNCE`];
+/// an explicit zero disables the debounce (used by focused tests/benchmarks).
+fn diagnostics_debounce_from_env() -> Duration {
+    let Some(value) = std::env::var_os("WXML_DIAGNOSTICS_DEBOUNCE_MS") else {
+        return DEFAULT_DIAGNOSTICS_DEBOUNCE;
+    };
+    let Some(text) = value.to_str() else {
+        return DEFAULT_DIAGNOSTICS_DEBOUNCE;
+    };
+    let Ok(milliseconds) = text.parse::<u64>() else {
+        return DEFAULT_DIAGNOSTICS_DEBOUNCE;
+    };
+    Duration::from_millis(milliseconds.min(MAX_DIAGNOSTICS_DEBOUNCE_MS))
 }
 
 /// Reads the backend epoch, degrading to a fallback generation on panic.
@@ -613,7 +694,10 @@ mod tests {
     fn setup_with(capabilities: BackendCapabilities) -> (Server, Arc<ManualDispatch>) {
         let backend: Arc<dyn Backend> = Arc::new(MockBackend::new());
         let dispatch = Arc::new(ManualDispatch::default());
-        let server = Server::new(backend, capabilities, dispatch.clone());
+        let mut server = Server::new(backend, capabilities, dispatch.clone());
+        // Focused protocol tests drive scheduling directly; debounce behavior
+        // has its own tests below.
+        server.diagnostics_debounce = Duration::ZERO;
         (server, dispatch)
     }
 
@@ -622,7 +706,8 @@ mod tests {
         capabilities: BackendCapabilities,
     ) -> (Server, Arc<ManualDispatch>) {
         let dispatch = Arc::new(ManualDispatch::default());
-        let server = Server::new(backend, capabilities, dispatch.clone());
+        let mut server = Server::new(backend, capabilities, dispatch.clone());
+        server.diagnostics_debounce = Duration::ZERO;
         (server, dispatch)
     }
 
@@ -1026,12 +1111,23 @@ mod tests {
             hover_params((0, 1)),
         ));
         let jobs = dispatch.take();
-        assert!(
-            server
-                .handle_incoming(notification("$/cancelRequest", json!({"id": "hover-1"}),))
-                .is_empty()
+        let outgoing =
+            only(server.handle_incoming(notification("$/cancelRequest", json!({"id": "hover-1"}))));
+        assert_eq!(
+            error_code(&outgoing),
+            jsonrpc::error_codes::REQUEST_CANCELLED
         );
         assert!(jobs[0].cancel.load(Ordering::SeqCst));
+        assert!(server.inflight.is_empty());
+        // The late worker result is dropped, not answered twice.
+        let done = WorkDone {
+            key: jobs[0].key.clone(),
+            kind: JobKind::Hover,
+            stamp: jobs[0].stamp.clone(),
+            cancelled: true,
+            outcome: Err(BackendError::Cancelled),
+        };
+        assert!(server.handle_work(done).is_empty());
         assert!(
             server
                 .handle_incoming(notification("$/cancelRequest", json!({"id": "unknown"})))
@@ -1477,6 +1573,96 @@ mod tests {
             server.workspace.is_current(&jobs[2].stamp),
             "the newest diagnostics job matches the document revision"
         );
+    }
+
+    #[test]
+    fn typed_changes_are_debounced_and_coalesced() {
+        let (mut server, dispatch) = setup();
+        server.diagnostics_debounce = Duration::from_millis(120);
+        initialize(&mut server);
+        open_document(&mut server, "abc", 1);
+        let opened = dispatch.take();
+        assert_eq!(opened.len(), 1);
+
+        for (version, text) in [(2, "ab"), (3, "abc"), (4, "abcd")] {
+            assert!(
+                server
+                    .handle_incoming(notification(
+                        "textDocument/didChange",
+                        json!({
+                            "textDocument": {"uri": URI, "version": version},
+                            "contentChanges": [{"text": text}],
+                        }),
+                    ))
+                    .is_empty()
+            );
+        }
+        assert!(
+            dispatch.take().is_empty(),
+            "typing must not queue one analysis per character"
+        );
+        assert_eq!(server.debounced_diagnostics.len(), 1);
+        assert!(opened[0].cancel.load(Ordering::SeqCst));
+
+        server.flush_all_debounced_diagnostics();
+        let jobs = dispatch.take();
+        assert_eq!(jobs.len(), 1, "one coalesced diagnostics job");
+        assert_eq!(jobs[0].kind, JobKind::Diagnostics);
+        assert!(
+            server.workspace.is_current(&jobs[0].stamp),
+            "the debounced job uses the newest revision"
+        );
+    }
+
+    #[test]
+    fn did_save_bypasses_the_diagnostics_debounce() {
+        let (mut server, dispatch) = setup();
+        server.diagnostics_debounce = Duration::from_millis(120);
+        initialize(&mut server);
+        open_document(&mut server, "abc", 1);
+        dispatch.take();
+
+        server.handle_incoming(notification(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {"uri": URI, "version": 2},
+                "contentChanges": [{"text": "abcd"}],
+            }),
+        ));
+        assert!(dispatch.take().is_empty());
+        server.handle_incoming(notification(
+            "textDocument/didSave",
+            json!({"textDocument": {"uri": URI}}),
+        ));
+        let jobs = dispatch.take();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].kind, JobKind::Diagnostics);
+        assert!(server.debounced_diagnostics.is_empty());
+    }
+
+    #[test]
+    fn did_close_cancels_a_pending_debounce() {
+        let (mut server, dispatch) = setup();
+        server.diagnostics_debounce = Duration::from_millis(120);
+        initialize(&mut server);
+        open_document(&mut server, "abc", 1);
+        dispatch.take();
+
+        server.handle_incoming(notification(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {"uri": URI, "version": 2},
+                "contentChanges": [{"text": "abcd"}],
+            }),
+        ));
+        server.handle_incoming(notification(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": URI}}),
+        ));
+        assert!(server.debounced_diagnostics.is_empty());
+        assert!(dispatch.take().is_empty());
+        server.flush_all_debounced_diagnostics();
+        assert!(dispatch.take().is_empty());
     }
 
     #[test]
