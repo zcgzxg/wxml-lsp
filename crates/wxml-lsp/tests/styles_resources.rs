@@ -302,9 +302,9 @@ fn class_completion_hover_and_definition_use_project_styles() {
     let hover = session.result(&json!(3));
     let contents = hover["contents"]["value"].as_str().expect("hover text");
     assert!(contents.contains("WXSS class"), "{contents}");
-    assert!(contents.contains("pages/index/index.wxss"), "{contents}");
     assert!(contents.contains("card doc"), "{contents}");
-    assert!(contents.contains("selector"), "{contents}");
+    assert!(!contents.contains("pages/index/index.wxss"), "{contents}");
+    assert!(!contents.contains("style index is partial"), "{contents}");
     assert_eq!(hover["range"], value_range(text, card - 2, card + 2));
 
     let definition = session.result(&json!(4));

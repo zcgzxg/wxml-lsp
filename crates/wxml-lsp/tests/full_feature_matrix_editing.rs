@@ -133,21 +133,11 @@ fn it_09_style_classes_follow_imports_globals_and_ignore_comments() {
     let _ = session.diagnostics_version(&uri, 2);
 
     let queries = [
-        (
-            "shared",
-            "shared/shared.scss",
-            "shared docs",
-            Some("shared/shared.scss"),
-        ),
-        ("app-global", "app.wxss", "app global doc", Some("app.wxss")),
-        (
-            "configured",
-            "styles/global.wxss",
-            "configured doc",
-            Some("styles/global.wxss"),
-        ),
+        ("shared", "shared docs", Some("shared/shared.scss")),
+        ("app-global", "app global doc", Some("app.wxss")),
+        ("configured", "configured doc", Some("styles/global.wxss")),
     ];
-    for (class, hover_path, hover_comment, definition_path) in queries {
+    for (class, hover_comment, definition_path) in queries {
         let offset = text.find(class).expect("class token") + 1;
         let id = session.request(
             "textDocument/hover",
@@ -159,8 +149,11 @@ fn it_09_style_classes_follow_imports_globals_and_ignore_comments() {
         let hover = session.result(id);
         let hover = hover_text(&hover);
         assert!(hover.contains("WXSS class"), "{class}: {hover}");
-        assert!(hover.contains(hover_path), "{class}: {hover}");
         assert!(hover.contains(hover_comment), "{class}: {hover}");
+        assert!(
+            !hover.contains("style index is partial"),
+            "{class}: {hover}"
+        );
         let id = session.request(
             "textDocument/definition",
             json!({

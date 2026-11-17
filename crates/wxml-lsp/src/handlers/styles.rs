@@ -7,7 +7,6 @@
 //! guessed.
 
 use std::collections::{HashMap, HashSet};
-use std::fmt::Write as _;
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -16,8 +15,8 @@ use wxml_text::{LineIndex, SourceRange};
 use wxml_types::{FileId, ProjectId};
 
 use super::{
-    code_text, hover_target, line_index_range_value, markdown_escape, sanitized_reason,
-    source_range_value, string, template_document, text_document,
+    code_text, hover_target, line_index_range_value, markdown_escape, source_range_value, string,
+    template_document, text_document,
 };
 use crate::completion::context::{Context as Detected, Site};
 use crate::jsonrpc::{self, Outgoing};
@@ -34,8 +33,8 @@ const MAX_LOCAL_INDEX_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum definitions returned by one definition request.
 const MAX_LOCAL_DEFINITIONS: usize = 16;
 
-/// Maximum definitions listed in one hover.
-const MAX_HOVER_DEFINITIONS: usize = 4;
+/// Maximum distinct class comments shown in one hover.
+const MAX_HOVER_COMMENTS: usize = 4;
 
 /// Maximum document links returned for one template.
 const MAX_DOCUMENT_LINKS: usize = 512;
@@ -107,13 +106,6 @@ impl<'a> Targets<'a> {
         let range = line_index_range_value(&index, range)?;
         Some(json!({"uri": uri, "range": range}))
     }
-
-    /// Maps a byte offset to one-based line and zero-based UTF-16 column.
-    fn position(&mut self, path: &ProjectPath, offset: u32) -> Option<(u32, u32)> {
-        let (_, index) = self.load(path)?;
-        let position = index.position(usize::try_from(offset).ok()?)?;
-        Some((position.line + 1, position.character))
-    }
 }
 
 /// Short scope label for hover/detail text.
@@ -126,88 +118,36 @@ fn scope_label(class: &ClassDefinition) -> String {
 }
 
 /// Builds hover markdown for one class.
-fn class_hover_value(
-    server: &Server,
-    document: &Document,
-    project: &ProjectId,
-    facts: &StyleViewFacts,
-    site: &ClassSite,
-) -> Value {
+///
+/// The location and selector list is intentionally omitted: editors already
+/// provide "go to definition" for that, and the partial-index note is an
+/// internal coverage detail, not user-facing documentation.
+fn class_hover_value(document: &Document, facts: &StyleViewFacts, site: &ClassSite) -> Value {
     if site.name.is_empty() {
         return Value::Null;
     }
     let definitions = facts.definitions(&site.name);
     if definitions.is_empty() {
-        if !facts.complete {
-            let reason = facts
-                .reason
-                .as_deref()
-                .map_or_else(String::new, sanitized_reason);
-            let mut value = json!({
-                "contents": {
-                    "kind": "markdown",
-                    "value": if reason.is_empty() {
-                        format!("`{}` was not found in a partial style index", markdown_escape(&site.name))
-                    } else {
-                        format!(
-                            "`{}` was not found in a partial style index: {}",
-                            markdown_escape(&site.name),
-                            markdown_escape(&reason)
-                        )
-                    },
-                },
-            });
-            if let Some(range) = source_range_value(document, SourceRange::new(site.token)) {
-                if let Some(object) = value.as_object_mut() {
-                    object.insert("range".to_owned(), range);
-                }
-            }
-            return value;
-        }
         return Value::Null;
     }
-    let mut targets = Targets::new(server, project.clone());
     let mut lines = vec![format!("`{}` — WXSS class", markdown_escape(&site.name))];
-    for definition in definitions.iter().take(MAX_HOVER_DEFINITIONS) {
-        let mut location = format!(
-            "`{}` ({})",
-            markdown_escape(definition.file().as_str()),
-            markdown_escape(&scope_label(definition))
-        );
-        if let Some((line, column)) =
-            targets.position(definition.file(), definition.range().start())
-        {
-            let _ = write!(location, ":{line}:{column}");
+    let mut comments = 0_usize;
+    let mut seen = HashSet::new();
+    for definition in &definitions {
+        if comments >= MAX_HOVER_COMMENTS {
+            break;
         }
-        lines.push(format!("- {location}"));
-        lines.push(format!(
-            "  selector `{}`",
-            markdown_escape(definition.selector())
-        ));
-        if let Some(comment) = definition.comment() {
-            lines.push(format!(
-                "  {}",
-                markdown_escape(&code_text(comment, MAX_HOVER_COMMENT_BYTES))
-            ));
+        let Some(comment) = definition.comment() else {
+            continue;
+        };
+        let comment = code_text(comment, MAX_HOVER_COMMENT_BYTES);
+        let comment = comment.trim();
+        if comment.is_empty() || !seen.insert(comment.to_owned()) {
+            continue;
         }
-    }
-    if definitions.len() > MAX_HOVER_DEFINITIONS {
-        lines.push(format!(
-            "- … {} more definition(s)",
-            definitions.len() - MAX_HOVER_DEFINITIONS
-        ));
-    }
-    if !facts.complete {
-        let reason = facts
-            .reason
-            .as_deref()
-            .map_or_else(String::new, sanitized_reason);
         lines.push(String::new());
-        lines.push(if reason.is_empty() {
-            "*style index is partial*".to_owned()
-        } else {
-            format!("*style index is partial: {}*", markdown_escape(&reason))
-        });
+        lines.push(markdown_escape(comment));
+        comments = comments.saturating_add(1);
     }
     let mut value = json!({
         "contents": {
@@ -303,7 +243,7 @@ impl Server {
         let file = self.host.resolve_file(uri).ok()?;
         let site = styles::class_site_at(document.text(), offset)?;
         let facts = self.host.style_facts_for(&file)?;
-        let value = class_hover_value(self, document, file.project(), &facts, &site);
+        let value = class_hover_value(document, &facts, &site);
         Some(vec![Outgoing::success(id.clone(), value)])
     }
 

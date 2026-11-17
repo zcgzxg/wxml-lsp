@@ -68,26 +68,32 @@ impl DependencyIndex {
         // added: changing them only affects their own view. Nested component
         // usages propagate to every transitive caller so an inner component
         // script also invalidates the page that renders the outer one.
-        let mut base_by_wxml: BTreeMap<ProjectPath, ProjectPath> = BTreeMap::new();
+        //
+        // The reverse walk marks a view visited when it is queued. Marking on
+        // pop instead would re-enqueue every parent once per already-visited
+        // path; on a large app with shared components that grows to hundreds
+        // of millions of iterations and seconds of startup latency.
+        let mut own_base: BTreeMap<ProjectPath, ProjectPath> = BTreeMap::new();
         let mut users_by_base: BTreeMap<ProjectPath, BTreeSet<ProjectPath>> = BTreeMap::new();
         for page in project.pages() {
             for (_, usage) in page.config.iter() {
                 let Some(base) = usage.component.as_ref() else {
                     continue;
                 };
-                base_by_wxml.insert(page.wxml.clone(), base.clone());
                 users_by_base
                     .entry(base.clone())
                     .or_default()
                     .insert(page.wxml.clone());
             }
         }
+        let mut component_by_id: BTreeMap<ProjectPath, &wxml_project::Component> = BTreeMap::new();
         for component in project.components() {
+            component_by_id.insert(component.id.clone(), component);
+            own_base.insert(component.wxml.clone(), component.id.clone());
             for (_, usage) in component.config.iter() {
                 let Some(base) = usage.component.as_ref() else {
                     continue;
                 };
-                base_by_wxml.insert(component.wxml.clone(), base.clone());
                 users_by_base
                     .entry(base.clone())
                     .or_default()
@@ -97,17 +103,21 @@ impl DependencyIndex {
         for (base, direct) in &users_by_base {
             let mut pending: Vec<ProjectPath> = direct.iter().cloned().collect();
             let mut affected = BTreeSet::new();
+            for view in direct {
+                affected.insert(view.clone());
+            }
             while let Some(view) = pending.pop() {
-                if !affected.insert(view.clone()) {
-                    continue;
-                }
-                if let Some(parent_base) = base_by_wxml.get(&view) {
+                if let Some(parent_base) = own_base.get(&view) {
                     if let Some(parents) = users_by_base.get(parent_base) {
-                        pending.extend(parents.iter().cloned());
+                        for parent in parents {
+                            if affected.insert(parent.clone()) {
+                                pending.push(parent.clone());
+                            }
+                        }
                     }
                 }
             }
-            let Some(component) = project.component(base) else {
+            let Some(component) = component_by_id.get(base) else {
                 continue;
             };
             for source in [component.script.as_ref(), component.json.as_ref()]
@@ -229,6 +239,74 @@ mod tests {
         assert!(index.is_view(&path("pages/index/index.wxml")));
         assert!(!index.is_view(&path("utils/unknown.ts")));
         assert_eq!(index.all_views().len(), 2);
+    }
+
+    #[test]
+    fn nested_component_scripts_affect_transitive_users() {
+        let temp = std::env::var_os("TMPDIR")
+            .map_or_else(
+                || std::path::PathBuf::from("/tmp/opencode"),
+                std::path::PathBuf::from,
+            )
+            .join(format!("wxml-deps-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        write(&temp, "app.json", r#"{"pages":["pages/index/index"]}"#);
+        write(
+            &temp,
+            "pages/index/index.wxml",
+            r"<outer-card></outer-card>",
+        );
+        write(
+            &temp,
+            "pages/index/index.json",
+            r#"{"usingComponents":{"outer-card":"../../components/outer/outer"}}"#,
+        );
+        write(&temp, "pages/index/index.ts", "Page({})");
+        write(
+            &temp,
+            "components/outer/outer.wxml",
+            r"<inner-badge></inner-badge>",
+        );
+        write(
+            &temp,
+            "components/outer/outer.json",
+            r#"{"component":true,"usingComponents":{"inner-badge":"../inner/inner"}}"#,
+        );
+        write(&temp, "components/outer/outer.ts", "Component({})");
+        write(&temp, "components/inner/inner.wxml", "<view></view>");
+        write(
+            &temp,
+            "components/inner/inner.json",
+            r#"{"component":true}"#,
+        );
+        write(&temp, "components/inner/inner.ts", "Component({})");
+
+        let project = Project::open(&temp).expect("nested component project");
+        let index = DependencyIndex::build(&project);
+        assert_eq!(
+            affected(&index, "components/inner/inner.ts").expect("inner script"),
+            vec![
+                path("components/inner/inner.wxml"),
+                path("components/outer/outer.wxml"),
+                path("pages/index/index.wxml")
+            ]
+        );
+        assert_eq!(
+            affected(&index, "components/outer/outer.ts").expect("outer script"),
+            vec![
+                path("components/outer/outer.wxml"),
+                path("pages/index/index.wxml")
+            ]
+        );
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    fn write(root: &Path, relative: &str, contents: &str) {
+        let target = root.join(relative);
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).expect("parent dir");
+        }
+        std::fs::write(target, contents).expect("fixture file");
     }
 
     #[test]
