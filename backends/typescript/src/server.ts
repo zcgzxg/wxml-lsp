@@ -7,6 +7,7 @@
  * capped at 20 MiB and an oversized line is rejected without buffering it.
  */
 
+import { realpathSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { analyze } from "./analysis.ts";
@@ -303,8 +304,16 @@ export async function main(): Promise<void> {
   process.exit(0);
 }
 
-const entry = process.argv[1] ? path.resolve(process.argv[1]) : "";
-if (entry && entry === fileURLToPath(import.meta.url)) {
+function canonicalPath(candidate: string): string {
+  try {
+    return realpathSync(candidate);
+  } catch {
+    return path.resolve(candidate);
+  }
+}
+
+const entry = process.argv[1] ? canonicalPath(process.argv[1]) : "";
+if (entry && entry === canonicalPath(fileURLToPath(import.meta.url))) {
   main().catch((error: unknown) => {
     process.stderr.write(`server failed: ${error instanceof Error ? (error.stack ?? error.message) : String(error)}\n`);
     process.exit(1);

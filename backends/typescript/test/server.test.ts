@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { BACKEND_DIR, SAMPLES_DIR } from "../src/env.ts";
 import { inspectRequest, type RunConfig } from "../src/run.ts";
@@ -19,8 +22,8 @@ interface Client {
   kill(): void;
 }
 
-function startServer(): Client {
-  const child = spawn(process.execPath, [SERVER], {
+function startServer(entry = SERVER): Client {
+  const child = spawn(process.execPath, [entry], {
     cwd: BACKEND_DIR,
     stdio: ["pipe", "pipe", "pipe"],
   });
@@ -229,4 +232,20 @@ test("ten concurrent requests are all answered on the same stream", async () => 
     }
     assert.deepEqual([...seen].sort((left, right) => left - right), ids);
   });
+});
+
+test("entry detection follows a symlinked install path", async () => {
+  const directory = mkdtempSync(path.join(tmpdir(), "wxml-lsp-server-entry-"));
+  const linked = path.join(directory, "server.ts");
+  symlinkSync(path.resolve(BACKEND_DIR, SERVER), linked);
+  const client = startServer(linked);
+  try {
+    client.send({ jsonrpc: "2.0", id: "symlink", method: "ping" });
+    const response = await client.next();
+    assert.equal(response.id, "symlink");
+    assert.equal((response.result as { ok?: boolean }).ok, true);
+  } finally {
+    client.kill();
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
