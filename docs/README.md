@@ -12,6 +12,7 @@
 | 功能基线 | [WXML 语言功能基线](reference/wxml-language-feature-baseline.md) | 通用 WXML 语言功能的默认行为、数据来源和验收要求 | 当前是否已实现 |
 | 基础契约 | [C0 基础契约](reference/contracts.md) | 坐标单位、文件与版本身份、能力状态、后端接口、mock 行为和共享样本 schema | 类型桥与协议的具体实现 |
 | 类型桥契约 | [C1 类型桥契约](reference/type-bridge-c1.md) | 候选 A 布局、数据根与 `properties` 覆盖、源码映射、C1 请求/响应和状态 | C0 坐标/身份/后端接口 |
+| 迁移契约 | [F2 测试契约](reference/tsgo-test-contract.md) | Rust + tsgo 迁移的 oracle 冻结、逐用例台账、差分归一化、原生缺失失败和必跑矩阵 | F0/F1 原生协议、F3 交付细节 |
 | 诊断策略 | [模板类型诊断策略](reference/type-diagnostics.md) | 严格空值、运行时转换、属性绑定、`any`/`unknown` 和未支持形式的降级规则 | 当前实现进度或测试证据 |
 | 验收样本 | [共享验收样本](../tests/fixtures/README.md) | AC-001..AC-013 的正例、反例、runtime 场景、schema v2 与校验入口 | 类型分析实现 |
 | 执行计划 | [Wave 5 并行交付计划](plans/2026-11-16-wave5-parallel-delivery.md)、[Zed 标准安装与真实项目验收计划](plans/2026-11-16-zed-standard-acceptance.md)、[Rust + tsgo 去 Node 迁移](plans/2026-11-17-rust-tsgo-migration.md) | 并行 worktree、接口冻结、测试门禁与评审流程；Zed 标准安装和真实编辑器验收步骤；原生类型后端迁移阶段与 G1–G7 闸门 | 需求定义和最终状态 |
