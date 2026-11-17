@@ -15,6 +15,7 @@
 | [0005](0005-self-contained-project-documentation.md) | 项目文档自包含与证据本地化 | accepted | 2026-11-15 |
 | [0006](0006-explicit-mini-program-roots.md) | 显式小程序根与类型项目根 | accepted | 2026-11-16 |
 | [0007](0007-local-delivery-trust-model.md) | 本地交付与安装信任模型 | accepted | 2026-11-17 |
+| [0008](0008-rust-tsgo-no-node-backend.md) | Rust + tsgo 类型后端与移除 Node 依赖 | proposed | 2026-11-17 |
 
 ## 阅读与维护约定
 
