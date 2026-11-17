@@ -363,3 +363,94 @@ test("component methods insertion with existing members parses without TS1005", 
     .parseDiagnostics;
   assert.deepEqual(diagnostics.map((diag) => diag.code), []);
 });
+
+test("component reserved names include data, properties and methods", () => {
+  const script = `Component({
+  properties: { title: { type: String }, heading: { type: String } },
+  data: { local: "x", user: { name: "x" } },
+  methods: { onTap() {} },
+});`;
+  const property = symbols(
+    request(script, { kind: "dataPath", path: ["title"] }, { root: "component" }),
+    config,
+  );
+  assert.equal(property.complete, true);
+  for (const name of ["local", "heading", "onTap", "title"]) {
+    assert.ok(property.reserved.includes(name), `${name} must be reserved`);
+  }
+  const data = symbols(
+    request(script, { kind: "dataPath", path: ["user", "name"] }, { root: "component" }),
+    config,
+  );
+  assert.equal(data.complete, true);
+  for (const name of ["heading", "local", "onTap"]) {
+    assert.ok(data.reserved.includes(name), `${name} must be reserved`);
+  }
+});
+
+test("nested setData in another script is incomplete", () => {
+  const script = `Page({ data: { user: { name: "x" } } });`;
+  const other = file(
+    "other.ts",
+    `export function update(page: any) { page.setData({ user: { name: "y" } }); }`,
+  );
+  const result = symbols(
+    request(script, { kind: "dataPath", path: ["user", "name"] }, { extraFiles: [other] }),
+    config,
+  );
+  assert.equal(result.complete, false);
+  assert.equal(result.state.status, "partial");
+  assert.equal(result.occurrences.length, 0);
+});
+
+test("this aliases with dynamic data access are incomplete", () => {
+  const script = `Page({
+  data: { user: { name: "x" } },
+  onLoad() {
+    const that = this;
+    const self = that;
+    const key = "user";
+    return self.data[key];
+  },
+});`;
+  const result = symbols(
+    request(script, { kind: "dataPath", path: ["user"] }),
+    config,
+  );
+  assert.equal(result.complete, false);
+  assert.equal(result.state.status, "partial");
+  assert.equal(result.occurrences.length, 0);
+});
+
+test("another page's own this.setData does not block the current page", () => {
+  const script = `Page({ data: { user: { name: "x" } } });`;
+  const other = file(
+    "pages/other/other.ts",
+    `Page({ data: { user: 1 }, onLoad() { this.setData({ "user.name": 2 }); } });`,
+  );
+  const result = symbols(
+    request(script, { kind: "dataPath", path: ["user"] }, { extraFiles: [other] }),
+    config,
+  );
+  assert.equal(result.complete, true, JSON.stringify(result));
+  assert.ok(result.declaration);
+});
+
+test("nested this.setData edits the nested target segment", () => {
+  const script = `Page({
+  data: { user: { name: "x" } },
+  onLoad() { this.setData({ user: { name: "y" } }); },
+});`;
+  const result = symbols(
+    request(script, { kind: "dataPath", path: ["user", "name"] }),
+    config,
+  );
+  assert.equal(result.complete, true, JSON.stringify(result));
+  const occurrence = result.occurrences.find((entry) => entry.kind === "setDataKey");
+  assert.ok(occurrence, "nested setData occurrence");
+  const start = byteIndexOf(script, `name: "y"`);
+  assert.deepEqual({ start: occurrence.start, end: occurrence.end }, {
+    start,
+    end: start + "name".length,
+  });
+});

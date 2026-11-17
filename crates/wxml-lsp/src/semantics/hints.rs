@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::{Value, json};
 use wxml_text::{Position, SourceRange, TextRange};
 
-use super::facts::{parse_doc, project_views, view_facts};
+use super::facts::{ImportCache, parse_doc, project_views, view_facts};
 use super::position::Utf16Cursor;
 use super::target::{collect_template_refs_with_views, for_each_element};
 use crate::server::Server;
@@ -44,6 +44,7 @@ pub(crate) fn workspace_symbols(server: &Server, query: &str) -> Value {
     let mut seen = BTreeSet::new();
     let mut complete = true;
     let mut inspected = 0_usize;
+    let mut imports = ImportCache::default();
     let original_project = server.host.project_id();
     for project in server.host.project_ids() {
         if server.host.activate_project(&project).is_err() {
@@ -77,6 +78,7 @@ pub(crate) fn workspace_symbols(server: &Server, query: &str) -> Value {
                 server,
                 &doc,
                 &semantics,
+                &mut imports,
                 &mut raw,
                 &mut texts,
                 &mut seen,
@@ -172,10 +174,12 @@ pub(crate) fn workspace_symbols(server: &Server, query: &str) -> Value {
     json!(symbols)
 }
 
+#[allow(clippy::too_many_arguments)] // collected output parameters
 fn add_template_definitions(
     server: &Server,
     doc: &super::facts::QueryDoc,
     semantics: &wxml_types::TemplateSemantics,
+    imports: &mut ImportCache,
     raw: &mut Vec<RawSymbol>,
     texts: &mut BTreeMap<wxml_types::FileId, std::sync::Arc<str>>,
     seen: &mut BTreeSet<(wxml_types::FileId, String, u32, u32)>,
@@ -209,17 +213,18 @@ fn add_template_definitions(
                 *complete = false;
                 continue;
             };
-            let Some(imported) = super::facts::load_project_doc(server, file.project(), &path)
-            else {
+            let Some(imported) = imports.load(server, file.project(), &path) else {
                 *complete = false;
+                if imports.is_exhausted() {
+                    return;
+                }
                 continue;
             };
             if !visited.insert(imported.file.clone()) {
                 continue;
             }
-            let imported_semantics = wxml_types::analyze_template_semantics(imported.tree());
-            texts.insert(imported.file.clone(), std::sync::Arc::from(imported.text()));
-            for definition in imported_semantics.distinct_definitions() {
+            texts.insert(imported.file.clone(), imported.text.clone());
+            for definition in imported.semantics.distinct_definitions() {
                 push_raw(
                     raw,
                     seen,
@@ -231,7 +236,7 @@ fn add_template_definitions(
                     },
                 );
             }
-            queue.push((imported.file, imported_semantics));
+            queue.push((imported.file.clone(), imported.semantics.clone()));
         }
     }
 }
@@ -417,6 +422,7 @@ pub(crate) fn code_lens(server: &Server, document: &Document) -> Value {
         return json!([]);
     };
     let views = project_views(server, &facts);
+    let mut imports = ImportCache::default();
     let mut raw: Vec<(u32, String, Value)> = Vec::new();
     let mut seen_templates = BTreeSet::new();
     let mut template_count = 0_usize;
@@ -429,7 +435,13 @@ pub(crate) fn code_lens(server: &Server, document: &Document) -> Value {
             break;
         }
         template_count += 1;
-        let collected = collect_template_refs_with_views(server, &facts, &views, &definition.name);
+        let collected = collect_template_refs_with_views(
+            server,
+            &facts,
+            &views,
+            &mut imports,
+            &definition.name,
+        );
         let count = collected.calls.len();
         let mut title = if collected.complete {
             format!("{count} template call{}", plural(count))
@@ -460,44 +472,55 @@ pub(crate) fn code_lens(server: &Server, document: &Document) -> Value {
             break;
         }
         component_count += 1;
-        let mut count = 0_usize;
-        let mut first = None;
-        let mut scan = |doc: &super::facts::QueryDoc| {
-            for_each_element(doc.tree(), &mut |element| {
+        let mut file_count = 0_usize;
+        let mut first_in_file = None;
+        let mut first_include = None;
+        for_each_element(facts.doc.tree(), &mut |element| {
+            if element.name() == Some("include") && first_include.is_none() {
+                first_include = element.name_range();
+            }
+            if element.name() == Some(component.name.as_str()) {
+                file_count += 1;
+                if first_in_file.is_none() {
+                    first_in_file = element.name_range();
+                }
+            }
+        });
+        let mut included_count = 0_usize;
+        for include in &facts.includes {
+            for_each_element(include.tree(), &mut |element| {
                 if element.name() == Some(component.name.as_str()) {
-                    count += 1;
-                    if first.is_none() {
-                        first = element.name_range();
-                    }
+                    included_count += 1;
                 }
             });
-        };
-        scan(&facts.doc);
-        for include in &facts.includes {
-            scan(include);
         }
+        let count = file_count.saturating_add(included_count);
         if count == 0 {
             continue;
         }
-        let Some(first) = first else {
+        // A lens range must be a position in the current document. When the
+        // component only appears through includes, anchor the lens at the
+        // current file's `<include>` element instead of an include offset.
+        let Some(anchor) = first_in_file.or(first_include) else {
             continue;
         };
         let incomplete = !facts.includes_complete;
-        let title = if incomplete {
-            format!(
-                "{count}+ indexed component use{} in this file",
-                plural(count)
-            )
-        } else {
-            format!("{count} component use{} in this file", plural(count))
+        let suffix = if incomplete { "+ indexed" } else { "" };
+        let location = match (file_count, included_count) {
+            (0, _) => "in included files".to_owned(),
+            (_, 0) => "in this file".to_owned(),
+            _ => format!("({included_count} in included files)"),
         };
+        let title = format!("{count}{suffix} component use{} {location}", plural(count));
         raw.push((
-            first.start(),
+            anchor.start(),
             title,
             json!({
                 "kind": "component",
                 "name": component.name,
                 "count": count,
+                "fileCount": file_count,
+                "includedCount": included_count,
                 "complete": !incomplete,
             }),
         ));

@@ -2862,12 +2862,27 @@ fn build_prepared(
             }
         }
     }
-    let mut source_complete = !sources.truncated;
+    let skipped_sources = sources.issues.iter().any(|issue| {
+        matches!(
+            issue.kind,
+            wxml_project::sources::SourceIssueKind::TooLarge
+                | wxml_project::sources::SourceIssueKind::Unreadable
+        )
+    });
+    let mut source_complete = !sources.truncated && !skipped_sources;
     if sources.truncated {
         merge_hint(
             &mut hint,
             CapabilityStatus::Partial {
                 reason: "project source collection was truncated".to_owned(),
+            },
+        );
+    } else if skipped_sources {
+        merge_hint(
+            &mut hint,
+            CapabilityStatus::Partial {
+                reason: "project source collection skipped an oversized or unreadable script"
+                    .to_owned(),
             },
         );
     }

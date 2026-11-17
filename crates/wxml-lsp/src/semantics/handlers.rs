@@ -1459,7 +1459,10 @@ fn node_rename_plan(
     match target {
         Target::Data { path, .. } => {
             let old = path.last().cloned().unwrap_or_default();
-            if new_name != old && result.fields.iter().any(|field| field.name == new_name) {
+            if new_name != old
+                && (result.fields.iter().any(|field| field.name == new_name)
+                    || result.reserved.iter().any(|reserved| reserved == new_name))
+            {
                 return Err("the new field name already exists".to_owned());
             }
             if view_scope_conflict(facts, new_name) {

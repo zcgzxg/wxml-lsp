@@ -7,7 +7,8 @@
 //! Nothing here parses TypeScript, re-implements component JSON or creates a
 //! second source map.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use wxml_project::ProjectPath;
 use wxml_syntax::expr::{Expr, ExprKind};
@@ -30,6 +31,81 @@ pub(crate) const MAX_PROJECT_VIEWS: usize = 512;
 
 /// Maximum estimated bytes of project WXML parsed for one query.
 pub(crate) const MAX_PROJECT_WXML_BYTES: usize = 16 * 1024 * 1024;
+
+/// Maximum distinct imported template documents read for one request.
+pub(crate) const MAX_IMPORT_DOCS: usize = 64;
+
+/// Maximum imported template bytes read for one request.
+pub(crate) const MAX_IMPORT_BYTES: usize = 4 * 1024 * 1024;
+
+/// One request-scoped imported template document.
+#[derive(Debug)]
+pub(crate) struct ImportedDoc {
+    /// Project-bound identity.
+    pub(crate) file: wxml_types::FileId,
+    /// Full effective text.
+    pub(crate) text: Arc<str>,
+    /// Template/import facts.
+    pub(crate) semantics: TemplateSemantics,
+}
+
+/// Request-scoped cache for statically imported template documents.
+///
+/// Lookups are keyed by `FileId` and happen before any read or parse. The
+/// cache enforces a total document/byte budget; once either bound is reached,
+/// every later miss fails and callers must mark their result incomplete instead
+/// of continuing to touch the filesystem.
+#[derive(Debug, Default)]
+pub(crate) struct ImportCache {
+    docs: BTreeMap<wxml_types::FileId, Option<ImportedDoc>>,
+    bytes: usize,
+    exhausted: bool,
+}
+
+impl ImportCache {
+    /// Loads one static import path, reusing an earlier parse of the same file.
+    ///
+    /// Returns `None` for an invalid path, an unreadable/unparseable file, or
+    /// an exhausted budget. Check [`Self::is_exhausted`] to distinguish a
+    /// budget stop from a per-file failure.
+    pub(crate) fn load(
+        &mut self,
+        server: &Server,
+        project: &wxml_types::ProjectId,
+        path: &str,
+    ) -> Option<&ImportedDoc> {
+        let path = ProjectPath::new(path).ok()?;
+        let file = server.host.file_id_in(project, &path).ok()?;
+        if !self.docs.contains_key(&file) {
+            if self.exhausted || self.docs.len() >= MAX_IMPORT_DOCS {
+                self.exhausted = true;
+                return None;
+            }
+            let loaded = server.host.file_text(&file).and_then(|text| {
+                if self.bytes.saturating_add(text.len()) > MAX_IMPORT_BYTES {
+                    self.exhausted = true;
+                    return None;
+                }
+                self.bytes = self.bytes.saturating_add(text.len());
+                parse_doc(file.clone(), &text).map(|doc| {
+                    let semantics = analyze_template_semantics(doc.tree());
+                    ImportedDoc {
+                        file: doc.file,
+                        text,
+                        semantics,
+                    }
+                })
+            });
+            self.docs.insert(file.clone(), loaded);
+        }
+        self.docs.get(&file).and_then(Option::as_ref)
+    }
+
+    /// Returns whether a budget stop occurred.
+    pub(crate) const fn is_exhausted(&self) -> bool {
+        self.exhausted
+    }
+}
 
 /// One parsed WXML document and its reusable structural facts.
 #[derive(Debug)]
@@ -71,6 +147,100 @@ pub(crate) fn parse_doc(file: wxml_types::FileId, text: &str) -> Option<QueryDoc
     })
 }
 
+/// One enclosing `<template name>` definition.
+#[derive(Clone, Copy, Debug)]
+struct TemplateBoundary {
+    range: SourceRange,
+    parent: Option<usize>,
+}
+
+/// Precomputed template-definition boundaries for one view.
+///
+/// Built with one pre-order element pass. Queries are `O(log n + depth)`, so
+/// per-element/per-mustache scope checks no longer rescan the whole tree.
+#[derive(Debug, Default)]
+pub(crate) struct TemplateIndex {
+    definitions: Vec<TemplateBoundary>,
+    has_dynamic_loop: bool,
+}
+
+impl TemplateIndex {
+    /// Builds the index in one element traversal.
+    pub(crate) fn new(tree: &wxml_syntax::SyntaxTree) -> Self {
+        let mut definitions: Vec<TemplateBoundary> = Vec::new();
+        let mut stack: Vec<usize> = Vec::new();
+        let mut has_dynamic_loop = false;
+        for element in tree.document().elements() {
+            let start = element.text_range().start();
+            while let Some(top) = stack.last().copied() {
+                if definitions
+                    .get(top)
+                    .is_some_and(|boundary| boundary.range.end() < start)
+                {
+                    stack.pop();
+                } else {
+                    break;
+                }
+            }
+            if element.name() == Some("template") && element.attribute("name").is_some() {
+                let Some(range) = SourceRange::from_bounds(
+                    element.text_range().start(),
+                    element.text_range().end(),
+                )
+                .ok() else {
+                    continue;
+                };
+                definitions.push(TemplateBoundary {
+                    range,
+                    parent: stack.last().copied(),
+                });
+                stack.push(definitions.len().saturating_sub(1));
+            }
+            if element.attribute("wx:for").is_some() {
+                let has_static = element
+                    .attribute("wx:for")
+                    .and_then(wxml_syntax::Attribute::value)
+                    .and_then(|value| value.mustaches().next())
+                    .and_then(wxml_syntax::Mustache::inner_range)
+                    .is_some();
+                if !has_static {
+                    has_dynamic_loop = true;
+                }
+            }
+        }
+        Self {
+            definitions,
+            has_dynamic_loop,
+        }
+    }
+
+    /// Returns the innermost template definition containing `range`.
+    pub(crate) fn boundary(&self, range: SourceRange) -> Option<SourceRange> {
+        let position = self
+            .definitions
+            .partition_point(|boundary| boundary.range.start() <= range.start());
+        let mut current = position.checked_sub(1);
+        while let Some(index) = current {
+            let boundary = self.definitions.get(index)?;
+            if boundary.range.start() <= range.start() && boundary.range.end() >= range.end() {
+                return Some(boundary.range);
+            }
+            current = boundary.parent;
+        }
+        None
+    }
+
+    /// Returns whether `range` is inside any template definition body.
+    pub(crate) fn inside(&self, range: SourceRange) -> bool {
+        self.boundary(range).is_some()
+    }
+
+    /// Returns whether a `wx:for` has no static mustache source.
+    pub(crate) const fn has_dynamic_loop(&self) -> bool {
+        self.has_dynamic_loop
+    }
+}
+
 /// Static facts for one view template.
 #[derive(Debug)]
 pub(crate) struct ViewFacts {
@@ -90,6 +260,8 @@ pub(crate) struct ViewFacts {
     pub(crate) includes_complete: bool,
     /// Loop scopes in source order.
     pub(crate) loops: Vec<LoopInfo>,
+    /// Precomputed `<template name>` boundaries and dynamic loop flag.
+    pub(crate) template_index: TemplateIndex,
 }
 
 impl ViewFacts {
@@ -104,6 +276,21 @@ impl ViewFacts {
     /// cannot attribute to the caller's data/methods.
     pub(crate) fn has_template_definitions(&self) -> bool {
         !self.semantics.definitions.is_empty()
+    }
+
+    /// Returns the innermost template definition containing `range`.
+    pub(crate) fn template_boundary(&self, range: SourceRange) -> Option<SourceRange> {
+        self.template_index.boundary(range)
+    }
+
+    /// Returns whether `range` is inside a template definition body.
+    pub(crate) fn inside_template_definition(&self, range: SourceRange) -> bool {
+        self.template_index.inside(range)
+    }
+
+    /// Returns whether any `wx:for` lacks a static source expression.
+    pub(crate) const fn has_dynamic_loop(&self) -> bool {
+        self.template_index.has_dynamic_loop()
     }
 }
 
@@ -140,7 +327,8 @@ fn view_facts_from(
         .with_component_tags(components.iter().map(|component| component.name.clone()))
         .analyze(doc.tree());
     let semantics = analyze_template_semantics(doc.tree());
-    let loops = collect_loops(&doc);
+    let template_index = TemplateIndex::new(doc.tree());
+    let loops = collect_loops(&doc, &template_index);
     let (includes, includes_complete) = collect_includes(server, file, &semantics);
     Some(ViewFacts {
         doc,
@@ -151,6 +339,7 @@ fn view_facts_from(
         includes,
         includes_complete,
         loops,
+        template_index,
     })
 }
 
@@ -319,6 +508,12 @@ pub(crate) struct LoopInfo {
     pub(crate) tag_name_end: u32,
     /// Whole `wx:for` attribute range, used as a default binding placeholder.
     pub(crate) for_attribute_range: SourceRange,
+    /// Enclosing loop in the same template definition scope.
+    pub(crate) parent: Option<usize>,
+    /// Enclosing loop ignoring template-definition boundaries.
+    pub(crate) outer_parent: Option<usize>,
+    /// Innermost template definition containing this loop element.
+    pub(crate) boundary: Option<SourceRange>,
 }
 
 /// Identity of one loop binding, independent of its current name.
@@ -359,26 +554,31 @@ fn literal_token(attribute: wxml_syntax::Attribute<'_>) -> Option<SourceRange> {
 }
 
 /// Collects loop scopes with their ancestor chains in source order.
-pub(crate) fn collect_loops(doc: &QueryDoc) -> Vec<LoopInfo> {
+pub(crate) fn collect_loops(doc: &QueryDoc, index: &TemplateIndex) -> Vec<LoopInfo> {
     let tree = doc.tree();
     let mut loops = Vec::new();
     let mut stack = Vec::new();
+    let mut outer_stack = Vec::new();
     let children: Vec<wxml_syntax::AstNode<'_>> = tree.document().children().collect();
     for child in children {
-        visit_loop_node(doc, child, &mut stack, &mut loops);
+        visit_loop_node(doc, index, child, &mut stack, &mut outer_stack, &mut loops);
     }
     loops
 }
 
 fn visit_loop_node(
     doc: &QueryDoc,
+    template_index: &TemplateIndex,
     node: wxml_syntax::AstNode<'_>,
     stack: &mut Vec<usize>,
+    outer_stack: &mut Vec<usize>,
     loops: &mut Vec<LoopInfo>,
 ) {
     let wxml_syntax::AstNode::Element(element) = node else {
         return;
     };
+    let parent = stack.last().copied();
+    let outer_parent = outer_stack.last().copied();
     let pushed = if let Some(source) = loop_source_range(element) {
         let Some(source_range) = doc.source_range(source) else {
             return;
@@ -411,9 +611,13 @@ fn visit_loop_node(
             index,
             tag_name_end,
             for_attribute_range,
+            parent,
+            outer_parent,
+            boundary: template_index.boundary(element_range),
         });
-        let index = loops.len().saturating_sub(1);
-        stack.push(index);
+        let loop_index = loops.len().saturating_sub(1);
+        stack.push(loop_index);
+        outer_stack.push(loop_index);
         true
     } else {
         false
@@ -427,13 +631,14 @@ fn visit_loop_node(
     };
     let children: Vec<wxml_syntax::AstNode<'_>> = element.children().collect();
     for child in children {
-        visit_loop_node(doc, child, stack, loops);
+        visit_loop_node(doc, template_index, child, stack, outer_stack, loops);
     }
     if let Some(saved) = saved_stack {
         *stack = saved;
     }
     if pushed {
         stack.pop();
+        outer_stack.pop();
     }
 }
 

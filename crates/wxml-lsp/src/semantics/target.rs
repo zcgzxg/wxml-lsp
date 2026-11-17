@@ -6,7 +6,7 @@
 //! handlers, tag pairs, template names and style classes so a same-named token
 //! in another context is never edited.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use wxml_project::{ProjectPath, StyleScope};
 use wxml_syntax::expr::{Expr, parse_expression};
@@ -15,9 +15,9 @@ use wxml_text::{SourceRange, TextRange};
 use wxml_types::{LocalRole, RootKind};
 
 use super::facts::{
-    LoopIdentity, QueryDoc, ViewFacts, collect_includes, effective_binding, effective_loop_binding,
-    load_project_doc, loop_for_binding, project_views, range_text, scan_expression,
-    view_facts_for_file,
+    ImportCache, LoopIdentity, QueryDoc, ViewFacts, collect_includes, effective_binding,
+    effective_loop_binding, load_project_doc, loop_for_binding, project_views, range_text,
+    scan_expression, view_facts_for_file,
 };
 use crate::project_host::ViewComponent;
 use crate::server::Server;
@@ -550,10 +550,7 @@ fn directive_expression_at(facts: &ViewFacts, offset: u32) -> Option<Target> {
             let scope = BindingScope::Loops(scope);
             found = target_in_expression(facts, &expr, offset, &scope);
             if matches!(found, Some(Target::Data { .. }))
-                && inside_template_definition(
-                    facts.doc.tree(),
-                    SourceRange::new(element.text_range()),
-                )
+                && facts.inside_template_definition(SourceRange::new(element.text_range()))
             {
                 found = None;
             }
@@ -676,29 +673,52 @@ fn loop_target(facts: &ViewFacts, index: usize, role: LocalRole) -> Option<Targe
     })
 }
 
-/// Returns the ancestor loop chain for one element (innermost last).
+/// Returns the ancestor loop chain for one element (outermost first).
 fn directive_scope(facts: &ViewFacts, element: Element<'_>, include_self: bool) -> Vec<usize> {
-    let range = element.text_range();
-    let boundary = template_boundary(facts.doc.tree(), SourceRange::new(range));
-    let mut chain: Vec<usize> = facts
+    loop_scope_for_range(facts, SourceRange::new(element.text_range()), include_self)
+}
+
+/// Returns the ancestor loop chain for one source range (outermost first).
+///
+/// Uses the precomputed template boundary and loop parent links so a query is
+/// `O(log n + depth)` instead of scanning every loop in the document.
+fn loop_scope_for_range(facts: &ViewFacts, range: SourceRange, include_self: bool) -> Vec<usize> {
+    let boundary = facts.template_boundary(range);
+    let position = facts
         .loops
-        .iter()
-        .enumerate()
-        .filter(|(_, info)| {
-            info.element_range.start() <= range.start()
-                && info.element_range.end() >= range.end()
-                && (include_self || info.element_range.start() != range.start())
-                && template_boundary(facts.doc.tree(), info.element_range) == boundary
-        })
-        .map(|(index, _)| index)
-        .collect();
-    chain.sort_by_key(|index| {
-        facts
-            .loops
-            .get(*index)
-            .map_or(0, |info| info.source_range.start())
-    });
-    chain
+        .partition_point(|info| info.element_range.start() <= range.start());
+    let mut current = position.checked_sub(1);
+    while let Some(index) = current {
+        let Some(info) = facts.loops.get(index) else {
+            break;
+        };
+        if info.boundary != boundary {
+            // A loop in another template definition is not in scope, but its
+            // geometric parent may still enclose this element.
+            current = info.outer_parent;
+            continue;
+        }
+        if info.element_range.end() >= range.end()
+            && (include_self || info.element_range.start() != range.start())
+        {
+            let mut chain = Vec::new();
+            let mut cursor = Some(index);
+            while let Some(node) = cursor {
+                let Some(current_info) = facts.loops.get(node) else {
+                    break;
+                };
+                if current_info.boundary != boundary {
+                    break;
+                }
+                chain.push(node);
+                cursor = current_info.parent;
+            }
+            chain.reverse();
+            return chain;
+        }
+        current = info.parent;
+    }
+    Vec::new()
 }
 
 fn mustache_inner(value: AttributeValue<'_>) -> Option<SourceRange> {
@@ -855,7 +875,7 @@ fn collect_path_in_expression(
 
 fn collect_directive_path_refs(facts: &ViewFacts, path: &[String], tokens: &mut Tokens) {
     for_each_element(facts.doc.tree(), &mut |element| {
-        if inside_template_definition(facts.doc.tree(), SourceRange::new(element.text_range())) {
+        if facts.inside_template_definition(SourceRange::new(element.text_range())) {
             return;
         }
         for attribute_name in ["wx:for", "wx:if", "wx:elif"] {
@@ -1274,7 +1294,8 @@ pub(crate) fn collect_template_refs(
     name: &str,
 ) -> TemplateTokens {
     let views = project_views(server, facts);
-    collect_template_refs_with_views(server, facts, &views, name)
+    let mut imports = ImportCache::default();
+    collect_template_refs_with_views(server, facts, &views, &mut imports, name)
 }
 
 /// Collects template references using an already loaded project view index.
@@ -1283,6 +1304,7 @@ pub(crate) fn collect_template_refs_with_views(
     server: &Server,
     facts: &ViewFacts,
     views: &super::facts::ProjectViews,
+    imports: &mut ImportCache,
     name: &str,
 ) -> TemplateTokens {
     let mut result = TemplateTokens {
@@ -1324,15 +1346,18 @@ pub(crate) fn collect_template_refs_with_views(
                 reason.get_or_insert("a template import path is dynamic");
                 continue;
             };
-            let Some(doc) = load_project_doc(server, facts.doc.file.project(), &path) else {
+            let Some(imported) = imports.load(server, facts.doc.file.project(), &path) else {
                 complete = false;
+                if imports.is_exhausted() {
+                    reason.get_or_insert("the template import budget was reached");
+                    break;
+                }
                 reason.get_or_insert("a template import could not be read");
                 continue;
             };
-            let semantics = wxml_types::analyze_template_semantics(doc.tree());
-            if let Some(definition_facts) = semantics.definition(name) {
+            if let Some(definition_facts) = imported.semantics.definition(name) {
                 definition = Some(SymbolToken {
-                    file: doc.file,
+                    file: imported.file.clone(),
                     range: definition_facts.name_range,
                     style: TokenStyle::Template,
                 });
@@ -1356,11 +1381,8 @@ pub(crate) fn collect_template_refs_with_views(
     let definition_file = definition_token.file.clone();
     // A shared template file may call another template in its own body while
     // not being a discovered page/component view.
-    if let Some(def_doc) =
-        load_project_doc(server, definition_file.project(), definition_file.path())
-    {
-        let semantics = wxml_types::analyze_template_semantics(def_doc.tree());
-        for call in &semantics.calls {
+    if let Some(def_doc) = imports.load(server, definition_file.project(), definition_file.path()) {
+        for call in &def_doc.semantics.calls {
             if call.name == name {
                 result.calls.push(SymbolToken {
                     file: def_doc.file.clone(),
@@ -1369,11 +1391,12 @@ pub(crate) fn collect_template_refs_with_views(
                 });
             }
         }
-        if semantics
+        if def_doc
+            .semantics
             .imports
             .iter()
             .any(|import| import.kind == wxml_types::StaticImportKind::Include)
-            || semantics.issues.iter().any(|issue| {
+            || def_doc.semantics.issues.iter().any(|issue| {
                 matches!(
                     issue.kind,
                     wxml_types::StaticIssueKind::DynamicTemplateIs
@@ -1385,10 +1408,11 @@ pub(crate) fn collect_template_refs_with_views(
             complete = false;
             reason.get_or_insert("the template definition file has dynamic calls");
         }
+    } else if imports.is_exhausted() {
+        complete = false;
+        reason.get_or_insert("the template import budget was reached");
     }
-    // Cache imported definitions by file so visibility checks do not reread.
-    let mut import_cache: BTreeMap<wxml_types::FileId, BTreeSet<String>> = BTreeMap::new();
-    for view in &views.views {
+    'views: for view in &views.views {
         if view
             .semantics
             .imports
@@ -1427,19 +1451,17 @@ pub(crate) fn collect_template_refs_with_views(
                 else {
                     continue;
                 };
-                let Some(doc) = load_project_doc(server, &definition_file.project().clone(), &path)
-                else {
+                let Some(imported) = imports.load(server, definition_file.project(), &path) else {
+                    complete = false;
+                    if imports.is_exhausted() {
+                        reason.get_or_insert("the template import budget was reached");
+                        break 'views;
+                    }
+                    reason.get_or_insert("a template import could not be read");
                     continue;
                 };
-                let entry = import_cache.entry(doc.file.clone()).or_insert_with(|| {
-                    wxml_types::analyze_template_semantics(doc.tree())
-                        .definitions
-                        .into_iter()
-                        .map(|definition| definition.name)
-                        .collect()
-                });
-                if entry.contains(name) {
-                    winner = Some(doc.file.clone());
+                if imported.semantics.definition(name).is_some() {
+                    winner = Some(imported.file.clone());
                     break;
                 }
             }
@@ -1694,7 +1716,7 @@ pub(crate) fn collect_loop_refs(
     if facts.analysis.truncated {
         reasons.push("template fragment budget was reached");
     }
-    if has_dynamic_loop(facts.doc.tree()) {
+    if facts.has_dynamic_loop() {
         reasons.push("a dynamic wx:for binding may shadow this loop local");
     }
     if loop_info.item.name == loop_info.index.name {
@@ -1718,7 +1740,7 @@ pub(crate) fn collect_loop_refs(
         range,
         style: TokenStyle::Identifier,
     });
-    let target_boundary = template_boundary(facts.doc.tree(), loop_info.element_range);
+    let target_boundary = facts.template_boundary(loop_info.element_range);
     let mut references = Vec::new();
     for fragment in &facts.analysis.fragments {
         let Some(binding) = effective_binding(&fragment.bindings, name) else {
@@ -1763,21 +1785,18 @@ pub(crate) fn collect_loop_refs(
             continue;
         };
         let expr_range = SourceRange::new(node.text_range());
-        if template_boundary(tree, expr_range) != target_boundary {
+        if facts.template_boundary(expr_range) != target_boundary {
             continue;
         }
-        let scope: Vec<usize> = facts
-            .loops
-            .iter()
-            .enumerate()
-            .filter(|(_, info)| {
-                info.element_range.start() <= expr_range.start()
-                    && info.element_range.end() >= expr_range.end()
-                    && !(info.source_range.start() <= expr_range.start()
-                        && expr_range.end() <= info.source_range.end())
+        let mut scope = loop_scope_for_range(facts, expr_range, true);
+        // A `wx:for` source expression is evaluated outside the binding it
+        // introduces, so its own loop must not capture the source root.
+        scope.retain(|index| {
+            facts.loops.get(*index).is_none_or(|info| {
+                !(info.source_range.start() <= expr_range.start()
+                    && expr_range.end() <= info.source_range.end())
             })
-            .map(|(index, _)| index)
-            .collect();
+        });
         let Some((owner, role)) = effective_loop_binding(&facts.loops, &scope, name) else {
             continue;
         };
@@ -1803,9 +1822,7 @@ pub(crate) fn collect_loop_refs(
     }
     // `wx:for` source expressions of descendant loops and guard attributes.
     for_each_element(facts.doc.tree(), &mut |element| {
-        if template_boundary(facts.doc.tree(), SourceRange::new(element.text_range()))
-            != target_boundary
-        {
+        if facts.template_boundary(SourceRange::new(element.text_range())) != target_boundary {
             return;
         }
         for attribute_name in ["wx:for", "wx:if", "wx:elif"] {
@@ -1853,52 +1870,4 @@ pub(crate) fn collect_loop_refs(
         reason: reasons.first().copied(),
         needs_attribute: binding.declaration.is_none(),
     }
-}
-
-fn has_dynamic_loop(tree: &SyntaxTree) -> bool {
-    let mut dynamic = false;
-    for_each_element(tree, &mut |element| {
-        if element.attribute("wx:for").is_some() {
-            let has_static = element
-                .attribute("wx:for")
-                .and_then(wxml_syntax::Attribute::value)
-                .and_then(|value| value.mustaches().next())
-                .and_then(wxml_syntax::Mustache::inner_range)
-                .is_some();
-            if !has_static {
-                dynamic = true;
-            }
-        }
-    });
-    dynamic
-}
-
-fn template_boundary(tree: &SyntaxTree, range: SourceRange) -> Option<SourceRange> {
-    let mut boundary = None;
-    for_each_element(tree, &mut |element| {
-        if element.name() != Some("template") || element.attribute("name").is_none() {
-            return;
-        }
-        let element_range = element.text_range();
-        if element_range.start() <= range.start() && element_range.end() >= range.end() {
-            let candidate = SourceRange::new(element_range);
-            if boundary.is_none_or(|current: SourceRange| candidate.len() < current.len()) {
-                boundary = Some(candidate);
-            }
-        }
-    });
-    boundary
-}
-
-fn inside_template_definition(tree: &SyntaxTree, range: SourceRange) -> bool {
-    let mut inside = false;
-    for_each_element(tree, &mut |element| {
-        if element.name() == Some("template") && element.attribute("name").is_some() {
-            let element_range = element.text_range();
-            if element_range.start() <= range.start() && element_range.end() >= range.end() {
-                inside = true;
-            }
-        }
-    });
-    inside
 }

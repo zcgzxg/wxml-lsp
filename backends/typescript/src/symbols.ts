@@ -548,14 +548,55 @@ function isThisSetData(expression: ts.Expression): boolean {
   );
 }
 
-/** Whole-value uses of this.data hide dynamic field access. */
+/** Local aliases of `this` (`const that = this`, including simple chains). */
+function thisAliases(sourceFile: ts.SourceFile): Set<string> {
+  const aliases = new Set<string>();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.initializer &&
+        !aliases.has(node.name.text)
+      ) {
+        const initializer = node.initializer;
+        if (
+          initializer.kind === ts.SyntaxKind.ThisKeyword ||
+          (ts.isIdentifier(initializer) && aliases.has(initializer.text))
+        ) {
+          aliases.add(node.name.text);
+          changed = true;
+        }
+      }
+      node.forEachChild(visit);
+    };
+    visit(sourceFile);
+  }
+  return aliases;
+}
+
+/** Whole-value uses of `this.data`/`that.data` hide dynamic field access. */
 function scanDataEscapes(sourceFile: ts.SourceFile, state: ScanState): void {
+  const aliases = thisAliases(sourceFile);
+  const isDataAccess = (node: ts.Node): node is ts.PropertyAccessExpression =>
+    ts.isPropertyAccessExpression(node) &&
+    node.name.text === "data" &&
+    (node.expression.kind === ts.SyntaxKind.ThisKeyword ||
+      (ts.isIdentifier(node.expression) && aliases.has(node.expression.text)));
   const visit = (node: ts.Node): void => {
     if (
-      ts.isPropertyAccessExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ThisKeyword &&
-      node.name.text === "data"
+      ts.isElementAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      aliases.has(node.expression.text) &&
+      node.argumentExpression &&
+      ts.isStringLiteral(node.argumentExpression) &&
+      node.argumentExpression.text === "data"
     ) {
+      reject(state, "an alias accesses `data` through a computed member");
+    }
+    if (isDataAccess(node)) {
       const parent = node.parent;
       const directMember =
         (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
@@ -581,41 +622,6 @@ function scanDataEscapes(sourceFile: ts.SourceFile, state: ScanState): void {
   visit(sourceFile);
 }
 
-/** Paths that match the target prefix, with exact segment tokens. */
-function pathOccurrence(
-  site: { start: number; end: number; name: string; quoted: boolean },
-  file: FileInfo,
-  target: string[],
-): { token: SymbolWireToken; path: string[]; segment: number } | undefined {
-  let pathText = site.name;
-  if (!site.quoted) {
-    // Identifier keys cannot contain a dot, so a matching target of depth 1
-    // names the whole field.
-    pathText = site.name;
-  }
-  if (
-    pathText.length === 0 ||
-    pathText.includes("[") ||
-    pathText.includes("]") ||
-    pathText.startsWith(".") ||
-    pathText.endsWith(".") ||
-    pathText.includes("..")
-  ) {
-    return undefined;
-  }
-  const path = pathText.split(".");
-  if (path.some((segment) => segment.length === 0)) return undefined;
-  if (path.length < target.length) return undefined;
-  for (let index = 0; index < target.length; index += 1) {
-    if (path[index] !== target[index]) return undefined;
-  }
-  const segment = target.length - 1;
-  let offset = 0;
-  for (let index = 0; index < segment; index += 1) offset += path[index]!.length + 1;
-  const token = tokenOf(file, site.start + offset, site.start + offset + path[segment]!.length);
-  return token ? { token, path, segment } : undefined;
-}
-
 function propertyNameSite(
   name: ts.PropertyName,
   sourceFile: ts.SourceFile,
@@ -638,7 +644,98 @@ function propertyNameSite(
   return undefined;
 }
 
-/** Scan `setData({...})` calls in the subject script. */
+interface LiteralSetDataPath {
+  site: { start: number; end: number; name: string; quoted: boolean };
+  path: string[];
+  prefixLength: number;
+  nested: boolean;
+}
+
+/** Collects literal setData paths, rejecting dynamic object members. */
+function collectSetDataPaths(
+  object: ts.ObjectLiteralExpression,
+  prefix: string[],
+  sourceFile: ts.SourceFile,
+  state: ScanState,
+  out: LiteralSetDataPath[],
+): void {
+  for (const property of object.properties) {
+    if (ts.isSpreadAssignment(property)) {
+      reject(state, "a setData object contains a spread member");
+      continue;
+    }
+    if (ts.isComputedPropertyName(property.name)) {
+      reject(state, "a setData object contains a computed key");
+      continue;
+    }
+    if (!ts.isPropertyAssignment(property)) {
+      reject(state, "a setData object contains a shorthand or method member");
+      continue;
+    }
+    const site = propertyNameSite(property.name, sourceFile);
+    if (!site) {
+      reject(state, "a setData key cannot be mapped to an exact token");
+      continue;
+    }
+    if (
+      site.name.length === 0 ||
+      site.name.includes("[") ||
+      site.name.includes("]") ||
+      site.name.startsWith(".") ||
+      site.name.endsWith(".") ||
+      site.name.includes("..")
+    ) {
+      reject(state, "a setData key uses an unsupported bracket or dotted path");
+      continue;
+    }
+    const segments = site.name.split(".");
+    if (segments.some((segment) => segment.length === 0)) {
+      reject(state, "a setData key contains an empty segment");
+      continue;
+    }
+    const path = [...prefix, ...segments];
+    const nested = ts.isObjectLiteralExpression(property.initializer);
+    out.push({ site, path, prefixLength: prefix.length, nested });
+    if (nested) {
+      collectSetDataPaths(property.initializer, path, sourceFile, state, out);
+    }
+  }
+}
+
+/** Returns whether one path is a prefix of the other (or equal). */
+function pathsIntersect(left: string[], right: string[]): boolean {
+  const depth = Math.min(left.length, right.length);
+  for (let index = 0; index < depth; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+/** Exact token for the target segment inside one literal setData path. */
+function setDataOccurrence(
+  entry: LiteralSetDataPath,
+  target: string[],
+  file: FileInfo,
+): { token: SymbolWireToken; path: string[]; segment: number } | undefined {
+  if (entry.path.length < target.length) return undefined;
+  for (let index = 0; index < target.length; index += 1) {
+    if (entry.path[index] !== target[index]) return undefined;
+  }
+  const segment = target.length - 1;
+  if (segment < entry.prefixLength) return undefined;
+  const segments = entry.site.name.split(".");
+  const local = segment - entry.prefixLength;
+  if (local < 0 || local >= segments.length) return undefined;
+  let offset = 0;
+  for (let index = 0; index < local; index += 1) {
+    offset += segments[index]!.length + 1;
+  }
+  const start = entry.site.start + offset;
+  const token = tokenOf(file, start, start + segments[local]!.length);
+  return token ? { token, path: entry.path, segment } : undefined;
+}
+
+/** Scan literal `setData({...})` calls in the subject script. */
 function scanSetData(
   sourceFile: ts.SourceFile,
   file: FileInfo,
@@ -657,29 +754,24 @@ function scanSetData(
       if (!argument || !ts.isObjectLiteralExpression(argument)) {
         reject(state, "a setData call does not use a literal object argument");
       } else {
-        for (const property of argument.properties) {
-          if (ts.isSpreadAssignment(property) || ts.isShorthandPropertyAssignment(property)) {
-            reject(state, "a setData object contains a spread or shorthand member");
+        const entries: LiteralSetDataPath[] = [];
+        collectSetDataPaths(argument, [], sourceFile, state, entries);
+        for (const entry of entries) {
+          if (!pathsIntersect(entry.path, target)) continue;
+          if (entry.path.length < target.length) {
+            if (!entry.nested) {
+              reject(state, "a setData key hides a nested target path");
+            }
             continue;
           }
-          if (ts.isComputedPropertyName(property.name)) {
-            reject(state, "a setData object contains a computed key");
-            continue;
-          }
-          if (!ts.isPropertyAssignment(property)) {
-            reject(state, "a setData object contains a non-property member");
-            continue;
-          }
-          const site = propertyNameSite(property.name, sourceFile);
-          if (!site) {
-            reject(state, "a setData key cannot be mapped to an exact token");
-            continue;
-          }
-          const occurrence = pathOccurrence(site, file, target);
+          const occurrence = setDataOccurrence(entry, target, file);
           if (occurrence) {
-            occurrences.push({ ...occurrence.token, kind: "setDataKey", path: occurrence.path, segment: occurrence.segment });
-          } else if (site.name.includes("[") || site.name.includes("]")) {
-            reject(state, "a setData key uses an unsupported bracket path");
+            occurrences.push({
+              ...occurrence.token,
+              kind: "setDataKey",
+              path: occurrence.path,
+              segment: occurrence.segment,
+            });
           }
         }
       }
@@ -747,33 +839,29 @@ function scanOtherScriptSetData(
     if (file.path === index.subject.path) continue;
     const sourceFile = index.project.program().getSourceFile(file.absolute);
     if (!sourceFile) continue;
+    const ownRegistration = findRegistrations(sourceFile).registrations.length > 0;
     const visit = (node: ts.Node): void => {
       if (
         ts.isCallExpression(node) &&
         ts.isPropertyAccessExpression(node.expression) &&
         node.expression.name.text === "setData"
       ) {
+        // `this.setData` in a file with its own Page/Component registration
+        // writes that owner's data, not the current view's data.
+        if (ownRegistration && isThisSetData(node.expression)) {
+          node.forEachChild(visit);
+          return;
+        }
         const argument = node.arguments[0];
         if (!argument || !ts.isObjectLiteralExpression(argument)) {
           reject(state, "another script calls setData with a dynamic argument");
         } else {
-          for (const property of argument.properties) {
-            if (!ts.isPropertyAssignment(property)) {
-              reject(state, "another script calls setData with a dynamic object");
-              continue;
-            }
-            const site = propertyNameSite(property.name, sourceFile);
-            if (!site) {
-              reject(state, "another script calls setData with a computed key");
-              continue;
-            }
-            const path = site.name.split(".");
-            if (
-              path.length >= target.length &&
-              target.every((segment, index) => path[index] === segment)
-            ) {
-              reject(state, "another script calls setData with this data path");
-            }
+          const entries: LiteralSetDataPath[] = [];
+          collectSetDataPaths(argument, [], sourceFile, state, entries);
+          for (const entry of entries) {
+            if (!pathsIntersect(entry.path, target)) continue;
+            reject(state, "another script calls setData with this data path");
+            break;
           }
         }
       }
@@ -949,12 +1037,55 @@ function insertionForHandler(
   return { fileId: file.path, offset, text: insertText };
 }
 
-/** Handler names already declared by the owner registration. */
+/** Static member names of one component option object. */
+function objectMemberNames(
+  object: ts.ObjectLiteralExpression,
+  state: ScanState,
+): string[] {
+  const names: string[] = [];
+  for (const property of object.properties) {
+    if (ts.isSpreadAssignment(property) || ts.isComputedPropertyName(property.name)) {
+      reject(state, "a component owner object contains a spread or computed member");
+      continue;
+    }
+    const name = propertyName(property);
+    if (name === undefined) {
+      reject(state, "a component owner member has no static name");
+      continue;
+    }
+    names.push(name);
+  }
+  return names;
+}
+
+/**
+ * Names already declared by the owner registration.
+ *
+ * For components `data`, `properties` and `methods` share one runtime
+ * namespace. The symbol query therefore returns the union so a rename cannot
+ * introduce the same key into two option objects.
+ */
 function ownerReservedNames(
   sourceFile: ts.SourceFile,
-  kind: "page" | "component",
+  registration: { kind: "page" | "component"; options: ts.ObjectLiteralExpression },
+  state: ScanState,
 ): string[] {
-  return handlerFacts(sourceFile, kind, "__wxml_missing__").taken;
+  const names = new Set(
+    handlerFacts(sourceFile, registration.kind, "__wxml_missing__").taken,
+  );
+  if (registration.kind === "component") {
+    const members = memberMap(registration.options);
+    for (const option of ["data", "properties", "methods"] as const) {
+      const member = members.get(option);
+      if (!member) continue;
+      if (ts.isPropertyAssignment(member) && ts.isObjectLiteralExpression(member.initializer)) {
+        for (const name of objectMemberNames(member.initializer, state)) names.add(name);
+      } else {
+        reject(state, `component \`${option}\` members are not statically readable`);
+      }
+    }
+  }
+  return [...names];
 }
 
 /* -------------------------------------------------------------------- queries */
@@ -1101,7 +1232,7 @@ export function symbols(request: SymbolsRequest, config: SymbolsConfig): Symbols
         declaration: entry.token,
         quoted: entry.quoted,
       }));
-      result.reserved = ownerReservedNames(sourceFile, registration.kind);
+      result.reserved = ownerReservedNames(sourceFile, registration, state);
     } else {
       const resolved = resolveDataPath(project, roots, query.path, state);
       if (resolved.declaration) {
@@ -1114,7 +1245,7 @@ export function symbols(request: SymbolsRequest, config: SymbolsConfig): Symbols
           const entry = entries[0]!;
           return { name: entry.name, declaration: entry.token, quoted: entry.quoted };
         });
-      result.reserved = ownerReservedNames(sourceFile, registration.kind);
+      result.reserved = ownerReservedNames(sourceFile, registration, state);
       scanDataEscapes(sourceFile, state);
       scanOtherScriptSetData(index, query.path, state);
       scanSetData(sourceFile, subject, query.path, state, result.occurrences);

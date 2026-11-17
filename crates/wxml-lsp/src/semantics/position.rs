@@ -52,8 +52,7 @@ impl<'a> Utf16Cursor<'a> {
         if self.scanned > self.limit {
             return None;
         }
-        let mut consumed = 0_usize;
-        for (index, character) in self.text[self.pos..offset].char_indices() {
+        for character in self.text[self.pos..offset].chars() {
             if character == '\n' {
                 self.line = self.line.saturating_add(1);
                 self.column = 0;
@@ -62,14 +61,8 @@ impl<'a> Utf16Cursor<'a> {
                     .column
                     .saturating_add(u32::try_from(character.len_utf16()).unwrap_or(1));
             }
-            consumed = index;
         }
-        if offset > self.pos {
-            // `consumed` is the last index before `offset`; the cursor is now at
-            // `offset` regardless of whether the loop body ran.
-            self.pos = offset;
-        }
-        let _ = consumed;
+        self.pos = offset;
         Some(Position::new(self.line, self.column))
     }
 }
