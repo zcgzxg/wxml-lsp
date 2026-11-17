@@ -128,3 +128,51 @@ test("a path-only change resolves the new alias instead of the old project", { c
   assert.deepEqual(unresolved, [], "the new paths alias must resolve");
   resetProjectPool();
 });
+
+test("project typeRoots still load the pinned mini program typings", { concurrency: false }, () => {
+  resetProjectPool();
+  const root = "/tmp/opencode/q2-compiler-test/type-roots";
+  const index = path.join(root, "index.ts");
+  const project = acquireProject({
+    rootDir: BACKEND_DIR,
+    compilerOptions: {
+      ...baseCompilerOptions(),
+      // A project-specific root replaces TypeScript's default @types lookup.
+      // The backend cannot read this directory, so the pinned package must
+      // stay reachable through the appended backend node_modules root.
+      typeRoots: [path.join(root, "typings")],
+    },
+    files: [
+      {
+        path: index,
+        text: "const page = Component({ data: { flag: false } });\nvoid page;\n",
+      },
+    ],
+    readPolicy: defaultReadPolicy(BACKEND_DIR),
+  });
+  const program = project.languageService().getProgram();
+  assert.ok(program);
+  const missing = ts
+    .getPreEmitDiagnostics(program)
+    .filter((diagnostic) => diagnostic.code === 2304 || diagnostic.code === 2688);
+  assert.deepEqual(missing, [], "Component and the pinned globals must stay declared");
+
+  const checker = program.getTypeChecker();
+  const source = program.getSourceFile(index);
+  assert.ok(source);
+  let flag: ts.Node | undefined;
+  const visit = (node: ts.Node): void => {
+    if (ts.isIdentifier(node) && node.text === "flag") flag = node;
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  assert.ok(flag);
+  const typeText = checker.typeToString(checker.getTypeAtLocation(flag));
+  assert.notEqual(
+    typeText,
+    "any",
+    "template data must keep its declared type instead of degrading to any",
+  );
+  assert.ok(typeText === "false" || typeText === "boolean", typeText);
+  resetProjectPool();
+});

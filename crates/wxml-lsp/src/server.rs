@@ -1302,7 +1302,7 @@ mod tests {
         assert!(
             result["contents"]["value"]
                 .as_str()
-                .is_some_and(|value| value.contains("Block container")),
+                .is_some_and(|value| value.contains("视图容器")),
             "{result}"
         );
         assert!(dispatch.take().is_empty());

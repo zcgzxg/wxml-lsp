@@ -374,9 +374,9 @@ export interface EventState {
 /**
  * Resolution of one statically bound event handler (protocol v2).
  *
- * `definition.fileId` and `diagnostic.range` are WXML/script coordinates: the
- * script file id is echoed from the request and the range is a UTF-8 byte range
- * in that script, so no absolute path is ever published.
+ * `definition.fileId` is project-relative (own script or an imported behavior);
+ * `diagnostic.range` is WXML coordinates. Ranges use UTF-8 byte offsets, so no
+ * absolute path is ever published.
  */
 export interface EventResult {
   eventId: string;
@@ -384,6 +384,8 @@ export interface EventResult {
   definition?: { fileId: string; range: { start: number; end: number } };
   /** Bounded one-line member snippet (method declaration or function property). */
   signature?: string;
+  /** JSDoc of the declaration, when the handler carries one. */
+  documentation?: string;
   diagnostic?: {
     range: { start: number; end: number };
     severity: "error" | "warning";

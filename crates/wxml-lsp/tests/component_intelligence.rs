@@ -336,7 +336,7 @@ fn component_completion_hover_and_definition() {
     let offset = text.find("outer-card").expect("tag") + 2;
     let hover = client.at("textDocument/hover", &uri, text, offset);
     let tag_hover = hover_text(&hover);
-    assert!(tag_hover.contains("Custom component"), "{tag_hover}");
+    assert!(tag_hover.contains("自定义组件"), "{tag_hover}");
     assert!(
         tag_hover.contains("components/outer-card/outer-card.wxml"),
         "{tag_hover}"
@@ -614,7 +614,7 @@ fn app_level_and_npm_build_components_use_one_model() {
     let offset = text.find("pkg-card").expect("tag") + 2;
     let hover = client.at("textDocument/hover", &uri, text, offset);
     let hover = hover_text(&hover);
-    assert!(hover.contains("Local build"), "{hover}");
+    assert!(hover.contains("本地构建"), "{hover}");
     assert!(
         hover.contains("miniprogram_npm/demo-ui/card/card.wxml"),
         "{hover}"
@@ -650,14 +650,14 @@ fn missing_and_invalid_components_degrade_without_paths() {
     assert!(
         missing["detail"]
             .as_str()
-            .is_some_and(|detail| detail.contains("target not found")),
+            .is_some_and(|detail| detail.contains("未找到目标")),
         "{missing}"
     );
     let text = "<missing-card />";
     let offset = text.find("missing-card").expect("tag") + 2;
     let hover = client.at("textDocument/hover", &uri, text, offset);
     let hover = hover_text(&hover);
-    assert!(hover.contains("could not be resolved"), "{hover}");
+    assert!(hover.contains("未能解析"), "{hover}");
     assert!(!hover.contains(root.to_str().expect("root")), "{hover}");
     let definition = client.at("textDocument/definition", &uri, text, offset);
     assert_eq!(definition, Value::Null, "{definition}");
@@ -857,7 +857,7 @@ fn unknown_external_components_degrade_honestly() {
     assert!(
         remote["detail"]
             .as_str()
-            .is_some_and(|detail| detail.contains("Plugin")),
+            .is_some_and(|detail| detail.contains("插件")),
         "{remote}"
     );
 
@@ -872,8 +872,7 @@ fn unknown_external_components_degrade_honestly() {
     let offset = text.find("remote-card").expect("tag") + 2;
     let hover = client.at("textDocument/hover", &uri, text, offset);
     let plugin_hover = hover_text(&hover);
-    assert!(plugin_hover.contains("Plugin component"), "{plugin_hover}");
-    assert!(plugin_hover.contains("unavailable"), "{plugin_hover}");
+    assert!(plugin_hover.contains("插件组件"), "{plugin_hover}");
     let definition = client.at("textDocument/definition", &uri, text, offset);
     assert_eq!(definition, Value::Null, "{definition}");
 
@@ -882,7 +881,7 @@ fn unknown_external_components_degrade_honestly() {
     let hover = client.at("textDocument/hover", &uri, text, offset);
     let attribute_hover = hover_text(&hover);
     assert!(
-        attribute_hover.contains("cannot verify property"),
+        attribute_hover.contains("暂无属性说明"),
         "{attribute_hover}"
     );
     assert!(
@@ -893,7 +892,7 @@ fn unknown_external_components_degrade_honestly() {
     let text = "<pkg-card />";
     let offset = text.find("pkg-card").expect("tag") + 2;
     let hover = client.at("textDocument/hover", &uri, text, offset);
-    assert!(hover_text(&hover).contains("Package component"), "{hover}");
+    assert!(hover_text(&hover).contains("包组件"), "{hover}");
 
     client.shutdown();
     assert!(client.finish().success());

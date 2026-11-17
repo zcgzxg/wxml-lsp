@@ -22,8 +22,9 @@
  * arrays and files outside the request snapshot are reported as problems; the
  * affected members are skipped or typed `any`, never guessed.
  *
- * Only `data` and `properties` are summarized. Methods are handled by the
- * event resolver, which has its own conservative behavior rule.
+ * Only `data`, `properties` and `methods` are summarized. Method entries feed
+ * the event resolver, which resolves handler signatures and definitions from
+ * the same conservative behavior graph.
  */
 
 import path from "node:path";
@@ -78,16 +79,35 @@ export interface BehaviorProperty extends DeclaredProperty {
   end: number;
 }
 
+/** One method contributed by a behavior's `methods` table. */
+export interface BehaviorMethod {
+  /** Method name used by an event binding. */
+  name: string;
+  /** The declaration to use for signature and documentation. */
+  node: ts.ObjectLiteralElementLike;
+  /** Property-name node whose byte range becomes the definition. */
+  nameNode: ts.Node;
+  /** Parsed source file that contains the method. */
+  sourceFile: ts.SourceFile;
+  /** Absolute script path of that file. */
+  path: string;
+}
+
 export interface BehaviorResolution {
   /** Merged behavior `data`, later behaviors overriding earlier ones. */
   data: BehaviorDataMember[];
   /** Merged behavior `properties`; the component's own declarations must be
    * merged first by the caller. */
   properties: BehaviorProperty[];
+  /** Merged behavior `methods`; the component's own methods must be applied
+   * first by the caller. */
+  methods: BehaviorMethod[];
   /** `true` when at least one data member is typed `any` or was skipped. */
   dataIncomplete: boolean;
   /** `true` when at least one property declaration was skipped or unreadable. */
   propertiesIncomplete: boolean;
+  /** `true` when at least one method could not be collected. */
+  methodsIncomplete: boolean;
   /** Human-readable degradation reasons (bounded). */
   problems: string[];
 }
@@ -101,6 +121,12 @@ export interface BehaviorInput {
   registration?: Registration;
   /** Snapshot-only module resolver: absolute path to parsed source. */
   getSourceFile: (absolutePath: string) => ts.SourceFile | undefined;
+  /**
+   * Resolves an import specifier through `compilerOptions` (path aliases,
+   * `baseUrl`, package `index` files). Relative specifiers keep using
+   * [`getSourceFile`]; this is only called for everything else.
+   */
+  resolveModule?: (specifier: string, fromFile: string) => ts.SourceFile | undefined;
   /** Checker of the request snapshot, for non-literal behavior initializers. */
   checker?: ts.TypeChecker;
 }
@@ -112,20 +138,22 @@ export function resolveBehaviors(input: BehaviorInput): BehaviorResolution {
   const stack = new Set<string>();
   const options = input.registration?.options;
   if (!options) {
-    return { data: [], properties: [], dataIncomplete: false, propertiesIncomplete: false, problems };
+    return { data: [], properties: [], methods: [], dataIncomplete: false, propertiesIncomplete: false, methodsIncomplete: false, problems };
   }
 
   const behaviorsMember = memberMap(options).get("behaviors");
   if (behaviorsMember === undefined) {
-    return { data: [], properties: [], dataIncomplete: false, propertiesIncomplete: false, problems };
+    return { data: [], properties: [], methods: [], dataIncomplete: false, propertiesIncomplete: false, methodsIncomplete: false, problems };
   }
   if (!ts.isPropertyAssignment(behaviorsMember) || !ts.isArrayLiteralExpression(behaviorsMember.initializer)) {
     problems.push("component `behaviors` is not a static array literal");
     return {
       data: [],
       properties: [],
+      methods: [],
       dataIncomplete: true,
       propertiesIncomplete: true,
+      methodsIncomplete: true,
       problems,
     };
   }
@@ -146,6 +174,7 @@ export function resolveBehaviors(input: BehaviorInput): BehaviorResolution {
   if (unresolvedBehavior) {
     merged.dataIncomplete = true;
     merged.propertiesIncomplete = true;
+    merged.methodsIncomplete = true;
   }
   return merged;
 }
@@ -173,8 +202,10 @@ function mergeUnits(
 
   const data = new Map<string, BehaviorDataMember>();
   const properties = new Map<string, BehaviorProperty>();
+  const methods = new Map<string, BehaviorMethod>();
   let dataIncomplete = false;
   let propertiesIncomplete = false;
+  let methodsIncomplete = false;
 
   for (const unit of [...units].reverse()) {
     const members = memberMap(unit.options);
@@ -184,10 +215,28 @@ function mergeUnits(
         problems.push(`behavior \`${unit.label}\` has a non-object-literal \`data\` member`);
         dataIncomplete = true;
       } else {
+        // Names contributed by a spread in this unit may be overridden by a
+        // later explicit member of the same object, exactly like JavaScript.
+        const expandedHere = new Set<string>();
         for (const property of dataMember.initializer.properties) {
         if (ts.isSpreadAssignment(property)) {
-          problems.push(`behavior \`${unit.label}\` has a spread in \`data\``);
-          dataIncomplete = true;
+          const expansion = expandDataSpread(
+            unit,
+            property,
+            ownDataMembers,
+            expandedHere,
+            data,
+            input.checker,
+          );
+          if (expansion.expanded === 0) {
+            problems.push(`behavior \`${unit.label}\` has a spread in \`data\``);
+            dataIncomplete = true;
+          } else if (expansion.incomplete) {
+            problems.push(
+              `behavior \`${unit.label}\` spread in \`data\` has members that cannot be typed`,
+            );
+            dataIncomplete = true;
+          }
           continue;
         }
         if (!ts.isPropertyAssignment(property) && !ts.isMethodDeclaration(property)) {
@@ -206,7 +255,7 @@ function mergeUnits(
           dataIncomplete = true;
           continue;
         }
-        if (data.has(name)) continue;
+        if (data.has(name) && !expandedHere.has(name)) continue;
         if (data.size >= MAX_MEMBERS) {
           problems.push("behavior data member budget reached");
           dataIncomplete = true;
@@ -300,15 +349,68 @@ function mergeUnits(
         }
       }
     }
+    const methodsMember = members.get("methods");
+    if (methodsMember !== undefined) {
+      if (
+        !ts.isPropertyAssignment(methodsMember) ||
+        !ts.isObjectLiteralExpression(methodsMember.initializer)
+      ) {
+        problems.push(`behavior \`${unit.label}\` has a non-object-literal \`methods\` member`);
+        methodsIncomplete = true;
+      } else {
+        for (const property of methodsMember.initializer.properties) {
+          if (ts.isSpreadAssignment(property)) {
+            problems.push(`behavior \`${unit.label}\` has a spread in \`methods\``);
+            methodsIncomplete = true;
+            continue;
+          }
+          const name = propertyName(property);
+          if (name === undefined) {
+            problems.push(`behavior \`${unit.label}\` has a computed method name`);
+            methodsIncomplete = true;
+            continue;
+          }
+          if (methods.has(name)) continue;
+          if (methods.size >= MAX_MEMBERS) {
+            problems.push("behavior method budget reached");
+            methodsIncomplete = true;
+            break;
+          }
+          if (isLiteralFunctionMember(property)) {
+            methods.set(name, {
+              name,
+              node: property,
+              nameNode: property.name ?? property,
+              sourceFile: unit.sourceFile,
+              path: unit.path,
+            });
+          } else {
+            problems.push(`behavior \`${unit.label}\` method \`${name}\` is not a literal function`);
+            methodsIncomplete = true;
+          }
+        }
+      }
+    }
   }
 
   return {
     data: [...data.values()],
     properties: [...properties.values()],
+    methods: [...methods.values()],
     dataIncomplete,
     propertiesIncomplete,
+    methodsIncomplete,
     problems: dedupe(problems),
   };
+}
+
+/** A method declaration or a property assigned a function literal. */
+function isLiteralFunctionMember(property: ts.ObjectLiteralElementLike): boolean {
+  return (
+    ts.isMethodDeclaration(property) ||
+    (ts.isPropertyAssignment(property) &&
+      (ts.isArrowFunction(property.initializer) || ts.isFunctionExpression(property.initializer)))
+  );
 }
 
 /** Depth-first collection: nested behaviors are applied before their owner. */
@@ -463,11 +565,16 @@ function resolveExport(
   depth: number,
   problems: string[],
 ): BehaviorUnit | undefined {
-  if (!specifier.startsWith("./") && !specifier.startsWith("../")) {
+  const relative = specifier.startsWith("./") || specifier.startsWith("../");
+  let resolved: ts.SourceFile | undefined;
+  if (relative) {
+    resolved = resolveRelativeModule(fromFile.fileName, specifier, input.getSourceFile);
+  } else if (input.resolveModule) {
+    resolved = input.resolveModule(specifier, fromFile.fileName);
+  } else {
     problems.push(`behavior import \`${specifier}\` is not a local relative import`);
     return undefined;
   }
-  const resolved = resolveRelativeModule(fromFile.fileName, specifier, input.getSourceFile);
   if (!resolved) {
     problems.push(`behavior import \`${specifier}\` is not part of the request snapshot`);
     return undefined;
@@ -579,6 +686,112 @@ function labelOf(sourceFile: ts.SourceFile): string {
 }
 
 /** Byte range of a node in its own source file. */
+/** Result of expanding one `data: { ...spread }` entry. */
+interface SpreadExpansion {
+  /** Members added to the merged table. */
+  expanded: number;
+  /** True when a member had to be typed `any` or was skipped. */
+  incomplete: boolean;
+}
+
+/**
+ * Expands one behavior `data` spread through the program checker.
+ *
+ * `data: { ...colors }` is common in shared behaviors. Without expansion every
+ * member of the spread is related only through the behavior's object type; the
+ * template root then degrades to `any` and the hover carries a long
+ * "spread in data" degradation note. The checker can usually enumerate the
+ * spread type, so each member is bound with its resolved type and declaration.
+ *
+ * The table stays conservative: an unreadable/`any` member keeps its name (so
+ * template roots still bind) but marks the result incomplete. A fully
+ * resolvable spread is not a coverage gap.
+ */
+function expandDataSpread(
+  unit: BehaviorUnit,
+  property: ts.SpreadAssignment,
+  ownDataMembers: ReadonlyMap<string, ts.PropertyAssignment>,
+  expandedHere: Set<string>,
+  data: Map<string, BehaviorDataMember>,
+  checker: ts.TypeChecker | undefined,
+): SpreadExpansion {
+  if (!checker) return { expanded: 0, incomplete: true };
+  let type: ts.Type;
+  try {
+    type = checker.getTypeAtLocation(property.expression);
+  } catch {
+    return { expanded: 0, incomplete: true };
+  }
+  if ((type.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown | ts.TypeFlags.TypeParameter)) !== 0) {
+    return { expanded: 0, incomplete: true };
+  }
+  let symbols: ts.Symbol[];
+  try {
+    symbols = checker.getPropertiesOfType(type);
+  } catch {
+    return { expanded: 0, incomplete: true };
+  }
+  if (symbols.length === 0) return { expanded: 0, incomplete: true };
+
+  let expanded = 0;
+  let incomplete = false;
+  for (const symbol of symbols) {
+    const name = symbol.getName();
+    if (!isProbeMemberName(name) || ownDataMembers.has(name)) continue;
+    // A later unit's member wins; a later spread in this same unit wins too.
+    if (data.has(name) && !expandedHere.has(name)) continue;
+    if (data.size >= MAX_MEMBERS) {
+      incomplete = true;
+      break;
+    }
+    const declaration = symbol.declarations?.[0];
+    const file = declaration?.getSourceFile() ?? unit.sourceFile;
+    const named = declaration as ts.NamedDeclaration | undefined;
+    const node = named?.name ?? declaration ?? property;
+    let typeText: string;
+    try {
+      typeText = checker.typeToString(
+        checker.getTypeOfSymbolAtLocation(symbol, property.expression),
+        property.expression,
+        ts.TypeFormatFlags.NoTruncation |
+          ts.TypeFormatFlags.UseFullyQualifiedType |
+          ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope,
+      );
+    } catch {
+      typeText = "any";
+    }
+    if (
+      !typeText ||
+      typeText === "any" ||
+      typeText.includes("import(") ||
+      typeText.includes("/") ||
+      typeText.includes("\\") ||
+      hasUnresolvedTypeReference(typeText)
+    ) {
+      typeText = "any";
+      incomplete = true;
+    }
+    const doc =
+      ts.displayPartsToString(symbol.getDocumentationComment(checker)).trim() ||
+      docTextOf(declaration ?? property);
+    data.set(name, {
+      name,
+      typeText,
+      exact: typeText !== "any",
+      doc,
+      ...byteSpanOf(file, node),
+      file: file.fileName,
+      source: {
+        file: file.fileName,
+        ...byteSpanOf(file, node),
+      },
+    });
+    expandedHere.add(name);
+    expanded += 1;
+  }
+  return { expanded, incomplete };
+}
+
 function byteSpanOf(
   sourceFile: ts.SourceFile,
   node: ts.Node,

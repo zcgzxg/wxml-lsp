@@ -103,29 +103,29 @@ fn component_detail(component: &ViewComponent) -> String {
             let mut detail = component.wxml.as_ref().map_or_else(
                 || {
                     component.component.as_ref().map_or_else(
-                        || format!("Custom component ({})", component.specifier),
-                        |base| format!("Custom component {} (target not found)", base.as_str()),
+                        || format!("自定义组件（{}）", component.specifier),
+                        |base| format!("自定义组件 {}（未找到目标）", base.as_str()),
                     )
                 },
-                |wxml| format!("Custom component {}", wxml.as_str()),
+                |wxml| format!("自定义组件 {}", wxml.as_str()),
             );
             if !component.property_facts.complete {
-                detail.push_str(" (property list incomplete)");
+                detail.push_str("（属性列表可能不完整）");
             }
             detail
         }
-        ComponentTargetKind::Plugin => "Plugin component (local metadata unavailable)".to_owned(),
+        ComponentTargetKind::Plugin => "插件组件（本地元数据不可用）".to_owned(),
         ComponentTargetKind::Package => component.wxml.as_ref().map_or_else(
-            || "Package component (local metadata unavailable)".to_owned(),
+            || "包组件（本地元数据不可用）".to_owned(),
             |wxml| {
-                let mut detail = format!("Package component {}", wxml.as_str());
+                let mut detail = format!("包组件 {}", wxml.as_str());
                 if !component.property_facts.complete {
-                    detail.push_str(" (property list incomplete)");
+                    detail.push_str("（属性列表可能不完整）");
                 }
                 detail
             },
         ),
-        _ => format!("Custom component ({})", component.specifier),
+        _ => format!("自定义组件（{}）", component.specifier),
     }
 }
 
@@ -148,7 +148,7 @@ fn tag_items(
                 name,
                 CompletionItemKind::Tag,
                 1,
-                Some("Open element".to_owned()),
+                Some("未闭合的元素".to_owned()),
                 name.clone(),
                 replace,
             ));
@@ -371,17 +371,17 @@ fn attribute_items(
         // event prefix; otherwise the list is dominated by noise.
         if catalog::is_event_prefix(prefix) {
             let attribute = format!("bind{name}");
-            let detail = format!("Bind `{name}`");
+            let detail = format!("绑定 `{name}` 事件");
             push_attribute(
                 &mut items, &mut seen, context, tag, replace, &attribute, &detail, 4,
             );
             let attribute = format!("catch{name}");
-            let detail = format!("Bind `{name}` and stop bubbling");
+            let detail = format!("绑定 `{name}` 事件并阻止冒泡");
             push_attribute(
                 &mut items, &mut seen, context, tag, replace, &attribute, &detail, 4,
             );
             let attribute = format!("bind:{name}");
-            let detail = format!("Bind `{name}` (alternate form)");
+            let detail = format!("绑定 `{name}` 事件（另一种写法）");
             push_attribute(
                 &mut items, &mut seen, context, tag, replace, &attribute, &detail, 4,
             );

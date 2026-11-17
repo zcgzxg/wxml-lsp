@@ -957,7 +957,7 @@ fn event_results_flow_into_diagnostics_and_definition() {
 }
 
 #[test]
-fn event_definition_outside_the_view_script_is_partial_and_empty() {
+fn event_definition_in_an_imported_behavior_file_is_mapped() {
     let shared = Shared::default();
     let backend = backend_with_events(
         &shared,
@@ -974,11 +974,11 @@ fn event_definition_outside_the_view_script_is_partial_and_empty() {
             offset: 12,
         })
         .expect("definition");
-    assert!(definition.locations.is_empty(), "{definition:?}");
-    let CapabilityStatus::Partial { reason } = definition.status else {
-        panic!("expected partial");
-    };
-    assert_eq!(reason, "an event definition points at an unexpected file");
+    assert!(definition.status.is_supported(), "{definition:?}");
+    assert_eq!(definition.locations.len(), 1, "{definition:?}");
+    let location = &definition.locations[0];
+    assert_eq!(location.file.path(), "pages/other.ts");
+    assert_eq!((location.range.start(), location.range.end()), (5, 10));
 }
 
 #[test]

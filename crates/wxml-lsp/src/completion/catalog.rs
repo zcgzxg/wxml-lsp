@@ -39,19 +39,19 @@ pub(crate) struct TagSpec {
 
 const ATTR_ID: AttributeSpec = AttributeSpec {
     name: "id",
-    detail: "Element id",
+    detail: "元素 id",
 };
 const ATTR_CLASS: AttributeSpec = AttributeSpec {
     name: "class",
-    detail: "Style class list",
+    detail: "样式类列表",
 };
 const ATTR_STYLE: AttributeSpec = AttributeSpec {
     name: "style",
-    detail: "Inline style",
+    detail: "内联样式",
 };
 const ATTR_HIDDEN: AttributeSpec = AttributeSpec {
     name: "hidden",
-    detail: "Hide the element",
+    detail: "隐藏元素",
 };
 
 /// Attributes accepted by every element.
@@ -96,75 +96,75 @@ pub(crate) const EVENT_NAMES: &[&str] = &[
 pub(crate) const EVENT_ATTRIBUTES: &[AttributeSpec] = &[
     AttributeSpec {
         name: "bindtap",
-        detail: "Bind tap (bubbling)",
+        detail: "绑定 tap 事件（冒泡）",
     },
     AttributeSpec {
         name: "catchtap",
-        detail: "Bind tap and stop bubbling",
+        detail: "绑定 tap 事件并阻止冒泡",
     },
     AttributeSpec {
         name: "bind:tap",
-        detail: "Bind tap (bubbling, alternate form)",
+        detail: "绑定 tap 事件（冒泡，另一种写法）",
     },
     AttributeSpec {
         name: "catch:tap",
-        detail: "Bind tap and stop bubbling (alternate form)",
+        detail: "绑定 tap 事件并阻止冒泡（另一种写法）",
     },
     AttributeSpec {
         name: "capture-bind:tap",
-        detail: "Capture-phase tap binding",
+        detail: "捕获阶段绑定 tap 事件",
     },
     AttributeSpec {
         name: "capture-catch:tap",
-        detail: "Capture-phase tap that stops propagation",
+        detail: "捕获阶段绑定 tap 事件并阻止传播",
     },
     AttributeSpec {
         name: "mut-bind:tap",
-        detail: "Mutually exclusive tap binding",
+        detail: "互斥的 tap 事件绑定",
     },
     AttributeSpec {
         name: "bindinput",
-        detail: "Bind input",
+        detail: "绑定输入事件",
     },
     AttributeSpec {
         name: "bindchange",
-        detail: "Bind value change",
+        detail: "绑定值变化事件",
     },
     AttributeSpec {
         name: "bindconfirm",
-        detail: "Bind confirm",
+        detail: "绑定确认事件",
     },
     AttributeSpec {
         name: "bindsubmit",
-        detail: "Bind form submit",
+        detail: "绑定表单提交事件",
     },
     AttributeSpec {
         name: "bindreset",
-        detail: "Bind form reset",
+        detail: "绑定表单重置事件",
     },
     AttributeSpec {
         name: "bindscroll",
-        detail: "Bind scroll",
+        detail: "绑定滚动事件",
     },
     AttributeSpec {
         name: "bindload",
-        detail: "Bind load",
+        detail: "绑定加载完成事件",
     },
     AttributeSpec {
         name: "binderror",
-        detail: "Bind error",
+        detail: "绑定错误事件",
     },
     AttributeSpec {
         name: "bindtouchstart",
-        detail: "Bind touch start",
+        detail: "绑定触摸开始事件",
     },
     AttributeSpec {
         name: "bindtouchmove",
-        detail: "Bind touch move",
+        detail: "绑定触摸移动事件",
     },
     AttributeSpec {
         name: "bindtouchend",
-        detail: "Bind touch end",
+        detail: "绑定触摸结束事件",
     },
 ];
 
@@ -172,53 +172,53 @@ pub(crate) const EVENT_ATTRIBUTES: &[AttributeSpec] = &[
 pub(crate) const DIRECTIVE_ATTRIBUTES: &[AttributeSpec] = &[
     AttributeSpec {
         name: "wx:if",
-        detail: "Conditional rendering",
+        detail: "条件渲染",
     },
     AttributeSpec {
         name: "wx:elif",
-        detail: "Else-if branch",
+        detail: "否则如果分支",
     },
     AttributeSpec {
         name: "wx:else",
-        detail: "Else branch",
+        detail: "否则分支",
     },
     AttributeSpec {
         name: "wx:for",
-        detail: "List rendering source",
+        detail: "列表渲染数据源",
     },
     AttributeSpec {
         name: "wx:for-item",
-        detail: "List item variable name",
+        detail: "列表项变量名",
     },
     AttributeSpec {
         name: "wx:for-index",
-        detail: "List index variable name",
+        detail: "列表索引变量名",
     },
     AttributeSpec {
         name: "wx:key",
-        detail: "List key expression",
+        detail: "列表 key 表达式",
     },
 ];
 
 const TAG_VIEW: TagSpec = TagSpec {
     name: "view",
-    detail: "Block container",
+    detail: "视图容器，可包裹其他组件",
     attributes: &[
         AttributeSpec {
             name: "hover-class",
-            detail: "Class applied while pressed",
+            detail: "按下时应用的样式类",
         },
         AttributeSpec {
             name: "hover-stop-propagation",
-            detail: "Stop hover propagation",
+            detail: "阻止按住样式传播",
         },
         AttributeSpec {
             name: "hover-start-time",
-            detail: "Hover delay in ms",
+            detail: "按住延迟（毫秒）",
         },
         AttributeSpec {
             name: "hover-stay-time",
-            detail: "Hover duration in ms",
+            detail: "按住持续时间（毫秒）",
         },
     ],
     values: &[(
@@ -226,11 +226,11 @@ const TAG_VIEW: TagSpec = TagSpec {
         &[
             ValueSpec {
                 value: "true",
-                detail: "Enable",
+                detail: "启用",
             },
             ValueSpec {
                 value: "false",
-                detail: "Disable",
+                detail: "禁用",
             },
         ],
     )],
@@ -238,23 +238,23 @@ const TAG_VIEW: TagSpec = TagSpec {
 
 const TAG_TEXT: TagSpec = TagSpec {
     name: "text",
-    detail: "Inline text",
+    detail: "内联文本",
     attributes: &[
         AttributeSpec {
             name: "selectable",
-            detail: "Allow text selection",
+            detail: "允许文本选中",
         },
         AttributeSpec {
             name: "user-select",
-            detail: "Allow text selection (newer)",
+            detail: "允许文本选中（新版）",
         },
         AttributeSpec {
             name: "space",
-            detail: "Whitespace handling",
+            detail: "空白符处理",
         },
         AttributeSpec {
             name: "decode",
-            detail: "Decode HTML entities",
+            detail: "解码 HTML 实体",
         },
     ],
     values: &[(
@@ -262,15 +262,15 @@ const TAG_TEXT: TagSpec = TagSpec {
         &[
             ValueSpec {
                 value: "ensp",
-                detail: "En space",
+                detail: "半角空格",
             },
             ValueSpec {
                 value: "emsp",
-                detail: "Em space",
+                detail: "全角空格",
             },
             ValueSpec {
                 value: "nbsp",
-                detail: "Non-breaking space",
+                detail: "不换行空格",
             },
         ],
     )],
@@ -279,64 +279,64 @@ const TAG_TEXT: TagSpec = TagSpec {
 const BUTTON_TYPES: &[ValueSpec] = &[
     ValueSpec {
         value: "default",
-        detail: "Default button",
+        detail: "默认按钮",
     },
     ValueSpec {
         value: "primary",
-        detail: "Primary button",
+        detail: "主要按钮",
     },
     ValueSpec {
         value: "warn",
-        detail: "Warning button",
+        detail: "警告按钮",
     },
 ];
 
 const BUTTON_SIZES: &[ValueSpec] = &[
     ValueSpec {
         value: "default",
-        detail: "Default size",
+        detail: "默认尺寸",
     },
     ValueSpec {
         value: "mini",
-        detail: "Mini size",
+        detail: "小尺寸",
     },
 ];
 
 const TAG_BUTTON: TagSpec = TagSpec {
     name: "button",
-    detail: "Button",
+    detail: "按钮",
     attributes: &[
         AttributeSpec {
             name: "type",
-            detail: "Visual type",
+            detail: "样式类型",
         },
         AttributeSpec {
             name: "size",
-            detail: "Button size",
+            detail: "按钮尺寸",
         },
         AttributeSpec {
             name: "plain",
-            detail: "Hollow style",
+            detail: "镂空样式",
         },
         AttributeSpec {
             name: "disabled",
-            detail: "Disable the button",
+            detail: "禁用按钮",
         },
         AttributeSpec {
             name: "loading",
-            detail: "Show a loading indicator",
+            detail: "显示加载状态",
         },
         AttributeSpec {
             name: "form-type",
-            detail: "Form submit/reset role",
+            detail: "表单提交/重置角色",
         },
         AttributeSpec {
             name: "open-type",
-            detail: "Mini Program open capability",
+            detail: "小程序开放能力",
         },
         AttributeSpec {
             name: "hover-class",
-            detail: "Class applied while pressed",
+            detail: "按下时应用的样式类",
         },
     ],
     values: &[
@@ -347,11 +347,11 @@ const TAG_BUTTON: TagSpec = TagSpec {
             &[
                 ValueSpec {
                     value: "submit",
-                    detail: "Submit the form",
+                    detail: "提交表单",
                 },
                 ValueSpec {
                     value: "reset",
-                    detail: "Reset the form",
+                    detail: "重置表单",
                 },
             ],
         ),
@@ -360,27 +360,27 @@ const TAG_BUTTON: TagSpec = TagSpec {
             &[
                 ValueSpec {
                     value: "contact",
-                    detail: "Open customer service",
+                    detail: "打开客服会话",
                 },
                 ValueSpec {
                     value: "share",
-                    detail: "Share the page",
+                    detail: "分享页面",
                 },
                 ValueSpec {
                     value: "getPhoneNumber",
-                    detail: "Request a phone number",
+                    detail: "获取手机号",
                 },
                 ValueSpec {
                     value: "getUserInfo",
-                    detail: "Request user information",
+                    detail: "获取用户信息",
                 },
                 ValueSpec {
                     value: "openSetting",
-                    detail: "Open settings",
+                    detail: "打开设置",
                 },
                 ValueSpec {
                     value: "feedback",
-                    detail: "Open feedback",
+                    detail: "打开意见反馈",
                 },
             ],
         ),
@@ -389,27 +389,27 @@ const TAG_BUTTON: TagSpec = TagSpec {
 
 const TAG_IMAGE: TagSpec = TagSpec {
     name: "image",
-    detail: "Image",
+    detail: "图片",
     attributes: &[
         AttributeSpec {
             name: "src",
-            detail: "Image URL",
+            detail: "图片地址",
         },
         AttributeSpec {
             name: "mode",
-            detail: "Crop/scale mode",
+            detail: "裁剪/缩放模式",
         },
         AttributeSpec {
             name: "lazy-load",
-            detail: "Lazy loading",
+            detail: "懒加载",
         },
         AttributeSpec {
             name: "binderror",
-            detail: "Load error",
+            detail: "加载出错",
         },
         AttributeSpec {
             name: "bindload",
-            detail: "Load complete",
+            detail: "加载完成",
         },
     ],
     values: &[(
@@ -417,43 +417,43 @@ const TAG_IMAGE: TagSpec = TagSpec {
         &[
             ValueSpec {
                 value: "scaleToFill",
-                detail: "Stretch to fill",
+                detail: "拉伸填满",
             },
             ValueSpec {
                 value: "aspectFit",
-                detail: "Fit inside, keep ratio",
+                detail: "完整显示并保持比例",
             },
             ValueSpec {
                 value: "aspectFill",
-                detail: "Fill, keep ratio",
+                detail: "填充并保持比例",
             },
             ValueSpec {
                 value: "widthFix",
-                detail: "Fix width, auto height",
+                detail: "固定宽度，高度自适应",
             },
             ValueSpec {
                 value: "heightFix",
-                detail: "Fix height, auto width",
+                detail: "固定高度，宽度自适应",
             },
             ValueSpec {
                 value: "center",
-                detail: "Center without scaling",
+                detail: "居中且不缩放",
             },
             ValueSpec {
                 value: "top",
-                detail: "Align top",
+                detail: "顶部对齐",
             },
             ValueSpec {
                 value: "bottom",
-                detail: "Align bottom",
+                detail: "底部对齐",
             },
             ValueSpec {
                 value: "left",
-                detail: "Align left",
+                detail: "左对齐",
             },
             ValueSpec {
                 value: "right",
-                detail: "Align right",
+                detail: "右对齐",
             },
         ],
     )],
@@ -462,65 +462,65 @@ const TAG_IMAGE: TagSpec = TagSpec {
 const INPUT_TYPES: &[ValueSpec] = &[
     ValueSpec {
         value: "text",
-        detail: "Text input",
+        detail: "文本输入",
     },
     ValueSpec {
         value: "number",
-        detail: "Numeric input",
+        detail: "数字输入",
     },
     ValueSpec {
         value: "idcard",
-        detail: "Identity card input",
+        detail: "身份证输入",
     },
     ValueSpec {
         value: "digit",
-        detail: "Digit input with decimal point",
+        detail: "带小数点的数字输入",
     },
     ValueSpec {
         value: "safe-password",
-        detail: "Password input",
+        detail: "密码输入",
     },
     ValueSpec {
         value: "nickname",
-        detail: "Nickname input",
+        detail: "昵称输入",
     },
 ];
 
 const TAG_INPUT: TagSpec = TagSpec {
     name: "input",
-    detail: "Single-line input",
+    detail: "单行输入框",
     attributes: &[
         AttributeSpec {
             name: "type",
-            detail: "Input type",
+            detail: "输入类型",
         },
         AttributeSpec {
             name: "value",
-            detail: "Current value",
+            detail: "当前值",
         },
         AttributeSpec {
             name: "placeholder",
-            detail: "Placeholder text",
+            detail: "占位提示文字",
         },
         AttributeSpec {
             name: "disabled",
-            detail: "Disable the input",
+            detail: "禁用输入框",
         },
         AttributeSpec {
             name: "maxlength",
-            detail: "Maximum length",
+            detail: "最大长度",
         },
         AttributeSpec {
             name: "focus",
-            detail: "Focus the input",
+            detail: "聚焦输入框",
         },
         AttributeSpec {
             name: "confirm-type",
-            detail: "Keyboard confirm label",
+            detail: "键盘确认按钮文案",
         },
         AttributeSpec {
             name: "password",
-            detail: "Password field",
+            detail: "密码输入框",
         },
     ],
     values: &[
@@ -530,23 +530,23 @@ const TAG_INPUT: TagSpec = TagSpec {
             &[
                 ValueSpec {
                     value: "send",
-                    detail: "Send",
+                    detail: "发送",
                 },
                 ValueSpec {
                     value: "search",
-                    detail: "Search",
+                    detail: "搜索",
                 },
                 ValueSpec {
                     value: "next",
-                    detail: "Next",
+                    detail: "下一步",
                 },
                 ValueSpec {
                     value: "go",
-                    detail: "Go",
+                    detail: "前往",
                 },
                 ValueSpec {
                     value: "done",
-                    detail: "Done",
+                    detail: "完成",
                 },
             ],
         ),
@@ -555,55 +555,55 @@ const TAG_INPUT: TagSpec = TagSpec {
 
 const TAG_PICKER: TagSpec = TagSpec {
     name: "picker",
-    detail: "Selector",
+    detail: "选择器",
     attributes: &[
         AttributeSpec {
             name: "mode",
-            detail: "Picker mode",
+            detail: "选择器类型",
         },
         AttributeSpec {
             name: "range",
-            detail: "Range data",
+            detail: "可选数据",
         },
         AttributeSpec {
             name: "range-key",
-            detail: "Object key for display",
+            detail: "用于显示的字段名",
         },
         AttributeSpec {
             name: "value",
-            detail: "Selected index/value",
+            detail: "选中项索引/值",
         },
         AttributeSpec {
             name: "start",
-            detail: "Start date/time",
+            detail: "开始日期/时间",
         },
         AttributeSpec {
             name: "end",
-            detail: "End date/time",
+            detail: "结束日期/时间",
         },
         AttributeSpec {
             name: "fields",
-            detail: "Date granularity",
+            detail: "日期粒度",
         },
         AttributeSpec {
             name: "custom-item",
-            detail: "Extra region item",
+            detail: "自定义地区项",
         },
         AttributeSpec {
             name: "level",
-            detail: "Region selection level",
+            detail: "地区选择层级",
         },
         AttributeSpec {
             name: "bindchange",
-            detail: "Selection change",
+            detail: "选择变化",
         },
         AttributeSpec {
             name: "bindcolumnchange",
-            detail: "Multi-column change",
+            detail: "多列变化",
         },
         AttributeSpec {
             name: "bindcancel",
-            detail: "Selection cancelled",
+            detail: "取消选择",
         },
     ],
     values: &[
@@ -612,23 +612,23 @@ const TAG_PICKER: TagSpec = TagSpec {
             &[
                 ValueSpec {
                     value: "selector",
-                    detail: "Single column selector",
+                    detail: "单列选择器",
                 },
                 ValueSpec {
                     value: "multiSelector",
-                    detail: "Multi column selector",
+                    detail: "多列选择器",
                 },
                 ValueSpec {
                     value: "time",
-                    detail: "Time picker",
+                    detail: "时间选择器",
                 },
                 ValueSpec {
                     value: "date",
-                    detail: "Date picker",
+                    detail: "日期选择器",
                 },
                 ValueSpec {
                     value: "region",
-                    detail: "Region picker",
+                    detail: "省市区选择器",
                 },
             ],
         ),
@@ -637,15 +637,15 @@ const TAG_PICKER: TagSpec = TagSpec {
             &[
                 ValueSpec {
                     value: "year",
-                    detail: "Select a year",
+                    detail: "选择年",
                 },
                 ValueSpec {
                     value: "month",
-                    detail: "Select a month",
+                    detail: "选择月",
                 },
                 ValueSpec {
                     value: "day",
-                    detail: "Select a day",
+                    detail: "选择日",
                 },
             ],
         ),
@@ -654,15 +654,15 @@ const TAG_PICKER: TagSpec = TagSpec {
             &[
                 ValueSpec {
                     value: "province",
-                    detail: "Province level",
+                    detail: "省级",
                 },
                 ValueSpec {
                     value: "city",
-                    detail: "City level",
+                    detail: "市级",
                 },
                 ValueSpec {
                     value: "district",
-                    detail: "District level",
+                    detail: "区县级",
                 },
             ],
         ),
@@ -671,39 +671,39 @@ const TAG_PICKER: TagSpec = TagSpec {
 
 const TAG_SCROLL_VIEW: TagSpec = TagSpec {
     name: "scroll-view",
-    detail: "Scrollable container",
+    detail: "可滚动容器",
     attributes: &[
         AttributeSpec {
             name: "scroll-x",
-            detail: "Horizontal scrolling",
+            detail: "水平滚动",
         },
         AttributeSpec {
             name: "scroll-y",
-            detail: "Vertical scrolling",
+            detail: "垂直滚动",
         },
         AttributeSpec {
             name: "enable-flex",
-            detail: "Enable flex layout",
+            detail: "启用 flex 布局",
         },
         AttributeSpec {
             name: "scroll-top",
-            detail: "Vertical scroll offset",
+            detail: "垂直滚动位置",
         },
         AttributeSpec {
             name: "scroll-left",
-            detail: "Horizontal scroll offset",
+            detail: "水平滚动位置",
         },
         AttributeSpec {
             name: "enable-back-to-top",
-            detail: "Back-to-top gesture",
+            detail: "双击返回顶部",
         },
         AttributeSpec {
             name: "bindscroll",
-            detail: "Scroll event",
+            detail: "绑定滚动事件",
         },
         AttributeSpec {
             name: "bindscrolltolower",
-            detail: "Reached the bottom/end",
+            detail: "滚动到底部",
         },
     ],
     values: &[(
@@ -711,11 +711,11 @@ const TAG_SCROLL_VIEW: TagSpec = TagSpec {
         &[
             ValueSpec {
                 value: "true",
-                detail: "Enable",
+                detail: "启用",
             },
             ValueSpec {
                 value: "false",
-                detail: "Disable",
+                detail: "禁用",
             },
         ],
     )],
@@ -723,35 +723,35 @@ const TAG_SCROLL_VIEW: TagSpec = TagSpec {
 
 const TAG_SWIPER: TagSpec = TagSpec {
     name: "swiper",
-    detail: "Carousel container",
+    detail: "轮播容器",
     attributes: &[
         AttributeSpec {
             name: "indicator-dots",
-            detail: "Show indicator dots",
+            detail: "显示指示点",
         },
         AttributeSpec {
             name: "autoplay",
-            detail: "Auto play",
+            detail: "自动播放",
         },
         AttributeSpec {
             name: "interval",
-            detail: "Autoplay interval in ms",
+            detail: "自动播放间隔（毫秒）",
         },
         AttributeSpec {
             name: "duration",
-            detail: "Transition duration in ms",
+            detail: "过渡时长（毫秒）",
         },
         AttributeSpec {
             name: "circular",
-            detail: "Circular sliding",
+            detail: "循环轮播",
         },
         AttributeSpec {
             name: "vertical",
-            detail: "Vertical direction",
+            detail: "垂直方向",
         },
         AttributeSpec {
             name: "bindchange",
-            detail: "Current item changed",
+            detail: "当前项变化",
         },
     ],
     values: &[
@@ -760,11 +760,11 @@ const TAG_SWIPER: TagSpec = TagSpec {
             &[
                 ValueSpec {
                     value: "true",
-                    detail: "Enable",
+                    detail: "启用",
                 },
                 ValueSpec {
                     value: "false",
-                    detail: "Disable",
+                    detail: "禁用",
                 },
             ],
         ),
@@ -773,11 +773,11 @@ const TAG_SWIPER: TagSpec = TagSpec {
             &[
                 ValueSpec {
                     value: "true",
-                    detail: "Enable",
+                    detail: "启用",
                 },
                 ValueSpec {
                     value: "false",
-                    detail: "Disable",
+                    detail: "禁用",
                 },
             ],
         ),
@@ -786,11 +786,11 @@ const TAG_SWIPER: TagSpec = TagSpec {
             &[
                 ValueSpec {
                     value: "true",
-                    detail: "Enable",
+                    detail: "启用",
                 },
                 ValueSpec {
                     value: "false",
-                    detail: "Disable",
+                    detail: "禁用",
                 },
             ],
         ),
@@ -799,23 +799,23 @@ const TAG_SWIPER: TagSpec = TagSpec {
 
 const TAG_NAVIGATOR: TagSpec = TagSpec {
     name: "navigator",
-    detail: "Navigation link",
+    detail: "导航链接",
     attributes: &[
         AttributeSpec {
             name: "url",
-            detail: "Target URL",
+            detail: "目标地址",
         },
         AttributeSpec {
             name: "open-type",
-            detail: "Navigation mode",
+            detail: "打开方式",
         },
         AttributeSpec {
             name: "delta",
-            detail: "Back step count",
+            detail: "返回层数",
         },
         AttributeSpec {
             name: "hover-class",
-            detail: "Pressed style",
+            detail: "按下样式",
         },
     ],
     values: &[(
@@ -823,27 +823,27 @@ const TAG_NAVIGATOR: TagSpec = TagSpec {
         &[
             ValueSpec {
                 value: "navigate",
-                detail: "Push a new page",
+                detail: "打开新页面",
             },
             ValueSpec {
                 value: "redirect",
-                detail: "Replace the current page",
+                detail: "替换当前页面",
             },
             ValueSpec {
                 value: "switchTab",
-                detail: "Switch to a tab page",
+                detail: "切换到 tab 页",
             },
             ValueSpec {
                 value: "reLaunch",
-                detail: "Close all pages and open",
+                detail: "关闭所有页面后打开",
             },
             ValueSpec {
                 value: "navigateBack",
-                detail: "Go back",
+                detail: "返回",
             },
             ValueSpec {
                 value: "exit",
-                detail: "Exit the Mini Program",
+                detail: "退出小程序",
             },
         ],
     )],
@@ -851,27 +851,27 @@ const TAG_NAVIGATOR: TagSpec = TagSpec {
 
 const TAG_TEXTAREA: TagSpec = TagSpec {
     name: "textarea",
-    detail: "Multi-line input",
+    detail: "多行输入框",
     attributes: &[
         AttributeSpec {
             name: "value",
-            detail: "Current value",
+            detail: "当前值",
         },
         AttributeSpec {
             name: "placeholder",
-            detail: "Placeholder text",
+            detail: "占位提示文字",
         },
         AttributeSpec {
             name: "maxlength",
-            detail: "Maximum length",
+            detail: "最大长度",
         },
         AttributeSpec {
             name: "auto-height",
-            detail: "Grow with content",
+            detail: "随内容自动增高",
         },
         AttributeSpec {
             name: "disabled",
-            detail: "Disable the input",
+            detail: "禁用输入框",
         },
     ],
     values: &[(
@@ -879,11 +879,11 @@ const TAG_TEXTAREA: TagSpec = TagSpec {
         &[
             ValueSpec {
                 value: "true",
-                detail: "Enable",
+                detail: "启用",
             },
             ValueSpec {
                 value: "false",
-                detail: "Disable",
+                detail: "禁用",
             },
         ],
     )],
@@ -891,15 +891,15 @@ const TAG_TEXTAREA: TagSpec = TagSpec {
 
 const TAG_FORM: TagSpec = TagSpec {
     name: "form",
-    detail: "Form container",
+    detail: "表单容器",
     attributes: &[
         AttributeSpec {
             name: "bindsubmit",
-            detail: "Submit event",
+            detail: "绑定提交事件",
         },
         AttributeSpec {
             name: "bindreset",
-            detail: "Reset event",
+            detail: "绑定重置事件",
         },
     ],
     values: &[],
@@ -907,29 +907,29 @@ const TAG_FORM: TagSpec = TagSpec {
 
 const TAG_LABEL: TagSpec = TagSpec {
     name: "label",
-    detail: "Form label",
+    detail: "表单标签",
     attributes: &[AttributeSpec {
         name: "for",
-        detail: "Associated control id",
+        detail: "关联控件的 id",
     }],
     values: &[],
 };
 
 const TAG_CHECKBOX: TagSpec = TagSpec {
     name: "checkbox",
-    detail: "Checkbox",
+    detail: "复选框",
     attributes: &[
         AttributeSpec {
             name: "value",
-            detail: "Checkbox value",
+            detail: "复选框的值",
         },
         AttributeSpec {
             name: "checked",
-            detail: "Checked state",
+            detail: "选中状态",
         },
         AttributeSpec {
             name: "disabled",
-            detail: "Disable the checkbox",
+            detail: "禁用复选框",
         },
     ],
     values: &[(
@@ -937,11 +937,11 @@ const TAG_CHECKBOX: TagSpec = TagSpec {
         &[
             ValueSpec {
                 value: "true",
-                detail: "Checked",
+                detail: "选中",
             },
             ValueSpec {
                 value: "false",
-                detail: "Unchecked",
+                detail: "未选中",
             },
         ],
     )],
@@ -949,19 +949,19 @@ const TAG_CHECKBOX: TagSpec = TagSpec {
 
 const TAG_RADIO: TagSpec = TagSpec {
     name: "radio",
-    detail: "Radio button",
+    detail: "单选框",
     attributes: &[
         AttributeSpec {
             name: "value",
-            detail: "Radio value",
+            detail: "单选框的值",
         },
         AttributeSpec {
             name: "checked",
-            detail: "Checked state",
+            detail: "选中状态",
         },
         AttributeSpec {
             name: "disabled",
-            detail: "Disable the radio",
+            detail: "禁用单选框",
         },
     ],
     values: &[(
@@ -969,11 +969,11 @@ const TAG_RADIO: TagSpec = TagSpec {
         &[
             ValueSpec {
                 value: "true",
-                detail: "Checked",
+                detail: "选中",
             },
             ValueSpec {
                 value: "false",
-                detail: "Unchecked",
+                detail: "未选中",
             },
         ],
     )],
@@ -981,15 +981,15 @@ const TAG_RADIO: TagSpec = TagSpec {
 
 const TAG_TEMPLATE: TagSpec = TagSpec {
     name: "template",
-    detail: "Template reference",
+    detail: "模板引用",
     attributes: &[
         AttributeSpec {
             name: "is",
-            detail: "Template name",
+            detail: "模板名称",
         },
         AttributeSpec {
             name: "data",
-            detail: "Template data",
+            detail: "模板数据",
         },
     ],
     values: &[],
@@ -997,29 +997,29 @@ const TAG_TEMPLATE: TagSpec = TagSpec {
 
 const TAG_BLOCK: TagSpec = TagSpec {
     name: "block",
-    detail: "Non-rendering wrapper",
+    detail: "不渲染的包裹元素",
     attributes: &[],
     values: &[],
 };
 
 const TAG_SWIPER_ITEM: TagSpec = TagSpec {
     name: "swiper-item",
-    detail: "Carousel item",
+    detail: "轮播项",
     attributes: &[],
     values: &[],
 };
 
 const TAG_WXS: TagSpec = TagSpec {
     name: "wxs",
-    detail: "Inline WXS module",
+    detail: "内联 WXS 模块",
     attributes: &[
         AttributeSpec {
             name: "module",
-            detail: "Module name",
+            detail: "模块名",
         },
         AttributeSpec {
             name: "src",
-            detail: "External WXS file",
+            detail: "外部 WXS 文件",
         },
     ],
     values: &[],
@@ -1028,169 +1028,169 @@ const TAG_WXS: TagSpec = TagSpec {
 const TAG_VIEWS: &[TagSpec] = &[
     TagSpec {
         name: "movable-area",
-        detail: "Movable area",
+        detail: "可移动区域",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "movable-view",
-        detail: "Movable element",
+        detail: "可移动元素",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "cover-view",
-        detail: "Native overlay container",
+        detail: "原生覆盖层容器",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "cover-image",
-        detail: "Native overlay image",
+        detail: "原生覆盖层图片",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "icon",
-        detail: "Builtin icon",
+        detail: "内置图标",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "progress",
-        detail: "Progress bar",
+        detail: "进度条",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "rich-text",
-        detail: "Rich text",
+        detail: "富文本",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "slider",
-        detail: "Slider",
+        detail: "滑动条",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "switch",
-        detail: "Switch",
+        detail: "开关",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "checkbox-group",
-        detail: "Checkbox group",
+        detail: "复选框组",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "radio-group",
-        detail: "Radio group",
+        detail: "单选框组",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "picker-view",
-        detail: "Custom picker container",
+        detail: "自定义选择器容器",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "picker-view-column",
-        detail: "Custom picker column",
+        detail: "自定义选择器列",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "map",
-        detail: "Map",
+        detail: "地图",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "canvas",
-        detail: "Canvas",
+        detail: "画布",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "video",
-        detail: "Video",
+        detail: "视频",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "audio",
-        detail: "Audio",
+        detail: "音频",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "camera",
-        detail: "Camera",
+        detail: "相机",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "live-player",
-        detail: "Live audio/video player",
+        detail: "音视频直播播放器",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "live-pusher",
-        detail: "Live audio/video pusher",
+        detail: "音视频直播推流器",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "web-view",
-        detail: "Embedded web page",
+        detail: "嵌入网页",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "open-data",
-        detail: "Open data view",
+        detail: "开放数据视图",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "ad",
-        detail: "Advertisement",
+        detail: "广告",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "official-account",
-        detail: "Official account",
+        detail: "公众号",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "page-meta",
-        detail: "Page metadata",
+        detail: "页面元信息",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "navigation-bar",
-        detail: "Custom navigation bar",
+        detail: "自定义导航栏",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "root-portal",
-        detail: "Render into the page root",
+        detail: "渲染到页面根节点",
         attributes: &[],
         values: &[],
     },
     TagSpec {
         name: "match-media",
-        detail: "Media query container",
+        detail: "媒体查询容器",
         attributes: &[],
         values: &[],
     },
@@ -1229,6 +1229,21 @@ pub(crate) fn tag(name: &str) -> Option<&'static TagSpec> {
 /// All builtin tag specs, including the ones without detailed attributes.
 pub(crate) fn all_tags() -> impl Iterator<Item = &'static TagSpec> {
     TAGS.iter().copied().chain(TAG_VIEWS.iter())
+}
+
+/// Returns the official `WeChat` documentation URL for one built-in tag.
+pub(crate) fn docs_url(tag: &str) -> String {
+    match tag {
+        "block" => {
+            "https://developers.weixin.qq.com/miniprogram/dev/reference/wxml/block.html".to_owned()
+        }
+        "template" => {
+            "https://developers.weixin.qq.com/miniprogram/dev/reference/wxml/template.html"
+                .to_owned()
+        }
+        "wxs" => "https://developers.weixin.qq.com/miniprogram/dev/reference/wxs/".to_owned(),
+        other => format!("https://developers.weixin.qq.com/miniprogram/dev/component/{other}.html"),
+    }
 }
 
 /// Static values for `tag.attribute`.

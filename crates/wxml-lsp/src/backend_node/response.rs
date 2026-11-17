@@ -733,6 +733,9 @@ pub(crate) struct EventResultWire {
     /// One-line method signature, used by event-handler hover.
     #[serde(default)]
     pub signature: Option<String>,
+    /// `JSDoc` of the handler declaration, used by event-handler hover.
+    #[serde(default)]
+    pub documentation: Option<String>,
 }
 
 /// Status of one event result.
@@ -1031,29 +1034,46 @@ fn event_hover(
         .signature
         .as_deref()
         .map(str::trim)
+        .filter(|signature| !signature.is_empty())
+        .map(|signature| crate::handlers::code_text(signature, 512))
         .filter(|signature| !signature.is_empty());
+    let documentation = result.documentation.as_deref().and_then(|documentation| {
+        let text = documentation
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let text = crate::handlers::code_text(&text, 1_024);
+        (!text.is_empty()).then(|| crate::handlers::markdown_escape(&text))
+    });
     let Some(signature) = signature else {
-        return HoverResult {
-            contents: String::new(),
-            markup: MarkupKind::Markdown,
-            range: None,
-            status,
-            quality: TypeQuality::Unknown,
+        return if let Some(documentation) = documentation {
+            HoverResult {
+                contents: documentation,
+                markup: MarkupKind::Markdown,
+                range: Some(info.handler_range),
+                status,
+                quality: TypeQuality::Unknown,
+            }
+        } else {
+            HoverResult {
+                contents: String::new(),
+                markup: MarkupKind::Markdown,
+                range: None,
+                status,
+                quality: TypeQuality::Unknown,
+            }
         };
     };
-    let signature = crate::handlers::code_text(signature, 512);
-    if signature.is_empty() {
-        return HoverResult {
-            contents: String::new(),
-            markup: MarkupKind::Markdown,
-            range: None,
-            status,
-            quality: TypeQuality::Unknown,
-        };
-    }
     let fence = fence_for(&signature);
+    let mut contents = format!("{fence}ts\n{signature}\n{fence}");
+    if let Some(documentation) = documentation {
+        contents.push_str("\n\n");
+        contents.push_str(&documentation);
+    }
     HoverResult {
-        contents: format!("{fence}ts\n{signature}\n{fence}"),
+        contents,
         markup: MarkupKind::Markdown,
         range: Some(info.handler_range),
         status,
@@ -1448,21 +1468,11 @@ fn event_definition(
         };
     };
     // Event definitions are `{fileId, range}` in the frozen wire contract; an
-    // explicit `kind` is still honored when a backend sends one.
+    // explicit `kind` is still honored when a backend sends one. Behavior
+    // imports may resolve to a different file than the page script, so the
+    // target is validated as a project-relative path rather than compared with
+    // the page script.
     let kind = definition.kind.as_str();
-    let unexpected_file = definition
-        .file_id
-        .as_deref()
-        .is_some_and(|file_id| script_file.is_some_and(|expected| file_id != expected.path()));
-    if unexpected_file {
-        return DefinitionResult {
-            locations: Vec::new(),
-            status: force_partial_reason(
-                status,
-                "an event definition points at an unexpected file",
-            ),
-        };
-    }
     let mapped = if kind.is_empty() || matches!(kind, "script" | "generated" | "external") {
         definition
             .file_id
@@ -2548,6 +2558,64 @@ mod tests {
                 .contents
                 .contains("onTap(event: { detail: { x: number } })")
         );
+    }
+
+    #[test]
+    fn event_hover_appends_escaped_documentation() {
+        let line = envelope_with_events(&serde_json::json!([
+            {
+                "eventId": "e0",
+                "state": {"status": "supported"},
+                "signature": "onBackTap()",
+                "documentation": "返回上一页\n[l](command:x)"
+            }
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("event response");
+        let result = hover(
+            &response,
+            &prepared_view(),
+            &BTreeMap::new(),
+            &[event_info("e0")],
+            4,
+        );
+        assert!(result.status.is_supported());
+        assert!(
+            result.contents.contains("onBackTap()"),
+            "{}",
+            result.contents
+        );
+        assert!(
+            result.contents.contains("返回上一页"),
+            "{}",
+            result.contents
+        );
+        assert!(
+            !result.contents.contains("](command:"),
+            "{}",
+            result.contents
+        );
+    }
+
+    #[test]
+    fn event_hover_shows_documentation_without_a_signature() {
+        let line = envelope_with_events(&serde_json::json!([
+            {
+                "eventId": "e0",
+                "state": {"status": "supported"},
+                "documentation": "返回上一页"
+            }
+        ]));
+        let response = parse_line(&line, "r1", 1).expect("event response");
+        let result = hover(
+            &response,
+            &prepared_view(),
+            &BTreeMap::new(),
+            &[event_info("e0")],
+            4,
+        );
+        assert!(result.status.is_supported());
+        assert_eq!(result.contents, "返回上一页");
+        assert_eq!(result.quality, TypeQuality::Unknown);
     }
 
     #[test]

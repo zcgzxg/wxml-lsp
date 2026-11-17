@@ -28,8 +28,15 @@ const fn markup_kind(kind: MarkupKind) -> &'static str {
 }
 
 /// Adds explicit degradation notes to backend hover text.
+///
+/// Notes only appear when the backend produced no text. A successful hover
+/// (signature, type or `JSDoc`) is more useful than a coverage disclaimer, and
+/// appending one turned every answer into a wall of status text.
 fn decorated_contents(result: &HoverResult) -> String {
     let mut text = result.contents.clone();
+    if !text.trim().is_empty() {
+        return text;
+    }
     let mut notes = Vec::new();
     if !result.status.is_supported() {
         let label = status_label(&result.status);
@@ -644,6 +651,16 @@ mod tests {
         };
         assert_eq!(decorated_contents(&known), "string");
 
+        let documented = HoverResult {
+            contents: "```ts\nonTap(): void\n```\n\n文档".to_owned(),
+            status: CapabilityStatus::Partial {
+                reason: "component behaviors are partially resolved".to_owned(),
+            },
+            quality: TypeQuality::Missing,
+            ..known
+        };
+        assert_eq!(decorated_contents(&documented), documented.contents);
+
         let degraded = HoverResult {
             contents: String::new(),
             markup: MarkupKind::PlainText,
@@ -689,7 +706,7 @@ mod tests {
     #[test]
     fn markdown_status_notes_escape_links_and_images() {
         let degraded = HoverResult {
-            contents: "string".to_owned(),
+            contents: String::new(),
             markup: MarkupKind::Markdown,
             range: None,
             status: CapabilityStatus::Partial {

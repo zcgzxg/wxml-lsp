@@ -1,3 +1,5 @@
+import ts from "typescript";
+import path from "node:path";
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKEND_DIR } from "../src/env.ts";
@@ -38,6 +40,15 @@ function stubView(kind: "page" | "component", script: string): PreparedView {
     scriptPath: SCRIPT_PATH,
     scriptText: script,
     registration: { kind, count: 1, topLevel: true },
+    behavior: {
+      data: [],
+      properties: [],
+      dataIncomplete: false,
+      propertiesIncomplete: false,
+      methods: [],
+      methodsIncomplete: false,
+      problems: [],
+    },
   } as unknown as PreparedView;
 }
 
@@ -176,11 +187,72 @@ test("non-literal registrations are partial without a missing-handler diagnostic
 
 test("component behaviors may define handlers and suppress missing diagnostics", () => {
   const script = `const base = Behavior({});\nComponent({ behaviors: [base], methods: {} })`;
-  const collection = run(script, "component", [event("e0", "fromBehavior")]);
+  const behaviorText = `Behavior({\n  methods: {\n    /** 来自 behavior */\n    fromBehavior(event: { detail: { x: number } }) {},\n  },\n})`;
+  const behaviorFile = ts.createSourceFile(
+    "src/behaviors/base.ts",
+    behaviorText,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  let method: ts.MethodDeclaration | undefined;
+  const visit = (node: ts.Node): void => {
+    if (ts.isMethodDeclaration(node) && node.name.getText(behaviorFile) === "fromBehavior") {
+      method = node;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(behaviorFile);
+  const view = stubView("component", script);
+  (view as unknown as { behavior: unknown }).behavior = {
+    data: [],
+    properties: [],
+    dataIncomplete: false,
+    propertiesIncomplete: false,
+    methods: [
+      {
+        name: "fromBehavior",
+        node: method!,
+        nameNode: method!.name,
+        sourceFile: behaviorFile,
+        path: path.join(TEST_PROJECT_ROOT, "src/behaviors/base.ts"),
+      },
+    ],
+    methodsIncomplete: false,
+    problems: [],
+  };
+  const collection = collectEventResults(
+    requestWith([event("e0", "fromBehavior")], { script, kind: "component" }),
+    view,
+  );
+  const result = collection.results[0]!;
+
+  assert.equal(result.state.status, "supported");
+  assert.equal(result.definition?.fileId, "src/behaviors/base.ts");
+  assert.match(result.signature ?? "", /fromBehavior/);
+  assert.match(result.documentation ?? "", /来自 behavior/);
+});
+
+test("an unresolved behavior graph keeps missing handlers unproven", () => {
+  const script = `Component({ behaviors: [external], methods: {} })`;
+  const view = stubView("component", script);
+  (view as unknown as { behavior: unknown }).behavior = {
+    data: [],
+    properties: [],
+    dataIncomplete: true,
+    propertiesIncomplete: true,
+    methods: [],
+    methodsIncomplete: true,
+    problems: ["behavior import `@/behaviors/BasePage` is not part of the request snapshot"],
+  };
+  const collection = collectEventResults(
+    requestWith([event("e0", "fromBehavior")], { script, kind: "component" }),
+    view,
+  );
   const result = collection.results[0]!;
 
   assert.equal(result.state.status, "partial");
-  assert.match(result.state.reason ?? "", /behaviors/);
+  assert.match(result.state.reason ?? "", /behavior methods/);
   assert.equal(result.diagnostic, undefined);
 });
 
@@ -348,4 +420,99 @@ test("the full analyze path returns eventResults without altering fragment resul
   assert.ok(response.eventResults?.[0]?.definition);
   assert.equal(response.eventResults?.[1]?.state.status, "supported");
   assert.equal(response.eventResults?.[1]?.diagnostic?.severity, "error");
+});
+
+test("a handler declared by an aliased behavior resolves to the behavior file", () => {
+  const script = `import base from "@/behaviors/base";
+Component({ behaviors: [base], data: {}, methods: {} });`;
+  const behavior = `export default Behavior({
+  methods: {
+    /** 返回上一页 */
+    onBack(e: { detail: string }) {}
+  }
+});`;
+  const request = analyzeRequest({
+    script,
+    scriptPath: SCRIPT_PATH,
+    kind: "component",
+    extraFiles: [{ path: "behaviors/base.ts", text: behavior }],
+    compilerOptions: {
+      baseUrl: TEST_PROJECT_ROOT,
+      paths: { "@/*": ["*"] },
+    },
+  });
+  request.events = [event("e0", "onBack")];
+  const result = analyze(request, config);
+  if (!result.ok) throw new Error(result.reason);
+  const resolved = result.response.eventResults?.[0];
+  assert.ok(resolved, "the event result must be published");
+  assert.equal(resolved.state.status, "supported");
+  assert.equal(resolved.diagnostic, undefined);
+  assert.equal(resolved.definition?.fileId, "behaviors/base.ts");
+  assert.ok(resolved.signature?.includes("onBack"));
+  assert.equal(resolved.documentation, "返回上一页");
+  const start = byteIndexOf(behavior, "onBack");
+  assert.deepEqual(resolved.definition?.range, {
+    start,
+    end: start + Buffer.byteLength("onBack"),
+  });
+});
+
+test("a component method overrides the same-named behavior method", () => {
+  const script = `import base from "@/behaviors/base";
+Component({
+  behaviors: [base],
+  data: {},
+  methods: {
+    /** 页面自己的实现 */
+    onBack(e: { detail: number }) {}
+  }
+});`;
+  const behavior = `export default Behavior({
+  methods: {
+    /** 来自 behavior */
+    onBack(e: { detail: string }) {}
+  }
+});`;
+  const request = analyzeRequest({
+    script,
+    scriptPath: SCRIPT_PATH,
+    kind: "component",
+    extraFiles: [{ path: "behaviors/base.ts", text: behavior }],
+    compilerOptions: {
+      baseUrl: TEST_PROJECT_ROOT,
+      paths: { "@/*": ["*"] },
+    },
+  });
+  request.events = [event("e0", "onBack")];
+  const result = analyze(request, config);
+  if (!result.ok) throw new Error(result.reason);
+  const resolved = result.response.eventResults?.[0];
+  assert.ok(resolved, "the event result must be published");
+  assert.equal(resolved.state.status, "supported");
+  assert.equal(resolved.definition?.fileId, SCRIPT_PATH);
+  assert.match(resolved.signature ?? "", /detail: number/);
+  assert.equal(resolved.documentation, "页面自己的实现");
+});
+
+test("an unresolved behavior alias stays partial and never reports a missing handler", () => {
+  const script = `import base from "@/behaviors/missing";
+Component({ behaviors: [base], data: {}, methods: {} });`;
+  const request = analyzeRequest({
+    script,
+    scriptPath: SCRIPT_PATH,
+    kind: "component",
+    compilerOptions: {
+      baseUrl: TEST_PROJECT_ROOT,
+      paths: { "@/*": ["*"] },
+    },
+  });
+  request.events = [event("e0", "onBack")];
+  const result = analyze(request, config);
+  if (!result.ok) throw new Error(result.reason);
+  const unresolved = result.response.eventResults?.[0];
+  assert.ok(unresolved, "the event result must be published");
+  assert.equal(unresolved.state.status, "partial");
+  assert.equal(unresolved.diagnostic, undefined, "an ambiguous table cannot prove the handler is missing");
+  assert.equal(unresolved.definition, undefined);
 });

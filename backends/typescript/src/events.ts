@@ -19,11 +19,13 @@
  * file path.
  */
 
+import path from "node:path";
 import ts from "typescript";
-import { findRegistrations, memberMap, propertyName, type Registration } from "./ast.ts";
+import { findRegistrations, docTextOf, memberMap, propertyName, type Registration } from "./ast.ts";
 import type { PreparedView } from "./analysis.ts";
 import { parseSource } from "./compiler.ts";
 import type { AnalyzeRequest, EventResult, RequestEvent } from "./protocol.ts";
+import type { BehaviorMethod } from "./behaviors.ts";
 
 /** Defensive cap; the Rust side already sends at most 1024 events. */
 export const MAX_EVENT_RESULTS = 1024;
@@ -61,6 +63,10 @@ interface HandlerMember {
   node: ts.ObjectLiteralElementLike;
   /** Property-name node whose byte range becomes the definition. */
   nameNode: ts.Node;
+  /** File that contains the declaration (own script or a behavior). */
+  sourceFile: ts.SourceFile;
+  /** Absolute path of that file, projected to a project-relative file id. */
+  path: string;
 }
 
 interface OwnerTable {
@@ -98,7 +104,15 @@ export function collectEventResults(request: AnalyzeRequest, view: PreparedView)
   const kind = view.registration.kind;
   const scan = findRegistrations(sourceFile);
   const registrations = scan.registrations.filter((candidate) => candidate.kind === kind);
-  const owner = buildOwnerTable(kind, registrations, scan.unsupportedCalls);
+  const owner = buildOwnerTable(
+    kind,
+    registrations,
+    scan.unsupportedCalls,
+    view.behavior?.methods ?? [],
+    view.behavior?.methodsIncomplete ?? false,
+    sourceFile,
+    view.scriptPath,
+  );
 
   const byteOffset = utf8ByteOffsets(view.scriptText);
   const results: EventResult[] = [];
@@ -138,6 +152,10 @@ function buildOwnerTable(
   kind: "page" | "component",
   registrations: Registration[],
   unsupportedCalls: string[],
+  behaviorMethods: BehaviorMethod[],
+  behaviorIncomplete: boolean,
+  sourceFile: ts.SourceFile,
+  scriptPath: string,
 ): OwnerTable {
   const members = new Map<string, HandlerMember>();
   const opaque = new Set<string>();
@@ -163,9 +181,26 @@ function buildOwnerTable(
   }
 
   if (kind === "page") {
-    collectObjectMembers(registration.options.properties, members, opaque, reasons);
+    collectObjectMembers(registration.options.properties, members, opaque, reasons, sourceFile, scriptPath);
   } else {
-    collectComponentMethods(registration.options.properties, members, opaque, reasons);
+    collectComponentMethods(registration.options.properties, members, opaque, reasons, sourceFile, scriptPath);
+  }
+
+  // Behavior-contributed methods are inherited after the owner's own table, so
+  // an own method always wins. An incomplete behavior graph downgrades the
+  // table instead of reporting a false missing-handler error.
+  for (const method of behaviorMethods) {
+    if (members.has(method.name) || opaque.has(method.name)) continue;
+    members.set(method.name, {
+      name: method.name,
+      node: method.node,
+      nameNode: method.nameNode,
+      sourceFile: method.sourceFile,
+      path: method.path,
+    });
+  }
+  if (behaviorIncomplete) {
+    pushReason(reasons, "component behavior methods are partially resolved");
   }
 
   return {
@@ -181,6 +216,8 @@ function collectObjectMembers(
   members: Map<string, HandlerMember>,
   opaque: Set<string>,
   reasons: string[],
+  sourceFile: ts.SourceFile,
+  scriptPath: string,
 ): void {
   for (const property of properties) {
     if (ts.isSpreadAssignment(property)) {
@@ -194,16 +231,8 @@ function collectObjectMembers(
       continue;
     }
     if (name.startsWith("__wxml_") || PAGE_RESERVED.has(name)) continue;
-    addMember(name, property, members, opaque);
+    addMember(name, property, members, opaque, sourceFile, scriptPath);
   }
-}
-
-/** A literal empty `behaviors: []` cannot contribute handlers; anything else may. */
-function hasBehaviorEntries(property: ts.ObjectLiteralElementLike): boolean {
-  if (!ts.isPropertyAssignment(property)) return true;
-  const initializer = property.initializer;
-  if (ts.isArrayLiteralExpression(initializer)) return initializer.elements.length > 0;
-  return true;
 }
 
 /** Component: only `methods` members are handlers. */
@@ -212,9 +241,10 @@ function collectComponentMethods(
   members: Map<string, HandlerMember>,
   opaque: Set<string>,
   reasons: string[],
+  sourceFile: ts.SourceFile,
+  scriptPath: string,
 ): void {
   let methodsMember: ts.ObjectLiteralElementLike | undefined;
-  let behaviorsMember: ts.ObjectLiteralElementLike | undefined;
   for (const property of properties) {
     if (ts.isSpreadAssignment(property)) {
       pushReason(reasons, "options contain spread members");
@@ -222,10 +252,6 @@ function collectComponentMethods(
     }
     const name = propertyName(property);
     if (name === "methods") methodsMember = property;
-    if (name === "behaviors") behaviorsMember = property;
-  }
-  if (behaviorsMember !== undefined && hasBehaviorEntries(behaviorsMember)) {
-    pushReason(reasons, "component behaviors may define handlers");
   }
   // A component without `methods` genuinely has no handlers: the empty table is
   // complete, so a missing handler stays a real error.
@@ -246,7 +272,7 @@ function collectComponentMethods(
       continue;
     }
     if (name.startsWith("__wxml_")) continue;
-    addMember(name, property, members, opaque);
+    addMember(name, property, members, opaque, sourceFile, scriptPath);
   }
 }
 
@@ -255,14 +281,16 @@ function addMember(
   property: ts.ObjectLiteralElementLike,
   members: Map<string, HandlerMember>,
   opaque: Set<string>,
+  sourceFile: ts.SourceFile,
+  scriptPath: string,
 ): void {
   const nameNode = property.name ?? property;
   if (ts.isMethodDeclaration(property)) {
-    members.set(name, { name, node: property, nameNode });
+    members.set(name, { name, node: property, nameNode, sourceFile, path: scriptPath });
     return;
   }
   if (ts.isPropertyAssignment(property) && isFunctionValue(property.initializer)) {
-    members.set(name, { name, node: property, nameNode });
+    members.set(name, { name, node: property, nameNode, sourceFile, path: scriptPath });
     return;
   }
   // Shorthand/identifier/accessor member: the name is known, its value is not
@@ -311,7 +339,7 @@ export function handlerFacts(
 ): HandlerFacts {
   const scan = findRegistrations(sourceFile);
   const matching = scan.registrations.filter((candidate) => candidate.kind === kind);
-  const owner = buildOwnerTable(kind, matching, scan.unsupportedCalls);
+  const owner = buildOwnerTable(kind, matching, scan.unsupportedCalls, [], false, sourceFile, sourceFile.fileName);
   const registration = matching.length === 1 ? matching[0] : undefined;
   const options = registration?.options;
   let methods: ts.ObjectLiteralExpression | undefined;
@@ -356,13 +384,27 @@ function resolveEvent(
 
   const member = owner.members.get(handler);
   if (member) {
-    const range = nameByteRange(member.nameNode, sourceFile, view.scriptText, byteOffset);
-    const signature = signatureOf(member, sourceFile);
+    const offset =
+      member.sourceFile === sourceFile ? byteOffset : utf8ByteOffsets(member.sourceFile.text);
+    const range = nameByteRange(member.nameNode, member.sourceFile, member.sourceFile.text, offset);
+    const signature = signatureOf(member, member.sourceFile);
+    const documentation = docTextOf(member.node);
     return {
       eventId,
       state: owner.state,
-      ...(range ? { definition: { fileId: request.scriptFileId, range } } : {}),
+      ...(range
+        ? {
+            definition: {
+              fileId:
+                path.resolve(member.path) === path.resolve(view.scriptPath)
+                  ? request.scriptFileId
+                  : fileIdFor(request, member.path),
+              range,
+            },
+          }
+        : {}),
       ...(signature ? { signature } : {}),
+      ...(documentation ? { documentation } : {}),
     };
   }
 
@@ -399,6 +441,15 @@ function missingHandlerMessage(handler: string, eventName: string, ownerLabel: s
   const safeEvent = boundedUtf8(sanitizeName(eventName), MAX_EVENT_IN_MESSAGE);
   const message = `Event handler "${safeHandler}" for "${safeEvent}" is not defined on this ${ownerLabel}`;
   return boundedUtf8(message, MAX_MESSAGE_BYTES);
+}
+
+/** Project-relative file id matching `request.files[].fileId`. */
+function fileIdFor(request: AnalyzeRequest, absolute: string): string {
+  const relative = path.relative(
+    path.resolve(request.project.projectRoot),
+    path.resolve(absolute),
+  );
+  return relative === "" ? "." : relative.split(path.sep).join("/");
 }
 
 /** Remove characters that would break a quoted, single-line message. */

@@ -1,9 +1,10 @@
 //! Builds C1.1 `AnalyzeRequest` JSON from a prepared view.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use serde_json::{Value, json};
-use wxml_text::SourceRange;
+use wxml_syntax::{Expr, ExprKind};
+use wxml_text::{SourceRange, TextRange};
 use wxml_types::{
     CheckFragment, CompletionKind, ComponentAttribute, ComponentUsage, EventHandler, GuardChain,
     LocalBinding, RequestContext,
@@ -83,25 +84,24 @@ pub(crate) fn build(
     let mut fragments = Vec::with_capacity(view.fragments.len());
     let mut infos = BTreeMap::new();
     for fragment in view.fragments.iter() {
-        let (selected, target_range) = fragment_target(fragment);
-        // Literal-only expressions (for example `{{ false }}`) have no
-        // identifier to target. The backend rejects fragments without a
-        // target, so leave them out of both the request and the diagnostic
-        // mapping. They cannot produce value diagnostics anyway.
-        if selected.is_none() {
+        // Expressions without a free root identifier (`{{ false }}`,
+        // `{{ Math.PI }}`, `{{ this.title }}`) cannot be mounted by the
+        // backend. Leaving them out keeps one literal from failing the whole
+        // document's hover, definition and diagnostics.
+        let Some((selected, target_range)) = fragment_target(fragment) else {
             continue;
-        }
+        };
         infos.insert(
             fragment.fragment_id.clone(),
             FragmentInfo {
                 fragment_id: fragment.fragment_id.clone(),
-                target: selected.clone(),
+                target: Some(selected.clone()),
                 target_range,
                 expr_range: fragment.wxml_range,
                 bindings: fragment.bindings.clone(),
             },
         );
-        fragments.push(fragment_value(fragment, selected.as_deref()));
+        fragments.push(fragment_value(fragment, Some(selected.as_str())));
     }
 
     let components: Vec<Value> = view.components.iter().map(component_value).collect();
@@ -326,112 +326,207 @@ fn byte_range(range: SourceRange) -> Value {
     json!({"start": range.start(), "end": range.end()})
 }
 
-/// Selects the P6 target or the default right-value identifier.
-fn fragment_target(fragment: &CheckFragment) -> (Option<String>, Option<SourceRange>) {
-    let ranges = identifier_ranges(&fragment.expr_text);
+/// Globals that the Node backend does not treat as free roots.
+///
+/// Mirrors `GLOBALS` in `backends/typescript/src/rewrite.ts`. An expression
+/// whose roots are all globals (`{{ Math.PI }}`, `{{ NaN }}`) has nothing the
+/// backend can mount, and sending it fails the whole analyze request instead
+/// of only that fragment.
+const NODE_GLOBALS: &[&str] = &[
+    "Math",
+    "JSON",
+    "Date",
+    "Number",
+    "String",
+    "Boolean",
+    "Array",
+    "Object",
+    "RegExp",
+    "Symbol",
+    "BigInt",
+    "Map",
+    "Set",
+    "WeakMap",
+    "WeakSet",
+    "Promise",
+    "console",
+    "Intl",
+    "parseInt",
+    "parseFloat",
+    "isNaN",
+    "isFinite",
+    "encodeURI",
+    "decodeURI",
+    "encodeURIComponent",
+    "decodeURIComponent",
+    "undefined",
+    "NaN",
+    "Infinity",
+];
+
+/// ECMAScript reserved words that cannot be a free expression root.
+///
+/// Template locals may shadow globals but never reserved words, so these never
+/// need the local-binding exemption in [`has_free_root`].
+const RESERVED_ROOTS: &[&str] = &[
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "enum",
+    "export",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "import",
+    "in",
+    "instanceof",
+    "new",
+    "null",
+    "return",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "with",
+    "yield",
+    "let",
+    "static",
+    "implements",
+    "interface",
+    "package",
+    "private",
+    "protected",
+    "public",
+    "await",
+];
+
+/// One identifier token that can act as a fragment target.
+struct TargetToken<'a> {
+    start: usize,
+    end: usize,
+    text: &'a str,
+}
+
+/// Chooses the C1 target for one fragment, or `None` when the Node backend
+/// would reject the fragment.
+///
+/// The backend rejects expressions without a free root identifier (`false`,
+/// `1e5`, `Math.PI`, `NaN`, `this.title`, `{ title: 1 }`). A single rejected
+/// fragment fails the whole analyze request, so such fragments must stay out
+/// of the request and the diagnostic map. The template analyzer's target wins;
+/// otherwise the rightmost identifier is used, matching the backend default.
+fn fragment_target(fragment: &CheckFragment) -> Option<(String, Option<SourceRange>)> {
+    let parsed = wxml_syntax::parse_expression(&fragment.expr_text, 0);
+    if !parsed.errors.is_empty() || parsed.expr.walk().any(Expr::is_missing) {
+        return None;
+    }
+    let locals: HashSet<&str> = fragment
+        .bindings
+        .iter()
+        .map(|binding| binding.name.as_str())
+        .collect();
+    if !has_free_root(&parsed.expr, &fragment.expr_text, &locals) {
+        return None;
+    }
+    let tokens = target_tokens(&parsed.expr, &fragment.expr_text);
     let chosen = fragment
         .target
-        .as_ref()
-        .and_then(|target| {
-            ranges
-                .iter()
-                .find(|(_, _, text)| *text == target.as_str())
-                .map(|(start, end, text)| (*start, *end, (*text).to_owned()))
-        })
-        .or_else(|| {
-            ranges
-                .iter()
-                .rev()
-                .find(|(_, _, text)| !is_keyword(text))
-                .map(|(start, end, text)| (*start, *end, (*text).to_owned()))
-        });
-    let Some((start, end, target)) = chosen else {
-        return (None, None);
-    };
-    let start = u32::try_from(start).ok();
-    let end = u32::try_from(end).ok();
-    let target_range = start
-        .zip(end)
-        .and_then(|(start, end)| SourceRange::from_bounds(start, end).ok())
-        .and_then(|range| {
-            let wxml = fragment.wxml_range;
-            let offset = wxml.start();
-            let start = offset.checked_add(range.start())?;
-            let end = offset.checked_add(range.end())?;
-            SourceRange::from_bounds(start, end).ok()
-        });
-    (Some(target), target_range)
+        .as_deref()
+        .and_then(|target| tokens.iter().find(|token| token.text == target))
+        .or_else(|| tokens.last())?;
+    let base = fragment.wxml_range.start();
+    let start = base.checked_add(u32::try_from(chosen.start).ok()?)?;
+    let end = base.checked_add(u32::try_from(chosen.end).ok()?)?;
+    let range = SourceRange::from_bounds(start, end).ok()?;
+    Some((chosen.text.to_owned(), Some(range)))
 }
 
-/// Returns identifier tokens `(start, end, text)` outside strings/comments.
-fn identifier_ranges(expr: &str) -> Vec<(usize, usize, &str)> {
-    let bytes = expr.as_bytes();
-    let mut ranges = Vec::new();
-    let mut index = 0_usize;
-    while index < bytes.len() {
-        let byte = bytes[index];
-        if byte == b'\'' || byte == b'"' {
-            index += 1;
-            while index < bytes.len() {
-                if bytes[index] == b'\\' {
-                    index = index.saturating_add(2);
-                    continue;
-                }
-                if bytes[index] == byte {
-                    index += 1;
-                    break;
-                }
-                index += 1;
-            }
-            continue;
-        }
-        if byte == b'/' && bytes.get(index + 1) == Some(&b'/') {
-            index += 2;
-            while index < bytes.len() && bytes[index] != b'\n' {
-                index += 1;
-            }
-            continue;
-        }
-        if byte == b'/' && bytes.get(index + 1) == Some(&b'*') {
-            index += 2;
-            while index + 1 < bytes.len() {
-                if bytes[index] == b'*' && bytes[index + 1] == b'/' {
-                    index += 2;
-                    break;
-                }
-                index += 1;
-            }
-            continue;
-        }
-        if is_identifier_start(byte) {
-            let start = index;
-            index += 1;
-            while index < bytes.len() && is_identifier_continue(bytes[index]) {
-                index += 1;
-            }
-            if let Some(text) = expr.get(start..index) {
-                ranges.push((start, index, text));
-            }
-            continue;
-        }
-        index += 1;
+/// Returns whether any identifier in `expr` survives as a free root.
+///
+/// Member properties are not roots; object keys are not visited. Template
+/// locals shadow globals (`wx:for-item="Math"`), so a binding name counts even
+/// when [`NODE_GLOBALS`] contains it.
+fn has_free_root(expr: &Expr, source: &str, locals: &HashSet<&str>) -> bool {
+    match expr.kind() {
+        ExprKind::Identifier { name } => slice_relative(source, *name).is_some_and(|text| {
+            locals.contains(text) || (!is_node_global(text) && !RESERVED_ROOTS.contains(&text))
+        }),
+        ExprKind::String { .. }
+        | ExprKind::Number
+        | ExprKind::Boolean(_)
+        | ExprKind::Null
+        | ExprKind::Missing => false,
+        ExprKind::Member { object, .. } => has_free_root(object, source, locals),
+        _ => expr
+            .children()
+            .any(|child| has_free_root(child, source, locals)),
     }
-    ranges
 }
 
-const fn is_identifier_start(byte: u8) -> bool {
-    byte.is_ascii_alphabetic() || byte == b'_' || byte == b'$'
+/// Collects identifier tokens in source order.
+///
+/// Member properties count because the backend maps them; object keys do not,
+/// and `this` can never be a target.
+fn target_tokens<'a>(expr: &Expr, source: &'a str) -> Vec<TargetToken<'a>> {
+    let mut tokens = Vec::new();
+    collect_target_tokens(expr, source, &mut tokens);
+    tokens
 }
 
-const fn is_identifier_continue(byte: u8) -> bool {
-    is_identifier_start(byte) || byte.is_ascii_digit()
+fn collect_target_tokens<'a>(expr: &Expr, source: &'a str, tokens: &mut Vec<TargetToken<'a>>) {
+    match expr.kind() {
+        ExprKind::Identifier { name } => {
+            let Some(text) = slice_relative(source, *name) else {
+                return;
+            };
+            if text == "this" {
+                return;
+            }
+            let (Ok(start), Ok(end)) = (usize::try_from(name.start()), usize::try_from(name.end()))
+            else {
+                return;
+            };
+            tokens.push(TargetToken { start, end, text });
+        }
+        ExprKind::String { .. }
+        | ExprKind::Number
+        | ExprKind::Boolean(_)
+        | ExprKind::Null
+        | ExprKind::Missing => {}
+        _ => {
+            for child in expr.children() {
+                collect_target_tokens(child, source, tokens);
+            }
+        }
+    }
 }
 
-fn is_keyword(text: &str) -> bool {
-    matches!(
-        text,
-        "true" | "false" | "null" | "undefined" | "this" | "new" | "typeof" | "void"
-    )
+/// Slices a range that is relative to the fragment's expression text.
+fn slice_relative(source: &str, range: TextRange) -> Option<&str> {
+    let start = usize::try_from(range.start()).ok()?;
+    let end = usize::try_from(range.end()).ok()?;
+    source.get(start..end)
+}
+
+fn is_node_global(text: &str) -> bool {
+    NODE_GLOBALS.contains(&text)
 }
 
 /// Returns the `{{ ...` expression start and the text up to `offset`.
@@ -768,42 +863,86 @@ mod tests {
         .expect("context")
     }
 
+    fn target(expr: &str) -> Option<String> {
+        fragment_target(&fragment(expr, 0)).map(|(target, _)| target)
+    }
+
     #[test]
-    fn defaults_to_the_last_identifier() {
+    fn selects_the_rightmost_value_identifier() {
         for (expr, expected) in [
-            ("user.name", "name"),
-            ("!title", "title"),
-            ("(title)", "title"),
-            ("title + user.name", "name"),
-            ("user.nmae", "nmae"),
-            ("true", "true"),
+            ("user.name", Some("name")),
+            ("!title", Some("title")),
+            ("(title)", Some("title")),
+            ("title + user.name", Some("name")),
+            ("user.nmae", Some("nmae")),
+            ("user.list[0]", Some("list")),
+            ("a.b[c]", Some("c")),
+            ("Math.max(user.price)", Some("price")),
+            ("false", None),
+            ("1e5", None),
+            ("0x1f", None),
+            ("123n", None),
+            ("Math.PI", None),
+            ("Math.max(1, 2)", None),
+            ("NaN", None),
+            ("Infinity", None),
+            ("this.title", None),
+            ("{ title: 1 }", None),
+            ("'text'", None),
+            ("[1, 2]", None),
         ] {
-            let ranges = identifier_ranges(expr);
-            let chosen = ranges
-                .iter()
-                .rev()
-                .find(|(_, _, text)| !is_keyword(text))
-                .map(|(_, _, text)| *text);
-            assert_eq!(
-                chosen,
-                if expected == "true" {
-                    None
-                } else {
-                    Some(expected)
-                },
-                "{expr}"
-            );
+            assert_eq!(target(expr).as_deref(), expected, "{expr}");
         }
     }
 
     #[test]
-    fn ignores_identifiers_in_strings_and_comments() {
-        let ranges = identifier_ranges(
-            r#""ignore.me" + // comment.name
-            user.name /* other.nope */"#,
+    fn keeps_the_analyzer_target_inside_a_larger_expression() {
+        let mut fragment = fragment("a.b[c]", 0);
+        fragment.target = Some("b".to_owned());
+        let (selected, range) = fragment_target(&fragment).expect("target");
+        assert_eq!(selected, "b");
+        let range = range.expect("range");
+        assert_eq!(range.start(), 2);
+        assert_eq!(range.end(), 3);
+    }
+
+    #[test]
+    fn unicode_identifiers_stay_targetable() {
+        let mut fragment = fragment("用户.名字", 10);
+        fragment.target = Some("名字".to_owned());
+        let (selected, range) = fragment_target(&fragment).expect("target");
+        assert_eq!(selected, "名字");
+        let range = range.expect("range");
+        assert_eq!(
+            range.start(),
+            10 + u32::try_from("用户.".len()).expect("len")
         );
-        let texts: Vec<&str> = ranges.iter().map(|(_, _, text)| *text).collect();
-        assert_eq!(texts, vec!["user", "name"]);
+        assert_eq!(
+            range.end(),
+            10 + u32::try_from("用户.名字".len()).expect("len")
+        );
+    }
+
+    #[test]
+    fn loop_locals_shadow_global_names() {
+        let mut fragment = fragment("Math", 0);
+        fragment.bindings = vec![LocalBinding {
+            name: "Math".to_owned(),
+            role: wxml_types::LocalRole::Item,
+            source_expr: "groups".to_owned(),
+            source_range: SourceRange::from_bounds(100, 106).expect("range"),
+        }];
+        let (selected, _) = fragment_target(&fragment).expect("target");
+        assert_eq!(selected, "Math");
+    }
+
+    #[test]
+    fn strings_do_not_produce_targets() {
+        assert_eq!(
+            target(r#""ignore.me" + user.name"#).as_deref(),
+            Some("name")
+        );
+        assert_eq!(target("'name'"), None);
     }
 
     #[test]
@@ -846,12 +985,32 @@ mod tests {
     }
 
     #[test]
-    fn skips_literal_only_fragments_without_a_target() {
-        let mut view = view(fragment_named("f0", "false", 0));
-        view.fragments = Arc::from(vec![
-            fragment_named("f0", "false", 0),
-            fragment_named("f1", "user.name", 10),
-        ]);
+    fn skips_fragments_the_node_backend_would_reject() {
+        // Each of these makes `planFragments` throw "no free root identifier";
+        // before filtering, one such expression failed every hover,
+        // definition and diagnostic in the document.
+        let rejected = [
+            "false",
+            "1e5",
+            "0x1f",
+            "123n",
+            "Math.PI",
+            "Math.max(1, 2)",
+            "NaN",
+            "Infinity",
+            "this.title",
+            "{ title: 1 }",
+            "'text'",
+        ];
+        let mut fragments: Vec<CheckFragment> = rejected
+            .iter()
+            .enumerate()
+            .map(|(index, expr)| fragment_named(&format!("bad{index}"), expr, 0))
+            .collect();
+        fragments.push(fragment_named("keep", "user.name", 10));
+
+        let mut view = view(fragment_named("keep", "user.name", 10));
+        view.fragments = Arc::from(fragments);
 
         let request = build(
             &view,
@@ -862,11 +1021,11 @@ mod tests {
         .expect("request")
         .expect("some");
 
-        assert!(!request.fragments.contains_key("f0"));
+        assert_eq!(request.fragments.len(), 1);
         assert_eq!(
             request
                 .fragments
-                .get("f1")
+                .get("keep")
                 .and_then(|info| info.target.as_deref()),
             Some("name")
         );
@@ -875,8 +1034,32 @@ mod tests {
             .as_array()
             .expect("fragments array");
         assert_eq!(fragments.len(), 1);
-        assert_eq!(fragments[0]["fragmentId"], "f1");
+        assert_eq!(fragments[0]["fragmentId"], "keep");
         assert_eq!(fragments[0]["target"], "name");
+    }
+
+    #[test]
+    fn a_document_with_only_literal_fragments_still_builds() {
+        let mut view = view(fragment_named("f0", "false", 0));
+        view.fragments = Arc::from(vec![
+            fragment_named("f0", "false", 0),
+            fragment_named("f1", "Math.PI", 10),
+        ]);
+        let request = build(
+            &view,
+            &context(),
+            &NodeBackendConfig::default(),
+            "req".to_owned(),
+        )
+        .expect("request")
+        .expect("some");
+        assert!(request.fragments.is_empty());
+        let value: Value = serde_json::from_str(&request.line).expect("json");
+        assert!(
+            value["params"]["fragments"]
+                .as_array()
+                .is_some_and(Vec::is_empty)
+        );
     }
 
     #[test]

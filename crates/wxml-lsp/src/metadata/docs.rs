@@ -9,80 +9,63 @@ use crate::completion::catalog;
 use crate::project_host::ViewComponent;
 
 /// Builds documentation for a tag name.
-#[allow(clippy::too_many_lines)] // one linear document builder
 pub(super) fn tag_document(components: &[ViewComponent], name: &str) -> Option<String> {
     if let Some(spec) = catalog::tag(name) {
         return Some(format!(
-            "### {}\n\n{}\n\nBuilt-in component.",
+            "### {}\n\n{}\n\n[官方文档]({})",
             escape(name),
-            escape(spec.detail)
+            escape(spec.detail),
+            catalog::docs_url(name)
         ));
     }
     let component = component(components, name)?;
     let mut document = format!("### {}\n\n", escape(name));
     match component.kind {
         ComponentTargetKind::Local => {
-            document.push_str("Custom component.\n\n");
+            document.push_str("自定义组件。\n\n");
             if let Some(file) = component.origin.file() {
-                let _ = write!(document, "Declared in `{}`.\n\n", escape(file.as_str()));
+                let _ = write!(document, "声明位置：`{}`。\n\n", escape(file.as_str()));
             }
             if let Some(wxml) = component.wxml.as_ref() {
-                let _ = write!(document, "Definition: `{}`.\n\n", escape(wxml.as_str()));
+                let _ = write!(document, "定义：`{}`。\n\n", escape(wxml.as_str()));
             } else if let Some(base) = component.component.as_ref() {
-                let _ = write!(
-                    document,
-                    "The local target `{}` could not be resolved; properties are unavailable.\n\n",
-                    escape(base.as_str())
-                );
+                let _ = write!(document, "未能解析组件路径 `{}`。", escape(base.as_str()));
+                return Some(document.trim_end().to_owned());
             } else {
-                document.push_str(
-                    "The local target could not be resolved; properties are unavailable.\n\n",
-                );
+                document.push_str("未能解析组件路径。");
+                return Some(document.trim_end().to_owned());
             }
         }
         ComponentTargetKind::Plugin => {
             let _ = write!(
                 document,
-                "Plugin component (`{}`).\n\n",
+                "插件组件（`{}`）。\n\n",
                 escape(&component.specifier)
             );
-            if component.property_facts.properties.is_empty() {
-                document.push_str(
-                    "Local metadata is unavailable; component properties cannot be verified.\n\n",
-                );
-            }
         }
         ComponentTargetKind::Package => {
             let _ = write!(
                 document,
-                "Package component (`{}`).\n\n",
+                "包组件（`{}`）。\n\n",
                 escape(&component.specifier)
             );
             if let Some(wxml) = component.wxml.as_ref() {
-                let _ = write!(document, "Local build: `{}`.\n\n", escape(wxml.as_str()));
-            } else if component.property_facts.properties.is_empty() {
-                document.push_str(
-                    "Local metadata is unavailable; component properties cannot be verified.\n\n",
-                );
+                let _ = write!(document, "本地构建：`{}`。\n\n", escape(wxml.as_str()));
             }
         }
         _ => {
             let _ = write!(
                 document,
-                "Custom component (`{}`).\n\n",
+                "自定义组件（`{}`）。\n\n",
                 escape(&component.specifier)
             );
         }
     }
     if !component.property_facts.properties.is_empty() {
         if component.property_facts.complete {
-            document.push_str("Properties:\n\n");
+            document.push_str("属性：\n\n");
         } else {
-            let reason = component
-                .property_facts
-                .reason
-                .unwrap_or("static extraction was incomplete");
-            let _ = write!(document, "Properties (incomplete: {}):\n\n", escape(reason));
+            document.push_str("属性（静态提取可能不完整）：\n\n");
         }
         for property in &component.property_facts.properties {
             let _ = write!(
@@ -96,18 +79,8 @@ pub(super) fn tag_document(components: &[ViewComponent], name: &str) -> Option<S
             }
             document.push('\n');
         }
-    } else if component.property_facts.complete && component.wxml.is_some() {
-        document.push_str("No statically declared properties were found.\n");
-    } else if !component.property_facts.complete {
-        let reason = component
-            .property_facts
-            .reason
-            .unwrap_or("static extraction was incomplete");
-        let _ = writeln!(
-            document,
-            "The static property list is incomplete: {}.",
-            escape(reason)
-        );
+    } else if component.wxml.is_some() && component.property_facts.complete {
+        document.push_str("未找到静态声明的属性。");
     }
     Some(document.trim_end().to_owned())
 }
@@ -134,17 +107,15 @@ pub(super) fn attribute_document(
             return Some(document);
         }
         // A resolved local component may have properties the static extractor
-        // cannot see (Behavior, spreads). Leave those to the backend instead
-        // of claiming they do not exist.
-        if component.wxml.is_some() {
+        // cannot see (Behavior, spreads, wrappers such as `VantComponent`).
+        // With complete facts, leave the unknown name to the backend instead
+        // of claiming it does not exist. With incomplete facts, answer with a
+        // short honest hint: returning nothing would leave the user with no
+        // hover at all (for example on `van-button`'s `round`).
+        if component.wxml.is_some() && component.property_facts.complete {
             return None;
         }
-        return Some(format!(
-            "### {}\n\nLocal metadata is unavailable; cannot verify property `{}` on component `{}`.",
-            escape(name),
-            escape(name),
-            escape(tag)
-        ));
+        return Some(format!("### {}\n\n暂无属性说明。", escape(name)));
     }
     shared_attribute_document(tag, name)
 }
@@ -153,7 +124,7 @@ pub(super) fn attribute_document(
 fn shared_attribute_document(tag: &str, name: &str) -> Option<String> {
     if let Some(spec) = catalog::directive(name) {
         return Some(format!(
-            "### {}\n\n{}\n\nWXML directive.",
+            "### {}\n\n{}\n\nWXML 指令。",
             escape(name),
             escape(spec.detail)
         ));
@@ -163,33 +134,33 @@ fn shared_attribute_document(tag: &str, name: &str) -> Option<String> {
     }
     if catalog::is_event_attribute(name) {
         let event = event_name(name).unwrap_or("event");
-        return Some(event_document(name, &format!("Binds the `{event}` event")));
+        return Some(event_document(name, &format!("绑定 `{event}` 事件。")));
     }
     if let Some(spec) = catalog::tag_attribute(tag, name) {
         let mut document = format!(
-            "### {}\n\n{}\n\n`{}` attribute.",
+            "### {}\n\n{}\n\n`{}` 属性。",
             escape(name),
             escape(spec.detail),
             escape(tag)
         );
         let values = catalog::values_for(tag, name);
         if !values.is_empty() {
-            document.push_str("\n\nValues:");
+            document.push_str("\n\n可选值：\n\n");
             for value in values {
-                let _ = write!(
+                let _ = writeln!(
                     document,
-                    " `{}` ({})",
+                    "- `{}`：{}",
                     escape(value.value),
                     escape(value.detail)
                 );
             }
-            document.push('.');
         }
+        let _ = write!(document, "\n[官方文档]({})", catalog::docs_url(tag));
         return Some(document);
     }
     if let Some(spec) = catalog::global_attribute(name) {
         return Some(format!(
-            "### {}\n\n{}\n\nGlobal attribute.",
+            "### {}\n\n{}\n\n全局属性。",
             escape(name),
             escape(spec.detail)
         ));
@@ -199,24 +170,20 @@ fn shared_attribute_document(tag: &str, name: &str) -> Option<String> {
 
 /// Builds documentation for an event attribute.
 fn event_document(name: &str, detail: &str) -> String {
-    format!(
-        "### {}\n\n{}\n\nEvent binding.",
-        escape(name),
-        escape(detail)
-    )
+    format!("### {}\n\n{}", escape(name), escape(detail))
 }
 
 /// Builds documentation for one component property.
 fn property_document(tag: &str, property: &wxml_project::ComponentProperty) -> String {
     let mut document = format!(
-        "### {}\n\n`{}` - component property of `{}`.\n\nDeclared in `{}`.",
+        "### {}\n\n`{}`，`{}` 的组件属性。\n\n声明位置：`{}`。",
         escape(&property.name),
         escape(&property.type_text),
         escape(tag),
         escape(property.script.as_str())
     );
     if let Some(default) = property.default_text.as_ref() {
-        let _ = write!(document, "\n\nDefault: `{}`.", escape(default));
+        let _ = write!(document, "\n\n默认值：`{}`。", escape(default));
     }
     if let Some(documentation) = property.documentation.as_ref() {
         let _ = write!(document, "\n\n{}", escape(documentation));
@@ -239,17 +206,18 @@ pub(super) fn value_document(
                 .iter()
                 .find(|property| property.name.eq_ignore_ascii_case(attribute))
             {
-                return Some(format!(
-                    "### {}\n\nValue of `{}` on `{}` (`{}`).\n\n{}",
-                    escape(value),
-                    escape(attribute),
-                    escape(tag),
+                let mut document = format!("### {}\n\n", escape(value));
+                if let Some(documentation) = property.documentation.as_ref() {
+                    let _ = write!(document, "{}\n\n", escape(documentation));
+                }
+                let _ = write!(
+                    document,
+                    "`{}`，`{}` 的 `{}` 取值。",
                     escape(&property.type_text),
-                    property
-                        .documentation
-                        .as_ref()
-                        .map_or_else(String::new, |documentation| escape(documentation))
-                ));
+                    escape(tag),
+                    escape(attribute)
+                );
+                return Some(document);
             }
             return None;
         }
@@ -261,11 +229,11 @@ pub(super) fn value_document(
         .iter()
         .find(|candidate| candidate.value == value)?;
     Some(format!(
-        "### {}\n\n{}\n\nValue of `{}` on `{}`.",
+        "### {}\n\n{}\n\n`{}` 的 `{}` 取值。",
         escape(value),
         escape(value_spec.detail),
-        escape(attribute),
-        escape(tag)
+        escape(tag),
+        escape(attribute)
     ))
 }
 

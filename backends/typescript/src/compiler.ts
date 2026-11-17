@@ -114,8 +114,9 @@ export function acquireProject(
   init: VirtualProjectInit,
   extraFiles: ReadonlyArray<{ path: string; text: string }> = [],
 ): VirtualProject {
-  const files = [...init.files, ...extraFiles];
-  const key = projectKey(init, files);
+  const normalized = withPinnedTypings(init);
+  const files = [...normalized.files, ...extraFiles];
+  const key = projectKey(normalized, files);
   const index = projectPool.findIndex((entry) => entry.key === key);
   if (index >= 0) {
     const [entry] = projectPool.splice(index, 1);
@@ -123,10 +124,44 @@ export function acquireProject(
     entry.project.refresh(files);
     return entry.project;
   }
-  const project = new VirtualProject({ ...init, files });
+  const project = new VirtualProject({ ...normalized, files });
   projectPool.unshift({ key, project });
   if (projectPool.length > MAX_POOLED_PROJECTS) projectPool.length = MAX_POOLED_PROJECTS;
   return project;
+}
+
+/**
+ * Keeps the pinned mini program typings reachable next to a project tsconfig.
+ *
+ * A project that sets `typeRoots` replaces TypeScript's default
+ * `node_modules/@types` lookup. The project-local roots usually live outside
+ * the request snapshot and cannot be read by this backend, so resolving
+ * `"miniprogram-api-typings"` against them alone leaves `Component`, `Page`
+ * and `wx` undeclared, and every template hover degrades to `any`.
+ *
+ * Appending the backend's own `node_modules` as a final root restores the
+ * pinned package without granting access to any project source: the read
+ * policy still rejects files outside the backend typings/lib directories.
+ * `types` always includes the pinned package because it is the vocabulary the
+ * WXML bridge is built on.
+ */
+export function withPinnedTypings(init: VirtualProjectInit): VirtualProjectInit {
+  const options = init.compilerOptions;
+  const types = options.types ?? [];
+  const normalizedTypes = types.includes(TYPINGS_PACKAGE)
+    ? types
+    : [...types, TYPINGS_PACKAGE];
+  const typeRoots = options.typeRoots
+    ? [...options.typeRoots, path.join(init.rootDir, "node_modules")]
+    : undefined;
+  return {
+    ...init,
+    compilerOptions: {
+      ...options,
+      types: normalizedTypes,
+      ...(typeRoots ? { typeRoots } : {}),
+    },
+  };
 }
 
 /** Drops every pooled project. Used by tests and explicit backend resets. */

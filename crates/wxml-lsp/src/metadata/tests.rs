@@ -122,7 +122,9 @@ fn builtin_tags_attributes_and_values_have_static_docs() {
     let HoverAnswer::Document { markdown, .. } = hover(&components, &tag) else {
         panic!("tag docs");
     };
-    assert!(markdown.contains("Button"), "{markdown}");
+    assert!(markdown.contains("按钮"), "{markdown}");
+    assert!(markdown.contains("[官方文档]"), "{markdown}");
+    assert!(markdown.contains("component/button.html"), "{markdown}");
 
     let attribute = target(text, 10).expect("attribute");
     let HoverAnswer::Document { markdown, .. } = hover(&components, &attribute) else {
@@ -130,20 +132,24 @@ fn builtin_tags_attributes_and_values_have_static_docs() {
     };
     assert!(markdown.contains("primary"), "{markdown}");
     assert!(markdown.contains("default"), "{markdown}");
+    assert!(markdown.contains("可选值："), "{markdown}");
+    assert!(markdown.contains("\n- `default`：默认按钮"), "{markdown}");
+    assert!(!markdown.contains("Values:"), "{markdown}");
 
     let offset = text.find("primary").expect("value") + 2;
     let value = target(text, offset).expect("value");
     let HoverAnswer::Document { markdown, .. } = hover(&components, &value) else {
         panic!("value docs");
     };
-    assert!(markdown.contains("Primary button"), "{markdown}");
+    assert!(markdown.contains("主要按钮"), "{markdown}");
 
     let offset = text.find("wx:if").expect("directive") + 2;
     let directive = target(text, offset).expect("directive");
     let HoverAnswer::Document { markdown, .. } = hover(&components, &directive) else {
         panic!("directive docs");
     };
-    assert!(markdown.contains("WXML directive"), "{markdown}");
+    assert!(markdown.contains("条件渲染"), "{markdown}");
+    assert!(markdown.contains("WXML 指令"), "{markdown}");
 }
 
 #[test]
@@ -155,7 +161,9 @@ fn component_tag_and_property_have_static_docs_and_definitions() {
     let HoverAnswer::Document { markdown, .. } = hover(&components, &tag) else {
         panic!("component docs");
     };
-    assert!(markdown.contains("Custom component"), "{markdown}");
+    assert!(markdown.contains("自定义组件"), "{markdown}");
+    assert!(markdown.contains("定义："), "{markdown}");
+    assert!(markdown.contains("声明位置："), "{markdown}");
     assert!(
         markdown.contains("components/my-card/index.wxml"),
         "{markdown}"
@@ -200,8 +208,7 @@ fn unresolved_components_and_unknown_properties_do_not_fabricate_targets() {
     let HoverAnswer::Document { markdown, .. } = hover(&components, &tag) else {
         panic!("plugin docs");
     };
-    assert!(markdown.contains("Plugin component"), "{markdown}");
-    assert!(markdown.contains("unavailable"), "{markdown}");
+    assert!(markdown.contains("插件组件"), "{markdown}");
     assert_eq!(definition(&components, &tag), DefinitionAnswer::None);
 
     let attribute = target(text, text.find("title").expect("attribute") + 2).expect("attribute");
@@ -212,7 +219,11 @@ fn unresolved_components_and_unknown_properties_do_not_fabricate_targets() {
     let HoverAnswer::Document { markdown, .. } = hover(&components, &attribute) else {
         panic!("unknown property docs");
     };
-    assert!(markdown.contains("cannot verify property"), "{markdown}");
+    assert!(markdown.contains("暂无属性说明"), "{markdown}");
+    assert!(
+        !markdown.contains("Local metadata is unavailable"),
+        "{markdown}"
+    );
 }
 
 #[test]
@@ -229,12 +240,19 @@ fn incomplete_component_properties_are_not_reported_as_empty() {
     let HoverAnswer::Document { markdown, .. } = hover(&components, &tag) else {
         panic!("component docs");
     };
-    assert!(markdown.contains("incomplete"), "{markdown}");
-    assert!(!markdown.contains("No statically declared"), "{markdown}");
+    assert!(!markdown.contains("未找到静态声明的属性"), "{markdown}");
+    assert!(!markdown.contains("属性："), "{markdown}");
+    assert!(
+        !markdown.contains("spread properties were not statically extracted"),
+        "{markdown}"
+    );
 
     let text = "<my-card title=\"x\" />";
     let attribute = target(text, text.find("title").expect("attribute") + 2).expect("attribute");
-    assert_eq!(hover(&components, &attribute), HoverAnswer::NotStatic);
+    let HoverAnswer::Document { markdown, .. } = hover(&components, &attribute) else {
+        panic!("incomplete property docs");
+    };
+    assert!(markdown.contains("暂无属性说明"), "{markdown}");
 }
 
 #[test]
@@ -247,8 +265,8 @@ fn builtin_tag_names_win_over_same_named_components() {
     let HoverAnswer::Document { markdown, .. } = hover(&components, &tag) else {
         panic!("builtin tag docs");
     };
-    assert!(markdown.contains("Built-in component"), "{markdown}");
-    assert!(!markdown.contains("Custom component"), "{markdown}");
+    assert!(markdown.contains("官方文档"), "{markdown}");
+    assert!(!markdown.contains("自定义组件"), "{markdown}");
     assert_eq!(definition(&components, &tag), DefinitionAnswer::NotStatic);
 
     let attribute = target(text, text.find("title").expect("attribute") + 2).expect("attribute");
@@ -279,4 +297,79 @@ fn binder_is_a_component_property_not_an_event_prefix() {
         panic!("property value docs");
     };
     assert!(markdown.contains("标题"), "{markdown}");
+}
+
+#[test]
+fn unresolved_component_hover_is_one_short_line() {
+    let mut component = component_fixture();
+    component.wxml = None;
+    component.json = None;
+    component.property_facts = wxml_project::ComponentPropertyFacts {
+        properties: Vec::new(),
+        complete: false,
+        reason: Some("component metadata is unavailable"),
+    };
+    let components = vec![component];
+    let text = "<my-card />";
+    let tag = target(text, 3).expect("tag");
+    let HoverAnswer::Document { markdown, .. } = hover(&components, &tag) else {
+        panic!("component docs");
+    };
+    assert!(markdown.contains("未能解析组件路径"), "{markdown}");
+    assert!(
+        !markdown.contains("properties are unavailable")
+            && !markdown.contains("static property list is incomplete")
+            && !markdown.contains("属性列表"),
+        "{markdown}"
+    );
+}
+
+#[test]
+fn builtin_tag_docs_link_to_the_official_page() {
+    let components: Vec<ViewComponent> = Vec::new();
+    let text = "<view>";
+    let tag = target(text, 2).expect("tag");
+    let HoverAnswer::Document { markdown, .. } = hover(&components, &tag) else {
+        panic!("tag docs");
+    };
+    assert!(markdown.contains("视图容器"), "{markdown}");
+    assert!(
+        markdown.contains(
+            "[官方文档](https://developers.weixin.qq.com/miniprogram/dev/component/view.html)"
+        ),
+        "{markdown}"
+    );
+
+    let text = "<wxs module=\"m\">";
+    let tag = target(text, 2).expect("tag");
+    let HoverAnswer::Document { markdown, .. } = hover(&components, &tag) else {
+        panic!("wxs docs");
+    };
+    assert!(markdown.contains("reference/wxs/"), "{markdown}");
+}
+
+#[test]
+fn enumerated_values_are_a_bullet_list() {
+    let components: Vec<ViewComponent> = Vec::new();
+    let text = "<button open-type=\"share\">";
+    let attribute =
+        target(text, text.find("open-type").expect("attribute") + 2).expect("attribute");
+    let HoverAnswer::Document { markdown, .. } = hover(&components, &attribute) else {
+        panic!("attribute docs");
+    };
+    assert!(markdown.contains("可选值：\n"), "{markdown}");
+    assert!(
+        markdown.contains("\n- `contact`：打开客服会话"),
+        "{markdown}"
+    );
+    assert!(markdown.contains("\n- `share`：分享页面"), "{markdown}");
+    assert!(!markdown.contains("Values:"), "{markdown}");
+}
+
+#[test]
+fn complete_component_facts_leave_unknown_attributes_to_the_backend() {
+    let components = vec![component_fixture()];
+    let text = "<my-card mystery=\"x\" />";
+    let attribute = target(text, text.find("mystery").expect("attribute") + 2).expect("attribute");
+    assert_eq!(hover(&components, &attribute), HoverAnswer::NotStatic);
 }

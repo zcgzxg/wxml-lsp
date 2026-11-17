@@ -697,6 +697,7 @@ fn load_app(
                         app_json.parent().as_ref(),
                         &mut parsed.value.using_components,
                     );
+                    retarget_root_components(root, overlay, &mut parsed.value.using_components);
                     issues.extend(parsed.issues);
                     parsed.value
                 }
@@ -991,6 +992,47 @@ fn classify_component(
     ProjectPath::resolve(base, specifier).map(|base| (ComponentTargetKind::Local, Some(base)))
 }
 
+/// Re-anchors root-absolute component specifiers that only exist under the
+/// project root.
+///
+/// Bundled projects often keep a component library outside the directory that
+/// contains `app.json` (for example `libs/` next to `src/`). The template still
+/// uses `/libs/...`, so a specifier that does not resolve under the app
+/// directory is retried against the project root before it is reported as
+/// missing.
+fn retarget_root_components(
+    root: &Path,
+    overlay: &Overlay,
+    components: &mut BTreeMap<String, UsingComponent>,
+) {
+    for component in components.values_mut() {
+        if component.kind != ComponentTargetKind::Local {
+            continue;
+        }
+        let Some(current) = component.component.as_ref() else {
+            continue;
+        };
+        if exists_wxml(root, overlay, current) {
+            continue;
+        }
+        let Some(rest) = component.specifier.strip_prefix('/') else {
+            continue;
+        };
+        let Ok(candidate) = ProjectPath::new(rest) else {
+            continue;
+        };
+        if exists_wxml(root, overlay, &candidate) {
+            component.component = Some(candidate);
+        }
+    }
+}
+
+/// Returns whether the component's WXML exists for one base path.
+fn exists_wxml(root: &Path, overlay: &Overlay, base: &ProjectPath) -> bool {
+    base.with_appended_extension("wxml")
+        .is_ok_and(|wxml| exists(root, overlay, &wxml))
+}
+
 /// Resolves package specifiers through the local `miniprogram_npm` build.
 ///
 /// We only accept a package component when its built WXML exists, so a bare
@@ -1259,6 +1301,7 @@ fn finish_page_local(
                 context.source.parent().as_ref(),
                 &mut parsed.value.local,
             );
+            retarget_root_components(root, overlay, &mut parsed.value.local);
             issues.extend(parsed.issues);
             let style_isolation = parsed.value.style_isolation;
             let add_global_class = parsed.value.add_global_class;
@@ -1513,6 +1556,7 @@ fn load_component_json(
                         context.source.parent().as_ref(),
                         &mut parsed.value.local,
                     );
+                    retarget_root_components(root, overlay, &mut parsed.value.local);
                     parsed_style = (
                         parsed.value.style_isolation.clone(),
                         parsed.value.add_global_class,
@@ -1960,6 +2004,107 @@ mod tests {
         assert_eq!(card.property_facts.properties[0].type_text, "string");
         assert!(card.property_facts.complete);
         assert_eq!(card.config.local.len(), 0);
+    }
+
+    #[test]
+    fn retargets_root_components_kept_outside_the_app_directory() {
+        let temp = TempDir::new("root-relative");
+        temp.write(
+            "src/app.json",
+            r#"{
+                "pages": ["pages/index/index"],
+                "usingComponents": {"van-button": "/libs/vant-ui/button/index"}
+            }"#,
+        );
+        temp.write("src/pages/index/index.wxml", "<van-button/>");
+        temp.write(
+            "src/pages/index/index.json",
+            r#"{"usingComponents": {"van-tag": "/libs/vant-ui/tag/index"}}"#,
+        );
+        temp.write("libs/vant-ui/button/index.wxml", "<button><slot/></button>");
+        temp.write("libs/vant-ui/button/index.json", "{}");
+        temp.write("libs/vant-ui/tag/index.wxml", "<view><slot/></view>");
+        temp.write("libs/vant-ui/tag/index.json", "{}");
+
+        let discovery = discover(&temp.root(), &Overlay::new(), &path("src/app.json"));
+        let page = &discovery.pages[0];
+        assert_eq!(
+            page.config
+                .get("van-button")
+                .and_then(|entry| entry.component.as_ref()),
+            Some(&path("libs/vant-ui/button/index"))
+        );
+        assert_eq!(
+            page.config
+                .get("van-tag")
+                .and_then(|entry| entry.component.as_ref()),
+            Some(&path("libs/vant-ui/tag/index"))
+        );
+        assert_eq!(
+            page.config.get("van-button").map(|entry| entry.kind),
+            Some(ComponentTargetKind::Local)
+        );
+        let ids: Vec<&str> = discovery
+            .components
+            .iter()
+            .map(|component| component.id.as_str())
+            .collect();
+        assert_eq!(ids, ["libs/vant-ui/button/index", "libs/vant-ui/tag/index"]);
+        assert!(discovery.issues.is_empty(), "{:?}", discovery.issues);
+    }
+
+    #[test]
+    fn retargets_root_components_declared_by_a_component_json() {
+        let temp = TempDir::new("nested-root-relative");
+        temp.write("src/app.json", r#"{"pages": ["pages/index/index"]}"#);
+        temp.write("src/pages/index/index.wxml", "<van-button/>");
+        temp.write(
+            "src/pages/index/index.json",
+            r#"{"usingComponents": {"van-button": "/libs/vant-ui/button/index"}}"#,
+        );
+        temp.write("libs/vant-ui/button/index.wxml", "<van-icon/>");
+        temp.write(
+            "libs/vant-ui/button/index.json",
+            r#"{"usingComponents": {"van-icon": "/libs/vant-ui/icon/index"}}"#,
+        );
+        temp.write("libs/vant-ui/icon/index.wxml", "<view/>");
+        temp.write("libs/vant-ui/icon/index.json", "{}");
+
+        let discovery = discover(&temp.root(), &Overlay::new(), &path("src/app.json"));
+        let ids: Vec<&str> = discovery
+            .components
+            .iter()
+            .map(|component| component.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            ["libs/vant-ui/button/index", "libs/vant-ui/icon/index"]
+        );
+        assert!(discovery.issues.is_empty(), "{:?}", discovery.issues);
+    }
+
+    #[test]
+    fn keeps_app_directory_components_when_the_same_path_also_exists_at_the_root() {
+        let temp = TempDir::new("root-relative-precedence");
+        temp.write("src/app.json", r#"{"pages": ["pages/index/index"]}"#);
+        temp.write("src/pages/index/index.wxml", "<my-card/>");
+        temp.write(
+            "src/pages/index/index.json",
+            r#"{"usingComponents": {"my-card": "/libs/my-card/index"}}"#,
+        );
+        temp.write("src/libs/my-card/index.wxml", "<view>app</view>");
+        temp.write("src/libs/my-card/index.json", "{}");
+        temp.write("libs/my-card/index.wxml", "<view>root</view>");
+        temp.write("libs/my-card/index.json", "{}");
+
+        let discovery = discover(&temp.root(), &Overlay::new(), &path("src/app.json"));
+        let ids: Vec<&str> = discovery
+            .components
+            .iter()
+            .map(|component| component.id.as_str())
+            .collect();
+        assert_eq!(ids, ["src/libs/my-card/index"]);
+        assert!(discovery.issues.is_empty(), "{:?}", discovery.issues);
     }
 
     #[test]

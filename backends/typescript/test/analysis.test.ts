@@ -7,6 +7,7 @@ import { analyze, finishedStates } from "../src/analysis.ts";
 import { BACKEND_DIR, SAMPLES_DIR } from "../src/env.ts";
 import { RequestError, validateRequest } from "../src/protocol.ts";
 import { inspectRequest, type RunConfig } from "../src/run.ts";
+import { analyzeRequest } from "./support.ts";
 import { scenarioById } from "../src/scenarios.ts";
 import type { AnalyzeRequest } from "../src/protocol.ts";
 
@@ -374,4 +375,23 @@ test("a malformed request is rejected before analysis", () => {
     () => validateRequest(request),
     (error: unknown) => error instanceof RequestError && error.code === "bad-protocol",
   );
+});
+
+test("behavior data spreads are expanded through the checker", () => {
+  const script = `import { BASE } from "./base";
+const shared = Behavior({ data: { ...BASE } });
+Component({ behaviors: [shared], data: {} });`;
+  const base = `export const BASE = { isFlag: true, title: "x" };`;
+  const request = analyzeRequest({
+    script,
+    kind: "component",
+    extraFiles: [{ path: "base.ts", text: base }],
+    fragments: [fragment({ exprText: "isFlag", wxmlRange: { start: 0, end: 6 } })],
+  });
+  const result = analyze(request, analysisConfig);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const entry = result.response.fragments.find((item) => item.fragmentId === "f0");
+  assert.equal(entry?.hover?.typeOnly, "boolean");
+  assert.equal(result.response.states.hover.status, "supported");
 });

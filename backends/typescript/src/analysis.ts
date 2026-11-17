@@ -217,6 +217,8 @@ export interface PreparedView {
   moduleBefore: "script" | "module";
   build: LayoutBuild;
   registration: AnalyzeResponse["registration"];
+  /** Static behavior graph of the selected component registration. */
+  behavior: import("./behaviors.ts").BehaviorResolution;
   pragmaNoCheck: boolean;
   baselineFingerprint: Fingerprint;
   baselineDiagnostics: Array<{ code: number; start: number; length: number }>;
@@ -339,12 +341,28 @@ export function buildView(request: AnalyzeRequest, config: AnalysisConfig): Prep
           candidate.kind === found.kind && candidate.options.pos === found.options.pos,
       )
     : undefined;
+  // Prefer the program's AST: the checker can only type nodes that belong to
+  // its program, so a standalone re-parse would silently degrade every
+  // non-literal behavior initializer (for example `data: { zIndex: Z_INDEX }`)
+  // to `any`.
+  const programSource = (absolute: string): ts.SourceFile | undefined =>
+    baseline.program().getSourceFile(path.resolve(absolute)) ?? behaviorSource(absolute);
   const behavior = resolveBehaviors({
     scriptPath,
     sourceFile: programScript,
     ...(programRegistration ? { registration: programRegistration } : {}),
-    getSourceFile: (absolute: string) =>
-      baseline.program().getSourceFile(path.resolve(absolute)) ?? behaviorSource(absolute),
+    getSourceFile: programSource,
+    resolveModule: (specifier: string, fromFile: string) => {
+      const resolution = ts.resolveModuleName(specifier, path.resolve(fromFile), compilerOptions, {
+        fileExists: (candidate: string) => files.has(path.resolve(candidate)),
+        readFile: (candidate: string) => files.get(path.resolve(candidate)) ?? "",
+        directoryExists: () => true,
+        getDirectories: () => [],
+        realpath: (candidate: string) => candidate,
+      });
+      const resolved = resolution.resolvedModule?.resolvedFileName;
+      return resolved === undefined ? undefined : programSource(resolved);
+    },
     checker: baseline.checker(),
   });
   const ownPropertyScan = scanDeclaredProperties(found?.options);
@@ -424,6 +442,7 @@ export function buildView(request: AnalyzeRequest, config: AnalysisConfig): Prep
     moduleBefore,
     build,
     registration,
+    behavior,
     pragmaNoCheck: pragma.noCheck,
     baselineFingerprint,
     baselineDiagnostics,
