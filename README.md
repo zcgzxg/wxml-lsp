@@ -4,9 +4,9 @@
 
 架构决策于 2026-11-15 整理至 [ADR 索引](docs/adr/README.md)，包含模块边界、类型检查与源码映射、文档同步及并行交付方案；2026-11-16 的 [ADR-0006](docs/adr/0006-explicit-mini-program-roots.md) 补充显式小程序根配置。架构边界以有效 ADR 为准；`accepted` 不表示功能已实现，实际进度与证据仍见本文。
 
-本文记录已确认的需求、方案评审结果、实验依据和后续计划。项目用于个人在 Zed 中开发微信小程序。截至 W3（2026-11-17，`379b097`），Rust workspace、WXML 语法/项目模型、C0/C1 契约、Node 类型后端、模板类型语义、组件/样式/资源智能、结构编辑与保真格式化、显式多 app、依赖失效、未保存 overlay、版本屏障与重启恢复均已接入；S 语义工具（references/rename/codeAction/semanticTokens/workspaceSymbol/inlayHint/signatureHelp/codeLens）已合入。Q1 本地交付（本地打包、验证安装、升级/回退、可选显式 HTTPS 下载）已合入 `f46dec9`；Q2 性能/恢复、完整 Linux UI 验收尚未完成。当前没有 marketplace、远端 release 或发布者签名；Windows/macOS 实机、真实主桌面 Wayland 交互和发布流水线仍未验收。
+本文记录已确认的需求、方案评审结果、实验依据和后续计划。项目用于个人在 Zed 中开发微信小程序。截至 W4（2026-11-17，`9b804d4`），Rust workspace、WXML 语法/项目模型、C0/C1 契约、Node 类型后端、模板类型语义、组件/样式/资源智能、结构编辑与保真格式化、显式多 app、依赖失效、未保存 overlay、版本屏障与重启恢复均已接入；S 语义工具（references/rename/codeAction/semanticTokens/workspaceSymbol/inlayHint/signatureHelp/codeLens）已合入；Q2 调度/恢复、最终 release 和 Linux Zed 运行时冒烟已完成。Q2 的 Rust 与安全 R2 均 `APPROVE`；S 第 2 轮 `CHANGES_REQUESTED` 的残余已由 `dd15bc1` 修复并由集成侧复验，按用户上限没有第 3 轮正式审核，不写成 `APPROVED`。Q1 本地交付（本地打包、验证安装、升级/回退、可选显式 HTTPS 下载）已合入 `f46dec9`。当前没有 marketplace、远端 release 或发布者签名；Windows/macOS 实机、真实主桌面 Wayland 交互和完整多 workspace 仍未验收。
 
-文档入口：[文档索引](docs/README.md) · [WXML 语言功能基线](docs/reference/wxml-language-feature-baseline.md) · [W3 语义工具证据](docs/evidence/full-feature-w3.md) · [W2 集成证据](docs/evidence/full-feature-w2.md) · [证据索引](docs/evidence/README.md) · [来源与许可证记录](docs/reference/provenance.md)。
+文档入口：[文档索引](docs/README.md) · [WXML 语言功能基线](docs/reference/wxml-language-feature-baseline.md) · [W4 最终验收证据](docs/evidence/full-feature-final.md) · [W3 语义工具证据](docs/evidence/full-feature-w3.md) · [W2 集成证据](docs/evidence/full-feature-w2.md) · [证据索引](docs/evidence/README.md) · [来源与许可证记录](docs/reference/provenance.md)。
 
 ## 0. 当前实现与快速开始
 
@@ -14,12 +14,12 @@
 
 | 组件 | 位置 | 当前内容 |
 | --- | --- | --- |
-| Rust workspace | `crates/` | `wxml-text`（UTF-8 字节 ↔ UTF-16 位置、行索引）、`wxml-syntax`（容错 lexer/parser、Mustache Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、显式多 app、tsconfig、依赖/样式/资源索引）、`wxml-types`（C0 契约、模板语义、`wx:for`/guards、Behavior 声明事实、template/import/include 与 WXS 静态摘要、脚本符号事实、后端接口与 mock）、`wxml-lsp`（JSON-RPC、多项目宿主、Node 后端、hover/definition/diagnostics/completion、格式/结构/链接、语义工具与安全编辑、版本屏障/缓存/超时/重启）、`wxml-delivery`（Q1 本地打包/验证安装器）、`wxml-fixtures`（schema v2 校验） |
-| Node 类型后端 | `backends/typescript/` | C1.1 类型桥；固定 `typescript@6.0.3`、`miniprogram-api-typings@5.3.1`；要求 Node >= 24；行为/共享 data/props、复杂属性类型、guards/loops、JS/JSDoc、未保存 overlay 与符号/引用事实；内存原位 shadow，不写业务文件 |
+| Rust workspace | `crates/` | `wxml-text`（UTF-8 字节 ↔ UTF-16 位置、行索引）、`wxml-syntax`（容错 lexer/parser、Mustache Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、显式多 app、tsconfig、依赖/样式/资源索引）、`wxml-types`（C0 契约、模板语义、`wx:for`/guards、Behavior 声明事实、template/import/include 与 WXS 静态摘要、脚本符号事实、后端接口与 mock）、`wxml-lsp`（JSON-RPC、多项目宿主、Node 后端、hover/definition/diagnostics/completion、格式/结构/链接、语义工具与安全编辑、Q2 调度/取消/恢复、版本屏障/缓存/超时/重启）、`wxml-delivery`（Q1 本地打包/验证安装器）、`wxml-fixtures`（schema v2 校验） |
+| Node 类型后端 | `backends/typescript/` | C1.1 类型桥；固定 `typescript@6.0.3`、`miniprogram-api-typings@5.3.1`；要求 Node >= 24；行为/共享 data/props、复杂属性类型、guards/loops、JS/JSDoc、未保存 overlay 与符号/引用事实；内存原位 shadow，不写业务文件；支持 source/dist/packaged/symlink 安装布局 |
 | Zed 扩展 | `editors/zed/` | 本地 Dev Extension，id `wxml-lsp`、名称 `WXML LSP`（避免与 Marketplace 上仅 grammar 的 `wxml` 扩展冲突）；WXML 语言配置、tree-sitter 查询与 outline、`wasm32-wasip2`；真实 grammar 已用 wasi-sdk 34 构建（约 23,806 B）；从 `WXML_LSP_BIN` 绝对路径启动 `wxml-lsp --stdio` |
-| 样本与证据 | `tests/fixtures/`、`docs/evidence/` | AC-001..AC-013 样本与 schema 校验；类型桥、P7/P8、G1、[W2 集成证据](docs/evidence/full-feature-w2.md) 与 [W3 语义工具证据](docs/evidence/full-feature-w3.md) |
+| 样本与证据 | `tests/fixtures/`、`docs/evidence/` | AC-001..AC-013 样本与 schema 校验；类型桥、P7/P8、G1、[W2 集成证据](docs/evidence/full-feature-w2.md)、[W3 语义工具证据](docs/evidence/full-feature-w3.md) 与 [W4 最终验收证据](docs/evidence/full-feature-final.md) |
 
-当前状态快照（W3 `379b097`，S `dd15bc1`）：W3 固定日志为 workspace `1251 passed / 0 failed / 21 ignored`（45 suites，含 doctests）；`semantic_tools` `41 passed`；Node 后端串行 `326 / 326`。21 个 ignored 是显式真实 Node 门禁（`stdio_type_loop` 9、`real_node` 5、`wave5_acceptance` 7），W3 没有重新执行 `WXML_TEST_NODE=1`。W2 固定日志的 `1095 / 20`、Node `304 / 305` 和 `editors/zed` `25 passed` 属于 W2 记录，不与 W3 计数混用；Q1 `f46dec9` 的 `cargo test -p wxml-delivery` 结果也保持原记录。Zed 标准 Dev Extension 安装、干净 fixture 的 hover/definition/completion/diagnostics、真实 TS/JS 项目和重启恢复是 2026-11-16 的隔离 Xvfb 证据，W3 未重跑，见 [P8 第 13 节](docs/evidence/p8-zed.md)。
+当前状态快照（W4 `9b804d4`）：W4 固定日志为 Rust workspace `1283 passed / 0 failed / 23 ignored`（49 suites，含 doctests），Node 串行 `333 / 333`；23 个 ignored 门禁（performance 1、q2_stability 1、real_node 5、stdio 9、wave5 7）全部通过；覆盖率 lines 87.24% / functions 88.85% / regions 86.71%；`cargo audit` 0 vulnerabilities、`cargo deny` advisories ok。最终 release 两次构建 SHA-256 均为 `c09062b16dd6bfea4ee03f99f13665cf4858130aae83eefec9c04cd94d3815ab`（8,696,984 B、protocol 2、214 files），install/verify/verify-package 通过；Linux Zed 运行时冒烟使用最终发布包，hover/definition/成员补全/诊断均通过。W3 的 `1251 / 21`、Node `326 / 326` 与 W2 的 `1095 / 20`、Node `304 / 305`、Zed `25 passed` 保持各自历史记录，不与 W4 混用。Q1 `f46dec9` 的 `cargo test -p wxml-delivery` 结果也保持原记录。W4 的 Linux 冒烟是手工安装发布包，不是标准 UI 重跑；标准 Dev Extension 安装仍引用 [P8 第 13 节](docs/evidence/p8-zed.md) 的历史证据。
 
 ### 0.2 验证命令
 
@@ -27,14 +27,15 @@
 # Rust workspace
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo test -p wxml-lsp --test semantic_tools
+cargo test --workspace -- --test-threads=4
+cargo test --workspace --doc
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
 # Node 类型后端（Node >= 24）
 (cd backends/typescript && npm ci && npm run check && npm run build && npm test)
 # 墙钟敏感断言用串行运行复核
 (cd backends/typescript && node --test --test-concurrency=1 test/*.test.ts)
+(cd backends/typescript && npm run matrix:json && npm run perf:json)
 
 # 本地交付（Q1）
 cargo test -p wxml-delivery
@@ -57,7 +58,12 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test stdio_type_loop -- --ignored
 WXML_TEST_NODE=1 cargo test -p wxml-lsp --test real_node -- --ignored
 env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR WXML_TEST_NODE=1 \
   cargo test -p wxml-lsp --test wave5_acceptance -- --ignored
+WXML_TEST_NODE=1 cargo test -p wxml-lsp --test q2_stability -- --ignored
+WXML_TEST_NODE=1 cargo test -p wxml-lsp --test performance_bench -- --ignored --nocapture
 ```
+
+性能/稳定性门禁要求 clean worktree，并保留 `thresholds.pass`、`git_head`、`git_dirty` 和
+samples 字段；最终数字见[W4 证据](docs/evidence/full-feature-final.md)。
 
 ### 0.3 在 Zed 中运行
 
@@ -207,17 +213,40 @@ export WXML_LSP_BIN="$HOME/.local/share/wxml-lsp/current/bin/wxml-lsp"
 - `WXML_LSP_BIN` 已设置且有效时，安装/升级/回退跳过，不下载、不覆盖；已设置但无效（空、相对、含 `..`、不存在、非普通文件、不可执行）立即报错，绝不回退到已安装版本或网络。
 - `list`、`current`、`verify`、`env` 是只读命令，不创建安装根或锁文件。缓存只保存完整验证通过的归档；离线安装/回退只使用已验证缓存或显式 `--from-dir`。
 - 当前信任链是 **TLS + index/归档 SHA-256 + manifest 文件哈希**，没有发布者签名、公钥 pin 或透明日志。它能证明内容与同一份元数据一致，不能证明发布者身份；被攻破的 HTTPS 源、误签 CA 或恶意本地 bundle 仍可自洽。该残留风险已明确接受，正式发布前应增加 detached 签名或 minisign，详见 [ADR-0007](docs/adr/0007-local-delivery-trust-model.md)。
-- 安装器目前只在 Linux 验证，依赖 Unix 原子 symlink 与系统 Node.js；Windows/macOS 未验证。S 语义工具已在 W3 合入；Q2 性能/恢复、完整 Linux UI 验收仍不在本波次完成范围。
+- 安装器目前只在 Linux 验证，依赖 Unix 原子 symlink 与系统 Node.js；Windows/macOS 未验证。S 语义工具已在 W3 合入，Q2 调度/恢复已在 W4 通过；完整多 workspace、标准 UI 最终重跑和跨平台验收仍不在本记录范围。
+
+#### 最终 release 与 Linux Zed 运行时冒烟（W4）
+
+W4 在 `7433194`/`9b804d4` 两个 Node 发布运行时修复后重建最终包两次，归档 SHA-256 完全一致：
+
+```text
+sha256  c09062b16dd6bfea4ee03f99f13665cf4858130aae83eefec9c04cd94d3815ab
+size    8,696,984 bytes
+protocol 2   files 214   platform linux-x86_64   node >= 24.0.0
+```
+
+包内包含 `bin/wxml-lsp`、`bin/wxml-type-backend/server.js` 及依赖、`zed-extension/extension.wasm`
+和 `zed-extension/grammars/wxml.wasm`。`install`、`verify`、`verify-package` 通过；安装根为
+`/tmp/opencode/final-wxml-root3`。构建时临时复制到 gitignored 的 grammar 后已清理。
+
+Linux Zed 运行时冒烟在隔离 Xvfb `:99`、隔离 `HOME`/`XDG`/user-data 中手工安装发布包
+`zed-extension`，打开 `tests/fixtures/page-basic`：release LSP 与 Node 启动，hover 显示
+`(property) title: string` 和“页面标题”，definition 跳到 `index.ts` 的 `data.title`，成员补全
+显示 `title`/`user`，诊断显示 `nmae` 错误且状态栏计数 1。**这不是标准 UI
+`zed: install dev extension` 重跑**；标准安装历史证据仍见 [P8 第 13 节](docs/evidence/p8-zed.md)，
+截图和原始路径见 [W4 证据](docs/evidence/full-feature-final.md) §6。没有 marketplace 上传、
+远端 release/tag 或发布者签名。
 
 ### 0.4 已知限制
 
 - W2 已完成显式单 workspace 多 app、依赖失效、隔离 tsconfig、overlay/版本屏障/重启恢复；组件智能（page/component 自身/app `usingComponents`、局部覆盖、props/事件/静态 hover、组件与属性 definition、picker/input mode 条件、插件/包降级）；WXSS/SCSS class 与本地资源补全/导航/链接/诊断；保真格式化、range formatting、linked editing、folding、selection range、documentSymbol/outline、内置/用户 snippets；Behavior/共享 data/props、template/import/include、WXS 静态子集、guards/loops、JS/JSDoc 与未保存跨文件 overlay。多 app 按文档 URI 的最长 app 目录匹配，以稳定 `projectId` 隔离；app 外、`projectRoot` 内的共享文件保留 active owner 或唯一 owner，多个 owner 且无 active 时不猜测。
 - 当前仍是**单 LSP workspace 内的显式多 app**：不支持完整多 workspace、根配置热更新或跨 app 自动依赖图；修改 `apps`/`projectRoot` 后需重启 LSP。插件/远程组件只有在本地存在可信元数据时才建模，否则明确降级；动态 template/is、动态 WXS 导出、动态 Behavior 和无法证明的 SCSS 生成类不猜测。模板体仍不按每次调用实例做完整类型检查，WXS 是静态子集且从不执行。格式化只规范开始标签内部空白，不重排文本节点或整份文档缩进。
 - S 语义工具已合入：references、prepareRename/rename、codeAction、semanticTokens、workspaceSymbol、inlayHint、signatureHelp、codeLens；rename 使用安全 `EditPlan`，只接受 `documentChanges`，打开文件带客户端 version、关闭文件重读并以 `version: null` 返回，失败零编辑，服务端不写盘。保守拒绝自定义组件 tag rename、静态 include 导致的 caller 覆盖不完整、动态访问、共享 importedData 跨脚本、快照截断/超限、跨视图冲突和文件含 `<template name>` 时的页面 data rename；未落盘 WXML fail-closed；没有跨文件事务/undo；硬链接未检测。
-- 未实现：Q2 性能/取消/恢复/大项目预算和最终 Linux UI 验收。反向编辑、跨文件原子编辑和发布者签名也不在当前能力内。
+- Q2 调度/恢复已合入：诊断 debounce（默认 120 ms，可配 0–5000）、同文档合并、交互队列 128 / 诊断队列 8、每 8 个交互任务让诊断前进、排队请求可立即取消、timeout/crash/协议不匹配降级并恢复、根移除/重加重放 overlay。单 worker 执行同步 TypeScript 调用，运行中请求不可中断；性能/稳定性门禁使用单个小 fixture，不是大项目语料。大项目语料调优、真实编辑器 UI 和完整多根/多 workspace 仍不在当前验证范围。
+- 发布包仅在 Linux x86_64 验证；没有 marketplace、远端 release、自动更新或发布者签名。最终 release 和 Linux Zed 运行时冒烟的细节见 [W4 证据](docs/evidence/full-feature-final.md)；标准 UI 安装没有在最终版本重跑。
 - 源文件预算为 2048 个文件 / 16 MiB，连续 hover 的待处理队列上限为 128；样式索引、资源扫描和 WXS/template 分析各有独立上限，截断时会标记不完整而不是伪造完整结果。
-- Zed 扩展已完成代码评审、host 测试、wasm 构建和真实 `tree-sitter-wxml` grammar 构建（wasi-sdk 34，约 23,806 B）。2026-11-16 已在隔离 user-data-dir 中通过命令面板实际执行 `zed: install dev extension`：安装目录为指向 `editors/zed` 的 symlink，`index.json` 中 `dev=true`，扩展加载并启动 release `wxml-lsp --stdio` 与 Node 后端。干净 fixture 的 `title`/`user.name` hover、definition、标签/属性/事件/成员补全、未知成员诊断和重启恢复均已实际执行并核对内容；真实 TS/JS 项目观感已记录。**W3 没有在最终版本上重跑标准 Zed UI；Windows/macOS 实机、真实主桌面 Wayland 观感和连续键入延迟仍未验收**；证据见 [P8 第 13 节](docs/evidence/p8-zed.md)。
-- G0/G2 已在隔离 Xvfb 中完成标准安装、扩展加载、五语言注册、LSP/Node 启动、hover/definition/completion/diagnostics 和重启恢复；Windows/macOS、真实主桌面 Wayland 观感和连续键入延迟未验收，完整 G0/G2 矩阵仍不整体勾选。W2/Q1 真实 Node 端到端通过（`stdio_type_loop` 9、`real_node` 4、`wave5_acceptance` 7 个显式门禁测试；W3 未重跑）。
+- Zed 扩展已完成代码评审、host 测试、wasm 构建和真实 `tree-sitter-wxml` grammar 构建（wasi-sdk 34，约 23,806 B）。2026-11-16 已在隔离 user-data-dir 中通过命令面板实际执行 `zed: install dev extension`：安装目录为指向 `editors/zed` 的 symlink，`index.json` 中 `dev=true`，扩展加载并启动 release `wxml-lsp --stdio` 与 Node 后端。干净 fixture 的 `title`/`user.name` hover、definition、标签/属性/事件/成员补全、未知成员诊断和重启恢复均已实际执行并核对内容；真实 TS/JS 项目观感已记录。**W4 已对最终发布包做 Linux Zed 运行时冒烟，但没有重跑标准 UI 安装；Windows/macOS 实机、真实主桌面 Wayland 观感和连续键入延迟仍未验收**；证据见 [P8 第 13 节](docs/evidence/p8-zed.md) 与 [W4 证据](docs/evidence/full-feature-final.md)。
+- G0/G2 已在隔离 Xvfb 中完成标准安装、扩展加载、五语言注册、LSP/Node 启动、hover/definition/completion/diagnostics 和重启恢复；Windows/macOS、真实主桌面 Wayland 观感和连续键入延迟未验收，完整 G0/G2 矩阵仍不整体勾选。W4 的 ignored 门禁 `stdio_type_loop` 9、`real_node` 5、`wave5_acceptance` 7 全部通过；标准 UI 没有在最终版本重跑。
 - Q1 已提供本地打包与安装器，但未发布：扩展 id 为 `wxml-lsp`、名称 `WXML LSP`（避免与 Marketplace 上仅 grammar 的 `wxml` 扩展冲突）；没有 marketplace 发布、远端 release/tag、服务器自动下载或自动安装。安装器下载默认关闭，只有显式 `--enable-download` 才访问 HTTPS 源；当前信任链没有发布者签名，详见 [ADR-0007](docs/adr/0007-local-delivery-trust-model.md)。
 - Zed 扩展已注册 WXML、JavaScript、TypeScript、TSX、JSON（不含 JSX），同一 `wxml-lsp` 进程接收关联文档的 `didOpen`/`didChange`/`didSave`。2026-11-16 隔离 Xvfb smoke 已验证：未保存的 TS 字段类型修改会实时反映到 WXML hover；保存后 `didSave` 刷新诊断；无关 TS 脚本只触发一次诊断刷新、不改变 WXML 类型结果；服务端动态注册并接收 `workspace/didChangeWatchedFiles`。标准 UI 安装、definition 跳转、服务重启恢复和真实项目观感已在隔离 Xvfb 中验收；Windows/macOS 和连续键入延迟仍未验收。
 
@@ -338,6 +367,8 @@ Component({
 - Hover、定义跳转、资源路径链接。
 - 引用查找与安全重命名（W3；含保守拒绝边界）。
 - 语义 token、workspace symbol、inlay hint、signature help、code lens（W3）。
+- 诊断 debounce/coalescing、有界交互/诊断队列、排队取消、timeout/crash/协议恢复和根移除/重加 overlay 重放（Q2/W4）。
+- 最终本地 release 包和 Linux Zed 运行时冒烟（W4；不是 marketplace 发布）。
 - 闭合标签补全、标签配对高亮、基础编辑支持。
 - 内置或用户 snippets。
 - WXML 保真格式化；保留文本、表达式与 `<wxs>` 语义，解析失败时不修改文件。
@@ -358,9 +389,9 @@ Component({
 
 目录仍是手写的受限子集，不宣称完整小程序组件覆盖；未收录的标签/属性仍可正常出现在模板中，只是没有静态候选。
 
-### 3.5 语义工具与安全编辑（S/W3）
+### 3.5 语义工具与安全编辑（S/W3–W4）
 
-S 在 W3 合入，能力声明只覆盖有真实 handler 和失败安全测试的工具。逐项状态和证据见[功能基线 §2.2](docs/reference/wxml-language-feature-baseline.md#22-s-语义工具状态w3)，完整验收快照见 [W3 证据](docs/evidence/full-feature-w3.md)。两轮正式 Rust/安全审核结论均为 `CHANGES_REQUESTED`；`dd15bc1` 修复第 2 轮残留项并由集成探针复验，按用户上限没有开启第 3 轮正式审核，因此不宣称 `APPROVED`。
+S 在 W3 合入，能力声明只覆盖有真实 handler 和失败安全测试的工具。逐项状态和证据见[功能基线 §2.2](docs/reference/wxml-language-feature-baseline.md#22-s-语义工具状态w3)，完整验收快照见 [W3 证据](docs/evidence/full-feature-w3.md) 和 [W4 最终证据](docs/evidence/full-feature-final.md)。两轮正式 Rust/安全审核结论均为 `CHANGES_REQUESTED`；`dd15bc1` 修复第 2 轮残留项并由集成探针复验，按用户上限没有开启第 3 轮正式审核，因此不宣称 `APPROVED`。W4 没有再改 S 语义，最终 release 冒烟覆盖了 hover/definition/成员补全/诊断。
 
 | 工具 | 行为 | 边界 |
 | --- | --- | --- |
@@ -373,6 +404,17 @@ S 在 W3 合入，能力声明只覆盖有真实 handler 和失败安全测试�
 | codeLens | template 调用和组件引用计数 | 默认开启，可关闭；有上限，不完整时明确标记 |
 
 rename 的 `EditPlan` 只使用 `documentChanges`：打开文件带客户端 version，关闭文件重读并以 `version: null` 返回；校验 expected 原文、UTF-16 范围、去重、不重叠、可写路径和文件身份；失败零编辑；服务端不写盘。没有跨文件事务、原子提交或 undo，硬链接也未检测。
+
+### 3.6 性能与恢复（Q2/W4）
+
+Q2 的 Rust 与安全 R2 均为 `APPROVE`；最终验收快照见 [W4 证据](docs/evidence/full-feature-final.md)，边界见[基线 §2.3/§3.10](docs/reference/wxml-language-feature-baseline.md#23-q2-调度性能与恢复状态w4)。
+
+- **调度**：单后台 worker；交互队列上限 128、诊断队列 8，每 8 个交互任务让诊断前进；同文档诊断按 revision 合并，旧结果不发布。
+- **debounce**：默认 120 ms，`wxml.diagnostics.debounceMs` 可设 0–5000；打开、保存和配置变更立即调度。
+- **取消**：排队请求立即返回；运行中的同步 TypeScript 调用不可中断，只能等待后端返回或超时，运行占用单独测量。
+- **恢复**：timeout/crash/协议不匹配降级并保留静态能力；根移除/重加重放 WXML snapshot 和 script/JSON/style overlay；资源/页面增删、关闭/重开有测试。
+- **最终门禁**：static p95 0.178 ms、semantic 39.659 ms、diagnostics stop 164.894 ms、queued cancel 0.674 ms、single TS 402.126 ms、parent RSS 10,460 KiB；strict 10 轮 + RSS baseline `thresholds.pass=true`。
+- **限制**：性能/稳定性使用单个小 fixture，不是大项目语料；仍是单 workspace 显式多 app，不支持多根热加；真实编辑器 UI、标准 UI 重装和跨平台未在 Q2 范围。
 
 ## 4. 方案评审结论
 
@@ -547,7 +589,7 @@ docs/                         # 参考、ADR、证据
 
 产出：可本地安装、可评审的最小验证版及实际测试记录。
 
-状态（2026-11-16）：扩展代码、host 测试、wasm 构建和真实 grammar 构建完成；标准 UI `zed: install dev extension` 已在隔离 Xvfb 中实际执行，确认 symlink + `dev=true`、五语言注册、release LSP/Node 启动。干净 fixture 的 `title`/`user.name` hover、definition、标签/属性/事件/成员补全、未知成员诊断和重启恢复已逐项执行；真实 TS 项目（`Component` 注册页面）和真实 JS 项目（无 tsconfig 降级）已记录，见 [p8-zed.md](docs/evidence/p8-zed.md) 第 13 节。未保存 `data` 字段类型已验收；跨文件未保存类型传播、连续键入的响应时间、Windows/macOS 实机仍未验收，因此第 5、6 项不勾选。
+状态（2026-11-16）：扩展代码、host 测试、wasm 构建和真实 grammar 构建完成；标准 UI `zed: install dev extension` 已在隔离 Xvfb 中实际执行，确认 symlink + `dev=true`、五语言注册、release LSP/Node 启动。干净 fixture 的 `title`/`user.name` hover、definition、标签/属性/事件/成员补全、未知成员诊断和重启恢复已逐项执行；真实 TS 项目（`Component` 注册页面）和真实 JS 项目（无 tsconfig 降级）已记录，见 [p8-zed.md](docs/evidence/p8-zed.md) 第 13 节。未保存 `data` 字段类型已验收；跨文件未保存类型传播、连续键入的响应时间、Windows/macOS 实机仍未验收，因此第 5、6 项不勾选。W4 另外对最终 release 包做了 Linux Zed 运行时冒烟（hover/definition/成员补全/诊断），但这是手工安装发布包，不是标准 UI 重装，见 [W4 证据](docs/evidence/full-feature-final.md)。
 
 ### 阶段 4：完整模板作用域与项目类型
 
@@ -577,12 +619,13 @@ docs/                         # 参考、ADR、证据
 
 ### 阶段 6：优化与可选后端替换
 
-- [ ] 根据实测性能处理后台任务、取消、诊断防抖及大项目缓存（Q2）。
+- [x] 根据实测性能处理后台任务、取消、诊断防抖及大项目缓存（Q2）。
 - [ ] 评估原生 TypeScript 后端能否通过完全相同的类型和项目验收用例。
 - [ ] 只有在兼容性、收益和维护成本明确后，决定是否去除 Node。
 - [x] 补齐本地构建、安装、升级、回退和排错说明（Q1）。
+- [x] 最终本地 release 与 Linux Zed 运行时冒烟（W4）。
 
-状态（2026-11-17）：已实现版本屏障、缓存、请求超时、后端失败重启与响应上限等基础防护；W3 的 S 语义工具也有独立预算和保守拒绝。Q1 已合入本地构建、验证、安装、升级、回退和离线缓存，`WXML_LSP_BIN` 优先，下载默认关闭；未实现 marketplace/远端发布和发布者签名。Q2 的性能/取消/恢复完善、完整 Linux UI 验收、原生 TypeScript 后端替换/去 Node 决策仍未完成。
+状态（2026-11-17）：版本屏障、缓存、请求超时、后端失败重启、响应上限、诊断 debounce/coalescing、有界队列、排队取消、timeout/crash/协议恢复和根移除/重加 overlay 重放已实现；Q2 的 Rust 与安全 R2 均 `APPROVE`。最终性能/稳定性门禁通过（static p95 0.178 ms、semantic 39.659 ms、diagnostics stop 164.894 ms、queued cancel 0.674 ms、single TS 402.126 ms、parent RSS 10,460 KiB；strict 10 轮 + RSS baseline `pass`）。Q1 已合入本地构建、验证、安装、升级、回退和离线缓存，`WXML_LSP_BIN` 优先，下载默认关闭；最终 release 两次构建 SHA-256 一致，install/verify/verify-package 和 Linux Zed 运行时冒烟通过。未实现 marketplace/远端发布和发布者签名；大项目语料、标准 UI 最终重跑、原生 TypeScript 后端替换/去 Node 决策仍未完成。
 
 公开发布、自动下载和多平台发布流水线不在当前计划中；Q1 的下载器仅在用户显式 `--enable-download` 时读取 HTTPS 源，不构成 marketplace 发布或后台自动更新。
 
@@ -601,7 +644,7 @@ docs/                         # 参考、ADR、证据
 - [x] 与已有 JS/TS 服务并存，不重复发布无关脚本诊断。
 - [x] 文档明确区分已支持、降级与待实现情况。
 
-状态（2026-11-17）：G1 在 LSP 层通过 AC-001/002/003/011/013，AC-005/006/008/012 已完成；W2 增加跨文件未保存 overlay、Behavior/共享类型、WXS/template 静态语义和 Node 重启重放测试。标准 UI 安装、干净 fixture 的 hover/definition/completion/diagnostics、真实 TS/JS 项目和重启恢复已在隔离 Zed 中验收；未保存 TS `data` 字段类型同步已验证，保存后诊断刷新。Zed UI 中的跨文件未保存类型传播、连续键入响应时间、Windows/macOS 实机仍未验收，因此第 5 项和整体清单不勾选。
+状态（2026-11-17）：G1 在 LSP 层通过 AC-001/002/003/011/013，AC-005/006/008/012 已完成；W2 增加跨文件未保存 overlay、Behavior/共享类型、WXS/template 静态语义和 Node 重启重放测试。标准 UI 安装、干净 fixture 的 hover/definition/completion/diagnostics、真实 TS/JS 项目和重启恢复已在隔离 Zed 中验收；未保存 TS `data` 字段类型同步已验证，保存后诊断刷新。W4 的最终 release 包也完成了 Linux Zed 运行时冒烟，但仍是手工安装发布包，不是标准 UI 重装。Zed UI 中的跨文件未保存类型传播、连续键入响应时间、Windows/macOS 实机仍未验收，因此第 5 项和整体清单不勾选。
 
 ## 9. 需求与来源索引
 
@@ -611,10 +654,9 @@ docs/                         # 参考、ADR、证据
 
 ## 10. 当前状态
 
-快照：2026-11-17，W3 `379b097`（S `dd15bc1`）+ Q1 `f46dec9`。P0–P8、G1、W2、Q1 和 S 语义工具已实现并通过代码门禁；Q2 性能/恢复和最终 Linux UI 验收仍未完成。CRLF 样本由 `.gitattributes` 保护。
+快照：2026-11-17，W4 `9b804d4`（Q2 `95ebb21`）+ Q1 `f46dec9`。P0–P8、G1、W2、Q1、S 语义工具和 Q2 调度/恢复已实现并通过最终门禁；最终 release 和 Linux Zed 运行时冒烟已完成。Q2 的 Rust 与安全 R2 均为 `APPROVE`；S 第 2 轮 `CHANGES_REQUESTED` 残余已修复并复验，没有第 3 轮正式审核。CRLF 样本由 `.gitattributes` 保护。
 
-- 已完成：C0/C1 契约；`wxml-text`、`wxml-syntax`（容错 lexer/parser、表达式 Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、显式多 app、tsconfig、sources、styles/resources）、`wxml-types`（类型契约、`wx:for`/guards、Behavior、template/WXS 静态语义、脚本符号事实、后端接口与 mock）、`wxml-lsp`（JSON-RPC、多项目宿主、Node 后端、hover/diagnostics/definition/completion、格式/结构/链接、语义工具与安全编辑、版本屏障/缓存/超时/重启）、Node 类型桥与后端、P8 Zed 扩展、Q1 本地打包/安装器、S 语义工具。
-- 验证（W3 固定日志）：workspace `1251 passed / 0 failed / 21 ignored`（45 suites）；`semantic_tools` 41 passed；Node 串行 `326 / 326`。21 ignored = `stdio_type_loop` 9 + `real_node` 5 + `wave5_acceptance` 7；W3 没有重跑 `WXML_TEST_NODE=1` 门禁。W2 固定日志的 `1095 / 20`、Node `304 / 305` 和 Zed `25 passed` 保持 W2 记录，不与 W3 混用。Q1 `cargo test -p wxml-delivery` 结果保持 Q1 记录。
-- 部分完成：Zed 扩展代码、wasm 构建和真实 `tree-sitter-wxml` grammar 构建通过；隔离 Xvfb 已完成标准 UI 安装、五语言注册、release LSP/Node 启动、干净 fixture 的 hover/definition/completion/diagnostics、真实 TS/JS 项目观感和重启恢复（[P8 第 13 节](docs/evidence/p8-zed.md)）。W3 未重跑标准 Zed UI；Windows/macOS 实机、真实主桌面 Wayland 观感、连续键入延迟和 G0/G2 完整矩阵仍未完成。
-- 未完成：Q2 性能/取消/恢复、大项目预算与最终 Linux UI 验收；完整多 workspace/根热更新；marketplace/远端发布/发布者签名；原生 TypeScript 后端替换/去 Node 决策；Windows/macOS 实机验收。S 的 tag rename、静态 include 的 caller 覆盖、动态访问、共享 importedData 跨脚本、跨文件事务/undo 和硬链接检测仍是明确边界。
-- 后续工作的优先级：完成 Q2 性能/恢复，随后按最终验收日志复核完整矩阵；在发布前补平台验证和发布者签名，不以本地 TLS+checksum 冒充完整供应链安全。
+- 已完成：C0/C1 契约；`wxml-text`、`wxml-syntax`（容错 lexer/parser、表达式 Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、显式多 app、tsconfig、sources、styles/resources）、`wxml-types`（类型契约、`wx:for`/guards、Behavior、template/WXS 静态语义、脚本符号事实、后端接口与 mock）、`wxml-lsp`（JSON-RPC、多项目宿主、Node 后端、hover/diagnostics/definition/completion、格式/结构/链接、语义工具与安全编辑、Q2 调度/取消/恢复、版本屏障/缓存/超时/重启）、Node 类型桥与后端、P8 Zed 扩展、Q1 本地打包/安装器、S 语义工具、Q2 调度/恢复、最终本地 release。
+- 验证（W4 最终日志）：Rust workspace `1283 passed / 0 failed / 23 ignored`（49 suites）；Node 串行 `333 / 333`；23 个 ignored 门禁全部通过；性能 static p95 0.178 ms、semantic 39.659 ms、diagnostics stop 164.894 ms、queued cancel 0.674 ms、single TS 402.126 ms、parent RSS 10,460 KiB；strict 10 轮 + RSS baseline `pass`；覆盖率 lines 87.24% / functions 88.85% / regions 86.71%；`cargo audit` 0 vulnerabilities、`cargo deny` advisories ok。W3 的 `1251 / 21`、Node `326 / 326` 与 W2 的 `1095 / 20`、Node `304 / 305`、Zed `25 passed` 保持历史记录，不与 W4 混用。
+- 发布（W4）：最终 release 两次构建 SHA-256 均为 `c09062b16dd6bfea4ee03f99f13665cf4858130aae83eefec9c04cd94d3815ab`（8,696,984 B、protocol 2、214 files），install/verify/verify-package 通过；Linux Zed 运行时冒烟使用最终发布包，hover `(property) title: string` + “页面标题”、definition、成员补全和 `nmae` 诊断均通过。这是手工安装发布包，不是标准 UI 重跑；标准 UI 历史证据仍见 [P8 第 13 节](docs/evidence/p8-zed.md)。
+- 未完成/限制：完整多 workspace/多根热加、大项目语料、Windows/macOS 实机、真实主桌面 Wayland、标准 UI 在最终版本上的重跑、marketplace/远端发布/发布者签名。S 的 tag rename、静态 include 的 caller 覆盖、动态访问、共享 importedData 跨脚本、跨文件事务/undo 和硬链接检测仍是明确边界；TypeScript 同步调用不可中断，发布包仅在 Linux 验证。

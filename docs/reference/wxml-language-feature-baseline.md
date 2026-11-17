@@ -4,7 +4,7 @@
 
 本文件是本项目 WXML 通用语言能力的自有需求基线。功能取舍、默认行为和验收条件以本文为准，不再依赖外部插件的 README、源码或本机实验目录。历史来源仅用于许可证与归属说明，见 [来源与许可证记录](provenance.md)。
 
-当前状态：F-01–F-04 已完成；截至 W3（`379b097`，2026-11-17），W2 功能和 S 语义工具均已合入，F-05–F-18 的逐项状态见 §2.1，S 工具逐项状态见 §2.2。`已实现（受限）` 表示主路径可用且有测试，但仍有明确降级或边界；`部分实现` 表示只覆盖了基线的一部分。Q2 性能/恢复、最终 Linux UI 验收和完整多 workspace 仍未完成，不能从相邻功能或 S 的合入推导为已完成。模板类型体验的优先级与验收见[项目 README](../../README.md#31-第一优先级模板类型体验)。
+当前状态：F-01–F-04 已完成；截至 W4（`9b804d4`，2026-11-17），W2 功能、S 语义工具和 Q2 调度/恢复均已合入，F-05–F-18 的逐项状态见 §2.1，S 工具见 §2.2，Q2 性能/恢复见 §2.3。`已实现（受限）` 表示主路径可用且有测试，但仍有明确降级或边界；`部分实现` 表示只覆盖了基线的一部分。最终 release 和 Linux Zed 运行时冒烟已完成，但完整多 workspace、大项目语料、Windows/macOS 实机和 marketplace/发布者签名仍未完成，不能从相邻功能推导为已完成。模板类型体验的优先级与验收见[项目 README](../../README.md#31-第一优先级模板类型体验)。
 
 ## 1. 优先级与范围
 
@@ -37,10 +37,11 @@
 | F-17 | 类型与项目上下文 | 尊重适用 `tsconfig`、路径别名、模块解析和未保存文档 | 类型后端、项目模型 | 2–4 |
 | F-18 | 多根与多项目 | 多工作区、多小程序根、多 `tsconfig` 和重启后状态隔离 | 项目模型、服务实例标识 | 3–6 |
 
-### 2.1 实现状态（F-05–F-18，含 W3 更新）
+### 2.1 实现状态（F-05–F-18，含 W3/W4 更新）
 
-下表以 W2 验收为底；F-09、F-13、F-18 已按 W3 合入的 S 语义工具更新，其余行未在 W3 重跑。
-S 的逐项工具状态见 §2.2，行为边界见 §3.9。
+下表以 W2 验收为底；F-09、F-11、F-13、F-18 已按 W3 的 S 和 W4 的最终验收更新，其余行未在
+W4 重跑。S 的逐项工具状态见 §2.2，Q2 调度/恢复见 §2.3，行为边界见 §3.9/§3.10，最终证据见
+[W4 最终验收与发布](../evidence/full-feature-final.md)。
 
 | 编号 | 状态 | 已实现范围 | 主要证据 | 仍待/限制 |
 | --- | --- | --- | --- | --- |
@@ -48,23 +49,25 @@ S 的逐项工具状态见 §2.2，行为边界见 §3.9。
 | F-06 | 已实现（受限） | 页面/组件自身/app `usingComponents`、本地同名覆盖、`miniprogram_npm` 本地构建、组件标签/属性/事件补全、组件 definition | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、[full_feature_matrix.rs](../../crates/wxml-lsp/tests/full_feature_matrix.rs)（IT-02） | 插件/远程组件仅在本地有可信元数据时建模；无远程下载或执行 |
 | F-07 | 已实现 | `wx:for` 作用域、表达式成员补全、事件处理函数补全；后端离线时静态通道保留 | [stdio_type_loop.rs](../../crates/wxml-lsp/tests/stdio_type_loop.rs)、[real_node.rs](../../crates/wxml-lsp/tests/real_node.rs) | 动态/不可解析类型保持降级 |
 | F-08 | 已实现（受限） | 表达式类型/JSDoc/声明归属；内置标签/属性/事件静态文档；组件属性、事件与来源 hover；不依赖 Node 的静态 hover | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、[metadata.rs](../../crates/wxml-lsp/src/metadata.rs) | 目录仍是手写子集；插件/远程组件仅显示降级说明 |
-| F-09 | 已实现（受限） | 字段/事件/组件文件/组件属性/class/本地资源/template/import/WXS 导出 definition；S 增加 data、事件、组件属性、template 和 class 的 references，覆盖不完整时保守返回空 | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[semantic_tools.rs](../../crates/wxml-lsp/tests/semantic_tools.rs)、[W3 证据](../evidence/full-feature-w3.md) | 请求目标只接受已打开的 WXML；跨 app 不推断；插件/远程目标不猜测；partial coverage 不冒充完整 |
+| F-09 | 已实现（受限） | 字段/事件/组件文件/组件属性/class/本地资源/template/import/WXS 导出 definition；S 增加 data、事件、组件属性、template 和 class 的 references，覆盖不完整时保守返回空 | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[semantic_tools.rs](../../crates/wxml-lsp/tests/semantic_tools.rs)、[W3 证据](../evidence/full-feature-w3.md)、[W4 证据](../evidence/full-feature-final.md) | 请求目标只接受已打开的 WXML；跨 app 不推断；插件/远程目标不猜测；partial coverage 不冒充完整 |
 | F-10 | 部分实现 | 未知字段/成员、绑定不兼容、picker/input mode、资源不存在、可证明 class 缺失诊断；修复后清除 | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、[styles_diagnostics.rs](../../crates/wxml-lsp/tests/styles_diagnostics.rs) | 不是完整模板语义检查；动态/不完整索引抑制猜测 |
-| F-11 | 已实现（受限） | WXSS/SCSS/CSS class 索引；同文件、`@import`/`@use`/`@forward`、app 样式、显式全局样式；`styleIsolation`；class 补全/hover/definition；S 增加 class references/rename | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[styles.rs](../../crates/wxml-project/tests/styles.rs)、[semantic_tools.rs](../../crates/wxml-lsp/tests/semantic_tools.rs) | 动态插值、mixin/`@extend` 生成类不猜测；预算截断标记不完整 |
+| F-11 | 已实现（受限） | WXSS/SCSS/CSS class 索引；同文件、`@import`/`@use`/`@forward`、app 样式、显式全局样式；`styleIsolation`；class 补全/hover/definition；S 增加 class references/rename | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[styles.rs](../../crates/wxml-project/tests/styles.rs)、[semantic_tools.rs](../../crates/wxml-lsp/tests/semantic_tools.rs)、[W4 证据](../evidence/full-feature-final.md) | 动态插值、mixin/`@extend` 生成类不猜测；预算截断标记不完整 |
 | F-12 | 已实现（受限） | 本地资源补全/documentLink/definition/存在性诊断；新增删除和 watched-file 更新；路径边界与 symlink 校验 | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[full_feature_matrix_editing.rs](../../crates/wxml-lsp/tests/full_feature_matrix_editing.rs)（IT-10） | 只处理本地资源；不访问远程 URL，不处理插件包内未落盘资源 |
-| F-13 | 部分实现 | 开始标签补全、`</` 栈补全、linkedEditingRange、Zed 括号/引号/Mustache 配对；S 增加 template、loop 绑定、class、组件属性、事件处理函数和 data 的安全 rename；自闭合与嵌套同名兄弟不误配 | [structural_editing.rs](../../crates/wxml-lsp/tests/structural_editing.rs)、[semantic_tools.rs](../../crates/wxml-lsp/tests/semantic_tools.rs)、[W3 证据](../evidence/full-feature-w3.md) | 自定义组件 tag rename 和普通 tag rename 保守拒绝（没有完整 `usingComponents` 别名/项目用法覆盖）；没有 LSP on-type 自动闭合；跨文件事务/undo 不提供 |
+| F-13 | 部分实现 | 开始标签补全、`</` 栈补全、linkedEditingRange、Zed 括号/引号/Mustache 配对；S 增加 template、loop 绑定、class、组件属性、事件处理函数和 data 的安全 rename；自闭合与嵌套同名兄弟不误配 | [structural_editing.rs](../../crates/wxml-lsp/tests/structural_editing.rs)、[semantic_tools.rs](../../crates/wxml-lsp/tests/semantic_tools.rs)、[W3 证据](../evidence/full-feature-w3.md)、[W4 证据](../evidence/full-feature-final.md) | 自定义组件 tag rename 和普通 tag rename 保守拒绝（没有完整 `usingComponents` 别名/项目用法覆盖）；没有 LSP on-type 自动闭合；跨文件事务/undo 不提供 |
 | F-14 | 已实现（受限） | 内置标签/属性 snippets、工作区/用户 snippets、`enabled`/`builtin` 覆盖、占位符插入安全、watched-file 热更 | [structural_editing.rs](../../crates/wxml-lsp/tests/structural_editing.rs) | 只读取 `snippetsPath` 或 `.wxml-lsp/snippets.json`；不读取 Zed 私有配置；无 marketplace 片段包 |
 | F-15 | 已实现（受限） | 保真 document/range formatting；只改开始标签内部 ASCII 空白；保留文本/注释/实体/Mustache/WXS/引号/重复属性；解析失败零编辑；CRLF/emoji/中文 | [structural_editing.rs](../../crates/wxml-lsp/tests/structural_editing.rs)、[full_feature_matrix_editing.rs](../../crates/wxml-lsp/tests/full_feature_matrix_editing.rs)（IT-11） | 不重排文本节点或整份文档缩进；多行标签中段无法安全推导时跳过 |
 | F-16 | 已实现（受限） | 显式 app registry、依赖图、overlay、缓存、watched files、tsconfig/样式/snippet 失效；无效配置保留错误状态 | [project_host.rs](../../crates/wxml-lsp/tests/project_host.rs)、[multi_app_projects.rs](../../crates/wxml-lsp/tests/multi_app_projects.rs) | 根配置只在启动时消费；无完整多 workspace 或跨 app 自动依赖图 |
 | F-17 | 已实现（受限） | Behavior/共享 data/props、复杂 props、guards/loops、JS/JSDoc、template/import/include、WXS 静态子集、未保存跨文件 overlay、Node 重启重放 | [real_node.rs](../../crates/wxml-lsp/tests/real_node.rs)、[stdio_type_loop.rs](../../crates/wxml-lsp/tests/stdio_type_loop.rs)、`backends/typescript/test/` | 模板体不逐调用实例检查；WXS 不执行；动态 Behavior/WXS/template 明确降级 |
-| F-18 | 部分实现 | 单 workspace 内显式多 app、独立 tsconfig/projectId/overlay/缓存、重启稳定身份、最长目录匹配；S 增加多 app + imported template 的 `workspace/symbol` | [multi_app_projects.rs](../../crates/wxml-lsp/tests/multi_app_projects.rs)、[semantic_tools.rs](../../crates/wxml-lsp/tests/semantic_tools.rs)、[full_feature_matrix.rs](../../crates/wxml-lsp/tests/full_feature_matrix.rs)（IT-05） | 不是完整多 workspace；无根热更新；无跨 app 依赖归属推断；索引不完整/预算耗尽时 workspaceSymbol 返回空并写日志 |
+| F-18 | 部分实现 | 单 workspace 内显式多 app、独立 tsconfig/projectId/overlay/缓存、重启稳定身份、最长目录匹配；S 增加多 app + imported template 的 `workspace/symbol`；Q2 增加根移除/重加 overlay 重放、资源/页面增删恢复和关闭/重开 | [multi_app_projects.rs](../../crates/wxml-lsp/tests/multi_app_projects.rs)、[semantic_tools.rs](../../crates/wxml-lsp/tests/semantic_tools.rs)、[q2_recovery.rs](../../crates/wxml-lsp/tests/q2_recovery.rs)、[W4 证据](../evidence/full-feature-final.md) | 不是完整多 workspace；无多根热加/根热更新；无跨 app 依赖归属推断；多 app 重放受 active project 限制；索引不完整/预算耗尽时 workspaceSymbol 返回空并写日志 |
 
-### 2.2 S 语义工具状态（W3）
+### 2.2 S 语义工具状态（W3 合入，W4 最终复验）
 
 S 只广告有真实 handler 和失败安全测试的能力。客户端未声明 `WorkspaceEdit.documentChanges`
 时，`rename` 和 `codeAction` 不广告。两轮正式 Rust/安全审核结论均为 `CHANGES_REQUESTED`；
 `dd15bc1` 修复第 2 轮残留项并由集成探针复验，按用户上限未开第 3 轮正式审核，不标记为
-`APPROVED`。证据见 [W3 证据](../evidence/full-feature-w3.md)。
+`APPROVED`。W4 没有再改 S 语义，最终 release 冒烟覆盖了 hover/definition/completion/
+diagnostics；证据见 [W3 证据](../evidence/full-feature-w3.md) 与
+[W4 证据](../evidence/full-feature-final.md)。
 
 | 工具 | 状态 | 已实现范围 | 主要证据 | 仍待/限制 |
 | --- | --- | --- | --- | --- |
@@ -77,6 +80,22 @@ S 只广告有真实 handler 和失败安全测试的能力。客户端未声明
 | signatureHelp | 已实现（受限） | WXS 静态子集签名和 active parameter；触发字符 `(`、`,` | 同上 | 不执行 WXS；动态函数不推断 |
 | codeLens | 已实现（受限） | template 调用计数、组件引用计数；include 计数带当前文档锚点并区分 included 数量 | 同上 | 默认开启；`semanticTools.codeLens=false` 关闭；模板/组件 lens 各最多 64 条，不完整时标题标记 |
 | documentSymbol | 复用 W2 实现 | 既有 W2 实现，W3 未改语义 | [structural_editing.rs](../../crates/wxml-lsp/tests/structural_editing.rs) | 见 F-13/F-14 的 W2 边界 |
+
+### 2.3 Q2 调度、性能与恢复状态（W4）
+
+Q2 的 Rust 与安全 R2 均为 `APPROVE`；R1 的 BLOCKING/HIGH/MEDIUM 已关闭，R2 的两个证据/测试
+脚手架 MAJOR 已在最终门禁前处理（`42a82ba`/`5990126` 和最终 manifest），没有第 3 轮正式审核。
+Q2 验证的是协议、进程和调度行为，不包含真实编辑器 UI 或大项目语料。
+
+| 项 | 状态 | 已实现/已验证 | 主要证据 | 仍待/限制 |
+| --- | --- | --- | --- | --- |
+| 诊断 debounce/coalescing | 已实现（受限） | 默认 120 ms；`wxml.diagnostics.debounceMs` 可设 0–5000；同一文档只保留最新 revision；打开/保存/配置立即调度 | [q2_scheduler.rs](../../crates/wxml-lsp/tests/q2_scheduler.rs)、`server.rs` 单测 | 连续大流量下的 CPU 仍依赖宿主；大项目未单独测量 |
+| 交互/诊断队列 | 已实现（受限） | 交互队列 128、诊断队列 8；每 8 个交互任务让诊断前进；队列满时明确拒绝 | [scheduler.rs](../../crates/wxml-lsp/src/scheduler.rs) | 单 worker；运行中的同步 TypeScript 调用不可中断 |
+| 取消 | 已实现（受限） | 排队请求立即响应 `$/cancelRequest`；运行请求等后端返回/超时；attempt 防旧结果污染复用 id | [q2_scheduler.rs](../../crates/wxml-lsp/tests/q2_scheduler.rs)、[q2_recovery.rs](../../crates/wxml-lsp/tests/q2_recovery.rs) | 运行中占用不作为取消延迟；late/duplicate cancel 仍有协议边界 |
+| 后端失败恢复 | 已实现（受限） | timeout/crash/protocol 不匹配时降级并报告，静态能力保留；恢复后重新请求 | [q2_recovery.rs](../../crates/wxml-lsp/tests/q2_recovery.rs)、`real_node`/`stdio_type_loop` | 真实 15 s 读超时未新增端到端等待用例 |
+| 工作区恢复 | 已实现（受限） | 根移除/重加重放 WXML snapshot 与 script/JSON/style overlay；资源/页面增删、关闭/重开；Node 重启重放 | [q2_recovery.rs](../../crates/wxml-lsp/tests/q2_recovery.rs)、[q2_stability.rs](../../crates/wxml-lsp/tests/q2_stability.rs) | 单 active root；多 app 重放受 active project 限制；配置/style 热更不在 Q2 组合测试 |
+| 性能门禁 | 已通过（受限） | static p95 0.178 ms、semantic 39.659 ms、diagnostics stop 164.894 ms、queued cancel 0.674 ms、single TS 402.126 ms、parent RSS 10,460 KiB；`thresholds.pass=true` | `perf/final-rust-perf.json`、[W4 证据](../evidence/full-feature-final.md) | JSON `git_head=5990126`；两个后续 commit 只改 Node 发布入口；benchmark 为单个小 fixture |
+| 稳定性门禁 | 已通过（受限） | strict 10 轮 + RSS baseline；`thresholds.pass=true`；Node/Rust RSS 比 1.0309/0.9928 | `test-logs/final-stability.json`、[W4 证据](../evidence/full-feature-final.md) | 同上；不能替代大项目/真实编辑器 UI 验收 |
 
 ## 3. 行为细则
 
@@ -225,6 +244,26 @@ W2 已实现 F-01–F-04 的目录驱动补全，并把 F-05 的条件规则数�
 - semanticTokens 使用 UTF-16，覆盖 CRLF、emoji 和 WXS 静态 token；只对可完整解析的模板生成，异常/超限返回空 token 流。workspaceSymbol 聚合多 app 和 static imported template，索引不完整时返回空并写日志。
 - inlayHint、signatureHelp 和 codeLens 都基于静态事实；inlayHint 与 codeLens 默认开启，可通过 `initializationOptions.semanticTools` 关闭。codeLens 的 template/组件计数有上限，include 计数带当前文档锚点并明确 included 数量。
 - 不提供跨文件事务、原子提交或 undo；硬链接未检测。symlink 和生成目录已拒绝，但不等于完整文件身份安全。
+- W4 没有再改 S 语义；最终 release 的 Linux Zed 运行时冒烟覆盖 hover、definition、成员补全和诊断，见 [W4 证据](../evidence/full-feature-final.md)。
+
+### 3.10 性能与恢复边界（Q2/W4）
+
+- 单后台 worker 串行执行后端请求；TypeScript 同步调用不可中断。取消只保证排队请求立即响应，
+  运行中请求必须等后端返回或超时，运行占用单独测量，不能当作取消延迟。
+- 诊断 debounce 默认 120 ms，可通过 `wxml.diagnostics.debounceMs` 设 0–5000 ms；打开、保存和
+  配置变更绕过 debounce。同一文档只保留最新 revision，旧结果不得发布。
+- 交互队列上限 128、诊断队列上限 8；连续 8 个交互任务后必须让诊断前进；队列满时明确报告
+  busy，不无限排队。诊断重试最多 8 次。
+- timeout、crash、协议不匹配时降级并保留静态能力；恢复后重新建立后端请求。根移除/重加
+  重放已打开的 WXML 和 script/JSON/style overlay；单 active root，多 app 重放受 active project
+  限制，不支持多根热加。
+- 性能/稳定性门禁的最终数字是：static p95 0.178 ms、semantic 39.659 ms、diagnostics stop
+  164.894 ms、queued cancel 0.674 ms、single TS 402.126 ms、parent RSS 10,460 KiB；strict
+  10 轮 + RSS baseline `thresholds.pass=true`。这些数字来自单 fixture，不是大项目语料。
+- 性能/稳定性 JSON 绑定 `5990126` 的 clean HEAD；之后只有 Node 发布入口/模块解析修复。
+  最终 release 在 `9b804d4` 重建，两次构建 SHA-256 相同；install/verify/verify-package 通过。
+- Linux Zed 运行时冒烟使用手工安装的最终发布包，不是标准 UI `zed: install dev extension`
+  重跑；发布包只在 Linux x86_64 验证。没有 marketplace、远端 release 或发布者签名。
 
 ## 4. 数据来源与元数据规则
 
@@ -254,4 +293,6 @@ W2 已实现 F-01–F-04 的目录驱动补全，并把 F-05 的条件规则数�
   - 部分实现：F-05 条件规则（目前 `picker`/`input`）；F-10 诊断子集；F-13 无 tag rename/on-type，S 的 rename 只覆盖 data、组件属性、事件、loop、class 和 template；F-18 单 workspace 内显式多 app 和 workspaceSymbol，非完整多 workspace。
   - 明确降级：动态 template/WXS/Behavior、未知 spread、插件/远程组件、动态 class 插值/SCSS 生成类、索引/预算截断；模板体不逐调用实例检查，WXS 不执行。
   - S 语义工具：references、prepareRename/rename、codeAction、semanticTokens、workspaceSymbol、inlayHint、signatureHelp、codeLens 已合入，但都带 §2.2/§3.9 的保守拒绝和预算边界；不把它描述为无限制的完整 LSP。
-  - 未实现：Q2 性能/恢复与最终 Linux UI 验收；完整多 workspace；marketplace/远端发布/发布者签名。
+  - Q2 调度/恢复：诊断 debounce/coalescing、交互/诊断有界队列、排队取消、timeout/crash/protocol 恢复、根移除/重加 overlay 重放和 Node 项目池稳定键已实现；Rust/安全 R2 均 APPROVE，最终性能/稳定性门禁通过，但边界见 §2.3/§3.10。
+  - 最终 release：Linux x86_64、protocol 2、214 files、两次构建相同 SHA-256；install/verify/verify-package 和 Linux Zed 运行时冒烟通过。它是本地发布包，不是 marketplace/远端发布。
+  - 未实现：完整多 workspace/多根热加、大项目语料、Windows/macOS 实机、真实主桌面 Wayland、标准 UI 在最终版本上的重跑、marketplace/远端发布/发布者签名。
