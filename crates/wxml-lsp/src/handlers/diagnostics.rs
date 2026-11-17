@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Instant;
 
 use serde_json::{Value, json};
 use wxml_project::ProjectPath;
@@ -14,7 +15,7 @@ use super::{
 use crate::jsonrpc::Outgoing;
 use crate::project_host::{ChangeDocument, DocumentRoute, HostUpdate, OpenDocument};
 use crate::scheduler::{Job, JobKind, Outcome, WorkDone};
-use crate::server::{CachedDiagnostics, Server, log};
+use crate::server::{CachedDiagnostics, MAX_DEBOUNCED_DIAGNOSTICS, Server, log};
 use crate::workspace::Document;
 
 /// Method name used for pushed diagnostics.
@@ -161,6 +162,7 @@ impl Server {
             log(format_args!("ignoring didOpen without text"));
             return Vec::new();
         };
+        self.cancel_debounced_diagnostics(uri);
         let version = document.get("version").and_then(Value::as_u64);
         let language_id = document.get("languageId").and_then(Value::as_str);
         let text = text.to_owned();
@@ -285,6 +287,12 @@ impl Server {
             }
         }
         for uri in uris {
+            // Script/JSON/style overlays are authoritative recovery inputs.
+            // They schedule immediately instead of joining the typing
+            // debounce: an unsaved type change must be visible without another
+            // template keystroke. The scheduler still coalesces duplicate
+            // diagnostics jobs per document.
+            self.cancel_debounced_diagnostics(&uri);
             let _ = self.schedule_diagnostics(&uri);
         }
         let style_paths: std::collections::HashSet<&str> =
@@ -346,7 +354,7 @@ impl Server {
                     if let Ok(target) = self.host.view_for(&path) {
                         self.workspace.set_view_revision(uri, target.view_revision);
                     }
-                    self.schedule_diagnostics(uri)
+                    self.debounce_diagnostics(uri)
                 }
                 DocumentRoute::Script(_) | DocumentRoute::Json(_) | DocumentRoute::Style(_) => {
                     let text = self
@@ -367,7 +375,7 @@ impl Server {
                 }
                 DocumentRoute::Unknown => {
                     if super::template_document(self, uri) {
-                        self.schedule_diagnostics(uri)
+                        self.debounce_diagnostics(uri)
                     } else {
                         Vec::new()
                     }
@@ -407,6 +415,7 @@ impl Server {
             .map(|document| document.file().clone());
         self.workspace.close(uri);
         self.clear_dirty(uri);
+        self.cancel_debounced_diagnostics(uri);
         if let Some(cancel) = self.diagnostics_cancel.remove(uri) {
             cancel.store(true, Ordering::SeqCst);
         }
@@ -439,6 +448,65 @@ impl Server {
         outgoing
     }
 
+    /// Defers diagnostics for one typed edit until the quiet period ends.
+    ///
+    /// Opening, saving and dependency/config updates schedule immediately.
+    /// The pending set is bounded; when it is full the newest document is
+    /// scheduled immediately rather than growing the timer map.
+    pub(crate) fn debounce_diagnostics(&mut self, uri: &str) -> Vec<Outgoing> {
+        if self.diagnostics_debounce.is_zero() {
+            return self.schedule_diagnostics(uri);
+        }
+        if let Some(previous) = self.diagnostics_cancel.remove(uri) {
+            previous.store(true, Ordering::SeqCst);
+        }
+        if !self.debounced_diagnostics.contains_key(uri)
+            && self.debounced_diagnostics.len() >= MAX_DEBOUNCED_DIAGNOSTICS
+        {
+            log(format_args!(
+                "diagnostics debounce is full; scheduling the newest edit immediately"
+            ));
+            return self.schedule_diagnostics(uri);
+        }
+        self.debounced_diagnostics
+            .insert(uri.to_owned(), Instant::now() + self.diagnostics_debounce);
+        Vec::new()
+    }
+
+    /// Cancels a pending debounce for one document.
+    pub(crate) fn cancel_debounced_diagnostics(&mut self, uri: &str) {
+        self.debounced_diagnostics.remove(uri);
+    }
+
+    /// Schedules every diagnostics deadline that has passed.
+    pub(crate) fn flush_due_diagnostics(&mut self, now: Instant) -> Vec<Outgoing> {
+        if self.debounced_diagnostics.is_empty() {
+            return Vec::new();
+        }
+        let due: Vec<String> = self
+            .debounced_diagnostics
+            .iter()
+            .filter(|(_, deadline)| **deadline <= now)
+            .map(|(uri, _)| uri.clone())
+            .collect();
+        if due.is_empty() {
+            return Vec::new();
+        }
+        let epoch = self.refresh_epoch();
+        for uri in due {
+            self.debounced_diagnostics.remove(&uri);
+            let _ = self.schedule_diagnostics_with_epoch(&uri, &epoch);
+        }
+        Vec::new()
+    }
+
+    /// Flushes every pending debounce regardless of its deadline.
+    #[cfg(test)]
+    pub(crate) fn flush_all_debounced_diagnostics(&mut self) {
+        let now = Instant::now() + self.diagnostics_debounce;
+        let _ = self.flush_due_diagnostics(now);
+    }
+
     /// Queues a diagnostics job for the current revision of `uri`.
     ///
     /// A full queue is not an error: the URI is remembered and retried after
@@ -465,6 +533,7 @@ impl Server {
             return Vec::new();
         };
         let stamp = document.stamp(epoch);
+        self.debounced_diagnostics.remove(uri);
         // A newer edit makes every older diagnostics request for this
         // document obsolete. Cancelling the queued job before moving the
         // pointer as well as after it closes the race with the worker.
@@ -478,6 +547,7 @@ impl Server {
             context,
             offset: 0,
             stamp,
+            attempt: 0,
             cancel: Arc::clone(&cancel),
         };
         match self.dispatch.submit(job) {

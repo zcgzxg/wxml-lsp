@@ -13,6 +13,7 @@ import { declarationSpans, findRegistrations, memberMap, scanDeclaredProperties 
 import type { DataRootKind, PropertyScan } from "./ast.ts";
 import { resolveBehaviors } from "./behaviors.ts";
 import {
+  acquireProject,
   assertEnvironment,
   defaultReadPolicy,
   EnvironmentError,
@@ -211,6 +212,8 @@ export interface PreparedView {
   files: Map<string, string>;
   compilerOptions: ts.CompilerOptions;
   readPolicy: ReturnType<typeof defaultReadPolicy>;
+  /** Warm language-service project; queries refresh it with the derived view. */
+  project: VirtualProject;
   moduleBefore: "script" | "module";
   build: LayoutBuild;
   registration: AnalyzeResponse["registration"];
@@ -282,7 +285,7 @@ export function buildView(request: AnalyzeRequest, config: AnalysisConfig): Prep
     return { ok: false, reason: `type environment is incomplete: ${reason}`, registration };
   }
 
-  const baseline = new VirtualProject({
+  const baseline = acquireProject({
     rootDir: config.backendDir,
     compilerOptions,
     files: [...files].map(([filePath, text]) => ({ path: filePath, text })),
@@ -417,6 +420,7 @@ export function buildView(request: AnalyzeRequest, config: AnalysisConfig): Prep
     files,
     compilerOptions,
     readPolicy,
+    project: baseline,
     moduleBefore,
     build,
     registration,
@@ -489,8 +493,7 @@ export function analyze(request: AnalyzeRequest, config: AnalysisConfig): Analys
     scriptPath,
     scriptText,
     files,
-    compilerOptions,
-    readPolicy,
+    project,
     moduleBefore,
     build,
     registration,
@@ -559,13 +562,13 @@ export function analyze(request: AnalyzeRequest, config: AnalysisConfig): Analys
     };
   }
 
-  const project = new VirtualProject({
-    rootDir: config.backendDir,
-    compilerOptions,
-    files: [...files].map(([filePath, text]) => ({ path: filePath, text })),
-    readPolicy,
-  });
-  for (const file of build.files) project.set(file.path, file.text);
+  // One warm project serves both the baseline and the derived view. Adding
+  // the generated files is incremental; the next request refreshes it back to
+  // the source-only shape before building its own view.
+  project.refresh([
+    ...[...files].map(([filePath, text]) => ({ path: filePath, text })),
+    ...build.files,
+  ]);
 
   const diagnosticsOff = build.jsCheckApplied === "off";
   const probeProblems = probeHealth(project, build, moduleBefore, !diagnosticsOff);

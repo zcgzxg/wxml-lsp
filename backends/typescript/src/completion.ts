@@ -248,13 +248,11 @@ function collectExpressionMembers(
     : mount.text.length;
   const queryPosition = mount.startUtf16 + queryOffset;
 
-  const project = new VirtualProject({
-    rootDir: config.backendDir,
-    compilerOptions: view.compilerOptions,
-    files: [...view.files].map(([filePath, text]) => ({ path: filePath, text })),
-    readPolicy: view.readPolicy,
-  });
-  for (const file of view.build.files) project.set(file.path, file.text);
+  const project = view.project;
+  project.refresh([
+    ...[...view.files].map(([filePath, text]) => ({ path: filePath, text })),
+    ...view.build.files,
+  ]);
 
   // Completing a bare root (`{{ us`) asks for the keys of `this.data`, not for
   // members of a symbol named `us`; the language service cannot answer that

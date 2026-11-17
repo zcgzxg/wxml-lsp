@@ -32,6 +32,113 @@ export interface VirtualProjectInit {
   readPolicy: ReadPolicy;
 }
 
+/**
+ * Number of recently used projects kept between requests.
+ *
+ * TypeScript program construction dominates a request (roughly 0.4-0.8 s for
+ * the pinned typings). Reusing the language service and updating only file
+ * versions keeps ordinary edits in the 10-50 ms range. The pool is bounded so
+ * alternating projects cannot grow memory without limit.
+ */
+export const MAX_POOLED_PROJECTS = 2;
+
+interface PooledProject {
+  key: string;
+  project: VirtualProject;
+}
+
+const projectPool: PooledProject[] = [];
+
+/**
+ * Stable JSON-like serialization for cache keys.
+ *
+ * `JSON.stringify(value, keyArray)` filters *every* object level by that key
+ * list, so nested compiler options such as `paths` became `{}`. This helper
+ * sorts object keys recursively, preserves array order (TypeScript resolution
+ * fallbacks depend on it), and mirrors JSON's treatment of undefined/function
+ * object properties by omitting them.
+ */
+function stableSerialize(value: unknown): string {
+  if (value === null) return "null";
+  switch (typeof value) {
+    case "string":
+    case "number":
+    case "boolean":
+      return JSON.stringify(value);
+    case "undefined":
+      return "null";
+    case "bigint":
+      return JSON.stringify(`${value.toString()}n`);
+    case "function":
+    case "symbol":
+      return "null";
+    default:
+      break;
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableSerialize(entry)).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    const keys = Object.keys(object)
+      .filter((key) => {
+        const entry = object[key];
+        return entry !== undefined && typeof entry !== "function" && typeof entry !== "symbol";
+      })
+      .sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableSerialize(object[key])}`).join(",")}}`;
+  }
+  return "null";
+}
+
+/** Canonical key for a project shape: options, read policy and file paths. */
+function projectKey(init: VirtualProjectInit, files: ReadonlyArray<{ path: string }>): string {
+  const paths = files.map((file) => path.resolve(file.path)).sort();
+  return [
+    init.rootDir,
+    stableSerialize(init.compilerOptions),
+    init.readPolicy.diskRoots.join("\u0000"),
+    init.readPolicy.diskFiles.join("\u0000"),
+    paths.join("\u0000"),
+  ].join("\u0001");
+}
+
+/**
+ * Returns a project for this exact file shape, reusing a warm language service.
+ *
+ * A request that changes only file text keeps the cached project and bumps the
+ * version of each changed file; TypeScript updates its program incrementally
+ * on the next query. A changed file set or option set gets a fresh project.
+ */
+export function acquireProject(
+  init: VirtualProjectInit,
+  extraFiles: ReadonlyArray<{ path: string; text: string }> = [],
+): VirtualProject {
+  const files = [...init.files, ...extraFiles];
+  const key = projectKey(init, files);
+  const index = projectPool.findIndex((entry) => entry.key === key);
+  if (index >= 0) {
+    const [entry] = projectPool.splice(index, 1);
+    projectPool.unshift(entry);
+    entry.project.refresh(files);
+    return entry.project;
+  }
+  const project = new VirtualProject({ ...init, files });
+  projectPool.unshift({ key, project });
+  if (projectPool.length > MAX_POOLED_PROJECTS) projectPool.length = MAX_POOLED_PROJECTS;
+  return project;
+}
+
+/** Drops every pooled project. Used by tests and explicit backend resets. */
+export function resetProjectPool(): void {
+  projectPool.length = 0;
+}
+
+/** Number of pooled projects, for bounded-cache tests. */
+export function projectPoolSize(): number {
+  return projectPool.length;
+}
+
 const TYPINGS_PACKAGE = "miniprogram-api-typings";
 
 /** Read policy for this experiment: TS lib + the pinned typings package only. */
@@ -71,7 +178,10 @@ export class VirtualProject {
   readonly readPolicy: ReadPolicy;
   private readonly files = new Map<string, string>();
   private readonly versions = new Map<string, number>();
-  private readonly knownFiles: string[];
+  /** Cached script snapshots keyed by the file version TypeScript last saw. */
+  private readonly snapshots = new Map<string, { version: number; snapshot: ts.IScriptSnapshot }>();
+  private knownFiles: string[];
+  private knownDirectories = new Set<string>();
   private service: ts.LanguageService | undefined;
   private dirty = true;
 
@@ -85,15 +195,65 @@ export class VirtualProject {
       this.versions.set(normalized, 1);
     }
     this.knownFiles = [...this.files.keys()];
+    this.rebuildKnownDirectories();
   }
 
   /** Create or replace a file inside the snapshot. Marks the program dirty. */
   set(filePath: string, text: string): void {
-    const normalized = path.resolve(filePath);
-    this.files.set(normalized, text);
-    this.versions.set(normalized, (this.versions.get(normalized) ?? 0) + 1);
-    if (!this.knownFiles.includes(normalized)) this.knownFiles.push(normalized);
+    this.applyFile(filePath, text);
+    this.knownFiles = [...this.files.keys()];
+    this.rebuildKnownDirectories();
     this.dirty = true;
+  }
+
+  /**
+   * Replace the snapshot without discarding the warm language service.
+   *
+   * Only text/version changes are incremental for TypeScript. A changed file
+   * set rebuilds the lookup tables; the language service itself stays alive, so
+   * the next query reuses parsing and the type checker.
+   */
+  refresh(files: ReadonlyArray<{ path: string; text: string }>): void {
+    const next = new Set<string>();
+    for (const file of files) {
+      const normalized = path.resolve(file.path);
+      next.add(normalized);
+      this.applyFile(normalized, file.text);
+    }
+    let removed = false;
+    for (const existing of [...this.files.keys()]) {
+      if (next.has(existing)) continue;
+      this.files.delete(existing);
+      this.versions.delete(existing);
+      this.snapshots.delete(existing);
+      removed = true;
+    }
+    if (removed || this.knownFiles.length !== next.size) {
+      this.knownFiles = [...this.files.keys()];
+      this.rebuildKnownDirectories();
+    }
+  }
+
+  private applyFile(filePath: string, text: string): void {
+    const normalized = path.resolve(filePath);
+    if (this.files.get(normalized) === text) return;
+    this.files.set(normalized, text);
+    const version = (this.versions.get(normalized) ?? 0) + 1;
+    this.versions.set(normalized, version);
+    this.snapshots.delete(normalized);
+  }
+
+  private rebuildKnownDirectories(): void {
+    const directories = new Set<string>();
+    for (const file of this.files.keys()) {
+      let directory = path.dirname(file);
+      while (directory !== path.dirname(directory)) {
+        if (directories.has(directory)) break;
+        directories.add(directory);
+        directory = path.dirname(directory);
+      }
+    }
+    this.knownDirectories = directories;
   }
 
   has(filePath: string): boolean {
@@ -147,7 +307,7 @@ export class VirtualProject {
   private directoryExists(dirPath: string): boolean {
     const resolved = path.resolve(dirPath);
     // Project directories exist as soon as the snapshot contains a file below them.
-    if (this.knownFiles.some((file) => file.startsWith(resolved + path.sep))) return true;
+    if (this.knownDirectories.has(resolved)) return true;
     // Directory existence is not source content: type-reference resolution needs
     // to see node_modules while file reads stay restricted by the policy.
     return ts.sys.directoryExists(resolved);
@@ -155,12 +315,19 @@ export class VirtualProject {
 
   private createService(): ts.LanguageService {
     const host: ts.LanguageServiceHost = {
-      getScriptFileNames: () => [...this.files.keys()],
+      getScriptFileNames: () => this.knownFiles,
       getScriptVersion: (fileName) => String(this.versions.get(path.resolve(fileName)) ?? 0),
       getScriptSnapshot: (fileName) => {
         const resolved = path.resolve(fileName);
         const inMemory = this.files.get(resolved);
-        if (inMemory !== undefined) return ts.ScriptSnapshot.fromString(inMemory);
+        if (inMemory !== undefined) {
+          const version = this.versions.get(resolved) ?? 0;
+          const cached = this.snapshots.get(resolved);
+          if (cached && cached.version === version) return cached.snapshot;
+          const snapshot = ts.ScriptSnapshot.fromString(inMemory);
+          this.snapshots.set(resolved, { version, snapshot });
+          return snapshot;
+        }
         if (!this.isAllowedOnDisk(resolved)) return undefined;
         const onDisk = ts.sys.readFile(resolved);
         return onDisk === undefined ? undefined : ts.ScriptSnapshot.fromString(onDisk);

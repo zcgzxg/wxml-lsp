@@ -390,6 +390,17 @@ pub trait Backend: Send + Sync {
         ))
     }
 
+    /// Drops cached state after a project/workspace identity change.
+    ///
+    /// **Caching backends MUST override this method.** They must make every
+    /// cached analysis from the removed project unreachable and advance their
+    /// epoch so a late result is dropped by the publication barrier. The
+    /// default no-op exists only for stateless backends (for example a mock or
+    /// a pure syntax backend); relying on it from a cache-owning backend is a
+    /// bug. Invalidation is not a backend success and must not reset failure
+    /// backoff counters.
+    fn invalidate(&self) {}
+
     /// Reports which features this backend implements and how completely.
     ///
     /// The default claims nothing, so a new backend must opt in explicitly.

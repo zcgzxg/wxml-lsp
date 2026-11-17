@@ -491,10 +491,12 @@ impl Server {
             }
         }
         let cancel = Arc::new(AtomicBool::new(false));
+        let attempt = self.next_attempt();
         self.inflight.insert(
             key.clone(),
             Inflight {
                 id: id.clone(),
+                attempt,
                 cancel: Arc::clone(&cancel),
                 uri: uri.to_owned(),
             },
@@ -504,6 +506,7 @@ impl Server {
             context,
             offset,
             stamp,
+            attempt,
             cancel,
             kind: kind.clone(),
         };

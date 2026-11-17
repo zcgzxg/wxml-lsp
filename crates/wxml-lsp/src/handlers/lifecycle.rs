@@ -5,12 +5,14 @@ use std::sync::atomic::Ordering;
 
 use serde_json::{Value, json};
 use wxml_project::{ProjectPath, StyleConfig, StyleDiagnosticsPolicy};
-use wxml_types::{CapabilityStatus, ProjectId, SourceSnapshot};
+use wxml_types::{CapabilityStatus, ProjectId, SourceSnapshot, ViewRevision};
 
 use super::{log_safe_method, log_safe_text, status_label, template_document};
 use crate::configuration::InitializationOptions;
 use crate::jsonrpc::{self, Outgoing, RequestKey};
-use crate::project_host::{DocumentRoute, HostError, WatchedChangeKind, WatchedFileChange};
+use crate::project_host::{
+    DocumentRoute, HostError, OpenDocument, WatchedChangeKind, WatchedFileChange,
+};
 use crate::server::{Lifecycle, Server, log};
 
 /// Reads `rootUri`, falling back to the first workspace folder.
@@ -142,6 +144,26 @@ fn initialize_result(server: &Server) -> Value {
         }
     }
     result
+}
+
+/// Reads an optional diagnostics debounce from initialization options.
+///
+/// Shape: `{"wxml":{"diagnostics":{"debounceMs":120}}}`. A value outside
+/// `0..=5000` is ignored in favour of the environment/default setting. This is
+/// configuration, not project content, and tests use it to pin behavior.
+fn diagnostics_debounce_override(params: Option<&Value>) -> Option<std::time::Duration> {
+    let root = params?.get("initializationOptions")?;
+    let options = root
+        .get("wxml")
+        .and_then(Value::as_object)
+        .or_else(|| root.get("style").and_then(Value::as_object))
+        .or_else(|| root.as_object())?;
+    let milliseconds = options
+        .get("diagnostics")?
+        .as_object()?
+        .get("debounceMs")?
+        .as_u64()?;
+    (milliseconds <= 5_000).then(|| std::time::Duration::from_millis(milliseconds))
 }
 
 /// Reads optional `wxml` style settings from initialization options.
@@ -307,10 +329,10 @@ impl Server {
             "textDocument/didClose" => self.did_close(params),
             "textDocument/didSave" => self.did_save(params),
             "workspace/didChangeWatchedFiles" => self.did_change_watched_files(params),
-            "$/cancelRequest" => {
-                self.cancel_request(params.as_ref());
-                Vec::new()
+            "workspace/didChangeWorkspaceFolders" => {
+                self.did_change_workspace_folders(params.as_ref())
             }
+            "$/cancelRequest" => self.cancel_request(params.as_ref()),
             other => {
                 log(format_args!(
                     "ignoring unknown notification `{}`",
@@ -322,6 +344,7 @@ impl Server {
     }
 
     /// Answers `initialize` once and opens the requested root.
+    #[allow(clippy::too_many_lines)] // one bounded option/root parsing sequence
     fn initialize(&mut self, id: Value, params: Option<&Value>) -> Vec<Outgoing> {
         if self.lifecycle != Lifecycle::Uninitialized {
             return vec![Outgoing::failure(
@@ -343,6 +366,10 @@ impl Server {
                 )];
             }
         };
+        self.initialization = options.clone();
+        if let Some(debounce) = diagnostics_debounce_override(params) {
+            self.diagnostics_debounce = debounce;
+        }
         self.client.watched_files = client_capability(
             params,
             &["workspace", "didChangeWatchedFiles", "dynamicRegistration"],
@@ -368,6 +395,7 @@ impl Server {
             client_capability_optional(params, &["workspace", "workspaceEdit", "documentChanges"])
                 .unwrap_or(false);
         let root = requested_root(params);
+        self.workspace_root = root.map(str::to_owned);
         let root_path = root.and_then(|uri| wxml_project::root_path_from_uri(uri).ok());
         let configured = initialization_string(params, "snippetsPath")
             .or_else(|| initialization_string(params, "wxmlSnippetsPath"));
@@ -597,27 +625,287 @@ impl Server {
         }
     }
 
-    /// Sets the cancel flag of one in-flight request.
-    fn cancel_request(&self, params: Option<&Value>) {
+    /// Answers a cancelled request immediately and drops its queued work.
+    ///
+    /// A running backend call is synchronous and cannot be interrupted; the
+    /// shared flag makes its late result a no-op. The protocol loop must not
+    /// wait for that call to answer `$/cancelRequest`, otherwise cancellation
+    /// latency would equal the slowest backend call.
+    fn cancel_request(&mut self, params: Option<&Value>) -> Vec<Outgoing> {
         let Some(params) = params else {
             log(format_args!("ignoring $/cancelRequest without parameters"));
-            return;
+            return Vec::new();
         };
         let Some(id) = params.as_object().and_then(|object| object.get("id")) else {
             log(format_args!("ignoring $/cancelRequest without an id"));
-            return;
+            return Vec::new();
         };
         let Some(key) = RequestKey::from_id(id) else {
             log(format_args!("ignoring $/cancelRequest with an invalid id"));
-            return;
+            return Vec::new();
         };
-        match self.inflight.get(&key) {
-            Some(inflight) => {
-                inflight.cancel.store(true, Ordering::SeqCst);
-                log(format_args!("cancelling request"));
+        let Some(inflight) = self.inflight.remove(&key) else {
+            // A cancelled semantic request already answered by a previous
+            // path must not leave auxiliary intent state behind.
+            self.semantic_pending.remove(&key);
+            log(format_args!("ignoring cancellation of an unknown request"));
+            return Vec::new();
+        };
+        self.semantic_pending.remove(&key);
+        inflight.cancel.store(true, Ordering::SeqCst);
+        self.dispatch.cancel(&key);
+        log(format_args!("cancelling request"));
+        vec![Outgoing::failure(
+            inflight.id,
+            jsonrpc::error_codes::REQUEST_CANCELLED,
+            "request cancelled",
+        )]
+    }
+
+    /// Clears project-bound state when the active workspace folder is removed.
+    ///
+    /// A removed root must not keep serving cached types or diagnostics. Open
+    /// buffers stay in the workspace so a later save/close can still be
+    /// routed, but the host project is closed and every published diagnostic
+    /// for a template is cleared. Re-adding exactly one root reopens it with
+    /// the original initialization options; adding roots to a live project is
+    /// not hot-applied (the multi-root registry belongs to the project host).
+    pub(crate) fn did_change_workspace_folders(&mut self, params: Option<&Value>) -> Vec<Outgoing> {
+        let Some(event) = params
+            .and_then(|params| params.get("event"))
+            .and_then(Value::as_object)
+        else {
+            log(format_args!(
+                "ignoring didChangeWorkspaceFolders without an event"
+            ));
+            return Vec::new();
+        };
+        let added = workspace_folder_uris(event.get("added"));
+        let removed = workspace_folder_uris(event.get("removed"));
+        if removed.is_empty() {
+            if added.is_empty() {
+                log(format_args!(
+                    "ignoring an empty didChangeWorkspaceFolders event"
+                ));
+                return Vec::new();
             }
-            None => log(format_args!("ignoring cancellation of an unknown request")),
+            if added.len() == 1 && !self.host.is_project_open() {
+                return self.open_replacement_workspace(&added[0]);
+            }
+            log(format_args!(
+                "workspace folder additions are not hot-applied; restart the server to change roots"
+            ));
+            return Vec::new();
         }
+        let removes_active = self
+            .workspace_root
+            .as_deref()
+            .is_some_and(|root| removed.iter().any(|uri| same_root_uri(root, uri)));
+        if !removes_active {
+            log(format_args!(
+                "ignoring removal of a workspace folder that is not active"
+            ));
+            return Vec::new();
+        }
+        self.close_removed_workspace(&added)
+    }
+
+    /// Drops project state and clears diagnostics after a root removal.
+    fn close_removed_workspace(&mut self, added: &[String]) -> Vec<Outgoing> {
+        let mut outgoing = Vec::new();
+        let open: Vec<String> = self
+            .workspace
+            .documents()
+            .map(|document| document.uri().to_owned())
+            .collect();
+        for uri in open {
+            if template_document(self, &uri) {
+                outgoing.push(Outgoing::notification(
+                    "textDocument/publishDiagnostics",
+                    json!({"uri": uri, "diagnostics": []}),
+                ));
+            }
+        }
+        // `inflight` is the only owner of response delivery. A semantic request
+        // also has an auxiliary `semantic_pending` intent; clear that table
+        // without answering it a second time.
+        let inflight = std::mem::take(&mut self.inflight);
+        for (key, request) in inflight {
+            request.cancel.store(true, Ordering::SeqCst);
+            self.dispatch.cancel(&key);
+            outgoing.push(Outgoing::failure(
+                request.id,
+                jsonrpc::error_codes::REQUEST_CANCELLED,
+                "workspace folder was removed",
+            ));
+        }
+        self.semantic_pending.clear();
+        for cancel in self.diagnostics_cancel.drain().map(|(_, cancel)| cancel) {
+            cancel.store(true, Ordering::SeqCst);
+        }
+        self.backend_diagnostics.clear();
+        self.dirty.clear();
+        self.debounced_diagnostics.clear();
+        self.synthetic_templates.clear();
+        self.workspace_root = None;
+        // Cached backend analyses belong to the removed project; clear them
+        // and advance the backend epoch before any later request can answer.
+        self.backend.invalidate();
+        match self.host.open_root(None) {
+            Ok(()) => {}
+            Err(error) => log(format_args!("closing the removed project failed: {error}")),
+        }
+        self.workspace
+            .set_project(self.host.project_id(), self.host.project_revision());
+        if let Some(root) = added.first() {
+            if added.len() > 1 {
+                log(format_args!(
+                    "opening only the first of {} added workspace folders; multi-root hot update is not supported",
+                    added.len()
+                ));
+            }
+            outgoing.extend(self.open_replacement_workspace(root));
+        }
+        outgoing
+    }
+
+    /// Opens one replacement root after a removal, keeping open buffers.
+    fn open_replacement_workspace(&mut self, root: &str) -> Vec<Outgoing> {
+        match self
+            .host
+            .open_root_with_options(Some(root), &self.initialization)
+        {
+            Ok(()) => {
+                self.workspace_root = Some(root.to_owned());
+                self.workspace
+                    .set_project(self.host.project_id(), self.host.project_revision());
+                log(format_args!("opened the replacement workspace folder"));
+                return self.replay_open_documents();
+            }
+            Err(error) => log(format_args!("opening the workspace folder failed: {error}")),
+        }
+        Vec::new()
+    }
+
+    /// Replays open WXML snapshots and script/style/JSON overlays into a
+    /// replacement project.
+    ///
+    /// `ProjectHost::open_root_with_options` clears the host snapshots and
+    /// overlays, while the LSP workspace still owns the unsaved buffers. Every
+    /// document identity is resolved again in the new project; old `FileId`s
+    /// are never reused. Diagnostics are scheduled only after all overlays are
+    /// back in place, so a replay cannot analyze against disk text.
+    fn replay_open_documents(&mut self) -> Vec<Outgoing> {
+        let documents: Vec<(String, String, u64)> = self
+            .workspace
+            .documents()
+            .map(|document| {
+                (
+                    document.uri().to_owned(),
+                    document.text().to_owned(),
+                    document.client_version().get(),
+                )
+            })
+            .collect();
+        let mut updates = Vec::new();
+        let mut templates = Vec::new();
+        for (uri, text, version) in documents {
+            match self.host.route(&uri) {
+                DocumentRoute::Wxml(path) => {
+                    let Ok(file) = self.host.file_id(&path) else {
+                        log(format_args!("replay skipped a template without a file id"));
+                        continue;
+                    };
+                    if let Err(error) = self.workspace.open_file(
+                        &uri,
+                        file.clone(),
+                        text,
+                        Some(version),
+                        ViewRevision::new(1),
+                    ) {
+                        log(format_args!("template replay failed: {error}"));
+                        continue;
+                    }
+                    if let Some(document) = self.workspace.get(&uri) {
+                        self.host
+                            .set_wxml_snapshot(file, Arc::clone(document.snapshot()));
+                        templates.push(uri.clone());
+                    }
+                    if let Ok(target) = self.host.view_for(&path) {
+                        self.workspace.set_view_revision(&uri, target.view_revision);
+                    }
+                }
+                DocumentRoute::Script(path)
+                | DocumentRoute::Json(path)
+                | DocumentRoute::Style(path) => {
+                    if let Ok(file) = self.host.file_id(&path) {
+                        if let Err(error) = self.workspace.open_file(
+                            &uri,
+                            file,
+                            text.clone(),
+                            Some(version),
+                            ViewRevision::new(0),
+                        ) {
+                            log(format_args!("overlay replay identity failed: {error}"));
+                        }
+                    } else {
+                        log(format_args!(
+                            "overlay replay skipped a document without a file id"
+                        ));
+                    }
+                    match self.host.open_document(OpenDocument {
+                        uri: uri.clone(),
+                        text,
+                        version: Some(version),
+                    }) {
+                        Ok(update) => updates.push(update),
+                        Err(error) => log(format_args!("overlay replay failed: {error}")),
+                    }
+                }
+                DocumentRoute::Unknown => {}
+            }
+        }
+        let mut outgoing = Vec::new();
+        for update in updates {
+            outgoing.extend(self.apply_host_update(&update));
+        }
+        for uri in templates {
+            let _ = self.schedule_diagnostics(&uri);
+        }
+        outgoing
+    }
+}
+
+/// Reads workspace-folder URIs from one `didChangeWorkspaceFolders` list.
+fn workspace_folder_uris(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map_or_else(Vec::new, |folders| {
+            folders
+                .iter()
+                .take(64)
+                .filter_map(|folder| {
+                    let uri = folder.get("uri")?.as_str()?;
+                    if uri.is_empty() || uri.len() > crate::workspace::MAX_URI_BYTES {
+                        return None;
+                    }
+                    Some(uri.to_owned())
+                })
+                .collect()
+        })
+}
+
+/// Compares root URIs without relying on the removed directory existing.
+fn same_root_uri(left: &str, right: &str) -> bool {
+    if left.trim_end_matches('/') == right.trim_end_matches('/') {
+        return true;
+    }
+    match (
+        wxml_project::root_path_from_uri(left),
+        wxml_project::root_path_from_uri(right),
+    ) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
     }
 }
 
@@ -708,7 +996,10 @@ fn watched_changes(params: &Value) -> Vec<WatchedFileChange> {
 mod tests {
     use serde_json::json;
 
-    use super::{MAX_WATCHED_CHANGES, saved_uri, style_initialization_options, watched_changes};
+    use super::{
+        MAX_WATCHED_CHANGES, diagnostics_debounce_override, same_root_uri, saved_uri,
+        style_initialization_options, watched_changes, workspace_folder_uris,
+    };
     use crate::project_host::WatchedChangeKind;
 
     #[test]
@@ -798,5 +1089,59 @@ mod tests {
             .collect();
         let parsed = watched_changes(&json!({"changes": changes}));
         assert_eq!(parsed.len(), MAX_WATCHED_CHANGES);
+    }
+
+    #[test]
+    fn reads_bounded_workspace_folder_uris() {
+        let folders = workspace_folder_uris(Some(&json!([
+            {"uri": "file:///workspace/a"},
+            {"uri": "file:///workspace/b/"},
+            {"uri": 3},
+            null,
+        ])));
+        assert_eq!(folders, vec!["file:///workspace/a", "file:///workspace/b/"]);
+        assert_eq!(workspace_folder_uris(None), Vec::<String>::new());
+        assert_eq!(
+            workspace_folder_uris(Some(&json!({}))),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            workspace_folder_uris(Some(&json!([{"uri": ""}, {"uri": "x".repeat(9_000)}]))),
+            Vec::<String>::new()
+        );
+        assert!(same_root_uri("file:///workspace/", "file:///workspace"));
+        assert!(same_root_uri(
+            "file:///workspace/a%20b",
+            "file:///workspace/a%20b/"
+        ));
+        assert!(!same_root_uri("file:///workspace/a", "file:///workspace/b"));
+    }
+
+    #[test]
+    fn reads_a_bounded_diagnostics_debounce_override() {
+        assert_eq!(
+            diagnostics_debounce_override(Some(&json!({
+                "initializationOptions": {"wxml": {"diagnostics": {"debounceMs": 50}}}
+            }))),
+            Some(std::time::Duration::from_millis(50))
+        );
+        assert_eq!(
+            diagnostics_debounce_override(Some(&json!({
+                "initializationOptions": {"diagnostics": {"debounceMs": 0}}
+            }))),
+            Some(std::time::Duration::ZERO)
+        );
+        for params in [
+            json!({}),
+            json!({"initializationOptions": {"wxml": {"diagnostics": {"debounceMs": 5001}}}}),
+            json!({"initializationOptions": {"wxml": {"diagnostics": {"debounceMs": "50"}}}}),
+            json!({"initializationOptions": {"wxml": {"diagnostics": {}}}}),
+        ] {
+            assert_eq!(
+                diagnostics_debounce_override(Some(&params)),
+                None,
+                "{params}"
+            );
+        }
     }
 }
