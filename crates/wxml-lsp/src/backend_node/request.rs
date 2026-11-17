@@ -84,6 +84,13 @@ pub(crate) fn build(
     let mut infos = BTreeMap::new();
     for fragment in view.fragments.iter() {
         let (selected, target_range) = fragment_target(fragment);
+        // Literal-only expressions (for example `{{ false }}`) have no
+        // identifier to target. The backend rejects fragments without a
+        // target, so leave them out of both the request and the diagnostic
+        // mapping. They cannot produce value diagnostics anyway.
+        if selected.is_none() {
+            continue;
+        }
         infos.insert(
             fragment.fragment_id.clone(),
             FragmentInfo {
@@ -708,6 +715,12 @@ mod tests {
         }
     }
 
+    fn fragment_named(id: &str, expr: &str, start: u32) -> CheckFragment {
+        let mut fragment = fragment(expr, start);
+        fragment.fragment_id = id.to_owned();
+        fragment
+    }
+
     fn view(fragment: CheckFragment) -> PreparedView {
         let project = ProjectId::new("proj-test");
         let script = FileId::new(project, "pages/index/index.ts").expect("script");
@@ -830,6 +843,40 @@ mod tests {
         assert!(params["components"].as_array().is_some_and(Vec::is_empty));
         assert!(params["events"].as_array().is_some_and(Vec::is_empty));
         assert_eq!(params["policy"]["propertiesOverlay"], "declaration");
+    }
+
+    #[test]
+    fn skips_literal_only_fragments_without_a_target() {
+        let mut view = view(fragment_named("f0", "false", 0));
+        view.fragments = Arc::from(vec![
+            fragment_named("f0", "false", 0),
+            fragment_named("f1", "user.name", 10),
+        ]);
+
+        let request = build(
+            &view,
+            &context(),
+            &NodeBackendConfig::default(),
+            "req".to_owned(),
+        )
+        .expect("request")
+        .expect("some");
+
+        assert!(!request.fragments.contains_key("f0"));
+        assert_eq!(
+            request
+                .fragments
+                .get("f1")
+                .and_then(|info| info.target.as_deref()),
+            Some("name")
+        );
+        let value: Value = serde_json::from_str(&request.line).expect("json");
+        let fragments = value["params"]["fragments"]
+            .as_array()
+            .expect("fragments array");
+        assert_eq!(fragments.len(), 1);
+        assert_eq!(fragments[0]["fragmentId"], "f1");
+        assert_eq!(fragments[0]["target"], "name");
     }
 
     #[test]
