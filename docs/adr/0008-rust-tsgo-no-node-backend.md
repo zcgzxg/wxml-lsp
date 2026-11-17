@@ -1,7 +1,7 @@
 # ADR-0008: Rust + tsgo 类型后端，移除 Node 依赖
 
 **Date**: 2026-11-17
-**Status**: proposed（用户已选择迁移方向；P1-A 有条件通过，7.1.0-beta 接受与 G1 收口完成前不升级为 accepted）
+**Status**: proposed（用户已选择迁移方向，并已于 2026-11-17 有条件接受 7.1.0-beta 作为唯一候选基线；P2 合同冻结、P1-C 收口与 G1 完成前不升级为 accepted）
 **Deciders**: 项目维护者；planner、architect、Rust 测试及交付盘点参与设计
 
 本文记录已采用的迁移方向；接口与能力验证完成前保持 proposed。实施计划见 `docs/plans/2026-11-17-rust-tsgo-migration.md`。本文件不表示迁移、测试或交付已经完成。
@@ -24,7 +24,7 @@ P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、Definit
 
 原生 node handle 不携带快照身份，跨 `updateSnapshot` 可能静默解析到新 AST 的同序号节点。Rust 必须把每个 handle 绑定 `(snapshot id, file path, content hash/node id)`，跨 epoch 一律拒绝，不能缓存到下一快照。未保存内容更新必须使用同一次 `updateSnapshot` 的 `closeFiles` + `openFiles`；仅 layer/full/notification 不会刷新已打开文件。原生 API 暴露 `emit` 等写方法且实测可写宿主磁盘，客户端只允许白名单查询方法，启动时设置 `writeFile:noop`、`removeFile:noop`，读回调 fail-closed，永不启用 `--runExternalCode`；`noEmit`/no-op 不构成 OS 沙箱。
 
-采用精确的原生发行版本、源码提交、API/AST schema 及平台资产摘要。P1-A 实测稳定版 `7.0.2` 不具备 `createSnapshot`/租约/`createSourceFile`，AST protocol v5（header 44）与候选线不兼容，不能作为本架构基础；当前唯一满足快照、虚拟 FS、查询与 AST 要求的候选是 `7.1.0-beta`（gitHead `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`，AST protocol v9/header 64）。接受 beta 作为生产基线属于显式风险决策，须在 P2 由维护者确认并固定 integrity；确认前保持 proposed。`7.0.2` 不作为回退候选。不使用 `main`、`next` 或浮动版本。版本、协议与类型资产更新作为一个经过测试的变更交付；升级必须重跑 F0/F1 合同测试与 AST schema 探针。旧 Node 安装可在无 Node 条件下由受限旧 schema 读取器识别并迁入原生包；验证成功前保持旧 current 不变，原生版本之间支持校验后的回退，不自动回退激活 Node 包。
+采用精确的原生发行版本、源码提交、API/AST schema 及平台资产摘要。P1-A 实测稳定版 `7.0.2` 不具备 `createSnapshot`/租约/`createSourceFile`，AST protocol v5（header 44）与候选线不兼容，不能作为本架构基础；当前唯一满足快照、虚拟 FS、查询与 AST 要求的候选是 `7.1.0-beta`（gitHead `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`，AST protocol v9/header 64）。维护者已于 2026-11-17 有条件接受 beta 作为唯一候选基线并固定 integrity；在 P2 合同冻结、P1-C 收口与 G1 完成前保持 proposed，且不切换默认后端。`7.0.2` 不作为回退候选。不使用 `main`、`next` 或浮动版本。版本、协议与类型资产更新作为一个经过测试的变更交付；升级必须重跑 F0/F1 合同测试与 AST schema 探针。旧 Node 安装可在无 Node 条件下由受限旧 schema 读取器识别并迁入原生包；验证成功前保持旧 current 不变，原生版本之间支持校验后的回退，不自动回退激活 Node 包。
 
 现有 TS 测试按源测试、展开用例、关键断言逐项登记并迁入 Rust。迁移期允许在隔离的历史基线环境运行旧 Node 后端生成 oracle；最终构建、测试、安装包及运行过程不得依赖它。删除旧实现前必须完成全量等价、恢复、安全、性能及无 Node 交付验收；删除后再验一次。
 

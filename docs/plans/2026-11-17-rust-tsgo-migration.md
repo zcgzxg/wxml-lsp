@@ -191,7 +191,7 @@ P7 串行删除旧 Node 实现与当前 TS 测试，再执行全部门禁
 - A：有条件 PROCEED。`7.1.0-beta` 是唯一满足快照/虚拟 FS/查询/AST 的版本；`7.0.2` 明确失败。hover/definition/rename 无直接 API，需 F1 组合规则；handle 跨快照错位、`emit` 写盘、更新语义已列为必测风险。证据：`docs/evidence/2026-11-17-tsgo-native-api-spike.md`。
 - B：P0 Rust 基线绿（1297 pass/0 fail/23 ignored，36.5s；fmt/check/clippy 通过）；TS 套件 339 个展开用例，338 pass/1 fail。唯一失败是 `perf.test.ts` 全量并行下冷启动 8325.25 ms；同一测试串行隔离 3/3 绿（1058.25/1005.64/675.60 ms），已裁决采用专用串行 perf gate，阈值与测试内容不变，全量并行结果保留为环境记录。台账 274 静态/339 展开，37 个原 blocked 决策已关闭：36 个 Candidate B/symbol-bridge 为 `obsolete`，1 个 `TS-META-0027` 为 F0 version pin `rewrite`；原位 shadow 用例仍强制。证据：`docs/evidence/2026-11-17-tsgo-migration-baseline.md`、`docs/plans/2026-11-17-tsgo-test-ledger.md`、`docs/plans/tsgo-test-ledger.json`。
 - C：PARTIAL。Node 依赖面、原生入口 `lib/tsc`、7.1.0-beta/7.0.2 资产结构与 manifest v2 状态机已确认；真实 `lib/tsc` 探针由 A 完成，但无 Node 安装器、clean-env 安装和 Zed 冒烟尚未实现。证据：`docs/evidence/2026-11-17-tsgo-delivery-spike.md`。
-- 结论：P2 可以继续修订 ADR/契约与安全设计，但不得开始生产实现。A 为有条件通过，B 的测试处置与 perf gate 已裁决，C 仍为 PARTIAL；G1 未关闭。仍需维护者显式接受固定 integrity 的 7.1.0-beta、完成 C 的可执行安装器方案，并冻结 F0–F3 契约。
+- 结论：P2 可以继续修订 ADR/契约与安全设计，但不得开始生产实现。A 为有条件通过，B 的测试处置与 perf gate 已裁决，C 仍为 PARTIAL；G1 未关闭。维护者已于 2026-11-17 有条件接受固定 integrity 的 7.1.0-beta；仍需完成 C 的可执行安装器方案，并冻结 F0–F3 契约。
 
 ### P2：落地 ADR、接口与测试契约
 
@@ -483,7 +483,7 @@ P1-C 证明旧→新的可行路径；P6/P7 用真实本地包重跑全部转换
 | 并行冲突/资源争用 | 单文件 owner、合同基线、独立 target、受限 worker/编译并发 |
 | 发布 ABI/离线/旧 schema 回归 | P1-C/P6/P7 真实包验证；不扩大未经验证的平台宣称 |
 
-当前下一步：P2 冻结 F0–F3 契约、完成 beta 风险裁决与安全评审；随后从 P3 开始建立 Rust 原生客户端、原位 shadow 和 parity 测试骨架。未通过 G1/P2 前不得大规模翻译 TS 语义代码或删除 Node。
+当前下一步：P2 冻结 F0–F3 契约、完成安全评审与 P1-C 安装器收口；随后从 P3 开始建立 Rust 原生客户端、原位 shadow 和 parity 测试骨架。未通过 G1/P2 前不得大规模翻译 TS 语义代码或删除 Node。
 
 ## 12. 执行状态、证据与边界
 
@@ -495,4 +495,4 @@ P1-C 证明旧→新的可行路径；P6/P7 用真实本地包重跑全部转换
 - `docs/evidence/2026-11-17-tsgo-delivery-spike.md`：无 Node 资产、安装/回滚状态机与平台事实。
 - `docs/plans/2026-11-17-tsgo-test-ledger.md` 与 `tsgo-test-ledger.json`：逐用例迁移台账、fixture v1 hash、ignored/静默跳过映射。
 
-当前边界：未修改生产源码，未删除 Node，未安装或切换原生后端，未声称迁移完成。G1 仍未关闭；7.1.0-beta 需维护者显式接受并固定 integrity。P2 可继续起草/冻结 F0–F3 契约与安全设计，P3 生产骨架必须等待 beta 决策、C 的可执行安装器方案和契约评审。
+当前边界：未修改生产源码，未删除 Node，未安装或切换原生后端，未声称迁移完成。G1 仍未关闭；7.1.0-beta 已由维护者有条件接受并固定 integrity。P2 可继续起草/冻结 F0–F3 契约与安全设计，P3 生产骨架必须等待 C 的可执行安装器方案和契约评审。
