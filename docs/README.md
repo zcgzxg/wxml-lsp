@@ -17,7 +17,7 @@
 | 执行计划 | [Wave 5 并行交付计划](plans/2026-11-16-wave5-parallel-delivery.md)、[Zed 标准安装与真实项目验收计划](plans/2026-11-16-zed-standard-acceptance.md) | 并行 worktree、接口冻结、测试门禁与评审流程；Zed 标准安装和真实编辑器验收步骤 | 需求定义和最终状态 |
 | 架构决策 | [ADR 索引](adr/README.md) | 模块边界、类型检查与映射、文档同步、交付闸门等长期决策 | 日常进度 |
 | 证据 | [证据索引](evidence/README.md) | 实验环境、方法、结果、限制和最小原始数据 | 把实验结论当作已实现功能 |
-| 集成与编辑器证据 | [P7 真实集成](evidence/p7-integration.md)、[P8 Zed 扩展](evidence/p8-zed.md)、[W2 集成与 Q1 交付](evidence/full-feature-w2.md) | 真实 Node 端到端与 G1 门禁；Zed wasm 构建、隔离 smoke；W2 交叉矩阵与 Q1 本地安装器证据 | 把部分证据当作完整验收 |
+| 集成与编辑器证据 | [P7 真实集成](evidence/p7-integration.md)、[P8 Zed 扩展](evidence/p8-zed.md)、[W2 集成与 Q1 交付](evidence/full-feature-w2.md)、[W3 语义工具与安全编辑](evidence/full-feature-w3.md) | 真实 Node 端到端与 G1 门禁；Zed wasm 构建、隔离 smoke；W2 交叉矩阵与 Q1 本地安装器证据；W3 语义工具、评审修复与固定日志 | 把部分证据当作完整验收 |
 | 来源与许可证 | [来源记录](reference/provenance.md) | 外部调研对象的版本、提交、许可证和归属 | 功能需求 |
 | 工具链说明 | [.opencode/README.md](../.opencode/README.md) | 本项目 OpenCode 配置的来源、安装、更新和卸载 | 产品架构或 WXML 需求 |
 
@@ -30,7 +30,7 @@
 3. 需要理解架构时，按 0001 → 0007 阅读 [ADR](adr/README.md)。
 4. 实现或评审跨模块接口时，阅读 [C0 基础契约](reference/contracts.md)、[C1 类型桥契约](reference/type-bridge-c1.md) 与[模板类型诊断策略](reference/type-diagnostics.md)。
 5. 需要实现通用 WXML 功能时，阅读[功能基线](reference/wxml-language-feature-baseline.md)。
-6. 需要引用实验或集成依据时，阅读[证据索引](evidence/README.md)及 [P7 真实集成](evidence/p7-integration.md)、[P8 Zed 扩展](evidence/p8-zed.md)、[W2 集成与 Q1 交付](evidence/full-feature-w2.md) 记录，同时检查其限制。
+6. 需要引用实验或集成依据时，阅读[证据索引](evidence/README.md)及 [P7 真实集成](evidence/p7-integration.md)、[P8 Zed 扩展](evidence/p8-zed.md)、[W2 集成与 Q1 交付](evidence/full-feature-w2.md)、[W3 语义工具与安全编辑](evidence/full-feature-w3.md) 记录，同时检查其限制。
 7. 需要复用外部代码或数据时，先查[来源记录](reference/provenance.md)，再复核许可证。
 
 ## 3. 权威顺序
@@ -41,7 +41,7 @@
 2. 有效的 ADR，说明“架构上决定怎么做”。
 3. C0/C1 契约与类型诊断策略（[contracts.md](reference/contracts.md)、[type-bridge-c1.md](reference/type-bridge-c1.md)、[type-diagnostics.md](reference/type-diagnostics.md)），说明“接口和检查规则是什么”。
 4. 项目 README 和功能基线，说明“需求是什么”。
-5. 证据记录（包括 [P7](evidence/p7-integration.md)、[P8](evidence/p8-zed.md)），说明“过去验证过什么、边界在哪里”。
+5. 证据记录（包括 [P7](evidence/p7-integration.md)、[P8](evidence/p8-zed.md)、[W3](evidence/full-feature-w3.md)），说明“过去验证过什么、边界在哪里”。
 6. 来源记录，只说明“历史来源和许可证是什么”。
 
 C1 与 C0 冲突时，类型桥部分以 C1 为准；C0 未覆盖的坐标、身份和后端接口仍以 `contracts.md` 为准。文档不能覆盖代码事实。发现文档与实现不一致时，记录差异并更新对应文档，不能静默选择一个来源。
@@ -78,6 +78,7 @@ docs/
 │   ├── p7-integration.md
 │   ├── p8-zed.md
 │   ├── full-feature-w2.md
+│   ├── full-feature-w3.md
 │   └── data/
 └── adr/
     ├── README.md

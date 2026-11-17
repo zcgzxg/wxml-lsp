@@ -25,34 +25,43 @@
 | 2026-11-15 | [类型桥候选验证与 C1 建议](type-bridge-c1.md) | TypeScript 6.0.3 / miniprogram-api-typings 5.3.1 | E2 | 33 场景 × 2 候选：A 26 supported / 3 Partial / 3 Unsupported / 1 Unavailable（208 tests）；B 在闭包、模块组件与 `this` 类型上失败；选项透传、多注册、替换与定义坐标已冻结为 C1 契约 |
 | 2026-11-16 | [P7 真实集成证据](p7-integration.md) | `wxml-lsp` + Node 24.22.2 | E1 | ProjectHost/NodeBackend/C1.1 路由落地；G1 真实门禁 `stdio_type_loop` 5 passed、`real_node` 1 passed（当时快照）；Wave 5 已补齐 AC-005/006/008/012 与未保存 JS/TS 同步 |
 | 2026-11-16 | [P8 Zed 扩展证据](p8-zed.md) | Zed 1.28.1 / zed_extension_api 0.7.0 | E1 | 显式 `WXML_LSP_BIN` 绝对路径、无 worktree/PATH 回退；host 单测 25 项；平台感知路径校验；wasm debug 7,633,946 B / release 238,792 B；标准 UI `zed: install dev extension` 已实际执行，symlink + `dev=true`，五语言注册；干净 fixture 的 hover/definition/completion/diagnostics 和重启恢复已实测；事件处理函数 hover 与 Ctrl+点击跳转已实测，标签/属性 hover 仍无结果；真实 TS/JS 项目观感已记录；Wave 5 多语言同步见 §12，标准安装见 §13 |
-| 2026-11-17 | [W2 集成与 Q1 交付](full-feature-w2.md) | W2 `a441de9` / Q1 `f46dec9` | E1 | W2 固定日志 workspace 1095 passed / 20 ignored；Node 304/305，唯一失败为既有 perf 墙钟断言（高负载超时，单独重跑通过）；IT-01/02/03/05/09/10/11/12 真实 stdio 矩阵通过；Q1 `cargo test -p wxml-delivery` 通过；本地打包/安装/升级/回退存在，下载默认关闭；S/Q2 未完成 |
+| 2026-11-17 | [W2 集成与 Q1 交付](full-feature-w2.md) | W2 `a441de9` / Q1 `f46dec9` | E1 | W2 固定日志 workspace 1095 passed / 20 ignored；Node 304/305，唯一失败为既有 perf 墙钟断言（高负载超时，单独重跑通过）；IT-01/02/03/05/09/10/11/12 真实 stdio 矩阵通过；Q1 `cargo test -p wxml-delivery` 通过；本地打包/安装/升级/回退存在，下载默认关闭；S/Q2 当时未完成 |
+| 2026-11-17 | [W3 语义工具与安全编辑](full-feature-w3.md) | W3 `379b097` / S `dd15bc1` | E1 | S 语义工具合入：references/rename/codeAction/semanticTokens/workspaceSymbol/inlayHint/signatureHelp/codeLens；W3 固定日志 workspace 1251 passed / 0 failed / 21 ignored（45 suites），Node 串行 326/326，`semantic_tools` 41 passed；两轮正式 Rust/安全审核均 CHANGES_REQUESTED，残余项由 `dd15bc1` 修复并由集成探针复验，未开第 3 轮；Q2 未完成 |
 
 ## 3. 当前门禁基线（2026-11-17）
 
-以下是当前仓库的快照，不替代各记录的原始结论。不同运行的计数不混用；合并 Q1 后的全量结果以最终验收日志为准。
+以下是当前仓库的快照，不替代各记录的原始结论。不同运行的计数不混用；W2、W3 和 Q1 的结果
+分别保留在自己的记录和行里，不把不同次运行的通过/失败计数合并。
 
 | 项 | 命令 | 当前结果 |
 | --- | --- | --- |
-| Rust workspace（W2 固定日志） | `cargo test --workspace` | 1095 passed / 20 ignored |
-| Node 后端（W2 固定日志） | `cd backends/typescript && npm test` | 304 / 305；唯一失败为既有 perf 墙钟断言，单独重跑通过 |
-| Zed 扩展 | `cd editors/zed && cargo test --locked` | 25 passed（1 suite） |
+| Rust workspace（W3 固定日志） | `cargo test --workspace -- --test-threads=4` | 1251 passed / 0 failed / 21 ignored（45 suites，含 doctests） |
+| S 语义工具（W3 固定日志） | `cargo test -p wxml-lsp --test semantic_tools` | 41 passed |
+| Node 后端串行（W3 固定日志） | `cd backends/typescript && node --test --test-concurrency=1 test/*.test.ts` | 326 / 326 |
+| Node 后端并行对照（W3） | `cd backends/typescript && npm test` | 324 / 326；两处高负载墙钟超时，不作为功能失败 |
+| Zed 扩展（W2 记录） | `cd editors/zed && cargo test --locked` | 25 passed（1 suite）；W3 未重跑 |
 | Zed wasm (debug) | `cargo build --target wasm32-wasip2 --locked` | 7,633,946 B（历史构建） |
 | Zed wasm (release) | `cargo build --target wasm32-wasip2 --release --locked` | 238,792 B |
-| G1 真实 Node | `WXML_TEST_NODE=1 cargo test -p wxml-lsp --test stdio_type_loop -- --ignored` | 9 passed |
-| G1 真实 Node | `WXML_TEST_NODE=1 cargo test -p wxml-lsp --test real_node -- --ignored` | 4 passed |
-| Wave 5 真实 Node | `WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored` | 7 passed |
-| Q1 本地交付 | `cargo test -p wxml-delivery` | 通过 |
-| Q1 构建计划 | `scripts/build-release.sh --dry-run --output <repo 外目录>` | 通过；不写文件、不联网、不发布 |
+| G1 真实 Node（W2 记录） | `WXML_TEST_NODE=1 cargo test -p wxml-lsp --test stdio_type_loop -- --ignored` | 9 passed；W3 未重跑 |
+| G1 真实 Node（W2 记录） | `WXML_TEST_NODE=1 cargo test -p wxml-lsp --test real_node -- --ignored` | 4 passed；W3 未重跑 |
+| Wave 5 真实 Node（W2 记录） | `WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored` | 7 passed；W3 未重跑 |
+| Q1 本地交付（W2 记录） | `cargo test -p wxml-delivery` | 通过；W3 未单独重跑 |
+| Q1 构建计划（W2 记录） | `scripts/build-release.sh --dry-run --output <repo 外目录>` | 通过；不写文件、不联网、不发布 |
 
-20 个 ignored 就是上述真实 Node 门禁（9 + 4 + 7），默认 `cargo test` 不运行；设置
-`WXML_TEST_NODE=1` 后仍要求 `backends/typescript/dist/server.js` 已构建。合并 Q1 后
-的全量 Rust 运行曾出现一处既有 5 秒墙钟断言在高负载下超时，单独重跑通过；该结果
-以最终验收日志为准，不把不同次运行的通过/失败计数混合。
+W3 的 21 个 ignored 是默认 `cargo test` 不运行的真实 Node 门禁：`stdio_type_loop` 9、
+`real_node` 5、`wave5_acceptance` 7。设置 `WXML_TEST_NODE=1` 后仍要求
+`backends/typescript/dist/server.js` 已构建。W3 没有重新执行这些显式门禁；表中标为 W2 的
+通过结果不能改写成 W3 结果。
+
+Node 串行 `326/326` 是 W3 记录采用的结果；并行运行的两处失败是 cold start 11.9s > 8s 和
+15s server timeout，来自宿主负载，不是功能断言。`semantic_tools` 的 8000-loop 墙钟断言在
+并行套件曾 1.10s > 1s，单跑 0.68–0.85s 通过，阈值未改；它只说明线性预算，不构成 Q2 性能结论。
 
 未计入通过：Windows/macOS 实机、真实主桌面 Wayland 观感、连续键入延迟、
-与 Zed 内置 JS/TS 服务的显式归属/重启用例、G0/G2 完整矩阵、S 语义工具与 Q2
-性能/恢复。标准 UI 安装、真实 grammar 加载、hover/definition/completion/diagnostics
-和重启恢复已在隔离 Xvfb 中通过，见 [p8-zed.md](p8-zed.md) 第 13 节；G0/G2 仍只算部分通过。
+与 Zed 内置 JS/TS 服务的显式归属/重启用例、G0/G2 完整矩阵、Q2 性能/恢复与最终 Linux UI
+验收。标准 UI 安装、真实 grammar 加载、hover/definition/completion/diagnostics 和重启恢复
+已在隔离 Xvfb 中通过，见 [p8-zed.md](p8-zed.md) 第 13 节；这些是既有版本证据，W3 没有重跑
+标准 Zed UI；G0/G2 仍只算部分通过。
 
 ## 4. 维护规则
 
@@ -77,11 +86,13 @@ docs/evidence/
 ├── p7-integration.md
 ├── p8-zed.md
 ├── full-feature-w2.md
+├── full-feature-w3.md
 └── data/
     ├── typescript-language-service/
     ├── existing-wxml-lsp-audit/
     ├── official-template-analyzer-audit/
     ├── native-typescript-service/
     ├── type-bridge-c1/
+    ├── w3/
     └── zed-standard/
 ```

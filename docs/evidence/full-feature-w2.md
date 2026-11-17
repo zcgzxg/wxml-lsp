@@ -2,7 +2,7 @@
 
 更新日期：2026-11-17。
 
-本记录保存 W2（组件/样式/资源/编辑/类型语义）和 Q1（本地交付）在集成分支上的验收快照。它不把“测试通过”扩大为“所有编辑器 UI 和平台均已验证”；S 语义工具、Q2 性能/恢复和 macOS/Windows 实机仍不在本记录范围。
+本记录保存 W2（组件/样式/资源/编辑/类型语义）和 Q1（本地交付）在集成分支上的验收快照。它不把“测试通过”扩大为“所有编辑器 UI 和平台均已验证”；S 语义工具、Q2 性能/恢复和 macOS/Windows 实机仍不在本记录范围。S 在 W3 合入后的状态见 [W3 语义工具与安全编辑](full-feature-w3.md)，本记录中的 W2 计数与结论保持原样，不与 W3 混用。
 
 ## 1. 基线
 
@@ -12,7 +12,7 @@
 | Q1 HEAD | `f46dec9`（`merge: integrate local delivery installation and packaging`） |
 | 分支 | `feat/full-integration` |
 | 已合并工作包 | P、E、C、N、T；随后 Q1 |
-| 未合并 | S 语义工具；Q2 性能/恢复与最终 Linux UI 验收 |
+| 未合并（当时） | S 语义工具；Q2 性能/恢复与最终 Linux UI 验收 |
 | 环境 | Linux x86_64；Cargo 1.100.0；Node 24.22.2；测试期间宿主负载较高 |
 
 W2 合并的提交包括显式多 app 宿主、依赖失效、组件智能、样式/资源索引、结构编辑/格式化、Behavior/template/WXS 静态语义和跨特性 JSON-RPC 矩阵。Q1 增加 `crates/wxml-delivery`、`scripts/build-release.sh` 和 [ADR-0007](../adr/0007-local-delivery-trust-model.md)。
@@ -75,7 +75,7 @@ Q1 测试覆盖的关键行为：
 | IT-09 | `full_feature_matrix_editing.rs::it_09_style_classes_follow_imports_globals_and_ignore_comments` | WXSS/SCSS `@import`/全局样式驱动 class 补全、hover、definition；注释 selector 不算定义 | 动态插值、mixin/`@extend` 生成类不猜测；截断时标记不完整 |
 | IT-10 | `full_feature_matrix_editing.rs::it_10_document_links_and_resource_diagnostics_track_disk_changes` | 资源补全/documentLink/definition/存在性诊断随新增、删除和 watched-file 更新；远程值不变成可点击的本地目标 | 仅本地 `app.json` 根内资源；不访问远程 URL，不处理插件包内未落盘资源 |
 | IT-11 | `full_feature_matrix_editing.rs::it_11_formatting_is_lossless_idempotent_and_reparses` | document/range formatting 保留 CRLF、中文、emoji、Mustache、WXS rawtext，幂等且应用后可重新解析 | 只规范开始标签内部空白；不重排文本节点或整份缩进 |
-| IT-12 | `full_feature_matrix_editing.rs::it_12_closing_tag_completion_linked_editing_and_rename_prep` | `</` 栈补全、标签 snippets、linkedEditingRange 对嵌套同名兄弟和自闭合元素精确 | `rename`/`prepareRename` 未实现；这里的“rename prep”只是客户端可用的 linked ranges |
+| IT-12 | `full_feature_matrix_editing.rs::it_12_closing_tag_completion_linked_editing_and_rename_prep` | `</` 栈补全、标签 snippets、linkedEditingRange 对嵌套同名兄弟和自闭合元素精确 | W2 时 `rename`/`prepareRename` 未实现；这里的“rename prep”只是客户端可用的 linked ranges |
 
 未覆盖或未完成：IT-04/06/07/08 中依赖 S 的引用/重命名/反向编辑部分、IT-13（semanticTokens）、IT-14/15/18（Q2 性能/恢复）。IT-17 的本地打包/安装/回退子集由 Q1 覆盖，但完整 release dry-run、下载/校验矩阵和版本升级场景不在本记录执行。它们不能因本记录中的相邻用例通过而视为完成。
 
@@ -95,7 +95,7 @@ Q1 测试覆盖的关键行为：
 - 动态 template `is`、动态 WXS 导出、动态 Behavior 工厂/无法解析的导入、未知 spread、动态 class 插值和无法证明的 SCSS 生成内容：给出原因或保持不完整，不猜测。
 - 插件/远程组件缺少本地可信元数据时只给降级说明；不下载、不执行包源码。
 - 模板体不按每次调用实例做完整类型检查；WXS 是静态子集，不执行源码，也不冒充完整 JS 标准库。
-- S 语义工具（references、prepareRename/rename、codeAction、semanticTokens、workspaceSymbol、inlayHint、signatureHelp、codeLens）未实现。
+- S 语义工具（references、prepareRename/rename、codeAction、semanticTokens、workspaceSymbol、inlayHint、signatureHelp、codeLens）在 W2 时未实现。
 - Q2 性能/取消/恢复完善、大项目预算、最终 Linux UI 验收未完成。
 - Q1 已实现本地打包/安装/升级/回退和可选显式 HTTPS 下载，但没有 marketplace、远端 release、自动更新或发布者签名；信任链为 TLS + checksum，TLS/CA/本地 bundle 被攻破时仍可自洽。详见 ADR-0007。
 - 没有 macOS/Windows 实机验证；Zed 的部分 UI 交互（连续键入延迟、跨文件未保存传播、所有编辑预览/撤销）未逐项验收。
