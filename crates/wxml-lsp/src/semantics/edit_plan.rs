@@ -26,9 +26,9 @@ use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
 use wxml_project::sources::EXCLUDED_DIRECTORIES;
-use wxml_text::{LineIndex, SourceRange};
+use wxml_text::SourceRange;
 
-use crate::handlers::line_index_range_value;
+use super::position::Utf16Cursor;
 use crate::server::Server;
 use crate::workspace::Document;
 
@@ -71,8 +71,6 @@ pub(crate) enum EditRule {
     Identifier,
     /// A template name: letters, digits, `_` and `-`, not starting with `-`.
     Template,
-    /// A custom-component tag: lower-case letters, digits and `-`.
-    Tag,
     /// A WXML attribute name: camelCase or kebab-case.
     AttributeName,
     /// A CSS class name fragment.
@@ -94,14 +92,6 @@ impl EditRule {
                 };
                 (first.is_ascii_alphabetic() || first == '_')
                     && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
-            }
-            Self::Tag => {
-                let mut chars = text.chars();
-                let Some(first) = chars.next() else {
-                    return false;
-                };
-                first.is_ascii_lowercase()
-                    && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
             }
             Self::AttributeName => {
                 let mut chars = text.chars();
@@ -226,7 +216,15 @@ impl EditPlan {
                 return Err(PlanError::Path);
             }
             let target = match server.workspace.get_by_file(&file) {
-                Some(document) => PlanTarget::Open(OpenTarget::from_document(document)),
+                Some(document) => {
+                    if server.host.is_project_open()
+                        && server.host.uri_for(&file).is_some()
+                        && !server.host.writable_target(&file)
+                    {
+                        return Err(PlanError::Path);
+                    }
+                    PlanTarget::Open(OpenTarget::from_document(document))
+                }
                 None => PlanTarget::Closed(ClosedTarget::load(server, &file)?),
             };
             let text = target.text();
@@ -259,10 +257,21 @@ impl EditPlan {
                 }
             }
             let mut serialized = Vec::with_capacity(edits.len());
+            let mut cursor = Utf16Cursor::new(text);
             for edit in &edits {
-                let range = line_index_range_value(target.line_index(), edit.range)
-                    .ok_or(PlanError::Range)?;
-                serialized.push(json!({"range": range, "newText": edit.replacement}));
+                let (Some(start), Some(end)) = (
+                    cursor.position(edit.range.start()),
+                    cursor.position(edit.range.end()),
+                ) else {
+                    return Err(PlanError::Range);
+                };
+                serialized.push(json!({
+                    "range": {
+                        "start": crate::handlers::position_value(start),
+                        "end": crate::handlers::position_value(end),
+                    },
+                    "newText": edit.replacement,
+                }));
             }
             changes.push(json!({
                 "textDocument": {
@@ -276,6 +285,9 @@ impl EditPlan {
     }
 }
 
+/// Generated/source-of-truth directories that must never receive edits.
+const EDIT_EXCLUDED_DIRECTORIES: [&str; 3] = ["generated", "__generated__", "gen"];
+
 /// Returns `true` for a path inside an editable project source tree.
 fn editable_path(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
@@ -285,6 +297,7 @@ fn editable_path(path: &str) -> bool {
     !path.split('/').any(|component| {
         EXCLUDED_DIRECTORIES
             .iter()
+            .chain(EDIT_EXCLUDED_DIRECTORIES.iter())
             .any(|excluded| component.eq_ignore_ascii_case(excluded))
     })
 }
@@ -328,13 +341,6 @@ impl PlanTarget<'_> {
             Self::Closed(target) => target.version(),
         }
     }
-
-    fn line_index(&self) -> &LineIndex {
-        match self {
-            Self::Open(target) => target.line_index(),
-            Self::Closed(target) => target.line_index(),
-        }
-    }
 }
 
 /// An open document: the client version and its own snapshot are authoritative.
@@ -358,17 +364,12 @@ impl<'a> OpenTarget<'a> {
     fn version(&self) -> Value {
         json!(self.document.client_version().get())
     }
-
-    fn line_index(&self) -> &LineIndex {
-        self.document.snapshot().line_index()
-    }
 }
 
 /// A closed project file: re-read from the host and rendered with a null version.
 struct ClosedTarget {
     uri: String,
     text: String,
-    line_index: LineIndex,
 }
 
 impl ClosedTarget {
@@ -382,11 +383,9 @@ impl ClosedTarget {
         let Some(text) = server.host.file_text(file) else {
             return Err(PlanError::Stale);
         };
-        let line_index = LineIndex::new(text.clone());
         Ok(Self {
             uri,
             text: text.to_string(),
-            line_index,
         })
     }
 
@@ -401,10 +400,6 @@ impl ClosedTarget {
     #[allow(clippy::unused_self)] // keeps the PlanTarget call site uniform
     const fn version(&self) -> Value {
         Value::Null
-    }
-
-    const fn line_index(&self) -> &LineIndex {
-        &self.line_index
     }
 }
 
@@ -426,8 +421,6 @@ mod tests {
     fn rejects_invalid_replacement_grammar() {
         assert!(EditRule::Identifier.accepts("nextField"));
         assert!(!EditRule::Identifier.accepts("next-field"));
-        assert!(EditRule::Tag.accepts("fancy-card"));
-        assert!(!EditRule::Tag.accepts("Fancy"));
         assert!(EditRule::Template.accepts("row-item"));
         assert!(!EditRule::Template.accepts("-row"));
         assert!(EditRule::PathSegment.accepts("next"));

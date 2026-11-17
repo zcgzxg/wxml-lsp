@@ -292,6 +292,9 @@ pub struct PreparedFile {
     pub source_revision: u64,
 }
 
+/// Generated directories that S must never propose edits for.
+const EDIT_EXCLUDED_DIRECTORIES: [&str; 3] = ["generated", "__generated__", "gen"];
+
 /// Maximum project WXML files returned for one semantic query.
 const MAX_VIEW_TEMPLATES: usize = 512;
 
@@ -361,6 +364,9 @@ pub struct PreparedView {
     pub syntax_diagnostics: Vec<Diagnostic>,
     /// Degradation hint produced before asking the type backend.
     pub status_hint: Option<CapabilityStatus>,
+    /// `false` when a source file/count/byte budget removed a script from
+    /// `files`; script symbol coverage can then never be complete.
+    pub source_complete: bool,
 }
 
 /// Project state and analysis inputs for one workspace root.
@@ -382,6 +388,10 @@ pub trait ProjectHost: Send + Sync {
     /// Returns whether a project root is currently loaded.
     fn is_project_open(&self) -> bool {
         false
+    }
+    /// Returns every loaded project identity (not only the active one).
+    fn project_ids(&self) -> Vec<ProjectId> {
+        vec![self.project_id()]
     }
     /// Maps a client URI to a project-relative path.
     fn path_for_uri(&self, uri: &str) -> Result<ProjectPath, HostError>;
@@ -455,6 +465,11 @@ pub trait ProjectHost: Send + Sync {
     /// whether it is complete; callers must not present an incomplete list as
     /// a complete reference set.
     fn view_templates(&self, _file: &FileId) -> Option<ProjectViewTemplates> {
+        None
+    }
+
+    /// Returns the host's content revision for a file, when it tracks one.
+    fn file_revision(&self, _file: &FileId) -> Option<u64> {
         None
     }
 
@@ -1115,6 +1130,15 @@ impl ProjectHost for ProjectState {
         !self.read().app_roots.is_empty()
     }
 
+    fn project_ids(&self) -> Vec<ProjectId> {
+        let state = self.read();
+        state
+            .app_roots
+            .iter()
+            .map(|app| project_id_for(&app.app_dir))
+            .collect()
+    }
+
     fn path_for_uri(&self, uri: &str) -> Result<ProjectPath, HostError> {
         let mut state = self.write();
         let (_, path) = route_project(&mut state, uri)?;
@@ -1315,10 +1339,24 @@ impl ProjectHost for ProjectState {
         })
     }
 
-    fn writable_target(&self, file: &FileId) -> bool {
+    fn file_revision(&self, file: &FileId) -> Option<u64> {
         let state = self.read();
-        let Some(slot) = state.projects.get(file.project()) else {
-            return false;
+        let slot = state.projects.get(file.project())?;
+        let path = ProjectPath::new(file.path()).ok()?;
+        slot.file_versions
+            .get(&path)
+            .copied()
+            .or_else(|| slot.project.overlay().revision(&path))
+            .or(Some(1))
+    }
+
+    fn writable_target(&self, file: &FileId) -> bool {
+        let root = {
+            let state = self.read();
+            let Some(slot) = state.projects.get(file.project()) else {
+                return false;
+            };
+            slot.app.project_root.clone()
         };
         let Ok(path) = ProjectPath::new(file.path()) else {
             return false;
@@ -1330,23 +1368,24 @@ impl ProjectHost for ProjectState {
         if path.as_str().split('/').any(|component| {
             wxml_project::sources::EXCLUDED_DIRECTORIES
                 .iter()
+                .chain(EDIT_EXCLUDED_DIRECTORIES.iter())
                 .any(|excluded| component.eq_ignore_ascii_case(excluded))
         }) {
             return false;
         }
-        let absolute = slot.app.project_root.join(path.as_str());
+        let absolute = root.join(path.as_str());
         if std::fs::symlink_metadata(&absolute)
             .map_or(true, |metadata| metadata.file_type().is_symlink())
         {
             return false;
         }
-        let Ok(root) = std::fs::canonicalize(&slot.app.project_root) else {
+        let Ok(canonical_root) = std::fs::canonicalize(&root) else {
             return false;
         };
         let Ok(canonical) = std::fs::canonicalize(&absolute) else {
             return false;
         };
-        canonical.starts_with(root)
+        canonical.starts_with(canonical_root)
     }
 
     fn view_components(&self, wxml: &ProjectPath) -> Vec<ViewComponent> {
@@ -2779,6 +2818,7 @@ fn build_prepared(
             status_hint: Some(CapabilityStatus::Unsupported {
                 reason: "page or component has no script".to_owned(),
             }),
+            source_complete: false,
         };
     };
     let script_file = view.script_file.clone();
@@ -2822,6 +2862,7 @@ fn build_prepared(
             }
         }
     }
+    let mut source_complete = !sources.truncated;
     if sources.truncated {
         merge_hint(
             &mut hint,
@@ -2830,7 +2871,7 @@ fn build_prepared(
             },
         );
     }
-    limit_request_files(&mut files, script, &mut hint);
+    source_complete &= limit_request_files(&mut files, script, &mut hint);
     script_present = files.iter().any(|file| file.path == *script);
     if !script_present {
         merge_hint(
@@ -2887,16 +2928,19 @@ fn build_prepared(
         project_root: slot.project.root().to_path_buf(),
         syntax_diagnostics: syntax,
         status_hint: hint,
+        source_complete,
     }
 }
 /// Keeps the owning script and applies the C1 `files[]` count/byte bounds.
+/// Returns `false` when a budget removed any file.
 fn limit_request_files(
     files: &mut Vec<PreparedFile>,
     script: &ProjectPath,
     hint: &mut Option<CapabilityStatus>,
-) {
+) -> bool {
     const MAX_FILES: usize = 2048;
     const MAX_BYTES: usize = 16 * 1024 * 1024;
+    let mut complete = true;
     if let Some(position) = files.iter().position(|file| file.path == *script) {
         if position > 0 {
             let file = files.remove(position);
@@ -2904,6 +2948,7 @@ fn limit_request_files(
         }
     }
     if files.len() > MAX_FILES {
+        complete = false;
         files.truncate(MAX_FILES);
         merge_hint(
             hint,
@@ -2916,6 +2961,7 @@ fn limit_request_files(
     let mut kept = Vec::with_capacity(files.len());
     for file in files.drain(..) {
         if total.saturating_add(file.text.len()) > MAX_BYTES {
+            complete = false;
             merge_hint(
                 hint,
                 CapabilityStatus::Partial {
@@ -2928,6 +2974,7 @@ fn limit_request_files(
         kept.push(file);
     }
     *files = kept;
+    complete
 }
 
 fn prepared_file(
@@ -3051,6 +3098,7 @@ fn syntax_only_view(
         status_hint: Some(CapabilityStatus::Unsupported {
             reason: reason.to_owned(),
         }),
+        source_complete: false,
     }
 }
 
@@ -3704,7 +3752,7 @@ mod tests {
             source_revision: 1,
         });
         let mut hint = None;
-        limit_request_files(&mut files, &script, &mut hint);
+        let _ = limit_request_files(&mut files, &script, &mut hint);
         assert_eq!(files.len(), 2048);
         assert_eq!(files[0].path, script);
         assert!(matches!(hint, Some(CapabilityStatus::Partial { .. })));

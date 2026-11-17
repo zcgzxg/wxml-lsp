@@ -15,8 +15,9 @@ use wxml_text::{SourceRange, TextRange};
 use wxml_types::{LocalRole, RootKind};
 
 use super::facts::{
-    LoopIdentity, QueryDoc, ViewFacts, effective_binding, effective_loop_binding, load_project_doc,
-    loop_for_binding, project_views, range_text, scan_expression,
+    LoopIdentity, QueryDoc, ViewFacts, collect_includes, effective_binding, effective_loop_binding,
+    load_project_doc, loop_for_binding, project_views, range_text, scan_expression,
+    view_facts_for_file,
 };
 use crate::project_host::ViewComponent;
 use crate::server::Server;
@@ -33,8 +34,6 @@ pub(crate) enum TokenStyle {
     Template,
     /// A CSS class-name fragment.
     Class,
-    /// A custom-component tag name.
-    Tag,
     /// A path segment inside a quoted script key.
     PathSegment,
 }
@@ -77,6 +76,8 @@ pub(crate) enum Target {
         token: SourceRange,
         /// Component whose facts produced the declaration.
         component: ProjectPath,
+        /// Component WXML template, when discovery found one.
+        wxml: Option<ProjectPath>,
     },
     /// A statically bound event handler.
     Event {
@@ -99,15 +100,6 @@ pub(crate) enum Target {
         declaration: Option<SourceRange>,
         /// Placeholder token for prepareRename.
         placeholder: SourceRange,
-    },
-    /// A custom-component tag pair.
-    Tag {
-        /// Tag name.
-        name: String,
-        /// Start-tag name token.
-        start: SourceRange,
-        /// End-tag name token.
-        end: SourceRange,
     },
     /// A static template name (`<template name>` / `<template is>`).
     Template {
@@ -139,7 +131,6 @@ impl Target {
                 placeholder,
                 ..
             } => declaration.unwrap_or(*placeholder),
-            Self::Tag { start, .. } => *start,
         }
     }
 
@@ -303,9 +294,10 @@ fn tag_or_attribute_at(server: &Server, facts: &ViewFacts, offset: u32) -> Optio
         let name = element.name().unwrap_or_default();
         if let Some(range) = element.name_range() {
             if range.contains(offset) {
-                if let Some(target) = tag_target(facts, name, offset) {
-                    found = Some(target);
-                }
+                // Tag rename needs the owning usingComponents alias and every
+                // project usage; the S package rejects it instead of editing a
+                // lone tag pair.
+                let _ = name;
                 return;
             }
         }
@@ -364,23 +356,6 @@ fn tag_or_attribute_at(server: &Server, facts: &ViewFacts, offset: u32) -> Optio
     found
 }
 
-fn tag_target(facts: &ViewFacts, name: &str, offset: u32) -> Option<Target> {
-    if crate::metadata::is_builtin_tag(name) {
-        return None;
-    }
-    let component = facts
-        .components
-        .iter()
-        .find(|component| component.name == name)?;
-    let _ = component;
-    let (first, second) = facts.doc.structure.linked_editing_range(offset)?;
-    Some(Target::Tag {
-        name: name.to_owned(),
-        start: SourceRange::new(first),
-        end: SourceRange::new(second),
-    })
-}
-
 fn property_target(
     facts: &ViewFacts,
     tag: &str,
@@ -406,6 +381,7 @@ fn property_target(
             .component
             .clone()
             .or_else(|| component.wxml.clone())?,
+        wxml: component.wxml.clone(),
     })
 }
 
@@ -696,13 +672,14 @@ fn loop_target(facts: &ViewFacts, index: usize, role: LocalRole) -> Option<Targe
         placeholder: binding
             .declaration
             .or(binding.attribute)
-            .unwrap_or(info.element_range),
+            .unwrap_or(info.for_attribute_range),
     })
 }
 
 /// Returns the ancestor loop chain for one element (innermost last).
 fn directive_scope(facts: &ViewFacts, element: Element<'_>, include_self: bool) -> Vec<usize> {
     let range = element.text_range();
+    let boundary = template_boundary(facts.doc.tree(), SourceRange::new(range));
     let mut chain: Vec<usize> = facts
         .loops
         .iter()
@@ -711,6 +688,7 @@ fn directive_scope(facts: &ViewFacts, element: Element<'_>, include_self: bool) 
             info.element_range.start() <= range.start()
                 && info.element_range.end() >= range.end()
                 && (include_self || info.element_range.start() != range.start())
+                && template_boundary(facts.doc.tree(), info.element_range) == boundary
         })
         .map(|(index, _)| index)
         .collect();
@@ -786,9 +764,26 @@ pub(crate) fn collect_data_refs(facts: &ViewFacts, path: &[String]) -> Tokens {
                 | wxml_types::UnsupportedKind::InvalidRange
                 | wxml_types::UnsupportedKind::FragmentLimit
                 | wxml_types::UnsupportedKind::DynamicForBinding
+                | wxml_types::UnsupportedKind::Template
+                | wxml_types::UnsupportedKind::Import
         ) {
-            tokens.reject("an expression could not be analyzed completely");
+            tokens.reject("template data attributes or expressions are not fully analyzed");
         }
+    }
+    if facts.semantics.issues.iter().any(|issue| {
+        matches!(
+            issue.kind,
+            wxml_types::StaticIssueKind::DynamicTemplateData
+                | wxml_types::StaticIssueKind::DynamicTemplateIs
+                | wxml_types::StaticIssueKind::LimitReached
+        )
+    }) || facts
+        .semantics
+        .calls
+        .iter()
+        .any(|call| call.data.is_some() || call.name.is_empty())
+    {
+        tokens.reject("template call data can reference this field");
     }
     for fragment in &facts.analysis.fragments {
         let Some(expr) = expression_for_fragment(fragment) else {
@@ -902,14 +897,98 @@ fn collect_directive_path_refs(facts: &ViewFacts, path: &[String], tokens: &mut 
     });
 }
 
+/// Returns `true` when a new data/property name is shadowed by a loop local
+/// or a WXS module in this view.
+pub(crate) fn view_scope_conflict(facts: &ViewFacts, name: &str) -> bool {
+    facts
+        .loops
+        .iter()
+        .any(|loop_info| loop_info.item.name == name || loop_info.index.name == name)
+        || facts
+            .semantics
+            .wxs
+            .iter()
+            .any(|block| block.module.as_deref() == Some(name))
+}
+
+/// Root data identifiers read by the current view, best effort but bounded.
+pub(crate) fn view_data_roots(facts: &ViewFacts) -> BTreeSet<String> {
+    let mut roots = BTreeSet::new();
+    for fragment in &facts.analysis.fragments {
+        let Some(expr) = expression_for_fragment(fragment) else {
+            continue;
+        };
+        let scan = scan_expression(&facts.doc, &expr);
+        for chain in &scan.chains {
+            let Some((root, _)) = chain.segments.first() else {
+                continue;
+            };
+            if fragment
+                .bindings
+                .iter()
+                .any(|binding| binding.name == *root)
+            {
+                continue;
+            }
+            if matches!(
+                String::as_str(root),
+                "this" | "true" | "false" | "null" | "undefined"
+            ) {
+                continue;
+            }
+            roots.insert(root.clone());
+        }
+    }
+    for_each_element(facts.doc.tree(), &mut |element| {
+        for attribute_name in ["wx:for", "wx:if", "wx:elif"] {
+            let Some(attribute) = element.attribute(attribute_name) else {
+                continue;
+            };
+            let Some(value) = attribute.value() else {
+                continue;
+            };
+            let Some(inner) = mustache_inner(value) else {
+                continue;
+            };
+            let Some(expr) = expression_at(facts, inner) else {
+                continue;
+            };
+            let scope = directive_scope(facts, element, attribute_name != "wx:for");
+            let scan = scan_expression(&facts.doc, &expr);
+            for chain in &scan.chains {
+                let Some((root, _)) = chain.segments.first() else {
+                    continue;
+                };
+                if effective_loop_binding(&facts.loops, &scope, root).is_some() {
+                    continue;
+                }
+                if matches!(
+                    String::as_str(root),
+                    "this" | "true" | "false" | "null" | "undefined"
+                ) {
+                    continue;
+                }
+                roots.insert(root.clone());
+            }
+        }
+    });
+    roots
+}
+
 /// Collects all static event bindings of one handler in the current document.
 pub(crate) fn collect_event_refs(facts: &ViewFacts, name: &str) -> Tokens {
     let mut tokens = Tokens::new();
     if !facts.includes.is_empty() || !facts.includes_complete {
         tokens.reject("static includes hide event bindings");
     }
-    if facts.has_template_definitions() {
-        tokens.reject("template definitions hide event bindings");
+    if facts.has_template_definitions()
+        || facts
+            .semantics
+            .imports
+            .iter()
+            .any(|import| import.kind == wxml_types::StaticImportKind::Import)
+    {
+        tokens.reject("template definitions or imports hide event bindings");
     }
     if facts.analysis.truncated {
         tokens.reject("template fragment budget was reached");
@@ -929,14 +1008,6 @@ pub(crate) fn collect_event_refs(facts: &ViewFacts, name: &str) -> Tokens {
             tokens.push(&facts.doc.file, event.handler_range, TokenStyle::Identifier);
         }
     }
-    tokens
-}
-
-/// Collects tag-pair tokens.
-pub(crate) fn collect_tag_refs(facts: &ViewFacts, start: SourceRange, end: SourceRange) -> Tokens {
-    let mut tokens = Tokens::new();
-    tokens.push(&facts.doc.file, start, TokenStyle::Tag);
-    tokens.push(&facts.doc.file, end, TokenStyle::Tag);
     tokens
 }
 
@@ -1153,24 +1224,20 @@ pub(crate) fn property_name_conflict(
     }
     let kebab = kebab_case(declared);
     for view in &views.views {
+        let (includes, includes_complete) =
+            collect_includes(server, &view.doc.file, &view.semantics);
+        if !includes_complete {
+            return None;
+        }
         for component in &view.components {
             if !same_component(component_path, component) {
                 continue;
             }
-            let mut conflict = false;
-            for_each_element(view.doc.tree(), &mut |element| {
-                if element.name() != Some(component.name.as_str()) {
-                    return;
-                }
-                if element.attributes().any(|attribute| {
-                    attribute
-                        .name()
-                        .is_some_and(|name| name == declared || name == kebab)
-                }) {
-                    conflict = true;
-                }
-            });
-            if conflict {
+            if property_conflict_in_doc(&view.doc, component, declared, &kebab)
+                || includes
+                    .iter()
+                    .any(|include| property_conflict_in_doc(include, component, declared, &kebab))
+            {
                 return Some(true);
             }
         }
@@ -1178,11 +1245,44 @@ pub(crate) fn property_name_conflict(
     Some(false)
 }
 
+fn property_conflict_in_doc(
+    doc: &QueryDoc,
+    component: &ViewComponent,
+    declared: &str,
+    kebab: &str,
+) -> bool {
+    let mut conflict = false;
+    for_each_element(doc.tree(), &mut |element| {
+        if element.name() != Some(component.name.as_str()) {
+            return;
+        }
+        if element.attributes().any(|attribute| {
+            attribute
+                .name()
+                .is_some_and(|name| name == declared || name == kebab)
+        }) {
+            conflict = true;
+        }
+    });
+    conflict
+}
+
 /// Collects a template definition and every statically visible call.
-#[allow(clippy::too_many_lines)] // one linear visibility scan
 pub(crate) fn collect_template_refs(
     server: &Server,
     facts: &ViewFacts,
+    name: &str,
+) -> TemplateTokens {
+    let views = project_views(server, facts);
+    collect_template_refs_with_views(server, facts, &views, name)
+}
+
+/// Collects template references using an already loaded project view index.
+#[allow(clippy::too_many_lines)] // one linear visibility scan
+pub(crate) fn collect_template_refs_with_views(
+    server: &Server,
+    facts: &ViewFacts,
+    views: &super::facts::ProjectViews,
     name: &str,
 ) -> TemplateTokens {
     let mut result = TemplateTokens {
@@ -1191,7 +1291,6 @@ pub(crate) fn collect_template_refs(
         complete: true,
         reason: None,
     };
-    let views = project_views(server, facts);
     let mut complete = views.complete;
     let mut reason = views.reason;
     let mut definition = None;
@@ -1383,6 +1482,31 @@ pub(crate) struct PropertyTokens {
     pub(crate) reason: Option<&'static str>,
 }
 
+fn collect_property_tokens_in_doc(
+    doc: &QueryDoc,
+    component: &ViewComponent,
+    declared: &str,
+    tokens: &mut Tokens,
+) {
+    for_each_element(doc.tree(), &mut |element| {
+        if element.name() != Some(component.name.as_str()) {
+            return;
+        }
+        for attribute in element.attributes() {
+            let Some(name) = attribute.name() else {
+                continue;
+            };
+            if !property_spelling(declared, name) {
+                continue;
+            }
+            let Some(range) = attribute.name_range() else {
+                continue;
+            };
+            tokens.push(&doc.file, SourceRange::new(range), TokenStyle::Attribute);
+        }
+    });
+}
+
 /// Collects WXML attribute usages of one component property.
 pub(crate) fn collect_property_refs(
     server: &Server,
@@ -1406,20 +1530,15 @@ pub(crate) fn collect_property_refs(
         if components.is_empty() {
             continue;
         }
-        if !view.doc.structure.text().is_empty()
-            && wxml_syntax::parse(view.doc.text())
-                .tree
-                .document()
-                .children()
-                .count()
-                == 0
-        {
-            tokens.reject("a project view could not be parsed");
-            continue;
+        let (includes, includes_complete) =
+            collect_includes(server, &view.doc.file, &view.semantics);
+        if !includes_complete {
+            tokens.reject("a component property include could not be read");
         }
         for component in components {
             if !component.property_facts.complete {
                 tokens.reject("a component property table is incomplete");
+                continue;
             }
             if !component
                 .property_facts
@@ -1430,27 +1549,10 @@ pub(crate) fn collect_property_refs(
                 tokens.reject("the component property is missing in one view");
                 continue;
             }
-            for_each_element(view.doc.tree(), &mut |element| {
-                if element.name() != Some(component.name.as_str()) {
-                    return;
-                }
-                for attribute in element.attributes() {
-                    let Some(name) = attribute.name() else {
-                        continue;
-                    };
-                    if !property_spelling(declared, name) {
-                        continue;
-                    }
-                    let Some(range) = attribute.name_range() else {
-                        continue;
-                    };
-                    tokens.push(
-                        &view.doc.file,
-                        SourceRange::new(range),
-                        TokenStyle::Attribute,
-                    );
-                }
-            });
+            collect_property_tokens_in_doc(&view.doc, component, declared, &mut tokens);
+            for include in &includes {
+                collect_property_tokens_in_doc(include, component, declared, &mut tokens);
+            }
         }
     }
     result.items = tokens.items;
@@ -1459,6 +1561,68 @@ pub(crate) fn collect_property_refs(
         result.reason = tokens.reason.or(result.reason);
     }
     result
+}
+
+/// Collects `{{ prop }}` references in the component's own WXML template.
+pub(crate) fn collect_component_template_refs(
+    server: &Server,
+    subject: &wxml_types::FileId,
+    component_wxml: Option<&ProjectPath>,
+    declared: &str,
+) -> Tokens {
+    let Some(wxml) = component_wxml else {
+        return Tokens::new();
+    };
+    let Ok(file) = wxml_types::FileId::new(subject.project().clone(), wxml.as_str()) else {
+        let mut tokens = Tokens::new();
+        tokens.reject("the component template identity is invalid");
+        return tokens;
+    };
+    let Some(facts) = view_facts_for_file(server, &file) else {
+        let mut tokens = Tokens::new();
+        tokens.reject("the component template could not be parsed completely");
+        return tokens;
+    };
+    collect_data_refs(&facts, &[declared.to_owned()])
+}
+
+/// Checks whether a new property name is captured or already declared in the
+/// component's own template/data/method scopes.
+pub(crate) fn component_property_conflict(
+    server: &Server,
+    subject: &wxml_types::FileId,
+    component_wxml: Option<&ProjectPath>,
+    declared: &str,
+) -> Option<bool> {
+    let Some(wxml) = component_wxml else {
+        return Some(false);
+    };
+    let file = wxml_types::FileId::new(subject.project().clone(), wxml.as_str()).ok()?;
+    let facts = view_facts_for_file(server, &file)?;
+    if facts
+        .loops
+        .iter()
+        .any(|loop_info| loop_info.item.name == declared || loop_info.index.name == declared)
+    {
+        return Some(true);
+    }
+    if facts
+        .semantics
+        .wxs
+        .iter()
+        .any(|block| block.module.as_deref() == Some(declared))
+    {
+        return Some(true);
+    }
+    if facts.analysis.fragments.iter().any(|fragment| {
+        fragment
+            .bindings
+            .iter()
+            .any(|binding| binding.name == declared)
+    }) {
+        return Some(true);
+    }
+    Some(false)
 }
 
 /// Compares a property declaration script with one registered component.
@@ -1554,6 +1718,7 @@ pub(crate) fn collect_loop_refs(
         range,
         style: TokenStyle::Identifier,
     });
+    let target_boundary = template_boundary(facts.doc.tree(), loop_info.element_range);
     let mut references = Vec::new();
     for fragment in &facts.analysis.fragments {
         let Some(binding) = effective_binding(&fragment.bindings, name) else {
@@ -1598,6 +1763,9 @@ pub(crate) fn collect_loop_refs(
             continue;
         };
         let expr_range = SourceRange::new(node.text_range());
+        if template_boundary(tree, expr_range) != target_boundary {
+            continue;
+        }
         let scope: Vec<usize> = facts
             .loops
             .iter()
@@ -1605,6 +1773,8 @@ pub(crate) fn collect_loop_refs(
             .filter(|(_, info)| {
                 info.element_range.start() <= expr_range.start()
                     && info.element_range.end() >= expr_range.end()
+                    && !(info.source_range.start() <= expr_range.start()
+                        && expr_range.end() <= info.source_range.end())
             })
             .map(|(index, _)| index)
             .collect();
@@ -1633,6 +1803,11 @@ pub(crate) fn collect_loop_refs(
     }
     // `wx:for` source expressions of descendant loops and guard attributes.
     for_each_element(facts.doc.tree(), &mut |element| {
+        if template_boundary(facts.doc.tree(), SourceRange::new(element.text_range()))
+            != target_boundary
+        {
+            return;
+        }
         for attribute_name in ["wx:for", "wx:if", "wx:elif"] {
             let Some(attribute) = element.attribute(attribute_name) else {
                 continue;
@@ -1696,6 +1871,23 @@ fn has_dynamic_loop(tree: &SyntaxTree) -> bool {
         }
     });
     dynamic
+}
+
+fn template_boundary(tree: &SyntaxTree, range: SourceRange) -> Option<SourceRange> {
+    let mut boundary = None;
+    for_each_element(tree, &mut |element| {
+        if element.name() != Some("template") || element.attribute("name").is_none() {
+            return;
+        }
+        let element_range = element.text_range();
+        if element_range.start() <= range.start() && element_range.end() >= range.end() {
+            let candidate = SourceRange::new(element_range);
+            if boundary.is_none_or(|current: SourceRange| candidate.len() < current.len()) {
+                boundary = Some(candidate);
+            }
+        }
+    });
+    boundary
 }
 
 fn inside_template_definition(tree: &SyntaxTree, range: SourceRange) -> bool {

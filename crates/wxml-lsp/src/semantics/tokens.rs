@@ -7,7 +7,7 @@
 
 use serde_json::{Value, json};
 use wxml_syntax::{AstNode, ExprKind, NodeKind};
-use wxml_text::{LineIndex, TextRange};
+use wxml_text::TextRange;
 
 use super::facts::{ViewFacts, scan_chains, view_facts};
 use crate::server::log;
@@ -99,8 +99,23 @@ fn collect_structure(facts: &ViewFacts, raw: &mut RawTokens) {
     }
     for (_, node) in tree.nodes() {
         if node.kind() == NodeKind::Comment {
-            if let Some(range) = Some(node.text_range()) {
-                raw.push(range, COMMENT);
+            let range = node.text_range();
+            let text = tree.text();
+            let start = usize::try_from(range.start()).unwrap_or(usize::MAX);
+            let end = usize::try_from(range.end()).unwrap_or(usize::MAX);
+            let Some(slice) = text.get(start..end) else {
+                continue;
+            };
+            let mut offset = range.start();
+            for line in slice.split_inclusive('\n') {
+                let content = line.trim_end_matches('\n');
+                if !content.is_empty()
+                    && let Ok(length) = u32::try_from(content.len())
+                    && let Ok(line_range) = TextRange::new(offset, offset.saturating_add(length))
+                {
+                    raw.push(line_range, COMMENT);
+                }
+                offset = offset.saturating_add(u32::try_from(line.len()).unwrap_or(0));
             }
         }
     }
@@ -214,7 +229,7 @@ fn collect_wxs(facts: &ViewFacts, raw: &mut RawTokens) {
 fn encode(facts: &ViewFacts, mut tokens: Vec<(u32, u32, u8)>) -> Vec<u64> {
     tokens.sort_by_key(|(start, end, _)| (*start, *end));
     tokens.dedup();
-    let line_index: LineIndex = LineIndex::new(facts.doc.text());
+    let mut cursor = super::position::Utf16Cursor::new(facts.doc.text());
     let mut data = Vec::with_capacity(tokens.len().saturating_mul(5));
     let mut last_line = 0_u32;
     let mut last_character = 0_u32;
@@ -231,10 +246,13 @@ fn encode(facts: &ViewFacts, mut tokens: Vec<(u32, u32, u8)>) -> Vec<u64> {
             continue;
         };
         let (Some(start_position), Some(end_position)) = (
-            line_index.position(start_usize),
-            line_index.position(end_usize),
+            cursor.position(u32::try_from(start_usize).unwrap_or(u32::MAX)),
+            cursor.position(u32::try_from(end_usize).unwrap_or(u32::MAX)),
         ) else {
-            continue;
+            log(format_args!(
+                "semantic tokens stopped at the position scan budget"
+            ));
+            break;
         };
         if end_position.line != start_position.line {
             continue;

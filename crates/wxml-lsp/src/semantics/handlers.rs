@@ -11,15 +11,17 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 use serde_json::{Value, json};
-use wxml_text::{LineIndex, Position, SourceRange};
+use wxml_text::{Position, SourceRange};
 use wxml_types::{BackendError, FileId, SymbolQuery, SymbolReferenceRole, SymbolResult};
 
 use super::edit_plan::{EditPlan, EditRule, is_identifier};
 use super::facts::{ViewFacts, view_facts};
+use super::position::Utf16Cursor;
 use super::target::{
     SymbolToken, Target, TokenStyle, Tokens, camel_case, class_in_use, collect_class_refs,
-    collect_data_refs, collect_event_refs, collect_loop_refs, collect_property_refs,
-    collect_tag_refs, collect_template_refs, kebab_case, target_at,
+    collect_component_template_refs, collect_data_refs, collect_event_refs, collect_loop_refs,
+    collect_property_refs, collect_template_refs, component_property_conflict, kebab_case,
+    target_at, view_data_roots, view_scope_conflict,
 };
 use crate::jsonrpc::{self, Outgoing, RequestKey};
 use crate::scheduler::{Job, JobKind, Outcome, SubmitError, WorkDone};
@@ -60,6 +62,16 @@ pub(crate) struct PendingSemantic {
     pub(crate) uri: String,
     /// What to answer once the script facts arrive.
     pub(crate) intent: PendingIntent,
+    /// Full-file fingerprints captured from the analysis snapshot.
+    files: Option<Vec<FileFingerprint>>,
+}
+
+/// One analysis-snapshot file identity and full-text fingerprint.
+#[derive(Clone, Debug)]
+struct FileFingerprint {
+    file: FileId,
+    revision: u64,
+    hash: u64,
 }
 
 impl Server {
@@ -106,6 +118,9 @@ impl Server {
                 query,
             );
         }
+        if !local_prepare_ready(self, &facts, &target) {
+            return vec![Outgoing::success(id, Value::Null)];
+        }
         prepare_result(id, &document, &facts, &target)
     }
 
@@ -137,19 +152,23 @@ impl Server {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         if !crate::handlers::template_document(self, uri) {
-            return vec![Outgoing::success(id, json!([]))];
+            return references_empty(
+                id,
+                command,
+                "references are only available for WXML templates",
+            );
         }
         let Some(document) = self.workspace.get(uri).cloned() else {
-            return vec![Outgoing::success(id, json!([]))];
+            return references_empty(id, command, "the document is not open");
         };
         let Some(offset) = document.offset_at(position) else {
-            return vec![Outgoing::success(id, json!([]))];
+            return references_empty(id, command, "the position is invalid");
         };
         let Some(facts) = view_facts(self, &document) else {
-            return vec![Outgoing::success(id, json!([]))];
+            return references_empty(id, command, "the template could not be parsed completely");
         };
         let Some(target) = target_at(self, &facts, offset) else {
-            return vec![Outgoing::success(id, json!([]))];
+            return references_empty(id, command, "the symbol target is unavailable");
         };
         if let Some((subject, query)) = node_query(&target) {
             return self.schedule_symbol_query(
@@ -166,9 +185,21 @@ impl Server {
             );
         }
         let tokens = local_reference_tokens(self, &facts, &target, include_declaration);
-        let _ = command;
-        let locations = locations_value(self, &tokens);
-        vec![Outgoing::success(id, json!(locations))]
+        let (locations, locations_complete) = locations_value(self, &tokens);
+        let complete = tokens.complete && locations_complete;
+        if command {
+            vec![Outgoing::success(
+                id,
+                json!({
+                    "locations": locations,
+                    "coverage": coverage_value(complete, tokens.reason),
+                }),
+            )]
+        } else if complete {
+            vec![Outgoing::success(id, json!(locations))]
+        } else {
+            vec![Outgoing::success(id, json!([]))]
+        }
     }
 
     /// Handles `textDocument/rename`.
@@ -199,6 +230,13 @@ impl Server {
                 id,
                 jsonrpc::error_codes::INVALID_PARAMS,
                 "invalid new name",
+            )];
+        }
+        if !self.client.document_changes {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the client does not support WorkspaceEdit.documentChanges",
             )];
         }
         if !crate::handlers::template_document(self, uri) {
@@ -266,7 +304,77 @@ impl Server {
             )],
         }
     }
+}
 
+fn references_empty(id: Value, command: bool, reason: &str) -> Vec<Outgoing> {
+    if command {
+        vec![Outgoing::success(
+            id,
+            json!({
+                "locations": [],
+                "coverage": {"status": "unsupported", "reason": reason},
+            }),
+        )]
+    } else {
+        vec![Outgoing::success(id, json!([]))]
+    }
+}
+
+/// FNV-1a over the complete file text.
+fn fingerprint_text(text: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Captures the exact files the backend will analyze, if the snapshot is sound.
+fn snapshot_files(
+    server: &Server,
+    document: &crate::workspace::Document,
+) -> Option<Vec<FileFingerprint>> {
+    let view = server.host.analysis(document.snapshot()).ok()?;
+    if !view.source_complete {
+        return None;
+    }
+    Some(
+        view.files
+            .iter()
+            .map(|file| FileFingerprint {
+                file: file.file.clone(),
+                revision: file.source_revision,
+                hash: fingerprint_text(&file.text),
+            })
+            .collect(),
+    )
+}
+
+/// Re-reads every analyzed file and rejects a stale snapshot.
+fn files_unchanged(server: &Server, files: &[FileFingerprint]) -> bool {
+    for expected in files {
+        let text = if let Some(document) = server.workspace.get_by_file(&expected.file) {
+            Arc::<str>::from(document.text())
+        } else {
+            let Some(text) = server.host.file_text(&expected.file) else {
+                return false;
+            };
+            text
+        };
+        if fingerprint_text(&text) != expected.hash {
+            return false;
+        }
+        if let Some(revision) = server.host.file_revision(&expected.file)
+            && revision != expected.revision
+        {
+            return false;
+        }
+    }
+    true
+}
+
+impl Server {
     /// Schedules one script symbol query for an async semantic handler.
     fn schedule_symbol_query(
         &mut self,
@@ -286,6 +394,38 @@ impl Server {
             )];
         };
         let stamp = document.stamp(&epoch);
+        let files = snapshot_files(self, document);
+        if files.is_none() {
+            return match intent {
+                PendingIntent::References { command, .. } => {
+                    if command {
+                        vec![Outgoing::success(
+                            id,
+                            json!({
+                                "locations": [],
+                                "coverage": {
+                                    "status": "partial",
+                                    "reason": "the project source snapshot is incomplete",
+                                },
+                            }),
+                        )]
+                    } else {
+                        vec![Outgoing::success(id, json!([]))]
+                    }
+                }
+                PendingIntent::CodeActionHandler { .. } | PendingIntent::CodeActionTypo { .. } => {
+                    vec![Outgoing::success(id, json!([]))]
+                }
+                PendingIntent::PrepareRename { .. } => {
+                    vec![Outgoing::success(id, Value::Null)]
+                }
+                PendingIntent::Rename { .. } => vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::CONTENT_MODIFIED,
+                    "the project source snapshot is incomplete",
+                )],
+            };
+        }
         let Some(key) = RequestKey::from_id(&id) else {
             return vec![Outgoing::failure(
                 id,
@@ -314,6 +454,7 @@ impl Server {
             PendingSemantic {
                 uri: uri.to_owned(),
                 intent,
+                files,
             },
         );
         let job = Job {
@@ -340,6 +481,7 @@ impl Server {
     }
 
     /// Answers one finished script symbol query.
+    #[allow(clippy::too_many_lines)] // one bounded dispatch over three intents
     pub(crate) fn symbols_done(
         &mut self,
         id: Value,
@@ -372,6 +514,12 @@ impl Server {
         if document.stamp(epoch) != done.stamp {
             return stale(&pending, id);
         }
+        let Some(files) = pending.files.as_deref() else {
+            return stale(&pending, id);
+        };
+        if !files_unchanged(self, files) {
+            return stale(&pending, id);
+        }
         let Some(facts) = view_facts(self, document) else {
             return stale(&pending, id);
         };
@@ -392,7 +540,10 @@ impl Server {
         };
         match pending.intent.clone() {
             PendingIntent::PrepareRename { target } => {
-                if result.complete && result.declaration.is_some() {
+                if result.complete
+                    && result.declaration.is_some()
+                    && node_target_coverage(self, &facts, &target, &result)
+                {
                     prepare_result(id, document, &facts, &target)
                 } else {
                     vec![Outgoing::success(id, Value::Null)]
@@ -414,9 +565,22 @@ impl Server {
                 }
                 let tokens =
                     node_reference_tokens(self, &facts, &target, &result, include_declaration);
-                let _ = command;
-                let locations = locations_value(self, &tokens);
-                vec![Outgoing::success(id, json!(locations))]
+                let (locations, locations_complete) = locations_value(self, &tokens);
+                let complete = result.complete && tokens.complete && locations_complete;
+                if command {
+                    vec![Outgoing::success(
+                        id,
+                        json!({
+                            "locations": locations,
+                            "coverage": coverage_value(complete, result.reason.as_deref().or(tokens.reason)),
+                        }),
+                    )]
+                } else if complete {
+                    vec![Outgoing::success(id, json!(locations))]
+                } else {
+                    log(format_args!("references withheld: coverage is incomplete"));
+                    vec![Outgoing::success(id, json!([]))]
+                }
             }
             PendingIntent::Rename { target, new_name } => {
                 match node_rename_plan(self, &facts, &target, &new_name, &result) {
@@ -460,6 +624,9 @@ impl Server {
                 "invalid textDocument or range",
             )];
         };
+        if !self.client.document_changes {
+            return vec![Outgoing::success(id, json!([]))];
+        }
         if let Some(only) = params
             .get("context")
             .and_then(|context| context.get("only"))
@@ -467,7 +634,7 @@ impl Server {
             && !only
                 .iter()
                 .filter_map(Value::as_str)
-                .any(|kind| kind == "quickfix" || kind == "source")
+                .any(|kind| kind == "quickfix")
         {
             return vec![Outgoing::success(id, json!([]))];
         }
@@ -583,6 +750,32 @@ fn prepare_result(
     )]
 }
 
+/// `prepareRename` dry-run for local targets.
+fn local_prepare_ready(server: &Server, facts: &ViewFacts, target: &Target) -> bool {
+    match target {
+        Target::Loop { identity, name, .. } => collect_loop_refs(facts, identity, name).complete,
+        Target::Template { name, .. } => {
+            let collected = collect_template_refs(server, facts, name);
+            collected.complete && collected.definition.is_some()
+        }
+        Target::Class { name, .. } => {
+            let collected = collect_class_refs(server, facts, name);
+            collected.complete && collected.rename_safe
+        }
+        _ => false,
+    }
+}
+
+/// `prepareRename` dry-run for a Node-backed target.
+fn node_target_coverage(
+    server: &Server,
+    facts: &ViewFacts,
+    target: &Target,
+    result: &SymbolResult,
+) -> bool {
+    node_reference_tokens(server, facts, target, result, false).complete
+}
+
 /// Builds the Node query for a script-backed WXML target.
 fn node_query(target: &Target) -> Option<(FileId, SymbolQuery)> {
     match target {
@@ -608,26 +801,46 @@ fn node_query(target: &Target) -> Option<(FileId, SymbolQuery)> {
 
 /// Returns a client-safe failure for a cancelled pending request.
 fn cancelled(pending: &PendingSemantic, id: Value) -> Vec<Outgoing> {
-    if matches!(pending.intent, PendingIntent::PrepareRename { .. }) {
-        return vec![Outgoing::success(id, Value::Null)];
+    match &pending.intent {
+        PendingIntent::PrepareRename { .. } => vec![Outgoing::success(id, Value::Null)],
+        PendingIntent::References { command: true, .. } => vec![Outgoing::success(
+            id,
+            json!({
+                "locations": [],
+                "coverage": {"status": "partial", "reason": "request cancelled"},
+            }),
+        )],
+        _ => vec![Outgoing::failure(
+            id,
+            jsonrpc::error_codes::REQUEST_CANCELLED,
+            "request cancelled",
+        )],
     }
-    vec![Outgoing::failure(
-        id,
-        jsonrpc::error_codes::REQUEST_CANCELLED,
-        "request cancelled",
-    )]
 }
 
 /// Returns a client-safe failure for a stale pending request.
 fn stale(pending: &PendingSemantic, id: Value) -> Vec<Outgoing> {
     match pending.intent {
         PendingIntent::PrepareRename { .. } => vec![Outgoing::success(id, Value::Null)],
-        PendingIntent::References { .. } => {
-            vec![Outgoing::failure(
-                id,
-                jsonrpc::error_codes::CONTENT_MODIFIED,
-                "the document changed before references could be resolved",
-            )]
+        PendingIntent::References { command, .. } => {
+            if command {
+                vec![Outgoing::success(
+                    id,
+                    json!({
+                        "locations": [],
+                        "coverage": {
+                            "status": "partial",
+                            "reason": "the document changed before references could be resolved",
+                        },
+                    }),
+                )]
+            } else {
+                vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::CONTENT_MODIFIED,
+                    "the document changed before references could be resolved",
+                )]
+            }
         }
         PendingIntent::CodeActionHandler { .. } | PendingIntent::CodeActionTypo { .. } => {
             vec![Outgoing::success(id, json!([]))]
@@ -643,7 +856,19 @@ fn stale(pending: &PendingSemantic, id: Value) -> Vec<Outgoing> {
 fn failed(pending: &PendingSemantic, id: Value, message: &str) -> Vec<Outgoing> {
     match pending.intent {
         PendingIntent::PrepareRename { .. } => vec![Outgoing::success(id, Value::Null)],
-        PendingIntent::References { .. } => vec![Outgoing::success(id, json!([]))],
+        PendingIntent::References { command, .. } => {
+            if command {
+                vec![Outgoing::success(
+                    id,
+                    json!({
+                        "locations": [],
+                        "coverage": {"status": "partial", "reason": message},
+                    }),
+                )]
+            } else {
+                vec![Outgoing::success(id, json!([]))]
+            }
+        }
         PendingIntent::CodeActionHandler { .. } | PendingIntent::CodeActionTypo { .. } => {
             vec![Outgoing::success(id, json!([]))]
         }
@@ -668,11 +893,72 @@ const fn failure_message(error: &BackendError) -> &'static str {
     }
 }
 
+/// Conservative JavaScript/WXML reserved names that never make a safe binding.
+fn is_reserved_binding_name(name: &str) -> bool {
+    matches!(
+        name,
+        "this"
+            | "true"
+            | "false"
+            | "null"
+            | "undefined"
+            | "NaN"
+            | "Infinity"
+            | "break"
+            | "case"
+            | "catch"
+            | "class"
+            | "const"
+            | "continue"
+            | "debugger"
+            | "default"
+            | "delete"
+            | "do"
+            | "else"
+            | "enum"
+            | "export"
+            | "extends"
+            | "finally"
+            | "for"
+            | "function"
+            | "if"
+            | "import"
+            | "in"
+            | "instanceof"
+            | "let"
+            | "new"
+            | "return"
+            | "static"
+            | "super"
+            | "switch"
+            | "throw"
+            | "try"
+            | "typeof"
+            | "var"
+            | "void"
+            | "while"
+            | "with"
+            | "yield"
+            | "await"
+            | "implements"
+            | "interface"
+            | "package"
+            | "private"
+            | "protected"
+            | "public"
+            | "arguments"
+            | "eval"
+            | "id"
+            | "style"
+    )
+}
+
 /// Builds the placeholder/name validation for a target.
 fn prevalidate_name(target: &Target, new_name: &str) -> Option<&'static str> {
     match target {
         Target::Data { .. } | Target::Event { .. } | Target::Loop { .. } => {
-            (!is_identifier(new_name)).then_some("the new name is not a valid identifier")
+            (!is_identifier(new_name) || is_reserved_binding_name(new_name))
+                .then_some("the new name is not a valid binding name")
         }
         Target::Property { .. } => {
             let declared: Option<String> = if new_name.contains('-') {
@@ -681,17 +967,17 @@ fn prevalidate_name(target: &Target, new_name: &str) -> Option<&'static str> {
                 Some(new_name.to_owned())
             };
             match declared {
-                Some(declared) if is_identifier(&declared) => None,
+                Some(declared)
+                    if is_identifier(&declared)
+                        && !is_reserved_binding_name(&declared)
+                        && !matches!(declared.as_str(), "class" | "id" | "style") =>
+                {
+                    None
+                }
                 _ => Some("the new property name is not a valid camelCase or kebab-case name"),
             }
         }
-        Target::Tag { .. } => {
-            let mut chars = new_name.chars();
-            let valid = chars.next().is_some_and(|first| first.is_ascii_lowercase())
-                && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-                && !crate::metadata::is_builtin_tag(new_name);
-            (!valid).then_some("the new tag name is not a valid custom-component tag")
-        }
+
         Target::Template { .. } => {
             let valid = super::target::is_template_name_public(new_name);
             (!valid).then_some("the new template name is not valid")
@@ -727,7 +1013,11 @@ fn file_text(server: &Server, file: &FileId) -> Option<Arc<str>> {
 }
 
 /// Maps exact tokens to LSP locations with per-file budgets.
-fn locations_value(server: &Server, tokens: &Tokens) -> Vec<Value> {
+///
+/// Returns `(locations, complete)`. `complete=false` means a file/position
+/// budget or mapping failure hid a location; callers must not present the set
+/// as a complete reference answer.
+fn locations_value(server: &Server, tokens: &Tokens) -> (Vec<Value>, bool) {
     let mut grouped: BTreeMap<FileId, Vec<SourceRange>> = BTreeMap::new();
     for token in &tokens.items {
         let entry = grouped.entry(token.file.clone()).or_default();
@@ -737,45 +1027,59 @@ fn locations_value(server: &Server, tokens: &Tokens) -> Vec<Value> {
     }
     let mut locations = Vec::new();
     let mut bytes = 0_usize;
-    let mut exhausted = false;
-    for (file_index, (file, ranges)) in grouped.into_iter().enumerate() {
-        if file_index >= MAX_REFERENCE_FILES || exhausted {
+    let mut complete = true;
+    for (file_index, (file, mut ranges)) in grouped.into_iter().enumerate() {
+        if file_index >= MAX_REFERENCE_FILES {
+            complete = false;
             break;
         }
         let target = if let Some(document) = server.workspace.get_by_file(&file) {
             LocationTarget {
                 uri: document.uri().to_owned(),
-                line_index: document.snapshot().line_index().clone(),
+                text: Arc::from(document.text()),
             }
         } else {
             let Some(uri) = server.host.uri_for(&file) else {
+                complete = false;
                 continue;
             };
             let Some(text) = server.host.file_text(&file) else {
+                complete = false;
                 continue;
             };
             let cost = text
                 .len()
                 .saturating_add(8_usize.saturating_mul(text.match_indices('\n').count()));
             if bytes.saturating_add(cost) > MAX_REFERENCE_INDEX_BYTES {
+                complete = false;
                 break;
             }
             bytes = bytes.saturating_add(cost);
-            LocationTarget {
-                uri,
-                line_index: LineIndex::new(text),
-            }
+            LocationTarget { uri, text }
         };
+        ranges.sort_by_key(|range| (range.start(), range.end()));
+        let mut cursor = Utf16Cursor::new(&target.text);
         for range in ranges {
             if locations.len() >= MAX_REFERENCE_LOCATIONS {
-                exhausted = true;
+                complete = false;
                 break;
             }
-            let Some(value) = crate::handlers::line_index_range_value(&target.line_index, range)
+            let (Some(start), Some(end)) =
+                (cursor.position(range.start()), cursor.position(range.end()))
             else {
+                complete = false;
                 continue;
             };
-            locations.push(json!({"uri": target.uri, "range": value}));
+            locations.push(json!({
+                "uri": target.uri,
+                "range": {
+                    "start": crate::handlers::position_value(start),
+                    "end": crate::handlers::position_value(end),
+                },
+            }));
+        }
+        if !complete {
+            break;
         }
     }
     locations.sort_by(|left, right| {
@@ -787,12 +1091,23 @@ fn locations_value(server: &Server, tokens: &Tokens) -> Vec<Value> {
             left_start.cmp(&right_start)
         })
     });
-    locations
+    (locations, complete)
+}
+
+fn coverage_value(complete: bool, reason: Option<&str>) -> Value {
+    if complete {
+        json!({"status": "supported"})
+    } else {
+        json!({
+            "status": "partial",
+            "reason": reason.unwrap_or("reference coverage is incomplete"),
+        })
+    }
 }
 
 struct LocationTarget {
     uri: String,
-    line_index: LineIndex,
+    text: Arc<str>,
 }
 
 /* --------------------------------------------------------- token helpers */
@@ -819,8 +1134,10 @@ fn node_reference_tokens(
         Target::Data { path, .. } => collect_data_refs(facts, path),
         Target::Event { name, .. } => collect_event_refs(facts, name),
         Target::Property {
+            subject,
             declared,
             component,
+            wxml,
             ..
         } => {
             let collected = collect_property_refs(server, facts, declared, component);
@@ -829,9 +1146,13 @@ fn node_reference_tokens(
                 complete: collected.complete,
                 reason: collected.reason,
             };
-            if !collected.complete {
+            let template =
+                collect_component_template_refs(server, subject, wxml.as_ref(), declared);
+            if !template.complete {
                 tokens.complete = false;
+                tokens.reason = template.reason.or(tokens.reason);
             }
+            tokens.items.extend(template.items);
             tokens
         }
         _ => Tokens::new(),
@@ -864,6 +1185,8 @@ fn local_reference_tokens(
         Target::Loop { identity, name, .. } => {
             let collected = collect_loop_refs(facts, identity, name);
             let mut tokens = Tokens::new();
+            tokens.complete = collected.complete;
+            tokens.reason = collected.reason;
             if include_declaration {
                 if let Some(declaration) = collected.declaration {
                     tokens.push(&declaration.file, declaration.range, TokenStyle::Identifier);
@@ -874,10 +1197,11 @@ fn local_reference_tokens(
             }
             tokens
         }
-        Target::Tag { start, end, .. } => collect_tag_refs(facts, *start, *end),
         Target::Template { name, .. } => {
             let collected = collect_template_refs(server, facts, name);
             let mut tokens = Tokens::new();
+            tokens.complete = collected.complete;
+            tokens.reason = collected.reason;
             if include_declaration {
                 if let Some(definition) = collected.definition {
                     tokens.push(&definition.file, definition.range, TokenStyle::Template);
@@ -891,6 +1215,8 @@ fn local_reference_tokens(
         Target::Class { name, .. } => {
             let collected = collect_class_refs(server, facts, name);
             let mut tokens = Tokens::new();
+            tokens.complete = collected.complete;
+            tokens.reason = collected.reason;
             if include_declaration {
                 for definition in collected.definitions {
                     tokens.push(&definition.file, definition.range, TokenStyle::Class);
@@ -943,42 +1269,6 @@ fn local_rename_plan(
 ) -> Result<Value, String> {
     let mut plan = EditPlan::new(facts.doc.file.clone());
     match target {
-        Target::Tag { name, start, end } => {
-            if name == new_name {
-                return Ok(json!({"documentChanges": []}));
-            }
-            let mut conflict = false;
-            super::target::for_each_element(facts.doc.tree(), &mut |element| {
-                if element.name() == Some(new_name) {
-                    conflict = true;
-                }
-            });
-            if conflict {
-                return Err("the new tag name is already used in this template".to_owned());
-            }
-            add_token_edit(
-                &mut plan,
-                server,
-                &SymbolToken {
-                    file: facts.doc.file.clone(),
-                    range: *start,
-                    style: TokenStyle::Tag,
-                },
-                new_name,
-                EditRule::Tag,
-            )?;
-            add_token_edit(
-                &mut plan,
-                server,
-                &SymbolToken {
-                    file: facts.doc.file.clone(),
-                    range: *end,
-                    style: TokenStyle::Tag,
-                },
-                new_name,
-                EditRule::Tag,
-            )?;
-        }
         Target::Template { name, .. } => {
             let current = collect_template_refs(server, facts, name);
             if !current.complete {
@@ -1023,6 +1313,15 @@ fn local_rename_plan(
                     }
                 }
             }
+            if view_data_roots(facts).contains(new_name)
+                || facts
+                    .semantics
+                    .wxs
+                    .iter()
+                    .any(|block| block.module.as_deref() == Some(new_name))
+            {
+                return Err("the new name conflicts with a data root or WXS module".to_owned());
+            }
             let collected = collect_loop_refs(facts, identity, name);
             if !collected.complete {
                 return Err(collected
@@ -1039,23 +1338,39 @@ fn local_rename_plan(
                     EditRule::Identifier,
                 )?;
             } else {
-                let attribute = match identity.role {
-                    wxml_types::LocalRole::Item => "wx:for-item",
-                    wxml_types::LocalRole::Index => "wx:for-index",
+                let binding = match identity.role {
+                    wxml_types::LocalRole::Item => &loop_info.item,
+                    wxml_types::LocalRole::Index => &loop_info.index,
                     _ => return Err("the loop binding role is unknown".to_owned()),
                 };
-                let insertion = format!(" {attribute}=\"{new_name}\"");
-                let range =
-                    SourceRange::from_bounds(loop_info.tag_name_end, loop_info.tag_name_end)
-                        .map_err(|_| "the loop tag anchor is invalid".to_owned())?;
-                plan.add(
-                    &facts.doc.file,
-                    range,
-                    "",
-                    insertion,
-                    EditRule::Preformatted,
-                )
-                .map_err(|error| error.message().to_owned())?;
+                if let Some(value_range) = binding.value {
+                    plan.add(
+                        &facts.doc.file,
+                        value_range,
+                        "",
+                        new_name,
+                        EditRule::Identifier,
+                    )
+                    .map_err(|error| error.message().to_owned())?;
+                } else {
+                    let attribute = match identity.role {
+                        wxml_types::LocalRole::Item => "wx:for-item",
+                        wxml_types::LocalRole::Index => "wx:for-index",
+                        _ => return Err("the loop binding role is unknown".to_owned()),
+                    };
+                    let insertion = format!(" {attribute}=\"{new_name}\"");
+                    let range =
+                        SourceRange::from_bounds(loop_info.tag_name_end, loop_info.tag_name_end)
+                            .map_err(|_| "the loop tag anchor is invalid".to_owned())?;
+                    plan.add(
+                        &facts.doc.file,
+                        range,
+                        "",
+                        insertion,
+                        EditRule::Preformatted,
+                    )
+                    .map_err(|error| error.message().to_owned())?;
+                }
             }
             for reference in collected.references {
                 add_token_edit(
@@ -1147,6 +1462,11 @@ fn node_rename_plan(
             if new_name != old && result.fields.iter().any(|field| field.name == new_name) {
                 return Err("the new field name already exists".to_owned());
             }
+            if view_scope_conflict(facts, new_name) {
+                return Err(
+                    "the new field name is captured by a loop local or WXS module".to_owned(),
+                );
+            }
             let wxml = collect_data_refs(facts, path);
             if !wxml.complete {
                 return Err(wxml
@@ -1154,27 +1474,27 @@ fn node_rename_plan(
                     .unwrap_or("WXML data references are incomplete")
                     .to_owned());
             }
-            add_token_edit(
+            add_script_token_edit(
                 &mut plan,
                 server,
-                &script_token(declaration),
+                declaration,
                 new_name,
                 EditRule::Identifier,
             )?;
             for reference in &result.references {
-                add_token_edit(
+                add_script_token_edit(
                     &mut plan,
                     server,
-                    &script_token(&reference.token),
+                    &reference.token,
                     new_name,
                     EditRule::Identifier,
                 )?;
             }
             for occurrence in &result.occurrences {
-                add_token_edit(
+                add_script_token_edit(
                     &mut plan,
                     server,
-                    &occurrence_token(occurrence),
+                    &occurrence.token,
                     new_name,
                     EditRule::PathSegment,
                 )?;
@@ -1184,7 +1504,10 @@ fn node_rename_plan(
             }
         }
         Target::Event { name, .. } => {
-            if new_name != *name && result.fields.iter().any(|field| field.name == new_name) {
+            if new_name != *name
+                && (result.fields.iter().any(|field| field.name == new_name)
+                    || result.reserved.iter().any(|reserved| reserved == new_name))
+            {
                 return Err("the new handler name already exists".to_owned());
             }
             let wxml = collect_event_refs(facts, name);
@@ -1194,18 +1517,18 @@ fn node_rename_plan(
                     .unwrap_or("WXML event references are incomplete")
                     .to_owned());
             }
-            add_token_edit(
+            add_script_token_edit(
                 &mut plan,
                 server,
-                &script_token(declaration),
+                declaration,
                 new_name,
                 EditRule::Identifier,
             )?;
             for reference in &result.references {
-                add_token_edit(
+                add_script_token_edit(
                     &mut plan,
                     server,
-                    &script_token(&reference.token),
+                    &reference.token,
                     new_name,
                     EditRule::Identifier,
                 )?;
@@ -1215,8 +1538,10 @@ fn node_rename_plan(
             }
         }
         Target::Property {
+            subject,
             declared,
             component,
+            wxml,
             ..
         } => {
             let declared_new = if new_name.contains('-') {
@@ -1225,9 +1550,32 @@ fn node_rename_plan(
                 new_name.to_owned()
             };
             if declared_new != *declared
-                && result.fields.iter().any(|field| field.name == declared_new)
+                && (result.fields.iter().any(|field| field.name == declared_new)
+                    || result
+                        .reserved
+                        .iter()
+                        .any(|reserved| reserved == &declared_new))
             {
                 return Err("the new property name already exists".to_owned());
+            }
+            if view_scope_conflict(facts, &declared_new) {
+                return Err(
+                    "the new property name is captured by a loop local or WXS module".to_owned(),
+                );
+            }
+            match component_property_conflict(server, subject, wxml.as_ref(), &declared_new) {
+                Some(false) => {}
+                Some(true) => {
+                    return Err(
+                        "the new property name conflicts with the component template scope"
+                            .to_owned(),
+                    );
+                }
+                None => {
+                    return Err(
+                        "the component template scope could not be proven conflict-free".to_owned(),
+                    );
+                }
             }
             match super::target::property_name_conflict(server, facts, component, &declared_new) {
                 Some(false) => {}
@@ -1242,39 +1590,39 @@ fn node_rename_plan(
                     );
                 }
             }
-            let wxml = collect_property_refs(server, facts, declared, component);
-            if !wxml.complete {
-                return Err(wxml
+            let caller_tokens = collect_property_refs(server, facts, declared, component);
+            if !caller_tokens.complete {
+                return Err(caller_tokens
                     .reason
                     .unwrap_or("component property references are incomplete")
                     .to_owned());
             }
-            add_token_edit(
+            add_script_token_edit(
                 &mut plan,
                 server,
-                &script_token(declaration),
+                declaration,
                 &declared_new,
                 EditRule::Identifier,
             )?;
             for reference in &result.references {
-                add_token_edit(
+                add_script_token_edit(
                     &mut plan,
                     server,
-                    &script_token(&reference.token),
+                    &reference.token,
                     &declared_new,
                     EditRule::Identifier,
                 )?;
             }
             for occurrence in &result.occurrences {
-                add_token_edit(
+                add_script_token_edit(
                     &mut plan,
                     server,
-                    &occurrence_token(occurrence),
+                    &occurrence.token,
                     &declared_new,
                     EditRule::PathSegment,
                 )?;
             }
-            for token in wxml.items {
+            for token in caller_tokens.items {
                 let Some(text) = token_text(server, &token) else {
                     return Err("a component attribute target is unavailable".to_owned());
                 };
@@ -1293,26 +1641,51 @@ fn node_rename_plan(
                     EditRule::AttributeName,
                 )?;
             }
+            let template =
+                collect_component_template_refs(server, subject, wxml.as_ref(), declared);
+            if !template.complete {
+                return Err(template
+                    .reason
+                    .unwrap_or("the component template references are incomplete")
+                    .to_owned());
+            }
+            for token in template.items {
+                add_token_edit(
+                    &mut plan,
+                    server,
+                    &token,
+                    &declared_new,
+                    EditRule::Identifier,
+                )?;
+            }
         }
         _ => return Err("the target does not accept a script rename".to_owned()),
     }
     plan_value(plan, server)
 }
 
-fn script_token(token: &wxml_types::SymbolToken) -> SymbolToken {
-    SymbolToken {
-        file: token.file.clone(),
-        range: token.range,
-        style: TokenStyle::Identifier,
-    }
-}
-
-fn occurrence_token(occurrence: &wxml_types::SymbolOccurrence) -> SymbolToken {
-    SymbolToken {
-        file: occurrence.token.file.clone(),
-        range: occurrence.token.range,
-        style: TokenStyle::PathSegment,
-    }
+fn add_script_token_edit(
+    plan: &mut EditPlan,
+    server: &Server,
+    token: &wxml_types::SymbolToken,
+    replacement: &str,
+    rule: EditRule,
+) -> Result<(), String> {
+    let expected = if let Some(text) = token.expected_text.as_deref() {
+        text.to_owned()
+    } else {
+        let text = file_text(server, &token.file)
+            .ok_or_else(|| "the edit target is unavailable".to_owned())?;
+        let start = usize::try_from(token.range.start())
+            .map_err(|_| "the edit target has an invalid range".to_owned())?;
+        let end = usize::try_from(token.range.end())
+            .map_err(|_| "the edit target has an invalid range".to_owned())?;
+        text.get(start..end)
+            .ok_or_else(|| "the edit target has an invalid range".to_owned())?
+            .to_owned()
+    };
+    plan.add(&token.file, token.range, expected, replacement, rule)
+        .map_err(|error| error.message().to_owned())
 }
 
 fn token_text(server: &Server, token: &SymbolToken) -> Option<String> {
@@ -1343,6 +1716,9 @@ fn code_action_diagnostic(params: &Value, range: (Position, Position)) -> Option
     diagnostics.iter().find_map(|diagnostic| {
         let diagnostic_range = code_action_diagnostic_range(diagnostic)?;
         if !position_overlaps(diagnostic_range, range) {
+            return None;
+        }
+        if diagnostic.get("source").and_then(Value::as_str) != Some("wxml-lsp") {
             return None;
         }
         let message = diagnostic.get("message")?.as_str()?;
@@ -1416,6 +1792,9 @@ fn handler_code_action(
 }
 
 fn count_identifier_occurrences(text: &str, name: &str) -> usize {
+    if name.is_empty() {
+        return 0;
+    }
     let mut count = 0_usize;
     let mut start = 0_usize;
     while let Some(index) = text.get(start..).and_then(|rest| rest.find(name)) {
@@ -1530,11 +1909,20 @@ impl Server {
     /// Handles `workspace/symbol`.
     #[allow(clippy::needless_pass_by_value)] // dispatch passes the request params by value
     pub(crate) fn workspace_symbol(&self, id: Value, params: Option<Value>) -> Vec<Outgoing> {
-        let query = params
-            .as_ref()
-            .and_then(|params| params.get("query"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        let Some(params) = params else {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::INVALID_PARAMS,
+                "missing parameters",
+            )];
+        };
+        let Some(query) = params.get("query").and_then(Value::as_str) else {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::INVALID_PARAMS,
+                "workspace/symbol requires a string query",
+            )];
+        };
         let value = super::hints::workspace_symbols(self, query);
         vec![Outgoing::success(id, value)]
     }

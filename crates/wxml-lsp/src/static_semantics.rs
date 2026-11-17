@@ -1605,6 +1605,21 @@ pub(crate) fn host_access(server: &Server) -> impl Fn(&str) -> Option<String> + 
     }
 }
 
+/// Project-bound variant of [`host_access`] for multi-app WXS resolution.
+pub(crate) fn host_access_in<'a>(
+    server: &'a Server,
+    project: &'a wxml_types::ProjectId,
+) -> impl Fn(&str) -> Option<String> + 'a {
+    move |path: &str| {
+        let path = ProjectPath::new(path).ok()?;
+        let file = server.host.file_id_in(project, &path).ok()?;
+        if let Some(document) = server.workspace.get_by_file(&file) {
+            return Some(document.snapshot().text().to_owned());
+        }
+        server.host.file_text(&file).map(|text| text.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2123,7 +2138,10 @@ fn signature_parameters(signature: &str) -> Vec<String> {
     let mut quote: Option<char> = None;
     let mut escaped = false;
     let mut end = None;
-    for (index, character) in signature.char_indices().skip(open) {
+    for (index, character) in signature
+        .char_indices()
+        .skip_while(|(index, _)| *index < open)
+    {
         if let Some(active) = quote {
             if escaped {
                 escaped = false;

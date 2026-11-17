@@ -1277,6 +1277,8 @@ export interface SymbolsRequest {
   subjectFileId: string;
   /** Registration root that owns the script symbol. */
   root: "page" | "component";
+  /** Present and false when the source snapshot was budget-truncated. */
+  sourceComplete?: boolean;
   query:
     | { kind: "dataRoots" }
     | { kind: "dataPath"; path: string[] }
@@ -1310,6 +1312,8 @@ export interface SymbolsResponse {
   occurrences: SymbolWireOccurrence[];
   insertion?: { fileId: string; offset: number; text: string };
   fields: Array<{ name: string; declaration?: SymbolWireToken; quoted: boolean }>;
+  /** Handler/owner names that already exist and cannot be reused. */
+  reserved: string[];
 }
 
 export const SYMBOL_QUERY_KINDS: ReadonlySet<SymbolQueryKind> = new Set<SymbolQueryKind>([
@@ -1376,6 +1380,9 @@ export function validateSymbolsRequest(request: SymbolsRequest): void {
   }
   if (request.root !== "page" && request.root !== "component") {
     throw new RequestError("bad-params", "root must be page or component");
+  }
+  if (request.sourceComplete !== undefined && typeof request.sourceComplete !== "boolean") {
+    throw new RequestError("bad-params", "sourceComplete must be a boolean");
   }
   if (!request.files.some((file) => file.fileId === request.subjectFileId)) {
     throw new RequestError("bad-params", "subjectFileId must name one of files[]");

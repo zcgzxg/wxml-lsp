@@ -1576,7 +1576,6 @@ fn quality(value: &str) -> TypeQuality {
 pub(crate) fn symbols(
     value: &serde_json::Value,
     view: &PreparedView,
-    _request: &wxml_types::SymbolRequest,
     expected_request: &str,
 ) -> Result<wxml_types::SymbolResult, ProtocolError> {
     let object = value.as_object().ok_or(ProtocolError::Shape)?;
@@ -1605,6 +1604,24 @@ pub(crate) fn symbols(
         }};
     }
     let status = symbol_status(object.get("state"));
+    if complete && !status.is_supported() {
+        complete = false;
+        reasons.push("complete=true was reported with a non-supported status".to_owned());
+    }
+    let requires_arrays =
+        status.is_supported() || matches!(status, CapabilityStatus::Partial { .. });
+    if requires_arrays {
+        for field in ["references", "occurrences", "fields", "reserved"] {
+            if object
+                .get(field)
+                .and_then(serde_json::Value::as_array)
+                .is_none()
+            {
+                reasons.push(format!("symbols response is missing the {field} array"));
+                complete = false;
+            }
+        }
+    }
     let mut result = wxml_types::SymbolResult {
         status: status.clone(),
         complete: false,
@@ -1617,6 +1634,7 @@ pub(crate) fn symbols(
         occurrences: Vec::new(),
         insertion: None,
         fields: Vec::new(),
+        reserved: Vec::new(),
     };
     if !status.is_supported() && !matches!(status, CapabilityStatus::Partial { .. }) {
         result.complete = false;
@@ -1806,6 +1824,22 @@ pub(crate) fn symbols(
         }
     }
 
+    if let Some(reserved) = object.get("reserved").and_then(serde_json::Value::as_array) {
+        if reserved.len() > wxml_types::MAX_SYMBOL_ENTRIES {
+            note!("reserved name list exceeded the limit");
+        }
+        for name in reserved.iter().take(wxml_types::MAX_SYMBOL_ENTRIES) {
+            let Some(name) = name.as_str() else {
+                note!("a reserved name is not a string");
+                continue;
+            };
+            if name.is_empty() || name.len() > wxml_types::MAX_SYMBOL_NAME_BYTES {
+                note!("a reserved name is out of bounds");
+                continue;
+            }
+            result.reserved.push(name.to_owned());
+        }
+    }
     if !complete {
         if let Some(reason) = result.reason.take() {
             note!(&reason);
@@ -1883,14 +1917,20 @@ fn symbol_token(
                 && text.is_char_boundary(start)
                 && text.is_char_boundary(end)
         });
-    if !inside {
+    if !inside || start == end {
         return Err("symbol token range is invalid".to_owned());
     }
     let range = SourceRange::from_bounds(start, end)
         .map_err(|_| "symbol token range is inverted".to_owned())?;
+    let expected_text = usize::try_from(start)
+        .ok()
+        .zip(usize::try_from(end).ok())
+        .and_then(|(start, end)| text.get(start..end))
+        .map(str::to_owned);
     Ok(wxml_types::SymbolToken {
         file: prepared.file.clone(),
         range,
+        expected_text,
     })
 }
 
@@ -2139,6 +2179,7 @@ mod tests {
             project_root: std::path::PathBuf::new(),
             syntax_diagnostics: Vec::new(),
             status_hint: None,
+            source_complete: true,
         }
     }
 
@@ -2526,5 +2567,80 @@ mod tests {
             panic!("expected partial");
         };
         assert_eq!(reason, MISSING_EVENT_RESULT_REASON);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod symbols_tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    fn prepared_view() -> PreparedView {
+        PreparedView {
+            view_id: "pages/index/index.wxml:1".to_owned(),
+            target: None,
+            files: Arc::from(Vec::new()),
+            compiler_options: serde_json::Map::new(),
+            fragments: Arc::from(Vec::new()),
+            components: Arc::from(Vec::new()),
+            events: Arc::from(Vec::new()),
+            project_root: std::path::PathBuf::new(),
+            syntax_diagnostics: Vec::new(),
+            status_hint: None,
+            source_complete: true,
+        }
+    }
+
+    #[allow(clippy::needless_pass_by_value)] // test helper mirrors JSON values
+    fn value(extra: serde_json::Value) -> serde_json::Value {
+        let mut object = serde_json::json!({
+            "protocolVersion": 2,
+            "requestId": "r1",
+            "state": {"status": "supported"},
+            "complete": true,
+            "references": [],
+            "occurrences": [],
+            "fields": [],
+            "reserved": [],
+        });
+        if let (Some(object), Some(extra)) = (object.as_object_mut(), extra.as_object()) {
+            for (key, value) in extra {
+                object.insert(key.clone(), value.clone());
+            }
+        }
+        object
+    }
+
+    #[test]
+    fn missing_arrays_make_a_supported_answer_incomplete() {
+        let mut payload = value(serde_json::json!({}));
+        payload
+            .as_object_mut()
+            .expect("object")
+            .remove("references");
+        let result = symbols(&payload, &prepared_view(), "r1").expect("symbols");
+        assert!(!result.complete);
+        assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+        assert!(result.reason.is_some());
+    }
+
+    #[test]
+    fn partial_status_cannot_claim_complete() {
+        let payload = value(serde_json::json!({
+            "state": {"status": "partial", "reason": "budget"},
+        }));
+        let result = symbols(&payload, &prepared_view(), "r1").expect("symbols");
+        assert!(!result.complete);
+        assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    }
+
+    #[test]
+    fn supported_arrays_are_accepted() {
+        let payload = value(serde_json::json!({}));
+        let result = symbols(&payload, &prepared_view(), "r1").expect("symbols");
+        assert!(result.complete);
+        assert!(result.status.is_supported());
     }
 }

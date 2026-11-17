@@ -96,6 +96,9 @@ pub struct SymbolToken {
     /// String literal property names exclude the surrounding quotes so an
     /// editor can replace the content without changing the quoting style.
     pub range: SourceRange,
+    /// Exact text in the analysis snapshot, when the fact came from a script
+    /// snapshot. The edit plan rechecks it against the current file.
+    pub expected_text: Option<String>,
 }
 
 /// The role of one reference token.
@@ -190,6 +193,8 @@ pub struct SymbolResult {
     pub insertion: Option<HandlerInsertion>,
     /// Declared sibling fields of the resolved data object.
     pub fields: Vec<SymbolField>,
+    /// Names already reserved by the owner (for example event methods).
+    pub reserved: Vec<String>,
 }
 
 impl SymbolResult {
@@ -207,6 +212,7 @@ impl SymbolResult {
             occurrences: Vec::new(),
             insertion: None,
             fields: Vec::new(),
+            reserved: Vec::new(),
         }
     }
 }
@@ -281,6 +287,7 @@ mod tests {
         let token = SymbolToken {
             file,
             range: SourceRange::from_bounds(10, 14).expect("range"),
+            expected_text: None,
         };
         let reference = SymbolReference {
             token: token.clone(),

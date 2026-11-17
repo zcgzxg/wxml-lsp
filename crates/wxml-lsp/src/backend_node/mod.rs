@@ -636,6 +636,21 @@ impl Backend for NodeBackend {
                 "template has no page or component script",
             ));
         }
+        if !view.source_complete {
+            return Ok(SymbolResult {
+                status: CapabilityStatus::Partial {
+                    reason: "the project source snapshot was truncated".to_owned(),
+                },
+                complete: false,
+                reason: Some("the project source snapshot was truncated".to_owned()),
+                declaration: None,
+                references: Vec::new(),
+                occurrences: Vec::new(),
+                insertion: None,
+                fields: Vec::new(),
+                reserved: Vec::new(),
+            });
+        }
         if !view.files.iter().any(|file| file.file == request.subject) {
             return Ok(SymbolResult::unsupported(
                 "the symbol's script is not part of the project snapshot",
@@ -708,12 +723,17 @@ impl Backend for NodeBackend {
                     "the node backend does not implement script symbol queries",
                 ));
             }
+            Err(ProtocolError::Node { code: -32602, .. }) => {
+                return Ok(SymbolResult::unsupported(
+                    "the script symbol query was rejected by the backend",
+                ));
+            }
             Err(error) => {
                 self.invalidate(&mut state);
                 return Err(BackendError::Protocol(error.to_string()));
             }
         };
-        match response::symbols(&value, &view, &request, &request_id) {
+        match response::symbols(&value, &view, &request_id) {
             Ok(result) => {
                 self.failures.store(0, Ordering::SeqCst);
                 *self

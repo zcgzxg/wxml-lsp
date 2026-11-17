@@ -82,6 +82,7 @@ pub(crate) struct Inflight {
 }
 
 /// Client capabilities that change server behavior.
+#[allow(clippy::struct_excessive_bools)] // independent protocol feature flags
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ClientFlags {
     /// The client declared dynamic watched-file registrations.
@@ -92,6 +93,8 @@ pub(crate) struct ClientFlags {
     /// The client accepts hierarchical `DocumentSymbol` results
     /// (`textDocument.documentSymbol.hierarchicalDocumentSymbolSupport`).
     pub(crate) hierarchical_symbols: bool,
+    /// The client accepts `WorkspaceEdit.documentChanges`.
+    pub(crate) document_changes: bool,
 }
 
 /// One connected client.

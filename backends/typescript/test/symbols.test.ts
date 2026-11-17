@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import ts from "typescript";
 import { BACKEND_DIR } from "../src/env.ts";
 import {
   DEFAULT_LIMITS,
@@ -172,8 +173,8 @@ Page({ data: sharedData, onLoad() { const t = this.data.title; } });`;
     ),
     config,
   );
-  assert.equal(result.state.status, "supported");
-  assert.equal(result.complete, true);
+  assert.equal(result.state.status, "partial");
+  assert.equal(result.complete, false);
   assert.equal(result.declaration?.fileId, "pages/index/shared.ts");
   const titleStart = byteIndexOf(shared, "title: \"x\"");
   assert.deepEqual(result.declaration, {
@@ -243,6 +244,7 @@ test("symbols request validation rejects malformed queries", () => {
   validateSymbolsRequest(good);
   for (const query of [
     { kind: "dataPath", path: [] },
+    { kind: "dataPath", path: Array.from({ length: 17 }, (_, index) => `s${index}`) },
     { kind: "dataPath", path: ["a[b]"] },
     { kind: "eventHandler", name: "a.b" },
   ]) {
@@ -279,4 +281,85 @@ test("event handler references include this.method calls", () => {
     ),
     JSON.stringify(result.references),
   );
+});
+
+test("shorthand destructuring is reported incomplete and never edited", () => {
+  const script = `Page({
+  data: { user: { name: "x" } },
+  onLoad() {
+    const { user } = this.data;
+    return user.name;
+  },
+});`;
+  const result = symbols(request(script, { kind: "dataPath", path: ["user"] }), config);
+  assert.equal(result.complete, false);
+  assert.equal(result.state.status, "partial");
+});
+
+test("renamed destructuring binding stays safe", () => {
+  const script = `Page({
+  data: { user: { name: "x" } },
+  onLoad() {
+    const { user: localUser } = this.data;
+    return localUser.name;
+  },
+});`;
+  const result = symbols(request(script, { kind: "dataPath", path: ["user"] }), config);
+  assert.equal(result.complete, true);
+  assert.ok(result.declaration);
+});
+
+test("other.setData receivers are not edited or claimed complete", () => {
+  const script = `Page({
+  data: { user: { name: "x" } },
+  onLoad() {
+    other.setData({ user: 1 });
+  },
+});`;
+  const result = symbols(request(script, { kind: "dataPath", path: ["user"] }), config);
+  assert.equal(result.complete, false);
+  assert.equal(result.occurrences.length, 0);
+});
+
+test("dynamic this.data access and spreads make coverage incomplete", () => {
+  for (const body of [
+    `const key = "user"; this.data[key];`,
+    `const { ...rest } = this.data; return rest;`,
+    `Object.keys(this.data);`,
+  ]) {
+    const script = `Page({ data: { user: 1 }, onLoad() { ${body} } });`;
+    const result = symbols(request(script, { kind: "dataPath", path: ["user"] }), config);
+    assert.equal(result.complete, false, body);
+  }
+});
+
+test("sourceComplete=false forces a partial empty answer", () => {
+  const script = `Page({ data: { user: 1 } });`;
+  const req = request(script, { kind: "dataRoots" });
+  req.sourceComplete = false;
+  const result = symbols(req, config);
+  assert.equal(result.complete, false);
+  assert.equal(result.state.status, "partial");
+  assert.equal(result.fields.length, 0);
+});
+
+test("component methods insertion with existing members parses without TS1005", () => {
+  const script = `Component({
+  properties: { title: { type: String } },
+  data: { local: "x" },
+});`;
+  const missing = symbols(
+    request(script, { kind: "eventHandler", name: "onSave" }, { root: "component" }),
+    config,
+  );
+  assert.equal(missing.complete, true);
+  assert.ok(missing.insertion);
+  const applied =
+    script.slice(0, missing.insertion.offset) +
+    missing.insertion.text +
+    script.slice(missing.insertion.offset);
+  const parsed = ts.createSourceFile("component.ts", applied, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const diagnostics = (parsed as ts.SourceFile & { parseDiagnostics: readonly ts.Diagnostic[] })
+    .parseDiagnostics;
+  assert.deepEqual(diagnostics.map((diag) => diag.code), []);
 });

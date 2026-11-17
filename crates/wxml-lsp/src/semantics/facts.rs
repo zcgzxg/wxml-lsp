@@ -71,11 +71,6 @@ pub(crate) fn parse_doc(file: wxml_types::FileId, text: &str) -> Option<QueryDoc
     })
 }
 
-/// Parses the snapshot of an open document.
-pub(crate) fn parse_open(document: &Document) -> Option<QueryDoc> {
-    parse_doc(document.file().clone(), document.text())
-}
-
 /// Static facts for one view template.
 #[derive(Debug)]
 pub(crate) struct ViewFacts {
@@ -114,20 +109,39 @@ impl ViewFacts {
 
 /// Builds static facts for an open template.
 pub(crate) fn view_facts(server: &Server, document: &Document) -> Option<ViewFacts> {
-    let file = document.file().clone();
-    let doc = parse_open(document)?;
-    let target = server.host.view_for_file(&file).ok();
-    let components = live_components(server, &file);
+    view_facts_from(
+        server,
+        document.file(),
+        document.text(),
+        document.revision().get(),
+    )
+}
+
+/// Builds view facts for a project file, using overlay-first effective text.
+pub(crate) fn view_facts_for_file(server: &Server, file: &wxml_types::FileId) -> Option<ViewFacts> {
+    let text = server.host.file_text(file)?;
+    view_facts_from(server, file, &text, 1)
+}
+
+/// Shared parser/analyzer setup for open and closed views.
+fn view_facts_from(
+    server: &Server,
+    file: &wxml_types::FileId,
+    text: &str,
+    revision: u64,
+) -> Option<ViewFacts> {
+    let doc = parse_doc(file.clone(), text)?;
+    let target = server.host.view_for_file(file).ok();
+    let components = live_components(server, file);
     let root = target
         .as_ref()
         .map_or(RootKind::Page, |target| target.owner);
-    let analysis =
-        wxml_types::TemplateAnalyzer::new(root, SourceRevision::new(document.revision().get()))
-            .with_component_tags(components.iter().map(|component| component.name.clone()))
-            .analyze(doc.tree());
+    let analysis = wxml_types::TemplateAnalyzer::new(root, SourceRevision::new(revision))
+        .with_component_tags(components.iter().map(|component| component.name.clone()))
+        .analyze(doc.tree());
     let semantics = analyze_template_semantics(doc.tree());
     let loops = collect_loops(&doc);
-    let (includes, includes_complete) = collect_includes(server, &file, &semantics);
+    let (includes, includes_complete) = collect_includes(server, file, &semantics);
     Some(ViewFacts {
         doc,
         target,
@@ -153,7 +167,7 @@ fn live_components(server: &Server, file: &wxml_types::FileId) -> Vec<ViewCompon
 
 /// Resolves static `<include>` documents, bounded and without escaping the
 /// project.
-fn collect_includes(
+pub(crate) fn collect_includes(
     server: &Server,
     file: &wxml_types::FileId,
     semantics: &TemplateSemantics,
@@ -256,7 +270,7 @@ pub(crate) fn project_views(server: &Server, current: &ViewFacts) -> ProjectView
                 continue;
             };
             let semantics = analyze_template_semantics(doc.tree());
-            let components = server.host.view_components_for(&template.file);
+            let components = live_components(server, &template.file);
             seen.insert(template.file);
             views.push(ProjectView {
                 doc,
@@ -284,6 +298,8 @@ pub(crate) struct BindingName {
     pub(crate) declaration: Option<SourceRange>,
     /// Whole attribute range, used as a rename placeholder for default names.
     pub(crate) attribute: Option<SourceRange>,
+    /// Value content range (inside quotes), including an empty value.
+    pub(crate) value: Option<SourceRange>,
 }
 
 /// One `wx:for` element scope.
@@ -301,6 +317,8 @@ pub(crate) struct LoopInfo {
     pub(crate) index: BindingName,
     /// End of the tag-name token, used for default-binding attribute insertion.
     pub(crate) tag_name_end: u32,
+    /// Whole `wx:for` attribute range, used as a default binding placeholder.
+    pub(crate) for_attribute_range: SourceRange,
 }
 
 /// Identity of one loop binding, independent of its current name.
@@ -375,6 +393,16 @@ fn visit_loop_node(
         let tag_name_end = element
             .name_range()
             .map_or_else(|| element_range.start(), |range| range.end());
+        let for_attribute_range = element
+            .attribute("wx:for")
+            .and_then(|attribute| {
+                SourceRange::from_bounds(
+                    attribute.text_range().start(),
+                    attribute.text_range().end(),
+                )
+                .ok()
+            })
+            .unwrap_or(element_range);
         loops.push(LoopInfo {
             file: doc.file.clone(),
             element_range,
@@ -382,6 +410,7 @@ fn visit_loop_node(
             item,
             index,
             tag_name_end,
+            for_attribute_range,
         });
         let index = loops.len().saturating_sub(1);
         stack.push(index);
@@ -389,9 +418,19 @@ fn visit_loop_node(
     } else {
         false
     };
+    let is_template_definition =
+        element.name() == Some("template") && element.attribute("name").is_some();
+    let saved_stack = if is_template_definition {
+        Some(std::mem::take(stack))
+    } else {
+        None
+    };
     let children: Vec<wxml_syntax::AstNode<'_>> = element.children().collect();
     for child in children {
         visit_loop_node(doc, child, stack, loops);
+    }
+    if let Some(saved) = saved_stack {
+        *stack = saved;
     }
     if pushed {
         stack.pop();
@@ -404,6 +443,7 @@ fn binding_name(attribute: Option<wxml_syntax::Attribute<'_>>, default: &str) ->
             name: default.to_owned(),
             declaration: None,
             attribute: None,
+            value: None,
         };
     };
     let attribute_range =
@@ -413,20 +453,29 @@ fn binding_name(attribute: Option<wxml_syntax::Attribute<'_>>, default: &str) ->
             name: default.to_owned(),
             declaration: None,
             attribute: attribute_range,
+            value: None,
         };
     };
     let literal = value.literal_text().map(str::trim).unwrap_or_default();
+    let quote = u32::from(value.is_quoted());
+    let value_range = SourceRange::from_bounds(
+        value.text_range().start().saturating_add(quote),
+        value.text_range().end().saturating_sub(quote),
+    )
+    .ok();
     if literal.is_empty() {
         return BindingName {
             name: default.to_owned(),
             declaration: None,
             attribute: attribute_range,
+            value: value_range,
         };
     }
     BindingName {
         name: literal.to_owned(),
         declaration: literal_token(attribute),
         attribute: attribute_range,
+        value: value_range,
     }
 }
 

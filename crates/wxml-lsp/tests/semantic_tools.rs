@@ -86,9 +86,9 @@ fn find_byte(haystack: &str, needle: &str) -> Option<usize> {
         .map(|index| byte_len(&haystack[..index]))
 }
 
-fn symbols_marker(script: &str) -> Vec<String> {
+fn marker_list(script: &str, marker: &str) -> Vec<String> {
     script
-        .split("// SYMBOL_FIELDS:")
+        .split(marker)
         .nth(1)
         .and_then(|rest| rest.lines().next())
         .map(|line| {
@@ -99,6 +99,16 @@ fn symbols_marker(script: &str) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn symbols_marker(script: &str) -> Vec<String> {
+    let mut names = marker_list(script, "// SYMBOL_FIELDS:");
+    for name in marker_list(script, "// DATA_FIELDS:") {
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 /// A fake `symbols` answer that follows test-script markers.
@@ -203,6 +213,7 @@ fn symbol_response(params: &Value) -> Value {
         "references": references,
         "occurrences": occurrences,
         "fields": field_entries,
+        "reserved": marker_list(&script, "// RESERVED_NAMES:"),
         "declaration": declaration,
         "insertion": insertion,
     })
@@ -382,6 +393,23 @@ fn start_session(
     Client,
     thread::JoinHandle<Result<wxml_lsp::ServerOutcome, wxml_lsp::ServerError>>,
 ) {
+    start_session_with(
+        project,
+        responder,
+        initialization,
+        json!({"workspace": {"workspaceEdit": {"documentChanges": true}}}),
+    )
+}
+
+fn start_session_with(
+    project: &TempProject,
+    responder: Responder,
+    initialization: Value,
+    capabilities: Value,
+) -> (
+    Client,
+    thread::JoinHandle<Result<wxml_lsp::ServerOutcome, wxml_lsp::ServerError>>,
+) {
     let (server, client_stream) = UnixStream::pair().expect("socket");
     let server_read = server.try_clone().expect("clone");
     let requests = Arc::new(Mutex::new(Vec::new()));
@@ -404,6 +432,7 @@ fn start_session(
     let options = json!({
         "processId": null,
         "rootUri": project.root_uri(),
+        "capabilities": capabilities,
         "initializationOptions": initialization,
     });
     let id = client.request("initialize", options);
@@ -610,12 +639,11 @@ fn local_rename_applies_tag_template_and_loop_edits_atomically() {
         }),
     );
     let response = client.response(id);
-    let edits = edit_for_uri(&response, &uri)["edits"]
-        .as_array()
-        .expect("edits");
-    assert_eq!(edits.len(), 2);
-    let renamed = apply_edits(wxml, edits);
-    assert!(renamed.contains("<fancy-card></fancy-card>"), "{renamed}");
+    assert_eq!(
+        response["error"]["code"], -32803,
+        "custom component tag rename must be rejected without alias coverage: {response}"
+    );
+    assert!(response.get("result").is_none(), "{response}");
 
     let (line, character) = position_at(wxml, "is=\"row\"");
     let id = client.request(
@@ -878,6 +906,7 @@ fn code_actions_create_handlers_and_fix_field_typos() {
                 "diagnostics": [{
                     "range": diagnostic_range,
                     "severity": 1,
+                    "source": "wxml-lsp",
                     "message": "Property 'nmae' does not exist on type '{ name: string; }'.",
                 }],
                 "only": ["quickfix"],
@@ -990,7 +1019,13 @@ fn signature_help_inlay_lens_symbols_and_command_use_static_facts() {
         }),
     );
     let response = client.response(id);
-    let locations = response["result"].as_array().expect("locations");
+    let locations = response["result"]["locations"]
+        .as_array()
+        .expect("locations");
+    assert_eq!(
+        response["result"]["coverage"]["status"], "supported",
+        "{response}"
+    );
     assert!(locations.len() >= 2, "{response}");
     client.finish();
     handle.join().expect("thread").expect("server");
@@ -1116,6 +1151,17 @@ fn component_property_rename_updates_declaration_and_wxml_attribute() {
         script_edits["edits"].as_array().expect("edits"),
     );
     assert!(renamed_script.contains("heading:"), "{renamed_script}");
+    let template_edits = edit_for_uri(&response, &project.uri(CARD_WXML));
+    let renamed_template = apply_edits(
+        "<view>{{ title }}</view>",
+        template_edits["edits"].as_array().expect("edits"),
+    );
+    assert!(
+        renamed_template.contains("{{ heading }}"),
+        "{renamed_template}"
+    );
+    let parsed = wxml_syntax::parse(&renamed_template);
+    assert!(parsed.errors.is_empty(), "{:?}", parsed.errors);
     client.finish();
     handle.join().expect("thread").expect("server");
 }
@@ -1143,6 +1189,7 @@ fn event_handler_rename_updates_script_and_bindings() {
     let wxml_edits = edit_for_uri(&response, &uri);
     let renamed = apply_edits(wxml, wxml_edits["edits"].as_array().expect("edits"));
     assert!(renamed.contains("bindtap=\"handleTap\""), "{renamed}");
+    assert!(wxml_syntax::parse(&renamed).errors.is_empty());
     let script_edits = edit_for_uri(&response, &project.uri(SCRIPT));
     let renamed_script = apply_edits(script, script_edits["edits"].as_array().expect("edits"));
     assert!(renamed_script.contains("handleTap()"), "{renamed_script}");
@@ -1172,6 +1219,7 @@ fn local_class_rename_updates_wxml_and_local_wxss() {
     let wxml_edits = edit_for_uri(&response, &uri);
     let renamed = apply_edits(wxml, wxml_edits["edits"].as_array().expect("edits"));
     assert!(renamed.contains("class=\"banner big\""), "{renamed}");
+    assert!(wxml_syntax::parse(&renamed).errors.is_empty());
     let style_edits = edit_for_uri(&response, &project.uri("pages/index/index.wxss"));
     let renamed_style = apply_edits(
         ".hero { color: red; }",
@@ -1419,6 +1467,738 @@ fn component_property_kebab_and_camel_spellings_stay_consistent() {
             .expect("script edits"),
     );
     assert!(renamed_script.contains("headingText:"), "{renamed_script}");
+    client.finish();
+    handle.join().expect("thread").expect("server");
+}
+
+#[test]
+fn semantic_tokens_single_long_line_stays_linear() {
+    let project = TempProject::new("wxml-semantic-long-line");
+    app_fixture(&project);
+    let (mut client, handle) = start_session(&project, Arc::new(default_responder), json!({}));
+    let uri = project.uri(WXML);
+    let mut wxml = String::new();
+    wxml.push_str(&"a".repeat(1024 * 1024));
+    for _ in 0..4_000 {
+        wxml.push_str("{{a}}");
+    }
+    let started = std::time::Instant::now();
+    client.open(&uri, 1, &wxml);
+    let id = client.request(
+        "textDocument/semanticTokens/full",
+        json!({"textDocument": {"uri": uri}}),
+    );
+    let response = client.response(id);
+    let elapsed = started.elapsed();
+    assert!(response["result"]["data"].is_array(), "{response}");
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "single-line semantic tokens took {elapsed:?}"
+    );
+    client.finish();
+    handle.join().expect("thread").expect("server");
+}
+
+#[test]
+fn component_property_rename_rejects_component_data_conflict() {
+    let project = TempProject::new("wxml-semantic-property-conflict");
+    app_fixture(&project);
+    project.write(
+        CARD_SCRIPT,
+        "Component({\n  // DATA_FIELDS: heading\n  data: { heading: 'x' },\n  properties: { title: { type: String } },\n});",
+    );
+    let (mut client, handle) = start_session(&project, Arc::new(default_responder), json!({}));
+    let uri = project.uri(WXML);
+    let wxml = "<my-card title=\"x\"></my-card>";
+    client.open(&uri, 1, wxml);
+    let (line, character) = position_at(wxml, "title");
+    let id = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+            "newName": "heading",
+        }),
+    );
+    let response = client.response(id);
+    assert_eq!(response["error"]["code"], -32803, "{response}");
+    assert!(response.get("result").is_none(), "{response}");
+    client.finish();
+    handle.join().expect("thread").expect("server");
+}
+
+#[test]
+fn reserved_and_scope_capturing_names_are_rejected() {
+    let project = TempProject::new("wxml-semantic-reserved");
+    app_fixture(&project);
+    project.write(
+        SCRIPT,
+        "Page({ // DATA_FIELDS: entry, items\n data: { user: { name: 'x' }, entry: 1, items: [] } });",
+    );
+    let (mut client, handle) = start_session(&project, Arc::new(default_responder), json!({}));
+    let uri = project.uri(WXML);
+    let wxml = "<view wx:for=\"{{ items }}\" wx:for-item=\"entry\">{{ user.name }}</view>";
+    client.open(&uri, 1, wxml);
+    let (line, character) = position_at(wxml, "user.name");
+
+    for (new_name, expected) in [("entry", -32803), ("this", -32602), ("null", -32602)] {
+        let id = client.request(
+            "textDocument/rename",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character},
+                "newName": new_name,
+            }),
+        );
+        let response = client.response(id);
+        assert_eq!(
+            response["error"]["code"], expected,
+            "{new_name}: {response}"
+        );
+        assert!(response.get("result").is_none(), "{response}");
+    }
+
+    let (line, character) = position_at(wxml, "wx:for-item=\"entry\"");
+    let id = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character + 13},
+            "newName": "user",
+        }),
+    );
+    let response = client.response(id);
+    assert_eq!(response["error"]["code"], -32803, "{response}");
+    client.finish();
+    handle.join().expect("thread").expect("server");
+}
+
+#[test]
+fn loop_rename_keeps_self_shadowing_and_template_definition_bodies() {
+    let project = TempProject::new("wxml-semantic-loop-self");
+    app_fixture(&project);
+    let (mut client, handle) = start_session(&project, Arc::new(default_responder), json!({}));
+    let uri = project.uri(WXML);
+
+    let wxml = "<view wx:for=\"{{ items }}\" wx:for-item=\"items\">{{ items.name }}</view>";
+    client.open(&uri, 1, wxml);
+    let (line, character) = position_at(wxml, "wx:for-item=\"items\"");
+    let id = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character + 13},
+            "newName": "entry",
+        }),
+    );
+    let response = client.response(id);
+    let edits = edit_for_uri(&response, &uri)["edits"]
+        .as_array()
+        .expect("edits");
+    let renamed = apply_edits(wxml, edits);
+    assert!(renamed.contains("wx:for=\"{{ items }}\""), "{renamed}");
+    assert!(renamed.contains("wx:for-item=\"entry\""), "{renamed}");
+    assert!(renamed.contains("{{ entry.name }}"), "{renamed}");
+    assert!(wxml_syntax::parse(&renamed).errors.is_empty());
+
+    let wxml = "<view wx:for=\"{{ items }}\" wx:for-item=\"item\"><template name=\"row\"><view>{{ item }}</view></template></view>";
+    client.change(&uri, 2, wxml);
+    let (line, character) = position_at(wxml, "wx:for-item=\"item\"");
+    let id = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character + 13},
+            "newName": "entry",
+        }),
+    );
+    let response = client.response(id);
+    let edits = edit_for_uri(&response, &uri)["edits"]
+        .as_array()
+        .expect("edits");
+    assert_eq!(edits.len(), 1, "{response}");
+    let renamed = apply_edits(wxml, edits);
+    assert!(
+        renamed.contains("<template name=\"row\"><view>{{ item }}</view></template>"),
+        "{renamed}"
+    );
+    client.finish();
+    handle.join().expect("thread").expect("server");
+}
+
+#[test]
+fn template_data_reference_blocks_data_rename() {
+    let project = TempProject::new("wxml-semantic-template-data");
+    app_fixture(&project);
+    project.write(
+        SCRIPT,
+        "Page({ // DATA_FIELDS: pageTitle\n data: { pageTitle: 'x' } });",
+    );
+    let (mut client, handle) = start_session(&project, Arc::new(default_responder), json!({}));
+    let uri = project.uri(WXML);
+    let wxml = "<template is=\"row\" data=\"{{ pageTitle }}\"/><view>{{ pageTitle }}</view>";
+    client.open(&uri, 1, wxml);
+    let (line, character) = position_at(wxml, "{{ pageTitle }}");
+    let id = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character + 4},
+            "newName": "headline",
+        }),
+    );
+    let response = client.response(id);
+    assert_eq!(response["error"]["code"], -32803, "{response}");
+    assert!(response.get("result").is_none(), "{response}");
+
+    let (line, character) = position_at(wxml, "{{ pageTitle }}</view>");
+    let references = client.request(
+        "textDocument/references",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character + 4},
+            "context": {"includeDeclaration": true},
+        }),
+    );
+    let references = client.response(references);
+    assert_eq!(references["result"], json!([]), "{references}");
+    let command = client.request(
+        "workspace/executeCommand",
+        json!({
+            "command": "wxml.references",
+            "arguments": [{
+                "uri": uri,
+                "position": {"line": line, "character": character + 4},
+                "includeDeclaration": true,
+            }],
+        }),
+    );
+    let command = client.response(command);
+    assert_eq!(
+        command["result"]["coverage"]["status"], "partial",
+        "{command}"
+    );
+    client.finish();
+    handle.join().expect("thread").expect("server");
+}
+
+#[test]
+fn code_lens_is_bounded_for_many_template_definitions() {
+    use std::fmt::Write as _;
+
+    let project = TempProject::new("wxml-semantic-lens-cap");
+    let mut pages = Vec::new();
+    for page in 0..32 {
+        let route = format!("pages/p{page}/p{page}");
+        pages.push(route.clone());
+        project.write(&format!("{route}.ts"), "Page({});");
+        let mut wxml = String::new();
+        let definitions = if page == 0 { 512 } else { 16 };
+        for index in 0..definitions {
+            write!(
+                wxml,
+                "<template name=\"r{page}_{index}\"><view/></template><template is=\"r{page}_{index}\"/>"
+            )
+            .expect("write");
+        }
+        project.write(&format!("{route}.wxml"), &wxml);
+    }
+    project.write(
+        "app.json",
+        &format!(
+            "{{\"pages\":[{}]}}",
+            pages
+                .iter()
+                .map(|page| format!("\"{page}\""))
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    );
+    let (mut client, handle) = start_session(&project, Arc::new(default_responder), json!({}));
+    let uri = project.uri("pages/p0/p0.wxml");
+    let text = std::fs::read_to_string(project.root().join("pages/p0/p0.wxml")).expect("wxml");
+    client.open(&uri, 1, &text);
+    let started = std::time::Instant::now();
+    let id = client.request(
+        "textDocument/codeLens",
+        json!({"textDocument": {"uri": uri}}),
+    );
+    let response = client.response(id);
+    let elapsed = started.elapsed();
+    assert!(response["result"].is_array());
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "codeLens with 512 project templates took {elapsed:?}"
+    );
+    assert!(
+        response["result"].as_array().expect("lenses").len() <= 64,
+        "lens cap"
+    );
+    client.finish();
+    handle.join().expect("thread").expect("server");
+}
+
+#[test]
+fn workspace_symbol_aggregates_projects_and_imported_templates() {
+    let project = TempProject::new("wxml-semantic-workspace-symbols");
+    for app in ["a", "b"] {
+        project.write(
+            &format!("{app}/app.json"),
+            r#"{"pages":["pages/index/index"]}"#,
+        );
+        project.write(&format!("{app}/pages/index/index.ts"), "Page({});");
+        project.write(
+            &format!("{app}/pages/index/index.wxml"),
+            &format!("<template name=\"row-{app}\"><view/></template>"),
+        );
+    }
+    let (mut client, handle) = start_session(
+        &project,
+        Arc::new(default_responder),
+        json!({"apps": [{"root": "a"}, {"root": "b"}]}),
+    );
+    let invalid = client.request("workspace/symbol", json!({}));
+    let invalid = client.response(invalid);
+    assert_eq!(invalid["error"]["code"], -32602, "{invalid}");
+    let id = client.request("workspace/symbol", json!({"query": "row"}));
+    let response = client.response(id);
+    let names: Vec<&str> = response["result"]
+        .as_array()
+        .expect("symbols")
+        .iter()
+        .filter_map(|symbol| symbol["name"].as_str())
+        .collect();
+    assert!(names.contains(&"row-a"), "{names:?}");
+    assert!(names.contains(&"row-b"), "{names:?}");
+    client.finish();
+    handle.join().expect("thread").expect("server");
+
+    let project = TempProject::new("wxml-semantic-workspace-import");
+    project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
+    project.write("pages/index/index.ts", "Page({});");
+    project.write(
+        "pages/index/index.wxml",
+        "<import src=\"../../templates/row.wxml\"/><template is=\"row\"/>",
+    );
+    project.write(
+        "templates/row.wxml",
+        "<template name=\"row\"><view/></template>",
+    );
+    let (mut client, handle) = start_session(&project, Arc::new(default_responder), json!({}));
+    let id = client.request("workspace/symbol", json!({"query": "row"}));
+    let response = client.response(id);
+    assert!(
+        response["result"]
+            .as_array()
+            .expect("symbols")
+            .iter()
+            .any(|symbol| symbol["name"] == "row"),
+        "{response}"
+    );
+    client.finish();
+    handle.join().expect("thread").expect("server");
+}
+
+#[test]
+fn closed_script_change_after_analysis_rejects_rename() {
+    let project = TempProject::new("wxml-semantic-toctou");
+    app_fixture(&project);
+    project.write(SCRIPT, "Page({ data: { alpha: 1, beta: 2 } });");
+    let gate = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+    let gate_responder = Arc::clone(&gate);
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let responder: Responder = Arc::new(move |request: &Value| {
+        if request["method"] == "symbols" {
+            let _ = entered_tx.send(());
+            let (lock, condvar) = &*gate_responder;
+            let mut released = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            while !*released {
+                released = condvar
+                    .wait(released)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+            drop(released);
+            return response(&request["id"], symbol_response(&request["params"]));
+        }
+        default_responder(request)
+    });
+    let (mut client, handle) = start_session(&project, responder, json!({}));
+    let uri = project.uri(WXML);
+    let wxml = "{{ alpha }}";
+    client.open(&uri, 1, wxml);
+    let (line, character) = position_at(wxml, "alpha");
+    let rename = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+            "newName": "renamed_alpha",
+        }),
+    );
+    entered_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("symbol query entered");
+    project.write(SCRIPT, "Page({ data: { gamma: 1, alpha: 1, beta: 2 } });");
+    let (lock, condvar) = &*gate;
+    *lock.lock().unwrap_or_else(PoisonError::into_inner) = true;
+    condvar.notify_all();
+    let response = client.response(rename);
+    assert!(
+        matches!(response["error"]["code"].as_i64(), Some(-32801 | -32803)),
+        "{response}"
+    );
+    assert!(response.get("result").is_none(), "{response}");
+    client.finish();
+    handle.join().expect("thread").expect("server");
+}
+
+#[test]
+fn signature_help_uses_the_document_owner_project() {
+    let project = TempProject::new("wxml-semantic-signature-apps");
+    for app in ["a", "b"] {
+        project.write(
+            &format!("{app}/app.json"),
+            r#"{"pages":["pages/index/index"]}"#,
+        );
+        project.write(&format!("{app}/pages/index/index.ts"), "Page({});");
+        project.write(
+            &format!("{app}/pages/index/index.wxml"),
+            "<wxs module=\"u\" src=\"./u.wxs\"/>{{ u.add(1, 2) }}",
+        );
+        let wxs = if app == "a" {
+            "function add(value) { return value; }\nmodule.exports = { add: add };"
+        } else {
+            "function add(left, right) { return left + right; }\nmodule.exports = { add: add };"
+        };
+        project.write(&format!("{app}/pages/index/u.wxs"), wxs);
+    }
+    let (mut client, handle) = start_session(
+        &project,
+        Arc::new(default_responder),
+        json!({"apps": [{"root": "a"}, {"root": "b"}]}),
+    );
+    for (app, expected) in [("b", 2), ("a", 1)] {
+        let uri = project.uri(&format!("{app}/pages/index/index.wxml"));
+        let text = "<wxs module=\"u\" src=\"./u.wxs\"/>{{ u.add(1, 2) }}";
+        client.open(&uri, 1, text);
+        let (line, character) = position_at(text, "u.add(1, ");
+        let id = client.request(
+            "textDocument/signatureHelp",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character + "u.add(1, ".len() as u64},
+            }),
+        );
+        let response = client.response(id);
+        assert_eq!(
+            response["result"]["signatures"][0]["parameters"]
+                .as_array()
+                .expect("parameters")
+                .len(),
+            expected,
+            "{app}: {response}"
+        );
+    }
+    client.finish();
+    handle.join().expect("thread").expect("server");
+}
+
+#[test]
+fn document_changes_capability_is_negotiated() {
+    let project = TempProject::new("wxml-semantic-document-changes");
+    app_fixture(&project);
+    let (mut client, handle) = start_session_with(
+        &project,
+        Arc::new(default_responder),
+        json!({}),
+        json!({"workspace": {"workspaceEdit": {"documentChanges": false}}}),
+    );
+    let capabilities = &client.initialize_result["result"]["capabilities"];
+    assert!(
+        capabilities.get("renameProvider").is_none(),
+        "{capabilities}"
+    );
+    assert!(
+        capabilities.get("codeActionProvider").is_none(),
+        "{capabilities}"
+    );
+    let uri = project.uri(WXML);
+    let wxml = "{{ user.name }}";
+    client.open(&uri, 1, wxml);
+    let (line, character) = position_at(wxml, "user");
+    let id = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+            "newName": "account",
+        }),
+    );
+    let response = client.response(id);
+    assert_eq!(response["error"]["code"], -32803, "{response}");
+    client.finish();
+    handle.join().expect("thread").expect("server");
+}
+
+#[cfg(unix)]
+#[test]
+fn symlink_and_generated_targets_are_rejected() {
+    use std::os::unix::fs::symlink;
+
+    let project = TempProject::new("wxml-semantic-path-boundary");
+    app_fixture(&project);
+    let outside = std::path::PathBuf::from("/tmp/opencode/wxml-semantic-outside.wxml");
+    std::fs::write(&outside, "<template name=\"row\"/>").expect("outside");
+    let link = project.root().join("pages/index/link.wxml");
+    let _ = std::fs::remove_file(&link);
+    symlink(&outside, &link).expect("symlink");
+    let (mut client, handle) = start_session(&project, Arc::new(default_responder), json!({}));
+    let uri = project.uri("pages/index/link.wxml");
+    client.open(&uri, 1, "<template name=\"row\"/>");
+    let id = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": 0, "character": 17},
+            "newName": "rowItem",
+        }),
+    );
+    let response = client.response(id);
+    assert_eq!(response["error"]["code"], -32803, "{response}");
+
+    let generated_uri = project.uri("generated/page.wxml");
+    client.open(&generated_uri, 1, "<template name=\"row\"/>");
+    let id = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": generated_uri},
+            "position": {"line": 0, "character": 17},
+            "newName": "rowItem",
+        }),
+    );
+    let response = client.response(id);
+    assert_eq!(response["error"]["code"], -32803, "{response}");
+    client.finish();
+    handle.join().expect("thread").expect("server");
+    let _ = std::fs::remove_file(outside);
+}
+
+#[test]
+fn component_property_rename_covers_static_include_markup() {
+    let project = TempProject::new("wxml-semantic-property-include");
+    app_fixture(&project);
+    project.write(
+        CARD_SCRIPT,
+        "Component({ properties: { title: { type: String } } });",
+    );
+    project.write("pages/index/part.wxml", "<my-card title=\"included\"/>");
+    let (mut client, handle) = start_session(&project, Arc::new(default_responder), json!({}));
+    let uri = project.uri(WXML);
+    let wxml = "<include src=\"./part.wxml\"/><my-card title=\"caller\"/>";
+    client.open(&uri, 1, wxml);
+    let (line, character) = position_at(wxml, "<my-card title=\"caller\"");
+    let title_index = wxml[..wxml.find("<my-card title=\"caller\"").expect("tag") + 12].len();
+    let id = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": (title_index - wxml[..title_index].rfind('\n').map_or(0, |index| index + 1)) as u64},
+            "newName": "heading",
+        }),
+    );
+    let response = client.response(id);
+    let caller = edit_for_uri(&response, &uri);
+    assert!(
+        apply_edits(wxml, caller["edits"].as_array().expect("edits"))
+            .contains("heading=\"caller\"")
+    );
+    let include_uri = project.uri("pages/index/part.wxml");
+    let include = edit_for_uri(&response, &include_uri);
+    assert_eq!(include["textDocument"]["version"], Value::Null);
+    let renamed = apply_edits(
+        "<my-card title=\"included\"/>",
+        include["edits"].as_array().expect("edits"),
+    );
+    assert!(renamed.contains("heading=\"included\""), "{renamed}");
+    let _ = character;
+    client.finish();
+    handle.join().expect("thread").expect("server");
+}
+
+#[test]
+fn imported_template_bodies_block_event_rename() {
+    let project = TempProject::new("wxml-semantic-imported-event");
+    project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
+    project.write("pages/index/index.ts", "Page({ onTap() {} });");
+    project.write(
+        "templates/row.wxml",
+        "<template name=\"row\"><view bindtap=\"onTap\"/></template>",
+    );
+    let (mut client, handle) = start_session(&project, Arc::new(default_responder), json!({}));
+    let uri = project.uri(WXML);
+    let wxml = "<import src=\"../../templates/row.wxml\"/><view bindtap=\"onTap\"/>";
+    client.open(&uri, 1, wxml);
+    let (line, character) = position_at(wxml, "onTap");
+    let id = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+            "newName": "handleTap",
+        }),
+    );
+    let response = client.response(id);
+    assert_eq!(response["error"]["code"], -32803, "{response}");
+    assert!(response.get("result").is_none(), "{response}");
+    client.finish();
+    handle.join().expect("thread").expect("server");
+}
+
+#[test]
+#[allow(clippy::too_many_lines)] // one end-to-end LSP session
+fn real_node_lsp_component_property_edit_applies_and_parses() {
+    let repo = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("repo root")
+        .to_path_buf();
+    let backend_dir = repo.join("backends/typescript");
+    let server = backend_dir.join("dist/server.js");
+    if !server.exists() {
+        eprintln!("skipping real Node LSP test: build backends/typescript first");
+        return;
+    }
+    let project = TempProject::new("wxml-semantic-real-lsp");
+    app_fixture(&project);
+    project.write(
+        CARD_SCRIPT,
+        "Component({ properties: { title: { type: String } } });",
+    );
+    let (socket, client_stream) = UnixStream::pair().expect("socket");
+    let server_read = socket.try_clone().expect("clone");
+    let host = Arc::new(ProjectState::new());
+    let backend = Arc::new(NodeBackend::new(
+        NodeBackendConfig {
+            server: Some(server),
+            backend_dir: Some(backend_dir),
+            timeout: Duration::from_secs(20),
+            ..NodeBackendConfig::default()
+        },
+        host.clone(),
+    ));
+    let handle = thread::spawn(move || run_with_host(server_read, socket, backend, host));
+    let mut client = Client::new(client_stream);
+    let id = client.request(
+        "initialize",
+        json!({
+            "processId": null,
+            "rootUri": project.root_uri(),
+            "capabilities": {"workspace": {"workspaceEdit": {"documentChanges": true}}},
+            "initializationOptions": {},
+        }),
+    );
+    let response = client.response(id);
+    assert!(response.get("error").is_none(), "{response}");
+    client.notify("initialized", json!({}));
+    let uri = project.uri(WXML);
+    let wxml = "<my-card title=\"x\"></my-card>";
+    client.open(&uri, 1, wxml);
+    let (line, character) = position_at(wxml, "title");
+    let id = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+            "newName": "heading",
+        }),
+    );
+    let response = client.response(id);
+    assert!(response.get("result").is_some(), "{response}");
+    let caller = edit_for_uri(&response, &uri);
+    let renamed = apply_edits(wxml, caller["edits"].as_array().expect("edits"));
+    assert!(renamed.contains("heading=\"x\""), "{renamed}");
+    assert!(wxml_syntax::parse(&renamed).errors.is_empty());
+    let template = edit_for_uri(&response, &project.uri(CARD_WXML));
+    let renamed_template = apply_edits(
+        "<view>{{ title }}</view>",
+        template["edits"].as_array().expect("edits"),
+    );
+    assert!(
+        renamed_template.contains("{{ heading }}"),
+        "{renamed_template}"
+    );
+    assert!(wxml_syntax::parse(&renamed_template).errors.is_empty());
+
+    let (line, character) = position_at(wxml, "<my-card");
+    let id = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character + 1},
+            "newName": "fancy-card",
+        }),
+    );
+    let response = client.response(id);
+    assert_eq!(response["error"]["code"], -32803, "{response}");
+
+    let script_uri = project.uri(SCRIPT);
+    client.notify(
+        "textDocument/didOpen",
+        json!({
+            "textDocument": {
+                "uri": script_uri,
+                "languageId": "typescript",
+                "version": 2,
+                "text": "Page({ data: { user: { name: 'x' } }, onLoad() { const { user } = this.data; return user.name; } });",
+            },
+        }),
+    );
+    let shorthand_wxml = "{{ user.name }}";
+    client.change(&uri, 2, shorthand_wxml);
+    let (line, character) = position_at(shorthand_wxml, "user");
+    let id = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character},
+            "newName": "account",
+        }),
+    );
+    let response = client.response(id);
+    assert_eq!(
+        response["error"]["code"], -32803,
+        "destructuring shorthand must reject the real Node rename: {response}"
+    );
+    client.finish();
+    handle.join().expect("thread").expect("server");
+}
+
+#[test]
+fn empty_loop_binding_value_is_replaced_not_duplicated() {
+    let project = TempProject::new("wxml-semantic-empty-loop");
+    app_fixture(&project);
+    let (mut client, handle) = start_session(&project, Arc::new(default_responder), json!({}));
+    let uri = project.uri(WXML);
+    let wxml = "<view wx:for=\"{{ items }}\" wx:for-item=\"\">{{ item }}</view>";
+    client.open(&uri, 1, wxml);
+    let (line, character) = position_at(wxml, "{{ item }}");
+    let id = client.request(
+        "textDocument/rename",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": {"line": line, "character": character + 4},
+            "newName": "entry",
+        }),
+    );
+    let response = client.response(id);
+    assert!(response.get("result").is_some(), "{response}");
+    let edits = edit_for_uri(&response, &uri)["edits"]
+        .as_array()
+        .expect("edits");
+    let renamed = apply_edits(wxml, edits);
+    assert_eq!(renamed.matches("wx:for-item=").count(), 1, "{renamed}");
+    assert!(renamed.contains("wx:for-item=\"entry\""), "{renamed}");
+    assert!(wxml_syntax::parse(&renamed).errors.is_empty());
     client.finish();
     handle.join().expect("thread").expect("server");
 }

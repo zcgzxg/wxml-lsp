@@ -2,13 +2,17 @@
 //!
 //! Every value is derived from existing facts: template semantics from T,
 //! component property declarations from C, the static WXS summary from T and
-//! the lossless tree from E. No method here guesses a type or a reference.
+//! the lossless tree from E. Each request builds its project/position indexes
+//! once; no method parses a project view per symbol.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::{Value, json};
-use wxml_text::{Position, SourceRange};
+use wxml_text::{Position, SourceRange, TextRange};
 
-use super::facts::{parse_doc, view_facts};
-use super::target::for_each_element;
+use super::facts::{parse_doc, project_views, view_facts};
+use super::position::Utf16Cursor;
+use super::target::{collect_template_refs_with_views, for_each_element};
 use crate::server::Server;
 use crate::workspace::Document;
 
@@ -16,84 +20,242 @@ use crate::workspace::Document;
 const MAX_WORKSPACE_SYMBOLS: usize = 512;
 /// Maximum inlay hints returned for one document.
 const MAX_INLAY_HINTS: usize = 1_000;
+/// Maximum template lens entries before the response is marked partial.
+const MAX_TEMPLATE_LENSES: usize = 64;
+/// Maximum component lens entries.
+const MAX_COMPONENT_LENSES: usize = 64;
+/// Maximum project WXML documents inspected for one workspace query.
+const MAX_SYMBOL_DOCUMENTS: usize = 1_024;
 
-/// Returns `workspace/symbol` entries.
+#[derive(Clone, Debug)]
+struct RawSymbol {
+    file: wxml_types::FileId,
+    name: String,
+    kind: u8,
+    range: SourceRange,
+}
+
+/// Returns `workspace/symbol` entries across every loaded project.
+#[allow(clippy::too_many_lines)] // one bounded project scan
 pub(crate) fn workspace_symbols(server: &Server, query: &str) -> Value {
-    let project = server.host.project_id();
-    let Ok(probe) = wxml_types::FileId::new(project, "__workspace_symbol__") else {
-        return json!([]);
-    };
-    let Some(templates) = server.host.view_templates(&probe) else {
-        return json!([]);
-    };
     let needle = query.to_lowercase();
-    let mut symbols = Vec::new();
-    for template in templates.templates {
-        let Some(doc) = parse_doc(template.file.clone(), &template.text) else {
+    let mut raw = Vec::new();
+    let mut texts: BTreeMap<wxml_types::FileId, std::sync::Arc<str>> = BTreeMap::new();
+    let mut seen = BTreeSet::new();
+    let mut complete = true;
+    let mut inspected = 0_usize;
+    let original_project = server.host.project_id();
+    for project in server.host.project_ids() {
+        if server.host.activate_project(&project).is_err() {
+            complete = false;
+            continue;
+        }
+        let Ok(probe) = wxml_types::FileId::new(project, "__workspace_symbol__") else {
+            complete = false;
             continue;
         };
-        let semantics = wxml_types::analyze_template_semantics(doc.tree());
-        for definition in semantics.distinct_definitions() {
-            if symbols.len() >= MAX_WORKSPACE_SYMBOLS {
-                break;
-            }
-            if !matches_query(&definition.name, &needle) {
-                continue;
-            }
-            let Some(range) = crate::handlers::line_index_range_value(
-                &wxml_text::LineIndex::new(template.text.clone()),
-                definition.name_range,
-            ) else {
-                continue;
-            };
-            let Some(uri) = server.host.uri_for(&template.file) else {
-                continue;
-            };
-            symbols.push(json!({
-                "name": definition.name,
-                "kind": 12,
-                "location": {"uri": uri, "range": range},
-            }));
-        }
-        if symbols.len() >= MAX_WORKSPACE_SYMBOLS {
+        let Some(templates) = server.host.view_templates(&probe) else {
+            continue;
+        };
+        if !templates.complete {
+            complete = false;
             break;
         }
-        let components = server.host.view_components_for(&template.file);
-        let mut seen = std::collections::HashSet::new();
-        for component in components {
-            if !seen.insert(component.name.clone()) || !matches_query(&component.name, &needle) {
-                continue;
-            }
-            let Some(range) = first_tag_range(&doc, &component.name) else {
-                continue;
-            };
-            let Some(range) = crate::handlers::line_index_range_value(
-                &wxml_text::LineIndex::new(template.text.clone()),
-                SourceRange::new(range),
-            ) else {
-                continue;
-            };
-            let Some(uri) = server.host.uri_for(&template.file) else {
-                continue;
-            };
-            symbols.push(json!({
-                "name": component.name,
-                "kind": 5,
-                "location": {"uri": uri, "range": range},
-            }));
-            if symbols.len() >= MAX_WORKSPACE_SYMBOLS {
+        for template in templates.templates {
+            if inspected >= MAX_SYMBOL_DOCUMENTS {
+                complete = false;
                 break;
             }
+            inspected += 1;
+            let Some(doc) = parse_doc(template.file.clone(), &template.text) else {
+                complete = false;
+                break;
+            };
+            texts.insert(template.file.clone(), template.text.clone());
+            let semantics = wxml_types::analyze_template_semantics(doc.tree());
+            add_template_definitions(
+                server,
+                &doc,
+                &semantics,
+                &mut raw,
+                &mut texts,
+                &mut seen,
+                &mut complete,
+            );
+            let components = server.host.view_components_for(&template.file);
+            let mut component_names = BTreeSet::new();
+            for component in components {
+                if !component_names.insert(component.name.clone()) {
+                    continue;
+                }
+                if !matches_query(&component.name, &needle) {
+                    continue;
+                }
+                let Some(range) = first_tag_range(&doc, &component.name) else {
+                    continue;
+                };
+                push_raw(
+                    &mut raw,
+                    &mut seen,
+                    RawSymbol {
+                        file: template.file.clone(),
+                        name: component.name,
+                        kind: 5,
+                        range: SourceRange::new(range),
+                    },
+                );
+            }
+        }
+        if !complete {
+            break;
         }
     }
+    let _ = server.host.activate_project(&original_project);
+    if !complete {
+        crate::server::log(format_args!(
+            "workspace symbols omitted: a project WXML index is incomplete"
+        ));
+        return json!([]);
+    }
+    raw.retain(|symbol| matches_query(&symbol.name, &needle));
+    raw.sort_by(|left, right| {
+        left.file
+            .cmp(&right.file)
+            .then_with(|| left.range.start().cmp(&right.range.start()))
+            .then_with(|| left.name.cmp(&right.name))
+    });
+    raw.dedup_by(|left, right| {
+        left.file == right.file && left.range == right.range && left.name == right.name
+    });
+    if raw.len() > MAX_WORKSPACE_SYMBOLS {
+        raw.truncate(MAX_WORKSPACE_SYMBOLS);
+        crate::server::log(format_args!(
+            "workspace symbols truncated at {MAX_WORKSPACE_SYMBOLS}"
+        ));
+    }
+    let mut symbols = Vec::with_capacity(raw.len());
+    let mut current_file = None;
+    let mut cursor: Option<Utf16Cursor<'_>> = None;
+    for symbol in raw {
+        if current_file.as_ref() != Some(&symbol.file) {
+            let Some(text) = texts.get(&symbol.file) else {
+                continue;
+            };
+            cursor = Some(Utf16Cursor::new(text));
+            current_file = Some(symbol.file.clone());
+        }
+        let Some(cursor) = cursor.as_mut() else {
+            continue;
+        };
+        let (Some(start), Some(end)) = (cursor.position(symbol.range.start()), {
+            // Positions must advance monotonically; a second cursor is not
+            // needed because symbols in one file are sorted by start.
+            cursor.position(symbol.range.end())
+        }) else {
+            continue;
+        };
+        let Some(uri) = server.host.uri_for(&symbol.file) else {
+            continue;
+        };
+        symbols.push(json!({
+            "name": symbol.name,
+            "kind": symbol.kind,
+            "location": {
+                "uri": uri,
+                "range": {
+                    "start": crate::handlers::position_value(start),
+                    "end": crate::handlers::position_value(end),
+                },
+            },
+        }));
+    }
     json!(symbols)
+}
+
+fn add_template_definitions(
+    server: &Server,
+    doc: &super::facts::QueryDoc,
+    semantics: &wxml_types::TemplateSemantics,
+    raw: &mut Vec<RawSymbol>,
+    texts: &mut BTreeMap<wxml_types::FileId, std::sync::Arc<str>>,
+    seen: &mut BTreeSet<(wxml_types::FileId, String, u32, u32)>,
+    complete: &mut bool,
+) {
+    for definition in semantics.distinct_definitions() {
+        push_raw(
+            raw,
+            seen,
+            RawSymbol {
+                file: doc.file.clone(),
+                name: definition.name.clone(),
+                kind: 12,
+                range: definition.name_range,
+            },
+        );
+    }
+    let mut visited = BTreeSet::new();
+    visited.insert(doc.file.clone());
+    let mut queue: Vec<(wxml_types::FileId, wxml_types::TemplateSemantics)> =
+        vec![(doc.file.clone(), semantics.clone())];
+    let mut budget = 64_usize;
+    while let Some((file, semantics)) = queue.pop() {
+        for import in &semantics.imports {
+            if budget == 0 {
+                *complete = false;
+                return;
+            }
+            budget = budget.saturating_sub(1);
+            let Some(path) = wxml_types::resolve_static_specifier(file.path(), &import.src) else {
+                *complete = false;
+                continue;
+            };
+            let Some(imported) = super::facts::load_project_doc(server, file.project(), &path)
+            else {
+                *complete = false;
+                continue;
+            };
+            if !visited.insert(imported.file.clone()) {
+                continue;
+            }
+            let imported_semantics = wxml_types::analyze_template_semantics(imported.tree());
+            texts.insert(imported.file.clone(), std::sync::Arc::from(imported.text()));
+            for definition in imported_semantics.distinct_definitions() {
+                push_raw(
+                    raw,
+                    seen,
+                    RawSymbol {
+                        file: imported.file.clone(),
+                        name: definition.name.clone(),
+                        kind: 12,
+                        range: definition.name_range,
+                    },
+                );
+            }
+            queue.push((imported.file, imported_semantics));
+        }
+    }
+}
+
+fn push_raw(
+    raw: &mut Vec<RawSymbol>,
+    seen: &mut BTreeSet<(wxml_types::FileId, String, u32, u32)>,
+    symbol: RawSymbol,
+) {
+    if seen.insert((
+        symbol.file.clone(),
+        symbol.name.clone(),
+        symbol.range.start(),
+        symbol.range.end(),
+    )) {
+        raw.push(symbol);
+    }
 }
 
 fn matches_query(name: &str, needle: &str) -> bool {
     needle.is_empty() || name.to_lowercase().contains(needle)
 }
 
-fn first_tag_range(doc: &super::facts::QueryDoc, tag: &str) -> Option<wxml_text::TextRange> {
+fn first_tag_range(doc: &super::facts::QueryDoc, tag: &str) -> Option<TextRange> {
     let mut found = None;
     for_each_element(doc.tree(), &mut |element| {
         if found.is_none() && element.name() == Some(tag) {
@@ -123,9 +285,9 @@ pub(crate) fn inlay_hints(
     };
     let start = start.min(end);
     let end = start.max(end);
-    let mut hints = Vec::new();
+    let mut raw: Vec<(u32, String)> = Vec::new();
     for_each_element(facts.doc.tree(), &mut |element| {
-        if hints.len() >= MAX_INLAY_HINTS {
+        if raw.len() >= MAX_INLAY_HINTS {
             return;
         }
         let Some(name) = element.name() else {
@@ -138,13 +300,20 @@ pub(crate) fn inlay_hints(
         else {
             return;
         };
+        if !component.property_facts.complete {
+            return;
+        }
         for attribute in element.attributes() {
-            if hints.len() >= MAX_INLAY_HINTS {
+            if raw.len() >= MAX_INLAY_HINTS {
                 return;
             }
             let Some(attribute_name) = attribute.name() else {
                 continue;
             };
+            let attribute_range = attribute.text_range();
+            if attribute_range.end() < start || attribute_range.start() > end {
+                continue;
+            }
             if crate::completion::catalog::is_event_attribute(attribute_name) {
                 let Some(event) = facts.analysis.events.iter().find(|event| {
                     event.attribute_range == SourceRange::new(attribute.text_range())
@@ -154,20 +323,7 @@ pub(crate) fn inlay_hints(
                 if event.handler_range.end() < start || event.handler_range.start() > end {
                     continue;
                 }
-                let Some(position) = document
-                    .snapshot()
-                    .line_index()
-                    .position(usize::try_from(event.handler_range.end()).unwrap_or(usize::MAX))
-                else {
-                    continue;
-                };
-                hints.push(json!({
-                    "position": crate::handlers::position_value(position),
-                    "label": ": event",
-                    "kind": 1,
-                    "paddingLeft": false,
-                    "paddingRight": false,
-                }));
+                raw.push((attribute_range.end(), ": event".to_owned()));
                 continue;
             }
             if attribute_name.starts_with("wx:")
@@ -185,26 +341,30 @@ pub(crate) fn inlay_hints(
             if property.type_text.trim().is_empty() {
                 continue;
             }
-            let attribute_range = attribute.text_range();
-            if attribute_range.end() < start || attribute_range.start() > end {
-                continue;
-            }
-            let Some(position) = document
-                .snapshot()
-                .line_index()
-                .position(usize::try_from(attribute_range.end()).unwrap_or(usize::MAX))
-            else {
-                continue;
-            };
-            hints.push(json!({
-                "position": crate::handlers::position_value(position),
-                "label": format!(": {}", property.type_text.trim()),
-                "kind": 1,
-                "paddingLeft": false,
-                "paddingRight": false,
-            }));
+            raw.push((
+                attribute_range.end(),
+                format!(": {}", property.type_text.trim()),
+            ));
         }
     });
+    raw.sort_by_key(|(offset, _)| *offset);
+    let mut cursor = Utf16Cursor::new(document.text());
+    let mut hints = Vec::with_capacity(raw.len());
+    for (offset, label) in raw {
+        let Some(position) = cursor.position(offset) else {
+            crate::server::log(format_args!(
+                "inlay hints stopped at the position scan budget"
+            ));
+            break;
+        };
+        hints.push(json!({
+            "position": crate::handlers::position_value(position),
+            "label": label,
+            "kind": 1,
+            "paddingLeft": false,
+            "paddingRight": false,
+        }));
+    }
     json!(hints)
 }
 
@@ -213,7 +373,7 @@ pub(crate) fn signature_help(server: &Server, document: &Document, position: Pos
     let Some(offset) = document.offset_at(position) else {
         return Value::Null;
     };
-    let access = crate::static_semantics::host_access(server);
+    let access = crate::static_semantics::host_access_in(server, document.file().project());
     let path = document.file().path();
     let Some(signature) =
         crate::static_semantics::wxs_call_signature(path, document.text(), offset, &access)
@@ -248,6 +408,7 @@ pub(crate) fn signature_help(server: &Server, document: &Document, position: Pos
 }
 
 /// Builds reference-count code lenses for templates and component aliases.
+#[allow(clippy::too_many_lines)] // one bounded project view pass
 pub(crate) fn code_lens(server: &Server, document: &Document) -> Value {
     if !server.semantic_tools.code_lens {
         return json!([]);
@@ -255,59 +416,115 @@ pub(crate) fn code_lens(server: &Server, document: &Document) -> Value {
     let Some(facts) = view_facts(server, document) else {
         return json!([]);
     };
-    let mut lenses = Vec::new();
-    let mut seen_templates = std::collections::HashSet::new();
+    let views = project_views(server, &facts);
+    let mut raw: Vec<(u32, String, Value)> = Vec::new();
+    let mut seen_templates = BTreeSet::new();
+    let mut template_count = 0_usize;
+    let template_truncated = facts.semantics.distinct_definitions().count() > MAX_TEMPLATE_LENSES;
     for definition in facts.semantics.distinct_definitions() {
         if !seen_templates.insert(definition.name.clone()) {
             continue;
         }
-        let collected = super::target::collect_template_refs(server, &facts, &definition.name);
+        if template_count >= MAX_TEMPLATE_LENSES {
+            break;
+        }
+        template_count += 1;
+        let collected = collect_template_refs_with_views(server, &facts, &views, &definition.name);
         let count = collected.calls.len();
-        let Some(range) = crate::handlers::source_range_value(document, definition.name_range)
-        else {
-            continue;
-        };
-        let title = if collected.complete {
+        let mut title = if collected.complete {
             format!("{count} template call{}", plural(count))
         } else {
             format!("{count}+ indexed template call{}", plural(count))
         };
-        let command = read_only_command(document, &range, &title);
-        lenses.push(json!({"range": range, "data": {"kind": "template", "name": definition.name, "count": count, "complete": collected.complete}, "command": command}));
+        if template_truncated {
+            title.push_str(" (lens list truncated)");
+        }
+        raw.push((
+            definition.name_range.start(),
+            title,
+            json!({
+                "kind": "template",
+                "name": definition.name,
+                "count": count,
+                "complete": collected.complete && !template_truncated,
+            }),
+        ));
     }
-    let mut seen_components = std::collections::HashSet::new();
+    let mut seen_components = BTreeSet::new();
+    let mut component_count = 0_usize;
     for component in &facts.components {
         if !seen_components.insert(component.name.clone()) {
             continue;
         }
+        if component_count >= MAX_COMPONENT_LENSES {
+            break;
+        }
+        component_count += 1;
         let mut count = 0_usize;
         let mut first = None;
-        for_each_element(facts.doc.tree(), &mut |element| {
-            if element.name() == Some(component.name.as_str()) {
-                count += 1;
-                if first.is_none() {
-                    first = element.name_range();
+        let mut scan = |doc: &super::facts::QueryDoc| {
+            for_each_element(doc.tree(), &mut |element| {
+                if element.name() == Some(component.name.as_str()) {
+                    count += 1;
+                    if first.is_none() {
+                        first = element.name_range();
+                    }
                 }
-            }
-        });
+            });
+        };
+        scan(&facts.doc);
+        for include in &facts.includes {
+            scan(include);
+        }
         if count == 0 {
             continue;
         }
-        let Some(range) = first.and_then(|range| {
-            crate::handlers::source_range_value(document, SourceRange::new(range))
-        }) else {
+        let Some(first) = first else {
             continue;
         };
-        let incomplete = !facts.includes.is_empty() || !facts.includes_complete;
+        let incomplete = !facts.includes_complete;
         let title = if incomplete {
-            format!("{count}+ indexed component use{}", plural(count))
+            format!(
+                "{count}+ indexed component use{} in this file",
+                plural(count)
+            )
         } else {
-            format!("{count} component use{}", plural(count))
+            format!("{count} component use{} in this file", plural(count))
         };
-        let command = read_only_command(document, &range, &title);
+        raw.push((
+            first.start(),
+            title,
+            json!({
+                "kind": "component",
+                "name": component.name,
+                "count": count,
+                "complete": !incomplete,
+            }),
+        ));
+    }
+    raw.sort_by_key(|(offset, _, _)| *offset);
+    let mut cursor = Utf16Cursor::new(document.text());
+    let mut lenses = Vec::with_capacity(raw.len());
+    for (offset, title, data) in raw {
+        let Some(position) = cursor.position(offset) else {
+            crate::server::log(format_args!(
+                "code lenses stopped at the position scan budget"
+            ));
+            break;
+        };
+        let start = crate::handlers::position_value(position);
+        let command = json!({
+            "title": title,
+            "command": "wxml.references",
+            "arguments": [{
+                "uri": document.uri(),
+                "position": start,
+                "includeDeclaration": true,
+            }],
+        });
         lenses.push(json!({
-            "range": range,
-            "data": {"kind": "component", "name": component.name, "count": count, "complete": true},
+            "range": {"start": start, "end": start},
+            "data": data,
             "command": command,
         }));
     }
@@ -316,20 +533,4 @@ pub(crate) fn code_lens(server: &Server, document: &Document) -> Value {
 
 const fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
-}
-
-/// Builds a read-only `wxml.references` command for one lens title.
-fn read_only_command(document: &Document, range: &Value, title: &str) -> Value {
-    let Some(start) = range.get("start") else {
-        return json!({"title": title, "command": "", "arguments": []});
-    };
-    json!({
-        "title": title,
-        "command": "wxml.references",
-        "arguments": [{
-            "uri": document.uri(),
-            "position": start,
-            "includeDeclaration": true,
-        }],
-    })
 }

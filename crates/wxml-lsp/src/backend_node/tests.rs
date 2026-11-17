@@ -80,6 +80,7 @@ fn view(bindings: Vec<LocalBinding>) -> PreparedView {
         project_root: std::path::PathBuf::from("/tmp/project"),
         syntax_diagnostics: Vec::new(),
         status_hint: None,
+        source_complete: true,
     }
 }
 
@@ -1108,4 +1109,52 @@ fn alternating_views_keep_a_bounded_cache() {
         2,
         "both alternating views must stay cached"
     );
+}
+
+#[test]
+fn symbol_parameter_errors_do_not_restart_the_backend() {
+    use wxml_types::{SymbolQuery, SymbolRequest};
+
+    let shared = Shared::default();
+    let backend = backend_with(&shared, StubHost::new(view(Vec::new())), |line: &str| {
+        let request: Value = serde_json::from_str(line).expect("request");
+        Ok(json!({
+            "jsonrpc": "2.0",
+            "id": request["id"],
+            "error": {"code": -32602, "message": "Invalid params", "data": {"code": "bad-params"}},
+        })
+        .to_string())
+    });
+    let epoch = backend.epoch();
+    let result = backend
+        .symbols(SymbolRequest {
+            context: context(),
+            subject: file(SCRIPT),
+            query: SymbolQuery::DataRoots,
+        })
+        .expect("symbols");
+    assert!(!result.status.is_supported());
+    assert!(!result.complete);
+    assert_eq!(backend.epoch(), epoch);
+    assert_eq!(shared.connects.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn truncated_source_snapshot_disables_script_symbols_without_starting_node() {
+    use wxml_types::{SymbolQuery, SymbolRequest};
+
+    let shared = Shared::default();
+    let mut prepared = view(Vec::new());
+    prepared.source_complete = false;
+    let backend = backend(&shared, StubHost::new(prepared));
+    let result = backend
+        .symbols(SymbolRequest {
+            context: context(),
+            subject: file(SCRIPT),
+            query: SymbolQuery::DataRoots,
+        })
+        .expect("symbols");
+    assert!(!result.complete);
+    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    assert_eq!(shared.connects.load(Ordering::SeqCst), 0);
 }

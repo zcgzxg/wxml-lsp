@@ -423,6 +423,46 @@ function resolveDataPath(
   };
 }
 
+/** Deepest node containing a position. */
+function nodeAt(sourceFile: ts.SourceFile, position: number): ts.Node | undefined {
+  let best: ts.Node | undefined;
+  const visit = (node: ts.Node): void => {
+    if (position >= node.getStart(sourceFile) && position < node.getEnd()) {
+      best = node;
+      node.forEachChild(visit);
+    }
+  };
+  visit(sourceFile);
+  return best;
+}
+
+/** Rejects reference contexts where a plain token rename changes a binding. */
+function unsafeReferenceContext(sourceFile: ts.SourceFile, position: number): string | undefined {
+  let node = nodeAt(sourceFile, position);
+  while (node) {
+    if (ts.isBindingElement(node)) {
+      return node.propertyName === undefined
+        ? "a destructuring shorthand binding cannot be renamed safely"
+        : undefined;
+    }
+    if (ts.isShorthandPropertyAssignment(node)) {
+      return "an object shorthand property cannot be renamed safely";
+    }
+    if (
+      ts.isPropertyAccessExpression(node) ||
+      ts.isPropertyAssignment(node) ||
+      ts.isMethodDeclaration(node) ||
+      ts.isPropertyDeclaration(node) ||
+      ts.isVariableDeclaration(node) ||
+      ts.isParameter(node)
+    ) {
+      return undefined;
+    }
+    node = node.parent;
+  }
+  return undefined;
+}
+
 /** Collect TypeScript references for one declaration name node. */
 function collectReferences(
   index: ScriptIndex,
@@ -467,6 +507,14 @@ function collectReferences(
         reject(state, "a reference has an unmappable token range");
         continue;
       }
+      const referenceSource = index.project.program().getSourceFile(absolute);
+      if (referenceSource) {
+        const unsafe = unsafeReferenceContext(referenceSource, reference.textSpan.start);
+        if (unsafe) {
+          reject(state, unsafe);
+          continue;
+        }
+      }
       const key = `${token.fileId}:${token.start}:${token.end}`;
       if (seen.has(key)) continue;
       seen.add(key);
@@ -490,6 +538,47 @@ function collectReferences(
 
 function isSetDataCallee(expression: ts.Expression): boolean {
   return ts.isPropertyAccessExpression(expression) && expression.name.text === "setData";
+}
+
+function isThisSetData(expression: ts.Expression): boolean {
+  return (
+    ts.isPropertyAccessExpression(expression) &&
+    expression.name.text === "setData" &&
+    expression.expression.kind === ts.SyntaxKind.ThisKeyword
+  );
+}
+
+/** Whole-value uses of this.data hide dynamic field access. */
+function scanDataEscapes(sourceFile: ts.SourceFile, state: ScanState): void {
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ThisKeyword &&
+      node.name.text === "data"
+    ) {
+      const parent = node.parent;
+      const directMember =
+        (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent)) &&
+        parent.expression === node;
+      if (!directMember) {
+        const safeDestructure =
+          ts.isVariableDeclaration(parent) &&
+          parent.initializer === node &&
+          ts.isObjectBindingPattern(parent.name) &&
+          !parent.name.elements.some((element) => element.dotDotDotToken !== undefined);
+        if (!safeDestructure) {
+          reject(
+            state,
+            "this.data is used as a whole value; dynamic field access is not analyzable",
+          );
+        }
+      } else if (ts.isElementAccessExpression(parent)) {
+        reject(state, "this.data uses a computed access that cannot be proven static");
+      }
+    }
+    node.forEachChild(visit);
+  };
+  visit(sourceFile);
 }
 
 /** Paths that match the target prefix, with exact segment tokens. */
@@ -559,6 +648,11 @@ function scanSetData(
 ): void {
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node) && isSetDataCallee(node.expression)) {
+      if (!isThisSetData(node.expression)) {
+        reject(state, "a setData call on an unknown receiver may reference this data");
+        node.forEachChild(visit);
+        return;
+      }
       const argument = node.arguments[0];
       if (!argument || !ts.isObjectLiteralExpression(argument)) {
         reject(state, "a setData call does not use a literal object argument");
@@ -640,6 +734,52 @@ function observerPaths(
     if (token) {
       occurrences.push({ ...token, kind: "observerPath", path, segment });
     }
+  }
+}
+
+/** Other scripts in the snapshot may call page.setData with a literal path. */
+function scanOtherScriptSetData(
+  index: ScriptIndex,
+  target: string[],
+  state: ScanState,
+): void {
+  for (const file of index.files.values()) {
+    if (file.path === index.subject.path) continue;
+    const sourceFile = index.project.program().getSourceFile(file.absolute);
+    if (!sourceFile) continue;
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === "setData"
+      ) {
+        const argument = node.arguments[0];
+        if (!argument || !ts.isObjectLiteralExpression(argument)) {
+          reject(state, "another script calls setData with a dynamic argument");
+        } else {
+          for (const property of argument.properties) {
+            if (!ts.isPropertyAssignment(property)) {
+              reject(state, "another script calls setData with a dynamic object");
+              continue;
+            }
+            const site = propertyNameSite(property.name, sourceFile);
+            if (!site) {
+              reject(state, "another script calls setData with a computed key");
+              continue;
+            }
+            const path = site.name.split(".");
+            if (
+              path.length >= target.length &&
+              target.every((segment, index) => path[index] === segment)
+            ) {
+              reject(state, "another script calls setData with this data path");
+            }
+          }
+        }
+      }
+      node.forEachChild(visit);
+    };
+    visit(sourceFile);
   }
 }
 
@@ -771,7 +911,15 @@ function insertionForHandler(
   } else {
     indent = `${containerIndent}  `;
   }
-  let body: string;
+  const handlerMember = `${name}() {${newline}${indent}  ${newline}${indent}}`;
+  let member = handlerMember;
+  if (kind === "component" && !facts.methods) {
+    // Insert `methods: { ... }` as a normal member. A member inserted before
+    // existing properties/data must carry a trailing comma.
+    const inner = `${indent}  `;
+    member = `methods: {${newline}${inner}${name}() {${newline}${inner}  ${newline}${inner}},${newline}${indent}}`;
+  }
+  let prefix = "";
   if (properties.length > 0) {
     const last = properties[properties.length - 1]!;
     const gap = text.slice(last.getEnd(), close);
@@ -785,28 +933,28 @@ function insertionForHandler(
       reject(state, "the closing brace is not a clean insertion anchor");
       return undefined;
     }
-    body = `${needsComma ? "," : ""}${newline}${indent}${name}() {${newline}${indent}  ${newline}${indent}},${newline}${containerIndent}`;
-  } else {
-    body = `${newline}${indent}${name}() {${newline}${indent}  }${newline}${containerIndent}`;
+    prefix = needsComma ? "," : "";
   }
-  let insertAt = close;
-  let insertText = body;
-  if (kind === "component" && !facts.methods) {
-    const inner = `${indent}  `;
-    insertText =
-      `${newline}${indent}methods: {${newline}${inner}${name}() {${newline}${inner}  ${newline}${inner}},${newline}${indent}}${newline}${containerIndent}`;
-    insertAt = open + 1;
-  }
+  const trailingComma = properties.length > 0 ? "," : "";
+  const insertText = `${prefix}${newline}${indent}${member}${trailingComma}${newline}${containerIndent}`;
   if (insertText.length > MAX_INSERTION_TEXT) {
     reject(state, "the handler insertion text is too large");
     return undefined;
   }
-  const offset = file.byte(insertAt);
+  const offset = file.byte(close);
   if (offset === undefined) {
     reject(state, "the handler insertion offset cannot be mapped");
     return undefined;
   }
   return { fileId: file.path, offset, text: insertText };
+}
+
+/** Handler names already declared by the owner registration. */
+function ownerReservedNames(
+  sourceFile: ts.SourceFile,
+  kind: "page" | "component",
+): string[] {
+  return handlerFacts(sourceFile, kind, "__wxml_missing__").taken;
 }
 
 /* -------------------------------------------------------------------- queries */
@@ -829,6 +977,7 @@ export function symbols(request: SymbolsRequest, config: SymbolsConfig): Symbols
     references: [],
     occurrences: [],
     fields: [],
+    reserved: [],
     ...(state.reasons.length > 1 ? { reason: state.reasons.join("; ") } : {}),
   });
 
@@ -891,7 +1040,19 @@ export function symbols(request: SymbolsRequest, config: SymbolsConfig): Symbols
     references: [],
     occurrences: [],
     fields: [],
+    reserved: [],
   };
+
+  if (request.sourceComplete === false) {
+    return {
+      ...empty(),
+      state: {
+        status: "partial",
+        reason: "the project source snapshot was truncated",
+      },
+      reason: "the project source snapshot was truncated",
+    };
+  }
 
   if (query.kind === "eventHandler") {
     const actualKind = registration?.kind ?? request.root;
@@ -900,6 +1061,7 @@ export function symbols(request: SymbolsRequest, config: SymbolsConfig): Symbols
       reject(state, facts.state.reason ?? "the handler owner table is incomplete");
     }
     result.fields = facts.taken.map((name) => ({ name, quoted: false }));
+    result.reserved = [...facts.taken];
     if (facts.nameNode) {
       const token = nameToken(facts.nameNode as ts.PropertyName, subject, sourceFile);
       if (token) result.declaration = token.token;
@@ -939,6 +1101,7 @@ export function symbols(request: SymbolsRequest, config: SymbolsConfig): Symbols
         declaration: entry.token,
         quoted: entry.quoted,
       }));
+      result.reserved = ownerReservedNames(sourceFile, registration.kind);
     } else {
       const resolved = resolveDataPath(project, roots, query.path, state);
       if (resolved.declaration) {
@@ -951,8 +1114,14 @@ export function symbols(request: SymbolsRequest, config: SymbolsConfig): Symbols
           const entry = entries[0]!;
           return { name: entry.name, declaration: entry.token, quoted: entry.quoted };
         });
+      result.reserved = ownerReservedNames(sourceFile, registration.kind);
+      scanDataEscapes(sourceFile, state);
+      scanOtherScriptSetData(index, query.path, state);
       scanSetData(sourceFile, subject, query.path, state, result.occurrences);
       scanObservers(project, registration, query.path, state, result.occurrences);
+      if (resolved.declaration && resolved.declaration.file.path !== subject.path) {
+        reject(state, "shared data declarations are not supported for complete rename");
+      }
     }
   }
 

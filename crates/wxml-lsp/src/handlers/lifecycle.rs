@@ -41,6 +41,15 @@ fn client_capability(params: Option<&Value>, path: &[&str]) -> bool {
     value.as_bool().unwrap_or(false)
 }
 
+/// Reads an optional boolean client capability path.
+fn client_capability_optional(params: Option<&Value>, path: &[&str]) -> Option<bool> {
+    let mut value = params.and_then(|params| params.get("capabilities"))?;
+    for key in path {
+        value = value.get(*key)?;
+    }
+    value.as_bool()
+}
+
 /// Reads one string initialization option.
 fn initialization_string<'a>(params: Option<&'a Value>, key: &str) -> Option<&'a str> {
     params?.get("initializationOptions")?.get(key)?.as_str()
@@ -126,6 +135,10 @@ fn initialize_result(server: &Server) -> Value {
                 "codeLensProvider".to_owned(),
                 json!({"resolveProvider": false}),
             );
+        }
+        if !server.client.document_changes {
+            capabilities.remove("renameProvider");
+            capabilities.remove("codeActionProvider");
         }
     }
     result
@@ -351,6 +364,9 @@ impl Server {
                 "hierarchicalDocumentSymbolSupport",
             ],
         );
+        self.client.document_changes =
+            client_capability_optional(params, &["workspace", "workspaceEdit", "documentChanges"])
+                .unwrap_or(false);
         let root = requested_root(params);
         let root_path = root.and_then(|uri| wxml_project::root_path_from_uri(uri).ok());
         let configured = initialization_string(params, "snippetsPath")
