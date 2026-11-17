@@ -438,29 +438,33 @@ fn loadavg() -> String {
 }
 
 fn static_completion(project: &TempProject) -> Value {
-    const CALLS_PER_SAMPLE: usize = 50;
+    const CALLS_PER_OUTER_ITERATION: usize = 50;
     let mut session = start_real_node(project);
     let uri = project.uri(WXML);
     let text = "<view class=\"card\">{{ user.name }}</view>";
     session.client.open(&uri, text, 1);
     session.client.wait_diagnostics(&uri, 1);
     // `<view cla` is an attribute-name site answered without Node. A single
-    // request is ~0.2 ms, below the resolution needed for a 10% gate, so each
-    // sample is a block of 50 calls and the reported p95 is per call.
+    // request is ~0.2 ms, below the resolution needed for a 10% gate. Each
+    // outer iteration issues 50 independent calls and every individual call
+    // time is summarized, so the reported p95 is per independent call.
     let character = u32::try_from("<view cla".chars().count()).expect("characters");
     for _ in 0..20 {
         session.client.completion(&uri, 0, character);
     }
-    let mut samples = Vec::with_capacity(sample_count().saturating_mul(CALLS_PER_SAMPLE));
+    let mut samples = Vec::with_capacity(sample_count().saturating_mul(CALLS_PER_OUTER_ITERATION));
     for _ in 0..sample_count() {
-        for _ in 0..CALLS_PER_SAMPLE {
+        for _ in 0..CALLS_PER_OUTER_ITERATION {
             samples.push(millis(session.client.completion(&uri, 0, character)));
         }
     }
     session.finish();
     let mut summary = summary(&mut samples);
     if let Some(object) = summary.as_object_mut() {
-        object.insert("calls_per_sample".to_owned(), json!(CALLS_PER_SAMPLE));
+        object.insert(
+            "independent_calls_per_outer_iteration".to_owned(),
+            json!(CALLS_PER_OUTER_ITERATION),
+        );
     }
     summary
 }
@@ -888,7 +892,8 @@ fn q2_performance_benchmark() {
             "rustc": rustc_version(),
             "target_dir": std::env::var("CARGO_TARGET_DIR").unwrap_or_default(),
             "samples_per_scenario": sample_count(),
-            "static_calls_per_sample": 50,
+            "static_outer_iterations": sample_count(),
+            "static_independent_calls": sample_count().saturating_mul(50),
             "warmups": {
                 "static_completion_calls": 20,
                 "semantic_completion_calls": 8,
@@ -945,7 +950,7 @@ fn q2_performance_benchmark() {
             "cancel_running_response is the immediate protocol response for a running call; a synchronous TypeScript call is not interruptible.",
             "single_ts_call_occupancy measures one uncached slow backend call and is reported separately.",
             "semantic_hover exercises the Rust analysis-cache hit path; it is not a cold Node hover measurement.",
-            "static_completion reports per-call latency from 50 calls per sample (10,000 calls at 200 samples).",
+            "static_completion reports p95 across 10,000 independent calls (50 per outer iteration, 200 outer iterations).",
             "diagnostics_stop is measured from the final didChange notification to the matching publishDiagnostics version."
         ]
     });

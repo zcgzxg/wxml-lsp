@@ -12,10 +12,16 @@
 //!
 //! ```bash
 //! (cd backends/typescript && npm ci && npm run build)
-//! WXML_TEST_NODE=1 WXML_STABILITY_LABEL=... \
+//! WXML_TEST_NODE=1 WXML_STABILITY_REQUIRE_CLEAN=1 WXML_STABILITY_LABEL=strict \
+//! WXML_STABILITY_OUT=/tmp/opencode/q2-bench/stability-strict.json \
 //!   CARGO_TARGET_DIR=/home/zxg/.cache/wxml-targets/full-performance-local \
 //!   cargo test -p wxml-lsp --test q2_stability -- --ignored --nocapture
 //! ```
+//!
+//! Strict recovery assertions are the default. `WXML_STABILITY_LENIENT=1` is
+//! only for the W3 old-code comparison and disables the overlay/restart/page
+//! assertions. `WXML_STABILITY_RSS_BASELINE=<json>` only selects an RSS
+//! comparison file and never changes strictness.
 //!
 //! Raw round data is written to `WXML_STABILITY_OUT` (default
 //! `/tmp/opencode/q2-bench/stability-<label>.json`). Generated evidence is
@@ -199,7 +205,10 @@ fn ten_round_lifecycle_stability() {
         std::env::var("WXML_TEST_NODE").as_deref() == Ok("1"),
         "set WXML_TEST_NODE=1 to run the stability gate"
     );
-    let strict_semantics = std::env::var_os("WXML_STABILITY_BASELINE").is_none();
+    // Strict is the default and final-gate mode. Only the W3 old-code
+    // comparison may set LENIENT=1; the RSS baseline path is independent.
+    let lenient = std::env::var("WXML_STABILITY_LENIENT").as_deref() == Ok("1");
+    let strict_semantics = !lenient;
     let repo = repo_root();
     let server_path = std::env::var_os("WXML_TEST_BACKEND_SERVER").map_or_else(
         || repo.join("backends/typescript/dist/server.js"),
@@ -456,10 +465,10 @@ fn ten_round_lifecycle_stability() {
         (final_node_rss as f64 - baseline_node_rss as f64) / baseline_node_rss as f64 * 100.0
     };
     let dirty = git_output(&["status", "--porcelain"]);
-    if std::env::var("WXML_STABILITY_REQUIRE_CLEAN").as_deref() == Ok("1") {
+    if strict_semantics || std::env::var("WXML_STABILITY_REQUIRE_CLEAN").as_deref() == Ok("1") {
         assert!(
             dirty.is_empty(),
-            "stability gate requires a clean worktree; dirty:\n{dirty}"
+            "strict stability gate requires a clean worktree; dirty:\n{dirty}"
         );
     }
     let mut failures = Vec::new();
@@ -469,7 +478,7 @@ fn ten_round_lifecycle_stability() {
     if node_rss_growth > 15.0 {
         failures.push(format!("node rss grew {node_rss_growth:.2}% in 10 rounds"));
     }
-    let baseline_value = std::env::var_os("WXML_STABILITY_BASELINE").and_then(|path| {
+    let baseline_value = std::env::var_os("WXML_STABILITY_RSS_BASELINE").and_then(|path| {
         std::fs::read_to_string(&path).ok().map(|text| {
             let parsed: Value = serde_json::from_str(&text).expect("baseline stability JSON");
             (PathBuf::from(path), parsed)
@@ -508,14 +517,16 @@ fn ten_round_lifecycle_stability() {
             "baseline_final_node_rss_kib": baseline_final_node,
         });
     } else if std::env::var("WXML_STABILITY_REQUIRE_BASELINE").as_deref() == Ok("1") {
-        failures.push("WXML_STABILITY_BASELINE is required but missing/unreadable".to_owned());
+        failures.push("WXML_STABILITY_RSS_BASELINE is required but missing/unreadable".to_owned());
     }
     let report = json!({
         "label": std::env::var("WXML_STABILITY_LABEL").unwrap_or_else(|_| "run".to_owned()),
-        "harness": "q2-r2-stability",
+        "harness": "q2-r3-stability",
         "git_head": git_output(&["rev-parse", "HEAD"]),
         "git_dirty": dirty,
-        "baseline": baseline_value.as_ref().map(|(path, _)| path.display().to_string()),
+        "strict_semantics": strict_semantics,
+        "lenient": lenient,
+        "rss_baseline": baseline_value.as_ref().map(|(path, _)| path.display().to_string()),
         "rounds": rounds,
         "summary": {
             "baseline_rss_kib": baseline_rss,
