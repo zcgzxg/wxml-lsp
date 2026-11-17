@@ -1,4 +1,4 @@
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -144,6 +144,16 @@ fn output_path(label: &str) -> PathBuf {
     )
 }
 
+fn git_output(args: &[&str]) -> String {
+    std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo_root())
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map_or_else(|| "unknown".to_owned(), |value| value.trim().to_owned())
+}
+
 fn wait_for_completion(client: &mut Client, uri: &str, position: (u32, u32)) -> Value {
     let id = client.request(
         "textDocument/completion",
@@ -216,7 +226,10 @@ fn ten_round_lifecycle_stability() {
     let handle =
         thread::spawn(move || wxml_lsp::run_with_host(server_read, server_stream, backend, host));
     let mut client = Client::new(client_stream);
-    client.initialize(&project, json!({}));
+    client.initialize(
+        &project,
+        json!({"wxml": {"diagnostics": {"debounceMs": 120}}}),
+    );
 
     let uri = project.uri(WXML);
     let script_uri = project.uri(SCRIPT);
@@ -432,29 +445,94 @@ fn ten_round_lifecycle_stability() {
     let final_rss = rss_kib();
     let final_children = node_children();
     let final_node_rss = final_children.first().map_or(0, |child| child.rss_kib);
+    let rss_growth = if baseline_rss == 0 {
+        0.0
+    } else {
+        (final_rss as f64 - baseline_rss as f64) / baseline_rss as f64 * 100.0
+    };
+    let node_rss_growth = if baseline_node_rss == 0 {
+        0.0
+    } else {
+        (final_node_rss as f64 - baseline_node_rss as f64) / baseline_node_rss as f64 * 100.0
+    };
+    let dirty = git_output(&["status", "--porcelain"]);
+    if std::env::var("WXML_STABILITY_REQUIRE_CLEAN").as_deref() == Ok("1") {
+        assert!(
+            dirty.is_empty(),
+            "stability gate requires a clean worktree; dirty:\n{dirty}"
+        );
+    }
+    let mut failures = Vec::new();
+    if rss_growth > 15.0 {
+        failures.push(format!("rust rss grew {rss_growth:.2}% in 10 rounds"));
+    }
+    if node_rss_growth > 15.0 {
+        failures.push(format!("node rss grew {node_rss_growth:.2}% in 10 rounds"));
+    }
+    let baseline_value = std::env::var_os("WXML_STABILITY_BASELINE").and_then(|path| {
+        std::fs::read_to_string(&path).ok().map(|text| {
+            let parsed: Value = serde_json::from_str(&text).expect("baseline stability JSON");
+            (PathBuf::from(path), parsed)
+        })
+    });
+    let mut baseline_ratios = json!(null);
+    if let Some((_path, baseline)) = baseline_value.as_ref() {
+        let baseline_final_rss = baseline["summary"]["final_rss_kib"].as_u64().unwrap_or(0);
+        let baseline_final_node = baseline["summary"]["final_node_rss_kib"]
+            .as_u64()
+            .unwrap_or(0);
+        let rust_ratio = if baseline_final_rss == 0 {
+            1.0
+        } else {
+            final_rss as f64 / baseline_final_rss as f64
+        };
+        let node_ratio = if baseline_final_node == 0 {
+            1.0
+        } else {
+            final_node_rss as f64 / baseline_final_node as f64
+        };
+        if rust_ratio > 1.15 {
+            failures.push(format!(
+                "rust steady RSS {final_rss} KiB is {rust_ratio:.3}x baseline {baseline_final_rss} KiB"
+            ));
+        }
+        if node_ratio > 1.15 {
+            failures.push(format!(
+                "node steady RSS {final_node_rss} KiB is {node_ratio:.3}x baseline {baseline_final_node} KiB"
+            ));
+        }
+        baseline_ratios = json!({
+            "rust_final_ratio": rust_ratio,
+            "node_final_ratio": node_ratio,
+            "baseline_final_rss_kib": baseline_final_rss,
+            "baseline_final_node_rss_kib": baseline_final_node,
+        });
+    } else if std::env::var("WXML_STABILITY_REQUIRE_BASELINE").as_deref() == Ok("1") {
+        failures.push("WXML_STABILITY_BASELINE is required but missing/unreadable".to_owned());
+    }
     let report = json!({
         "label": std::env::var("WXML_STABILITY_LABEL").unwrap_or_else(|_| "run".to_owned()),
-        "git_head": std::process::Command::new("git")
-            .args(["rev-parse", "HEAD"])
-            .current_dir(&repo)
-            .output()
-            .ok()
-            .and_then(|output| String::from_utf8(output.stdout).ok())
-            .map_or_else(|| "unknown".to_owned(), |value| value.trim().to_owned()),
+        "harness": "q2-r2-stability",
+        "git_head": git_output(&["rev-parse", "HEAD"]),
+        "git_dirty": dirty,
+        "baseline": baseline_value.as_ref().map(|(path, _)| path.display().to_string()),
         "rounds": rounds,
         "summary": {
             "baseline_rss_kib": baseline_rss,
             "final_rss_kib": final_rss,
-            "rss_growth_percent": if baseline_rss == 0 { 0.0 } else {
-                (final_rss as f64 - baseline_rss as f64) / baseline_rss as f64 * 100.0
-            },
+            "rss_growth_percent": rss_growth,
             "baseline_node_rss_kib": baseline_node_rss,
             "final_node_rss_kib": final_node_rss,
-            "node_rss_growth_percent": if baseline_node_rss == 0 { 0.0 } else {
-                (final_node_rss as f64 - baseline_node_rss as f64) / baseline_node_rss as f64 * 100.0
-            },
+            "node_rss_growth_percent": node_rss_growth,
             "node_processes": final_children.len(),
             "wall_ms": started.elapsed().as_secs_f64() * 1000.0,
+        },
+        "baseline_ratios": baseline_ratios,
+        "thresholds": {
+            "in_run_rss_growth_percent_max": 15.0,
+            "steady_rss_ratio_max": 1.15,
+            "pass": failures.is_empty(),
+            "failures": failures,
         }
     });
     let path = output_path(report["label"].as_str().unwrap_or("run"));
@@ -464,6 +542,11 @@ fn ten_round_lifecycle_stability() {
     std::fs::write(&path, serde_json::to_vec_pretty(&report).expect("json")).expect("write");
     println!("stability report: {}", path.display());
     println!("{}", serde_json::to_string_pretty(&report).expect("json"));
+    assert!(
+        report["thresholds"]["pass"].as_bool() == Some(true),
+        "stability thresholds failed: {}",
+        report["thresholds"]["failures"]
+    );
 
     client.finish();
     let outcome = handle.join().expect("server thread").expect("outcome");

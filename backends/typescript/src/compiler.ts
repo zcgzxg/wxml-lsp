@@ -49,12 +49,54 @@ interface PooledProject {
 
 const projectPool: PooledProject[] = [];
 
+/**
+ * Stable JSON-like serialization for cache keys.
+ *
+ * `JSON.stringify(value, keyArray)` filters *every* object level by that key
+ * list, so nested compiler options such as `paths` became `{}`. This helper
+ * sorts object keys recursively, preserves array order (TypeScript resolution
+ * fallbacks depend on it), and mirrors JSON's treatment of undefined/function
+ * object properties by omitting them.
+ */
+function stableSerialize(value: unknown): string {
+  if (value === null) return "null";
+  switch (typeof value) {
+    case "string":
+    case "number":
+    case "boolean":
+      return JSON.stringify(value);
+    case "undefined":
+      return "null";
+    case "bigint":
+      return JSON.stringify(`${value.toString()}n`);
+    case "function":
+    case "symbol":
+      return "null";
+    default:
+      break;
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableSerialize(entry)).join(",")}]`;
+  }
+  if (typeof value === "object") {
+    const object = value as Record<string, unknown>;
+    const keys = Object.keys(object)
+      .filter((key) => {
+        const entry = object[key];
+        return entry !== undefined && typeof entry !== "function" && typeof entry !== "symbol";
+      })
+      .sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableSerialize(object[key])}`).join(",")}}`;
+  }
+  return "null";
+}
+
 /** Canonical key for a project shape: options, read policy and file paths. */
 function projectKey(init: VirtualProjectInit, files: ReadonlyArray<{ path: string }>): string {
   const paths = files.map((file) => path.resolve(file.path)).sort();
   return [
     init.rootDir,
-    JSON.stringify(init.compilerOptions, Object.keys(init.compilerOptions).sort()),
+    stableSerialize(init.compilerOptions),
     init.readPolicy.diskRoots.join("\u0000"),
     init.readPolicy.diskFiles.join("\u0000"),
     paths.join("\u0000"),

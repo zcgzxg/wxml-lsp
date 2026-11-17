@@ -101,6 +101,8 @@ pub(crate) const MAX_DEBOUNCED_DIAGNOSTICS: usize = 256;
 pub(crate) struct Inflight {
     /// Id to echo in the response.
     pub(crate) id: serde_json::Value,
+    /// Monotonic attempt for this request id.
+    pub(crate) attempt: u64,
     /// Set by `$/cancelRequest`.
     pub(crate) cancel: Arc<AtomicBool>,
     /// Document the request belongs to, so `didClose` can cancel it.
@@ -167,7 +169,13 @@ pub(crate) struct Server {
     pub(crate) semantic_tools: crate::semantics::SemanticToolsConfig,
     /// Pending references/rename/code-action intentions waiting for a
     /// script symbol query.
+    ///
+    /// [`Self::inflight`] remains the only owner of response delivery. Pending
+    /// intents are auxiliary state and are removed on completion, cancellation
+    /// or workspace removal without sending a second response.
     pub(crate) semantic_pending: HashMap<RequestKey, crate::semantics::handlers::PendingSemantic>,
+    /// Next request attempt; never reused within one session.
+    pub(crate) next_attempt: u64,
     /// Last backend diagnostics for one document, keyed by client URI.
     ///
     /// Style changes refresh only the local diagnostics; the cached backend
@@ -236,6 +244,7 @@ impl Server {
             synthetic_templates: HashSet::new(),
             semantic_tools: crate::semantics::SemanticToolsConfig::default(),
             semantic_pending: HashMap::new(),
+            next_attempt: 0,
             backend_diagnostics: HashMap::new(),
             diagnostics_debounce: diagnostics_debounce_from_env(),
             debounced_diagnostics: HashMap::new(),
@@ -266,6 +275,12 @@ impl Server {
     /// Removes a document from the diagnostics retry queue.
     pub(crate) fn clear_dirty(&mut self, uri: &str) {
         self.dirty.retain(|dirty| dirty != uri);
+    }
+
+    /// Allocates the next request attempt.
+    pub(crate) const fn next_attempt(&mut self) -> u64 {
+        self.next_attempt = self.next_attempt.saturating_add(1);
+        self.next_attempt
     }
 
     /// Returns the earliest pending diagnostics deadline.
@@ -299,10 +314,31 @@ impl Server {
         }
         let Some(key) = done.key.clone() else {
             log(format_args!("dropping a request result without an id"));
+            self.retry_pending_diagnostics_with_epoch(&epoch);
             return Vec::new();
         };
-        let Some(inflight) = self.inflight.remove(&key) else {
+        let Some(inflight) = self.inflight.get(&key) else {
+            // A cancelled semantic request may still have a late worker
+            // result. Pending intents are removed by the cancellation itself,
+            // but clear defensively so a future cancellation path cannot leak.
+            self.semantic_pending.remove(&key);
             log(format_args!("dropping a result for an unknown request"));
+            self.retry_pending_diagnostics_with_epoch(&epoch);
+            return Vec::new();
+        };
+        if inflight.attempt != done.attempt {
+            // The id was reused after the old request was answered. Keep the
+            // new in-flight entry and drop this late result.
+            log(format_args!(
+                "dropping a result for a superseded request attempt"
+            ));
+            self.retry_pending_diagnostics_with_epoch(&epoch);
+            return Vec::new();
+        }
+        let Some(inflight) = self.inflight.remove(&key) else {
+            // The entry disappeared between the check and removal; treating it
+            // as unknown is the same safe outcome as a late result.
+            self.retry_pending_diagnostics_with_epoch(&epoch);
             return Vec::new();
         };
         let outgoing = match done.kind {
@@ -472,6 +508,14 @@ fn drive_loop(
     writer: &mut impl io::Write,
 ) -> Result<(), ServerError> {
     loop {
+        // Check expired debounce deadlines before blocking and after every
+        // handled message. A client that keeps a <1 ms message stream alive
+        // must not postpone diagnostics until the stream stops.
+        let outgoing = server.flush_due_diagnostics(Instant::now());
+        write_outgoing(writer, outgoing)?;
+        if server.should_stop() {
+            break;
+        }
         let wait = server.next_diagnostics_deadline().map_or_else(
             || Duration::from_secs(3_600),
             |deadline| {
@@ -482,14 +526,7 @@ fn drive_loop(
         );
         let message = match receiver.recv_timeout(wait) {
             Ok(message) => message,
-            Err(RecvTimeoutError::Timeout) => {
-                let outgoing = server.flush_due_diagnostics(Instant::now());
-                write_outgoing(writer, outgoing)?;
-                if server.should_stop() {
-                    break;
-                }
-                continue;
-            }
+            Err(RecvTimeoutError::Timeout) => continue,
             Err(RecvTimeoutError::Disconnected) => break,
         };
         let outgoing = match message {
@@ -793,6 +830,7 @@ mod tests {
             key: job.key.clone(),
             kind: JobKind::Hover,
             stamp: job.stamp.clone(),
+            attempt: job.attempt,
             cancelled: false,
             outcome: Ok(Outcome::Hover(Box::new(result))),
         }
@@ -803,6 +841,7 @@ mod tests {
             key: job.key.clone(),
             kind: JobKind::Diagnostics,
             stamp: job.stamp.clone(),
+            attempt: job.attempt,
             cancelled: false,
             outcome: Ok(Outcome::Diagnostics(Box::new(result))),
         }
@@ -845,6 +884,7 @@ mod tests {
             key: jobs[0].key.clone(),
             kind: JobKind::Completion(CompletionKind::ExpressionMember),
             stamp: jobs[0].stamp.clone(),
+            attempt: jobs[0].attempt,
             cancelled: false,
             outcome: Ok(Outcome::Completion(Box::new(completion.clone()))),
         }));
@@ -874,6 +914,7 @@ mod tests {
             key: jobs[0].key.clone(),
             kind: JobKind::Completion(CompletionKind::ExpressionMember),
             stamp: stale,
+            attempt: jobs[0].attempt,
             cancelled: false,
             outcome: Ok(Outcome::Completion(Box::new(completion))),
         }));
@@ -1089,6 +1130,7 @@ mod tests {
             key: jobs[0].key.clone(),
             kind: JobKind::Hover,
             stamp: jobs[0].stamp.clone(),
+            attempt: jobs[0].attempt,
             cancelled: true,
             outcome: Err(BackendError::Cancelled),
         };
@@ -1124,6 +1166,7 @@ mod tests {
             key: jobs[0].key.clone(),
             kind: JobKind::Hover,
             stamp: jobs[0].stamp.clone(),
+            attempt: jobs[0].attempt,
             cancelled: true,
             outcome: Err(BackendError::Cancelled),
         };
@@ -1133,6 +1176,56 @@ mod tests {
                 .handle_incoming(notification("$/cancelRequest", json!({"id": "unknown"})))
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_late_cancelled_attempt_does_not_touch_a_reused_request_id() {
+        let (mut server, dispatch) = setup();
+        initialize(&mut server);
+        open_document(&mut server, "abc", 1);
+        dispatch.take();
+
+        server.handle_incoming(request(
+            json!(7),
+            "textDocument/hover",
+            hover_params((0, 1)),
+        ));
+        let first = dispatch.take().remove(0);
+        assert_eq!(first.attempt, 1);
+        let cancelled =
+            only(server.handle_incoming(notification("$/cancelRequest", json!({"id": 7}))));
+        assert_eq!(
+            error_code(&cancelled),
+            jsonrpc::error_codes::REQUEST_CANCELLED
+        );
+
+        server.handle_incoming(request(
+            json!(7),
+            "textDocument/hover",
+            hover_params((0, 1)),
+        ));
+        let second = dispatch.take().remove(0);
+        assert_eq!(second.attempt, 2);
+        assert!(
+            server
+                .inflight
+                .contains_key(first.key.as_ref().expect("key"))
+        );
+
+        // The old synchronous call returns after the client reused the id.
+        assert!(
+            server
+                .handle_work(completed_hover(&first, hover_result()))
+                .is_empty(),
+            "the superseded attempt must not answer or remove the new inflight"
+        );
+        assert!(
+            server
+                .inflight
+                .contains_key(first.key.as_ref().expect("key"))
+        );
+        let fresh = only(server.handle_work(completed_hover(&second, hover_result())));
+        assert_eq!(result(&fresh)["contents"]["value"], json!("string"));
     }
 
     #[test]
@@ -1151,6 +1244,7 @@ mod tests {
             key: jobs[0].key.clone(),
             kind: JobKind::Hover,
             stamp: jobs[0].stamp.clone(),
+            attempt: jobs[0].attempt,
             cancelled: false,
             outcome: Err(BackendError::Timeout),
         };
@@ -1289,6 +1383,7 @@ mod tests {
             key: jobs[0].key.clone(),
             kind: JobKind::Definition,
             stamp: jobs[0].stamp.clone(),
+            attempt: jobs[0].attempt,
             cancelled: false,
             outcome: Ok(Outcome::Definition(Box::new(DefinitionResult {
                 locations: vec![SourceLocation {
@@ -1327,6 +1422,7 @@ mod tests {
             key: jobs[0].key.clone(),
             kind: JobKind::Definition,
             stamp: jobs[0].stamp.clone(),
+            attempt: jobs[0].attempt,
             cancelled: false,
             outcome: Ok(Outcome::Definition(Box::new(DefinitionResult {
                 locations: vec![SourceLocation {
@@ -1358,6 +1454,7 @@ mod tests {
             key: jobs[0].key.clone(),
             kind: JobKind::Definition,
             stamp: jobs[0].stamp.clone(),
+            attempt: jobs[0].attempt,
             cancelled: false,
             outcome: Ok(Outcome::Definition(Box::new(DefinitionResult {
                 locations: Vec::new(),
@@ -1522,6 +1619,7 @@ mod tests {
             key: None,
             kind: JobKind::Diagnostics,
             stamp: jobs[0].stamp.clone(),
+            attempt: jobs[0].attempt,
             cancelled: false,
             outcome: Err(BackendError::Unavailable("no node".to_owned())),
         };
@@ -1898,6 +1996,7 @@ mod tests {
         let flag = Arc::new(AtomicBool::new(false));
         let inflight = Inflight {
             id: json!(1),
+            attempt: 1,
             cancel: Arc::clone(&flag),
             uri: URI.to_owned(),
         };
@@ -2150,6 +2249,7 @@ mod tests {
             key: None,
             kind: JobKind::Diagnostics,
             stamp: jobs[0].stamp.clone(),
+            attempt: jobs[0].attempt,
             cancelled: true,
             outcome: Err(BackendError::Cancelled),
         };
@@ -2167,6 +2267,7 @@ mod tests {
             key: None,
             kind: JobKind::Diagnostics,
             stamp: job.stamp.clone(),
+            attempt: job.attempt,
             cancelled: false,
             outcome: Ok(Outcome::Hover(Box::new(hover_result()))),
         };
@@ -2179,6 +2280,7 @@ mod tests {
             key: None,
             kind: JobKind::Diagnostics,
             stamp: job.stamp,
+            attempt: job.attempt,
             cancelled: false,
             outcome: Err(BackendError::Timeout),
         };
@@ -2292,6 +2394,7 @@ mod tests {
             key: jobs[0].key.clone(),
             kind: JobKind::Hover,
             stamp: jobs[0].stamp.clone(),
+            attempt: jobs[0].attempt,
             cancelled: false,
             outcome: Ok(Outcome::Diagnostics(Box::new(DiagnosticsResult {
                 diagnostics: Vec::new(),
@@ -2349,6 +2452,7 @@ mod tests {
             key: job.key.clone(),
             kind: JobKind::Definition,
             stamp: job.stamp,
+            attempt: job.attempt,
             cancelled: true,
             outcome: Err(BackendError::Cancelled),
         };
@@ -2367,6 +2471,7 @@ mod tests {
             key: job.key.clone(),
             kind: JobKind::Definition,
             stamp: job.stamp,
+            attempt: job.attempt,
             cancelled: false,
             outcome: Err(BackendError::Timeout),
         };
@@ -2382,6 +2487,7 @@ mod tests {
             key: job.key.clone(),
             kind: JobKind::Definition,
             stamp: job.stamp,
+            attempt: job.attempt,
             cancelled: false,
             outcome: Ok(Outcome::Hover(Box::new(hover_result()))),
         };
@@ -2407,6 +2513,7 @@ mod tests {
             key: job.key.clone(),
             kind: JobKind::Definition,
             stamp: job.stamp,
+            attempt: job.attempt,
             cancelled: false,
             outcome: Ok(Outcome::Definition(Box::new(DefinitionResult {
                 locations: vec![SourceLocation {
@@ -2428,6 +2535,7 @@ mod tests {
             key: job.key.clone(),
             kind: JobKind::Definition,
             stamp: job.stamp,
+            attempt: job.attempt,
             cancelled: false,
             outcome: Ok(Outcome::Definition(Box::new(DefinitionResult {
                 locations: Vec::new(),
@@ -2530,6 +2638,7 @@ mod tests {
             key: None,
             kind: JobKind::Diagnostics,
             stamp: job.stamp,
+            attempt: job.attempt,
             cancelled: false,
             outcome: Ok(Outcome::Diagnostics(Box::new(DiagnosticsResult {
                 diagnostics: vec![Diagnostic {
@@ -2605,6 +2714,7 @@ mod tests {
             key: job.key.clone(),
             kind: JobKind::Definition,
             stamp: job.stamp,
+            attempt: job.attempt,
             cancelled: false,
             outcome: Ok(Outcome::Definition(Box::new(DefinitionResult {
                 locations: vec![SourceLocation {

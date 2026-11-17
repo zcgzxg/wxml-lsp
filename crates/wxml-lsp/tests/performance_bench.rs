@@ -1,4 +1,4 @@
-#![cfg(unix)]
+#![cfg(target_os = "linux")]
 #![allow(
     clippy::expect_used,
     clippy::unwrap_used,
@@ -16,16 +16,17 @@
 //!
 //! ```bash
 //! (cd backends/typescript && npm ci && npm run build)
-//! WXML_TEST_NODE=1 WXML_PERF_LABEL=after \
+//! WXML_TEST_NODE=1 WXML_PERF_LABEL=after WXML_PERF_REQUIRE_CLEAN=1 \
+//! WXML_PERF_REQUIRE_BASELINE=1 WXML_PERF_BASELINE=/tmp/opencode/q2-bench/w3-baseline-r2.json \
 //!   CARGO_TARGET_DIR=/home/zxg/.cache/wxml-targets/full-performance-local \
 //!   cargo test -p wxml-lsp --test performance_bench -- --ignored --nocapture
 //! ```
 //!
 //! Raw samples are written as JSON to `WXML_PERF_OUT` (default
 //! `/tmp/opencode/q2-bench/<label>.json`). The output is evidence, never a
-//! committed fixture. Thresholds are checked by the person running the gate;
-//! this harness only records measurements so a threshold change cannot hide a
-//! regression.
+//! committed fixture. Absolute targets, p95 regression and parent RSS are
+//! asserted by the test; a baseline JSON is required for the W4 gate. Set
+//! `WXML_PERF_BASELINE_ONLY=1` only when producing that baseline from W3.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -233,6 +234,7 @@ impl Client {
                 "processId": null,
                 "rootUri": project.root_uri(),
                 "capabilities": {},
+                "initializationOptions": {"wxml": {"diagnostics": {"debounceMs": 120}}},
             }),
         );
         let response = self.response(id);
@@ -361,23 +363,106 @@ fn git_head() -> String {
         .map_or_else(|| "unknown".to_owned(), |value| value.trim().to_owned())
 }
 
+fn git_dirty() -> String {
+    std::process::Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(repo_root())
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map_or_else(|| "unknown".to_owned(), |value| value.trim().to_owned())
+}
+
+fn command_line(program: &str, args: &[&str]) -> String {
+    std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map_or_else(|| "unknown".to_owned(), |value| value.trim().to_owned())
+}
+
+fn rustc_version() -> String {
+    command_line("rustc", &["-vV"])
+        .lines()
+        .next()
+        .unwrap_or("unknown")
+        .to_owned()
+}
+
+fn cpu_model() -> String {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("model name\t: "))
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn cpu_count() -> usize {
+    thread::available_parallelism().map_or(0, std::num::NonZero::get)
+}
+
+fn mem_total_kib() -> u64 {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("MemTotal:"))
+                .and_then(|value| value.split_whitespace().next())
+                .and_then(|value| value.parse().ok())
+        })
+        .unwrap_or(0)
+}
+
+fn os_pretty_name() -> String {
+    std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("PRETTY_NAME="))
+                .map(|value| value.trim_matches('"').to_owned())
+        })
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn kernel_release() -> String {
+    command_line("uname", &["-r"])
+}
+
+fn loadavg() -> String {
+    std::fs::read_to_string("/proc/loadavg")
+        .map_or_else(|_| "unknown".to_owned(), |text| text.trim().to_owned())
+}
+
 fn static_completion(project: &TempProject) -> Value {
+    const CALLS_PER_SAMPLE: usize = 50;
     let mut session = start_real_node(project);
     let uri = project.uri(WXML);
     let text = "<view class=\"card\">{{ user.name }}</view>";
     session.client.open(&uri, text, 1);
     session.client.wait_diagnostics(&uri, 1);
-    // `<view cla` is an attribute-name site answered without Node.
+    // `<view cla` is an attribute-name site answered without Node. A single
+    // request is ~0.2 ms, below the resolution needed for a 10% gate, so each
+    // sample is a block of 50 calls and the reported p95 is per call.
     let character = u32::try_from("<view cla".chars().count()).expect("characters");
     for _ in 0..20 {
         session.client.completion(&uri, 0, character);
     }
-    let mut samples = Vec::with_capacity(sample_count());
+    let mut samples = Vec::with_capacity(sample_count().saturating_mul(CALLS_PER_SAMPLE));
     for _ in 0..sample_count() {
-        samples.push(millis(session.client.completion(&uri, 0, character)));
+        for _ in 0..CALLS_PER_SAMPLE {
+            samples.push(millis(session.client.completion(&uri, 0, character)));
+        }
     }
     session.finish();
-    summary(&mut samples)
+    let mut summary = summary(&mut samples);
+    if let Some(object) = summary.as_object_mut() {
+        object.insert("calls_per_sample".to_owned(), json!(CALLS_PER_SAMPLE));
+    }
+    summary
 }
 
 fn semantic_completion(project: &TempProject) -> (Value, Value) {
@@ -569,8 +654,9 @@ fn cancel_latency(project: &TempProject) -> (Value, Value) {
     let mut queue_samples = Vec::with_capacity(sample_count());
     let mut running_samples = Vec::with_capacity(sample_count());
     for round in 0..sample_count() {
-        // A running backend call is not interruptible: the response can only
-        // arrive after the call returns. Record that occupancy separately.
+        // A running backend call is not interruptible. The cancellation
+        // response is immediate; the actual call occupancy is measured by
+        // `slow_call_occupancy`, not by this response latency.
         let running_id = session.client.request(
             "textDocument/completion",
             json!({
@@ -649,6 +735,39 @@ fn slow_call_occupancy(project: &TempProject) -> Value {
     summary(&mut samples)
 }
 
+fn p95(summary: &Value) -> f64 {
+    summary["p95_ms"].as_f64().unwrap_or(f64::INFINITY)
+}
+
+fn check_limit(failures: &mut Vec<String>, name: &str, value: f64, limit: f64) {
+    let pass = value <= limit;
+    println!("threshold {name}: {value:.3} <= {limit:.3} -> {pass}");
+    if !pass {
+        failures.push(format!("{name}: {value:.3} > {limit:.3}"));
+    }
+}
+
+fn check_regression(
+    failures: &mut Vec<String>,
+    name: &str,
+    after: f64,
+    baseline: f64,
+    allowed_fraction: f64,
+) {
+    let limit = baseline * (1.0 + allowed_fraction);
+    let pass = after <= limit;
+    println!(
+        "regression {name}: after {after:.3} <= baseline {baseline:.3} * {:.2} = {limit:.3} -> {pass}",
+        1.0 + allowed_fraction
+    );
+    if !pass {
+        failures.push(format!(
+            "{name}: after {after:.3} > baseline {baseline:.3} * {:.2}",
+            1.0 + allowed_fraction
+        ));
+    }
+}
+
 #[test]
 #[ignore = "performance gate: set WXML_TEST_NODE=1 and run with --ignored"]
 fn q2_performance_benchmark() {
@@ -656,11 +775,22 @@ fn q2_performance_benchmark() {
         std::env::var("WXML_TEST_NODE").as_deref() == Ok("1"),
         "set WXML_TEST_NODE=1 to run the performance gate"
     );
+    let require_clean = std::env::var("WXML_PERF_REQUIRE_CLEAN").as_deref() == Ok("1");
+    let baseline_only = std::env::var("WXML_PERF_BASELINE_ONLY").as_deref() == Ok("1");
+    let head = git_head();
+    let dirty = git_dirty();
+    if require_clean {
+        assert!(
+            dirty.is_empty(),
+            "performance gate requires a clean worktree; dirty:\n{dirty}"
+        );
+    }
     let project = project_fixture();
     let label = label();
     let started = Instant::now();
     let rss_before = rss_kib();
     let threads_before = threads();
+    let load_start = loadavg();
 
     let static_summary = static_completion(&project);
     println!("static_completion: {static_summary}");
@@ -675,30 +805,115 @@ fn q2_performance_benchmark() {
     let ts_call_summary = slow_call_occupancy(&project);
     println!("single_ts_call_occupancy: {ts_call_summary}");
 
-    let debounce_ms = std::env::var("WXML_DIAGNOSTICS_DEBOUNCE_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(120);
+    let rss_after = rss_kib();
+    let threads_after = threads();
+    let load_end = loadavg();
+    let debounce_ms = 120_u64; // pinned by the initialization options in start_real_node
+
+    let mut failures = Vec::new();
+    check_limit(
+        &mut failures,
+        "static_completion_p95",
+        p95(&static_summary),
+        50.0,
+    );
+    check_limit(
+        &mut failures,
+        "semantic_completion_p95",
+        p95(&semantic_summary),
+        200.0,
+    );
+    check_limit(
+        &mut failures,
+        "diagnostics_stop_p95",
+        p95(&diagnostics_summary),
+        500.0,
+    );
+    check_limit(
+        &mut failures,
+        "cancel_queued_request_p95",
+        p95(&cancel_queue_summary),
+        100.0,
+    );
+
+    let baseline_value = std::env::var_os("WXML_PERF_BASELINE").and_then(|path| {
+        std::fs::read_to_string(&path).ok().map(|text| {
+            let parsed: Value = serde_json::from_str(&text).expect("baseline performance JSON");
+            (PathBuf::from(path), parsed)
+        })
+    });
+    if let Some((_baseline_path, baseline)) = baseline_value.as_ref() {
+        for (name, after) in [
+            ("static_completion", p95(&static_summary)),
+            ("semantic_completion", p95(&semantic_summary)),
+            ("semantic_hover", p95(&hover_summary)),
+            ("diagnostics_stop", p95(&diagnostics_summary)),
+            ("cancel_queued_request", p95(&cancel_queue_summary)),
+        ] {
+            let Some(before) = baseline["scenarios"][name]["p95_ms"].as_f64() else {
+                failures.push(format!("baseline {name} is missing"));
+                continue;
+            };
+            check_regression(&mut failures, name, after, before, 0.10);
+        }
+        if let (Some(before), Some(after)) = (
+            baseline["resources"]["rss_kib_after"].as_u64(),
+            Some(rss_after),
+        ) {
+            check_regression(
+                &mut failures,
+                "parent_rss_kib",
+                after as f64,
+                before as f64,
+                0.15,
+            );
+        } else {
+            failures.push("baseline parent RSS is missing".to_owned());
+        }
+    } else if std::env::var("WXML_PERF_REQUIRE_BASELINE").as_deref() == Ok("1") {
+        failures.push("WXML_PERF_BASELINE is required but missing/unreadable".to_owned());
+    }
+
     let report = json!({
         "label": label,
-        "git_head": git_head(),
+        "harness": "q2-r2-batch",
+        "baseline_only": baseline_only,
+        "git_head": head,
+        "git_dirty": dirty,
         "generated_at_unix_s": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs()),
         "environment": {
             "node": node_version(),
-            "rustc": option_env!("RUSTC_VERSION").unwrap_or("unknown"),
+            "rustc": rustc_version(),
             "target_dir": std::env::var("CARGO_TARGET_DIR").unwrap_or_default(),
             "samples_per_scenario": sample_count(),
-            "warmup_samples": 20,
+            "static_calls_per_sample": 50,
+            "warmups": {
+                "static_completion_calls": 20,
+                "semantic_completion_calls": 8,
+                "semantic_hover_calls": 0,
+                "diagnostics_edits": 10,
+                "cancel_rounds": 0,
+                "single_ts_call_calls": 0
+            },
             "diagnostics_debounce_ms": debounce_ms,
             "diagnostics_backend_estimate_ms": round(
-                (diagnostics_summary["p95_ms"].as_f64().unwrap_or(0.0)
-                    - debounce_ms as f64)
-                    .max(0.0)
+                (p95(&diagnostics_summary) - debounce_ms as f64).max(0.0)
             ),
             "outliers": "max_ms and p99_ms include outliers; raw percentile method is nearest-rank",
         },
+        "machine": {
+            "os": os_pretty_name(),
+            "kernel": kernel_release(),
+            "cpu": cpu_model(),
+            "cpu_count": cpu_count(),
+            "mem_total_kib": mem_total_kib(),
+            "loadavg_start": load_start,
+            "loadavg_end": load_end,
+            "concurrency": "single benchmark process, no other benchmark running"
+        },
+        "baseline": baseline_value.as_ref().map(|(path, _)| path.display().to_string()),
         "scenarios": {
             "static_completion": static_summary,
             "semantic_completion": semantic_summary,
@@ -710,15 +925,27 @@ fn q2_performance_benchmark() {
         },
         "resources": {
             "rss_kib_before": rss_before,
-            "rss_kib_after": rss_kib(),
+            "rss_kib_after": rss_after,
             "threads_before": threads_before,
-            "threads_after": threads(),
+            "threads_after": threads_after,
             "wall_time_ms": millis(started.elapsed()),
+        },
+        "thresholds": {
+            "static_completion_p95_ms": 50.0,
+            "semantic_completion_p95_ms": 200.0,
+            "diagnostics_stop_p95_ms": 500.0,
+            "cancel_queued_request_p95_ms": 100.0,
+            "p95_regression_fraction": 0.10,
+            "parent_rss_regression_fraction": 0.15,
+            "pass": failures.is_empty(),
+            "failures": failures,
         },
         "notes": [
             "cancel_queued_request measures the LSP response path for a job that has not started yet.",
-            "cancel_running_response is the response latency for a running backend call; a synchronous TypeScript call is not interruptible.",
+            "cancel_running_response is the immediate protocol response for a running call; a synchronous TypeScript call is not interruptible.",
             "single_ts_call_occupancy measures one uncached slow backend call and is reported separately.",
+            "semantic_hover exercises the Rust analysis-cache hit path; it is not a cold Node hover measurement.",
+            "static_completion reports per-call latency from 50 calls per sample (10,000 calls at 200 samples).",
             "diagnostics_stop is measured from the final didChange notification to the matching publishDiagnostics version."
         ]
     });
@@ -729,4 +956,11 @@ fn q2_performance_benchmark() {
     std::fs::write(&path, serde_json::to_vec_pretty(&report).expect("json")).expect("write report");
     println!("performance report: {}", path.display());
     println!("{}", serde_json::to_string_pretty(&report).expect("json"));
+    if !baseline_only {
+        assert!(
+            report["thresholds"]["pass"].as_bool() == Some(true),
+            "performance thresholds failed: {}",
+            report["thresholds"]["failures"]
+        );
+    }
 }

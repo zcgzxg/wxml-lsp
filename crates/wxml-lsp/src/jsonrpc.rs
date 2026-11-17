@@ -369,11 +369,6 @@ impl RequestKey {
         }
     }
 
-    /// Returns the original JSON id.
-    pub(crate) fn to_id(&self) -> Value {
-        serde_json::from_str(&self.0).unwrap_or(Value::Null)
-    }
-
     /// Returns the serialized id.
     #[cfg(test)]
     pub(crate) fn as_str(&self) -> &str {

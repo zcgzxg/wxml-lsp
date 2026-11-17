@@ -5,12 +5,14 @@ use std::sync::atomic::Ordering;
 
 use serde_json::{Value, json};
 use wxml_project::{ProjectPath, StyleConfig, StyleDiagnosticsPolicy};
-use wxml_types::{CapabilityStatus, ProjectId, SourceSnapshot};
+use wxml_types::{CapabilityStatus, ProjectId, SourceSnapshot, ViewRevision};
 
 use super::{log_safe_method, log_safe_text, status_label, template_document};
 use crate::configuration::InitializationOptions;
 use crate::jsonrpc::{self, Outgoing, RequestKey};
-use crate::project_host::{DocumentRoute, HostError, WatchedChangeKind, WatchedFileChange};
+use crate::project_host::{
+    DocumentRoute, HostError, OpenDocument, WatchedChangeKind, WatchedFileChange,
+};
 use crate::server::{Lifecycle, Server, log};
 
 /// Reads `rootUri`, falling back to the first workspace folder.
@@ -142,6 +144,26 @@ fn initialize_result(server: &Server) -> Value {
         }
     }
     result
+}
+
+/// Reads an optional diagnostics debounce from initialization options.
+///
+/// Shape: `{"wxml":{"diagnostics":{"debounceMs":120}}}`. A value outside
+/// `0..=5000` is ignored in favour of the environment/default setting. This is
+/// configuration, not project content, and tests use it to pin behavior.
+fn diagnostics_debounce_override(params: Option<&Value>) -> Option<std::time::Duration> {
+    let root = params?.get("initializationOptions")?;
+    let options = root
+        .get("wxml")
+        .and_then(Value::as_object)
+        .or_else(|| root.get("style").and_then(Value::as_object))
+        .or_else(|| root.as_object())?;
+    let milliseconds = options
+        .get("diagnostics")?
+        .as_object()?
+        .get("debounceMs")?
+        .as_u64()?;
+    (milliseconds <= 5_000).then(|| std::time::Duration::from_millis(milliseconds))
 }
 
 /// Reads optional `wxml` style settings from initialization options.
@@ -322,6 +344,7 @@ impl Server {
     }
 
     /// Answers `initialize` once and opens the requested root.
+    #[allow(clippy::too_many_lines)] // one bounded option/root parsing sequence
     fn initialize(&mut self, id: Value, params: Option<&Value>) -> Vec<Outgoing> {
         if self.lifecycle != Lifecycle::Uninitialized {
             return vec![Outgoing::failure(
@@ -344,6 +367,9 @@ impl Server {
             }
         };
         self.initialization = options.clone();
+        if let Some(debounce) = diagnostics_debounce_override(params) {
+            self.diagnostics_debounce = debounce;
+        }
         self.client.watched_files = client_capability(
             params,
             &["workspace", "didChangeWatchedFiles", "dynamicRegistration"],
@@ -619,9 +645,13 @@ impl Server {
             return Vec::new();
         };
         let Some(inflight) = self.inflight.remove(&key) else {
+            // A cancelled semantic request already answered by a previous
+            // path must not leave auxiliary intent state behind.
+            self.semantic_pending.remove(&key);
             log(format_args!("ignoring cancellation of an unknown request"));
             return Vec::new();
         };
+        self.semantic_pending.remove(&key);
         inflight.cancel.store(true, Ordering::SeqCst);
         self.dispatch.cancel(&key);
         log(format_args!("cancelling request"));
@@ -696,6 +726,9 @@ impl Server {
                 ));
             }
         }
+        // `inflight` is the only owner of response delivery. A semantic request
+        // also has an auxiliary `semantic_pending` intent; clear that table
+        // without answering it a second time.
         let inflight = std::mem::take(&mut self.inflight);
         for (key, request) in inflight {
             request.cancel.store(true, Ordering::SeqCst);
@@ -706,19 +739,14 @@ impl Server {
                 "workspace folder was removed",
             ));
         }
-        for (key, _) in std::mem::take(&mut self.semantic_pending) {
-            outgoing.push(Outgoing::failure(
-                key.to_id(),
-                jsonrpc::error_codes::CONTENT_MODIFIED,
-                "workspace folder was removed",
-            ));
-        }
+        self.semantic_pending.clear();
         for cancel in self.diagnostics_cancel.drain().map(|(_, cancel)| cancel) {
             cancel.store(true, Ordering::SeqCst);
         }
         self.backend_diagnostics.clear();
         self.dirty.clear();
         self.debounced_diagnostics.clear();
+        self.synthetic_templates.clear();
         self.workspace_root = None;
         // Cached backend analyses belong to the removed project; clear them
         // and advance the backend epoch before any later request can answer.
@@ -752,10 +780,99 @@ impl Server {
                 self.workspace
                     .set_project(self.host.project_id(), self.host.project_revision());
                 log(format_args!("opened the replacement workspace folder"));
+                return self.replay_open_documents();
             }
             Err(error) => log(format_args!("opening the workspace folder failed: {error}")),
         }
         Vec::new()
+    }
+
+    /// Replays open WXML snapshots and script/style/JSON overlays into a
+    /// replacement project.
+    ///
+    /// `ProjectHost::open_root_with_options` clears the host snapshots and
+    /// overlays, while the LSP workspace still owns the unsaved buffers. Every
+    /// document identity is resolved again in the new project; old `FileId`s
+    /// are never reused. Diagnostics are scheduled only after all overlays are
+    /// back in place, so a replay cannot analyze against disk text.
+    fn replay_open_documents(&mut self) -> Vec<Outgoing> {
+        let documents: Vec<(String, String, u64)> = self
+            .workspace
+            .documents()
+            .map(|document| {
+                (
+                    document.uri().to_owned(),
+                    document.text().to_owned(),
+                    document.client_version().get(),
+                )
+            })
+            .collect();
+        let mut updates = Vec::new();
+        let mut templates = Vec::new();
+        for (uri, text, version) in documents {
+            match self.host.route(&uri) {
+                DocumentRoute::Wxml(path) => {
+                    let Ok(file) = self.host.file_id(&path) else {
+                        log(format_args!("replay skipped a template without a file id"));
+                        continue;
+                    };
+                    if let Err(error) = self.workspace.open_file(
+                        &uri,
+                        file.clone(),
+                        text,
+                        Some(version),
+                        ViewRevision::new(1),
+                    ) {
+                        log(format_args!("template replay failed: {error}"));
+                        continue;
+                    }
+                    if let Some(document) = self.workspace.get(&uri) {
+                        self.host
+                            .set_wxml_snapshot(file, Arc::clone(document.snapshot()));
+                        templates.push(uri.clone());
+                    }
+                    if let Ok(target) = self.host.view_for(&path) {
+                        self.workspace.set_view_revision(&uri, target.view_revision);
+                    }
+                }
+                DocumentRoute::Script(path)
+                | DocumentRoute::Json(path)
+                | DocumentRoute::Style(path) => {
+                    if let Ok(file) = self.host.file_id(&path) {
+                        if let Err(error) = self.workspace.open_file(
+                            &uri,
+                            file,
+                            text.clone(),
+                            Some(version),
+                            ViewRevision::new(0),
+                        ) {
+                            log(format_args!("overlay replay identity failed: {error}"));
+                        }
+                    } else {
+                        log(format_args!(
+                            "overlay replay skipped a document without a file id"
+                        ));
+                    }
+                    match self.host.open_document(OpenDocument {
+                        uri: uri.clone(),
+                        text,
+                        version: Some(version),
+                    }) {
+                        Ok(update) => updates.push(update),
+                        Err(error) => log(format_args!("overlay replay failed: {error}")),
+                    }
+                }
+                DocumentRoute::Unknown => {}
+            }
+        }
+        let mut outgoing = Vec::new();
+        for update in updates {
+            outgoing.extend(self.apply_host_update(&update));
+        }
+        for uri in templates {
+            let _ = self.schedule_diagnostics(&uri);
+        }
+        outgoing
     }
 }
 
@@ -880,8 +997,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        MAX_WATCHED_CHANGES, same_root_uri, saved_uri, style_initialization_options,
-        watched_changes, workspace_folder_uris,
+        MAX_WATCHED_CHANGES, diagnostics_debounce_override, same_root_uri, saved_uri,
+        style_initialization_options, watched_changes, workspace_folder_uris,
     };
     use crate::project_host::WatchedChangeKind;
 
@@ -998,5 +1115,33 @@ mod tests {
             "file:///workspace/a%20b/"
         ));
         assert!(!same_root_uri("file:///workspace/a", "file:///workspace/b"));
+    }
+
+    #[test]
+    fn reads_a_bounded_diagnostics_debounce_override() {
+        assert_eq!(
+            diagnostics_debounce_override(Some(&json!({
+                "initializationOptions": {"wxml": {"diagnostics": {"debounceMs": 50}}}
+            }))),
+            Some(std::time::Duration::from_millis(50))
+        );
+        assert_eq!(
+            diagnostics_debounce_override(Some(&json!({
+                "initializationOptions": {"diagnostics": {"debounceMs": 0}}
+            }))),
+            Some(std::time::Duration::ZERO)
+        );
+        for params in [
+            json!({}),
+            json!({"initializationOptions": {"wxml": {"diagnostics": {"debounceMs": 5001}}}}),
+            json!({"initializationOptions": {"wxml": {"diagnostics": {"debounceMs": "50"}}}}),
+            json!({"initializationOptions": {"wxml": {"diagnostics": {}}}}),
+        ] {
+            assert_eq!(
+                diagnostics_debounce_override(Some(&params)),
+                None,
+                "{params}"
+            );
+        }
     }
 }

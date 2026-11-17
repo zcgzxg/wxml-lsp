@@ -1205,6 +1205,55 @@ fn a_failed_analysis_clears_the_cache() {
 }
 
 #[test]
+fn invalidate_keeps_the_restart_backoff() {
+    let shared = Shared::default();
+    let backend = backend_with(&shared, StubHost::new(view(Vec::new())), |_line| {
+        Err(NodeTransportError::Timeout)
+    });
+    for _ in 0..3 {
+        let _ = backend.diagnostics(DiagnosticsRequest { context: context() });
+    }
+    assert_eq!(backend.failures.load(Ordering::SeqCst), 3);
+    assert!(
+        backend
+            .cooldown_until
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some(),
+        "three failures must start the restart cooldown"
+    );
+    backend.invalidate();
+    assert_eq!(
+        backend.failures.load(Ordering::SeqCst),
+        3,
+        "project invalidation is not a backend success"
+    );
+    assert!(
+        backend
+            .cooldown_until
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some(),
+        "project invalidation must not clear the restart backoff"
+    );
+}
+
+#[test]
+fn cache_keys_use_the_request_epoch_and_live_generation() {
+    let shared = Shared::default();
+    let backend = backend(&shared, StubHost::new(view(Vec::new())));
+    let request = context();
+    let before = backend.key(&request);
+    backend.invalidate();
+    let after = backend.key(&request);
+    assert_eq!(
+        after.epoch, before.epoch,
+        "the key epoch must come from the request context, not a live read"
+    );
+    assert_ne!(after.generation, before.generation);
+}
+
+#[test]
 fn invalidate_clears_the_generation_and_cache() {
     let shared = Shared::default();
     let backend = backend(&shared, StubHost::new(view(Vec::new())));

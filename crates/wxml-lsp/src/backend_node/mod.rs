@@ -176,7 +176,7 @@ impl NodeBackend {
             view_revision: context.view_revision(),
             project_revision: context.project_revision(),
             generation: self.generation.load(Ordering::SeqCst),
-            epoch: self.epoch.load(Ordering::SeqCst),
+            epoch: context.backend_epoch().get(),
         }
     }
 
@@ -434,12 +434,12 @@ impl Backend for NodeBackend {
         // bump makes every cached key unreachable immediately. The next
         // analysis clears the entries under the state lock and starts a fresh
         // Node generation. The process is reused for the replacement project.
+        //
+        // Project invalidation is not a backend success: keep the failure
+        // counter and restart cooldown so repeated remove/add cycles cannot
+        // reset the restart backoff of a broken backend.
         let _ = self.generation.fetch_add(1, Ordering::SeqCst);
         let _ = self.epoch.fetch_add(1, Ordering::SeqCst);
-        self.failures.store(0, Ordering::SeqCst);
-        if let Ok(mut until) = self.cooldown_until.try_lock() {
-            *until = None;
-        }
     }
 
     fn epoch(&self) -> BackendEpoch {

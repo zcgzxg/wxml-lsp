@@ -47,6 +47,7 @@ pub struct Shared {
     pub connects: Arc<AtomicU64>,
     pub failure: Arc<Mutex<Failure>>,
     pub delay: Arc<Mutex<Duration>>,
+    pub symbols_delay: Arc<Mutex<Duration>>,
     pub bad_version: Arc<AtomicBool>,
 }
 
@@ -57,6 +58,7 @@ impl Default for Shared {
             connects: Arc::new(AtomicU64::new(0)),
             failure: Arc::new(Mutex::new(Failure::None)),
             delay: Arc::new(Mutex::new(Duration::ZERO)),
+            symbols_delay: Arc::new(Mutex::new(Duration::ZERO)),
             bad_version: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -93,6 +95,13 @@ impl Shared {
     pub fn set_delay(&self, delay: Duration) {
         *self.delay.lock().unwrap_or_else(PoisonError::into_inner) = delay;
     }
+
+    pub fn set_symbols_delay(&self, delay: Duration) {
+        *self
+            .symbols_delay
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = delay;
+    }
 }
 
 struct FakeTransport {
@@ -113,6 +122,21 @@ impl NodeTransport for FakeTransport {
             .unwrap_or_else(PoisonError::into_inner);
         if !delay.is_zero() {
             thread::sleep(delay);
+        }
+        if serde_json::from_str::<Value>(line)
+            .ok()
+            .and_then(|request| request["method"].as_str().map(str::to_owned))
+            .as_deref()
+            == Some("symbols")
+        {
+            let symbols_delay = *self
+                .shared
+                .symbols_delay
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if !symbols_delay.is_zero() {
+                thread::sleep(symbols_delay);
+            }
         }
         let mut failure = self
             .shared
@@ -173,7 +197,10 @@ pub fn start_fake(
     ));
     let handle = thread::spawn(move || run_with_host(server_read, server_stream, backend, host));
     let mut client = Client::new(client_stream);
-    client.initialize(project, json!({}));
+    client.initialize(
+        project,
+        json!({"wxml": {"diagnostics": {"debounceMs": 120}}}),
+    );
     (client, handle, shared)
 }
 
@@ -222,6 +249,10 @@ impl Client {
         self.next_id += 1;
         self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
         id
+    }
+
+    pub fn request_with_id(&mut self, id: i64, method: &str, params: Value) {
+        self.send(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
     }
 
     pub fn notify(&mut self, method: &str, params: Value) {
@@ -276,7 +307,7 @@ impl Client {
             json!({
                 "processId": null,
                 "rootUri": project.root_uri(),
-                "capabilities": {},
+                "capabilities": {"workspace": {"workspaceEdit": {"documentChanges": true}}},
                 "initializationOptions": options,
             }),
         );
@@ -291,7 +322,7 @@ impl Client {
             json!({
                 "processId": null,
                 "rootUri": project.root_uri(),
-                "capabilities": {},
+                "capabilities": {"workspace": {"workspaceEdit": {"documentChanges": true}}},
                 "initializationOptions": options,
             }),
         );

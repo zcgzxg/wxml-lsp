@@ -107,6 +107,13 @@ pub(crate) struct Job {
     pub(crate) offset: u32,
     /// Stamp the result must match before it is published.
     pub(crate) stamp: AnalysisStamp,
+    /// Monotonic attempt for request/response jobs.
+    ///
+    /// A client may reuse a request id after it received a cancellation
+    /// response while the old synchronous backend call is still running. The
+    /// attempt lets the server drop that late result without touching the new
+    /// request's in-flight entry. Diagnostics use `0`.
+    pub(crate) attempt: u64,
     /// Set by `$/cancelRequest`.
     pub(crate) cancel: Arc<AtomicBool>,
 }
@@ -135,6 +142,8 @@ pub(crate) struct WorkDone {
     pub(crate) kind: JobKind,
     /// Stamp captured when the job was created.
     pub(crate) stamp: AnalysisStamp,
+    /// Attempt captured when the job was created; `0` for diagnostics.
+    pub(crate) attempt: u64,
     /// Whether the job was cancelled before or during the backend call.
     pub(crate) cancelled: bool,
     /// Backend answer. A pre-call cancellation reports
@@ -366,6 +375,7 @@ where
             key: job.key.clone(),
             kind: job.kind,
             stamp: job.stamp.clone(),
+            attempt: job.attempt,
             cancelled,
             outcome,
         });
@@ -419,6 +429,7 @@ fn cancelled(job: &Job) -> WorkDone {
         key: job.key.clone(),
         kind: job.kind.clone(),
         stamp: job.stamp.clone(),
+        attempt: job.attempt,
         cancelled: true,
         outcome: Err(BackendError::Cancelled),
     }
@@ -477,6 +488,7 @@ mod tests {
             context,
             offset,
             stamp,
+            attempt: 0,
             cancel: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -819,8 +831,10 @@ mod tests {
         gate.wait_until_entered();
 
         let first = job(JobKind::Diagnostics, None, 0);
-        let second = job(JobKind::Diagnostics, None, 0);
-        let first_stamp = first.stamp.clone();
+        let mut second = job(JobKind::Diagnostics, None, 0);
+        second.stamp.revision = wxml_types::SourceRevision::new(2);
+        second.stamp.snapshot = wxml_types::SnapshotId::new(2);
+        let second_stamp = second.stamp.clone();
         scheduler.submit(first).expect("first diagnostics");
         scheduler.submit(second).expect("second diagnostics");
         gate.release();
@@ -829,7 +843,10 @@ mod tests {
         assert!(!hover.cancelled);
         let diagnostics = receive(&receiver);
         assert_eq!(diagnostics.kind, JobKind::Diagnostics);
-        assert_eq!(diagnostics.stamp, first_stamp);
+        assert_eq!(
+            diagnostics.stamp, second_stamp,
+            "the newest queued diagnostics job must replace the older one"
+        );
         assert_eq!(
             backend.diagnostics_calls.load(Ordering::SeqCst),
             1,
@@ -957,6 +974,14 @@ mod tests {
         second.stamp.file =
             FileId::new(wxml_types::ProjectId::new("lsp"), "documents/2.wxml").expect("file");
         scheduler.submit(second).expect("diagnostics two");
+        let mut third = job(JobKind::Diagnostics, None, 0);
+        third.stamp.file =
+            FileId::new(wxml_types::ProjectId::new("lsp"), "documents/3.wxml").expect("file");
+        assert_eq!(
+            scheduler.submit(third),
+            Err(SubmitError::Busy),
+            "the diagnostics class has its own bounded capacity"
+        );
         scheduler
             .submit(job(JobKind::Hover, Some("interactive"), 1))
             .expect("interactive must not be blocked by diagnostics");

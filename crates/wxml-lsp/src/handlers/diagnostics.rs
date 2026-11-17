@@ -287,6 +287,11 @@ impl Server {
             }
         }
         for uri in uris {
+            // Script/JSON/style overlays are authoritative recovery inputs.
+            // They schedule immediately instead of joining the typing
+            // debounce: an unsaved type change must be visible without another
+            // template keystroke. The scheduler still coalesces duplicate
+            // diagnostics jobs per document.
             self.cancel_debounced_diagnostics(&uri);
             let _ = self.schedule_diagnostics(&uri);
         }
@@ -542,6 +547,7 @@ impl Server {
             context,
             offset: 0,
             stamp,
+            attempt: 0,
             cancel: Arc::clone(&cancel),
         };
         match self.dispatch.submit(job) {
