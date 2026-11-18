@@ -18,6 +18,7 @@
 #![allow(clippy::multiple_crate_versions)]
 
 pub mod acquire;
+pub mod acquire_v2;
 pub mod archive;
 pub mod cache;
 pub mod error;

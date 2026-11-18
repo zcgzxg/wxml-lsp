@@ -495,10 +495,13 @@ pub fn explicit_binary() -> Result<Option<PathBuf>> {
     validate_explicit_binary(&raw).map(Some)
 }
 
-/// Enforces `WXML_LSP_BIN` precedence before a native mutating operation.
+/// Library helper that turns a set `WXML_LSP_BIN` into a hard error before a
+/// native mutating operation.
 ///
-/// A valid explicit binary means the operation must skip and report that the
-/// explicit path wins. An invalid value is always a hard error.
+/// The `wxml-lsp-install` CLI reports the explicit path and returns success
+/// instead, so it validates [`explicit_binary`] itself. CLI users lose nothing:
+/// both paths validate the variable and never fall back to an install when it
+/// is set.
 ///
 /// # Errors
 ///

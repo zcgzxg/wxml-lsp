@@ -1,0 +1,62 @@
+# cargo-deny policy for the wxml-lsp workspace.
+#
+# The checked-in lockfile is the only dependency graph this policy is expected
+# to cover. Run it offline in CI and locally:
+#
+#   cargo deny --offline check
+#
+# License allowlist: every entry is a permissive license already present in
+# `Cargo.lock`. No copyleft license is allowed. Adding a dependency under a new
+# license requires editing this list in the same review.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+# A yanked release is never acceptable in a locked delivery build.
+yanked = "deny"
+ignore = []
+
+[bans]
+# Only the duplicate family listed in `skip` is accepted: `windows-sys` is
+# pulled at 0.52 by `ring` and at 0.61 by the tokio/reqwest stack. Any new
+# duplicate family fails.
+multiple-versions = "deny"
+wildcards = "deny"
+# Internal crates are workspace path dependencies without a version
+# requirement; they are not published and cannot float.
+allow-wildcard-paths = true
+deny = []
+skip = [
+    { name = "windows-sys", version = "=0.52.0" },
+    { name = "windows-sys", version = "=0.61.2" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[licenses.private]
+# Workspace members are `publish = false` and carry no license field; they are
+# first-party code, not third-party dependencies.
+ignore = true

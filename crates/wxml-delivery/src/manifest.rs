@@ -621,8 +621,16 @@ pub fn read_manifest(root: &Path, expected: ExpectedManifest<'_>) -> Result<Mani
 /// Returns an error when the file is missing, too large, malformed or fails
 /// validation.
 pub fn read_index(path: &Path) -> Result<Index> {
-    let bytes = read_limited(path, MAX_INDEX_BYTES)?;
-    let index: Index = serde_json::from_slice(&bytes).map_err(|error| {
+    parse_index(&read_limited(path, MAX_INDEX_BYTES)?)
+}
+
+/// Parses and validates a size-bounded schema v1 index.
+///
+/// # Errors
+///
+/// Returns an error when the bytes are malformed or fail validation.
+pub fn parse_index(bytes: &[u8]) -> Result<Index> {
+    let index: Index = serde_json::from_slice(bytes).map_err(|error| {
         DeliveryError::InvalidPackage(format!("index.json is malformed: {error}"))
     })?;
     index.validate()?;

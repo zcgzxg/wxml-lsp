@@ -9,8 +9,9 @@ use reqwest::blocking::Client;
 use reqwest::redirect::Policy;
 
 use crate::error::{DeliveryError, Result};
+use crate::index_v2::{IndexV2, ReleaseV2};
 use crate::manifest::{
-    Index, MAX_ARCHIVE_BYTES, MAX_INDEX_BYTES, Release, read_index, sha256_file,
+    Index, MAX_ARCHIVE_BYTES, MAX_INDEX_BYTES, Release, parse_index, sha256_file,
 };
 use crate::paths::{validate_archive_name, validate_sha256};
 
@@ -109,21 +110,43 @@ impl Source {
     /// Returns an error when the index is missing, too large, malformed or
     /// fails validation.
     pub fn read_index(&self) -> Result<Index> {
+        let bytes = self.read_index_bytes()?;
+        parse_index(&bytes)
+    }
+
+    /// Reads the raw, size-bounded `index.json` bytes from the source.
+    ///
+    /// Callers that support both schema versions inspect `schemaVersion` once
+    /// and then use [`crate::manifest::parse_index`] or
+    /// [`crate::index_v2::parse_index_v2`] on the same bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the index is missing, too large or unreadable.
+    pub fn read_index_bytes(&self) -> Result<Vec<u8>> {
         match self {
             Self::Remote(base) => {
                 let url = base
                     .join("index.json")
                     .map_err(|error| DeliveryError::UntrustedSource(error.to_string()))?;
                 ensure_same_origin(base, &url)?;
-                let bytes = fetch_bytes(&url, MAX_INDEX_BYTES)?;
-                let index: Index = serde_json::from_slice(&bytes).map_err(|error| {
-                    DeliveryError::InvalidPackage(format!("index.json is malformed: {error}"))
-                })?;
-                index.validate()?;
-                Ok(index)
+                fetch_bytes(&url, MAX_INDEX_BYTES)
             }
-            Self::Local(directory) => read_index(&directory.join("index.json")),
+            Self::Local(directory) => {
+                crate::manifest::read_limited(&directory.join("index.json"), MAX_INDEX_BYTES)
+            }
         }
+    }
+
+    /// Reads and validates a schema v2 native index from the source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the index is missing, too large, malformed or
+    /// fails native validation.
+    pub fn read_index_v2(&self) -> Result<IndexV2> {
+        let bytes = self.read_index_bytes()?;
+        crate::index_v2::parse_index_v2(&bytes)
     }
 
     /// Downloads or copies one release archive to `destination`.
@@ -175,7 +198,10 @@ impl Source {
                     .open(destination)
                     .map_err(|error| DeliveryError::io(destination, error))?;
                 let written = std::io::copy(&mut response.take(MAX_ARCHIVE_BYTES + 1), &mut output)
-                    .map_err(|error| DeliveryError::io(destination, error))?;
+                    .map_err(|error| {
+                        let _ = std::fs::remove_file(destination);
+                        DeliveryError::io(destination, error)
+                    })?;
                 if written > MAX_ARCHIVE_BYTES {
                     let _ = std::fs::remove_file(destination);
                     return Err(DeliveryError::SizeLimit(
@@ -224,6 +250,107 @@ impl Source {
             )));
         }
         validate_sha256(&release.sha256)?;
+        Ok(())
+    }
+
+    /// Downloads or copies one schema v2 release archive to `destination` and
+    /// verifies its size, SHA-256 and SHA-512 SRI before returning.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an untrusted archive name, missing file, oversized
+    /// archive, network failure, truncated transfer, size mismatch or either
+    /// digest mismatch. A failed transfer never leaves a partial file behind.
+    pub fn fetch_archive_v2(&self, release: &ReleaseV2, destination: &Path) -> Result<()> {
+        release.validate()?;
+        validate_archive_name(&release.archive)?;
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| DeliveryError::io(parent, error))?;
+        }
+        match self {
+            Self::Remote(base) => {
+                let url = base
+                    .join(&release.archive)
+                    .map_err(|error| DeliveryError::UntrustedSource(error.to_string()))?;
+                ensure_same_origin(base, &url)?;
+                let client = http_client()?;
+                let response = client.get(url).send().map_err(|error| {
+                    DeliveryError::Network(format!("release download failed: {error}"))
+                })?;
+                if !response.status().is_success() {
+                    return Err(DeliveryError::HttpStatus {
+                        status: response.status().as_u16(),
+                        resource: release.archive.clone(),
+                    });
+                }
+                if let Some(length) = response.content_length() {
+                    if length > MAX_ARCHIVE_BYTES {
+                        return Err(DeliveryError::SizeLimit(
+                            "release archive exceeds the size limit".to_owned(),
+                        ));
+                    }
+                    if length != release.size {
+                        return Err(DeliveryError::Integrity(format!(
+                            "server declared {} bytes but the index says {}",
+                            length, release.size
+                        )));
+                    }
+                }
+                let mut output = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(destination)
+                    .map_err(|error| DeliveryError::io(destination, error))?;
+                let written = std::io::copy(&mut response.take(MAX_ARCHIVE_BYTES + 1), &mut output)
+                    .map_err(|error| {
+                        let _ = std::fs::remove_file(destination);
+                        DeliveryError::io(destination, error)
+                    })?;
+                if written > MAX_ARCHIVE_BYTES {
+                    let _ = std::fs::remove_file(destination);
+                    return Err(DeliveryError::SizeLimit(
+                        "release archive exceeds the size limit".to_owned(),
+                    ));
+                }
+                if written != release.size {
+                    let _ = std::fs::remove_file(destination);
+                    return Err(DeliveryError::Integrity(format!(
+                        "downloaded {written} bytes but the index says {}",
+                        release.size
+                    )));
+                }
+            }
+            Self::Local(directory) => {
+                let archive = directory.join(&release.archive);
+                let metadata = std::fs::symlink_metadata(&archive)
+                    .map_err(|error| DeliveryError::io(&archive, error))?;
+                if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+                    return Err(DeliveryError::UnsafeArchive(
+                        "local release archive is not a regular file".to_owned(),
+                    ));
+                }
+                let canonical = std::fs::canonicalize(&archive)
+                    .map_err(|error| DeliveryError::io(&archive, error))?;
+                if !canonical.starts_with(directory) {
+                    return Err(DeliveryError::UnsafeArchive(
+                        "local release archive escapes its directory".to_owned(),
+                    ));
+                }
+                if metadata.len() != release.size {
+                    return Err(DeliveryError::Integrity(
+                        "local release archive size does not match the index".to_owned(),
+                    ));
+                }
+                std::fs::copy(&archive, destination).map_err(|error| {
+                    let _ = std::fs::remove_file(destination);
+                    DeliveryError::io(destination, error)
+                })?;
+            }
+        }
+        if let Err(error) = release.verify_archive(destination) {
+            let _ = std::fs::remove_file(destination);
+            return Err(error);
+        }
         Ok(())
     }
 }

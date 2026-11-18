@@ -268,8 +268,16 @@ impl IndexV2 {
 /// Returns an error when the file is missing, oversized, malformed or fails
 /// validation.
 pub fn read_index_v2(path: &Path) -> Result<IndexV2> {
-    let bytes = read_limited(path, MAX_INDEX_BYTES)?;
-    let index: IndexV2 = serde_json::from_slice(&bytes).map_err(|error| {
+    parse_index_v2(&read_limited(path, MAX_INDEX_BYTES)?)
+}
+
+/// Parses and validates size-bounded schema v2 index bytes.
+///
+/// # Errors
+///
+/// Returns an error when the bytes are malformed or fail validation.
+pub fn parse_index_v2(bytes: &[u8]) -> Result<IndexV2> {
+    let index: IndexV2 = serde_json::from_slice(bytes).map_err(|error| {
         DeliveryError::InvalidPackage(format!("index.json is malformed: {error}"))
     })?;
     index.validate()?;

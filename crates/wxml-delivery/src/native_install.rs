@@ -11,16 +11,16 @@
 //! extension point a later wave uses to add the F0 handshake without changing
 //! the transaction code.
 //!
-//! `WXML_LSP_BIN` precedence is CLI-owned until the v2 CLI is wired. The CLI
-//! must call [`crate::install::ensure_no_explicit_binary`] before any native
-//! install/upgrade/rollback; the pure helper is tested here so the guard cannot
-//! be forgotten when the command is connected.
+//! `WXML_LSP_BIN` is checked by the CLI before it creates a root. Native
+//! mutating entry points are exposed as `*_locked` variants so a caller can
+//! hold one transaction lock across state inspection, acquisition, staging and
+//! activation without taking a second lock (which would self-deadlock).
 //!
-//! BLOCKED in this wave: F3-01/F3-02 (no v2 CLI/clean-PATH exec audit),
+//! BLOCKED in this wave: F3-01/F3-02 (no clean-PATH/strace exec audit),
 //! F3-03 (no v2 packager), F3-12 (no network-namespace audit), F3-13 (no real
-//! asset/ABI data), F3-14 (no Zed smoke) and F3-15 (no v2 CLI env wiring).
-//! F3-04/05/10/11/16 have library-level invariants covered here but still
-//! require real assets and the CLI for end-to-end acceptance.
+//! asset/ABI data), F3-14 (no Zed smoke) and F3-15 (Zed forwarding not
+//! exercised). F3-04/05/10/11/16 have library-level invariants covered here
+//! but still require real assets and the CLI for end-to-end acceptance.
 
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
@@ -28,7 +28,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use crate::error::{DeliveryError, Result};
-use crate::install::{InstallRoot, SwitchOutcome};
+use crate::install::{InstallLock, InstallRoot, SwitchOutcome};
 use crate::manifest::{now_rfc3339, sha256_file};
 use crate::manifest_v2::{
     ExpectedManifestV2, ManifestSchema, ManifestV2, NATIVE_PACKAGE_PLATFORM, read_manifest_schema,
@@ -389,7 +389,8 @@ pub fn inspect_current(root: &InstallRoot) -> Result<CurrentInstall> {
 /// Installs, upgrades or migrates a staged native tree.
 ///
 /// The tree must be below `<root>/tmp/`. Verification and the probe run before
-/// any rename or symlink switch.
+/// any rename or symlink switch. This wrapper takes the transaction lock and
+/// then calls [`install_native_locked`].
 ///
 /// # Errors
 ///
@@ -398,7 +399,6 @@ pub fn inspect_current(root: &InstallRoot) -> Result<CurrentInstall> {
 /// invalid existing state or an I/O failure. On failure the previous `current`
 /// and tree remain byte-identical except for the documented committed-target
 /// window.
-#[allow(clippy::too_many_lines)]
 pub fn install_native(
     root: &InstallRoot,
     tree: &Path,
@@ -406,9 +406,32 @@ pub fn install_native(
     probe: &dyn NativeEngineProbe,
     hooks: &dyn InstallHooks,
 ) -> Result<NativeInstallOutcome> {
+    let lock = root.lock()?;
+    install_native_locked(root, tree, expected, probe, hooks, &lock)
+}
+
+/// Installs, upgrades or migrates a staged native tree while the caller holds
+/// the exclusive install lock.
+///
+/// `lock` must come from [`InstallRoot::lock`] on the same root. Holding it
+/// across state inspection, acquisition and this call serializes concurrent
+/// mutating commands and prevents [`crate::state::cleanup_tmp`] from removing
+/// another process's in-flight staging tree.
+///
+/// # Errors
+///
+/// See [`install_native`].
+#[allow(clippy::too_many_lines)]
+pub fn install_native_locked(
+    root: &InstallRoot,
+    tree: &Path,
+    expected: ExpectedManifestV2<'_>,
+    probe: &dyn NativeEngineProbe,
+    hooks: &dyn InstallHooks,
+    _lock: &InstallLock,
+) -> Result<NativeInstallOutcome> {
     ensure_native_host()?;
     ensure_safe_layout(root)?;
-    let _lock = root.lock()?;
     let tree = canonical_staging_tree(root, tree)?;
     cleanup_tmp(root, Some(&tree))?;
     clean_staged_journals(root)?;
@@ -744,6 +767,9 @@ fn validate_current_state(
 
 /// Rolls back to a previously installed, fully verified native version.
 ///
+/// This wrapper takes the transaction lock and then calls
+/// [`rollback_native_locked`].
+///
 /// # Errors
 ///
 /// Returns an error when there is no native current, the target is missing,
@@ -755,9 +781,26 @@ pub fn rollback_native(
     probe: &dyn NativeEngineProbe,
     hooks: &dyn InstallHooks,
 ) -> Result<NativeInstallOutcome> {
+    let lock = root.lock()?;
+    rollback_native_locked(root, to, probe, hooks, &lock)
+}
+
+/// Rolls back while the caller holds the exclusive install lock.
+///
+/// `lock` must come from [`InstallRoot::lock`] on the same root.
+///
+/// # Errors
+///
+/// See [`rollback_native`].
+pub fn rollback_native_locked(
+    root: &InstallRoot,
+    to: &str,
+    probe: &dyn NativeEngineProbe,
+    hooks: &dyn InstallHooks,
+    _lock: &InstallLock,
+) -> Result<NativeInstallOutcome> {
     ensure_native_host()?;
     ensure_safe_layout(root)?;
-    let _lock = root.lock()?;
     cleanup_tmp(root, None)?;
     let current = inspect_current(root)?;
     let state = InstallState::read(root)?.ok_or_else(|| {

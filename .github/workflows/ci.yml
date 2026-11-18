@@ -24,3 +24,11 @@ jobs:
         run: cargo test --workspace --all-features
       - name: Docs
         run: cargo doc --workspace --no-deps
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny@0.21.0
+      - name: Fetch advisory database
+        run: cargo deny fetch db
+      - name: Deny advisories, bans, licenses, sources
+        run: cargo deny --offline check

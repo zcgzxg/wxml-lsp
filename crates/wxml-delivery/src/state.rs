@@ -833,6 +833,9 @@ fn fsync_tree_inner(directory: &Path) -> Result<()> {
 /// Removes leftover staging entries, preserving `keep` when it is inside
 /// `<root>/tmp`.
 ///
+/// Callers must hold the root's exclusive install lock. Without it, this may
+/// delete another process's in-flight staging tree.
+///
 /// # Errors
 ///
 /// Returns an error when an entry cannot be removed.

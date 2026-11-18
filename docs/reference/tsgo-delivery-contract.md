@@ -1183,6 +1183,13 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 ### 9.4 状态
 
 - F3-01～F3-16：**planned，未实现**（生产 Rust 交付链）。
+- 2026-11-19：`wxml-lsp-install` 已按 index `schemaVersion` 分派 schema v1/v2，并新增 `recover`；v2 的
+  `install`/`verify`/`upgrade`/`rollback`/`recover`、`--from-dir` 获取、`WXML_LSP_BIN` 优先级和精确版本
+  探针已有 fixture 级集成测试。该实现**不关闭任何 F3 ID**：真实 `7.1.0-beta` 资产、clean-env/`strace`、
+  网络审计、包级/Zed 冒烟和 ABI 证据仍缺；v2 归档缓存尚未实现，v2 离线安装必须显式 `--from-dir`。
+- 2026-11-19：新增根 `deny.toml`，`cargo deny --offline check` 的 advisories/bans/licenses/sources
+  全部通过（P5-SEC-06 的 license 门禁条件）。Rust 依赖许可门禁关闭；B7 的发布包
+  许可/provenance/SBOM 评审仍未关闭。
 - 2026-11-17 临时 Python spike 执行了其中一部分（fresh install、checksum 失败、中断升级、
   N1→N2、rollback、legacy 拒绝、离线、进程审计、恶意 tar、版本探针）；这是**临时证明**，
   不是 F3-01～F3-16 的实现，见 [证据 §11](../evidence/2026-11-17-tsgo-delivery-spike.md)。
@@ -1195,13 +1202,13 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 
 | ID | 2026-11-17 状态 | 阻塞 | 影响 | 退出条件 |
 | --- | --- | --- | --- | --- |
-| B1 | **PARTIAL**（临时 Python spike） | 生产 `wxml-delivery` schema v2 安装器、provisioning 工具、state/journal、legacy 读取器未实现；spike 只证明流程可行 | 生产 native 安装/升级/回滚仍未接入 | D 包 Rust 实现并通过 F3-01～F3-12；spike 不能替代 |
+| B1 | **PARTIAL**（2026-11-19：Rust CLI 已接线） | v2 库与 `wxml-lsp-install` 的 install/verify/upgrade/rollback/recover、本地 `--from-dir` 获取（远端代码路径已接线但未验收）、state/journal、legacy 读取器已实现并有 fixture 测试；真实资产、clean-env/网络审计、包级验收未做；v2 归档缓存未实现 | 生产 native 安装/升级/回滚仍未用真实资产验收 | D 包 Rust 实现并通过 F3-01～F3-12；fixture 不能替代真实资产 |
 | B2 | **PARTIAL**（spike clean-env） | 无 Node PATH、offline、进程审计已在 spike 上执行；Rust build/test/CI/Zed 未在 clean-env 运行 | 生产无 Node 门禁未关闭 | Rust 构建/测试/发布/CI/Zed 在无 Node 环境通过 F3-01/02/12 |
 | B3 | **BLOCKED** | 平台矩阵未测试 | 只能宣称 Linux x86_64；aarch64/macOS/Windows/musl 无证据 | F3-13 记录 Rust glibc/ABI；其他平台保持“不支持” |
 | B4 | **PARTIAL**（spike 复核） | 临时 spike 已复核 tarball SRI/SHA-256/size、122 文件、`lib/tsc` SHA/`--version`；F0 API/AST 握手、`tsc.sig` 用途、Rust glibc、miniprogram SRI 未验证 | 资产身份可用，但安装器未消费真实 API/AST 探针 | F0/F3 安装器消费可重放 SRI/解包/探针/`readelf` 证据 |
 | B5 | **PARTIAL**（维护者条件性接受） | 7.1.0-beta 身份已条件性接受；F0 API/AST 合同仍是 draft，`apiSchemaVersion`/协议/探针期望值未正式冻结 | F0 合同未接受 | F0 记录冻结值并写入 lock/manifest，F3 评审接受 |
 | B6 | **BLOCKED** | release 包/Zed 冒烟未构建运行；spike 包是 Python/占位产物 | 无包级/UI 证据 | F3-03/14 在隔离 Linux 环境通过真实 Rust 包 |
-| B7 | **PARTIAL**（spike 打包） | spike 已把 LICENSE/NOTICE/MIT 许可、`provenance.json`、`THIRD_PARTY_LICENSES.md` 打入包并 hash；未做发布许可评审 | NF-09 不可关闭 | 许可文件、provenance、SBOM 评审通过 |
+| B7 | **PARTIAL**（Rust 依赖许可门禁已通过） | `deny.toml` 的许可 allowlist 与 `cargo deny --offline check` 已通过 advisories/bans/sources/licenses；spike 已把 LICENSE/NOTICE/MIT 许可、`provenance.json`、`THIRD_PARTY_LICENSES.md` 打入包并 hash；发布包许可/provenance/SBOM 评审未做 | NF-09 不可关闭 | 许可文件、provenance、SBOM 评审通过 |
 | B8 | **ACCEPTED RISK** | 无发布者签名 | 只能证明“内容与元数据一致”，不能证明来源身份 | 接受 ADR-0007 残留风险，或新增签名 ADR |
 | B9 | **PARTIAL**（进程中断） | spike 已测 crash-after-commit/recover；staged 崩溃恢复、断电/目录 fsync 持久性未测 | 不能宣称断电或全部崩溃窗口安全 | F3-16 注入/断电测试；未通过前只宣称“commit 后进程中断可恢复” |
 | B10 | **OPEN** | 本文件未加入 docs 索引 | 读者可能不知道它是草案 | 合同接受后由文档 owner 更新索引 |
