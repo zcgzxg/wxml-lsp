@@ -26,8 +26,13 @@
 //! generation, engine snapshot id, file path, content hash, encoder index and
 //! node kind before they may be sent back; an update makes every old binding
 //! stale.
+//!
+//! The engine has no definition method. [`NativeSession::definition`] composes
+//! `getSymbolAtPosition`, a same-snapshot Identifier node,
+//! `getReferencedSymbolsForNode` and declaration-handle AST decoding without
+//! publishing a raw handle as a location.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -36,7 +41,10 @@ use serde_json::Value;
 
 use crate::config::{MAX_LIVE_SNAPSHOTS, PinnedEngine};
 use crate::input::{AnalysisInput, ProjectKey, SnapshotRevision};
-use crate::native::ast::{AstHeader, decode_base64, find_identifier};
+use crate::native::ast::{
+    AstError, AstHeader, AstRange, IDENTIFIER_KIND, decode_base64, find_declaration_name,
+    find_identifier, node_span,
+};
 use crate::native::framing::{DEFAULT_FRAME_LIMITS, FrameLimits, FrameRole};
 use crate::native::handles::{
     BoundNodeHandle, BoundSymbol, BoundSymbolReference, EngineSnapshotId, HandleBinding,
@@ -50,7 +58,7 @@ use crate::native::rpc::{
     encode_callback_error, encode_callback_rejection, encode_callback_result, encode_request,
 };
 use crate::native::strings::{
-    Utf16Offset, Utf16Position, position_to_offset, utf16_len, utf16_to_utf8,
+    Utf8Offset, Utf16Offset, Utf16Position, position_to_offset, utf16_len, utf16_to_utf8,
 };
 use crate::native::supervisor::{
     Deadline, EngineSupervisor, HANDSHAKE_DEADLINE_MS, InboundEvent, ProcessSession,
@@ -128,6 +136,70 @@ pub struct ReferencesQuery {
     pub groups: Vec<RawReferencedSymbol>,
     /// Identifier handle actually sent to the engine, when one was found.
     pub identifier: Option<BoundNodeHandle>,
+}
+
+/// Maximum distinct definition targets retained for one query.
+///
+/// This matches the C0 definition publication cap in `wxml-lsp`
+/// (`MAX_DEFINITION_LOCATIONS = 16`) so native evidence cannot exceed what the
+/// server boundary accepts. Deduplication happens before this cap is applied.
+pub const MAX_DEFINITION_TARGETS: usize = 16;
+
+/// Maximum decoded AST bytes retained across declaration files for one query.
+const MAX_DEFINITION_AST_CACHE_BYTES: usize = 32 * 1024 * 1024;
+
+/// One declaration target decoded from a definition handle.
+///
+/// The path is project-relative and normalized. Both coordinate systems are
+/// carried because the AST produces UTF-16 and the C0 boundary consumes UTF-8;
+/// the pair comes from the same source snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefinitionTargetEvidence {
+    /// Normalized project-relative target path.
+    pub path: String,
+    /// Inclusive UTF-16 token start.
+    pub start_utf16: Utf16Offset,
+    /// Exclusive UTF-16 token end.
+    pub end_utf16: Utf16Offset,
+    /// Inclusive UTF-8 byte start.
+    pub start_utf8: Utf8Offset,
+    /// Exclusive UTF-8 byte end.
+    pub end_utf8: Utf8Offset,
+}
+
+/// Raw definition evidence for one position.
+///
+/// `symbol: None` is a checked "no symbol at this position". `identifier:
+/// None` with a symbol means the position has a symbol but no Identifier node
+/// (for example a quoted member access); the presentation layer maps that to
+/// `Partial`, because a checked "no definition" cannot be proven.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefinitionEvidence {
+    /// Symbol at the queried position, when one exists.
+    pub symbol: Option<BoundSymbol>,
+    /// Identifier handle sent to `getReferencedSymbolsForNode`.
+    pub identifier: Option<BoundNodeHandle>,
+    /// Decoded declaration targets, deduplicated in engine order.
+    pub targets: Vec<DefinitionTargetEvidence>,
+    /// Referenced-symbol groups returned by the engine.
+    pub groups: usize,
+    /// Candidate declaration handles that could not be decoded.
+    pub decode_failures: usize,
+    /// Whether the target cap cut the answer short.
+    pub truncated: bool,
+}
+
+impl DefinitionEvidence {
+    const fn empty(symbol: Option<BoundSymbol>, identifier: Option<BoundNodeHandle>) -> Self {
+        Self {
+            symbol,
+            identifier,
+            targets: Vec::new(),
+            groups: 0,
+            decode_failures: 0,
+            truncated: false,
+        }
+    }
 }
 
 /// Both diagnostic sources for one file.
@@ -1138,6 +1210,254 @@ impl NativeSession {
         })
     }
 
+    /// Resolves the definition at a UTF-16 position from native evidence.
+    ///
+    /// The composition is: symbol at position, same-snapshot Identifier node,
+    /// `getReferencedSymbolsForNode`, then decoding every group's declaration
+    /// handle back into the current snapshot's AST. Declaration handles are
+    /// never published as locations; they are decoded into the declaration's
+    /// name Identifier token first.
+    ///
+    /// A missing symbol is a checked empty answer. A symbol without an
+    /// Identifier and undecodable declaration candidates stay visible in
+    /// [`DefinitionEvidence`] so the presentation layer returns `Partial`
+    /// instead of a fake definition.
+    ///
+    /// # Errors
+    ///
+    /// Requires an open snapshot and a valid position. Transport, deadline and
+    /// session failures propagate; individual declaration decode failures do
+    /// not.
+    pub fn definition(
+        &mut self,
+        path: &str,
+        position: Utf16Position,
+    ) -> Result<DefinitionEvidence, NativeError> {
+        let (_, _, absolute) = self.file_context(path)?;
+        let offset = self.position_offset(&absolute, position)?;
+        let Some(symbol) = self.symbol_at_position(path, position)? else {
+            return Ok(DefinitionEvidence::empty(None, None));
+        };
+        let Some(identifier) = self.identifier_handle(&absolute, offset, symbol.name())? else {
+            return Ok(DefinitionEvidence::empty(Some(symbol), None));
+        };
+        require_identifier_kind(&identifier)?;
+        // `identifier_handle` already proved that `offset` lies inside this
+        // exact Identifier node, so the primary path does not refetch its AST.
+        self.collect_definition_targets(&identifier, position, &symbol)
+    }
+
+    /// Resolves the definition for an already bound Identifier handle.
+    ///
+    /// The handle must belong to the current session generation, engine
+    /// snapshot and file content; stale or foreign handles return
+    /// [`NativeError::StaleHandle`] before any native request is sent. A
+    /// non-Identifier handle returns [`NativeError::InvalidHandle`].
+    ///
+    /// # Errors
+    ///
+    /// Rejects a stale or non-Identifier handle, a position outside the
+    /// identifier token, or a session without an open snapshot.
+    pub fn definition_for_identifier(
+        &mut self,
+        identifier: &BoundNodeHandle,
+        position: Utf16Position,
+    ) -> Result<DefinitionEvidence, NativeError> {
+        require_identifier_kind(identifier)?;
+        self.validate_handle(identifier)?;
+        let relative =
+            self.project_relative_path(identifier.binding().normalized_file_path.as_str())?;
+        let Some(symbol) = self.symbol_at_position(&relative, position)? else {
+            return Ok(DefinitionEvidence::empty(None, Some(identifier.clone())));
+        };
+        self.verify_identifier_position(identifier, position, &symbol)?;
+        self.collect_definition_targets(identifier, position, &symbol)
+    }
+
+    /// Verifies that a caller-supplied Identifier handle really contains the
+    /// requested position.
+    ///
+    /// The AST token start is derived from the pool name. For an escaped
+    /// identifier (`\u0061bc`) the source slice cannot equal the decoded name,
+    /// so the full node span is used instead; a position inside the escape must
+    /// not become `InvalidParams`.
+    fn verify_identifier_position(
+        &mut self,
+        identifier: &BoundNodeHandle,
+        position: Utf16Position,
+        symbol: &BoundSymbol,
+    ) -> Result<(), NativeError> {
+        self.validate_handle(identifier)?;
+        let epoch = self.epoch.ok_or(NativeError::NoSnapshot)?;
+        let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
+        let absolute = identifier.binding().normalized_file_path.clone();
+        let file = vfs.file(&absolute).ok_or(NativeError::StaleHandle)?;
+        let content_hash = file.hash().to_owned();
+        let source_len = utf16_len(file.text());
+        if !symbol.is_current(self.generation, epoch.snapshot, &content_hash) {
+            return Err(NativeError::StaleHandle);
+        }
+        let payload = self.get_source_ast(&absolute)?;
+        let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
+        let file = vfs.file(&absolute).ok_or(NativeError::StaleHandle)?;
+        let token = match find_declaration_name(
+            &payload,
+            identifier.handle().encoder_index,
+            identifier.handle().kind,
+            symbol.name(),
+            source_len,
+        ) {
+            Ok(Some(range)) => range,
+            Ok(None) => {
+                return Err(NativeError::InvalidHandle {
+                    reason: "identifier handle does not resolve to an identifier token",
+                });
+            }
+            Err(error) => return Err(definition_ast_error(error)),
+        };
+        let span = node_span(
+            &payload,
+            identifier.handle().encoder_index,
+            identifier.handle().kind,
+            source_len,
+        )
+        .map_err(definition_ast_error)?;
+        let offset = self.position_offset(&absolute, position)?;
+        let bounds = identifier_position_bounds(file.text(), token, span, symbol.name());
+        if offset < bounds.start || offset >= bounds.end {
+            return Err(NativeError::InvalidParams {
+                reason: "position is not inside the definition identifier",
+            });
+        }
+        Ok(())
+    }
+
+    fn collect_definition_targets(
+        &mut self,
+        identifier: &BoundNodeHandle,
+        position: Utf16Position,
+        symbol: &BoundSymbol,
+    ) -> Result<DefinitionEvidence, NativeError> {
+        require_identifier_kind(identifier)?;
+        self.validate_handle(identifier)?;
+        let epoch = self.epoch.ok_or(NativeError::NoSnapshot)?;
+        let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
+        let absolute = identifier.binding().normalized_file_path.clone();
+        let file = vfs.file(&absolute).ok_or(NativeError::StaleHandle)?;
+        if !symbol.is_current(self.generation, epoch.snapshot, file.hash()) {
+            return Err(NativeError::StaleHandle);
+        }
+
+        let groups = self.references_for_handle(identifier, position)?;
+        let mut targets = Vec::new();
+        let mut decode_failures = 0usize;
+        let mut truncated = false;
+        let mut cache = BTreeMap::new();
+        let mut cache_bytes = 0usize;
+        for group in &groups {
+            let expected = group
+                .symbol
+                .as_ref()
+                .map_or_else(|| symbol.name(), |group_symbol| group_symbol.name.as_str());
+            let Some(target) = self.decode_definition_target(
+                &group.definition,
+                expected,
+                &mut cache,
+                &mut cache_bytes,
+            )?
+            else {
+                decode_failures = decode_failures.saturating_add(1);
+                continue;
+            };
+            if targets.contains(&target) {
+                continue;
+            }
+            if targets.len() == MAX_DEFINITION_TARGETS {
+                truncated = true;
+                break;
+            }
+            targets.push(target);
+        }
+
+        Ok(DefinitionEvidence {
+            symbol: Some(symbol.clone()),
+            identifier: Some(identifier.clone()),
+            targets,
+            groups: groups.len(),
+            decode_failures,
+            truncated,
+        })
+    }
+
+    fn decode_definition_target(
+        &mut self,
+        definition: &str,
+        expected_name: &str,
+        cache: &mut BTreeMap<String, Option<Vec<u8>>>,
+        cache_bytes: &mut usize,
+    ) -> Result<Option<DefinitionTargetEvidence>, NativeError> {
+        let bound = match self.bind_handle(definition) {
+            Ok(bound) => bound,
+            Err(NativeError::InvalidHandle { .. } | NativeError::StaleHandle) => return Ok(None),
+            Err(error) => return Err(error),
+        };
+        match self.validate_handle(&bound) {
+            Ok(()) => {}
+            Err(NativeError::InvalidHandle { .. } | NativeError::StaleHandle) => return Ok(None),
+            Err(error) => return Err(error),
+        }
+        let absolute = bound.binding().normalized_file_path.clone();
+        let payload = if let Some(entry) = cache.get(&absolute) {
+            match entry {
+                Some(payload) => payload,
+                None => return Ok(None),
+            }
+        } else {
+            match self.get_source_ast(&absolute) {
+                Ok(payload) => {
+                    let total = cache_bytes.saturating_add(payload.len());
+                    if total > MAX_DEFINITION_AST_CACHE_BYTES {
+                        cache.insert(absolute.clone(), None);
+                        return Ok(None);
+                    }
+                    *cache_bytes = total;
+                    cache.insert(absolute.clone(), Some(payload));
+                    match cache.get(&absolute) {
+                        Some(Some(payload)) => payload,
+                        _ => return Ok(None),
+                    }
+                }
+                Err(error) if definition_decode_error(&error) => return Ok(None),
+                Err(error) => return Err(error),
+            }
+        };
+        let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
+        let Some(file) = vfs.file(&absolute) else {
+            return Ok(None);
+        };
+        let source_len = utf16_len(file.text());
+        let range = match find_declaration_name(
+            payload,
+            bound.handle().encoder_index,
+            bound.handle().kind,
+            expected_name,
+            source_len,
+        ) {
+            Ok(Some(range)) => range,
+            Err(error) if error.is_structural() => return Err(definition_ast_error(error)),
+            Ok(None) | Err(_) => return Ok(None),
+        };
+        let Ok(path) = self.project_relative_path(&absolute) else {
+            return Ok(None);
+        };
+        Ok(definition_target_from_ast(
+            path,
+            file.text(),
+            range,
+            expected_name,
+        ))
+    }
+
     /// Returns the Identifier node handle at `offset` when its pool text is
     /// `name`.
     fn identifier_handle(
@@ -1146,8 +1466,6 @@ impl NativeSession {
         offset: u32,
         name: &str,
     ) -> Result<Option<BoundNodeHandle>, NativeError> {
-        let epoch = self.epoch.ok_or(NativeError::NoSnapshot)?;
-        let project = self.project_id.clone().ok_or(NativeError::NoSnapshot)?;
         let source_len = {
             let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
             let file = vfs.file(absolute).ok_or(NativeError::InvalidParams {
@@ -1155,15 +1473,7 @@ impl NativeSession {
             })?;
             utf16_len(file.text())
         };
-        let value = self.call(
-            NativeMethod::GetSourceFile,
-            source_file_params(epoch.snapshot.get(), &project, absolute),
-            Deadline::request(self.limits),
-            Some(epoch.snapshot),
-        )?;
-        let source: RawSourceFile = parse_response(value)?;
-        let payload = decode_base64(&source.data)
-            .map_err(|_| NativeError::Protocol("engine AST payload is not base64".to_owned()))?;
+        let payload = self.get_source_ast(absolute)?;
         let found = find_identifier(&payload, offset, name, source_len)
             .map_err(|_| NativeError::Protocol("engine AST schema mismatch".to_owned()))?;
         let Some((index, kind)) = found else {
@@ -1171,6 +1481,42 @@ impl NativeSession {
         };
         let raw = format!("{index}.{kind}.{absolute}");
         self.bind_handle(&raw).map(Some)
+    }
+
+    /// Fetches and base64-decodes the current snapshot AST for one file.
+    fn get_source_ast(&mut self, absolute: &str) -> Result<Vec<u8>, NativeError> {
+        let epoch = self.epoch.ok_or(NativeError::NoSnapshot)?;
+        let project = self.project_id.clone().ok_or(NativeError::NoSnapshot)?;
+        let value = self.call(
+            NativeMethod::GetSourceFile,
+            source_file_params(epoch.snapshot.get(), &project, absolute),
+            Deadline::request(self.limits),
+            Some(epoch.snapshot),
+        )?;
+        let source: RawSourceFile = parse_response(value)?;
+        decode_ast_payload(&source.data)
+    }
+
+    /// Converts an absolute snapshot path into its normalized project-relative
+    /// form.
+    fn project_relative_path(&self, absolute: &str) -> Result<String, NativeError> {
+        let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
+        let Some(rest) = absolute.strip_prefix(vfs.root()) else {
+            return Err(NativeError::InvalidHandle {
+                reason: "definition target is outside the project root",
+            });
+        };
+        let Some(rest) = rest.strip_prefix('/') else {
+            return Err(NativeError::InvalidHandle {
+                reason: "definition target is not a project file",
+            });
+        };
+        if rest.is_empty() {
+            return Err(NativeError::InvalidHandle {
+                reason: "definition target is the project root",
+            });
+        }
+        Ok(rest.to_owned())
     }
 
     /// Returns referenced symbols for an already bound node handle.
@@ -1652,6 +1998,106 @@ fn map_supervisor_error(error: SupervisorError) -> NativeError {
     }
 }
 
+/// Decodes the base64 AST member into raw v9 bytes.
+fn decode_ast_payload(data: &str) -> Result<Vec<u8>, NativeError> {
+    decode_base64(data)
+        .map_err(|_| NativeError::Protocol("engine AST payload is not base64".to_owned()))
+}
+
+/// Classifies an AST failure for a definition candidate.
+///
+/// Structural payload corruption is a protocol failure, never a partial
+/// definition. Missing/mismatched nodes and out-of-source ranges are local to
+/// one candidate and may degrade to `Partial`.
+fn definition_ast_error(error: AstError) -> NativeError {
+    if error.is_structural() {
+        NativeError::Protocol("engine AST schema mismatch".to_owned())
+    } else {
+        NativeError::InvalidHandle {
+            reason: "definition AST node is outside the candidate",
+        }
+    }
+}
+
+/// Returns whether a declaration decode failure is local and should degrade the
+/// answer to `Partial` instead of aborting the whole definition query.
+///
+/// `Protocol` is deliberately absent: base64, header/schema, budget and string
+/// corruption must abort instead of being reported as an incomplete answer.
+const fn definition_decode_error(error: &NativeError) -> bool {
+    matches!(
+        error,
+        NativeError::InvalidParams { .. }
+            | NativeError::InvalidHandle { .. }
+            | NativeError::StaleHandle
+    )
+}
+
+/// Requires a definition handle to address an Identifier node.
+const fn require_identifier_kind(identifier: &BoundNodeHandle) -> Result<(), NativeError> {
+    if identifier.handle().kind == IDENTIFIER_KIND {
+        Ok(())
+    } else {
+        Err(NativeError::InvalidHandle {
+            reason: "definition handle is not an Identifier node",
+        })
+    }
+}
+
+/// Returns the UTF-8 slice for a UTF-16 AST range, if both ends are boundaries.
+fn utf16_slice(text: &str, range: AstRange) -> Option<&str> {
+    let start = utf16_to_utf8(text, Utf16Offset::new(range.start)).ok()?;
+    let end = utf16_to_utf8(text, Utf16Offset::new(range.end)).ok()?;
+    text.get(
+        usize::try_from(start.get()).unwrap_or(usize::MAX)
+            ..usize::try_from(end.get()).unwrap_or(usize::MAX),
+    )
+}
+
+/// Chooses the position bounds for a caller-supplied identifier.
+///
+/// The strict token range is used only when the source slice equals the decoded
+/// symbol name. Escaped identifiers cannot be validated that way, so their full
+/// AST node span is used instead; this keeps a position inside the escape from
+/// being rejected as `InvalidParams`.
+fn identifier_position_bounds(
+    text: &str,
+    token: AstRange,
+    span: AstRange,
+    expected_name: &str,
+) -> AstRange {
+    if utf16_slice(text, token) == Some(expected_name) {
+        token
+    } else {
+        span
+    }
+}
+
+/// Maps an AST token range to a verified target, or `None` when the source text
+/// does not equal the symbol name.
+fn definition_target_from_ast(
+    path: String,
+    text: &str,
+    range: AstRange,
+    expected_name: &str,
+) -> Option<DefinitionTargetEvidence> {
+    if expected_name.is_empty() || range.start >= range.end {
+        return None;
+    }
+    let start_utf8 = utf16_to_utf8(text, Utf16Offset::new(range.start)).ok()?;
+    let end_utf8 = utf16_to_utf8(text, Utf16Offset::new(range.end)).ok()?;
+    if utf16_slice(text, range)? != expected_name {
+        return None;
+    }
+    Some(DefinitionTargetEvidence {
+        path,
+        start_utf16: Utf16Offset::new(range.start),
+        end_utf16: Utf16Offset::new(range.end),
+        start_utf8,
+        end_utf8,
+    })
+}
+
 fn map_vfs(error: &VfsError) -> NativeError {
     match error {
         VfsError::InvalidPath { .. } | VfsError::Root(_) => NativeError::InvalidParams {
@@ -1812,5 +2258,135 @@ mod tests {
             map_engine_error(NativeMethod::GetTypeAtPosition, &missing),
             NativeError::Unsupported { .. }
         ));
+    }
+
+    fn bound_handle(kind: u32) -> BoundNodeHandle {
+        BoundNodeHandle::new(
+            NodeHandle::parse(&format!("7.{kind}./work/main.ts")).expect("handle"),
+            HandleBinding {
+                session_generation: SessionGeneration::new(1),
+                engine_snapshot_id: EngineSnapshotId::new(3),
+                normalized_file_path: "/work/main.ts".to_owned(),
+                content_hash_or_node_id: "hash".to_owned(),
+                node_index: 7,
+                node_kind: kind,
+            },
+        )
+    }
+
+    fn header_with_version(version: u32) -> Vec<u8> {
+        let mut bytes = vec![0u8; 64];
+        bytes[0..4].copy_from_slice(&(version << 24).to_le_bytes());
+        bytes[24..28].copy_from_slice(&64u32.to_le_bytes());
+        bytes[28..32].copy_from_slice(&64u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(&64u32.to_le_bytes());
+        bytes[36..40].copy_from_slice(&64u32.to_le_bytes());
+        bytes[40..44].copy_from_slice(&64u32.to_le_bytes());
+        bytes
+    }
+
+    #[test]
+    fn definition_handles_require_an_identifier_node() {
+        assert!(require_identifier_kind(&bound_handle(IDENTIFIER_KIND)).is_ok());
+        assert!(matches!(
+            require_identifier_kind(&bound_handle(173)),
+            Err(NativeError::InvalidHandle { .. })
+        ));
+    }
+
+    #[test]
+    fn malformed_base64_non_v9_and_truncated_payloads_are_protocol_failures() {
+        assert!(matches!(
+            decode_ast_payload("***"),
+            Err(NativeError::Protocol(_))
+        ));
+
+        let truncated = [0u8; 10];
+        let error = find_declaration_name(&truncated, 1, 300, "x", 1).expect_err("truncated");
+        assert!(matches!(
+            definition_ast_error(error),
+            NativeError::Protocol(_)
+        ));
+
+        let non_v9 = header_with_version(5);
+        let error = find_declaration_name(&non_v9, 1, 300, "x", 1).expect_err("non-v9");
+        assert!(matches!(
+            definition_ast_error(error),
+            NativeError::Protocol(_)
+        ));
+
+        assert!(matches!(
+            definition_ast_error(AstError::NodeIndexOutOfRange),
+            NativeError::InvalidHandle { .. }
+        ));
+        assert!(definition_decode_error(&NativeError::InvalidHandle {
+            reason: "missing node",
+        }));
+        assert!(!definition_decode_error(&NativeError::Protocol(
+            "bad AST".to_owned()
+        )));
+    }
+
+    #[test]
+    fn definition_targets_convert_offsets_after_a_cjk_and_emoji_prefix() {
+        let text = "// 😀 注释\nconst name = 1;\n";
+        let start = position_to_offset(
+            text,
+            Utf16Position {
+                line: 1,
+                character: 6,
+            },
+        )
+        .expect("start")
+        .get();
+        let end = position_to_offset(
+            text,
+            Utf16Position {
+                line: 1,
+                character: 10,
+            },
+        )
+        .expect("end")
+        .get();
+        let target = definition_target_from_ast(
+            "main.ts".to_owned(),
+            text,
+            AstRange::new(start, end),
+            "name",
+        )
+        .expect("target");
+
+        assert_ne!(target.start_utf8.get(), target.start_utf16.get());
+        assert_eq!(
+            target.start_utf8.get(),
+            utf16_to_utf8(text, Utf16Offset::new(start))
+                .expect("utf8 start")
+                .get()
+        );
+        assert_eq!(
+            text.get(
+                usize::try_from(target.start_utf8.get()).expect("start")
+                    ..usize::try_from(target.end_utf8.get()).expect("end")
+            ),
+            Some("name")
+        );
+    }
+
+    #[test]
+    fn escaped_identifiers_use_the_node_span_for_position_checks() {
+        let text = "const \\u0061bc = 1;\n";
+        let computed = AstRange::new(11, 14);
+        let span = AstRange::new(5, 14);
+        assert_eq!(
+            definition_target_from_ast("main.ts".to_owned(), text, computed, "abc",),
+            None,
+            "an escaped token cannot be verified as literal source text"
+        );
+        let bounds = identifier_position_bounds(text, computed, span, "abc");
+        assert_eq!(bounds, span);
+        assert!(
+            bounds.start <= 6 && 6 < bounds.end,
+            "a position inside the escape must remain inside the accepted span"
+        );
     }
 }

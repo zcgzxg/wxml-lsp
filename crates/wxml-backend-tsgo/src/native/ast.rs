@@ -147,6 +147,62 @@ pub enum AstError {
     /// The payload is larger than `u32`.
     #[error("AST payload exceeds the u32 size field")]
     PayloadTooLarge,
+    /// A requested node index is outside the node table.
+    #[error("AST node index is outside the node table")]
+    NodeIndexOutOfRange,
+    /// The node table entry does not carry the expected node kind.
+    #[error("AST node {index} has kind {observed}, expected {expected}")]
+    NodeKindMismatch {
+        /// Node table index.
+        index: u32,
+        /// Expected node kind from the handle.
+        expected: u32,
+        /// Observed node kind.
+        observed: u32,
+    },
+    /// A `next`/`parent` link is out of range or cyclic.
+    #[error("AST node link is outside the node table or cyclic")]
+    NodeLinkInvalid,
+}
+
+/// Node kind of an Identifier in the frozen v9 schema.
+pub const IDENTIFIER_KIND: u32 = 79;
+
+/// Half-open UTF-16 code-unit range decoded from an AST node.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AstRange {
+    /// Inclusive token start after trimming leading trivia.
+    pub start: u32,
+    /// Exclusive token end.
+    pub end: u32,
+}
+
+impl AstRange {
+    /// Creates a range without validating it against any text.
+    #[must_use]
+    pub const fn new(start: u32, end: u32) -> Self {
+        Self { start, end }
+    }
+}
+
+impl AstError {
+    /// Returns whether the failure is payload-wide corruption rather than a
+    /// candidate-local node/range problem.
+    ///
+    /// Structural failures must abort the query as
+    /// [`crate::native::NativeError::Protocol`]; missing or mismatched
+    /// candidate nodes and out-of-source ranges may degrade one candidate to
+    /// `Partial`.
+    #[must_use]
+    pub const fn is_structural(self) -> bool {
+        !matches!(
+            self,
+            Self::NodeIndexOutOfRange
+                | Self::NodeKindMismatch { .. }
+                | Self::NodeRangeInvalid
+                | Self::NodeRangeOutOfSource
+        )
+    }
 }
 
 impl AstHeader {
@@ -287,7 +343,7 @@ pub fn find_identifier(
         let Some(kind) = read_u32(payload, base) else {
             return Err(AstError::SectionOrder);
         };
-        if kind != 79 {
+        if kind != IDENTIFIER_KIND {
             continue;
         }
         let Some(pos) = read_u32(payload, base + 4) else {
@@ -354,6 +410,235 @@ pub fn find_identifier(
     }
 
     Ok(exact.map(|(index, kind, _)| (index, kind)))
+}
+
+/// Finds the name token of a declaration node by node-table index.
+///
+/// Declaration handles returned by `getReferencedSymbolsForNode` address a
+/// declaration node (for example a `PropertySignature` or an
+/// `InterfaceDeclaration`), not an Identifier. This function walks the flat
+/// pre-order node table from the declaration into its subtree, bounded by the
+/// nearest `next` link, and prefers an Identifier whose `parent` is the
+/// declaration itself (the name slot). Decorator, heritage and initializer
+/// identifiers can share the same text, so they only win when no direct name
+/// slot matches.
+///
+/// Identifier `pos` includes leading trivia in the frozen encoder, while `end`
+/// is the exact token end. The token start is therefore derived as
+/// `end - utf16_len(name)` and must stay inside the node's `pos..end` range.
+/// The caller must still compare the source text in `start..end` with `name`;
+/// this function only proves the AST side.
+///
+/// # Errors
+///
+/// Returns [`AstError`] for a malformed header, an out-of-range node index, a
+/// node-kind mismatch, malformed node links, or an invalid node range or string
+/// reference. A declaration without a matching name Identifier is `Ok(None)`.
+pub fn find_declaration_name(
+    payload: &[u8],
+    node_index: u32,
+    node_kind: u32,
+    name: &str,
+    source_utf16_len: u32,
+) -> Result<Option<AstRange>, AstError> {
+    if node_index == 0 {
+        // Index zero is the v9 nil sentinel, never a declaration handle.
+        return Err(AstError::NodeIndexOutOfRange);
+    }
+    let header = AstHeader::parse(payload)?;
+    let base = node_base(&header, node_index)?;
+    let observed = read_u32(payload, base).ok_or(AstError::SectionOrder)?;
+    if observed != node_kind {
+        return Err(AstError::NodeKindMismatch {
+            index: node_index,
+            expected: node_kind,
+            observed,
+        });
+    }
+    if observed == IDENTIFIER_KIND {
+        return identifier_range(payload, &header, base, name, source_utf16_len);
+    }
+
+    let end = subtree_end(payload, &header, node_index)?;
+    let mut fallback = None;
+    let mut index = node_index.saturating_add(1);
+    while index < end {
+        let base = node_base(&header, index)?;
+        let kind = read_u32(payload, base).ok_or(AstError::SectionOrder)?;
+        if kind == IDENTIFIER_KIND {
+            if let Some(range) = identifier_range(payload, &header, base, name, source_utf16_len)? {
+                // A direct child is the declaration's name slot. Decorators,
+                // heritage clauses and initializers can contain identifiers
+                // with the same text; they must never win over the name slot.
+                let parent = read_u32(payload, base + 16).ok_or(AstError::SectionOrder)?;
+                if parent == node_index {
+                    return Ok(Some(range));
+                }
+                if fallback.is_none() {
+                    fallback = Some(range);
+                }
+            }
+        }
+        index = index.saturating_add(1);
+    }
+    Ok(fallback)
+}
+
+/// Returns the full `pos..end` span of one node by node-table index.
+///
+/// Unlike [`find_declaration_name`], this span includes leading trivia. It is
+/// used only to bound a caller-supplied Identifier position when the token text
+/// cannot be verified (for example an escaped identifier).
+///
+/// # Errors
+///
+/// Returns [`AstError`] for a malformed header, an out-of-range node index, a
+/// node-kind mismatch, or a range outside the source text.
+pub fn node_span(
+    payload: &[u8],
+    node_index: u32,
+    node_kind: u32,
+    source_utf16_len: u32,
+) -> Result<AstRange, AstError> {
+    if node_index == 0 {
+        return Err(AstError::NodeIndexOutOfRange);
+    }
+    let header = AstHeader::parse(payload)?;
+    let base = node_base(&header, node_index)?;
+    let observed = read_u32(payload, base).ok_or(AstError::SectionOrder)?;
+    if observed != node_kind {
+        return Err(AstError::NodeKindMismatch {
+            index: node_index,
+            expected: node_kind,
+            observed,
+        });
+    }
+    let pos = read_u32(payload, base + 4).ok_or(AstError::SectionOrder)?;
+    let end = read_u32(payload, base + 8).ok_or(AstError::SectionOrder)?;
+    if pos > end {
+        return Err(AstError::NodeRangeInvalid);
+    }
+    if end > source_utf16_len {
+        return Err(AstError::NodeRangeOutOfSource);
+    }
+    Ok(AstRange::new(pos, end))
+}
+
+/// Decodes one Identifier node's exact token range and checks its pool name.
+fn identifier_range(
+    payload: &[u8],
+    header: &AstHeader,
+    base: usize,
+    name: &str,
+    source_utf16_len: u32,
+) -> Result<Option<AstRange>, AstError> {
+    let pos = read_u32(payload, base + 4).ok_or(AstError::SectionOrder)?;
+    let end = read_u32(payload, base + 8).ok_or(AstError::SectionOrder)?;
+    if pos > end {
+        return Err(AstError::NodeRangeInvalid);
+    }
+    if end > source_utf16_len {
+        return Err(AstError::NodeRangeOutOfSource);
+    }
+    let data = read_u32(payload, base + 20).ok_or(AstError::SectionOrder)?;
+    if string_bytes(payload, header, data)? != name.as_bytes() {
+        return Ok(None);
+    }
+
+    let token_units = u32::try_from(name.encode_utf16().count()).unwrap_or(u32::MAX);
+    if token_units == 0 || end < token_units {
+        return Ok(None);
+    }
+    let start = end - token_units;
+    if start < pos {
+        // The pool name does not correspond to a source token of the same
+        // length, for example an escaped identifier. Let the caller treat the
+        // candidate as undecodable instead of publishing a shifted range.
+        return Ok(None);
+    }
+    Ok(Some(AstRange::new(start, end)))
+}
+
+/// Returns the exclusive subtree end for one node table index.
+fn subtree_end(payload: &[u8], header: &AstHeader, index: u32) -> Result<u32, AstError> {
+    let mut current = index;
+    let mut steps = 0u32;
+    loop {
+        if steps > header.nnodes {
+            return Err(AstError::NodeLinkInvalid);
+        }
+        steps = steps.saturating_add(1);
+        let base = node_base(header, current)?;
+        let next = read_u32(payload, base + 12).ok_or(AstError::SectionOrder)?;
+        if next != 0 {
+            if next <= current || next > header.nnodes {
+                return Err(AstError::NodeLinkInvalid);
+            }
+            return Ok(next);
+        }
+        let parent = read_u32(payload, base + 16).ok_or(AstError::SectionOrder)?;
+        if parent == 0 {
+            return Ok(header.nnodes);
+        }
+        if parent >= header.nnodes || parent == current {
+            return Err(AstError::NodeLinkInvalid);
+        }
+        current = parent;
+    }
+}
+
+/// Reads the UTF-8/WTF-8 string-pool bytes addressed by a node `data` word.
+fn string_bytes<'a>(
+    payload: &'a [u8],
+    header: &AstHeader,
+    data: u32,
+) -> Result<&'a [u8], AstError> {
+    if data & 0xC000_0000 != 0x4000_0000 {
+        return Err(AstError::InvalidNodeData);
+    }
+    let ordinal = (data & 0x00FF_FFFF) / 2;
+    if ordinal >= header.nstrings {
+        return Err(AstError::StringIndexOutOfRange);
+    }
+    let entry = header
+        .string_offsets
+        .checked_add(ordinal.checked_mul(8).ok_or(AstError::SectionOrder)?)
+        .ok_or(AstError::SectionOrder)?;
+    let entry = usize::try_from(entry).map_err(|_| AstError::SectionOrder)?;
+    let start = read_u32(payload, entry).ok_or(AstError::SectionOrder)?;
+    let finish = read_u32(payload, entry + 4).ok_or(AstError::SectionOrder)?;
+    if finish < start {
+        return Err(AstError::StringRangeInvalid);
+    }
+    let text_start = header
+        .string_data
+        .checked_add(start)
+        .ok_or(AstError::StringRangeInvalid)?;
+    let text_end = header
+        .string_data
+        .checked_add(finish)
+        .ok_or(AstError::StringRangeInvalid)?;
+    if text_end > header.extended {
+        return Err(AstError::StringRangeInvalid);
+    }
+    let text_start = usize::try_from(text_start).map_err(|_| AstError::StringRangeInvalid)?;
+    let text_end = usize::try_from(text_end).map_err(|_| AstError::StringRangeInvalid)?;
+    payload
+        .get(text_start..text_end)
+        .ok_or(AstError::StringRangeInvalid)
+}
+
+/// Resolves a node table index to its record offset.
+fn node_base(header: &AstHeader, index: u32) -> Result<usize, AstError> {
+    if index >= header.nnodes {
+        return Err(AstError::NodeIndexOutOfRange);
+    }
+    let stride = u32::try_from(AST_NODE_STRIDE_BYTES).unwrap_or(u32::MAX);
+    let base = header
+        .nodes
+        .checked_add(index.checked_mul(stride).ok_or(AstError::SectionOrder)?)
+        .ok_or(AstError::SectionOrder)?;
+    usize::try_from(base).map_err(|_| AstError::SectionOrder)
 }
 
 fn read_u32(payload: &[u8], offset: usize) -> Option<u32> {
@@ -630,6 +915,295 @@ mod tests {
             AstHeader::parse(&payload),
             Err(AstError::VersionMismatch { observed: 5 })
         ));
+    }
+
+    /// Builds a minimal v9 payload with a string pool and a node table.
+    fn tree_payload(strings: &[&[u8]], nodes: &[[u32; 7]]) -> Vec<u8> {
+        let mut table = Vec::new();
+        let mut pool = Vec::new();
+        for string in strings {
+            let start = u32::try_from(pool.len()).expect("pool start");
+            pool.extend_from_slice(string);
+            let end = u32::try_from(pool.len()).expect("pool end");
+            table.extend_from_slice(&start.to_le_bytes());
+            table.extend_from_slice(&end.to_le_bytes());
+        }
+        let string_data = 64 + u32::try_from(table.len()).expect("table length");
+        let extended = string_data + u32::try_from(pool.len()).expect("pool length");
+        let nodes_offset = extended;
+        let mut payload = header(9, 64, [string_data, extended, extended, nodes_offset], 0);
+        payload.extend_from_slice(&table);
+        payload.extend_from_slice(&pool);
+        for node in nodes {
+            for word in node {
+                payload.extend_from_slice(&word.to_le_bytes());
+            }
+        }
+        payload
+    }
+
+    const fn string_word(ordinal: u32) -> u32 {
+        0x4000_0000 | (ordinal * 2)
+    }
+
+    #[test]
+    fn finds_a_declaration_name_by_trimming_leading_trivia() {
+        let payload = tree_payload(
+            &[b"User", b"name"],
+            &[
+                [0, 0, 0, 0, 0, 0, 0],
+                [308, 0, 40, 0, 0, 0x8000_0000, 0],
+                [0xFFFF_FFFF, 0, 39, 0, 1, 1, 0],
+                // Declaration starts at 0 and includes leading trivia.
+                [266, 0, 20, 7, 2, 0x13, 0],
+                // Identifier pos includes trivia (4..10), token is 6..10.
+                [79, 4, 10, 0, 3, string_word(0), 0],
+                [173, 12, 28, 0, 3, 0xA, 0],
+                [79, 12, 22, 0, 5, string_word(1), 0],
+                // A later sibling declaration with the same name.
+                [266, 30, 38, 0, 2, 0x13, 0],
+                [79, 32, 40, 0, 7, string_word(0), 0],
+            ],
+        );
+
+        assert_eq!(
+            find_declaration_name(&payload, 3, 266, "User", 40).expect("declaration"),
+            Some(AstRange::new(6, 10))
+        );
+        assert_eq!(
+            find_declaration_name(&payload, 5, 173, "name", 40).expect("property"),
+            Some(AstRange::new(18, 22))
+        );
+        assert_eq!(
+            find_declaration_name(&payload, 4, 79, "User", 40).expect("identifier"),
+            Some(AstRange::new(6, 10))
+        );
+    }
+
+    #[test]
+    fn prefers_the_direct_name_slot_over_a_decorator_identifier() {
+        let payload = tree_payload(
+            &[b"User"],
+            &[
+                [0, 0, 0, 0, 0, 0, 0],
+                [308, 0, 60, 0, 0, 0x8000_0000, 0],
+                [0xFFFF_FFFF, 0, 59, 0, 1, 1, 0],
+                // Class declaration; the decorator comes first in pre-order.
+                [300, 0, 50, 8, 2, 0, 0],
+                [301, 0, 10, 5, 3, 0, 0],
+                [79, 4, 8, 0, 4, string_word(0), 0],
+                // The class name Identifier is a direct child of the class.
+                [79, 39, 44, 0, 3, string_word(0), 0],
+                [302, 45, 50, 0, 3, 0, 0],
+                [266, 52, 58, 0, 2, 0x13, 0],
+            ],
+        );
+
+        assert_eq!(
+            find_declaration_name(&payload, 3, 300, "User", 60).expect("class name"),
+            Some(AstRange::new(40, 44)),
+            "the decorator identifier must not win over the declaration name slot"
+        );
+    }
+
+    #[test]
+    fn falls_back_to_a_nested_name_when_there_is_no_direct_slot() {
+        let payload = tree_payload(
+            &[b"User"],
+            &[
+                [0, 0, 0, 0, 0, 0, 0],
+                [308, 0, 20, 0, 0, 0x8000_0000, 0],
+                [0xFFFF_FFFF, 0, 19, 0, 1, 1, 0],
+                [300, 0, 20, 6, 2, 0, 0],
+                [301, 0, 15, 0, 3, 0, 0],
+                [79, 4, 10, 0, 4, string_word(0), 0],
+            ],
+        );
+        assert_eq!(
+            find_declaration_name(&payload, 3, 300, "User", 20).expect("fallback"),
+            Some(AstRange::new(6, 10))
+        );
+    }
+
+    #[test]
+    fn declaration_subtree_stops_at_the_next_sibling() {
+        let payload = tree_payload(
+            &[b"User", b"name"],
+            &[
+                [0, 0, 0, 0, 0, 0, 0],
+                [308, 0, 40, 0, 0, 0x8000_0000, 0],
+                [0xFFFF_FFFF, 0, 39, 0, 1, 1, 0],
+                [266, 0, 20, 5, 2, 0x13, 0],
+                [79, 0, 10, 0, 3, string_word(1), 0],
+                [266, 30, 38, 0, 2, 0x13, 0],
+                [79, 30, 38, 0, 5, string_word(0), 0],
+            ],
+        );
+
+        assert_eq!(
+            find_declaration_name(&payload, 3, 266, "User", 40).expect("bounded"),
+            None,
+            "the first declaration must not borrow the later sibling's identifier"
+        );
+    }
+
+    #[test]
+    fn last_child_is_bounded_by_its_parent_next_link() {
+        let payload = tree_payload(
+            &[b"User", b"other"],
+            &[
+                [0, 0, 0, 0, 0, 0, 0],
+                [308, 0, 40, 0, 0, 0x8000_0000, 0],
+                [0xFFFF_FFFF, 0, 39, 0, 1, 1, 0],
+                // Last child of the inner list.
+                [300, 0, 20, 0, 6, 0, 0],
+                [79, 0, 10, 0, 3, string_word(1), 0],
+                [302, 12, 20, 0, 3, 0, 0],
+                // Inner list ends at its next sibling, node 8.
+                [0xFFFF_FFFF, 0, 20, 8, 2, 1, 0],
+                [303, 20, 28, 0, 6, 0, 0],
+                // Later sibling declaration with the same name.
+                [300, 30, 40, 0, 2, 0, 0],
+                [79, 30, 40, 0, 8, string_word(0), 0],
+            ],
+        );
+
+        assert_eq!(
+            find_declaration_name(&payload, 3, 300, "User", 40).expect("bounded"),
+            None,
+            "a last child must stop at its parent's next link, not at the file end"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_next_links_and_multi_hop_parent_cycles() {
+        let invalid_next = tree_payload(
+            &[b"User"],
+            &[
+                [0, 0, 0, 0, 0, 0, 0],
+                [308, 0, 40, 0, 0, 0x8000_0000, 0],
+                [0xFFFF_FFFF, 0, 39, 0, 1, 1, 0],
+                [300, 0, 20, 99, 2, 0, 0],
+                [79, 0, 10, 0, 3, string_word(0), 0],
+            ],
+        );
+        assert_eq!(
+            find_declaration_name(&invalid_next, 3, 300, "User", 40).expect_err("next"),
+            AstError::NodeLinkInvalid
+        );
+
+        let cycle = tree_payload(
+            &[b"User"],
+            &[
+                [0, 0, 0, 0, 0, 0, 0],
+                [308, 0, 40, 0, 0, 0x8000_0000, 0],
+                [0xFFFF_FFFF, 0, 39, 0, 1, 1, 0],
+                [300, 0, 20, 0, 4, 0, 0],
+                [301, 0, 20, 0, 3, 0, 0],
+            ],
+        );
+        assert_eq!(
+            find_declaration_name(&cycle, 3, 300, "User", 40).expect_err("parent cycle"),
+            AstError::NodeLinkInvalid
+        );
+    }
+
+    #[test]
+    fn rejects_a_token_start_before_the_identifier_node() {
+        let payload = tree_payload(
+            &[b"User"],
+            &[
+                [0, 0, 0, 0, 0, 0, 0],
+                [308, 0, 20, 0, 0, 0x8000_0000, 0],
+                [0xFFFF_FFFF, 0, 19, 0, 1, 1, 0],
+                [300, 0, 20, 0, 2, 0, 0],
+                // "User" is four units; end 8 would start at 4, before pos 5.
+                [79, 5, 8, 0, 3, string_word(0), 0],
+            ],
+        );
+        assert_eq!(
+            find_declaration_name(&payload, 3, 300, "User", 20).expect("start"),
+            None
+        );
+    }
+
+    #[test]
+    fn classifies_structural_payload_errors() {
+        assert!(AstError::TooShort.is_structural());
+        assert!(AstError::VersionMismatch { observed: 5 }.is_structural());
+        assert!(AstError::NodeTableMisaligned.is_structural());
+        assert!(AstError::StringRangeInvalid.is_structural());
+        assert!(AstError::NodeLinkInvalid.is_structural());
+        assert!(!AstError::NodeIndexOutOfRange.is_structural());
+        assert!(
+            !AstError::NodeKindMismatch {
+                index: 3,
+                expected: 300,
+                observed: 79,
+            }
+            .is_structural()
+        );
+        assert!(!AstError::NodeRangeInvalid.is_structural());
+        assert!(!AstError::NodeRangeOutOfSource.is_structural());
+    }
+
+    #[test]
+    fn rejects_invalid_declaration_indices_kinds_and_links() {
+        let payload = tree_payload(
+            &[b"User", b"name"],
+            &[
+                [0, 0, 0, 0, 0, 0, 0],
+                [308, 0, 40, 0, 0, 0x8000_0000, 0],
+                [0xFFFF_FFFF, 0, 39, 0, 1, 1, 0],
+                [266, 0, 20, 7, 2, 0x13, 0],
+                [79, 0, 10, 0, 3, string_word(0), 0],
+                [266, 30, 38, 0, 2, 0x13, 0],
+                [79, 30, 38, 0, 5, string_word(0), 0],
+            ],
+        );
+
+        assert_eq!(
+            find_declaration_name(&payload, 0, 0, "User", 40).expect_err("nil"),
+            AstError::NodeIndexOutOfRange
+        );
+        assert_eq!(
+            find_declaration_name(&payload, 99, 266, "User", 40).expect_err("index"),
+            AstError::NodeIndexOutOfRange
+        );
+        assert!(matches!(
+            find_declaration_name(&payload, 3, 173, "User", 40),
+            Err(AstError::NodeKindMismatch { .. })
+        ));
+
+        let mut cyclic = payload;
+        // Make the first declaration its own parent and drop its next link so
+        // the subtree walk cannot terminate; the decoder must reject it.
+        let nodes_offset = 64 + 2 * 8 + 8;
+        let first = nodes_offset + 3 * 28;
+        cyclic[first + 12..first + 16].copy_from_slice(&0u32.to_le_bytes());
+        cyclic[first + 16..first + 20].copy_from_slice(&3u32.to_le_bytes());
+        assert_eq!(
+            find_declaration_name(&cyclic, 3, 266, "User", 40).expect_err("cycle"),
+            AstError::NodeLinkInvalid
+        );
+    }
+
+    #[test]
+    fn rejects_declaration_ranges_outside_the_source() {
+        let payload = tree_payload(
+            &[b"User"],
+            &[
+                [0, 0, 0, 0, 0, 0, 0],
+                [308, 0, 40, 0, 0, 0x8000_0000, 0],
+                [0xFFFF_FFFF, 0, 39, 0, 1, 1, 0],
+                [266, 0, 20, 0, 2, 0x13, 0],
+                [79, 0, 10, 0, 3, string_word(0), 0],
+            ],
+        );
+        assert_eq!(
+            find_declaration_name(&payload, 3, 266, "User", 5).expect_err("source"),
+            AstError::NodeRangeOutOfSource
+        );
     }
 
     #[test]

@@ -22,8 +22,9 @@ use wxml_backend_tsgo::input::{
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::handles::NodeHandle;
 use wxml_backend_tsgo::native::session::{NativeSession, SessionOptions};
-use wxml_backend_tsgo::native::strings::Utf16Position;
+use wxml_backend_tsgo::native::strings::{Utf16Position, position_to_offset};
 use wxml_backend_tsgo::query::completion::map_completions;
+use wxml_backend_tsgo::query::definition::map_definition;
 use wxml_backend_tsgo::query::diagnostics::{DiagnosticSeverity, map_diagnostics};
 use wxml_backend_tsgo::query::documentation::map_documentation;
 use wxml_backend_tsgo::query::references::map_references;
@@ -353,6 +354,18 @@ fn real_engine_vertical_slice() {
         references_result.status
     );
 
+    let identifier_definition = session
+        .definition_for_identifier(identifier, position(3, 0))
+        .expect("identifier definition");
+    assert!(
+        !identifier_definition.targets.is_empty(),
+        "an Identifier handle must resolve a definition"
+    );
+    assert!(matches!(
+        session.definition_for_identifier(&symbol.declarations()[0], position(3, 0)),
+        Err(NativeError::InvalidHandle { .. })
+    ));
+
     let completions = session
         .completions("main.ts", position(4, 2))
         .expect("completions");
@@ -395,6 +408,13 @@ fn real_engine_vertical_slice() {
         session.documentation(&reference),
         Err(NativeError::StaleHandle)
     ));
+    assert!(
+        matches!(
+            session.definition_for_identifier(identifier, position(3, 0)),
+            Err(NativeError::StaleHandle)
+        ),
+        "definition must reject an identifier bound to the previous snapshot"
+    );
 
     let updated_diagnostics = session.diagnostics("main.ts").expect("updated diagnostics");
     println!(
@@ -439,4 +459,193 @@ fn real_engine_vertical_slice() {
         canary_text,
         "the engine must not write the host canary"
     );
+}
+
+/// Opt-in real-engine gate for the F1 definition composition.
+///
+/// The queried `u.name` token must resolve to the `name` property declaration
+/// inside `interface User` in `model.ts`, with the exact identifier token range
+/// after leading `JSDoc` trivia, not the declaration node's `pos`.
+#[test]
+fn real_engine_definition_decodes_declaration_identifier_ranges() {
+    let Ok(bin) = std::env::var("TSGO_BIN") else {
+        let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
+        assert!(
+            !required,
+            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1; \
+             set it to the pinned 7.1.0-beta lib/tsc"
+        );
+        eprintln!(
+            "real-engine definition gate skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc \
+             (or WXML_REQUIRE_REAL_ENGINE=1 to make this a hard gate)"
+        );
+        return;
+    };
+    let executable = Path::new(&bin);
+    assert!(
+        executable.is_file(),
+        "TSGO_BIN does not point at a file: {bin}"
+    );
+
+    let sandbox = std::env::temp_dir().join(unique("definition-sandbox"));
+    std::fs::create_dir_all(&sandbox).expect("sandbox");
+    let _sandbox_guard = Cleanup(sandbox.clone());
+
+    let project_root = format!("/tmp/opencode/{}", unique("definition-project"));
+    assert!(
+        !Path::new(&project_root).exists(),
+        "the virtual project root must not exist on disk: {project_root}"
+    );
+    let fixture = input(
+        &project_root,
+        1,
+        MAIN_V2,
+        "/tmp/opencode/definition-unused-canary",
+    );
+
+    let mut session =
+        NativeSession::start(SessionOptions::new(executable, sandbox)).expect("start real engine");
+    session.open_project(&fixture).expect("open project");
+
+    let raw = session
+        .definition("main.ts", position(4, 2))
+        .expect("definition");
+    let result = map_definition(&raw);
+    println!(
+        "definition: targets={:?} groups={} failures={} truncated={} status={:?}",
+        result
+            .targets
+            .iter()
+            .map(|target| {
+                (
+                    target.path.as_str(),
+                    target.range.start.get(),
+                    target.range.end.get(),
+                    target.utf16.start.get(),
+                    target.utf16.end.get(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        raw.groups,
+        raw.decode_failures,
+        raw.truncated,
+        result.status
+    );
+    assert_eq!(
+        result.status,
+        wxml_types::CapabilityStatus::Supported,
+        "every definition declaration must decode"
+    );
+
+    let target = result
+        .targets
+        .iter()
+        .find(|target| target.path == "model.ts")
+        .expect("the interface property declaration in model.ts");
+    let start = position_to_offset(MODEL, position(2, 4))
+        .expect("name start")
+        .get();
+    let end = position_to_offset(MODEL, position(2, 8))
+        .expect("name end")
+        .get();
+    assert_eq!(target.utf16.start.get(), start);
+    assert_eq!(target.utf16.end.get(), end);
+    assert_eq!(target.range.start.get(), start);
+    assert_eq!(target.range.end.get(), end);
+    assert_eq!(
+        MODEL.get(
+            usize::try_from(target.range.start.get()).expect("start")
+                ..usize::try_from(target.range.end.get()).expect("end")
+        ),
+        Some("name"),
+        "the published range must be the identifier token, not the \
+         declaration node pos that includes leading JSDoc trivia"
+    );
+
+    // Cross-file `User` has both the interface target and the import alias.
+    // Both candidates must survive decoding and deduplication.
+    let imported = session
+        .definition("main.ts", position(0, 14))
+        .expect("import definition");
+    let imported_result = map_definition(&imported);
+    println!(
+        "import definition: targets={:?} groups={} failures={} status={:?}",
+        imported_result
+            .targets
+            .iter()
+            .map(|target| (target.path.as_str(), target.utf16.start.get()))
+            .collect::<Vec<_>>(),
+        imported.groups,
+        imported.decode_failures,
+        imported_result.status
+    );
+    assert_eq!(
+        imported_result.status,
+        wxml_types::CapabilityStatus::Supported,
+        "the target and the import alias must both decode"
+    );
+    assert_eq!(imported.groups, 2);
+    let mut actual: Vec<(String, u32, u32, u32, u32)> = imported_result
+        .targets
+        .iter()
+        .map(|target| {
+            (
+                target.path.clone(),
+                target.range.start.get(),
+                target.range.end.get(),
+                target.utf16.start.get(),
+                target.utf16.end.get(),
+            )
+        })
+        .collect();
+    actual.sort();
+    let import_start = position_to_offset(MAIN_V2, position(0, 14))
+        .expect("import User start")
+        .get();
+    let import_end = position_to_offset(MAIN_V2, position(0, 18))
+        .expect("import User end")
+        .get();
+    let interface_start = position_to_offset(MODEL, position(0, 17))
+        .expect("interface User start")
+        .get();
+    let interface_end = position_to_offset(MODEL, position(0, 21))
+        .expect("interface User end")
+        .get();
+    assert_eq!(
+        actual,
+        vec![
+            (
+                "main.ts".to_owned(),
+                import_start,
+                import_end,
+                import_start,
+                import_end,
+            ),
+            (
+                "model.ts".to_owned(),
+                interface_start,
+                interface_end,
+                interface_start,
+                interface_end,
+            ),
+        ],
+        "both the import alias and the interface declaration must have exact ranges"
+    );
+    assert_eq!(
+        MAIN_V2.get(
+            usize::try_from(import_start).expect("start")
+                ..usize::try_from(import_end).expect("end")
+        ),
+        Some("User")
+    );
+    assert_eq!(
+        MODEL.get(
+            usize::try_from(interface_start).expect("start")
+                ..usize::try_from(interface_end).expect("end")
+        ),
+        Some("User")
+    );
+
+    session.release().expect("release snapshot");
+    session.shutdown().expect("shutdown");
 }
