@@ -147,7 +147,7 @@ F0 冻结的 schema 标识：**AST protocol version = 9，AST header = 64 字节
   --async
   --cwd <sandbox-root>
   --useCaseSensitiveFileNames=true
-  --callbacks=readFile,fileExists,directoryExists,getAccessibleEntries,realpath,writeFile:noop,removeFile:noop
+  --callbacks=readFile,fileExists,directoryExists,getAccessibleEntries,realpath,stat,writeFile:noop,removeFile:noop
 ```
 
 - MUST 使用 `--api` 与 `--async`；不得使用无 `--async` 的 MessagePack 同步路径。
