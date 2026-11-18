@@ -24,6 +24,12 @@ P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、Definit
 
 原生 node handle 不携带快照身份，跨 `updateSnapshot` 可能静默解析到新 AST 的同序号节点。Rust 必须把每个 handle 绑定 `(snapshot id, file path, content hash/node id)`，跨 epoch 一律拒绝，不能缓存到下一快照。未保存内容更新必须使用同一次 `updateSnapshot` 的 `closeFiles` + `openFiles`；仅 layer/full/notification 不会刷新已打开文件。原生 API 暴露 `emit` 等写方法且实测可写宿主磁盘，客户端只允许白名单查询方法，启动时设置 `writeFile:noop`、`removeFile:noop`，读回调 fail-closed，永不启用 `--runExternalCode`；`noEmit`/no-op 不构成 OS 沙箱。2026-11-17 P2 追加探针确认 `appendFile`/`chtimes` 没有可注册的 deny 回调，源码中始终走 base OS FS；因此写阻断不能只依赖回调，必须同时依赖“写方法不可达”的白名单和运行目录最小权限。该残余风险为 B-02 PARTIAL；维护者已于 2026-11-18 显式接受“方法白名单 + 运行目录最小权限 + 禁用 emit/external code”的补偿控制，P3 原生骨架可据此启动，但不得声称已实现回调级 deny。
 
+### B-02：`appendFile`/`chtimes` 是设计边界还是临时缺陷
+
+维护者于 2026-11-18 询问：这两项无法注册回调，是 tsgo 临时未实现的功能/缺陷，还是有意设计？固定版本 7.1.0-beta 的结论是：**当前 API 的有意能力边界**，不是本项目误用或偶发崩溃。`callbackfs.go` 只注册 `readFile`、`fileExists`、`directoryExists`、`getAccessibleEntries`、`realpath`、`stat`、`writeFile`、`removeFile` 八个回调；`AppendFile` 与 `Chtimes` 始终委托 base OS FS，源码注释明确写着 *“always delegates to base (no callback support)”*。实测 `appendFile`、`appendFile:error`、`appendFile:noop`、`chtimes` 及对应变体均在启动阶段以 `panic: unknown callback name` 失败；证据见 `docs/evidence/2026-11-17-tsgo-native-api-spike.md` §15（第 1072–1083 行）及 `docs/reference/tsgo-native-contract.md` 第 788 行。
+
+因此迁移不以“等待上游补回调”为前提，也不声称实现回调级写沙箱。采用方案 1 的补偿控制：方法白名单使写/append/chtimes 路径不可达，引擎以最小权限运行，禁止 emit/external code；若任何白名单方法实际触发 `AppendFile`/`Chtimes`，按 F0 阻塞缺陷处理，而不是当作可接受行为。该结论只对固定的 7.1.0-beta 成立；升级必须重新探测回调集合，不能把当前行为视为永久 API 承诺。
+
 采用精确的原生发行版本、源码提交、API/AST schema 及平台资产摘要。P1-A 实测稳定版 `7.0.2` 不具备 `createSnapshot`/租约/`createSourceFile`，AST protocol v5（header 44）与候选线不兼容，不能作为本架构基础；当前唯一满足快照、虚拟 FS、查询与 AST 要求的候选是 `7.1.0-beta`（gitHead `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`，AST protocol v9/header 64）。维护者已于 2026-11-17 有条件接受 beta 作为唯一候选基线并固定 integrity；在 P2 合同冻结、P1-C 收口与 G1 完成前保持 proposed，且不切换默认后端。`7.0.2` 不作为回退候选。不使用 `main`、`next` 或浮动版本。版本、协议与类型资产更新作为一个经过测试的变更交付；升级必须重跑 F0/F1 合同测试与 AST schema 探针。旧 Node 安装可在无 Node 条件下由受限旧 schema 读取器识别并迁入原生包；验证成功前保持旧 current 不变，原生版本之间支持校验后的回退，不自动回退激活 Node 包。
 
 现有 TS 测试按源测试、展开用例、关键断言逐项登记并迁入 Rust。迁移期允许在隔离的历史基线环境运行旧 Node 后端生成 oracle；最终构建、测试、安装包及运行过程不得依赖它。删除旧实现前必须完成全量等价、恢复、安全、性能及无 Node 交付验收；删除后再验一次。
