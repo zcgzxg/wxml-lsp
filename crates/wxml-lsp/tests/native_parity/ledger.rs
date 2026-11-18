@@ -3,7 +3,8 @@
 //! The JSON ledger is the single source of truth for the case inventory and
 //! routing. These tests fail loudly when the ledger is missing, has an
 //! unexpected schema, drifts from the frozen counts, loses an old source
-//! location, or claims a case migrated. They never skip.
+//! location, or claims a case migrated without complete Rust evidence. They
+//! never skip.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
@@ -18,10 +19,14 @@ pub(crate) const LEDGER_RELATIVE_PATH: &str = "docs/plans/tsgo-test-ledger.json"
 
 /// Frozen expanded registration count.
 pub(crate) const TOTAL_CASES: usize = 339;
-/// Frozen planned case count.
-pub(crate) const PLANNED_CASES: usize = 303;
+/// Exact-parity cases promoted to `green` in P5.
+pub(crate) const GREEN_CASES: usize = 32;
+/// Cases still `planned` after the P5 exact-parity promotion.
+pub(crate) const PLANNED_CASES: usize = 271;
 /// Frozen retired-with-decision count.
 pub(crate) const RETIRED_CASES: usize = 36;
+/// Near-exact cases intentionally left `planned` with a green recommendation.
+pub(crate) const NEAR_EXACT_CASES: usize = 3;
 
 /// Partitions named by the test contract. P3-T creates all 16 skeletons.
 pub(crate) const PARTITION_NAMES: &[&str] = &[
@@ -65,8 +70,13 @@ const REQUIRED_TOP_LEVEL_KEYS: &[&str] = &[
 ];
 
 const ALLOWED_DISPOSITIONS: &[&str] = &["direct", "rewrite", "split", "obsolete"];
-const ALLOWED_STATUSES: &[&str] = &["planned", "retired-with-decision"];
+const ALLOWED_STATUSES: &[&str] = &["planned", "green", "retired-with-decision"];
 const ALLOWED_ORACLE_TYPES: &[&str] = &["assertion", "unit", "parity"];
+const ALLOWED_PARITIES: &[&str] = &["exact", "near_exact", "weaker", "structural", "blocked"];
+const ALLOWED_RECOMMENDATIONS: &[&str] = &["green", "planned"];
+const GREEN_TARGET_STATUS: &str = "migrated_green";
+const PLANNED_TARGET_STATUS: &str = "proposed";
+const RETIRED_TARGET_STATUS: &str = "not_migrated_internal_evidence";
 const ALLOWED_COMPARISON_TYPES: &[&str] = &[
     "semantic_exact",
     "safety_exact",
@@ -95,7 +105,7 @@ const CONTRACT_DISPOSITION_VALUES: &[&str] =
     &["direct", "rewrite", "split", "obsolete", "blocked-decision"];
 const FROZEN_ORACLE_REVISION: &str = "F2 frozen 2026-11-17 (dcc1f15)";
 const FROZEN_NOTE_2_SHA256: &str =
-    "4f8fc63fc8e84750f078f30071db7b378a77a528c5116fb04ed1d7cd4620ca7a";
+    "8bffb12cbd5cc3d91edab637aea67a4d1dbfe0ef926721a09fcc9e636bef8913";
 const FROZEN_NOTE_3_SHA256: &str =
     "512436c5617d109411c1a35a04e9c046cd43e4de202092073de2fd9ee08d1d05";
 const FROZEN_X8_SHA256: &str = "ae211e05f50a827a9ff4831ebfc731cceddaf84a926c46aaa55e29a503c125cf";
@@ -339,6 +349,25 @@ fn is_case_id(value: &str) -> bool {
         })
 }
 
+/// Returns the native-parity module named by a ledger target path.
+pub(crate) fn target_partition(target: &str) -> &str {
+    let (file, _) = target
+        .split_once("::")
+        .unwrap_or_else(|| panic!("target lacks a test separator: {target}"));
+    file.rsplit('/')
+        .next()
+        .and_then(|file| file.strip_suffix(".rs"))
+        .unwrap_or_else(|| panic!("target is not a Rust module path: {target}"))
+}
+
+/// Counts non-obsolete cases from the actual ledger inventory.
+pub(crate) fn non_obsolete_case_count(cases: &[Value]) -> usize {
+    cases
+        .iter()
+        .filter(|case| required_str(object(case, "case"), "disposition", "case") != "obsolete")
+        .count()
+}
+
 pub(crate) fn case_ids(cases: &[Value]) -> BTreeSet<String> {
     cases
         .iter()
@@ -381,7 +410,7 @@ fn ledger_schema_is_frozen() {
     );
     assert_eq!(
         required_str(contract, "this_round_status", "ledger.contract"),
-        "planned"
+        "green"
     );
     assert!(required_bool(
         contract,
@@ -685,18 +714,39 @@ fn ledger_counts_and_dispositions_are_frozen() {
     );
 
     let statuses = tally(cases, "status", ALLOWED_STATUSES);
+    let green = statuses.get("green").copied().unwrap_or_default();
+    let planned = statuses.get("planned").copied().unwrap_or_default();
+    let retired = statuses
+        .get("retired-with-decision")
+        .copied()
+        .unwrap_or_default();
+    assert_eq!(green, GREEN_CASES, "green case count drifted");
+    assert_eq!(planned, PLANNED_CASES, "planned case count drifted");
+    assert_eq!(retired, RETIRED_CASES, "retired case count drifted");
+    assert_eq!(statuses.len(), 3, "unexpected status bucket");
     assert_eq!(
-        statuses.get("planned").copied().unwrap_or_default(),
-        PLANNED_CASES
+        green + planned + retired,
+        TOTAL_CASES,
+        "status counts must sum to the total case count"
     );
+
+    let declared_statuses = required_object(counts, "statuses", "ledger.counts");
     assert_eq!(
-        statuses
-            .get("retired-with-decision")
-            .copied()
-            .unwrap_or_default(),
-        RETIRED_CASES
+        declared_statuses.len(),
+        3,
+        "counts.statuses must contain each status bucket"
     );
-    assert_eq!(statuses.len(), 2);
+    for (status, expected) in [
+        ("planned", planned),
+        ("green", green),
+        ("retired-with-decision", retired),
+    ] {
+        assert_eq!(
+            required_u64(declared_statuses, status, "ledger.counts.statuses"),
+            u64::try_from(expected).expect("status count fits u64"),
+            "declared status {status} drifted"
+        );
+    }
 
     let oracle_types = tally(cases, "oracle_type", ALLOWED_ORACLE_TYPES);
     let expected_oracle = [("assertion", 125_usize), ("unit", 114), ("parity", 100)];
@@ -891,7 +941,7 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
         let status = required_str(case, "status", case_id);
         assert!(
             ALLOWED_STATUSES.contains(&status),
-            "{case_id} must not claim a migrated status: {status:?}"
+            "{case_id} has unexpected status: {status:?}"
         );
         let target_status = required_str(case, "target_rust_test_status", case_id);
         let oracle_type = required_str(case, "oracle_type", case_id);
@@ -914,7 +964,7 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
             "obsolete" => {
                 obsolete += 1;
                 assert_eq!(status, "retired-with-decision", "{case_id}");
-                assert_eq!(target_status, "not_migrated_internal_evidence", "{case_id}");
+                assert_eq!(target_status, RETIRED_TARGET_STATUS, "{case_id}");
                 assert!(
                     reason.contains("Candidate B"),
                     "{case_id} must cite the retired Candidate B layout"
@@ -923,21 +973,40 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
             }
             "direct" | "rewrite" | "split" => {
                 non_obsolete += 1;
-                assert_eq!(status, "planned", "{case_id}");
-                assert_eq!(target_status, "proposed", "{case_id}");
                 validate_target_module(target, case_id);
                 assert!(
                     targets.insert(target.to_owned()),
                     "duplicate target Rust test {target} for {case_id}"
                 );
+                match status {
+                    "green" => {
+                        assert_eq!(target_status, GREEN_TARGET_STATUS, "{case_id}");
+                        let evidence = required_object(case, "migration_evidence", case_id);
+                        assert_eq!(
+                            required_str(evidence, "parity", case_id),
+                            "exact",
+                            "{case_id} may only be green with exact parity"
+                        );
+                        assert!(
+                            required_bool(evidence, "green_eligible", case_id),
+                            "{case_id} green evidence must be eligible"
+                        );
+                        assert!(
+                            !required_array(evidence, "rust_tests", case_id).is_empty(),
+                            "{case_id} green requires at least one Rust test"
+                        );
+                    }
+                    "planned" => assert_eq!(target_status, PLANNED_TARGET_STATUS, "{case_id}"),
+                    other => panic!("{case_id} has unexpected status {other:?}"),
+                }
             }
             other => panic!("{case_id} has unexpected disposition {other:?}"),
         }
     }
 
-    assert_eq!(non_obsolete, PLANNED_CASES);
+    assert_eq!(non_obsolete, PLANNED_CASES + GREEN_CASES);
     assert_eq!(obsolete, RETIRED_CASES);
-    assert_eq!(targets.len(), PLANNED_CASES);
+    assert_eq!(targets.len(), PLANNED_CASES + GREEN_CASES);
     assert_eq!(decision_ids.len(), 37);
     non_obsolete_decision_ids.sort_unstable();
     assert_eq!(non_obsolete_decision_ids, ["TS-META-0027"]);
@@ -993,6 +1062,337 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
         }
     }
     assert_eq!(dirty_case_ids.len(), 8);
+}
+
+#[test]
+fn ledger_migration_evidence_is_complete_and_consistent() {
+    let ledger = load_ledger();
+    let root = object(&ledger, "ledger root");
+    let cases = required_array(root, "cases", "ledger root");
+    let counts = required_object(root, "counts", "ledger root");
+    let workspace = workspace_root();
+
+    let mut green = 0_usize;
+    let mut planned = 0_usize;
+    let mut evidence_cases = 0_usize;
+    let mut without_evidence = 0_usize;
+    let mut parity_counts: BTreeMap<&str, usize> =
+        ALLOWED_PARITIES.iter().map(|parity| (*parity, 0)).collect();
+    let mut partition_counts: BTreeMap<String, BTreeMap<String, usize>> = BTreeMap::new();
+
+    for case in cases {
+        let case = object(case, "case");
+        let case_id = required_str(case, "case_id", "case");
+        let disposition = required_str(case, "disposition", case_id);
+        let status = required_str(case, "status", case_id);
+        let target_status = required_str(case, "target_rust_test_status", case_id);
+
+        if disposition == "obsolete" {
+            assert_eq!(status, "retired-with-decision", "{case_id}");
+            assert_eq!(target_status, RETIRED_TARGET_STATUS, "{case_id}");
+            assert!(
+                case.get("migration_evidence").is_none(),
+                "{case_id} retired evidence must stay outside the migration ledger"
+            );
+            continue;
+        }
+
+        let module = target_partition(required_str(case, "target_rust_test", case_id));
+        let partition = partition_counts.entry(module.to_owned()).or_default();
+        *partition.entry("routed_cases".to_owned()).or_default() += 1;
+        if status == "planned" {
+            planned += 1;
+        }
+
+        let Some(evidence) = case.get("migration_evidence") else {
+            assert_eq!(
+                status, "planned",
+                "{case_id} must stay planned without evidence"
+            );
+            assert_eq!(target_status, PLANNED_TARGET_STATUS, "{case_id}");
+            without_evidence += 1;
+            continue;
+        };
+
+        evidence_cases += 1;
+        *partition.entry("evidence_cases".to_owned()).or_default() += 1;
+        let evidence = object(evidence, case_id);
+        assert_eq!(
+            required_str(evidence, "case_id", case_id),
+            case_id,
+            "{case_id} evidence names another case"
+        );
+        assert!(
+            !required_str(evidence, "assessed_at", case_id).is_empty(),
+            "{case_id} evidence has no assessment date"
+        );
+        let head = required_str(evidence, "implementation_head", case_id);
+        assert_eq!(
+            head.len(),
+            40,
+            "{case_id} implementation head is not a git id"
+        );
+        assert!(
+            head.bytes().all(|byte| byte.is_ascii_hexdigit()),
+            "{case_id} implementation head is not hex"
+        );
+
+        let parity = required_str(evidence, "parity", case_id);
+        assert!(
+            ALLOWED_PARITIES.contains(&parity),
+            "{case_id} has unexpected parity {parity:?}"
+        );
+        *parity_counts.get_mut(parity).expect("known parity") += 1;
+        *partition.entry(parity.to_owned()).or_default() += 1;
+
+        let eligible = required_bool(evidence, "green_eligible", case_id);
+        let recommendation = required_str(evidence, "status_recommendation", case_id);
+        assert!(
+            ALLOWED_RECOMMENDATIONS.contains(&recommendation),
+            "{case_id} has unexpected recommendation {recommendation:?}"
+        );
+        assert_eq!(
+            required_str(evidence, "status_applied", case_id),
+            status,
+            "{case_id} status_applied must match status"
+        );
+        let note = required_str(evidence, "note", case_id);
+        assert!(
+            note.len() > 20,
+            "{case_id} needs a substantive evidence note"
+        );
+
+        let tests = required_array(evidence, "rust_tests", case_id);
+        assert!(
+            !tests.is_empty(),
+            "{case_id} must never accept empty Rust evidence"
+        );
+        for test in tests {
+            let test = object(test, case_id);
+            let path = required_str(test, "path", case_id);
+            assert!(!path.is_empty(), "{case_id} has an empty Rust test path");
+            assert!(
+                path.ends_with(".rs"),
+                "{case_id} Rust test path is not a .rs file: {path}"
+            );
+            assert!(
+                !Path::new(path).is_absolute(),
+                "{case_id} Rust test path must stay repository-relative: {path}"
+            );
+            let absolute = workspace.join(path);
+            let source = std::fs::read_to_string(&absolute).unwrap_or_else(|error| {
+                panic!(
+                    "{case_id} Rust test source is missing at {}: {error}",
+                    absolute.display()
+                )
+            });
+            let line = usize::try_from(required_u64(test, "line", case_id))
+                .expect("Rust test line fits usize");
+            assert!(
+                line > 0 && line <= source.lines().count(),
+                "{case_id} Rust test line {line} is outside {path}"
+            );
+            let test_name = required_str(test, "test", case_id);
+            assert!(!test_name.is_empty(), "{case_id} has an empty test name");
+            assert!(
+                test_name.bytes().all(|byte| {
+                    byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'
+                }),
+                "{case_id} test name has unexpected characters: {test_name}"
+            );
+            assert!(
+                source
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(&format!("fn {test_name}("))),
+                "{case_id} test {test_name} is not declared in {path}"
+            );
+            let fully_qualified = required_str(test, "fully_qualified", case_id);
+            assert!(
+                !fully_qualified.is_empty(),
+                "{case_id} has an empty fully-qualified test name"
+            );
+            assert_eq!(
+                fully_qualified.rsplit("::").next(),
+                Some(test_name),
+                "{case_id} fully-qualified name does not end with {test_name}"
+            );
+            assert_eq!(
+                fully_qualified.split_whitespace().count(),
+                1,
+                "{case_id} fully-qualified name contains whitespace"
+            );
+            let test_note = required_str(test, "note", case_id);
+            assert!(
+                test_note.len() > 20,
+                "{case_id} needs a substantive Rust test note"
+            );
+        }
+
+        match parity {
+            "exact" => {
+                assert!(eligible, "{case_id} exact parity must be green eligible");
+                assert_eq!(status, "green", "{case_id} exact parity must be green");
+                assert_eq!(target_status, GREEN_TARGET_STATUS, "{case_id}");
+                assert_eq!(recommendation, "green", "{case_id}");
+                green += 1;
+                *partition.entry("green_cases".to_owned()).or_default() += 1;
+            }
+            "near_exact" => {
+                assert!(!eligible, "{case_id} near-exact must not be green eligible");
+                assert_eq!(status, "planned", "{case_id} near-exact must stay planned");
+                assert_eq!(target_status, PLANNED_TARGET_STATUS, "{case_id}");
+                assert_eq!(recommendation, "green", "{case_id}");
+            }
+            "weaker" | "structural" | "blocked" => {
+                assert!(
+                    !eligible,
+                    "{case_id} non-exact evidence must not be eligible"
+                );
+                assert_eq!(
+                    status, "planned",
+                    "{case_id} non-exact evidence must stay planned"
+                );
+                assert_eq!(target_status, PLANNED_TARGET_STATUS, "{case_id}");
+                assert_eq!(recommendation, "planned", "{case_id}");
+            }
+            other => panic!("{case_id} has unexpected parity {other:?}"),
+        }
+    }
+
+    assert_eq!(green, GREEN_CASES, "green count drifted");
+    assert_eq!(planned, PLANNED_CASES, "planned count drifted");
+    assert_eq!(parity_counts["exact"], GREEN_CASES);
+    assert_eq!(parity_counts["near_exact"], NEAR_EXACT_CASES);
+    assert_eq!(parity_counts["weaker"], 44);
+    assert_eq!(parity_counts["structural"], 5);
+    assert_eq!(parity_counts["blocked"], 16);
+    assert_eq!(
+        parity_counts.values().sum::<usize>(),
+        evidence_cases,
+        "parity buckets must cover every evidence case"
+    );
+    assert_eq!(
+        without_evidence,
+        PLANNED_CASES
+            - parity_counts["near_exact"]
+            - parity_counts["weaker"]
+            - parity_counts["structural"]
+            - parity_counts["blocked"],
+        "planned cases without evidence drifted"
+    );
+
+    for partition in partition_counts.values_mut() {
+        let evidence = partition.get("evidence_cases").copied().unwrap_or_default();
+        let green_cases = partition.get("green_cases").copied().unwrap_or_default();
+        partition.insert("planned_evidence_cases".to_owned(), evidence - green_cases);
+        let routed = partition.get("routed_cases").copied().unwrap_or_default();
+        partition.insert("unassessed_cases".to_owned(), routed - evidence);
+    }
+
+    let declared = required_object(counts, "migration_evidence", "ledger.counts");
+    assert_eq!(
+        required_u64(
+            declared,
+            "assessed_cases",
+            "ledger.counts.migration_evidence"
+        ),
+        u64::try_from(evidence_cases).expect("evidence count fits u64")
+    );
+    for (parity, expected) in parity_counts {
+        assert_eq!(
+            required_u64(declared, parity, "ledger.counts.migration_evidence"),
+            u64::try_from(expected).expect("parity count fits u64"),
+            "declared parity {parity} drifted"
+        );
+    }
+    assert_eq!(
+        required_u64(
+            declared,
+            "green_eligible",
+            "ledger.counts.migration_evidence"
+        ),
+        u64::try_from(GREEN_CASES).expect("green count fits u64")
+    );
+    assert_eq!(
+        required_u64(
+            declared,
+            "promoted_to_green",
+            "ledger.counts.migration_evidence"
+        ),
+        u64::try_from(GREEN_CASES).expect("green count fits u64")
+    );
+    assert_eq!(
+        required_u64(
+            declared,
+            "near_exact_recommendations",
+            "ledger.counts.migration_evidence"
+        ),
+        u64::try_from(NEAR_EXACT_CASES).expect("near-exact count fits u64")
+    );
+    assert_eq!(
+        required_u64(
+            declared,
+            "remaining_planned_without_evidence",
+            "ledger.counts.migration_evidence"
+        ),
+        u64::try_from(without_evidence).expect("planned count fits u64")
+    );
+
+    let declared_statuses =
+        required_object(declared, "statuses", "ledger.counts.migration_evidence");
+    for (status, expected) in [
+        ("planned", planned),
+        ("green", green),
+        ("retired-with-decision", RETIRED_CASES),
+    ] {
+        assert_eq!(
+            required_u64(
+                declared_statuses,
+                status,
+                "ledger.counts.migration_evidence.statuses"
+            ),
+            u64::try_from(expected).expect("status count fits u64"),
+            "declared migration status {status} drifted"
+        );
+    }
+
+    let declared_partitions =
+        required_object(declared, "by_partition", "ledger.counts.migration_evidence");
+    assert_eq!(
+        declared_partitions.len(),
+        PARTITION_NAMES.len(),
+        "migration evidence must cover every partition"
+    );
+    for (module, partition) in &partition_counts {
+        let declared_partition = required_object(
+            declared_partitions,
+            module,
+            "ledger.counts.migration_evidence",
+        );
+        for key in [
+            "routed_cases",
+            "evidence_cases",
+            "green_cases",
+            "planned_evidence_cases",
+            "unassessed_cases",
+            "exact",
+            "near_exact",
+            "weaker",
+            "structural",
+            "blocked",
+        ] {
+            assert_eq!(
+                required_u64(
+                    declared_partition,
+                    key,
+                    &format!("ledger.counts.migration_evidence.by_partition.{module}")
+                ),
+                u64::try_from(partition.get(key).copied().unwrap_or_default())
+                    .expect("partition count fits u64"),
+                "{module}.{key} drifted from the actual cases"
+            );
+        }
+    }
 }
 
 #[test]

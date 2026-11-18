@@ -83,14 +83,14 @@
       "obsolete",
       "blocked-decision"
     ],
-    "this_round_status": "planned",
+    "this_round_status": "green",
     "no_old_test_deleted": true,
     "old_test_source_hashes_recorded": true,
     "oracle_revision": "F2 frozen 2026-11-17 (dcc1f15)",
     "notes": [
       "Case IDs are stable keys derived from source file, line and expansion.",
       "Target Rust paths are proposals under crates/wxml-lsp/tests/native_parity/ per plan section 6.1.1; pure codec cases may move beside production modules in P2 without changing case IDs.",
-      "P1-B did not mark any case migrated. 303 cases remain planned; the 36 Candidate-B cases are retired-with-decision, not passed.",
+      "P5 promoted 32 exact-parity cases to green after unfreezing the validator; 271 cases remain planned, including the 3 near-exact recommendations, and the 36 Candidate-B cases are retired-with-decision, not passed.",
       "The integrator retired 36 Candidate-B/symbol-bridge cases as historical A/B evidence; blocked-decision is now 0. TS-META-0027 remains a rewrite to the F0 pin gate.",
       "Dirty-work increments D1-D7 are the seven behaviors named in plan section 6.1.1.",
       "Assertion counts are direct assert.* call sites inside each test body; helper assertions (for example throwsCode in completion.test.ts) and loop-multiplied executions are not expanded into the count."
@@ -161,6 +161,229 @@
       "accepted_obsolete": 36,
       "accepted_rewrite": 1,
       "remaining_blocked": 0
+    },
+    "migration_evidence": {
+      "assessed_at": "2026-11-18",
+      "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+      "rust_test_command": "cargo test -p wxml-backend-tsgo --test shadow_layout --test shadow_rewrite --test shadow_mapping --test shadow_locals_guards --test script_registration --test script_behavior --test script_properties --test script_events --test script_symbols",
+      "rust_test_result": "176 passed, 0 failed, 0 ignored",
+      "assessed_cases": 100,
+      "exact": 32,
+      "near_exact": 3,
+      "weaker": 44,
+      "structural": 5,
+      "blocked": 16,
+      "green_eligible": 32,
+      "promoted_to_green": 32,
+      "remaining_planned_without_evidence": 203,
+      "by_partition": {
+        "behaviors": {
+          "routed_cases": 22,
+          "evidence_cases": 18,
+          "green_cases": 1,
+          "planned_evidence_cases": 17,
+          "unassessed_cases": 4,
+          "exact": 1,
+          "near_exact": 2,
+          "weaker": 6,
+          "structural": 5,
+          "blocked": 4
+        },
+        "completion": {
+          "routed_cases": 9,
+          "evidence_cases": 0,
+          "green_cases": 0,
+          "planned_evidence_cases": 0,
+          "unassessed_cases": 9,
+          "exact": 0,
+          "near_exact": 0,
+          "weaker": 0,
+          "structural": 0,
+          "blocked": 0
+        },
+        "components": {
+          "routed_cases": 19,
+          "evidence_cases": 9,
+          "green_cases": 4,
+          "planned_evidence_cases": 5,
+          "unassessed_cases": 10,
+          "exact": 4,
+          "near_exact": 0,
+          "weaker": 1,
+          "structural": 0,
+          "blocked": 4
+        },
+        "definitions": {
+          "routed_cases": 5,
+          "evidence_cases": 0,
+          "green_cases": 0,
+          "planned_evidence_cases": 0,
+          "unassessed_cases": 5,
+          "exact": 0,
+          "near_exact": 0,
+          "weaker": 0,
+          "structural": 0,
+          "blocked": 0
+        },
+        "events": {
+          "routed_cases": 24,
+          "evidence_cases": 21,
+          "green_cases": 9,
+          "planned_evidence_cases": 12,
+          "unassessed_cases": 3,
+          "exact": 9,
+          "near_exact": 0,
+          "weaker": 10,
+          "structural": 0,
+          "blocked": 2
+        },
+        "guards_js": {
+          "routed_cases": 25,
+          "evidence_cases": 10,
+          "green_cases": 4,
+          "planned_evidence_cases": 6,
+          "unassessed_cases": 15,
+          "exact": 4,
+          "near_exact": 0,
+          "weaker": 1,
+          "structural": 0,
+          "blocked": 5
+        },
+        "hover_docs": {
+          "routed_cases": 10,
+          "evidence_cases": 1,
+          "green_cases": 0,
+          "planned_evidence_cases": 1,
+          "unassessed_cases": 9,
+          "exact": 0,
+          "near_exact": 0,
+          "weaker": 1,
+          "structural": 0,
+          "blocked": 0
+        },
+        "loops": {
+          "routed_cases": 16,
+          "evidence_cases": 9,
+          "green_cases": 5,
+          "planned_evidence_cases": 4,
+          "unassessed_cases": 7,
+          "exact": 5,
+          "near_exact": 0,
+          "weaker": 3,
+          "structural": 0,
+          "blocked": 1
+        },
+        "mapping_utf16": {
+          "routed_cases": 21,
+          "evidence_cases": 14,
+          "green_cases": 6,
+          "planned_evidence_cases": 8,
+          "unassessed_cases": 7,
+          "exact": 6,
+          "near_exact": 0,
+          "weaker": 8,
+          "structural": 0,
+          "blocked": 0
+        },
+        "messages_evidence": {
+          "routed_cases": 8,
+          "evidence_cases": 0,
+          "green_cases": 0,
+          "planned_evidence_cases": 0,
+          "unassessed_cases": 8,
+          "exact": 0,
+          "near_exact": 0,
+          "weaker": 0,
+          "structural": 0,
+          "blocked": 0
+        },
+        "perf_budget": {
+          "routed_cases": 1,
+          "evidence_cases": 0,
+          "green_cases": 0,
+          "planned_evidence_cases": 0,
+          "unassessed_cases": 1,
+          "exact": 0,
+          "near_exact": 0,
+          "weaker": 0,
+          "structural": 0,
+          "blocked": 0
+        },
+        "project_overlay": {
+          "routed_cases": 20,
+          "evidence_cases": 0,
+          "green_cases": 0,
+          "planned_evidence_cases": 0,
+          "unassessed_cases": 20,
+          "exact": 0,
+          "near_exact": 0,
+          "weaker": 0,
+          "structural": 0,
+          "blocked": 0
+        },
+        "protocol_limits": {
+          "routed_cases": 40,
+          "evidence_cases": 0,
+          "green_cases": 0,
+          "planned_evidence_cases": 0,
+          "unassessed_cases": 40,
+          "exact": 0,
+          "near_exact": 0,
+          "weaker": 0,
+          "structural": 0,
+          "blocked": 0
+        },
+        "scenario_matrix": {
+          "routed_cases": 43,
+          "evidence_cases": 0,
+          "green_cases": 0,
+          "planned_evidence_cases": 0,
+          "unassessed_cases": 43,
+          "exact": 0,
+          "near_exact": 0,
+          "weaker": 0,
+          "structural": 0,
+          "blocked": 0
+        },
+        "shadow_rewrite": {
+          "routed_cases": 19,
+          "evidence_cases": 18,
+          "green_cases": 3,
+          "planned_evidence_cases": 15,
+          "unassessed_cases": 1,
+          "exact": 3,
+          "near_exact": 1,
+          "weaker": 14,
+          "structural": 0,
+          "blocked": 0
+        },
+        "symbols_edits": {
+          "routed_cases": 21,
+          "evidence_cases": 0,
+          "green_cases": 0,
+          "planned_evidence_cases": 0,
+          "unassessed_cases": 21,
+          "exact": 0,
+          "near_exact": 0,
+          "weaker": 0,
+          "structural": 0,
+          "blocked": 0
+        }
+      },
+      "rust_unit_test_command": "cargo test -p wxml-backend-tsgo --lib",
+      "rust_unit_test_result": "215 passed, 0 failed, 0 ignored",
+      "near_exact_recommendations": 3,
+      "statuses": {
+        "planned": 271,
+        "green": 32,
+        "retired-with-decision": 36
+      },
+      "status_policy": "Only parity=exact cases are green. near_exact, weaker, structural and blocked cases stay planned with status_recommendation recorded; no empty evidence is accepted."
+    },
+    "statuses": {
+      "planned": 271,
+      "green": 32,
+      "retired-with-decision": 36
     }
   },
   "plan_reconciliation": {
@@ -1840,7 +2063,26 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0123",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust asserts the Page-root fallback selects Component and the reverse does not; TS also asserts registration.count=1 and hover string.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_registration.rs",
+            "line": 103,
+            "test": "structural_page_root_falls_back_to_component_but_not_the_reverse",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_registration.rs::structural_page_root_falls_back_to_component_but_not_the_reverse",
+            "note": "Rust asserts the Page-root fallback selects Component and the reverse does not; TS also asserts registration.count=1 and hover string."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0139",
@@ -2934,7 +3176,26 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0380",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "structural",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts hover typeOnly boolean and Supported through the checker; Rust resolves the same exported const spread syntactically and asserts script facts, not the hover payload.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 83,
+            "test": "case_analysis_0380_imported_behavior_data_spread_stays_exact_and_supported",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_analysis_0380_imported_behavior_data_spread_stays_exact_and_supported",
+            "note": "TS asserts hover typeOnly boolean and Supported through the checker; Rust resolves the same exported const spread syntactically and asserts script facts, not the hover payload."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPILER-0035",
@@ -4331,7 +4592,26 @@
       "status": "planned",
       "capabilities": [
         "messages"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0292",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts component-binding diagnostics for behavior properties; Rust asserts declaration facts only and never runs the binding check.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_properties.rs",
+            "line": 72,
+            "test": "case_component_0292_only_optional_types_and_defaults_are_preserved",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_properties.rs::case_component_0292_only_optional_types_and_defaults_are_preserved",
+            "note": "TS asserts component-binding diagnostics for behavior properties; Rust asserts declaration facts only and never runs the binding check."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0357",
@@ -4398,7 +4678,26 @@
         "definition",
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0357",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "structural",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts hover types, documentation, empty diagnostics and a generated definition range; Rust asserts overlay facts only.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 111,
+            "test": "case_component_0357_inline_behavior_data_and_properties_join_the_overlay",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0357_inline_behavior_data_and_properties_join_the_overlay",
+            "note": "TS asserts hover types, documentation, empty diagnostics and a generated definition range; Rust asserts overlay facts only."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0403",
@@ -4458,7 +4757,26 @@
       "capabilities": [
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0403",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust asserts the own-data type and override flag; TS also asserts empty diagnostics.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 131,
+            "test": "case_component_0403_component_own_data_wins_over_a_behavior_field",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0403_component_own_data_wins_over_a_behavior_field",
+            "note": "Rust asserts the own-data type and override flag; TS also asserts empty diagnostics."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0416",
@@ -4525,7 +4843,26 @@
         "definition",
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0416",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust asserts the types and source paths; TS also asserts empty diagnostics and generated definition kind/fileId.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 147,
+            "test": "case_component_0416_imported_default_export_contributes_data_and_properties",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0416_imported_default_export_contributes_data_and_properties",
+            "note": "Rust asserts the types and source paths; TS also asserts empty diagnostics and generated definition kind/fileId."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0452",
@@ -4578,13 +4915,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0452",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same three winning types (later number, nested string object, onlyNested number) after nested/later behavior ordering.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 172,
+            "test": "case_component_0452_nested_behaviors_apply_before_their_owner_and_later_ones_win",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0452_nested_behaviors_apply_before_their_owner_and_later_ones_win",
+            "note": "Same three winning types (later number, nested string object, onlyNested number) after nested/later behavior ordering."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0476",
@@ -4645,7 +5001,26 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0476",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "structural",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts a reachable hover number plus reason text; Rust asserts Partial, reachable fields and cycle/dynamic problems, not hover.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 188,
+            "test": "case_component_0476_cycles_and_factory_calls_degrade_without_recursion",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0476_cycles_and_factory_calls_degrade_without_recursion",
+            "note": "TS asserts a reachable hover number plus reason text; Rust asserts Partial, reachable fields and cycle/dynamic problems, not hover."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0498",
@@ -4704,7 +5079,33 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0498",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts hover any plus a behavior reason; the two Rust tests assert data/property spread completeness facts only.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 236,
+            "test": "case_component_0498_spread_and_dynamic_data_members_stay_partial_and_any",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0498_spread_and_dynamic_data_members_stay_partial_and_any",
+            "note": "TS asserts hover any plus a behavior reason; the two Rust tests assert data/property spread completeness facts only."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_properties.rs",
+            "line": 179,
+            "test": "case_component_0498_only_property_spread_keeps_known_properties",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_properties.rs::case_component_0498_only_property_spread_keeps_known_properties",
+            "note": "TS asserts hover any plus a behavior reason; the two Rust tests assert data/property spread completeness facts only."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0514",
@@ -4759,7 +5160,26 @@
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0514",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "structural",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts typeOfInitializer returns {number, exact:true}; Rust asserts extracted data-field types, a different surface.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_properties.rs",
+            "line": 99,
+            "test": "case_component_0514_literal_data_types_are_conservative_and_exact",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_properties.rs::case_component_0514_literal_data_types_are_conservative_and_exact",
+            "note": "TS asserts typeOfInitializer returns {number, exact:true}; Rust asserts extracted data-field types, a different surface."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0521",
@@ -4817,7 +5237,26 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0521",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "near_exact",
+        "green_eligible": false,
+        "status_recommendation": "green",
+        "status_applied": "planned",
+        "note": "Same named/re-exported behavior resolution: number type and Supported status (the field is renamed namedCount).",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 254,
+            "test": "case_component_0521_named_imports_and_reexport_aliases_resolve_statically",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0521_named_imports_and_reexport_aliases_resolve_statically",
+            "note": "Same named/re-exported behavior resolution: number type and Supported status (the field is renamed namedCount)."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0539",
@@ -4878,7 +5317,26 @@
         "diagnostics",
         "hover",
         "locals"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0539",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "structural",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts a hover type containing label plus empty diagnostics; Rust asserts the overlay type only.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 384,
+            "test": "case_component_0539_local_const_data_member_keeps_its_static_shape",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0539_local_const_data_member_keeps_its_static_shape",
+            "note": "TS asserts a hover type containing label plus empty diagnostics; Rust asserts the overlay type only."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0550",
@@ -5002,7 +5460,26 @@
       "status": "planned",
       "capabilities": [
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0570",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts behaviorIncomplete/Partial and no 2339 diagnostics; Rust asserts Partial and no invented field only.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 279,
+            "test": "case_component_0570_only_unresolved_behavior_is_partial_and_invents_no_field",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0570_only_unresolved_behavior_is_partial_and_invents_no_field",
+            "note": "TS asserts behaviorIncomplete/Partial and no 2339 diagnostics; Rust asserts Partial and no invented field only."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0591",
@@ -5063,7 +5540,26 @@
       "capabilities": [
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0591",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust asserts the CommonJS-imported number and complete behavior data; TS also asserts empty diagnostics.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 298,
+            "test": "case_component_0591_commonjs_require_resolves_statically",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0591_commonjs_require_resolves_statically",
+            "note": "Rust asserts the CommonJS-imported number and complete behavior data; TS also asserts empty diagnostics."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0607",
@@ -5127,7 +5623,26 @@
       "capabilities": [
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0607",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust asserts Partial, incomplete data/properties and the non-object-literal problem; TS also asserts buildStatus partial and no 2339.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_properties.rs",
+            "line": 129,
+            "test": "case_component_0607_non_literal_behavior_members_mark_the_overlay_partial",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_properties.rs::case_component_0607_non_literal_behavior_members_mark_the_overlay_partial",
+            "note": "Rust asserts Partial, incomplete data/properties and the non-object-literal problem; TS also asserts buildStatus partial and no 2339."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0628",
@@ -5255,7 +5770,26 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0654",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust asserts the selected Page registration, the page field and absence of the behavior leak; TS also asserts ok/behaviorIncomplete and hover types.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 319,
+            "test": "case_component_0654_page_and_component_use_the_selected_registration",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0654_page_and_component_use_the_selected_registration",
+            "note": "Rust asserts the selected Page registration, the page field and absence of the behavior leak; TS also asserts ok/behaviorIncomplete and hover types."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0676",
@@ -5316,7 +5850,26 @@
       "capabilities": [
         "diagnostics",
         "messages"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0676",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts the component-binding diagnostic and skipped details; Rust asserts the own-property overlay only.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_properties.rs",
+            "line": 156,
+            "test": "case_component_0676_only_unresolved_external_behavior_keeps_own_property",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_properties.rs::case_component_0676_only_unresolved_external_behavior_keeps_own_property",
+            "note": "TS asserts the component-binding diagnostic and skipped details; Rust asserts the own-property overlay only."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0697",
@@ -5442,7 +5995,26 @@
       "capabilities": [
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0724",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust asserts the correct behavior resolves and the unrelated alias does not; TS also asserts empty diagnostics for two queries and behaviorIncomplete.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 344,
+            "test": "case_component_0724_import_equals_alias_does_not_hijack_behavior_binding",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0724_import_equals_alias_does_not_hijack_behavior_binding",
+            "note": "Rust asserts the correct behavior resolves and the unrelated alias does not; TS also asserts empty diagnostics for two queries and behaviorIncomplete."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0763",
@@ -5500,7 +6072,26 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0763",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "near_exact",
+        "green_eligible": false,
+        "status_recommendation": "green",
+        "status_applied": "planned",
+        "note": "Same non-probe __state number type and complete behavior data.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 369,
+            "test": "case_component_0763_non_probe_double_underscore_data_names_remain_usable",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0763_non_probe_double_underscore_data_names_remain_usable",
+            "note": "Same non-probe __state number type and complete behavior data."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0774",
@@ -5927,14 +6518,33 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "definition",
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0071",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same three handler forms: zero skipped, Supported, no diagnostic, definition path/range and signature.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 83,
+            "test": "case_events_0071_page_method_shorthand_function_and_arrow_resolve",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0071_page_method_shorthand_function_and_arrow_resolve",
+            "note": "Same three handler forms: zero skipped, Supported, no diagnostic, definition path/range and signature."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0093",
@@ -5996,7 +6606,26 @@
       "status": "planned",
       "capabilities": [
         "definition"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0093",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks skipped=0, Supported and definition presence; TS also checks fileId, exact range and signature.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 112,
+            "test": "case_events_0093_component_methods_shorthand_and_arrow_property_resolve",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0093_component_methods_shorthand_and_arrow_property_resolve",
+            "note": "Rust checks skipped=0, Supported and definition presence; TS also checks fileId, exact range and signature."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0108",
@@ -6057,7 +6686,26 @@
       "status": "planned",
       "capabilities": [
         "definition"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0108",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts the full template event chain; Rust classifies the seven binding forms and rejects malformed attributes only.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 131,
+            "test": "case_events_0108_only_binding_forms_are_classified",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0108_only_binding_forms_are_classified",
+            "note": "TS asserts the full template event chain; Rust classifies the seven binding forms and rejects malformed attributes only."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0130",
@@ -6110,14 +6758,33 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "definition",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0130",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same UTF-8 byte and UTF-16 definition ranges after multi-byte text.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 160,
+            "test": "case_events_0130_definition_ranges_are_utf8_bytes_and_utf16_units",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0130_definition_ranges_are_utf8_bytes_and_utf16_units",
+            "note": "Same UTF-8 byte and UTF-16 definition ranges after multi-byte text."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0143",
@@ -6177,16 +6844,35 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "definition",
         "diagnostics",
         "messages",
         "project"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0143",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same missing-handler Supported state, absent definition, exact range, error severity, message fields and path-free text.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 183,
+            "test": "case_events_0143_missing_handler_reports_the_exact_handler_range",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0143_missing_handler_reports_the_exact_handler_range",
+            "note": "Same missing-handler Supported state, absent definition, exact range, error severity, message fields and path-free text."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0162",
@@ -6249,7 +6935,26 @@
       "capabilities": [
         "definition",
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0162",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks Partial on both handlers and no diagnostics; TS also asserts the multiple-Page reason and exact definition start.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 205,
+            "test": "case_events_0162_multiple_page_registrations_are_partial_and_use_the_first",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0162_multiple_page_registrations_are_partial_and_use_the_first",
+            "note": "Rust checks Partial on both handlers and no diagnostics; TS also asserts the multiple-Page reason and exact definition start."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0176",
@@ -6308,7 +7013,26 @@
       "status": "planned",
       "capabilities": [
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0176",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks Partial and no diagnostic for two non-literal registrations; TS also asserts the registration reason text.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 226,
+            "test": "case_events_0176_non_literal_registration_is_partial_without_a_diagnostic",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0176_non_literal_registration_is_partial_without_a_diagnostic",
+            "note": "Rust checks Partial and no diagnostic for two non-literal registrations; TS also asserts the registration reason text."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0188",
@@ -6371,7 +7095,26 @@
       "capabilities": [
         "definition",
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0188",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts the behavior fileId/signature/docs from a stub view; Rust resolves inline behavior script facts only.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 558,
+            "test": "case_events_0188_only_inline_behavior_methods_resolve",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0188_only_inline_behavior_methods_resolve",
+            "note": "TS asserts the behavior fileId/signature/docs from a stub view; Rust resolves inline behavior script facts only."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0236",
@@ -6432,7 +7175,26 @@
       "status": "planned",
       "capabilities": [
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0236",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks Partial/no diagnostic/no definition; TS also asserts the behavior-methods reason.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 579,
+            "test": "case_events_0236_unresolved_behavior_graph_keeps_missing_handlers_unproven",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0236_unresolved_behavior_graph_keeps_missing_handlers_unproven",
+            "note": "Rust checks Partial/no diagnostic/no definition; TS also asserts the behavior-methods reason."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0259",
@@ -6483,13 +7245,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0259",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same Supported state and error-severity missing-handler diagnostic for an empty literal behaviors array.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 246,
+            "test": "case_events_0259_empty_literal_behaviors_keep_the_methods_table_complete",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0259_empty_literal_behaviors_keep_the_methods_table_complete",
+            "note": "Same Supported state and error-severity missing-handler diagnostic for an empty literal behaviors array."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0268",
@@ -6551,7 +7332,26 @@
       "capabilities": [
         "definition",
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0268",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks the known definition and no diagnostics; TS also asserts Partial on both handlers.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 268,
+            "test": "case_events_0268_literal_registration_is_partial_when_a_non_literal_one_exists",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0268_literal_registration_is_partial_when_a_non_literal_one_exists",
+            "note": "Rust checks the known definition and no diagnostics; TS also asserts Partial on both handlers."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0280",
@@ -6617,7 +7417,26 @@
         "compiler",
         "definition",
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0280",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks known definitions and no diagnostics for page/component spreads; TS also asserts spread reasons, Partial states and exact starts.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 279,
+            "test": "case_events_0280_spread_in_options_or_methods_is_partial_but_known_handlers_resolve",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0280_spread_in_options_or_methods_is_partial_but_known_handlers_resolve",
+            "note": "Rust checks known definitions and no diagnostics for page/component spreads; TS also asserts spread reasons, Partial states and exact starts."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0301",
@@ -6679,7 +7498,26 @@
         "definition",
         "diagnostics",
         "messages"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0301",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks Supported, error severity and the component message; TS also asserts an absent definition.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 305,
+            "test": "case_events_0301_component_without_methods_reports_a_real_missing_handler",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0301_component_without_methods_reports_a_real_missing_handler",
+            "note": "Rust checks Supported, error severity and the component message; TS also asserts an absent definition."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0312",
@@ -6732,13 +7570,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0312",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same Partial state, no diagnostic and the 'methods is not a literal object' reason.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 333,
+            "test": "case_events_0312_non_literal_component_methods_are_partial",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0312_non_literal_component_methods_are_partial",
+            "note": "Same Partial state, no diagnostic and the 'methods is not a literal object' reason."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0322",
@@ -6801,7 +7658,26 @@
       "capabilities": [
         "definition",
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0322",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks error severity for the three reserved/probe keys and a definition for onTap; TS also asserts Supported status.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 362,
+            "test": "case_events_0322_reserved_page_keys_and_probe_members_are_ignored",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0322_reserved_page_keys_and_probe_members_are_ignored",
+            "note": "Rust checks error severity for the three reserved/probe keys and a definition for onTap; TS also asserts Supported status."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0339",
@@ -6864,7 +7740,26 @@
       "capabilities": [
         "definition",
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0339",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks the first handler Partial/no diagnostic and the second no diagnostic/no definition; TS also asserts the second Partial and 'not a literal function' reason.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 391,
+            "test": "case_events_0339_non_identifier_and_non_literal_handlers_never_become_diagnostics",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0339_non_identifier_and_non_literal_handlers_never_become_diagnostics",
+            "note": "Rust checks the first handler Partial/no diagnostic and the second no diagnostic/no definition; TS also asserts the second Partial and 'not a literal function' reason."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0352",
@@ -6916,11 +7811,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0352",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same non-empty, bounded, single-line signature.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 409,
+            "test": "case_events_0352_long_signatures_are_capped_to_one_bounded_line",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0352_long_signatures_are_capped_to_one_bounded_line",
+            "note": "Same non-empty, bounded, single-line signature."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0363",
@@ -6973,11 +7887,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0363",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same result cap, one skipped result and truncation detail.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 429,
+            "test": "case_events_0363_results_are_capped",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0363_results_are_capped",
+            "note": "Same result cap, one skipped result and truncation detail."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0375",
@@ -7218,14 +8151,33 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "definition",
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0425",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same aliased behavior file, Supported/no diagnostic, documentation, signature and exact UTF-8 range.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 459,
+            "test": "case_events_0425_aliased_behavior_handler_points_at_the_behavior_file",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0425_aliased_behavior_handler_points_at_the_behavior_file",
+            "note": "Same aliased behavior file, Supported/no diagnostic, documentation, signature and exact UTF-8 range."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0461",
@@ -7289,7 +8241,26 @@
       "status": "planned",
       "capabilities": [
         "definition"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0461",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks the component file, Chinese docs and signature; TS also asserts Supported status.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 502,
+            "test": "case_events_0461_component_method_overrides_the_same_named_behavior_method",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0461_component_method_overrides_the_same_named_behavior_method",
+            "note": "Rust checks the component file, Chinese docs and signature; TS also asserts Supported status."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0498",
@@ -7345,14 +8316,33 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "definition",
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-EVENTS-0498",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same unresolved alias Partial, no diagnostic and no definition.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 535,
+            "test": "case_events_0498_unresolved_behavior_alias_stays_partial_and_never_reports_missing",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0498_unresolved_behavior_alias_stays_partial_and_never_reports_missing",
+            "note": "Same unresolved alias Partial, no diagnostic and no definition."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVIDENCE-0011",
@@ -7588,13 +8578,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-GUARDS-0047",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same unresolved flag, if/elif open text and closer.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 329,
+            "test": "case_guards_0047_renderguards_opens_if_elif_and_closes_one_block",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_guards_0047_renderguards_opens_if_elif_and_closes_one_block",
+            "note": "Same unresolved flag, if/elif open text and closer."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-GUARDS-0057",
@@ -7645,13 +8654,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-GUARDS-0057",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same else-branch open text and closer.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 350,
+            "test": "case_guards_0057_renderguards_renders_the_else_branch_as_a_trailing_else",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_guards_0057_renderguards_renders_the_else_branch_as_a_trailing_else",
+            "note": "Same else-branch open text and closer."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-GUARDS-0066",
@@ -7703,13 +8731,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-GUARDS-0066",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same selected-branch open text and absence of the later condition.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 367,
+            "test": "case_guards_0066_renderguards_never_renders_a_condition_after_the_selected_branch",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_guards_0066_renderguards_never_renders_a_condition_after_the_selected_branch",
+            "note": "Same selected-branch open text and absence of the later condition."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-GUARDS-0075",
@@ -7763,7 +8810,26 @@
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-GUARDS-0075",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks the open text and unresolved=false but omits the close text from TS's deepEqual.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 384,
+            "test": "case_guards_0075_plain_value_level_or_guards_are_not_degraded",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_guards_0075_plain_value_level_or_guards_are_not_degraded",
+            "note": "Rust checks the open text and unresolved=false but omits the close text from TS's deepEqual."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-GUARDS-0087",
@@ -7813,11 +8879,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-GUARDS-0087",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same empty open/close and unresolved=true.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 398,
+            "test": "case_guards_0087_an_unrewritable_condition_yields_no_narrowing_block",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_guards_0087_an_unrewritable_condition_yields_no_narrowing_block",
+            "note": "Same empty open/close and unresolved=true."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-GUARDS-0097",
@@ -7881,7 +8966,26 @@
       "capabilities": [
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-GUARDS-0097",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts checker narrowing/union behavior; Rust pins the rendered if/elif structure only.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 413,
+            "test": "guards_0097_rendered_structure_only_narrowing_blocked",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::guards_0097_rendered_structure_only_narrowing_blocked",
+            "note": "TS asserts checker narrowing/union behavior; Rust pins the rendered if/elif structure only."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-GUARDS-0128",
@@ -8129,7 +9233,26 @@
       "status": "planned",
       "capabilities": [
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-GUARDS-0201",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts diagnostics Partial, the reason, empty diagnostics and no fabricated 2339; Rust pins the rendered structure and Partial reason only.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 448,
+            "test": "case_guards_0201_an_unparseable_guard_does_not_fabricate_a_diagnostic_and_reports_partial",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_guards_0201_an_unparseable_guard_does_not_fabricate_a_diagnostic_and_reports_partial",
+            "note": "TS asserts diagnostics Partial, the reason, empty diagnostics and no fabricated 2339; Rust pins the rendered structure and Partial reason only."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-GUARDS-0218",
@@ -8195,7 +9318,26 @@
       "capabilities": [
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-GUARDS-0218",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts &&/|| narrowing; Rust pins the rendered structure and Partial only.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 475,
+            "test": "guards_0218_rendered_structure_only_narrowing_blocked",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::guards_0218_rendered_structure_only_narrowing_blocked",
+            "note": "TS asserts &&/|| narrowing; Rust pins the rendered structure and Partial only."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-GUARDS-0261",
@@ -8257,7 +9399,26 @@
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-GUARDS-0261",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts nested loop/guard narrowing; Rust pins local capture and closer order only.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 514,
+            "test": "guards_0261_rendered_structure_only_narrowing_blocked",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::guards_0261_rendered_structure_only_narrowing_blocked",
+            "note": "TS asserts nested loop/guard narrowing; Rust pins local capture and closer order only."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-GUARDS-0302",
@@ -8382,7 +9543,26 @@
         "config",
         "diagnostics",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-GUARDS-0312",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks pragma application, the @ts-check prefix and the note; TS also asserts a published diagnostic for the typo.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 566,
+            "test": "case_guards_0312_pragma_injects_a_shadow_only_ts_check",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_guards_0312_pragma_injects_a_shadow_only_ts_check",
+            "note": "Rust checks pragma application, the @ts-check prefix and the note; TS also asserts a published diagnostic for the typo."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-GUARDS-0321",
@@ -8558,7 +9738,26 @@
       "capabilities": [
         "compiler",
         "project"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-LAYOUTS-0049",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts the checker reports no diagnostics for the injected probe; the Rust test asserts Supported layout, probe placement and byte-exact reconstruction but never runs diagnostics.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 78,
+            "test": "case_layouts_0049_page_options_accept_an_injected_probe_member",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_layout.rs::case_layouts_0049_page_options_accept_an_injected_probe_member",
+            "note": "TS asserts the checker reports no diagnostics for the injected probe; the Rust test asserts Supported layout, probe placement and byte-exact reconstruction but never runs diagnostics."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LAYOUTS-0062",
@@ -8616,7 +9815,26 @@
         "compiler",
         "diagnostics",
         "project"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-LAYOUTS-0062",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS expects diagnostic 2353 for a probe placed as a direct Component option; the Rust test pins the production placement inside methods and cannot prove the diagnostic absence/presence without a checker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 142,
+            "test": "layouts_0062_placement_only_diagnostic_blocked",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_layout.rs::layouts_0062_placement_only_diagnostic_blocked",
+            "note": "TS expects diagnostic 2353 for a probe placed as a direct Component option; the Rust test pins the production placement inside methods and cannot prove the diagnostic absence/presence without a checker."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LAYOUTS-0072",
@@ -8672,7 +9890,26 @@
       "status": "planned",
       "capabilities": [
         "project"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-LAYOUTS-0072",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts the checker reports no diagnostics for the injected probe; the Rust test asserts probe placement inside Component methods only.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 118,
+            "test": "case_layouts_0072_component_methods_accept_the_injected_probe",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_layout.rs::case_layouts_0072_component_methods_accept_the_injected_probe",
+            "note": "TS asserts the checker reports no diagnostics for the injected probe; the Rust test asserts probe placement inside Component methods only."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LAYOUTS-0084",
@@ -8846,7 +10083,26 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-LAYOUTS-0117",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts hover type/documentation and empty diagnostics for the JavaScript JSDoc overlay; the Rust test pins the pragma/JSDoc layout only.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 442,
+            "test": "layouts_0117_text_overlay_only_hover_blocked",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_layout.rs::layouts_0117_text_overlay_only_hover_blocked",
+            "note": "TS asserts hover type/documentation and empty diagnostics for the JavaScript JSDoc overlay; the Rust test pins the pragma/JSDoc layout only."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LAYOUTS-0147",
@@ -8963,13 +10219,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-LAYOUTS-0167",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same completeness flag and all five optionalTypes boundary type texts (any, Record<string, any>, any[], function, number | string).",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 192,
+            "test": "case_layouts_0167_optionaltypes_boundary_mapping",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_layout.rs::case_layouts_0167_optionaltypes_boundary_mapping",
+            "note": "Same completeness flag and all five optionalTypes boundary type texts (any, Record<string, any>, any[], function, number | string)."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LAYOUTS-0190",
@@ -9023,11 +10298,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-LAYOUTS-0190",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same incomplete flag, 'no readable' problem and surviving property list (['b']).",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 218,
+            "test": "case_layouts_0190_unknown_property_shapes_degrade_instead_of_guessing",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_layout.rs::case_layouts_0190_unknown_property_shapes_degrade_instead_of_guessing",
+            "note": "Same incomplete flag, 'no readable' problem and surviving property list (['b'])."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LAYOUTS-0206",
@@ -9079,11 +10373,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-LAYOUTS-0206",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same incomplete flag, 'not an object literal' problem and empty property list.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 250,
+            "test": "case_layouts_0206_non_literal_properties_is_reported_never_narrowed_silently",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_layout.rs::case_layouts_0206_non_literal_properties_is_reported_never_narrowed_silently",
+            "note": "Same incomplete flag, 'not an object literal' problem and empty property list."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LAYOUTS-0216",
@@ -9143,7 +10456,26 @@
       "status": "planned",
       "capabilities": [
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-LAYOUTS-0216",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS exercises identifierOffset on five inputs including the longer-identifier and missing-target cases; the Rust test exercises rewrite_expression target selection and omits the 'username + name' case.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 273,
+            "test": "case_layouts_0216_the_mounted_target_is_a_whole_identifier_outside_string_literals",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_layout.rs::case_layouts_0216_the_mounted_target_is_a_whole_identifier_outside_string_literals",
+            "note": "TS exercises identifierOffset on five inputs including the longer-identifier and missing-target cases; the Rust test exercises rewrite_expression target selection and omits the 'username + name' case."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LAYOUTS-0224",
@@ -9193,14 +10525,33 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "definition",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-LAYOUTS-0224",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same quoted property-name slice ('a-b') at the published declaration range; the Rust test additionally pins the surrounding quotes.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 302,
+            "test": "case_layouts_0224_quoted_property_names_keep_the_definition_target_inside_the_quotes",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_layout.rs::case_layouts_0224_quoted_property_names_keep_the_definition_target_inside_the_quotes",
+            "note": "Same quoted property-name slice ('a-b') at the published declaration range; the Rust test additionally pins the surrounding quotes."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LOCALS-0048",
@@ -9252,14 +10603,33 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "locals",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-LOCALS-0048",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same unresolved flag, nested helper declarations and closer.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 152,
+            "test": "case_locals_0048_renderlocals_emits_nested_helper_declarations",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_locals_0048_renderlocals_emits_nested_helper_declarations",
+            "note": "Same unresolved flag, nested helper declarations and closer."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LOCALS-0063",
@@ -9315,7 +10685,26 @@
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-LOCALS-0063",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust matches the nested text and closers but omits the unresolved=false assertion.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 170,
+            "test": "case_locals_0063_nested_levels_indent_and_closers_are_innermost_first",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_locals_0063_nested_levels_indent_and_closers_are_innermost_first",
+            "note": "Rust matches the nested text and closers but omits the unresolved=false assertion."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LOCALS-0089",
@@ -9373,7 +10762,26 @@
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-LOCALS-0089",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks the capture declaration and absence of self-reference; TS also asserts unresolved=false and the exact text/close.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 196,
+            "test": "case_locals_0089_a_same_name_nested_chain_captures_the_outer_binding_no_tdz",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_locals_0089_a_same_name_nested_chain_captures_the_outer_binding_no_tdz",
+            "note": "Rust checks the capture declaration and absence of self-reference; TS also asserts unresolved=false and the exact text/close."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LOCALS-0124",
@@ -9425,11 +10833,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-LOCALS-0124",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same unresolved flag and 'undefined as any' fallback text.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 226,
+            "test": "case_locals_0124_an_unparseable_source_expression_falls_back_to_any",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_locals_0124_an_unparseable_source_expression_falls_back_to_any",
+            "note": "Same unresolved flag and 'undefined as any' fallback text."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LOCALS-0130",
@@ -9482,13 +10909,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "locals"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-LOCALS-0130",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same unresolved flag, JavaScript any binding text and JS/TS helper strings.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 241,
+            "test": "case_locals_0130_javascript_mode_binds_locals_as_any_without_helper_types",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_locals_0130_javascript_mode_binds_locals_as_any_without_helper_types",
+            "note": "Same unresolved flag, JavaScript any binding text and JS/TS helper strings."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LOCALS-0138",
@@ -9539,11 +10985,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-LOCALS-0138",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same empty text and close for an invalid binding name.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 257,
+            "test": "case_locals_0138_invalid_binding_names_are_ignored_defensively",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_locals_0138_invalid_binding_names_are_ignored_defensively",
+            "note": "Same empty text and close for an invalid binding name."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LOCALS-0144",
@@ -9600,7 +11065,26 @@
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-LOCALS-0144",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks the level count and item names; TS also checks the index name.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 268,
+            "test": "case_locals_0144_levels_are_grouped_by_array_order_not_source_expression",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_locals_0144_levels_are_grouped_by_array_order_not_source_expression",
+            "note": "Rust checks the level count and item names; TS also checks the index name."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LOCALS-0261",
@@ -9849,11 +11333,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-LOCALS-0334",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same unresolved flag and typed fallback for a 40k-term wx:for source.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 291,
+            "test": "case_locals_0334_an_extremely_deep_wx_for_source_degrades_instead_of_overflowing",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_locals_0334_an_extremely_deep_wx_for_source_degrades_instead_of_overflowing",
+            "note": "Same unresolved flag and typed fallback for a 40k-term wx:for source."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-LOCALS-0343",
@@ -9915,7 +11418,26 @@
       "capabilities": [
         "diagnostics",
         "locals"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-LOCALS-0343",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS asserts diagnostics Partial, the typed reason and empty fragment diagnostics; Rust pins the layout status/reason and fallback text only.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 307,
+            "test": "case_locals_0343_a_locals_only_request_still_degrades_to_partial_with_a_typed_reason",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_locals_0343_a_locals_only_request_still_degrades_to_partial_with_a_typed_reason",
+            "note": "TS asserts diagnostics Partial, the typed reason and empty fragment diagnostics; Rust pins the layout status/reason and fallback text only."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0010",
@@ -9970,13 +11492,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MAPPING-0010",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same utf16_to_byte/byte_to_utf16 boundaries and rejection of mid-surrogate/mid-codepoint offsets.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 93,
+            "test": "case_mapping_0010_utf16_and_byte_offsets_agree_around_astral_characters",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0010_utf16_and_byte_offsets_agree_around_astral_characters",
+            "note": "Same utf16_to_byte/byte_to_utf16 boundaries and rejection of mid-surrogate/mid-codepoint offsets."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0020",
@@ -10028,11 +11569,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-MAPPING-0020",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same mapped source range and trimmedSyntheticPrefix flag.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 104,
+            "test": "case_mapping_0020_mapped_span_trims_a_synthetic_prefix_and_keeps_the_source_part",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0020_mapped_span_trims_a_synthetic_prefix_and_keeps_the_source_part",
+            "note": "Same mapped source range and trimmedSyntheticPrefix flag."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0034",
@@ -10085,13 +11645,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MAPPING-0034",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same unattributable spans and in-source range mapping.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 119,
+            "test": "case_mapping_0034_a_span_entirely_inside_synthetic_text_is_not_attributable",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0034_a_span_entirely_inside_synthetic_text_is_not_attributable",
+            "note": "Same unattributable spans and in-source range mapping."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0048",
@@ -10143,14 +11722,33 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "mapping",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MAPPING-0048",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same offsets after a multi-character insertion; Rust additionally pins the end offset.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 147,
+            "test": "case_mapping_0048_assemble_maps_offsets_after_an_insertion_with_several_synthetic_prefixes",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0048_assemble_maps_offsets_after_an_insertion_with_several_synthetic_prefixes",
+            "note": "Same offsets after a multi-character insertion; Rust additionally pins the end offset."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0078",
@@ -10208,7 +11806,26 @@
       "status": "planned",
       "capabilities": [
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MAPPING-0078",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS treats the overlong span as unattributable; Rust returns a typed Err, so the refusal is asserted through a different API result.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 172,
+            "test": "case_mapping_0078_a_mapped_span_never_exceeds_the_recorded_source_range",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0078_a_mapped_span_never_exceeds_the_recorded_source_range",
+            "note": "TS treats the overlong span as unattributable; Rust returns a typed Err, so the refusal is asserted through a different API result."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0091",
@@ -10270,7 +11887,26 @@
       "status": "planned",
       "capabilities": [
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MAPPING-0091",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust covers four of TS's five unattributable cases and the valid astral range; it omits targetLength+1 and returns Err rather than unattributable.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 191,
+            "test": "case_mapping_0091_out_of_bounds_spans_and_non_character_boundaries_are_typed_errors",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0091_out_of_bounds_spans_and_non_character_boundaries_are_typed_errors",
+            "note": "Rust covers four of TS's five unattributable cases and the valid astral range; it omits targetLength+1 and returns Err rather than unattributable."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0110",
@@ -10328,7 +11964,26 @@
       "status": "planned",
       "capabilities": [
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MAPPING-0110",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "TS passes fractional/negative bounds and expects unattributable; the Rust typed API makes those values unrepresentable and only checks u32 overflow.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 215,
+            "test": "case_mapping_0110_fractional_and_negative_bounds_are_unrepresentable_in_the_typed_api",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0110_fractional_and_negative_bounds_are_unrepresentable_in_the_typed_api",
+            "note": "TS passes fractional/negative bounds and expects unattributable; the Rust typed API makes those values unrepresentable and only checks u32 overflow."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0126",
@@ -10380,11 +12035,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-MAPPING-0126",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same cross-gap target selection, trimmed prefix and mapped range.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 228,
+            "test": "case_mapping_0126_cross_gap_target_is_used_only_when_fully_inside_the_span",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0126_cross_gap_target_is_used_only_when_fully_inside_the_span",
+            "note": "Same cross-gap target selection, trimmed prefix and mapped range."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0145",
@@ -10452,7 +12126,26 @@
       "capabilities": [
         "diagnostics",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MAPPING-0145",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust verifies segment coverage and source bytes for two mounts; TS also checks insertionId linkage and a diagnostic range.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 248,
+            "test": "case_mapping_0145_every_mount_carries_an_explicit_synthetic_source_split",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0145_every_mount_carries_an_explicit_synthetic_source_split",
+            "note": "Rust verifies segment coverage and source bytes for two mounts; TS also checks insertionId linkage and a diagnostic range."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0188",
@@ -10643,7 +12336,26 @@
       "status": "planned",
       "capabilities": [
         "config"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MAPPING-0223",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks BOM removal, hashbang first, the note and replaceLength; TS also asserts the edit kind.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 304,
+            "test": "case_mapping_0223_bom_is_dropped_whenever_a_pragma_must_be_honoured",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0223_bom_is_dropped_whenever_a_pragma_must_be_honoured",
+            "note": "Rust checks BOM removal, hashbang first, the note and replaceLength; TS also asserts the edit kind."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0239",
@@ -10711,7 +12423,26 @@
       "capabilities": [
         "evidence",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MAPPING-0239",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks insertions/mounts exist and insertionId linkage; TS also asserts exactly two segments, synthetic/source order and insertion offsets.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 326,
+            "test": "case_mapping_0239_published_evidence_carries_insertions_and_mounts_for_every_run",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0239_published_evidence_carries_insertions_and_mounts_for_every_run",
+            "note": "Rust checks insertions/mounts exist and insertionId linkage; TS also asserts exactly two segments, synthetic/source order and insertion offsets."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0261",
@@ -10774,7 +12505,26 @@
       "capabilities": [
         "evidence",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MAPPING-0261",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust hardcodes target length 4 and the 'name' slice; TS cross-checks published evidence against mount.target and segment starts.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 356,
+            "test": "case_mapping_0261_mount_target_length_is_published_and_matches_the_mounted_identifier",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0261_mount_target_length_is_published_and_matches_the_mounted_identifier",
+            "note": "Rust hardcodes target length 4 and the 'name' slice; TS cross-checks published evidence against mount.target and segment starts."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0279",
@@ -10833,13 +12583,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "config"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MAPPING-0279",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Same BOM-removal edit (kind, start 0, length 0, replace 1) and no pragma injection.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 384,
+            "test": "case_mapping_0279_bom_removal_is_a_one_character_replacement_not_an_insertion",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0279_bom_removal_is_a_one_character_replacement_not_an_insertion",
+            "note": "Same BOM-removal edit (kind, start 0, length 0, replace 1) and no pragma injection."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0306",
@@ -20139,7 +21908,26 @@
       "capabilities": [
         "hover",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0051",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust matches the six rewritten texts; TS also asserts result.ok and hoverType for f0.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 63,
+            "test": "case_rewrite_0051_unary_parenthesized_and_multi_root_expressions_are_fully_rewritten",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0051_unary_parenthesized_and_multi_root_expressions_are_fully_rewritten",
+            "note": "Rust matches the six rewritten texts; TS also asserts result.ok and hoverType for f0."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0078",
@@ -20201,7 +21989,26 @@
       "capabilities": [
         "hover",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0078",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust matches the rewritten text; TS also asserts hoverType and the absence of error 2304.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 79,
+            "test": "case_rewrite_0078_indexed_array_roots_are_rewritten_before_the_index",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0078_indexed_array_roots_are_rewritten_before_the_index",
+            "note": "Rust matches the rewritten text; TS also asserts hoverType and the absence of error 2304."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0088",
@@ -20270,7 +22077,26 @@
         "hover",
         "locals",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0088",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks rewritten text and local_root; TS also asserts hover/diagnostics/definition Partial states, hover quality any and no fabricated diagnostics.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 84,
+            "test": "case_rewrite_0088_template_locals_are_not_prefixed_anywhere_in_the_expression",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0088_template_locals_are_not_prefixed_anywhere_in_the_expression",
+            "note": "Rust checks rewritten text and local_root; TS also asserts hover/diagnostics/definition Partial states, hover quality any and no fabricated diagnostics."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0101",
@@ -20335,7 +22161,26 @@
         "locals",
         "mapping",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0101",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks three rewritten texts; TS also asserts hover types and hover Partial status.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 97,
+            "test": "case_rewrite_0101_template_locals_may_shadow_global_builtins",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0101_template_locals_may_shadow_global_builtins",
+            "note": "Rust checks three rewritten texts; TS also asserts hover types and hover Partial status."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0118",
@@ -20396,7 +22241,26 @@
       "capabilities": [
         "hover",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0118",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks both rewritten texts; TS also asserts hover types for both fragments.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 118,
+            "test": "case_rewrite_0118_string_and_template_text_stay_verbatim_while_substitutions_are_rewritten",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0118_string_and_template_text_stay_verbatim_while_substitutions_are_rewritten",
+            "note": "Rust checks both rewritten texts; TS also asserts hover types for both fragments."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0127",
@@ -20457,7 +22321,26 @@
       "capabilities": [
         "hover",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0127",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks both rewritten texts; TS also asserts hover types for both fragments.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 127,
+            "test": "case_rewrite_0127_numeric_literals_do_not_become_default_targets",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0127_numeric_literals_do_not_become_default_targets",
+            "note": "Rust checks both rewritten texts; TS also asserts hover types for both fragments."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0136",
@@ -20513,13 +22396,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0136",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Rust matches all six rewritten texts; the TS result.ok assertion is implied by the outputs.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 133,
+            "test": "case_rewrite_0136_member_names_object_keys_strings_and_globals_are_not_rewritten",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0136_member_names_object_keys_strings_and_globals_are_not_rewritten",
+            "note": "Rust matches all six rewritten texts; the TS result.ok assertion is implied by the outputs."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0156",
@@ -20582,7 +22484,26 @@
       "capabilities": [
         "hover",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0156",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks target offsets and slices; TS asserts mapped ranges and hover types.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 152,
+            "test": "case_rewrite_0156_repeated_identifiers_keep_the_rightmost_target_offset",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0156_repeated_identifiers_keep_the_rightmost_target_offset",
+            "note": "Rust checks target offsets and slices; TS asserts mapped ranges and hover types."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0183",
@@ -20641,7 +22562,26 @@
       "capabilities": [
         "hover",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0183",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks the target slice; TS asserts the mounted text and hover type.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 176,
+            "test": "case_rewrite_0183_object_keys_are_not_default_targets",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0183_object_keys_are_not_default_targets",
+            "note": "Rust checks the target slice; TS asserts the mounted text and hover type."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0190",
@@ -20700,7 +22640,26 @@
       "capabilities": [
         "hover",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0190",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks the expanded shorthand text; TS also asserts hoverType.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 204,
+            "test": "case_rewrite_0190_object_shorthand_is_expanded_safely",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0190_object_shorthand_is_expanded_safely",
+            "note": "Rust checks the expanded shorthand text; TS also asserts hoverType."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0197",
@@ -20814,7 +22773,26 @@
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0207",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "near_exact",
+        "green_eligible": false,
+        "status_recommendation": "green",
+        "status_applied": "planned",
+        "note": "Rust returns a typed Invalid(fragment.range) for the wrong wxmlRange length; this is the native equivalent of the TS RequestError code bad-fragment.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 209,
+            "test": "case_rewrite_0207_wxmlrange_must_match_the_expression_byte_length",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0207_wxmlrange_must_match_the_expression_byte_length",
+            "note": "Rust returns a typed Invalid(fragment.range) for the wrong wxmlRange length; this is the native equivalent of the TS RequestError code bad-fragment."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0224",
@@ -20868,7 +22846,26 @@
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0224",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust rejects all three comment/string targets but only asserts is_err; TS asserts the bad-fragment error code.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 229,
+            "test": "case_rewrite_0224_targets_inside_comments_or_strings_are_rejected",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0224_targets_inside_comments_or_strings_are_rejected",
+            "note": "Rust rejects all three comment/string targets but only asserts is_err; TS asserts the bad-fragment error code."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0239",
@@ -20924,7 +22921,26 @@
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0239",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust rejects the three wrapper-escape shapes but only asserts is_err; TS asserts the bad-fragment error code.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 243,
+            "test": "case_rewrite_0239_wrapper_escapes_and_extra_statements_are_rejected",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0239_wrapper_escapes_and_extra_statements_are_rejected",
+            "note": "Rust rejects the three wrapper-escape shapes but only asserts is_err; TS asserts the bad-fragment error code."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0250",
@@ -20980,7 +22996,26 @@
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0250",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust rejects the four unsupported shapes but only asserts is_err; TS asserts the bad-fragment error code.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 253,
+            "test": "case_rewrite_0250_unsupported_expression_shapes_fail_closed",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0250_unsupported_expression_shapes_fail_closed",
+            "note": "Rust rejects the four unsupported shapes but only asserts is_err; TS asserts the bad-fragment error code."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0260",
@@ -21036,7 +23071,26 @@
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0260",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks accept/reject at depth 256/257 but does not assert the typed bad-fragment error TS requires for the over-limit case.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 268,
+            "test": "case_rewrite_0260_depth_limit_is_counted_from_the_parsed_root_expression",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0260_depth_limit_is_counted_from_the_parsed_root_expression",
+            "note": "Rust checks accept/reject at depth 256/257 but does not assert the typed bad-fragment error TS requires for the over-limit case."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0274",
@@ -21088,11 +23142,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0274",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Rust asserts BadExpression for the deeply nested and malformed expressions, matching TS bad-fragment (not RangeError).",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 276,
+            "test": "case_rewrite_0274_deeply_nested_and_malformed_expressions_are_bad_fragment_not_rangeerror",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0274_deeply_nested_and_malformed_expressions_are_bad_fragment_not_rangeerror",
+            "note": "Rust asserts BadExpression for the deeply nested and malformed expressions, matching TS bad-fragment (not RangeError)."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0285",
@@ -21156,7 +23229,26 @@
       "capabilities": [
         "mapping",
         "messages"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0285",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks message length and the 'total 5000 UTF-16 chars' text; TS also asserts RequestError type and code.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 286,
+            "test": "case_rewrite_0285_error_messages_truncate_huge_expressions",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0285_error_messages_truncate_huge_expressions",
+            "note": "Rust checks message length and the 'total 5000 UTF-16 chars' text; TS also asserts RequestError type and code."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0299",
@@ -21208,11 +23300,37 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0299",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The unit test pins BadExpression for '1 + 2' and 'Math.random()'; the integration test rejects the same shapes. TS asserts bad-fragment.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/rewrite.rs",
+            "line": 857,
+            "test": "expressions_without_a_free_root_are_rejected",
+            "fully_qualified": "wxml_backend_tsgo::shadow::rewrite::tests::expressions_without_a_free_root_are_rejected",
+            "note": "The unit test pins BadExpression for '1 + 2' and 'Math.random()'; the integration test rejects the same shapes. TS asserts bad-fragment."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 295,
+            "test": "case_rewrite_0299_expressions_without_a_free_root_identifier_are_rejected",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0299_expressions_without_a_free_root_identifier_are_rejected",
+            "note": "The unit test pins BadExpression for '1 + 2' and 'Math.random()'; the integration test rejects the same shapes. TS asserts bad-fragment."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0309",
@@ -21277,7 +23395,26 @@
       "status": "planned",
       "capabilities": [
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0309",
+        "assessed_at": "2026-11-18",
+        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Rust checks two mapped target ranges; TS also asserts trimmedSyntheticPrefix for both the bang and a synthetic-prefix case.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 305,
+            "test": "case_rewrite_0309_rewritten_mounts_map_target_spans_and_trim_synthetic_prefixes",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0309_rewritten_mounts_map_target_spans_and_trim_synthetic_prefixes",
+            "note": "Rust checks two mapped target ranges; TS also asserts trimmedSyntheticPrefix for both the bang and a synthetic-prefix case."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0349",

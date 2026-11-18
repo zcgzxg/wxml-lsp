@@ -28,16 +28,13 @@ pub(crate) struct Partition {
     /// Stable partition name matching the module and ledger target.
     pub(crate) name: &'static str,
     /// Number of non-obsolete ledger cases routed to this partition.
-    pub(crate) planned_cases: usize,
+    pub(crate) routed_cases: usize,
 }
 
 impl Partition {
     /// Creates a partition descriptor.
-    pub(crate) const fn new(name: &'static str, planned_cases: usize) -> Self {
-        Self {
-            name,
-            planned_cases,
-        }
+    pub(crate) const fn new(name: &'static str, routed_cases: usize) -> Self {
+        Self { name, routed_cases }
     }
 }
 

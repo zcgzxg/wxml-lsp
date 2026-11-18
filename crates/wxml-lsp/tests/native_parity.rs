@@ -152,13 +152,18 @@ const PARTITIONS: &[PartitionSkeleton] = &[
 
 #[test]
 fn partition_skeleton_is_empty_and_fails_closed() {
+    let ledger_value = ledger::load_ledger();
+    let root = ledger::object(&ledger_value, "ledger root");
+    let cases = ledger::required_array(root, "cases", "ledger root");
+    let routed = ledger::non_obsolete_case_count(cases);
+
     let runner = ParityRunner::without_backend();
     let mut total = 0_usize;
 
     for skeleton in PARTITIONS {
         assert!(
             skeleton.migrated_cases.is_empty(),
-            "{} must not claim a migrated case in P3-T",
+            "{} must not claim a native parity case yet",
             skeleton.module
         );
         assert_eq!(skeleton.partition.name, skeleton.module);
@@ -181,18 +186,18 @@ fn partition_skeleton_is_empty_and_fails_closed() {
             "{} reason must identify the case: {reason}",
             skeleton.module
         );
-        total += skeleton.partition.planned_cases;
+        total += skeleton.partition.routed_cases;
     }
 
     assert_eq!(PARTITIONS.len(), 16);
     assert_eq!(
-        total, 303,
-        "all 16 partitions must cover every planned case"
+        total, routed,
+        "all 16 partitions must cover every non-obsolete ledger case"
     );
 }
 
 #[test]
-fn partition_planned_counts_match_ledger_targets() {
+fn partition_routed_counts_match_ledger_targets() {
     let ledger_value = ledger::load_ledger();
     let root = ledger::object(&ledger_value, "ledger root");
     let cases = ledger::required_array(root, "cases", "ledger root");
@@ -204,14 +209,7 @@ fn partition_planned_counts_match_ledger_targets() {
             continue;
         }
         let target = ledger::required_str(case, "target_rust_test", "case");
-        let (file, _) = target
-            .split_once("::")
-            .unwrap_or_else(|| panic!("target lacks a test separator: {target}"));
-        let module = file
-            .rsplit('/')
-            .next()
-            .and_then(|file| file.strip_suffix(".rs"))
-            .unwrap_or_else(|| panic!("target is not a Rust module path: {target}"));
+        let module = ledger::target_partition(target);
         *expected.entry(module.to_owned()).or_default() += 1;
     }
     assert_eq!(
@@ -225,14 +223,18 @@ fn partition_planned_counts_match_ledger_targets() {
     for skeleton in PARTITIONS {
         assert_eq!(
             expected.get(skeleton.module).copied().unwrap_or_default(),
-            skeleton.partition.planned_cases,
+            skeleton.partition.routed_cases,
             "{} count drifted from the ledger target paths",
             skeleton.module
         );
-        declared += skeleton.partition.planned_cases;
+        declared += skeleton.partition.routed_cases;
         created.push(skeleton.module);
     }
-    assert_eq!(declared, 303);
+    assert_eq!(
+        declared,
+        ledger::non_obsolete_case_count(cases),
+        "partition counts must cover every non-obsolete ledger case"
+    );
 
     created.sort_unstable();
     let mut expected_partitions = ledger::PARTITION_NAMES.to_vec();
