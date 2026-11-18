@@ -1,12 +1,14 @@
-# Rust + tsgo 测试迁移账本（P1-B + P3-S/P4-B + P5 状态回填）
+# Rust + tsgo 测试迁移账本（P1-B + P3-S/P4-B + P5/P5.1 状态回填）
 
-生成时间：2026-11-17T23:08:57+08:00；P3-S/P4-B 证据与 P5 状态回填：2026-11-18
+生成时间：2026-11-17T23:08:57+08:00；P3-S/P4-B 证据与 P5 状态回填：2026-11-18；P5.1 适配器/定义/性能回填：2026-11-19
 
-状态：**green 32 / planned 271 / retired-with-decision 36**（P5 仅将 32 个 exact-parity 用例提升为 `green`；3 个 near-exact 保留 `planned` + green recommendation；36 个 Candidate B 不变；未删除任何旧测试）
+状态：**green 33 / planned 270 / retired-with-decision 36**（P5 将 32 个 exact-parity 用例提升为 `green`；P5.1 将 1 个 adapter exact 用例提升为 `green`，并登记 13 个 planned 证据；3 个 near-exact 保留 `planned` + green recommendation；36 个 Candidate B 不变；未删除任何旧测试）
 
 基线：`b9616c557e54a06b7d756e516e6dd7c4016664cf`（`tsgo/migration`，包含 `4d59ca7`）
 
 实现 HEAD（P3-S/P4-B）：`47947da4878212cb8bef7d1505c313b9b51b0f48`
+
+实现 HEAD（P5.1 回填）：`6ba407b4cb8d3ea124276337e6da983a1e9f3a51`
 
 机器可读账本：`docs/plans/tsgo-test-ledger.json`
 
@@ -17,8 +19,9 @@ P0 证据：`docs/evidence/2026-11-17-tsgo-migration-baseline.md`
 - 21 个 TS 测试文件 + `support.ts`；**274 个静态 `test()` 声明**（273 个字面标题 + 1 个动态标题），**339 个展开注册**。
 - 33 个 scenario；matrix 文件 78 个注册（12 个顶层声明 + 66 个 scenario × layout）。
 - 1145 个直接 `assert.*` 调用点，其中按领域关键词判定 930 个为语义断言；循环会让实际执行次数更高。
-- 处置分布（2026-11-17 集成决策后）：direct 240、rewrite 52、split 11、obsolete 36、blocked-decision 0；P5 后 status 为 32 `green`、271 `planned`、36 `retired-with-decision`。
+- 处置分布（2026-11-17 集成决策后）：direct 240、rewrite 52、split 11、obsolete 36、blocked-decision 0；P5.1 后 status 为 33 `green`、270 `planned`、36 `retired-with-decision`。
 - P5 状态回填（2026-11-18）：100 个用例登记了现有 Rust 测试；32 个 exact-parity 用例提升为 `green`，3 个 near-exact 保留 `planned` + `status_recommendation=green`，44 个 weaker、5 个 structural、16 个 blocked 仍为 `planned`。最终 **32 green / 271 planned / 36 retired-with-decision**。逐条见 §14。
+- P5.1 回填（2026-11-19）：新增 14 个用例证据（114 assessed）；`TS-COMPLETION-0220` 由 P4-C adapter 测试提升为 `green`，其余 13 个保持 `planned`（7 个新增 weaker adapter、4 个 weaker definition、1 个 blocked definition、1 个 structural perf）。最终 **33 green / 270 planned / 36 retired-with-decision**；仍有 189 个 planned 用例没有 Rust 证据。
 - 本轮 TS 套件实际执行：339 个，通过 338，失败 1，跳过 0。
 - 计划对账：计划 273 静态 / ~338 展开，实际 **274 / 339**（+1）；原因是 `events.test.ts` 实际 24 个声明而非计划表中的 23。
 - 23 个 Rust `#[ignore]` 测试全部映射到必跑原生命令；2 个 `semantic_tools` 静默 return 路径同样映射；均不计为已迁移。
@@ -144,7 +147,7 @@ P0 证据：`docs/evidence/2026-11-17-tsgo-migration-baseline.md`
 | unit | 114 | 纯函数/codec/验证：locals、guards、rewrite、mapping math、protocol validation。 |
 | parity | 100 | scenario matrix、overlay、mapping/run、性能采样。 |
 
-32 条 `status=green`、271 条 `status=planned`、36 条 `status=retired-with-decision`；`oracle_revision` 已冻结为 `F2 frozen 2026-11-17 (dcc1f15)`；独立 `reviewer` 尚未签署。P5 只提升 exact-parity 用例；near-exact/weaker/structural/blocked 的逐条证据和状态见 §14。
+33 条 `status=green`、270 条 `status=planned`、36 条 `status=retired-with-decision`；`oracle_revision` 已冻结为 `F2 frozen 2026-11-17 (dcc1f15)`；独立 `reviewer` 尚未签署。P5/P5.1 只提升 exact-parity 用例；near-exact/weaker/structural/blocked 的逐条证据和状态见 §14。
 
 ## 8. Dirty 必保增量（D1–D7）
 
@@ -712,9 +715,9 @@ cd backends/typescript && npm test   # 需要 Node 24 与已存在的 node_modul
 - 依据：生产 LSP 不传 `layoutId`（`server.ts:152`）；`analysis.ts:59-60,416` 明确默认原位 shadow；Candidate B 只由 matrix/perf/evidence 脚本遍历。
 - 不降低要求：原位 shadow 的 39 个 matrix 用例、协议/映射/诊断/编辑安全/FS 用例继续强制迁移。
 
-## 14. P5 Rust 证据与状态回填（2026-11-18）
+## 14. P5/P5.1 Rust 证据与状态回填（2026-11-18，P5.1 更新 2026-11-19）
 
-本回填登记 `wxml-backend-tsgo` 中已经存在并通过的 Rust 测试，并把 **exact parity** 的 32 个用例提升为 `green`。3 个 near-exact 用例按裁决保留 `planned` 并记录 `status_recommendation=green`；weaker/structural/blocked 全部保持 `planned`。未修改生产 Rust、ADR、交付、server/config 或 Cargo。
+本回填登记 `wxml-backend-tsgo` 与 P4-C LSP adapter 中已经存在并通过的 Rust 测试。P5 将 **exact parity** 的 32 个用例提升为 `green`；P5.1 追加 P4-C adapter、native definition slice 与 perf budget gate 的逐条证据，只把 1 个 adapter exact 用例（`TS-COMPLETION-0220`）提升为 `green`。3 个 near-exact 用例按裁决保留 `planned` 并记录 `status_recommendation=green`；其余 weaker/structural/blocked 全部保持 `planned`。未修改生产 Rust、ADR、交付、server/config 或 Cargo。
 
 P5 已解冻 `crates/wxml-lsp/tests/native_parity/ledger.rs` 的旧 303 planned 常量：现在校验 total=339、retired=36、状态总和=339、green 必须有非空 Rust 证据、分区计数从实际 cases 派生。`reviewed`/`closed` 仍未使用（无独立评审证据）。
 
@@ -722,10 +725,12 @@ P5 已解冻 `crates/wxml-lsp/tests/native_parity/ledger.rs` 的旧 303 planned 
 
 ### 14.1 状态计数 before / after
 
-| status | before | after | 说明 |
+P5 初次回填（2026-11-18）：303 planned / 0 green → 271 planned / 32 green。P5.1 追加回填（2026-11-19）：271 planned / 32 green → 270 planned / 33 green。
+
+| status | P5.1 before | P5.1 after | 说明 |
 | --- | ---: | ---: | --- |
-| planned | 303 | 271 | 3 near-exact + 44 weaker + 5 structural + 16 blocked + 203 无证据 |
-| green | 0 | 32 | 仅 `parity=exact` 且证据完整的用例 |
+| planned | 271 | 270 | 3 near-exact + 55 weaker + 6 structural + 17 blocked + 189 无证据 |
+| green | 32 | 33 | 仅 `parity=exact` 且证据完整的用例；P5.1 新增 `TS-COMPLETION-0220` |
 | retired-with-decision | 36 | 36 | 36 个 Candidate B/symbol-bridge 用例不变 |
 | red | 0 | 0 | 不新增 red |
 | reviewed / closed | 0 | 0 | 无独立评审证据 |
@@ -736,29 +741,30 @@ P5 已解冻 `crates/wxml-lsp/tests/native_parity/ledger.rs` 的旧 303 planned 
 | 分区 | routed | 有证据 | green | planned | exact | near-exact | weaker | structural | blocked | 无证据 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `behaviors` | 22 | 18 | 1 | 21 | 1 | 2 | 6 | 5 | 4 | 4 |
-| `completion` | 9 | 0 | 0 | 9 | 0 | 0 | 0 | 0 | 0 | 9 |
+| `completion` | 9 | 3 | 1 | 8 | 1 | 0 | 2 | 0 | 0 | 6 |
 | `components` | 19 | 9 | 4 | 15 | 4 | 0 | 1 | 0 | 4 | 10 |
-| `definitions` | 5 | 0 | 0 | 5 | 0 | 0 | 0 | 0 | 0 | 5 |
+| `definitions` | 5 | 5 | 0 | 5 | 0 | 0 | 4 | 0 | 1 | 0 |
 | `events` | 24 | 21 | 9 | 15 | 9 | 0 | 10 | 0 | 2 | 3 |
 | `guards_js` | 25 | 10 | 4 | 21 | 4 | 0 | 1 | 0 | 5 | 15 |
-| `hover_docs` | 10 | 1 | 0 | 10 | 0 | 0 | 1 | 0 | 0 | 9 |
+| `hover_docs` | 10 | 3 | 0 | 10 | 0 | 0 | 3 | 0 | 0 | 7 |
 | `loops` | 16 | 9 | 5 | 11 | 5 | 0 | 3 | 0 | 1 | 7 |
 | `mapping_utf16` | 21 | 14 | 6 | 15 | 6 | 0 | 8 | 0 | 0 | 7 |
 | `messages_evidence` | 8 | 0 | 0 | 8 | 0 | 0 | 0 | 0 | 0 | 8 |
-| `perf_budget` | 1 | 0 | 0 | 1 | 0 | 0 | 0 | 0 | 0 | 1 |
-| `project_overlay` | 20 | 0 | 0 | 20 | 0 | 0 | 0 | 0 | 0 | 20 |
+| `perf_budget` | 1 | 1 | 0 | 1 | 0 | 0 | 0 | 1 | 0 | 0 |
+| `project_overlay` | 20 | 3 | 0 | 20 | 0 | 0 | 3 | 0 | 0 | 17 |
 | `protocol_limits` | 40 | 0 | 0 | 40 | 0 | 0 | 0 | 0 | 0 | 40 |
 | `scenario_matrix` | 43 | 0 | 0 | 43 | 0 | 0 | 0 | 0 | 0 | 43 |
 | `shadow_rewrite` | 19 | 18 | 3 | 16 | 3 | 1 | 14 | 0 | 0 | 1 |
 | `symbols_edits` | 21 | 0 | 0 | 21 | 0 | 0 | 0 | 0 | 0 | 21 |
-| **合计** | **303** | **100** | **32** | **271** | **32** | **3** | **44** | **5** | **16** | **203** |
+| **合计** | **303** | **114** | **33** | **270** | **33** | **3** | **55** | **6** | **17** | **189** |
 
-### 14.3 exact-parity（32，已提升 `green`）
+### 14.3 exact-parity（33，已提升 `green`）
 
 判定标准：Rust 断言覆盖 TS case 的同一可观察语义，且不依赖未执行的 checker/native query。`status=green`；`status_applied=green`；`target_rust_test_status=migrated_green`。
 
 | Case | Rust test（path:line） | 证据摘要 |
 | --- | --- | --- |
+| `TS-COMPLETION-0220` |  crates/wxml-lsp/src/backend_tsgo/tests.rs:916 | Both tests cap the list at 256 items and report truncated=true; the native adapter test additionally reports Partial. |
 | `TS-COMPONENT-0452` |  crates/wxml-backend-tsgo/tests/script_behavior.rs:172 | Same three winning types (later number, nested string object, onlyNested number) after nested/later behavior ordering. |
 | `TS-EVENTS-0071` |  crates/wxml-backend-tsgo/tests/script_events.rs:83 | Same three handler forms: zero skipped, Supported, no diagnostic, definition path/range and signature. |
 | `TS-EVENTS-0130` |  crates/wxml-backend-tsgo/tests/script_events.rs:160 | Same UTF-8 byte and UTF-16 definition ranges after multi-byte text. |
@@ -802,7 +808,7 @@ P5 已解冻 `crates/wxml-lsp/tests/native_parity/ledger.rs` 的旧 303 planned 
 | `TS-COMPONENT-0763` |  crates/wxml-backend-tsgo/tests/script_behavior.rs:369 | Same non-probe __state number type and complete behavior data. |
 | `TS-REWRITE-0207` |  crates/wxml-backend-tsgo/tests/shadow_rewrite.rs:209 | Rust returns a typed Invalid(fragment.range) for the wrong wxmlRange length; this is the native equivalent of the TS RequestError code bad-fragment. |
 
-### 14.4 blocked（16，保留 `planned`）
+### 14.4 blocked（17，保留 `planned`）
 
 这些用例的 TS 断言需要 checker 诊断、hover/definition 查询或完整模板链；现有 Rust 测试只覆盖布局/结构/脚本事实，不能按同强度判定。
 
@@ -812,6 +818,7 @@ P5 已解冻 `crates/wxml-lsp/tests/native_parity/ledger.rs` 的旧 303 planned 
 | `TS-COMPONENT-0498` |  crates/wxml-backend-tsgo/tests/script_behavior.rs:236<br> crates/wxml-backend-tsgo/tests/script_properties.rs:179 | TS asserts hover any plus a behavior reason; the two Rust tests assert data/property spread completeness facts only. |
 | `TS-COMPONENT-0570` |  crates/wxml-backend-tsgo/tests/script_behavior.rs:279 | TS asserts behaviorIncomplete/Partial and no 2339 diagnostics; Rust asserts Partial and no invented field only. |
 | `TS-COMPONENT-0676` |  crates/wxml-backend-tsgo/tests/script_properties.rs:156 | TS asserts the component-binding diagnostic and skipped details; Rust asserts the own-property overlay only. |
+| `TS-DEFINITIONS-0036` |  crates/wxml-backend-tsgo/tests/real_engine.rs:470 | TS asserts a generated-member kind and the generated declaration's source range; native definition decoding has no generated-member classification or overlay source mapping, and the gate is opt-in. |
 | `TS-EVENTS-0108` |  crates/wxml-backend-tsgo/tests/script_events.rs:131 | TS asserts the full template event chain; Rust classifies the seven binding forms and rejects malformed attributes only. |
 | `TS-EVENTS-0188` |  crates/wxml-backend-tsgo/tests/script_events.rs:558 | TS asserts the behavior fileId/signature/docs from a stub view; Rust resolves inline behavior script facts only. |
 | `TS-GUARDS-0097` |  crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs:413 | TS asserts checker narrowing/union behavior; Rust pins the rendered if/elif structure only. |
@@ -825,29 +832,27 @@ P5 已解冻 `crates/wxml-lsp/tests/native_parity/ledger.rs` 的旧 303 planned 
 | `TS-LAYOUTS-0117` |  crates/wxml-backend-tsgo/tests/shadow_layout.rs:442 | TS asserts hover type/documentation and empty diagnostics for the JavaScript JSDoc overlay; the Rust test pins the pragma/JSDoc layout only. |
 | `TS-LOCALS-0343` |  crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs:307 | TS asserts diagnostics Partial, the typed reason and empty fragment diagnostics; Rust pins the layout status/reason and fallback text only. |
 
-### 14.5 weaker / structural（49，保留 `planned`）
+### 14.5 weaker / structural（61，保留 `planned`）
 
-`weaker` 44 条：同一层次但缺少 TS 的部分断言（多为 hover 类型、诊断、reason、精确 range）；`structural` 5 条：只断言 overlay/布局结构，不是 LSP 可观察结果。逐条摘要见 JSON `migration_evidence.note`。
+`weaker` 55 条：同一层次但缺少 TS 的部分断言（多为 hover 类型、诊断、reason、精确 range）；`structural` 6 条：只断言 overlay/布局结构或不同粒度的性能采样，不是 TS 的同强度可观察结果。逐条摘要见 JSON `migration_evidence.note`。
 
-- **weaker（44）**：`TS-ANALYSIS-0123`, `TS-COMPONENT-0403`, `TS-COMPONENT-0416`, `TS-COMPONENT-0591`, `TS-COMPONENT-0607`, `TS-COMPONENT-0654`, `TS-COMPONENT-0724`, `TS-EVENTS-0093`, `TS-EVENTS-0162`, `TS-EVENTS-0176`, `TS-EVENTS-0236`, `TS-EVENTS-0268`, `TS-EVENTS-0280`, `TS-EVENTS-0301`, `TS-EVENTS-0322`, `TS-EVENTS-0339`, `TS-EVENTS-0461`, `TS-GUARDS-0075`, `TS-LAYOUTS-0216`, `TS-LOCALS-0063`, `TS-LOCALS-0089`, `TS-LOCALS-0144`, `TS-MAPPING-0078`, `TS-MAPPING-0091`, `TS-MAPPING-0110`, `TS-MAPPING-0145`, `TS-MAPPING-0223`, `TS-MAPPING-0239`, `TS-MAPPING-0261`, `TS-REWRITE-0051`, `TS-REWRITE-0078`, `TS-REWRITE-0088`, `TS-REWRITE-0101`, `TS-REWRITE-0118`, `TS-REWRITE-0127`, `TS-REWRITE-0156`, `TS-REWRITE-0183`, `TS-REWRITE-0190`, `TS-REWRITE-0224`, `TS-REWRITE-0239`, `TS-REWRITE-0250`, `TS-REWRITE-0260`, `TS-REWRITE-0285`, `TS-REWRITE-0309`
-- **structural（5）**：`TS-ANALYSIS-0380`, `TS-COMPONENT-0357`, `TS-COMPONENT-0476`, `TS-COMPONENT-0514`, `TS-COMPONENT-0539`
+- **weaker（55）**：`TS-ANALYSIS-0033`, `TS-ANALYSIS-0054`, `TS-ANALYSIS-0123`, `TS-ANALYSIS-0297`, `TS-ANALYSIS-0358`, `TS-COMPILER-0035`, `TS-COMPLETION-0104`, `TS-COMPLETION-0207`, `TS-COMPONENT-0403`, `TS-COMPONENT-0416`, `TS-COMPONENT-0591`, `TS-COMPONENT-0607`, `TS-COMPONENT-0654`, `TS-COMPONENT-0724`, `TS-DEFINITIONS-0013`, `TS-DEFINITIONS-0052`, `TS-DEFINITIONS-0074`, `TS-DEFINITIONS-0093`, `TS-EVENTS-0093`, `TS-EVENTS-0162`, `TS-EVENTS-0176`, `TS-EVENTS-0236`, `TS-EVENTS-0268`, `TS-EVENTS-0280`, `TS-EVENTS-0301`, `TS-EVENTS-0322`, `TS-EVENTS-0339`, `TS-EVENTS-0461`, `TS-GUARDS-0075`, `TS-LAYOUTS-0216`, `TS-LOCALS-0063`, `TS-LOCALS-0089`, `TS-LOCALS-0144`, `TS-MAPPING-0078`, `TS-MAPPING-0091`, `TS-MAPPING-0110`, `TS-MAPPING-0145`, `TS-MAPPING-0223`, `TS-MAPPING-0239`, `TS-MAPPING-0261`, `TS-REWRITE-0051`, `TS-REWRITE-0078`, `TS-REWRITE-0088`, `TS-REWRITE-0101`, `TS-REWRITE-0118`, `TS-REWRITE-0127`, `TS-REWRITE-0156`, `TS-REWRITE-0183`, `TS-REWRITE-0190`, `TS-REWRITE-0224`, `TS-REWRITE-0239`, `TS-REWRITE-0250`, `TS-REWRITE-0260`, `TS-REWRITE-0285`, `TS-REWRITE-0309`
+- **structural（6）**：`TS-ANALYSIS-0380`, `TS-COMPONENT-0357`, `TS-COMPONENT-0476`, `TS-COMPONENT-0514`, `TS-COMPONENT-0539`, `TS-PERF-0012`
 
-### 14.6 无 Rust 证据的 planned 用例（203）
+### 14.6 无 Rust 证据的 planned 用例（189）
 
 这些用例尚未有同名或同语义的 Rust 测试，仍需要对应的 native/query/协议能力。按目标分区列出：
 
 - **`behaviors`（4，需要 complete behavior graph）**：`TS-COMPONENT-0550`, `TS-COMPONENT-0628`, `TS-COMPONENT-0697`, `TS-COMPONENT-0774`
-- **`completion`（9，需要 native completion query）**：`TS-COMPLETION-0066`, `TS-COMPLETION-0078`, `TS-COMPLETION-0104`, `TS-COMPLETION-0127`, `TS-COMPLETION-0153`, `TS-COMPLETION-0175`, `TS-COMPLETION-0193`, `TS-COMPLETION-0207`, `TS-COMPLETION-0220`
+- **`completion`（6，需要 native completion query）**：`TS-COMPLETION-0066`, `TS-COMPLETION-0078`, `TS-COMPLETION-0127`, `TS-COMPLETION-0153`, `TS-COMPLETION-0175`, `TS-COMPLETION-0193`
 - **`components`（10，需要 component-binding diagnostics/hover）**：`TS-COMPONENT-0147`, `TS-COMPONENT-0193`, `TS-COMPONENT-0206`, `TS-COMPONENT-0229`, `TS-COMPONENT-0251`, `TS-COMPONENT-0268`, `TS-COMPONENT-0279`, `TS-LAYOUTS-0084`, `TS-LAYOUTS-0101`, `TS-LAYOUTS-0147`
-- **`definitions`（5，需要 native definition query + snapshot mapping）**：`TS-DEFINITIONS-0013`, `TS-DEFINITIONS-0036`, `TS-DEFINITIONS-0052`, `TS-DEFINITIONS-0074`, `TS-DEFINITIONS-0093`
 - **`events`（3，需要 full analyze path / event result budget）**：`TS-EVENTS-0375`, `TS-EVENTS-0387`, `TS-EVENTS-0399`
 - **`guards_js`（15，需要 native checker narrowing + probe diagnostics）**：`TS-GUARDS-0128`, `TS-GUARDS-0152`, `TS-GUARDS-0174`, `TS-GUARDS-0302`, `TS-GUARDS-0321`, `TS-GUARDS-0329`, `TS-PROBES-0027`, `TS-PROBES-0048`, `TS-PROBES-0059`, `TS-PROBES-0064`, `TS-PROBES-0080`, `TS-PROBES-0098`, `TS-PROBES-0135`, `TS-PROBES-0153`, `TS-PROBES-0169`
-- **`hover_docs`（9，需要 native hover/quickinfo + checker）**：`TS-ANALYSIS-0033`, `TS-ANALYSIS-0054`, `TS-ANALYSIS-0078`, `TS-ANALYSIS-0093`, `TS-ANALYSIS-0139`, `TS-ANALYSIS-0161`, `TS-ANALYSIS-0174`, `TS-ANALYSIS-0184`, `TS-ANALYSIS-0196`
+- **`hover_docs`（7，需要 native hover/quickinfo + checker）**：`TS-ANALYSIS-0078`, `TS-ANALYSIS-0093`, `TS-ANALYSIS-0139`, `TS-ANALYSIS-0161`, `TS-ANALYSIS-0174`, `TS-ANALYSIS-0184`, `TS-ANALYSIS-0196`
 - **`loops`（7，需要 native locals/loop-scope hover/definition）**：`TS-ANALYSIS-0205`, `TS-ANALYSIS-0226`, `TS-ANALYSIS-0243`, `TS-ANALYSIS-0255`, `TS-LOCALS-0261`, `TS-LOCALS-0288`, `TS-LOCALS-0312`
 - **`mapping_utf16`（7，需要 remaining mapping/rewrite queries）**：`TS-MAPPING-0188`, `TS-MAPPING-0208`, `TS-MAPPING-0306`, `TS-REWRITE-0349`, `TS-REWRITE-0368`, `TS-REWRITE-0378`, `TS-REWRITE-0413`
 - **`messages_evidence`（8，需要 evidence sanitizer/contract）**：`TS-EVIDENCE-0011`, `TS-EVIDENCE-0025`, `TS-EVIDENCE-0050`, `TS-MESSAGES-0005`, `TS-MESSAGES-0016`, `TS-MESSAGES-0025`, `TS-MESSAGES-0032`, `TS-MESSAGES-0039`
-- **`perf_budget`（1，需要 native performance gate）**：`TS-PERF-0012`
-- **`project_overlay`（20，需要 compiler/session overlay + transport）**：`TS-ANALYSIS-0272`, `TS-ANALYSIS-0287`, `TS-ANALYSIS-0297`, `TS-ANALYSIS-0315`, `TS-ANALYSIS-0332`, `TS-ANALYSIS-0349`, `TS-ANALYSIS-0358`, `TS-ANALYSIS-0371`, `TS-COMPILER-0035`, `TS-COMPILER-0050`, `TS-COMPILER-0063`, `TS-COMPILER-0086`, `TS-COMPILER-0095`, `TS-COMPILER-0132`, `TS-OVERLAY-0023`, `TS-OVERLAY-0036`, `TS-OVERLAY-0047`, `TS-OVERLAY-0055`, `TS-OVERLAY-0076`, `TS-PROBES-0176`
+- **`project_overlay`（17，需要 compiler/session overlay + transport）**：`TS-ANALYSIS-0272`, `TS-ANALYSIS-0287`, `TS-ANALYSIS-0315`, `TS-ANALYSIS-0332`, `TS-ANALYSIS-0349`, `TS-ANALYSIS-0371`, `TS-COMPILER-0050`, `TS-COMPILER-0063`, `TS-COMPILER-0086`, `TS-COMPILER-0095`, `TS-COMPILER-0132`, `TS-OVERLAY-0023`, `TS-OVERLAY-0036`, `TS-OVERLAY-0047`, `TS-OVERLAY-0055`, `TS-OVERLAY-0076`, `TS-PROBES-0176`
 - **`protocol_limits`（40，需要 native JSON-RPC/C1 server replacement）**：`TS-META-0009`, `TS-META-0027`, `TS-PROTOCOL-0021`, `TS-PROTOCOL-0053`, `TS-PROTOCOL-0098`, `TS-PROTOCOL-0126`, `TS-PROTOCOL-0141`, `TS-PROTOCOL-0154`, `TS-PROTOCOL-0178`, `TS-PROTOCOL-0234`, `TS-PROTOCOL-0250`, `TS-PROTOCOL-0280`, `TS-PROTOCOL-0306`, `TS-PROTOCOL-0319`, `TS-PROTOCOL-0329`, `TS-PROTOCOL-0348`, `TS-PROTOCOL-0368`, `TS-PROTOCOL-0395`, `TS-PROTOCOL-0421`, `TS-PROTOCOL-0438`, `TS-PROTOCOL-0450`, `TS-PROTOCOL-0479`, `TS-PROTOCOL-0500`, `TS-PROTOCOL-0505`, `TS-PROTOCOL-0525`, `TS-PROTOCOL-0549`, `TS-PROTOCOL-0561`, `TS-PROTOCOL-0600`, `TS-PROTOCOL-0606`, `TS-PROTOCOL-0644`, `TS-PROTOCOL-0653`, `TS-SERVER-0094`, `TS-SERVER-0109`, `TS-SERVER-0129`, `TS-SERVER-0150`, `TS-SERVER-0171`, `TS-SERVER-0203`, `TS-SERVER-0216`, `TS-SERVER-0237`, `TS-SERVER-0267`
 - **`scenario_matrix`（43，需要 full in-place-shadow scenario matrix）**：`TS-MATRIX-0092`, `TS-MATRIX-0102-PAGE_BASIC-IN_PLACE_SHADOW`, `TS-MATRIX-0102-PAGE_EXPORT_EMPTY-IN_PLACE_SHADOW`, `TS-MATRIX-0102-PAGE_CJS-IN_PLACE_SHADOW`, `TS-MATRIX-0102-PAGE_ESM-IN_PLACE_SHADOW`, `TS-MATRIX-0102-PAGE_CLOSURE-IN_PLACE_SHADOW`, `TS-MATRIX-0102-COMPONENT_PROPERTIES-IN_PLACE_SHADOW`, `TS-MATRIX-0102-COMPONENT_MODULE-IN_PLACE_SHADOW`, `TS-MATRIX-0102-COMPONENT_JS-IN_PLACE_SHADOW`, `TS-MATRIX-0102-PROPERTIES_SPREAD-IN_PLACE_SHADOW`, `TS-MATRIX-0102-MULTI_REGISTRATION-IN_PLACE_SHADOW`, `TS-MATRIX-0102-JS_JSDOC_PRAGMA-IN_PLACE_SHADOW`, `TS-MATRIX-0102-JS_JSDOC_OFF-IN_PLACE_SHADOW`, `TS-MATRIX-0102-JS_CHECKJS-IN_PLACE_SHADOW`, `TS-MATRIX-0102-TS_NOCHECK-IN_PLACE_SHADOW`, `TS-MATRIX-0102-JS_NOCHECK-IN_PLACE_SHADOW`, `TS-MATRIX-0102-JS_SHEBANG_BOM-IN_PLACE_SHADOW`, `TS-MATRIX-0102-INTERFACE_ROOT-IN_PLACE_SHADOW`, `TS-MATRIX-0102-INTERFACE_ROOT_IMPORT-IN_PLACE_SHADOW`, `TS-MATRIX-0102-NULLABLE-IN_PLACE_SHADOW`, `TS-MATRIX-0102-CROSS_FILE_OVERLAY-IN_PLACE_SHADOW`, `TS-MATRIX-0102-ALIAS_PROJECT-IN_PLACE_SHADOW`, `TS-MATRIX-0102-COMPONENT_DATA_CROSS_FILE-IN_PLACE_SHADOW`, `TS-MATRIX-0102-CRLF_SCRIPT-IN_PLACE_SHADOW`, `TS-MATRIX-0102-DATA_SHORTHAND-IN_PLACE_SHADOW`, `TS-MATRIX-0102-JS_SOURCE_CHECK_OFF-IN_PLACE_SHADOW`, `TS-MATRIX-0102-JS_SOURCE_CHECK_INHERIT-IN_PLACE_SHADOW`, `TS-MATRIX-0102-METHODS_NONLITERAL-IN_PLACE_SHADOW`, `TS-MATRIX-0102-UNCHECKED_INDEX-IN_PLACE_SHADOW`, `TS-MATRIX-0102-NULLABLE_NO_STRICT_NULL-IN_PLACE_SHADOW`, `TS-MATRIX-0102-NO_IMPLICIT_THIS_OFF-IN_PLACE_SHADOW`, `TS-MATRIX-0102-JS_BOM_CHECK_OFF-IN_PLACE_SHADOW`, `TS-MATRIX-0102-JS_BOM_CHECK_INHERIT-IN_PLACE_SHADOW`, `TS-MATRIX-0102-UNICODE_CRLF-IN_PLACE_SHADOW`, `TS-MATRIX-0215`, `TS-MATRIX-0228`, `TS-MATRIX-0239`, `TS-MATRIX-0252`, `TS-MATRIX-0271`, `TS-MATRIX-0283`, `TS-MATRIX-0301`, `TS-MATRIX-0319`, `TS-MATRIX-0335`
 - **`shadow_rewrite`（1，需要 definition range through native query）**：`TS-REWRITE-0197`
@@ -856,13 +861,21 @@ P5 已解冻 `crates/wxml-lsp/tests/native_parity/ledger.rs` 的旧 303 planned 
 ### 14.7 复现与验证
 
 ```sh
+# P5 基线（2026-11-18）
 cargo test -p wxml-backend-tsgo --test shadow_layout --test shadow_rewrite \
   --test shadow_mapping --test shadow_locals_guards --test script_registration \
   --test script_behavior --test script_properties --test script_events --test script_symbols
 # 176 passed, 0 failed, 0 ignored
 
 cargo test -p wxml-backend-tsgo --lib
-# 215 passed, 0 failed, 0 ignored
+# 235 passed, 0 failed, 0 ignored
+
+# P5.1 定向证据（2026-11-19）
+cargo test -p wxml-lsp --lib backend_tsgo::tests
+# 51 passed, 0 failed
+
+cargo test -p wxml-backend-tsgo --lib query::definition::tests
+# 6 passed, 0 failed
 
 jq empty docs/plans/tsgo-test-ledger.json
 cargo test -p wxml-lsp --test native_parity
@@ -873,7 +886,8 @@ cargo fmt --all -- --check
 
 ### 14.8 Validator 改动
 
-- `ALLOWED_STATUSES` 增加 `green`；状态计数校验改为 green=32、planned=271、retired=36，且三者之和必须等于 339，不再硬编码 pre-migration 的 303 planned。
+- `ALLOWED_STATUSES` 增加 `green`；状态计数校验改为 green=33、planned=270、retired=36，且三者之和必须等于 339，不再硬编码 pre-migration 的 303 planned。
+- P5.1 把 parity bucket 校验更新为 exact=33、near_exact=3、weaker=55、structural=6、blocked=17，并继续由实际 `migration_evidence` 反算 `assessed_cases`/无证据数。
 - 新增 `ledger_migration_evidence_is_complete_and_consistent`：green 必须是 `parity=exact`、`green_eligible=true`、`status_applied=green`，并具备非空 `rust_tests`；每个测试必须有非空 path、line、test、fully-qualified name 和 note，且源文件中确实存在该 `fn`。
 - near-exact 必须保持 planned + recommendation=green + green_eligible=false；weaker/structural/blocked 必须 planned + recommendation=planned；空证据直接失败。
 - 分区计数由 `cases[].target_rust_test` 和 `counts.migration_evidence.by_partition` 双向校验；`Partition.planned_cases` 改为 `Partition.routed_cases`，总数由 `ledger::non_obsolete_case_count` 派生，不再固定 303。

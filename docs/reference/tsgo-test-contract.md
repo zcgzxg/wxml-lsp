@@ -19,8 +19,8 @@
 | `split` | 11 |
 | `obsolete` | 36（Candidate B/symbol-bridge 内部布局） |
 | `blocked-decision` | 0 |
-| `green` | 32（真实 Rust 测试证据，未独立 review） |
-| `planned` | 271 |
+| `green` | 33（真实 Rust 测试证据，未独立 review） |
+| `planned` | 270 |
 | `retired-with-decision` | 36 |
 
 `obsolete` 不等于“未迁移的通过项”。36 个 Candidate B 用例只作为历史 A/B 证据保留；生产 LSP

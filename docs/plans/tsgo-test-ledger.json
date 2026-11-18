@@ -163,19 +163,19 @@
       "remaining_blocked": 0
     },
     "migration_evidence": {
-      "assessed_at": "2026-11-18",
-      "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
-      "rust_test_command": "cargo test -p wxml-backend-tsgo --test shadow_layout --test shadow_rewrite --test shadow_mapping --test shadow_locals_guards --test script_registration --test script_behavior --test script_properties --test script_events --test script_symbols",
-      "rust_test_result": "176 passed, 0 failed, 0 ignored",
-      "assessed_cases": 100,
-      "exact": 32,
+      "assessed_at": "2026-11-19",
+      "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+      "rust_test_command": "cargo test -p wxml-lsp --lib backend_tsgo::tests; cargo test -p wxml-backend-tsgo --lib query::definition::tests; cargo test -p wxml-lsp --test native_parity",
+      "rust_test_result": "targeted P4-C adapter and definition unit tests pass; real-engine definition and perf gates remain opt-in and skip without TSGO_BIN; native_parity ledger gate passes",
+      "assessed_cases": 114,
+      "exact": 33,
       "near_exact": 3,
-      "weaker": 44,
-      "structural": 5,
-      "blocked": 16,
-      "green_eligible": 32,
-      "promoted_to_green": 32,
-      "remaining_planned_without_evidence": 203,
+      "weaker": 55,
+      "structural": 6,
+      "blocked": 17,
+      "green_eligible": 33,
+      "promoted_to_green": 33,
+      "remaining_planned_without_evidence": 189,
       "by_partition": {
         "behaviors": {
           "routed_cases": 22,
@@ -191,13 +191,13 @@
         },
         "completion": {
           "routed_cases": 9,
-          "evidence_cases": 0,
-          "green_cases": 0,
-          "planned_evidence_cases": 0,
-          "unassessed_cases": 9,
-          "exact": 0,
+          "evidence_cases": 3,
+          "green_cases": 1,
+          "planned_evidence_cases": 2,
+          "unassessed_cases": 6,
+          "exact": 1,
           "near_exact": 0,
-          "weaker": 0,
+          "weaker": 2,
           "structural": 0,
           "blocked": 0
         },
@@ -215,15 +215,15 @@
         },
         "definitions": {
           "routed_cases": 5,
-          "evidence_cases": 0,
+          "evidence_cases": 5,
           "green_cases": 0,
-          "planned_evidence_cases": 0,
-          "unassessed_cases": 5,
+          "planned_evidence_cases": 5,
+          "unassessed_cases": 0,
           "exact": 0,
           "near_exact": 0,
-          "weaker": 0,
+          "weaker": 4,
           "structural": 0,
-          "blocked": 0
+          "blocked": 1
         },
         "events": {
           "routed_cases": 24,
@@ -251,13 +251,13 @@
         },
         "hover_docs": {
           "routed_cases": 10,
-          "evidence_cases": 1,
+          "evidence_cases": 3,
           "green_cases": 0,
-          "planned_evidence_cases": 1,
-          "unassessed_cases": 9,
+          "planned_evidence_cases": 3,
+          "unassessed_cases": 7,
           "exact": 0,
           "near_exact": 0,
-          "weaker": 1,
+          "weaker": 3,
           "structural": 0,
           "blocked": 0
         },
@@ -299,25 +299,25 @@
         },
         "perf_budget": {
           "routed_cases": 1,
-          "evidence_cases": 0,
+          "evidence_cases": 1,
           "green_cases": 0,
-          "planned_evidence_cases": 0,
-          "unassessed_cases": 1,
+          "planned_evidence_cases": 1,
+          "unassessed_cases": 0,
           "exact": 0,
           "near_exact": 0,
           "weaker": 0,
-          "structural": 0,
+          "structural": 1,
           "blocked": 0
         },
         "project_overlay": {
           "routed_cases": 20,
-          "evidence_cases": 0,
+          "evidence_cases": 3,
           "green_cases": 0,
-          "planned_evidence_cases": 0,
-          "unassessed_cases": 20,
+          "planned_evidence_cases": 3,
+          "unassessed_cases": 17,
           "exact": 0,
           "near_exact": 0,
-          "weaker": 0,
+          "weaker": 3,
           "structural": 0,
           "blocked": 0
         },
@@ -371,18 +371,18 @@
         }
       },
       "rust_unit_test_command": "cargo test -p wxml-backend-tsgo --lib",
-      "rust_unit_test_result": "215 passed, 0 failed, 0 ignored",
+      "rust_unit_test_result": "235 passed, 0 failed, 0 ignored",
       "near_exact_recommendations": 3,
       "statuses": {
-        "planned": 271,
-        "green": 32,
+        "planned": 270,
+        "green": 33,
         "retired-with-decision": 36
       },
       "status_policy": "Only parity=exact cases are green. near_exact, weaker, structural and blocked cases stay planned with status_recommendation recorded; no empty evidence is accepted."
     },
     "statuses": {
-      "planned": 271,
-      "green": 32,
+      "planned": 270,
+      "green": 33,
       "retired-with-decision": 36
     }
   },
@@ -1806,7 +1806,33 @@
         "diagnostics",
         "hover",
         "version"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0033",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "P4-C adapter tests assert Supported hover type/documentation and exact token ranges plus semantic/syntactic diagnostic mapping; definition remains an explicit Unsupported result, so the TS analyze hover+diagnostic+definition combination is not matched.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 565,
+            "test": "hover_composes_type_documentation_and_jsdoc",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::hover_composes_type_documentation_and_jsdoc",
+            "note": "Asserts Supported hover, Known quality, the string type block, comment and @deprecated tag, and the exact name token range."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 742,
+            "test": "diagnostics_map_semantic_and_syntactic_ranges",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::diagnostics_map_semantic_and_syntactic_ranges",
+            "note": "Asserts two mapped diagnostics (2339 semantic, 1109 syntactic), Error severity and the exact user.name byte range."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0054",
@@ -1873,7 +1899,26 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0054",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The adapter hover test covers one identifier with type, documentation, JSDoc tag and exact range; the TS case requires a hover candidate for every identifier in the expression, which the adapter does not publish.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 565,
+            "test": "hover_composes_type_documentation_and_jsdoc",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::hover_composes_type_documentation_and_jsdoc",
+            "note": "Single name hover is exact, but there is no multi-identifier hover candidate list."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0078",
@@ -2822,7 +2867,26 @@
         "diagnostics",
         "hover",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0297",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "A generated-only diagnostic is dropped and diagnostics become Partial; the adapter test does not assert the TS reason text or that hover and definition stay Supported.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 845,
+            "test": "a_generated_only_diagnostic_range_is_partial_and_dropped",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::a_generated_only_diagnostic_range_is_partial_and_dropped",
+            "note": "Asserts the diagnostics result is empty and Partial for a generated-only range, but not the reason or the other capabilities."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0315",
@@ -3061,7 +3125,33 @@
       "capabilities": [
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0358",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "A missing prepared view or target script returns BackendError::Unavailable and starts no native session; the TS result.ok/reason/states/zero-fragment contract is not asserted.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 1165,
+            "test": "a_missing_project_view_is_unavailable_and_starts_no_session",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::a_missing_project_view_is_unavailable_and_starts_no_session",
+            "note": "Asserts Unavailable and zero session starts when no prepared view exists."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 1183,
+            "test": "a_missing_target_script_is_unavailable",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::a_missing_target_script_is_unavailable",
+            "note": "Asserts Unavailable when the prepared view has no target script file."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0371",
@@ -3257,7 +3347,26 @@
       "status": "planned",
       "capabilities": [
         "project"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPILER-0035",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "A second view revision reuses one adapter session with one start/open and one in-place update, rebuilding the shadow root; the TS project-pool shape and compiler-option reuse assertions are not covered.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 1107,
+            "test": "a_new_template_revision_updates_the_native_snapshot",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::a_new_template_revision_updates_the_native_snapshot",
+            "note": "Asserts one start, one open, one update, one updated input and a rebuilt __wxml_root shadow without an epoch bump."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPILER-0050",
@@ -3734,7 +3843,26 @@
       "status": "planned",
       "capabilities": [
         "completion"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPLETION-0104",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The adapter replaces only the typed member prefix and sets insertText to the label, but deliberately reports Partial where the TS case requires supported.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 869,
+            "test": "completion_maps_entries_and_replaces_only_the_typed_prefix",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::completion_maps_entries_and_replaces_only_the_typed_prefix",
+            "note": "Asserts two items, the exact replace start/end for the na prefix, insertText=label, PlainText format, and Partial status."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPLETION-0127",
@@ -4024,7 +4152,26 @@
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-COMPLETION-0207",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Native Unsupported is mapped to an Unsupported empty completion list; the test does not assert truncated=false and covers a native failure rather than the TS unavailable-layout trigger.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 970,
+            "test": "an_unsupported_native_completion_is_explicitly_unsupported",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::an_unsupported_native_completion_is_explicitly_unsupported",
+            "note": "Asserts empty items and Unsupported status for a native Unsupported completion query."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPLETION-0220",
@@ -4075,13 +4222,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "completion"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPLETION-0220",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Both tests cap the completion list at 256 items and report truncated=true; the native test additionally reports Partial but asserts the same cap and truncation behavior.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 916,
+            "test": "completion_truncation_is_reported",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::completion_truncation_is_reported",
+            "note": "Builds 257 native entries and asserts the 256-item cap and truncated=true; also asserts Partial status."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0147",
@@ -6212,7 +6378,26 @@
       "capabilities": [
         "definition",
         "project"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-DEFINITIONS-0013",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The real-engine definition gate resolves a cross-file declaration to model.ts with exact UTF-8/UTF-16 ranges and both import/interface targets; it does not use a .d.ts target, assert the external-snapshot classification, or require exactly one target. The gate is opt-in and skips without TSGO_BIN.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/real_engine.rs",
+            "line": 470,
+            "test": "real_engine_definition_decodes_declaration_identifier_ranges",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/real_engine.rs::real_engine_definition_decodes_declaration_identifier_ranges",
+            "note": "Asserts Supported status and exact User/name ranges in main.ts and model.ts, not a .d.ts external snapshot."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-DEFINITIONS-0036",
@@ -6276,7 +6461,26 @@
       "capabilities": [
         "definition",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-DEFINITIONS-0036",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The native definition composition decodes real AST declaration handles and has no generated-member classification or overlay source mapping, so the TS generated kind/range contract cannot be asserted; the gate is opt-in.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/real_engine.rs",
+            "line": 470,
+            "test": "real_engine_definition_decodes_declaration_identifier_ranges",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/real_engine.rs::real_engine_definition_decodes_declaration_identifier_ranges",
+            "note": "Closest evidence only: cross-file real declaration ranges; no generated member or overlay mapping exists."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-DEFINITIONS-0052",
@@ -6339,7 +6543,33 @@
       "status": "planned",
       "capabilities": [
         "definition"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-DEFINITIONS-0052",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Native definition evidence preserves two deduplicated cross-file targets with exact UTF-8/UTF-16 ranges, but there is no external/generated/dropped classification and no sweep over the three TS scenarios or both layouts. The gate is opt-in and skips without TSGO_BIN.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/real_engine.rs",
+            "line": 470,
+            "test": "real_engine_definition_decodes_declaration_identifier_ranges",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/real_engine.rs::real_engine_definition_decodes_declaration_identifier_ranges",
+            "note": "Asserts exact original-byte and UTF-16 ranges for the import alias and interface declaration, plus Supported status."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/src/query/definition.rs",
+            "line": 252,
+            "test": "preserves_multiple_declarations_and_deduplicates_exact_targets",
+            "fully_qualified": "wxml_backend_tsgo::query::definition::tests::preserves_multiple_declarations_and_deduplicates_exact_targets",
+            "note": "Asserts deduplication of exact targets while preserving two distinct declarations."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-DEFINITIONS-0074",
@@ -6399,7 +6629,33 @@
       "status": "planned",
       "capabilities": [
         "definition"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-DEFINITIONS-0074",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Invalid or undecodable definition targets are dropped and make the result Partial, so they are never published; the test does not model the TS derived query file or its dropped classification, and the real-engine gate is opt-in.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/query/definition.rs",
+            "line": 267,
+            "test": "decode_failures_and_invalid_ranges_make_the_result_partial",
+            "fully_qualified": "wxml_backend_tsgo::query::definition::tests::decode_failures_and_invalid_ranges_make_the_result_partial",
+            "note": "Asserts decode failures and reversed ranges leave a Partial result and do not publish invalid targets."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/src/query/definition.rs",
+            "line": 291,
+            "test": "groups_without_decoded_targets_are_partial",
+            "fully_qualified": "wxml_backend_tsgo::query::definition::tests::groups_without_decoded_targets_are_partial",
+            "note": "Asserts no decoded target plus a referenced-symbol group is Partial rather than a Supported empty answer."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-DEFINITIONS-0093",
@@ -6459,7 +6715,26 @@
       "capabilities": [
         "definition",
         "version"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-DEFINITIONS-0093",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The native session replaces the language-service API and proves cross-file declaration ranges, but no .d.ts library target or TypeScript version guard is asserted; the gate is opt-in.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/real_engine.rs",
+            "line": 470,
+            "test": "real_engine_definition_decodes_declaration_identifier_ranges",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/real_engine.rs::real_engine_definition_decodes_declaration_identifier_ranges",
+            "note": "Mechanism-replaced evidence: native definition decoding returns exact cross-file ranges, not a language-service .d.ts target."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-EVENTS-0071",
@@ -19416,7 +19691,26 @@
         "diagnostics",
         "hover",
         "perf"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PERF-0012",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+        "parity": "structural",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The native gate measures 200-sample p95 type/diagnostics/completion/queued-cancel budgets and snapshot-cycle growth, but it does not assert the TS cold-start <8000 ms, hover p50 <500 ms or wide-40 workloads, and it is opt-in (returns without TSGO_BIN). The serial TS perf test remains the authoritative 8000 ms gate.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/perf_budget.rs",
+            "line": 296,
+            "test": "real_engine_meets_p5_performance_budgets",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/perf_budget.rs::real_engine_meets_p5_performance_budgets",
+            "note": "Asserts p95 budgets, probe non-emptiness, 10 open/edit/release cycles and clean shutdown only when TSGO_BIN is set."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROBES-0027",
