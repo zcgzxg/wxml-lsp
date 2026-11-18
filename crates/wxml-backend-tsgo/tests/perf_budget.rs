@@ -5,7 +5,8 @@
 //! | metric | budget |
 //! | --- | --- |
 //! | hot type query (`getTypeAtPosition` + `typeToString`) | p95 ≤ 200 ms |
-//! | semantic + syntactic diagnostics | p95 ≤ 500 ms |
+//! | diagnostics after an edit (stop-typing) | p95 ≤ 500 ms |
+//! | repeated diagnostics on an unchanged snapshot | p95 ≤ 500 ms (informational) |
 //! | hot completion (`getCompletionsAtPosition`) | p95 ≤ 200 ms |
 //! | queued cancellation/skip | p95 ≤ 100 ms |
 //! | static completion/structural query | p95 ≤ 50 ms (BLOCKED: no static path) |
@@ -15,6 +16,14 @@
 //! every metric additionally runs [`WARMUP`] untimed iterations first. The
 //! wall-clock assertions assume a quiet local machine with one engine, so do
 //! not run this on shared CI. Exact invocation with the pinned engine:
+//!
+//! The `diagnostics_after_edit` row is the plan's stop-typing metric: every
+//! sample first commits a real `updateProject` edit whose text and line number
+//! change, then times `getSemanticDiagnostics` + `getSyntacticDiagnostics` on
+//! `main.ts`, and rejects any answer whose 2339 diagnostic does not name the
+//! revision marker just written. The unchanged-snapshot row stays as
+//! informational context only; it is not the sole evidence for the 500 ms
+//! budget.
 //!
 //! ```text
 //! TSGO_BIN=/tmp/opencode/tsgo-spike/extract/7.1.0-beta/package/lib/tsc \
@@ -47,7 +56,7 @@ use wxml_backend_tsgo::input::{
 };
 use wxml_backend_tsgo::native::framing::DEFAULT_FRAME_LIMITS;
 use wxml_backend_tsgo::native::rpc::RpcDispatch;
-use wxml_backend_tsgo::native::session::{NativeSession, SessionOptions};
+use wxml_backend_tsgo::native::session::{DiagnosticsEvidence, NativeSession, SessionOptions};
 use wxml_backend_tsgo::native::strings::Utf16Position;
 
 /// Measured samples per metric; plan section 9.5 requires at least 200.
@@ -167,6 +176,11 @@ fn engine_executable() -> Option<PathBuf> {
 /// update changes real source text instead of only the revision number.
 fn project_input(root: &str, revision: u64, cycle: Option<u32>) -> AnalysisInput {
     let main = cycle.map_or_else(|| MAIN.to_owned(), cycle_source);
+    project_input_with_main(root, revision, main)
+}
+
+/// Builds one virtual project revision from an explicit `main.ts` text.
+fn project_input_with_main(root: &str, revision: u64, main: String) -> AnalysisInput {
     let files = vec![
         SourceFile::new(MAIN_PATH, main, DocumentRevision::new(revision)).expect("main.ts"),
         SourceFile::new(MODEL_PATH, MODEL, DocumentRevision::new(revision)).expect("model.ts"),
@@ -189,6 +203,99 @@ fn cycle_source(cycle: u32) -> String {
          const cycle{cycle} = {cycle};\n\
          u.name;\n"
     )
+}
+
+/// One valid edit used by the post-edit diagnostics workload.
+///
+/// The text stays parseable but keeps deliberate property errors: the generic
+/// `u.missing` error and a per-revision `u.cycle{edit}` error whose diagnostic
+/// text names the current edit. Both the edited line and its line number move
+/// with `edit` (0–2 padding lines), so an answer computed from a stale snapshot
+/// fails the evidence check.
+fn edited_source(edit: u64) -> String {
+    let padding = "\n".repeat((edit % 3) as usize);
+    format!(
+        "import type {{ User }} from \"./model\";\n\
+         \n\
+         const u: User = {{ name: \"a\", age: 1 }};\n\
+         const cycle{edit}: number = {edit};\n\
+         {padding}u.name;\n\
+         u.missing;\n\
+         u.cycle{edit};\n"
+    )
+}
+
+/// Commits one real `updateProject` edit and returns the new `main.ts` text.
+fn apply_edit(session: &mut NativeSession, root: &str, revision: &mut u64) -> String {
+    *revision += 1;
+    let source = edited_source(*revision);
+    let input = project_input_with_main(root, *revision, source.clone());
+    if let Err(error) = session.update_project(&input) {
+        panic!("post-edit update at revision {revision} failed: {error}");
+    }
+    source
+}
+
+/// Rejects a stale, empty or unrelated answer for an edited revision.
+///
+/// The 2339 diagnostic for `u.cycle{revision}` must name the revision marker:
+/// a cached answer from the previous snapshot cannot satisfy it.
+fn assert_edited_diagnostics(evidence: &DiagnosticsEvidence, revision: u64) {
+    let marker = format!("cycle{revision}");
+    assert!(
+        !evidence.semantic.is_empty(),
+        "revision {revision} returned no semantic diagnostics: {evidence:?}"
+    );
+    assert!(
+        evidence
+            .semantic
+            .iter()
+            .any(|diagnostic| diagnostic.code == 2339 && diagnostic.text.contains(&marker)),
+        "revision {revision} diagnostics must reflect the edited text ({marker}): {evidence:?}"
+    );
+}
+
+/// Measures diagnostics on a revision that was just edited.
+///
+/// The `updateProject` request itself is outside the timed region, but it is a
+/// real edit committed for every sample, so the timed query is the stop-typing
+/// metric instead of a cache hit on one frozen snapshot. Each answer must still
+/// name the revision marker just written, which fails a stale or fast-empty
+/// result.
+fn measure_diagnostics_after_edit(
+    session: &mut NativeSession,
+    root: &str,
+    base_revision: u64,
+) -> Measurement {
+    let mut revision = base_revision;
+    let mut previous = String::new();
+    let mut edited = |session: &mut NativeSession| -> f64 {
+        let source = apply_edit(session, root, &mut revision);
+        assert_ne!(
+            source, previous,
+            "every post-edit revision must change the main.ts text"
+        );
+        previous = source;
+        let start = Instant::now();
+        let evidence = session
+            .diagnostics(MAIN_PATH)
+            .expect("diagnostics after edit");
+        let elapsed_ms = start.elapsed().as_secs_f64() * 1_000.0;
+        assert_edited_diagnostics(&evidence, revision);
+        elapsed_ms
+    };
+    for _ in 0..WARMUP {
+        edited(session);
+    }
+    let mut samples = Vec::with_capacity(SAMPLES);
+    for _ in 0..SAMPLES {
+        samples.push(edited(session));
+    }
+    Measurement {
+        label: "diagnostics_after_edit",
+        budget_p95_ms: DIAGNOSTICS_P95_MS,
+        stats: LatencyStats::from_samples(samples),
+    }
 }
 
 /// Nearest-rank percentile over ascending samples.
@@ -394,6 +501,14 @@ fn real_engine_meets_p5_performance_budgets() {
             .completions(MAIN_PATH, COMPLETION_POSITION)
             .expect("completions");
     }));
+    // The stop-typing metric runs last on the original fixture: every sample
+    // commits a new revision, so fixed type/completion positions must be
+    // sampled before the snapshot text moves.
+    measurements.push(measure_diagnostics_after_edit(
+        &mut session,
+        &project_root,
+        1,
+    ));
     measurements.push(measure("cancel_queued_skip", CANCEL_QUEUED_P95_MS, || {
         std::hint::black_box(measure_queued_cancel());
     }));
@@ -412,12 +527,16 @@ fn real_engine_meets_p5_performance_budgets() {
     );
     println!(
         "[perf] diagnostics_unchanged_snapshot scope: repeated query on one frozen \
-         snapshot; post-edit diagnostics are NOT measured"
+         snapshot; informational context, not the stop-typing evidence"
+    );
+    println!(
+        "[perf] diagnostics_after_edit scope: each sample commits a real updateProject \
+         edit outside the timed region, then times diagnostics on the new revision"
     );
     if required_engine() {
         println!(
-            "[perf] COVERAGE: PARTIAL static_completion=BLOCKED running_cancel=BLOCKED \
-             diagnostics_post_edit=BLOCKED; exit 0 does not claim all 9.5 budgets"
+            "[perf] COVERAGE: PARTIAL static_completion=BLOCKED running_cancel=BLOCKED; \
+             exit 0 does not claim all 9.5 budgets"
         );
     }
 
