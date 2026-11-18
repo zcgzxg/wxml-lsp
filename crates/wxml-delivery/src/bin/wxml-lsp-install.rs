@@ -325,13 +325,13 @@ fn rollback(options: &Options) -> Result<()> {
     check_binary(&target_dir, &manifest)?;
     check_backend(&target_dir, &manifest)?;
     let previous = root.current_version()?;
-    root.switch(&target)?;
+    root.switch_durable(&target)?;
     let binary = root.current_binary()?;
     let version = match binary_version(&binary) {
         Ok(version) => version,
         Err(error) => {
             if let Some(previous) = previous {
-                let _ = root.switch(&previous);
+                let _ = root.switch_durable(&previous);
                 return Err(DeliveryError::Runtime(format!(
                     "{error}; rolled back to {previous}"
                 )));
@@ -557,7 +557,7 @@ fn install_and_report(
         Ok(()) => Ok(()),
         Err(error) => {
             if let Some(previous) = previous {
-                let _ = root.switch(&previous);
+                let _ = root.switch_durable(&previous);
                 return Err(DeliveryError::Runtime(format!(
                     "{error}; rolled back to {previous}"
                 )));

@@ -110,6 +110,7 @@ impl InstallRoot {
     /// Returns an error when the directory cannot be created.
     pub fn new_temp_dir(&self, prefix: &str) -> Result<PathBuf> {
         let tmp = self.tmp_dir();
+        ensure_real_directory_or_missing(&tmp, "temporary directory")?;
         let existed = tmp.exists();
         std::fs::create_dir_all(&tmp).map_err(|error| DeliveryError::io(&tmp, error))?;
         if !existed {
@@ -166,6 +167,7 @@ impl InstallRoot {
     /// Returns an error when the versions directory cannot be read.
     pub fn versions(&self) -> Result<Vec<String>> {
         let directory = self.versions_dir();
+        ensure_real_directory_or_missing(&directory, "versions directory")?;
         let entries = match std::fs::read_dir(&directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -308,6 +310,7 @@ impl InstallRoot {
         check_backend(&canonical_tree, &manifest)?;
 
         let versions = self.versions_dir();
+        ensure_real_directory_or_missing(&versions, "versions directory")?;
         let versions_existed = versions.exists();
         std::fs::create_dir_all(&versions).map_err(|error| DeliveryError::io(&versions, error))?;
         if !versions_existed {
@@ -320,7 +323,7 @@ impl InstallRoot {
                     check_binary(&destination, &existing)?;
                     check_backend(&destination, &existing)?;
                     let _ = std::fs::remove_dir_all(&canonical_tree);
-                    self.switch(version)?;
+                    self.switch_durable(version)?;
                     return Ok(InstallOutcome::AlreadyInstalled);
                 }
                 return Err(DeliveryError::InstallState(format!(
@@ -337,22 +340,45 @@ impl InstallRoot {
         std::fs::rename(&canonical_tree, &destination)
             .map_err(|error| DeliveryError::io(&destination, error))?;
         set_mode(&destination, 0o755)?;
-        self.switch(version)?;
+        self.switch_durable(version)?;
         Ok(InstallOutcome::Installed)
     }
 
+    /// Atomically switches `current` and treats a missing fsync as an error.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the link cannot be replaced or the directory
+    /// fsync fails after the replacement.
+    pub fn switch_durable(&self, version: &str) -> Result<()> {
+        match self.switch(version)? {
+            SwitchOutcome::Switched => Ok(()),
+            SwitchOutcome::SwitchedButNotDurable => Err(DeliveryError::InstallState(
+                "current was switched but the install root fsync failed".to_owned(),
+            )),
+        }
+    }
+
     /// Atomically switches the `current` symlink to `version`.
+    ///
+    /// A rename failure means `current` was not changed. A directory fsync
+    /// failure is reported as [`SwitchOutcome::SwitchedButNotDurable`]: the
+    /// link was replaced, but its persistence across a power loss is unknown.
     ///
     /// # Errors
     ///
     /// Returns an error when the version is not installed or the link cannot be
     /// replaced.
-    pub fn switch(&self, version: &str) -> Result<()> {
+    pub fn switch(&self, version: &str) -> Result<SwitchOutcome> {
         validate_version(version)?;
-        if !self.versions_dir().join(version).is_dir() {
-            return Err(DeliveryError::InstallState(format!(
-                "version {version} is not installed"
-            )));
+        let version_dir = self.versions_dir().join(version);
+        match std::fs::symlink_metadata(&version_dir) {
+            Ok(metadata) if metadata.file_type().is_dir() => {}
+            _ => {
+                return Err(DeliveryError::InstallState(format!(
+                    "version {version} is not installed"
+                )));
+            }
         }
         #[cfg(unix)]
         {
@@ -370,7 +396,13 @@ impl InstallRoot {
                 let _ = std::fs::remove_file(&temporary);
                 return Err(DeliveryError::io(&self.path.join("current"), error));
             }
-            Ok(())
+            let Ok(directory) = File::open(&self.path) else {
+                return Ok(SwitchOutcome::SwitchedButNotDurable);
+            };
+            match directory.sync_all() {
+                Ok(()) => Ok(SwitchOutcome::Switched),
+                Err(_) => Ok(SwitchOutcome::SwitchedButNotDurable),
+            }
         }
         #[cfg(not(unix))]
         {
@@ -378,6 +410,20 @@ impl InstallRoot {
                 "the installer currently supports Unix hosts only".to_owned(),
             ))
         }
+    }
+}
+
+fn ensure_real_directory_or_missing(path: &Path, label: &str) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(DeliveryError::InstallState(
+            format!("{label} must not be a symbolic link"),
+        )),
+        Ok(metadata) if !metadata.file_type().is_dir() => Err(DeliveryError::InstallState(
+            format!("{label} is not a directory"),
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(DeliveryError::io(path, error)),
     }
 }
 
@@ -406,6 +452,16 @@ pub enum InstallOutcome {
     Installed,
     /// The same verified version was already installed.
     AlreadyInstalled,
+}
+
+/// Result of an atomic `current` switch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SwitchOutcome {
+    /// The link was replaced and the root directory was fsynced.
+    Switched,
+    /// The link was replaced, but the directory fsync failed. Callers must not
+    /// treat this as "not switched" or delete the transaction journal.
+    SwitchedButNotDurable,
 }
 
 /// Holds the exclusive install lock until dropped.
@@ -437,6 +493,33 @@ pub fn explicit_binary() -> Result<Option<PathBuf>> {
         DeliveryError::InstallState(format!("{BINARY_ENV} is set but is not valid UTF-8"))
     })?;
     validate_explicit_binary(&raw).map(Some)
+}
+
+/// Enforces `WXML_LSP_BIN` precedence before a native mutating operation.
+///
+/// A valid explicit binary means the operation must skip and report that the
+/// explicit path wins. An invalid value is always a hard error.
+///
+/// # Errors
+///
+/// Returns [`DeliveryError::InstallState`] when the variable is set.
+pub fn ensure_no_explicit_binary(operation: &str) -> Result<()> {
+    check_explicit_binary_precedence(explicit_binary()?.as_deref(), operation)
+}
+
+/// Pure precedence check used by the native state machine and tests.
+///
+/// # Errors
+///
+/// Returns [`DeliveryError::InstallState`] when `explicit` is `Some`.
+pub fn check_explicit_binary_precedence(explicit: Option<&Path>, operation: &str) -> Result<()> {
+    if let Some(path) = explicit {
+        return Err(DeliveryError::InstallState(format!(
+            "{BINARY_ENV} is set; explicit binary `{}` takes precedence, so native {operation} is skipped",
+            crate::error::display_name(path)
+        )));
+    }
+    Ok(())
 }
 
 fn validate_explicit_binary(raw: &str) -> Result<PathBuf> {

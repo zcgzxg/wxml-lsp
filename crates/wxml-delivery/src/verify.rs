@@ -2,8 +2,8 @@
 
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
-use std::process::{Command, Output, Stdio};
-use std::time::{Duration, Instant};
+use std::process::{Command, Output};
+use std::time::Duration;
 
 use crate::error::{DeliveryError, Result, display_name};
 use crate::manifest::{
@@ -171,40 +171,8 @@ fn check_mode(path: &Path, metadata: &std::fs::Metadata, expected: u32) -> Resul
 }
 
 /// Runs a short version probe with a hard timeout.
-fn output_with_timeout(command: &mut Command, timeout: Duration) -> Result<Output> {
-    let mut child = command
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            DeliveryError::Runtime(format!("could not execute a version probe: {error}"))
-        })?;
-    let deadline = Instant::now() + timeout;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                return child.wait_with_output().map_err(|error| {
-                    DeliveryError::Runtime(format!("could not collect version output: {error}"))
-                });
-            }
-            Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(DeliveryError::Runtime(
-                    "version probe timed out; the installed binary or Node.js did not exit"
-                        .to_owned(),
-                ));
-            }
-            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(DeliveryError::Runtime(format!(
-                    "could not wait for version probe: {error}"
-                )));
-            }
-        }
-    }
+pub(crate) fn output_with_timeout(command: &mut Command, timeout: Duration) -> Result<Output> {
+    crate::probe::run_probe(command, timeout)
 }
 
 /// Checks that the installed server reports the manifest version.
