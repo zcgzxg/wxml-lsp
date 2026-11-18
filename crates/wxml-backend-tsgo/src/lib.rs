@@ -1,10 +1,12 @@
-//! Native `tsgo` backend scaffold for the WXML language server.
+//! Native `tsgo` backend foundations for the WXML language server.
 //!
-//! This crate is deliberately non-functional. It freezes the module
-//! boundaries, pinned engine identity, input/provider seam and query DTO
-//! placeholders that `P3-N`, `P3-S` and `P4` will fill in. It has no Node
-//! dependency, never starts a process, never opens a socket and never reads
-//! the file system.
+//! The crate freezes the module boundaries, pinned engine identity,
+//! input/provider seam and query DTO placeholders that `P3-N`, `P3-S` and `P4`
+//! fill in. It has no Node dependency and no fallback path to Node. The
+//! `P3-N` supervisor can verify a pinned executable's SHA-256, spawn it with
+//! piped stdio and manage its lifecycle; the backend is still inert because
+//! nothing constructs a session from `wxml-lsp`, no engine artifact is
+//! downloaded, and no socket or virtual file service is implemented.
 //!
 //! `wxml-lsp` only declares an inert adapter module for this crate; the
 //! default server configuration still selects the existing Node backend.

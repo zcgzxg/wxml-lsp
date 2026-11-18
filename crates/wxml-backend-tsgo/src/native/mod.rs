@@ -1,7 +1,20 @@
-//! Failures at the native boundary as defined by F0/F1.
+//! Native transport and supervision substrate as defined by F0/F1.
 //!
-//! All modules are declarations for `P3-N`/`P4`. No process is started, no
-//! byte is written to a pipe and no virtual file is served.
+//! `P3-N` implements the transport half of the native client:
+//!
+//! - [`framing`]: incremental `Content-Length` parser/writer and the frozen
+//!   frame/JSON budgets;
+//! - [`rpc`]: JSON-RPC 2.0 envelopes, request-id allocation, callback-id
+//!   preservation and separate routing tables;
+//! - [`protocol`]: the typed method allow-list and the minimal handshake,
+//!   snapshot and query response shapes needed by this phase;
+//! - [`supervisor`]: exact argv construction, piped process spawn, bounded
+//!   `stderr`, deadlines and kill-on-drop/explicit shutdown.
+//!
+//! [`ast`], [`handles`], [`strings`] and [`vfs`] remain seams for `P4`. No
+//! native engine artifact is downloaded or executed by this crate's tests;
+//! the supervisor can spawn a pinned executable and hashes it first, but the
+//! backend is not wired into `wxml-lsp` and no virtual file is served yet.
 
 pub mod ast;
 pub mod framing;
@@ -13,6 +26,10 @@ pub mod supervisor;
 pub mod vfs;
 
 use thiserror::Error;
+
+use crate::native::framing::FrameError;
+use crate::native::protocol::ShapeError;
+use crate::native::rpc::RpcError;
 
 /// Why the native engine is unavailable.
 ///
@@ -28,6 +45,8 @@ pub enum UnavailableReason {
     HandshakeFailed,
     /// The child process exited or could not be spawned.
     ProcessExited,
+    /// The session is poisoned after a timeout and must be restarted.
+    SessionPoisoned,
     /// A required standard-library or typings asset is missing.
     MissingAsset,
 }
@@ -41,6 +60,7 @@ impl UnavailableReason {
             Self::ApiMismatch => "engine API mismatch",
             Self::HandshakeFailed => "engine handshake failed",
             Self::ProcessExited => "engine process exited",
+            Self::SessionPoisoned => "native session is poisoned",
             Self::MissingAsset => "engine asset missing",
         }
     }
@@ -74,10 +94,37 @@ pub enum NativeError {
     /// The method is not on the typed allow-list.
     #[error("native method is not allowlisted: {0}")]
     MethodNotAllowed(String),
+    /// The engine answered with a JSON-RPC error.
+    ///
+    /// Only the numeric code is retained; the engine message may contain a Go
+    /// panic stack or absolute paths and is never exposed through this error.
+    #[error("native engine error (code {code})")]
+    EngineError {
+        /// JSON-RPC error code, for example `-32603`.
+        code: i64,
+    },
     /// Capability reserved for `P3-N`/`P4`.
     #[error("native capability is not implemented: {feature}")]
     Unimplemented {
         /// Capability marker supplied by the caller.
         feature: &'static str,
     },
+}
+
+impl From<FrameError> for NativeError {
+    fn from(error: FrameError) -> Self {
+        Self::Protocol(error.to_string())
+    }
+}
+
+impl From<RpcError> for NativeError {
+    fn from(error: RpcError) -> Self {
+        Self::Protocol(error.to_string())
+    }
+}
+
+impl From<ShapeError> for NativeError {
+    fn from(error: ShapeError) -> Self {
+        error.into_native_error()
+    }
 }
