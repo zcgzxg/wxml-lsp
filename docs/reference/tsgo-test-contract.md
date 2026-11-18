@@ -36,6 +36,9 @@
 `relative_path_utf8 + NUL + raw_bytes + NUL` 后取 SHA-256。任何 fixture 变更必须同时更新台账与 hash，
 不得只改 hash 掩盖内容变化。
 
+行尾（M5）：v1 hash 基于 LF checkout 的原始字节；CRLF checkout 会改变 hash。本地和 CI 必须保持 LF
+（`git config core.autocrlf false`，仓库 `.gitattributes` 约束），不得通过改 hash 掩盖行尾变化。
+
 ## 3. 逐用例记录
 
 每个 case 至少保留：`case_id`、旧文件/标题/行、`body_sha256`、完整展开标题、参数子 ID、断言摘要、

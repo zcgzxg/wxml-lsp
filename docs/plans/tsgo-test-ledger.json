@@ -72,24 +72,26 @@
       "planned",
       "red",
       "green",
-      "differential",
-      "integrated"
+      "reviewed",
+      "closed",
+      "retired-with-decision"
     ],
     "disposition_values": [
       "direct",
       "rewrite",
       "split",
+      "obsolete",
       "blocked-decision"
     ],
     "this_round_status": "planned",
     "no_old_test_deleted": true,
     "old_test_source_hashes_recorded": true,
-    "oracle_revision": "unfrozen:P2/F2",
+    "oracle_revision": "F2 frozen 2026-11-17 (dcc1f15)",
     "notes": [
       "Case IDs are stable keys derived from source file, line and expansion.",
       "Target Rust paths are proposals under crates/wxml-lsp/tests/native_parity/ per plan section 6.1.1; pure codec cases may move beside production modules in P2 without changing case IDs.",
-      "No case is marked migrated in P1-B. Every status is planned.",
-      "No case is marked obsolete: the 37 former obsolete candidates are blocked-decision until the integrator decides whether historical A/B/C1 evidence must be preserved.",
+      "P1-B did not mark any case migrated. 303 cases remain planned; the 36 Candidate-B cases are retired-with-decision, not passed.",
+      "The integrator retired 36 Candidate-B/symbol-bridge cases as historical A/B evidence; blocked-decision is now 0. TS-META-0027 remains a rewrite to the F0 pin gate.",
       "Dirty-work increments D1-D7 are the seven behaviors named in plan section 6.1.1.",
       "Assertion counts are direct assert.* call sites inside each test body; helper assertions (for example throwsCode in completion.test.ts) and loop-multiplied executions are not expanded into the count."
     ]
@@ -1471,10 +1473,10 @@
       "id": "X8",
       "severity": "medium",
       "area": "symbol-bridge",
-      "claim": "The matrix, protocol 463 and some component tests encode candidate B (symbol-bridge) behavior. Code inspection shows symbol-bridge is an internal candidate layout, not a user-selectable LSP layout; whether its historical A/B evidence must be preserved is a decision, not an automatic obsolete.",
-      "evidence": "analysis.ts:59-60 says production uses the default in-place shadow; analysis.ts:416 defaults to in-place-shadow; server.ts:152 calls analyze without layoutId; cli.ts:17 and scripts/emit-evidence.ts:20 iterate both layouts only for matrix/perf/evidence; matrix.test.ts:11 and perf.test.ts:10 iterate both. 33 dynamic B matrix cases + matrix 197/205 + protocol 463 are blocked-decision.",
+      "claim": "The matrix, protocol 463 and some component tests encode candidate B (symbol-bridge) behavior. Code inspection shows symbol-bridge is an internal candidate layout, not a user-selectable LSP layout; the integrator decided the historical A/B evidence is retired, not a product contract.",
+      "evidence": "analysis.ts:59-60 says production uses the default in-place shadow; analysis.ts:416 defaults to in-place-shadow; server.ts:152 calls analyze without layoutId; cli.ts:17 and scripts/emit-evidence.ts:20 iterate both layouts only for matrix/perf/evidence; matrix.test.ts:11 and perf.test.ts:10 iterate both. 33 dynamic B matrix cases + matrix 197/205 + protocol 463 were retired-with-decision; remaining blocked is 0.",
       "root_cause": "The TS matrix is an A/B experiment record, not only a product contract.",
-      "action": "No case is marked obsolete. 33 symbol-bridge matrix cases + matrix 197/205 + protocol 463 are blocked-decision with replacement_case_id=null; integrator must decide before any stop-migration. Both-layout literal matrix tests remain split; A assertions are direct."
+      "action": "Resolved by integrator_decision: 33 symbol-bridge matrix cases + matrix 197/205 + protocol 463 are obsolete/retired-with-decision with replacement_case_id=null. Both-layout literal matrix tests remain split; A assertions are direct. Do not reintroduce these as planned native gates."
     },
     {
       "id": "X9",

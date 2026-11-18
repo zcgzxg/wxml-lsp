@@ -1958,6 +1958,7 @@ dependencies = [
  "proptest",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
  "wxml-backend-tsgo",
  "wxml-project",
