@@ -475,13 +475,28 @@ impl SpawnSpec {
         sandbox_root: &Path,
     ) -> Result<Self, SpawnError> {
         validate_install_root(install_root)?;
+        let executable = install_root.join(engine.executable());
+        Self::for_executable(engine, &executable, sandbox_root)
+    }
+
+    /// Builds the frozen argv for an explicit executable path.
+    ///
+    /// This supports a verified extraction layout such as
+    /// `<package>/lib/tsc` without copying the binary into an installation
+    /// tree. The argv, environment and cwd are identical to [`Self::for_engine`].
+    fn for_executable(
+        engine: &PinnedEngine,
+        executable: &Path,
+        sandbox_root: &Path,
+    ) -> Result<Self, SpawnError> {
+        validate_executable_path(executable)?;
         validate_sandbox_root(engine, sandbox_root)?;
 
         let root = sandbox_root.to_str().ok_or(SpawnError::SandboxNotUtf8)?;
         let plan = engine.launch_plan(root)?;
 
         Ok(Self {
-            program: install_root.join(plan.executable),
+            program: executable.to_path_buf(),
             args: plan.args,
             sandbox_root: sandbox_root.to_path_buf(),
             environment: CHILD_ENVIRONMENT.to_vec(),
@@ -528,6 +543,9 @@ pub enum SpawnError {
     /// The install root is not an absolute, normalized path.
     #[error("install root must be an absolute, normalized path")]
     InvalidInstallRoot,
+    /// The executable path is not absolute or contains `.`/`..` components.
+    #[error("engine executable path must be absolute and normalized")]
+    InvalidExecutablePath,
     /// The pinned executable does not exist.
     #[error("pinned engine executable does not exist")]
     ExecutableMissing,
@@ -568,6 +586,20 @@ fn validate_install_root(root: &Path) -> Result<(), SpawnError> {
     Ok(())
 }
 
+/// Rejects executable paths that are not absolute and normalized.
+fn validate_executable_path(path: &Path) -> Result<(), SpawnError> {
+    if !path.is_absolute() {
+        return Err(SpawnError::InvalidExecutablePath);
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(SpawnError::InvalidExecutablePath);
+    }
+    Ok(())
+}
+
 /// Requires an existing, empty, non-symlink sandbox directory.
 fn validate_sandbox_root(engine: &PinnedEngine, root: &Path) -> Result<(), SpawnError> {
     let text = root.to_str().ok_or(SpawnError::SandboxNotUtf8)?;
@@ -603,6 +635,11 @@ fn validate_sandbox_root(engine: &PinnedEngine, root: &Path) -> Result<(), Spawn
 /// Unix, and its streamed SHA-256 must equal `expected_sha256`. Reading the
 /// whole binary (about 24 MB for the pinned artifact) happens before spawn and
 /// before any project content is sent.
+pub fn verify_engine_executable(path: &Path, expected_sha256: &str) -> Result<(), SpawnError> {
+    verify_executable(path, expected_sha256)
+}
+
+/// Streams `path` through SHA-256 and checks the pinned digest.
 fn verify_executable(path: &Path, expected_sha256: &str) -> Result<(), SpawnError> {
     let metadata = std::fs::symlink_metadata(path).map_err(|error| {
         if error.kind() == io::ErrorKind::NotFound {
@@ -681,6 +718,9 @@ pub enum SupervisorError {
     /// The child exited before the handshake/probe completed.
     #[error("native process exited before the probe completed")]
     ProcessExited,
+    /// The session was poisoned by a timeout or terminal transport event.
+    #[error("native session is poisoned")]
+    SessionPoisoned,
     /// A session operation failed.
     #[error(transparent)]
     Native(#[from] NativeError),
@@ -690,6 +730,9 @@ impl From<SupervisorError> for NativeError {
     fn from(error: SupervisorError) -> Self {
         match error {
             SupervisorError::Native(native) => native,
+            SupervisorError::SessionPoisoned => Self::Unavailable {
+                reason: UnavailableReason::SessionPoisoned,
+            },
             SupervisorError::Spawn(_)
             | SupervisorError::AlreadyRunning
             | SupervisorError::NotRunning
@@ -1023,7 +1066,11 @@ impl ProcessSession {
         self.closed.load(Ordering::SeqCst)
     }
 
-    /// Returns the sanitized last [`STDERR_TAIL_BYTES`] of `stderr`.
+    /// Returns the control-character-sanitized last [`STDERR_TAIL_BYTES`] of
+    /// `stderr`.
+    ///
+    /// Absolute paths and engine stack text may remain; callers must not
+    /// expose this text as a user-visible error message.
     #[must_use]
     pub fn stderr_tail(&self) -> String {
         lock_ring(&self.stderr).tail(STDERR_TAIL_BYTES)
@@ -1392,6 +1439,28 @@ impl EngineSupervisor {
         self.start(&spec)
     }
 
+    /// Verifies an explicit pinned executable and spawns it with the frozen
+    /// argv for `sandbox_root`.
+    ///
+    /// This is the extraction-layout counterpart of [`Self::spawn`]: the
+    /// executable may live at `<package>/lib/tsc` instead of
+    /// `<install_root>/engine/lib/tsc`, but the argv, environment and cwd are
+    /// identical and the SHA-256 still has to match the pinned identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SupervisorError`] when a session already exists, the sandbox
+    /// or artifact is invalid, or the process/threads cannot be started.
+    pub fn spawn_with_executable(
+        &mut self,
+        executable: &Path,
+        sandbox_root: &Path,
+    ) -> Result<(), SupervisorError> {
+        let spec = SpawnSpec::for_executable(&self.engine, executable, sandbox_root)?;
+        verify_executable(&spec.program, self.engine.executable_sha256())?;
+        self.start(&spec)
+    }
+
     /// Starts a session for an already validated spec.
     fn start(&mut self, spec: &SpawnSpec) -> Result<(), SupervisorError> {
         if self.session.is_some() {
@@ -1429,6 +1498,10 @@ impl EngineSupervisor {
             return Err(SupervisorError::NotStarting);
         };
 
+        if session.is_poisoned() {
+            self.lifecycle = Lifecycle::Failed;
+            return Err(SupervisorError::SessionPoisoned);
+        }
         if matches!(session.try_wait(), Ok(None)) {
             self.lifecycle = Lifecycle::Ready;
             Ok(())
@@ -2148,6 +2221,25 @@ mod tests {
 
         let report = session.abort_for_timeout_with(Duration::from_millis(50));
         assert!(report.forced_kill());
+    }
+
+    #[test]
+    fn mark_ready_refuses_a_poisoned_session() {
+        let mut supervisor = EngineSupervisor::new(PinnedEngine::pinned());
+        supervisor
+            .start_for_test(&helper_spec("sleep"))
+            .expect("start helper");
+        supervisor.session().expect("session").poison();
+        assert!(matches!(
+            supervisor.mark_ready(),
+            Err(SupervisorError::SessionPoisoned)
+        ));
+        assert_eq!(
+            NativeError::from(SupervisorError::SessionPoisoned).to_string(),
+            "native engine is unavailable: native session is poisoned"
+        );
+        assert_eq!(supervisor.lifecycle(), Lifecycle::Failed);
+        let _ = supervisor.shutdown_with_timeout(Duration::from_millis(50));
     }
 
     #[test]

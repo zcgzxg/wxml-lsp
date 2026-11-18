@@ -4,9 +4,11 @@
 //! input/provider seam and query DTO placeholders that `P3-N`, `P3-S` and `P4`
 //! fill in. It has no Node dependency and no fallback path to Node. The
 //! `P3-N` supervisor can verify a pinned executable's SHA-256, spawn it with
-//! piped stdio and manage its lifecycle; the backend is still inert because
-//! nothing constructs a session from `wxml-lsp`, no engine artifact is
-//! downloaded, and no socket or virtual file service is implemented.
+//! piped stdio and manage its lifecycle, and the `P4-N` session layer owns
+//! initialize/snapshot/update/release plus a read-only virtual filesystem.
+//! The backend is still inert because nothing constructs a native session from
+//! `wxml-lsp`, no engine artifact is downloaded, and no server-facing file
+//! service is implemented.
 //!
 //! `wxml-lsp` only declares an inert adapter module for this crate; the
 //! default server configuration still selects the existing Node backend.

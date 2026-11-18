@@ -95,6 +95,12 @@ pub const MAX_PENDING_QUEUE: usize = 64;
 /// Maximum concurrent in-flight engine callbacks.
 pub const MAX_IN_FLIGHT_CALLBACKS: usize = 16;
 
+/// Maximum number of engine snapshots that may stay alive in one session.
+///
+/// F0 §6.4 freezes this initial budget; a session must release an old
+/// snapshot before it would exceed the bound.
+pub const MAX_LIVE_SNAPSHOTS: usize = 8;
+
 /// Default deadline for one native request, in milliseconds.
 pub const DEFAULT_REQUEST_DEADLINE_MS: u64 = 15_000;
 
@@ -102,19 +108,25 @@ pub const DEFAULT_REQUEST_DEADLINE_MS: u64 = 15_000;
 pub const SNAPSHOT_DEADLINE_MS: u64 = 30_000;
 
 /// Callback names passed to the engine, in the frozen order.
+///
+/// `stat` is a read-only callback. Registering it keeps metadata probes on the
+/// same virtual table as `readFile`; an unregistered callback would fall
+/// through to the host OS (F0 §5.2). This extends the original F0 list with
+/// that one read callback and must be reflected in the contract revision.
 pub const CALLBACK_NAMES: &[&str] = &[
     "readFile",
     "fileExists",
     "directoryExists",
     "getAccessibleEntries",
     "realpath",
+    "stat",
     "writeFile:noop",
     "removeFile:noop",
 ];
 
 /// Frozen callback argument string (without the `--callbacks=` prefix).
 pub const CALLBACK_ARGUMENT: &str = "readFile,fileExists,directoryExists,\
-getAccessibleEntries,realpath,writeFile:noop,removeFile:noop";
+getAccessibleEntries,realpath,stat,writeFile:noop,removeFile:noop";
 
 /// Methods permitted by the frozen F0 allow-list, in wire order.
 ///
@@ -446,7 +458,7 @@ mod tests {
                 "--cwd".to_owned(),
                 "/tmp/tsgo-sandbox".to_owned(),
                 "--useCaseSensitiveFileNames=true".to_owned(),
-                "--callbacks=readFile,fileExists,directoryExists,getAccessibleEntries,realpath,writeFile:noop,removeFile:noop".to_owned(),
+                "--callbacks=readFile,fileExists,directoryExists,getAccessibleEntries,realpath,stat,writeFile:noop,removeFile:noop".to_owned(),
             ]
         );
     }
@@ -464,6 +476,7 @@ mod tests {
     #[test]
     fn callback_data_is_consistent() {
         assert_eq!(CALLBACK_NAMES.join(","), CALLBACK_ARGUMENT);
+        assert!(CALLBACK_NAMES.contains(&"stat"));
         assert!(CALLBACK_NAMES.contains(&"writeFile:noop"));
         assert!(CALLBACK_NAMES.contains(&"removeFile:noop"));
         assert!(!CALLBACK_NAMES.contains(&"appendFile"));

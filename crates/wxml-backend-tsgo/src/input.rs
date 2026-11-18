@@ -28,6 +28,12 @@ use thiserror::Error;
 pub const MAX_INPUT_FILES: usize = 20_000;
 
 /// Maximum combined UTF-8 source bytes accepted in one [`AnalysisInput`].
+///
+/// The frozen native request budget is 32 MiB. JSON escaping can expand a
+/// control character to six bytes, so an accepted 48 MiB input cannot always
+/// be sent in one snapshot request; `NativeSession` preflights a conservative
+/// serialized-size bound and returns a typed `InputTooLarge` error before
+/// allocating the body.
 pub const MAX_INPUT_BYTES: usize = 48 * 1024 * 1024;
 
 /// Stable key of one discovered mini-program project.

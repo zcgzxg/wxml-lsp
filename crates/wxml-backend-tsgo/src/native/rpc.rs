@@ -336,6 +336,24 @@ impl JsonRpcError {
         self.code == -32603
     }
 
+    /// Returns whether the message reports a released/unknown snapshot.
+    ///
+    /// The engine does not expose a stable error code for this case, so the
+    /// bounded, sanitized message is classified locally.
+    #[must_use]
+    pub fn is_snapshot_not_found(&self) -> bool {
+        let message = self.message.to_ascii_lowercase();
+        message.contains("snapshot") && message.contains("not found")
+    }
+
+    /// Returns whether the message reports an unresolved or stale node handle.
+    #[must_use]
+    pub fn is_stale_handle(&self) -> bool {
+        let message = self.message.to_ascii_lowercase();
+        message.contains("handle")
+            && (message.contains("could not be resolved") || message.contains("stale"))
+    }
+
     /// Maps the error to a bounded [`NativeError`] carrying only the code.
     #[must_use]
     pub const fn to_native_error(&self) -> NativeError {
@@ -1196,6 +1214,25 @@ mod tests {
         let object = value.as_object().expect("object");
         assert!(!object.contains_key("result"));
         assert!(!object.contains_key("error"));
+    }
+
+    #[test]
+    fn classifies_stale_snapshot_and_handle_messages() {
+        let snapshot = JsonRpcError::from_value(&serde_json::json!({
+            "code": -32603,
+            "message": "api: client error: snapshot 2 not found",
+        }))
+        .expect("snapshot error");
+        assert!(snapshot.is_snapshot_not_found());
+        assert!(!snapshot.is_stale_handle());
+
+        let handle = JsonRpcError::from_value(&serde_json::json!({
+            "code": -32603,
+            "message": "node handle 9999.79./work/main.ts could not be resolved",
+        }))
+        .expect("handle error");
+        assert!(handle.is_stale_handle());
+        assert!(!handle.is_snapshot_not_found());
     }
 
     #[test]

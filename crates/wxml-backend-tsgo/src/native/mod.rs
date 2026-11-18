@@ -1,29 +1,37 @@
 //! Native transport and supervision substrate as defined by F0/F1.
 //!
-//! `P3-N` implements the transport half of the native client:
+//! `P3-N`/`P4-N` implement the native client substrate:
 //!
 //! - [`framing`]: incremental `Content-Length` parser/writer and the frozen
 //!   frame/JSON budgets;
 //! - [`rpc`]: JSON-RPC 2.0 envelopes, request-id allocation, callback-id
 //!   preservation and separate routing tables;
-//! - [`protocol`]: the typed method allow-list and the minimal handshake,
-//!   snapshot and query response shapes needed by this phase;
+//! - [`protocol`]: the typed method allow-list and handshake/snapshot DTOs;
 //! - [`supervisor`]: exact argv construction, piped process spawn, bounded
-//!   `stderr`, deadlines and kill-on-drop/explicit shutdown.
+//!   `stderr`, deadlines and kill-on-drop/explicit shutdown;
+//! - [`session`]: real initialize/schema handshake, virtual snapshots,
+//!   callback dispatch and the query operations;
+//! - [`vfs`]: a read-only in-memory filesystem that never falls back to the
+//!   host;
+//! - [`handles`], [`ast`], [`strings`] and [`wire`]: epoch-bound node handles,
+//!   v9 AST header validation, UTF-16/UTF-8 conversion and wire DTOs.
 //!
-//! [`ast`], [`handles`], [`strings`] and [`vfs`] remain seams for `P4`. No
-//! native engine artifact is downloaded or executed by this crate's tests;
-//! the supervisor can spawn a pinned executable and hashes it first, but the
-//! backend is not wired into `wxml-lsp` and no virtual file is served yet.
+//! No native engine artifact is downloaded by this crate's tests; the
+//! real-engine gate runs when `TSGO_BIN` points at the pinned executable, and
+//! `WXML_REQUIRE_REAL_ENGINE=1` makes a missing engine a hard failure.
+//! The backend is not wired into `wxml-lsp` and no virtual file service is
+//! exposed to a server yet.
 
 pub mod ast;
 pub mod framing;
 pub mod handles;
 pub mod protocol;
 pub mod rpc;
+pub mod session;
 pub mod strings;
 pub mod supervisor;
 pub mod vfs;
+pub mod wire;
 
 use thiserror::Error;
 
@@ -49,6 +57,8 @@ pub enum UnavailableReason {
     SessionPoisoned,
     /// A required standard-library or typings asset is missing.
     MissingAsset,
+    /// The startup virtual-filesystem canary self-check failed.
+    VfsConfinement,
 }
 
 impl UnavailableReason {
@@ -62,6 +72,7 @@ impl UnavailableReason {
             Self::ProcessExited => "engine process exited",
             Self::SessionPoisoned => "native session is poisoned",
             Self::MissingAsset => "engine asset missing",
+            Self::VfsConfinement => "virtual filesystem confinement check failed",
         }
     }
 }
@@ -91,6 +102,38 @@ pub enum NativeError {
     /// A handle or lease no longer belongs to the current epoch.
     #[error("stale native handle or lease")]
     StaleHandle,
+    /// A result was produced for a snapshot that is no longer current.
+    #[error("stale native snapshot response")]
+    StaleSnapshot,
+    /// No native snapshot is open.
+    #[error("no native snapshot is open")]
+    NoSnapshot,
+    /// A node handle is malformed or outside the current project.
+    #[error("invalid native node handle: {reason}")]
+    InvalidHandle {
+        /// Static rejection reason.
+        reason: &'static str,
+    },
+    /// A request position, path or revision is invalid.
+    #[error("invalid native request: {reason}")]
+    InvalidParams {
+        /// Static rejection reason.
+        reason: &'static str,
+    },
+    /// A serialized snapshot request would exceed the frozen request budget.
+    #[error("native input is too large: {bytes} bytes exceeds the {limit}-byte request budget")]
+    InputTooLarge {
+        /// Conservative upper bound of the serialized request body.
+        bytes: u64,
+        /// Frozen request budget.
+        limit: usize,
+    },
+    /// The method is not available in the running engine or this slice.
+    #[error("native method is not available in this session: {method}")]
+    Unsupported {
+        /// Static method or capability name.
+        method: &'static str,
+    },
     /// The method is not on the typed allow-list.
     #[error("native method is not allowlisted: {0}")]
     MethodNotAllowed(String),

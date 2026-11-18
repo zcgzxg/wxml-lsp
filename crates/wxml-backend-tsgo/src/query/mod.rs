@@ -11,7 +11,11 @@ pub mod bindings;
 pub mod completion;
 pub mod definition;
 pub mod diagnostics;
+pub mod documentation;
 pub mod hover;
+pub mod references;
+pub mod symbol;
+pub mod type_info;
 
 use thiserror::Error;
 
