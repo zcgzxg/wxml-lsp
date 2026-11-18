@@ -42,6 +42,8 @@
 #![allow(clippy::redundant_pub_crate)]
 
 pub mod backend_node;
+// Wired for P3-I but deliberately inert: no server or config path selects it.
+pub(crate) mod backend_tsgo;
 pub(crate) mod completion;
 pub mod configuration;
 pub(crate) mod dependencies;
