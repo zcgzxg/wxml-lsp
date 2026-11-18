@@ -25,12 +25,13 @@
 //!
 //! # Blocked capabilities
 //!
-//! `definition`, rename edits and script symbols remain explicitly
-//! `Unsupported`. The native API has no `getQuickInfoAtPosition`,
-//! `getDefinitionAtPosition`, `getDefinitionAndBoundSpan`, `getRenameInfo` or
-//! `getEditsForRename`; the AST range completion those combinations need is not
-//! implemented. The adapter does not fake locations or edits and does not call
-//! a Node fallback.
+//! Rename edits and script symbols remain explicitly `Unsupported`. The native
+//! API has no `getRenameInfo` or `getEditsForRename`, and script symbol
+//! extraction is not wired into this adapter. Definition is limited to
+//! expression-member targets that the native referenced-symbol path can decode
+//! and map back to original text; the cursor must be inside a mounted template
+//! expression. The adapter does not fake locations or edits and does not call a
+//! Node fallback.
 //!
 //! # Platform limits
 //!
@@ -42,9 +43,10 @@
 //! # Test seams
 //!
 //! [`ViewProvider`] and [`SessionFactory`] are internal seams. Unit tests use a
-//! fake session to exercise hover/diagnostics/completion mapping, no-false-clean
-//! statuses and epoch invalidation without a native binary. The optional real
-//! engine test is gated by `TSGO_BIN` and `WXML_REQUIRE_REAL_ENGINE=1`.
+//! fake session to exercise hover/diagnostics/completion/definition mapping,
+//! no-false-clean statuses and epoch invalidation without a native binary. The
+//! optional real engine test is gated by `TSGO_BIN` and
+//! `WXML_REQUIRE_REAL_ENGINE=1`.
 
 #![allow(
     dead_code,
@@ -52,6 +54,7 @@
 )]
 
 pub(crate) mod completion;
+pub(crate) mod definition;
 pub(crate) mod diagnostics;
 pub(crate) mod hover;
 pub(crate) mod input;
@@ -80,10 +83,6 @@ use self::session::{NativeSessionFactory, QuerySession, SessionFactory};
 
 /// Stable backend identity used in [`BackendEpoch`].
 pub(crate) const BACKEND_ID: &str = "tsgo-native";
-
-/// Reason returned for definition queries until native range completion exists.
-pub(crate) const DEFINITION_UNSUPPORTED: &str =
-    "native DefinitionAtPosition/AST range completion is not implemented";
 
 /// Reason returned for symbols until script symbol facts are wired.
 pub(crate) const SYMBOLS_UNSUPPORTED: &str =
@@ -362,11 +361,13 @@ impl Backend for TsgoBackendAdapter {
         if !self.epoch_matches(&request.context) {
             return Err(BackendError::Cancelled);
         }
-        Ok(DefinitionResult {
-            locations: Vec::new(),
-            status: CapabilityStatus::Unsupported {
-                reason: DEFINITION_UNSUPPORTED.to_owned(),
-            },
+        let plan = self.prepare(&request.context)?;
+        let Some(position) = definition::query_position(&plan.layout, request.offset)? else {
+            return Ok(definition::outside_expression());
+        };
+        let degradation = plan.degradation.clone();
+        self.with_session(&plan, |session| {
+            definition::definition(session, &plan, position, degradation.as_deref())
         })
     }
 
@@ -438,8 +439,10 @@ impl Backend for TsgoBackendAdapter {
                     "host syntax plus native fragment diagnostics are wired; event-handler and component diagnostics are not covered"
                         .to_owned(),
             },
-            definition: CapabilityStatus::Unsupported {
-                reason: DEFINITION_UNSUPPORTED.to_owned(),
+            definition: CapabilityStatus::Partial {
+                reason:
+                    "native expression-member definition is wired; event-handler, component and non-expression targets are not covered"
+                        .to_owned(),
             },
             completion: CapabilityStatus::Partial {
                 reason:

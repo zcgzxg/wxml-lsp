@@ -6,7 +6,7 @@
 //! native process is started. A missing target file is an `Unavailable`
 //! backend error; it never becomes an empty supported result.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use wxml_backend_tsgo::input::{
@@ -104,6 +104,8 @@ pub(crate) struct RequestPlan {
     project: ProjectKey,
     root: ProjectRoot,
     files: Vec<SourceFile>,
+    /// Exact host file identity for every path sent to the native session.
+    file_ids: BTreeMap<String, FileId>,
     /// Template-to-shadow mapping for this request.
     pub(crate) layout: ShadowLayout,
     /// Host parser/template diagnostics that must be merged into every
@@ -123,6 +125,22 @@ impl RequestPlan {
             self.files.clone(),
         )
         .map_err(|error| input_error(&error))
+    }
+
+    /// Returns the host file identity for a path sent to the native session.
+    pub(crate) fn file_id(&self, path: &str) -> Option<FileId> {
+        self.file_ids.get(path).cloned()
+    }
+
+    /// Returns the original text of a path sent to the native session.
+    ///
+    /// For the owning script this is the derived shadow text, which is exactly
+    /// what the native engine saw; use [`ShadowLayout`] to map its ranges back.
+    pub(crate) fn file_text<'a>(&'a self, path: &str) -> Option<&'a str> {
+        self.files
+            .iter()
+            .find(|file| file.path() == path)
+            .map(SourceFile::text)
     }
 }
 
@@ -247,6 +265,7 @@ pub(crate) fn build_request_plan(
     }
 
     let mut files = Vec::with_capacity(view.files.len());
+    let mut file_ids = BTreeMap::new();
     for prepared in view.files.iter() {
         let path = prepared.path.as_str();
         let target_file = path == script_path;
@@ -270,7 +289,10 @@ pub(crate) fn build_request_plan(
             continue;
         }
         match SourceFile::new(path, text, DocumentRevision::new(prepared.source_revision)) {
-            Ok(file) => files.push(file),
+            Ok(file) => {
+                file_ids.insert(path.to_owned(), prepared.file.clone());
+                files.push(file);
+            }
             Err(error) => {
                 if target_file {
                     return Err(input_error(&error));
@@ -307,6 +329,7 @@ pub(crate) fn build_request_plan(
         project,
         root,
         files,
+        file_ids,
         layout: ShadowLayout::new(
             snapshot.text().to_owned(),
             built.view.text,

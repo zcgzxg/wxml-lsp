@@ -194,10 +194,13 @@ impl ShadowLayout {
         let end_byte = utf16_to_byte(&self.derived, end).map_err(MappingError::from)?;
         let start = u32::try_from(start_byte).map_err(|_| MappingError::InvalidRange)?;
         let end = u32::try_from(end_byte).map_err(|_| MappingError::InvalidRange)?;
-        self.script_map
+        let mapped = self
+            .script_map
             .to_original(MappingLayer::Shadow, ShadowSourceRange::new(start, end))
-            .map(|_| NativeRange::Script)
-            .map_err(|_| MappingError::MappingGap)
+            .map_err(|_| MappingError::MappingGap)?;
+        let range = TemplateRange::from_bounds(mapped.start.get(), mapped.end.get())
+            .map_err(|_| MappingError::InvalidRange)?;
+        Ok(NativeRange::Script { range })
     }
 
     fn validate_source_offset(&self, offset: u32) -> Result<(), MappingError> {
@@ -335,7 +338,10 @@ pub(crate) enum NativeRange {
         approximate: bool,
     },
     /// The range belongs to the original script, not the template.
-    Script,
+    Script {
+        /// Mapped byte range in the original script.
+        range: TemplateRange,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]

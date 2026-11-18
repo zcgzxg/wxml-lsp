@@ -1,14 +1,17 @@
 //! Native session seam used by the adapter.
 //!
 //! Production sessions are real [`NativeSession`] values. Tests substitute a
-//! fake [`QuerySession`] so hover/diagnostics/completion mapping and epoch
-//! invalidation can be exercised without starting a native process.
+//! fake [`QuerySession`] so hover/diagnostics/completion/definition mapping and
+//! epoch invalidation can be exercised without starting a native process.
 
 use wxml_backend_tsgo::input::AnalysisInput;
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::session::{NativeSession, SessionOptions, TypeQuery};
 use wxml_backend_tsgo::native::strings::Utf16Position;
 use wxml_backend_tsgo::native::wire::{RawCompletionList, RawDiagnostic};
+use wxml_backend_tsgo::query::definition::{
+    DefinitionResult as NativeDefinitionResult, map_definition,
+};
 use wxml_backend_tsgo::query::documentation::{DocumentationResult, map_documentation};
 use wxml_types::CapabilityStatus;
 
@@ -82,6 +85,13 @@ pub(crate) trait QuerySession: Send {
         path: &str,
         position: Utf16Position,
     ) -> Result<Option<RawCompletionList>, NativeError>;
+
+    /// Returns decoded definition targets at one UTF-16 position.
+    fn definition(
+        &mut self,
+        path: &str,
+        position: Utf16Position,
+    ) -> Result<NativeDefinitionResult, NativeError>;
 
     /// Releases the snapshot and stops the process.
     fn shutdown(self: Box<Self>);
@@ -167,6 +177,15 @@ impl QuerySession for LiveQuerySession {
         position: Utf16Position,
     ) -> Result<Option<RawCompletionList>, NativeError> {
         self.session.completions(path, position)
+    }
+
+    fn definition(
+        &mut self,
+        path: &str,
+        position: Utf16Position,
+    ) -> Result<NativeDefinitionResult, NativeError> {
+        let evidence = self.session.definition(path, position)?;
+        Ok(map_definition(&evidence))
     }
 
     fn shutdown(self: Box<Self>) {

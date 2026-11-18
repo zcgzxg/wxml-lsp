@@ -24,7 +24,12 @@ use wxml_backend_tsgo::native::strings::{
 use wxml_backend_tsgo::native::wire::{
     RawCompletionEntry, RawCompletionList, RawDiagnostic, RawJsDocTag, RawPosition, RawType,
 };
+use wxml_backend_tsgo::query::definition::{
+    DefinitionResult as NativeDefinitionResult, DefinitionTarget as NativeDefinitionTarget,
+};
 use wxml_backend_tsgo::query::documentation::map_documentation;
+use wxml_backend_tsgo::script::symbols::Utf16Range;
+use wxml_backend_tsgo::shadow::mapping::SourceRange as NativeSourceRange;
 use wxml_project::ProjectPath;
 use wxml_text::SourceRange;
 use wxml_types::{
@@ -41,8 +46,12 @@ use crate::project_host::{HostError, PreparedFile, PreparedView, ViewTarget};
 
 const WXML: &str = "<view>{{ user.name }}</view>";
 const SCRIPT: &str = "Page({\n  data: { user: { name: \"Ada\", age: 42 } },\n});\n";
+const UNICODE_SCRIPT: &str =
+    "// 😀 中文\nconst prefix = 1;\nPage({\n  data: { user: { name: \"Ada\", age: 42 } },\n});\n";
 const SCRIPT_PATH: &str = "pages/index/index.ts";
 const WXML_PATH: &str = "pages/index/index.wxml";
+const MODEL_PATH: &str = "model.ts";
+const MODEL: &str = "// 😀 模型\nexport interface User {\n  name: string;\n}\n";
 const COMMENT: &str = "Display name.";
 
 fn project() -> ProjectId {
@@ -233,6 +242,20 @@ enum FakeCompletionOutcome {
     Failure(FakeFailure),
 }
 
+#[derive(Clone, Debug)]
+enum FakeDefinitionOutcome {
+    CheckedEmpty,
+    Targets {
+        targets: Vec<NativeDefinitionTarget>,
+        status: CapabilityStatus,
+        truncated: bool,
+    },
+    TargetInScript {
+        needle: &'static str,
+    },
+    Failure(FakeFailure),
+}
+
 #[derive(Debug, Default)]
 struct SlowGate {
     state: Mutex<(bool, bool)>,
@@ -273,8 +296,10 @@ struct FakeBehavior {
     semantic: FakeDiagnosticOutcome,
     syntactic: FakeDiagnosticOutcome,
     completions: FakeCompletionOutcome,
+    definition: FakeDefinitionOutcome,
     update_failure: Option<FakeFailure>,
     type_gate: Option<Arc<SlowGate>>,
+    definition_gate: Option<Arc<SlowGate>>,
 }
 
 impl Default for FakeBehavior {
@@ -285,8 +310,10 @@ impl Default for FakeBehavior {
             semantic: FakeDiagnosticOutcome::Empty,
             syntactic: FakeDiagnosticOutcome::Empty,
             completions: FakeCompletionOutcome::Null,
+            definition: FakeDefinitionOutcome::CheckedEmpty,
             update_failure: None,
             type_gate: None,
+            definition_gate: None,
         }
     }
 }
@@ -316,6 +343,7 @@ struct FakeLog {
     syntactic_calls: usize,
     type_calls: Vec<(String, Utf16Position)>,
     completion_calls: Vec<(String, Utf16Position)>,
+    definition_calls: Vec<(String, Utf16Position)>,
     opened_inputs: Vec<AnalysisInput>,
     updated_inputs: Vec<AnalysisInput>,
 }
@@ -506,6 +534,48 @@ impl QuerySession for FakeSession {
         }
     }
 
+    fn definition(
+        &mut self,
+        path: &str,
+        position: Utf16Position,
+    ) -> Result<NativeDefinitionResult, NativeError> {
+        self.log
+            .lock()
+            .expect("log")
+            .definition_calls
+            .push((path.to_owned(), position));
+        if let Some(gate) = &self.behavior.definition_gate {
+            gate.enter_and_wait();
+        }
+        match &self.behavior.definition {
+            FakeDefinitionOutcome::CheckedEmpty => Ok(NativeDefinitionResult {
+                targets: Vec::new(),
+                status: CapabilityStatus::Supported,
+                truncated: false,
+            }),
+            FakeDefinitionOutcome::Targets {
+                targets,
+                status,
+                truncated,
+            } => Ok(NativeDefinitionResult {
+                targets: targets.clone(),
+                status: status.clone(),
+                truncated: *truncated,
+            }),
+            FakeDefinitionOutcome::TargetInScript { needle } => {
+                let text = self.text(SCRIPT_PATH).ok_or(NativeError::InvalidParams {
+                    reason: "script is not in the open snapshot",
+                })?;
+                Ok(NativeDefinitionResult {
+                    targets: vec![native_target(SCRIPT_PATH, text, needle)],
+                    status: CapabilityStatus::Supported,
+                    truncated: false,
+                })
+            }
+            FakeDefinitionOutcome::Failure(failure) => Err(failure.native()),
+        }
+    }
+
     fn shutdown(self: Box<Self>) {
         self.log.lock().expect("log").shutdowns += 1;
     }
@@ -546,6 +616,21 @@ fn context_with_epoch(
 
 fn offset_of(wxml: &str, needle: &str) -> u32 {
     u32::try_from(wxml.find(needle).expect("needle in template")).expect("offset")
+}
+
+fn native_target(path: &str, text: &str, needle: &str) -> NativeDefinitionTarget {
+    let start = text.find(needle).expect("target needle");
+    let end = start + needle.len();
+    let start_utf16 = utf16_len(&text[..start]);
+    let end_utf16 = utf16_len(&text[..end]);
+    NativeDefinitionTarget {
+        path: path.to_owned(),
+        range: NativeSourceRange::new(
+            u32::try_from(start).expect("target start"),
+            u32::try_from(end).expect("target end"),
+        ),
+        utf16: Utf16Range::new(start_utf16, end_utf16),
+    }
 }
 
 #[allow(clippy::significant_drop_tightening)]
@@ -1014,23 +1099,12 @@ fn a_non_expression_completion_kind_is_explicitly_unsupported() {
 }
 
 #[test]
-fn definition_and_symbols_are_explicitly_unsupported() {
+fn symbols_are_explicitly_unsupported() {
     let (adapter, log) = adapter_with(
         Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
         FakeBehavior::default(),
     );
     let context = context(&adapter, WXML);
-    let definition = adapter
-        .definition(DefinitionRequest {
-            context: context.clone(),
-            offset: offset_of(WXML, "name"),
-        })
-        .expect("definition");
-    assert_eq!(definition.locations, Vec::new());
-    assert!(matches!(
-        definition.status,
-        CapabilityStatus::Unsupported { .. }
-    ));
     let symbols = adapter
         .symbols(SymbolRequest {
             context,
@@ -1044,6 +1118,475 @@ fn definition_and_symbols_are_explicitly_unsupported() {
         CapabilityStatus::Unsupported { .. }
     ));
     assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn definition_maps_a_target_file_utf16_range_to_utf8() {
+    let target = native_target(MODEL_PATH, MODEL, "name");
+    let expected_start = u32::try_from(MODEL.find("name").expect("model name")).expect("offset");
+    let expected_end =
+        u32::try_from(MODEL.find("name").expect("model name") + "name".len()).expect("offset");
+    let behavior = FakeBehavior {
+        definition: FakeDefinitionOutcome::Targets {
+            targets: vec![target],
+            status: CapabilityStatus::Supported,
+            truncated: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let files = vec![
+        prepared_file(SCRIPT_PATH, SCRIPT),
+        prepared_file(MODEL_PATH, MODEL),
+    ];
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view_with_files(
+            WXML,
+            "user.name",
+            files,
+        ))),
+        behavior,
+    );
+    let result = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("definition");
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert_eq!(result.locations.len(), 1);
+    let location = &result.locations[0];
+    assert_eq!(
+        location.file,
+        FileId::new(project(), MODEL_PATH).expect("model file")
+    );
+    assert_eq!(location.range.start(), expected_start);
+    assert_eq!(location.range.end(), expected_end);
+    let expected_position = derived_position(&log, "user.name", Some("name"));
+    let calls = log.lock().expect("log").definition_calls.clone();
+    assert_eq!(calls, vec![(SCRIPT_PATH.to_owned(), expected_position)]);
+}
+
+#[test]
+fn a_native_partial_empty_definition_is_not_a_checked_empty_success() {
+    let behavior = FakeBehavior {
+        definition: FakeDefinitionOutcome::Targets {
+            targets: Vec::new(),
+            status: CapabilityStatus::Partial {
+                reason: "some declarations could not be decoded".to_owned(),
+            },
+            truncated: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let result = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("definition");
+    assert_eq!(result.locations, Vec::new());
+    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+}
+
+#[test]
+fn definition_maps_a_shadow_script_target_back_to_the_original_script() {
+    let behavior = FakeBehavior {
+        definition: FakeDefinitionOutcome::TargetInScript { needle: "age" },
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(
+            WXML,
+            UNICODE_SCRIPT,
+            "user.name",
+        ))),
+        behavior,
+    );
+    let result = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("definition");
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert_eq!(result.locations.len(), 1);
+    let location = &result.locations[0];
+    assert_eq!(location.file, script_file());
+    let expected = offset_of(UNICODE_SCRIPT, "age");
+    let expected_utf16 =
+        utf16_len(&UNICODE_SCRIPT[..usize::try_from(expected).expect("original byte offset")]);
+    assert_ne!(
+        expected, expected_utf16,
+        "the fixture must prove UTF-16 and UTF-8 offsets differ"
+    );
+    assert_eq!(location.range.start(), expected);
+    assert_eq!(
+        location.range.end(),
+        expected + u32::try_from("age".len()).expect("length")
+    );
+    let expected_position = derived_position(&log, "user.name", Some("name"));
+    let calls = log.lock().expect("log").definition_calls.clone();
+    assert_eq!(calls, vec![(SCRIPT_PATH.to_owned(), expected_position)]);
+}
+
+#[test]
+fn an_inconsistent_native_definition_byte_range_is_partial() {
+    let mut target = native_target(MODEL_PATH, MODEL, "name");
+    let shifted = NativeSourceRange::new(target.range.start.get() + 1, target.range.end.get() + 1);
+    target.range = shifted;
+    let behavior = FakeBehavior {
+        definition: FakeDefinitionOutcome::Targets {
+            targets: vec![target],
+            status: CapabilityStatus::Supported,
+            truncated: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let files = vec![
+        prepared_file(SCRIPT_PATH, SCRIPT),
+        prepared_file(MODEL_PATH, MODEL),
+    ];
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view_with_files(
+            WXML,
+            "user.name",
+            files,
+        ))),
+        behavior,
+    );
+    let result = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("definition");
+    assert_eq!(result.locations, Vec::new());
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Partial { ref reason }
+            if reason.contains("could not be represented")
+    ));
+}
+
+#[test]
+fn a_truncated_native_definition_is_partial_and_keeps_mapped_targets() {
+    let behavior = FakeBehavior {
+        definition: FakeDefinitionOutcome::Targets {
+            targets: vec![native_target(MODEL_PATH, MODEL, "name")],
+            status: CapabilityStatus::Supported,
+            truncated: true,
+        },
+        ..FakeBehavior::default()
+    };
+    let files = vec![
+        prepared_file(SCRIPT_PATH, SCRIPT),
+        prepared_file(MODEL_PATH, MODEL),
+    ];
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view_with_files(
+            WXML,
+            "user.name",
+            files,
+        ))),
+        behavior,
+    );
+    let result = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("definition");
+    assert_eq!(result.locations.len(), 1);
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Partial { ref reason } if reason.contains("truncated")
+    ));
+}
+
+#[test]
+fn duplicate_mapped_definition_targets_are_folded_and_reported() {
+    let target = native_target(MODEL_PATH, MODEL, "name");
+    let behavior = FakeBehavior {
+        definition: FakeDefinitionOutcome::Targets {
+            targets: vec![target.clone(), target],
+            status: CapabilityStatus::Supported,
+            truncated: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let files = vec![
+        prepared_file(SCRIPT_PATH, SCRIPT),
+        prepared_file(MODEL_PATH, MODEL),
+    ];
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view_with_files(
+            WXML,
+            "user.name",
+            files,
+        ))),
+        behavior,
+    );
+    let result = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("definition");
+    assert_eq!(result.locations.len(), 1);
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Partial { ref reason } if reason.contains("duplicate")
+    ));
+}
+
+#[test]
+fn definition_degrades_when_the_prepared_source_list_is_incomplete() {
+    let mut view = prepared_view(WXML, SCRIPT, "user.name");
+    view.source_complete = false;
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let result = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("definition");
+    assert_eq!(result.locations, Vec::new());
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Partial { ref reason } if reason.contains("incomplete")
+    ));
+}
+
+#[test]
+fn a_definition_target_in_generated_shadow_text_is_partial_and_dropped() {
+    let behavior = FakeBehavior {
+        definition: FakeDefinitionOutcome::TargetInScript {
+            needle: "__wxml_check_0",
+        },
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let result = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("definition");
+    assert_eq!(result.locations, Vec::new());
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Partial { ref reason }
+            if reason.contains("could not be represented")
+    ));
+}
+
+#[test]
+fn definition_with_no_native_symbol_is_a_checked_empty_success() {
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        FakeBehavior::default(),
+    );
+    let result = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("definition");
+    assert_eq!(result.locations, Vec::new());
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    let second = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("second definition");
+    assert_eq!(second.status, CapabilityStatus::Supported);
+    let log = log.lock().expect("log");
+    assert_eq!(log.definition_calls.len(), 2);
+    assert_eq!(log.starts, 1, "an unchanged request must reuse the session");
+}
+
+#[test]
+fn an_unrepresentable_definition_target_is_partial_but_keeps_valid_targets() {
+    let behavior = FakeBehavior {
+        definition: FakeDefinitionOutcome::Targets {
+            targets: vec![
+                native_target(MODEL_PATH, MODEL, "name"),
+                native_target("missing.ts", MODEL, "name"),
+            ],
+            status: CapabilityStatus::Supported,
+            truncated: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let files = vec![
+        prepared_file(SCRIPT_PATH, SCRIPT),
+        prepared_file(MODEL_PATH, MODEL),
+    ];
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view_with_files(
+            WXML,
+            "user.name",
+            files,
+        ))),
+        behavior,
+    );
+    let result = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("definition");
+    assert_eq!(result.locations.len(), 1);
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Partial { ref reason }
+            if reason.contains("could not be represented")
+    ));
+}
+
+#[test]
+fn an_unsupported_native_definition_is_explicitly_unsupported() {
+    let behavior = FakeBehavior {
+        definition: FakeDefinitionOutcome::Failure(FakeFailure::Unsupported("definition")),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let result = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("definition");
+    assert_eq!(result.locations, Vec::new());
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Unsupported { .. }
+    ));
+    assert_eq!(log.lock().expect("log").starts, 1);
+}
+
+#[test]
+fn a_failed_definition_query_is_an_error_not_a_supported_empty_result() {
+    let behavior = FakeBehavior {
+        definition: FakeDefinitionOutcome::Failure(FakeFailure::Timeout),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let before = adapter.epoch();
+    let error = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect_err("definition failure");
+    assert!(matches!(error, BackendError::Timeout));
+    assert_eq!(log.lock().expect("log").shutdowns, 1);
+    assert!(adapter.epoch().get() > before.get());
+}
+
+#[test]
+fn definition_outside_a_mounted_expression_is_unsupported_without_a_query() {
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        FakeBehavior::default(),
+    );
+    let result = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "<view>"),
+        })
+        .expect("definition");
+    assert_eq!(result.locations, Vec::new());
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Unsupported { .. }
+    ));
+    assert_eq!(log.lock().expect("log").starts, 0);
+    assert_eq!(log.lock().expect("log").definition_calls.len(), 0);
+}
+
+#[test]
+fn definition_at_the_expression_end_still_queries_the_native_session() {
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        FakeBehavior::default(),
+    );
+    let expression_end =
+        offset_of(WXML, "user.name") + u32::try_from("user.name".len()).expect("length");
+    let result = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: expression_end,
+        })
+        .expect("definition");
+    assert_eq!(result.locations, Vec::new());
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert_eq!(log.lock().expect("log").definition_calls.len(), 1);
+}
+
+#[test]
+fn definition_rejects_a_stale_epoch_before_starting_a_session() {
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        FakeBehavior::default(),
+    );
+    let stale = BackendEpoch::new(
+        BackendId::new(BACKEND_ID),
+        adapter.epoch().get().saturating_add(1),
+    );
+    let error = adapter
+        .definition(DefinitionRequest {
+            context: context_with_epoch(&adapter, WXML, stale),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect_err("stale epoch");
+    assert!(matches!(error, BackendError::Cancelled));
+    assert_eq!(log.lock().expect("log").starts, 0);
+    assert_eq!(log.lock().expect("log").definition_calls.len(), 0);
+}
+
+#[test]
+fn a_slow_definition_is_cancelled_by_invalidation_and_drops_the_session() {
+    let gate = Arc::new(SlowGate::default());
+    let behavior = FakeBehavior {
+        definition_gate: Some(Arc::clone(&gate)),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let adapter = Arc::new(adapter);
+    let first_context = context(adapter.as_ref(), WXML);
+    let worker = Arc::clone(&adapter);
+    let handle = thread::spawn(move || {
+        worker.definition(DefinitionRequest {
+            context: first_context,
+            offset: offset_of(WXML, "name"),
+        })
+    });
+    gate.wait_until_entered();
+    adapter.invalidate();
+    gate.release();
+    let result = handle.join().expect("definition thread");
+    assert!(matches!(result, Err(BackendError::Cancelled)));
+    assert_eq!(log.lock().expect("log").shutdowns, 1);
+    assert_eq!(log.lock().expect("log").definition_calls.len(), 1);
+    assert_eq!(log.lock().expect("log").starts, 1);
 }
 
 #[test]
@@ -1063,7 +1606,7 @@ fn capabilities_advertise_only_implemented_features() {
     ));
     assert!(matches!(
         capabilities.definition,
-        CapabilityStatus::Unsupported { .. }
+        CapabilityStatus::Partial { .. }
     ));
     assert!(matches!(
         capabilities.completion,
@@ -1727,6 +2270,97 @@ fn optional_real_engine_hover_smoke() {
         offset_of(WXML, "name") + u32::try_from("name".len()).expect("length")
     );
     assert!(result.contents.contains("string"));
+}
+
+#[test]
+fn optional_real_engine_definition_smoke() {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let Ok(bin) = std::env::var("TSGO_BIN") else {
+        let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
+        assert!(
+            !required,
+            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
+        );
+        eprintln!(
+            "optional real-engine adapter definition test skipped: set TSGO_BIN to the pinned \
+             7.1.0-beta lib/tsc"
+        );
+        return;
+    };
+    let executable = PathBuf::from(&bin);
+    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let sandbox = std::env::temp_dir().join(format!(
+        "wxml-tsgo-adapter-definition-{}-{count}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&sandbox).expect("sandbox");
+    let _cleanup = Cleanup(sandbox.clone());
+
+    let wxml = "<view>{{ u.name }}</view>";
+    let script = r#"import type { User } from "./model";
+const u: User = { name: "Ada", age: 42 };
+Page({
+  data: { u },
+});
+"#;
+    let model = r"export interface User {
+    /** Display name. */
+    name: string;
+    age: number;
+}
+";
+    let globals = r#"import type { User } from "./model";
+declare global {
+  function Page(options: {
+    data: { u: User };
+    __wxml_check_0(this: { data: { u: User } }): void;
+  }): void;
+}
+export {};
+"#;
+    let files = vec![
+        prepared_file(SCRIPT_PATH, script),
+        prepared_file("model.ts", model),
+        prepared_file("globals.d.ts", globals),
+    ];
+    let views = Arc::new(FakeViews::new(prepared_view_with_files(
+        wxml, "u.name", files,
+    )));
+    let adapter = TsgoBackendAdapter::new(
+        PinnedEngine::pinned(),
+        views,
+        Arc::new(super::session::NativeSessionFactory::new(
+            SessionOptions::new(executable, sandbox),
+        )),
+    );
+    let result = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "name"),
+        })
+        .expect("real engine definition");
+    eprintln!(
+        "real engine adapter definition: status={:?} locations={:?}",
+        result.status, result.locations
+    );
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Supported,
+        "the real engine must decode the model.ts declaration token"
+    );
+    let location = result
+        .locations
+        .iter()
+        .find(|location| location.file.path() == "model.ts")
+        .expect("the property declaration in model.ts");
+    let expected_start =
+        u32::try_from(model.find("name: string").expect("model property")).expect("model offset");
+    assert_eq!(location.range.start(), expected_start);
+    assert_eq!(
+        location.range.end(),
+        expected_start + u32::try_from("name".len()).expect("length")
+    );
 }
 
 struct Cleanup(PathBuf);
