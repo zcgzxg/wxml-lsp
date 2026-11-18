@@ -1172,7 +1172,9 @@ fn ledger_migration_evidence_is_complete_and_consistent() {
             let path = required_str(test, "path", case_id);
             assert!(!path.is_empty(), "{case_id} has an empty Rust test path");
             assert!(
-                path.ends_with(".rs"),
+                Path::new(path)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("rs")),
                 "{case_id} Rust test path is not a .rs file: {path}"
             );
             assert!(
