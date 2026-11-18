@@ -4,6 +4,12 @@
 
 **日期**：2026-11-17。**合同版本**：`draft-0`。**适用发布**：Linux x86_64、原生引擎 `7.1.0-beta`、manifest/index schema v2。
 
+> **2026-11-17 后续**：维护者已条件性接受 `7.1.0-beta`（gitHead
+> `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`、linux-x64 SRI/`lib/tsc` SHA-256 见 §2）作为唯一
+> 候选基线。临时 Python spike 已执行一次可执行安装器证明，见
+> [P1-C 证据 §11](../evidence/2026-11-17-tsgo-delivery-spike.md)；该证明**不是**生产安装器，
+> 不改变本文 draft/未接受状态，也不把 F3-01～F3-16 变成已实现。
+
 **关系**：[ADR-0007](../adr/0007-local-delivery-trust-model.md)（accepted，信任/离线/原子安装/回滚规则继续有效）；
 [ADR-0008](../adr/0008-rust-tsgo-no-node-backend.md)（proposed，迁移方向）；实施计划
 [§8～§9](../plans/2026-11-17-rust-tsgo-migration.md)；事实来源
@@ -79,7 +85,8 @@
 
 1. F0 草案冻结 `protocolVersion`、`engine.apiSchemaVersion`、`engine.astHeaderBytes`、`--version` 探针前缀和 `--api --async` 握手；
 2. `assets.lock.json` 已提交，含精确 URL、版本、SHA-512 SRI、大小、许可和 `extract` allowlist；
-3. 维护者确认接受 `7.1.0-beta` 作为生产基线的 beta 风险；
+3. 维护者已**条件性**接受 `7.1.0-beta` 作为唯一候选基线（2026-11-17）；正式接受仍以 F3
+   评审和证据 §11 的限制为准；
 4. 安全评审接受 ADR-0007 的“TLS+摘要、无发布者签名”残留风险；
 5. 本文 §10 的阻塞项有明确 owner 和退出条件。
 
@@ -97,15 +104,15 @@ ADR-0008 是否从 proposed 升为 accepted 由 ADR 自身门禁决定，不由�
 | 3 | 归档 SRI | `sha512-kcD51ihf+pnI5KT4uQQYG04OpwznaZYBlIQhDhl8fflFd27NktxXsUeguxZyvUMyWfum7IF2bBS6Jv7ox0AgFQ==` | registry 元数据 | `dist.integrity` |
 | 4 | 许可/平台 | Apache-2.0；`os=["linux"]`、`cpu=["x64"]`；无 `libc` 字段 | registry 元数据 | 无 `libc` 意味着不能从元数据区分 glibc/musl |
 | 5 | 归档/解包大小 | packed `10,175,135` B；unpacked `28,450,796` B；`122` 文件 | registry 元数据 | packed 由 1 字节 range 得到；文件数来自发布清单 |
-| 6 | 引擎文件 | `lib/tsc` `24,522,912` B；`116` 个 `lib.*.d.ts` 共 `3,870,196` B；`LICENSE` `9,197` B；`NOTICE.txt` `46,827` B；`tsc.sig` `481` B | registry 发布清单 | 未下载真实字节；文件大小以清单为准 |
+| 6 | 引擎文件 | `lib/tsc` `24,522,912` B；`116` 个 `lib*.d.ts`（含 `lib.d.ts`）共 `3,870,196` B；`LICENSE` `9,197` B；`NOTICE.txt` `46,827` B；`tsc.sig` `481` B | registry 发布清单 | 未下载真实字节；文件大小以清单为准 |
 | 7 | npm 入口性质 | `typescript` 包的 `bin/tsc` 是 `#!/usr/bin/env node` launcher；平台包无 `bin/`，原生入口是 `lib/tsc` | registry 小文本文件内容 | 这不是本项目运行时验证 |
 | 8 | 类型资产 | `miniprogram-api-typings@5.3.1`：MIT、26 文件、packed `449,429` B、unpacked `2,552,052` B、SRI `sha512-2CirO+C1z5RmKXDqTUSNbuyouHf5d0/KJTt+Qqi1EsiQYs8jlYhq7yWjp6EdTcJpvZzjuefZQCcDixYbrgIqow==` | registry 元数据 | 与现有 `Typings` 固定版本一致 |
 | 9 | 现有 v1 合同 | schema v1 强制 `node` 字段和 `node-backend` artifact；index v1 强制 `nodeMinimumVersion`；`env` 输出 `WXML_TYPE_BACKEND` | 仓库静态事实 | 见 `crates/wxml-delivery/src/manifest.rs`、`bin/wxml-lsp-install.rs` |
 | 10 | 现有校验/安装骨架 | 临时区校验 → `rename` 到 `versions/` → 临时 symlink atomic `rename`；OS 文件锁；`WXML_LSP_BIN` 优先 | 仓库静态事实 | 现有测试为 v1/Node 路径，不能替代 F3 |
 | 11 | 原生进程能力 | `7.1.0-beta` 在 Linux x64 的 `--api --async`、快照、查询、AST v9/header 64 等 | P1-A 运行时证据（独立记录） | 本交付合同未重跑；F0 必须冻结常量 |
 | 12 | `7.0.2` 排除 | 稳定版不具备所需 snapshot/租约/AST protocol v5，不满足架构；明确不作为回退候选 | P1-A 运行时证据 + ADR-0008 决策 | 不是 registry 元数据事实 |
-| 13 | 交付运行时声明 | `lib/tsc --version` 的实际输出、Rust 二进制的 glibc 下限、本交付链的真实解包、安装事务、clean-env、Zed 冒烟 | **本交付链未验证** | 见 §10 阻塞项；不得用 registry 元数据或 F0 的独立证据代替 |
-| 14 | 引擎资产摘要 | tarball SHA-256 `59128685cb55f44c9e6644ef5edb3cb321618d9547b4ee94c3038598ffd51855`；`lib/tsc` SHA-256 `a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70`；静态 Go、无 glibc 动态依赖 | F0/P1-A 资产证据（独立） | 本交付链未独立重跑；安装仍以 manifest/真实文件哈希为准 |
+| 13 | 交付运行时声明 | 临时 Python spike 已在 Linux x64 验证 install/verify/upgrade/rollback/离线/无 Node PATH；生产 Rust 安装器、CI、Zed 冒烟、平台矩阵仍未验证 | 2026-11-17 临时证据（非生产） | 见 §10 与证据 §11；不得把 spike 当生产完成 |
+| 14 | 引擎资产摘要 | tarball SHA-256 `59128685cb55f44c9e6644ef5edb3cb321618d9547b4ee94c3038598ffd51855`、SRI 见 #3、size `10175135`；解包 122 文件/`28450796` B；`lib/tsc` SHA-256 `a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70`、`Version 7.1.0-beta` | F0/P1-A + 2026-11-17 spike 复核 | tarball/引擎已复核；`miniprogram-api-typings` 只有已解包 26 文件，SRI 因无 tarball 未复核 |
 
 **不得混用**：
 
@@ -128,7 +135,7 @@ wxml-lsp-<version>-linux-x86_64/
 │   ├── lib/
 │   │   ├── tsc                        0755  原生引擎 7.1.0-beta
 │   │   ├── tsc.sig                    0644  随上游保留；运行期是否必需由 F0 探针决定
-│   │   └── lib.*.d.ts                 0644  ×116，标准库类型声明
+│   │   └── lib*.d.ts                  0644  ×116，标准库类型声明（含 lib.d.ts）
 │   ├── LICENSE                        0644  Apache-2.0 全文
 │   ├── NOTICE.txt                     0644  Apache-2.0 NOTICE
 │   ├── package.json                   0644  仅作版本/provenance 元数据，不执行
@@ -152,7 +159,7 @@ wxml-lsp-<version>-linux-x86_64/
 
 ### 3.2 必需、可选与禁止
 
-**必需**：`bin/wxml-lsp`、`bin/wxml-lsp-install`、`engine/lib/tsc`、116 个 `engine/lib/lib.*.d.ts`、
+**必需**：`bin/wxml-lsp`、`bin/wxml-lsp-install`、`engine/lib/tsc`、116 个 `engine/lib/lib*.d.ts`（含 `lib.d.ts`）、
 `engine/LICENSE`、`engine/NOTICE.txt`、`engine/package.json`、`engine/lib/tsc.sig`、
 `typings/miniprogram-api-typings/index.d.ts` 与 `types/**`、typings `LICENSE`、
 `zed-extension/extension.wasm`、`zed-extension/extension.toml`、`zed-extension/languages/**`、
@@ -176,7 +183,7 @@ wxml-lsp-<version>-linux-x86_64/
 | 文件 | 大小 | 说明 |
 | --- | ---: | --- |
 | `engine/lib/tsc` | 24,522,912 B | 原生 ELF，`0755` |
-| `engine/lib/lib.*.d.ts` | 3,870,196 B | 116 个文件合计 |
+| `engine/lib/lib*.d.ts` | 3,870,196 B | 116 个文件合计（含 `lib.d.ts`） |
 | `engine/LICENSE` | 9,197 B | Apache-2.0 |
 | `engine/NOTICE.txt` | 46,827 B | 必须随包 |
 | `engine/lib/tsc.sig` | 481 B | 用途待 F0 确认，先随包保留 |
@@ -322,11 +329,14 @@ Artifact URL/SRI 的归属：上游 engine tarball 的 **URL** 是 `engine.distr
 
 | name | version | license | root | include | fileCount |
 | --- | --- | --- | --- | --- | ---: |
-| `typescript-standard-lib` | `7.1.0-beta` | `Apache-2.0` | `engine/lib` | `["lib.*.d.ts"]` | 116 |
+| `typescript-standard-lib` | `7.1.0-beta` | `Apache-2.0` | `engine/lib` | `["lib*.d.ts"]` | 116 |
 | `miniprogram-api-typings` | `5.3.1` | `MIT` | `typings/miniprogram-api-typings` | `["**"]` | 26 |
 
 `typeAssets[].licenseFiles`：标准库为 `engine/LICENSE`、`engine/NOTICE.txt`；
 miniprogram 为 `typings/miniprogram-api-typings/LICENSE`。
+
+注意：`lib.d.ts` 是基础声明，`lib.*.d.ts` 只匹配 115 个文件，会漏掉它；标准库 include 必须用
+`lib*.d.ts` 并断言 `fileCount == 116`。2026-11-17 spike 已实测该差异（见证据 §11）。
 
 **必需 binaries**：
 
@@ -388,7 +398,7 @@ hex 是结构占位值，**不是真实摘要**，真实发布必须由打包器
       "version": "7.1.0-beta",
       "license": "Apache-2.0",
       "root": "engine/lib",
-      "include": ["lib.*.d.ts"],
+      "include": ["lib*.d.ts"],
       "fileCount": 116,
       "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       "licenseFiles": ["engine/LICENSE", "engine/NOTICE.txt"]
@@ -1172,7 +1182,10 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 
 ### 9.4 状态
 
-- F3-01～F3-16：**planned，未实现**。
+- F3-01～F3-16：**planned，未实现**（生产 Rust 交付链）。
+- 2026-11-17 临时 Python spike 执行了其中一部分（fresh install、checksum 失败、中断升级、
+  N1→N2、rollback、legacy 拒绝、离线、进程审计、恶意 tar、版本探针）；这是**临时证明**，
+  不是 F3-01～F3-16 的实现，见 [证据 §11](../evidence/2026-11-17-tsgo-delivery-spike.md)。
 - 任何“通过”必须附真实命令与日志；仅有设计/命令文本不算通过。
 - 缺失原生资产、`strace`、Zed 图形环境或离线能力时，对应项为 **BLOCKED**，不得标记 pass。
 
@@ -1180,18 +1193,18 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 
 ### 10.1 阻塞项
 
-| ID | 阻塞 | 影响 | 退出条件 |
-| --- | --- | --- | --- |
-| B1 | schema v2 安装器、provisioning 工具、state/journal、legacy 读取器未实现 | 无真实 native 安装/升级/回滚 | D 包实现并通过 F3-01～F3-12 |
-| B2 | clean-env 未运行 | 无证据证明无 Node/离线/进程审计 | 无 Node PATH + 离线 + 审计日志通过 F3-01/02/12 |
-| B3 | 平台矩阵未测试 | 只能宣称 Linux x86_64；aarch64/macOS/Windows/musl 无证据 | F3-13 记录 glibc/ABI；其他平台保持“不支持” |
-| B4 | 本交付链未独立重跑真实原生资产的下载/解包/探针；F0/P1-A 已有独立证据 | `--version` 实际输出、API/AST 探针、`tsc.sig`、Rust glibc 未在安装器链路验证 | 资产 worker 产出可重放 SRI/解包/探针/`readelf` 证据，并由 F3 安装器消费 |
-| B5 | F0 常量未冻结 | `apiSchemaVersion`、协议、探针期望值仍是示例 | F0 记录冻结值并写入 lock/manifest |
-| B6 | release 包/Zed 冒烟未构建运行 | 无包级/UI 证据 | F3-03/14 在隔离 Linux 环境通过 |
-| B7 | 许可/provenance 未经发布评审 | NF-09 不可关闭 | 许可文件、`THIRD_PARTY_LICENSES.md`、provenance 评审通过 |
-| B8 | 无发布者签名 | 只能证明“内容与元数据一致”，不能证明来源身份 | 接受 ADR-0007 残留风险，或新增签名 ADR |
-| B9 | fsync/断电持久性未证明 | 不能宣称断电安全 | F3-16 注入/断电测试；未通过前只宣称“进程中断可恢复” |
-| B10 | 本文件未加入 docs 索引 | 读者可能不知道它是草案 | 合同接受后由文档 owner 更新索引 |
+| ID | 2026-11-17 状态 | 阻塞 | 影响 | 退出条件 |
+| --- | --- | --- | --- | --- |
+| B1 | **PARTIAL**（临时 Python spike） | 生产 `wxml-delivery` schema v2 安装器、provisioning 工具、state/journal、legacy 读取器未实现；spike 只证明流程可行 | 生产 native 安装/升级/回滚仍未接入 | D 包 Rust 实现并通过 F3-01～F3-12；spike 不能替代 |
+| B2 | **PARTIAL**（spike clean-env） | 无 Node PATH、offline、进程审计已在 spike 上执行；Rust build/test/CI/Zed 未在 clean-env 运行 | 生产无 Node 门禁未关闭 | Rust 构建/测试/发布/CI/Zed 在无 Node 环境通过 F3-01/02/12 |
+| B3 | **BLOCKED** | 平台矩阵未测试 | 只能宣称 Linux x86_64；aarch64/macOS/Windows/musl 无证据 | F3-13 记录 Rust glibc/ABI；其他平台保持“不支持” |
+| B4 | **PARTIAL**（spike 复核） | 临时 spike 已复核 tarball SRI/SHA-256/size、122 文件、`lib/tsc` SHA/`--version`；F0 API/AST 握手、`tsc.sig` 用途、Rust glibc、miniprogram SRI 未验证 | 资产身份可用，但安装器未消费真实 API/AST 探针 | F0/F3 安装器消费可重放 SRI/解包/探针/`readelf` 证据 |
+| B5 | **PARTIAL**（维护者条件性接受） | 7.1.0-beta 身份已条件性接受；F0 API/AST 合同仍是 draft，`apiSchemaVersion`/协议/探针期望值未正式冻结 | F0 合同未接受 | F0 记录冻结值并写入 lock/manifest，F3 评审接受 |
+| B6 | **BLOCKED** | release 包/Zed 冒烟未构建运行；spike 包是 Python/占位产物 | 无包级/UI 证据 | F3-03/14 在隔离 Linux 环境通过真实 Rust 包 |
+| B7 | **PARTIAL**（spike 打包） | spike 已把 LICENSE/NOTICE/MIT 许可、`provenance.json`、`THIRD_PARTY_LICENSES.md` 打入包并 hash；未做发布许可评审 | NF-09 不可关闭 | 许可文件、provenance、SBOM 评审通过 |
+| B8 | **ACCEPTED RISK** | 无发布者签名 | 只能证明“内容与元数据一致”，不能证明来源身份 | 接受 ADR-0007 残留风险，或新增签名 ADR |
+| B9 | **PARTIAL**（进程中断） | spike 已测 crash-after-commit/recover；staged 崩溃恢复、断电/目录 fsync 持久性未测 | 不能宣称断电或全部崩溃窗口安全 | F3-16 注入/断电测试；未通过前只宣称“commit 后进程中断可恢复” |
+| B10 | **OPEN** | 本文件未加入 docs 索引 | 读者可能不知道它是草案 | 合同接受后由文档 owner 更新索引 |
 
 ### 10.2 明确不承诺
 
@@ -1202,6 +1215,7 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 - 不承诺发布者签名、透明日志、证书固定或完整供应链安全。
 - 不承诺断电/文件系统崩溃下的原子性；只承诺进程失败/中断下的状态机与校验后切换。
 - 不承诺性能、启动时延或引擎查询结果；这些属于 F0/F1。
+- 不承诺临时 Python spike 等于生产安装器；其证明范围仅 Linux x86_64 的受限本地路径。
 
 ### 10.3 F3 退出门禁
 
@@ -1214,6 +1228,21 @@ F3 合同可标记 accepted（不是实现完成）需：
 5. 安全评审接受 §8 的信任边界和残留风险。
 
 实现完成（G3/F3 测试通过）还需 §9 全部通过；两者不能混为一谈。
+
+### 10.4 G1-C 判定（2026-11-17）
+
+**G1-C 仍不能关闭。** 临时 Python spike 消除了“是否可实现 manifest v2/原子安装/回滚/无 Node
+本地流程”的关键未知，但：
+
+- 生产 Rust 安装器与 `wxml-delivery` 未改（B1）；
+- Rust build/test/release/CI/Zed 未在 clean-env 跑（B2/B6）；
+- 平台矩阵、Rust glibc/ABI、musl 未测（B3）；
+- F0 API/AST 握手、`tsc.sig`、miniprogram SRI 未验证（B4/B5）；
+- 许可/provenance 未经发布评审（B7）；
+- 断电持久性未测（B9）。
+
+因此只能把“可执行安装器存在性”从 BLOCKED 降为 **PARTIAL PASS（临时证明）**；G1-C 仍是
+**OPEN**，不能以 spike 关闭。详见证据 §11。
 
 ## 11. 变更控制
 

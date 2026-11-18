@@ -896,3 +896,254 @@ curl -s -r 0-0 -D - -o /dev/null \
 等级：**E1（可复查）**。结论可由本节命令与仓库行号复核；缺原始解包/运行输出，
 未达到 E2。所有“PASS”仅指静态调查或元数据核验，不代表实现/门禁已通过。
 `docs/evidence/README.md` 的索引登记由文档 owner（R 包）统一处理，本轮按只读约束未修改。
+
+## 11. 2026-11-17 追加：可执行安装器 spike（临时证明）
+
+本节是**追加的临时证明**，不改变 §0～§10 的历史结论。§10.3 的 E1 等级仍适用于 §0～§10；
+§11 虽然包含原始 spike 输出，但它只是临时证明，不能把整份记录升级为 E2 或生产验收。它不是
+生产安装器、不是 F3 实现、不是 release 产物。工作目录固定为 `/tmp/opencode/tsgo-delivery-spike`；原生资产复用
+`/tmp/opencode/tsgo-spike` 中**已存在**的 7.1.0-beta 解包与 tarball，**未重新下载**；未运行
+`node`/`npm`；未修改生产源码、Cargo、脚本、CI、Zed、计划或 ADR。仓库写入仅本证据与
+[F3 交付合同](../reference/tsgo-delivery-contract.md)。
+
+### 11.1 结论摘要
+
+| 项 | 结果 |
+| --- | --- |
+| 临时 Python 安装器（manifest v2/index/state/journal/provision/install/verify/rollback） | ✅ PASS（Linux x64 本地） |
+| 真实 7.1.0-beta tarball SRI/SHA-256/size/122 文件/`lib/tsc` 复核 | ✅ PASS |
+| fresh install、verify、atomic current | ✅ PASS |
+| failed checksum / tampered archive 保持旧 current 与旧树 | ✅ PASS |
+| interrupted upgrade（commit 后退出 137）保持 previous；recover 不自动激活 | ✅ PASS |
+| native N1→N2 upgrade；rollback N2→N1 | ✅ PASS |
+| legacy Node current 迁移（旧树不变）；rollback 到 legacy 明确拒绝 | ✅ PASS |
+| clean PATH 无 node/npm；fake `/usr/bin/node`/npm shim 未被调用 | ✅ PASS（受限审计，见 11.6） |
+| offline install/verify（`unshare -rn`，网络不可达） | ✅ PASS |
+| unsafe tar（绝对路径/`..`/symlink/hardlink/FIFO/坏模式/重复） | ✅ PASS（7/7 拒绝） |
+| 版本/`--version` mismatch 拒绝 | ✅ PASS |
+| `miniprogram-api-typings` SRI | ◐ **NOT VERIFIED**（无 tarball；只验 26 文件/版本/许可/包内 digest） |
+| F0 `--api --async` / AST 握手由安装器消费 | ⛔ **NOT RUN**（本次只做 `--version` 探针） |
+| 生产 Rust 安装器 / Rust build/test/CI / Zed 冒烟 | ⛔ **BLOCKED** |
+| 平台矩阵 / Rust glibc / musl / aarch64 | ⛔ **BLOCKED** |
+| 许可/provenance 发布评审 | ◐ **PARTIAL**（spike 已打包并 hash，未评审） |
+| 断电/fsync 持久性 | ⛔ **BLOCKED**（只测进程退出，不测断电） |
+
+**G1-C 判定：仍不能关闭。** 本次只把“可执行安装器存在性”从 BLOCKED 降为
+**PARTIAL PASS（临时证明）**；生产实现、clean-env Rust 门禁、平台/ABI、Zed、许可评审仍未满足。
+详见 §11.8。
+
+### 11.2 边界与不可替代性
+
+- 安装器是 **Python 3.14.10** 临时脚本，不是 Rust `wxml-delivery`；包内 `bin/wxml-lsp` 是
+  打印固定版本号的 shell placeholder，不是真实 Rust LSP。任何“安装成功”只证明流程与校验，
+  不证明真实 LSP/原生 API。
+- 只使用 `--from-dir` 本地源；spike **没有实现网络下载**。因此离线测试证明“本地安装不依赖
+  网络”，不能证明生产 HTTPS 获取实现。
+- 进程审计使用 `bwrap --unshare-net` + 替换 `/usr/bin/node` 和 npm 入口为“记录并退出 99”的
+  shim；系统未安装 `strace`，因此这不是完整 execve 审计。clean PATH 与源码审查作为补充。
+- 原生引擎 `lib/tsc` 是上游静态 Go 二进制；Rust LSP 的 glibc 下限未测，因为本次没有构建
+  Rust 二进制。
+- 类型资产 `miniprogram-api-typings` 来自仓库内已解包的 5.3.1（26 文件、MIT），没有对应
+  tarball，故无法重算 `sha512-2Cir…` SRI；只验证版本、文件数、字节数、许可和包内 bundle digest。
+- 没有修改生产安装器；本文的 B1/B2/B4/B7/B9 状态更新只描述 spike 的实际输出。
+
+### 11.3 复用资产的复核
+
+复用的 tarball：`/tmp/opencode/tsgo-spike/download/typescript-linux-x64-7.1.0-beta.tgz`。
+已解包目录：`/tmp/opencode/tsgo-spike/extract/7.1.0-beta/package`。
+
+| 项 | 实测值 | 与维护者/F0 值 |
+| --- | --- | --- |
+| tarball size | `10,175,135` B | 一致 |
+| tarball SHA-256 | `59128685cb55f44c9e6644ef5edb3cb321618d9547b4ee94c3038598ffd51855` | 一致 |
+| tarball SRI | `sha512-kcD51ihf+pnI5KT4uQQYG04OpwznaZYBlIQhDhl8fflFd27NktxXsUeguxZyvUMyWfum7IF2bBS6Jv7ox0AgFQ==` | 一致 |
+| 解包文件数 | `122` | 与 registry 清单一致 |
+| 解包总字节 | `28,450,796` | 一致 |
+| `lib/tsc` 大小 | `24,522,912` B | 一致 |
+| `lib/tsc` SHA-256 | `a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70` | 一致 |
+| `lib/tsc --version` | `Version 7.1.0-beta`（exit 0） | 一致 |
+| `lib/*.d.ts` | `116` 个，含基础 `lib.d.ts` | 发现 include 陷阱：`lib.*.d.ts` 只匹配 115 |
+| `miniprogram-api-typings` | `5.3.1`、MIT、`26` 文件、`2,552,052` B | 版本/文件数/字节一致；**SRI 未复核** |
+| 引擎链接 | `ldd` 输出“not a dynamic executable”；`readelf` Class `ELF64`、Type `EXEC`、Machine `x86-64` | 静态 Go；无 GLIBC version info |
+
+复核命令（`$PKG=dist/wxml-lsp-0.1.0-linux-x86_64`）：
+
+```sh
+LC_ALL=C ldd "$PKG/engine/lib/tsc"          # exit 1, "not a dynamic executable"
+LC_ALL=C readelf -h "$PKG/engine/lib/tsc"   # Class ELF64, Type EXEC, Machine x86-64
+LC_ALL=C readelf --version-info "$PKG/engine/lib/tsc"  # no version information
+```
+
+`lib.d.ts` 是基础声明：`find .../lib -name 'lib*.d.ts'` 为 116，`-name 'lib.*.d.ts'` 为 115。
+仓库合同已据此把标准库 include 从 `lib.*.d.ts` 修正为 `lib*.d.ts`，并断言 `fileCount == 116`。
+这是本次 spike 直接发现并修正的合同缺陷。
+
+### 11.4 临时实现物
+
+只在 `/tmp/opencode/tsgo-delivery-spike`：
+
+| 路径 | 作用 |
+| --- | --- |
+| `spike.py` | Python 安装器/校验器/打包器；manifest v2、index v2、state/journal、safe tar、probe |
+| `run_tests.sh` | 临时测试驱动；记录命令、exit code、digest、审计 |
+| `clean-path/{python3,sh,env}` | 无 node/npm 的 PATH |
+| `dist/` | 临时 release 0.1.0、0.2.0、0.3.0 与 index |
+| `dist-bad-archive/` | 篡改 0.2.0 归档，用于 checksum 失败测试 |
+| `root-main/`、`root-crash/`、`root-legacy/`、`root-refuse/`、`root-tamper/`、`root-offline/`、`root-audit/` | 各测试安装根 |
+| `logs/run-20261117T154936Z.log` | 完整命令/输出/exit code 日志（主证据） |
+| `audit/exec.log` | fake node/npm shim 日志；本次为 0 字节 |
+
+临时包不是可发布产物：`bin/wxml-lsp` 是 shell 脚本；`zed-extension/extension.wasm` 是文本占位；
+`provenance.json` 明确标记 `"spike": true`。manifest 的 `typeAssets`、`files[]`、`SHA256SUMS`
+由 spike 按合同字段生成并校验。
+
+### 11.5 命令与结果
+
+变量：`SPIKE=/tmp/opencode/tsgo-delivery-spike`，`CLEAN=$SPIKE/clean-path`，
+`PY=/usr/bin/python3`。所有 `run_clean` 命令均为：
+
+```sh
+# clean PATH check
+env -i PATH="$CLEAN" /bin/sh -c 'command -v node || true; command -v npm || true'
+
+# ordinary clean-env run
+env -i PATH="$CLEAN" HOME="$HOME" LANG=C LC_ALL=C "$PY" "$SPIKE/spike.py" <subcommand...>
+
+# network-disabled run
+unshare -rn env -i PATH="$CLEAN" HOME="$HOME" LANG=C LC_ALL=C "$PY" "$SPIKE/spike.py" \
+  install --root "$SPIKE/root-offline" --from-dir "$SPIKE/dist" --version 0.1.0 --offline
+
+# process audit run (fake /usr/bin/node + npm log and exit 99)
+bwrap --unshare-net --ro-bind / / --dev /dev --proc /proc \
+  --bind "$SPIKE" "$SPIKE" \
+  --bind "$SPIKE/audit/fake-node" /usr/bin/node \
+  --bind "$SPIKE/audit/fake-npm" /usr/lib/node_modules/npm/bin/npm-cli.js \
+  -- /usr/bin/env -i PATH="$CLEAN" HOME="$HOME" LANG=C LC_ALL=C \
+  SPIKE_EXEC_LOG="$SPIKE/audit/exec.log" \
+  "$PY" "$SPIKE/spike.py" install --root "$SPIKE/root-audit" \
+  --from-dir "$SPIKE/dist" --version 0.1.0 --offline
+
+# network-namespace probe
+unshare -rn /usr/bin/python3 -c \
+  'import socket; socket.create_connection(("1.1.1.1", 80), 2)'
+# -> OSError: [Errno 101] Network is unreachable
+```
+
+`CLEAN` 只含 `python3`、`sh`、`env` 三个 symlink；`command -v node` 与 `command -v npm` 均为空。
+完整日志：`logs/run-20261117T154936Z.log`。主测试结果：
+
+| # | 命令（摘要） | exit | 结果 |
+| --- | --- | ---: | --- |
+| 1 | `spike.py provision --dist "$SPIKE/dist"` | 0 | 122 文件/28,450,796 B；三个临时包与 index |
+| 2 | `spike.py install --root root-main --from-dir dist --version 0.1.0 --offline` | 0 | current=`versions/0.1.0` |
+| 3 | `spike.py verify --root root-main` | 0 | manifest/files/SHA256SUMS/engine probe 全通过 |
+| 4 | `install ... --version 0.2.0 --index index-bad-sri.json` | 1 | `archive SRI mismatch` |
+| 5 | `install ... --version 0.2.0 --index index-bad-sha.json` | 1 | `archive sha256 mismatch` |
+| 6 | `install ... --from-dir dist-bad-archive --version 0.2.0` | 1 | 篡改归档 `archive sha256 mismatch` |
+| 7 | `install ... 0.2.0 --crash-after-commit` | **137** | 模拟 commit 后进程消失 |
+| 8 | `spike.py recover --root root-main` | 0 | `committed -> kept target 0.2.0; not auto-activated` |
+| 9 | `install ... 0.2.0 --offline`（resume） | 0 | current=`0.2.0`；state.previous=`0.1.0` |
+| 10 | `install ... 0.3.0 --offline` | 1 | placeholder 打印 `wxml-lsp 0.2.9`，version mismatch |
+| 11 | `spike.py rollback --root root-main --to 0.1.0` | 0 | current=`0.1.0`；state.previous=`0.2.0` |
+| 12 | `install ... 0.2.0 --offline` | 0 | current=`0.2.0` |
+| 13 | `verify`（篡改 `lib.es2020.d.ts`） | 1 | `size mismatch` |
+| 14 | `verify`（额外 `extra.txt`） | 1 | `file set mismatch` |
+| 15 | `make-legacy --root root-legacy` + `install ... 0.1.0` | 0 | legacy current → native；旧树 digest 不变 |
+| 16 | `rollback --root root-refuse --to 0.0.9` | 1 | `legacy Node package is not a Node-free target` |
+| 17 | `unshare -rn` + `install ... 0.1.0 --offline` | 0 | 无网络命名空间安装成功 |
+| 18 | `unshare -rn` + `verify` | 0 | 离线 verify 成功 |
+| 19 | `unshare -rn` + `install`（空 `from-dir`） | 1 | `missing JSON file: .../index.json` |
+| 20 | bwrap fake node/npm + `install`/`install`/`rollback` | 0/0/0 | `audit/exec.log` 0 字节 |
+| 21 | `spike.py test-archives` | 0 | 7/7 恶意条目拒绝 |
+| 22 | `sha256sum -c SHA256SUMS`（0.1.0 包根） | 0 | 156 条全部成功 |
+
+**归档/清单摘要**：
+
+| 产物 | size | SHA-256 | SRI |
+| --- | ---: | --- | --- |
+| `wxml-lsp-0.1.0-linux-x86_64.tar.gz` | 10,517,620 | `950cbf617d9c0d83cfe0c43c84c14310abc254a269036106e250fb7250e04f4e` | `sha512-ZFZrRaArMVLRQXd5y3RefboRjkG/pjT6xUF/4umnmrPN9bJhbMCz1RZgTxZScNXkDpU1uDB/a828J6bVc/1HRQ==` |
+| `wxml-lsp-0.2.0-linux-x86_64.tar.gz` | 10,517,600 | `30817627671ed987c1454ba25db2ed60df130d703e474ce03bd0c11dcdf470a7` | `sha512-NJERf4GCpc6v6BIxgiPGHQ2GizHK1K6VfQguQtMOlO1x4vn29JP2OLvxhFgvzohl3ckCz6JWcH6YwNfTnU6DpA==` |
+| `wxml-lsp-0.3.0-linux-x86_64.tar.gz`（故意坏版本） | 10,517,623 | `06da50c66ca3c516543d134c8b8675b8e95f42c6bf3ff6711c0d410deb97ead7` | `sha512-TCbgjgCG7X/EfLFhVROouJ5l001uSBHWNTrL4MucrF2Z6BovObOr6BGxs6zLj7FE/i3CLXsD1FhfoqUJFy1tfA==` |
+| `0.1.0/manifest.json` | 32,520 | `c4f3b4dafb3cc9dbb632e02af13f4518adb6ed054b4708d1ae2908f951ab1204` | — |
+| `0.1.0/SHA256SUMS` | 15,978 | `d2afda41e8bc5fee269269cc7830df51e3724cf424c78fd988d52c5eed947395` | — |
+
+包内 `files[]` 为 155 项；`SHA256SUMS` 为 156 行（155 + `manifest.json`）。标准库 116 个
+`.d.ts`，typings 26 个文件，均与 manifest 的 `fileCount`/bundle digest 一致。
+
+### 11.6 状态机观测
+
+| 场景 | journal / state | current | 旧树 digest |
+| --- | --- | --- | --- |
+| fresh install V1 | `staged` → `committed` → `activated`；state active `0.1.0`，previous `null` | `versions/0.1.0` | — |
+| failed checksum（3 次） | 未创建新 journal；state/current 不变 | `versions/0.1.0` | `728c3959cce6e63a6c1da04f53caeb0803486543edad61f0614aa00ec2fd9b07`（前后一致，157 项） |
+| interrupted upgrade V2 | journal `committed`，target `0.2.0`，previous `0.1.0`；进程 `os._exit(137)` 在 switch 前 | `versions/0.1.0` | `728c3959…`（前后一致） |
+| `recover` | `committed -> kept target 0.2.0; not auto-activated`；tmp 清理 | `versions/0.1.0` | 不变 |
+| explicit resume V2 | 重新校验现有 `0.2.0` → switch；state active `0.2.0`，previous `0.1.0` | `versions/0.2.0` | V1 `728c3959…` 不变 |
+| version mismatch V3 | probe 失败；未写 `staged`/`committed`；tmp 清理 | `versions/0.2.0` | V2 `f90c81b65ac617d9c4c60f80b992e1b643b6e5fbee9221872be7c3d9831780ce`（前后一致） |
+| rollback N2→N1 | `committed` → `activated`；state active `0.1.0`，previous `0.2.0` | `versions/0.1.0` | V2 不变 |
+| legacy migration | 旧 `current` 只读识别；`staged` → `committed` → `activated`；state active `0.1.0`，previous `null` | `versions/0.1.0` | legacy `a23de21aaf35dc47e278cca96045ec7268f9107c01eebc8125b89a4ae0debf78`（前后一致，4 项） |
+| legacy rollback refusal | 未创建 journal；schema v1 在 verify/switch 前拒绝 | `versions/0.1.0` | legacy `a23de21a…`、native `728c3959…` 均不变 |
+
+`root-crash` 的 journal 原文（commit 后、switch 前）：
+
+```json
+{
+  "schemaVersion": 2,
+  "id": "txn-20261117T155149Z-2161662-158",
+  "op": "install",
+  "target": "0.2.0",
+  "previous": "0.1.0",
+  "state": "committed",
+  "startedAt": "2026-11-17T15:51:49Z",
+  "updatedAt": "2026-11-17T15:51:49Z"
+}
+```
+
+`root-crash` 的 current 仍为 `versions/0.1.0`；`recover` 输出
+`committed -> kept target 0.2.0; not auto-activated`。这证明“commit 后中断不自动激活”，
+但不证明断电持久性。
+
+### 11.7 P1-C 测试判定
+
+| P1-C 测试 | 判定 | 依据/限制 |
+| --- | --- | --- |
+| fresh install | ✅ PASS | 0.1.0 安装、verify、atomic current、state/journal |
+| failed checksum keeps old current byte-identical | ✅ PASS | 坏 SRI / 坏 SHA / 篡改归档均 exit 1；V1 digest 前后一致 |
+| interrupted/failed upgrade keeps previous | ✅ PASS | exit 137；current/旧树不变；recover 不自动激活 |
+| native N1→N2 upgrade | ✅ PASS | 0.1.0→0.2.0；state.previous=`0.1.0` |
+| rollback to N1 | ✅ PASS | 0.2.0→0.1.0；重新校验；state.previous=`0.2.0` |
+| refusal to reactivate legacy Node package | ✅ PASS | `rollback --to 0.0.9` exit 1；current/legacy/native digest 均不变 |
+| legacy migration | ✅ PASS | legacy current → native；旧树 digest 不变；previous=null |
+| no Node process spawned | ✅ PASS（受限） | clean PATH 无 node/npm；fake `/usr/bin/node`+npm shim 0 调用；无 `strace`，非完整 execve 审计 |
+| offline install/verify | ✅ PASS | `unshare -rn` 内安装/verify 成功；网络探测 `OSError [Errno 101] Network is unreachable` |
+| unsafe tar rejection | ✅ PASS | absolute/`..`/symlink/hardlink/FIFO/0777/duplicate 共 7/7 拒绝 |
+| version/`--version` mismatch | ✅ PASS | 0.3.0 包打印 0.2.9，exit 1，V2 current 不变 |
+| tamper detection | ✅ PASS | 改 d.ts 或加 extra 文件，verify exit 1 |
+| engine SRI/SHA-256/file count | ✅ PASS | tarball/122 文件/28,450,796 B/`lib/tsc` 全部一致 |
+| miniprogram typings SRI | ◐ NOT VERIFIED | 无 tarball；只验 26 文件/2,552,052 B/5.3.1/MIT/bundle digest |
+| F0 API/AST handshake | ⛔ NOT RUN | 安装器只做 `--version` 探针；未发送 `initialize`/验证 AST header |
+| production Rust installer | ⛔ BLOCKED | 未改 `crates/wxml-delivery`；Python spike 不可替代 |
+| Rust build/test/CI clean-env | ⛔ BLOCKED | 未运行 `cargo`/CI |
+| packaged Zed smoke | ⛔ BLOCKED | 无真实包/图形环境 |
+| glibc/ABI/musl/aarch64 | ⛔ BLOCKED | 只记录引擎静态 ELF；Rust glibc 未测 |
+| power-loss/fsync durability | ⛔ BLOCKED | 只测进程退出；未断电/未证明目录持久性 |
+| license/provenance review | ◐ PARTIAL | spike 包内许可与 provenance 已生成并 hash；未做发布评审 |
+
+### 11.8 G1-C 判定与限制
+
+**G1-C 仍不能关闭。** 结论是 **PARTIAL PASS（临时证明）**，不是 PASS：
+
+1. 生产 `wxml-delivery` 的 Rust schema v2 安装器、provisioning、state/journal、legacy 读取器
+   仍未实现（B1）。
+2. clean-env 只覆盖 Python spike；Rust build/test/release/CI/Zed 未在无 Node 环境运行（B2/B6）。
+3. 平台矩阵只测 Linux x86_64；Rust glibc 下限、musl、aarch64、macOS/Windows 未测（B3）。
+4. F0 `--api --async`/AST 握手未由安装器执行；`tsc.sig` 仍未验签；miniprogram SRI 未复核
+   （B4/B5）。
+5. 许可/provenance 只是 spike 打包，未做发布评审（B7）。
+6. 无发布者签名（B8，ADR-0007 残留风险）；断电持久性未测（B9）。
+7. 本次 Python spike 不是生产代码，不能作为 F3-01～F3-16 的实现证据；这些测试仍是 planned。
+
+可关闭的未知：**“manifest v2 + index + state/journal + 原子 current + checksum/失败/回滚/
+legacy 拒绝 + 无 Node 本地路径”在 Linux x64 上可实现**，且已用真实 7.1.0-beta 引擎字节
+（SRI/SHA/122 文件/`--version`）验证。该未知从 BLOCKED 降为 PASS（临时），但 G1-C 门禁仍为
+OPEN。

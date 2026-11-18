@@ -1,8 +1,8 @@
 # tsgo 原生后端 F0/F1 合同（草案）
 
-**状态：draft / not accepted。** 本文只用于 P2 合同评审，**评审通过前没有规范效力**；不得据此声称迁移、实现、测试或验收已经完成。本文不修改任何源码、测试、Cargo、计划、ADR 或其它文档，也不构成对 `7.1.0-beta` 的生产接受。
+**状态：draft / not accepted。** 维护者已**条件接受** `7.1.0-beta` 作为唯一候选基线（见 §2.1），但本文仍是 P2 草案；**只有在 P2 评审通过且 G1 关闭后才有规范效力**。不得据此声称迁移、实现、测试或验收已经完成，也不得视为默认后端切换已批准。本文不修改任何源码、测试、Cargo、计划、ADR 或其它文档；对 beta 的条件接受不等于对本文的接受。
 
-更新日期：2026-11-17。适用基线：ADR-0008（proposed）、`docs/plans/2026-11-17-rust-tsgo-migration.md` 第 3–4、5、6 节、`docs/evidence/2026-11-17-tsgo-native-api-spike.md`（下称“P1-A 证据”）。
+更新日期：2026-11-17。适用基线：ADR-0008（proposed）、`docs/plans/2026-11-17-rust-tsgo-migration.md` 第 3–4、5、6 节、`docs/evidence/2026-11-17-tsgo-native-api-spike.md`（下称“P1-A 证据”；其 §15 为 2026-11-17 P2 追加探针 B-02/B-03/B-04/B-12）。
 
 ## 1. 状态、权威顺序与证据边界
 
@@ -11,6 +11,8 @@
 - 本文定义 **F0 原生兼容合同**与 **F1 Backend 语义合同**的草案文本，供 P2 评审、拆分测试与实现包。
 - 规范词：**MUST / MUST NOT** 为强制项；**SHOULD** 为需要说明理由的默认项；**MAY** 为可选。中文“必须/不得”等同 MUST/MUST NOT。
 - 本文中的 `F0-xx`、`F1-xx` 是合同项 ID；第 12 节把它们映射到**未来** Rust 测试文件和测试名。所有测试状态均为 `planned（未实现）`。
+- 维护者的条件接受记录只针对**引擎候选与制品身份**（§2.1），不改变本文 draft 状态，也不关闭 G1；P2 评审通过前不得把任何 F0/F1 项标记为已实现或已验收。
+- 2026-11-17 的 P2 追加探针已关闭 B-02/B-03/B-04/B-12 的原始未知项，其中 B-02 是**负结果**：`appendFile`/`chtimes` 没有可注册的回调；详见 §5.3 与证据 §15。
 - 本文不定义交付/安装 schema（F3）、测试迁移账本（F2）或具体语义切片的代码布局（P3/P4）；这些由各自 owner 冻结。
 
 ### 1.2 权威顺序
@@ -38,7 +40,11 @@
 | AST 关键字段 | protocol v9、header 64、字符串池 UTF-8、节点表 28 字节、identifier/string/numeric/SourceFile 扩展数据 |
 | 坐标 | API position 与 AST pos/end 为 UTF-16；字符串池为 UTF-8/WTF-8 字节 |
 | 句柄 | symbol descriptor 有内容校验；node handle 跨快照会静默指向新 AST 同序号节点 |
-| 文件系统 | 读回调、`{kind:"missing"}`、`{kind:"useOS"}`、未注册回调走 OS；`emit` 写宿主磁盘；`writeFile:noop` 阻断 |
+| 文件系统 | 读回调、`{kind:"missing"}`（仅 readFile/stat）、`{kind:"useOS"}`、未注册回调走 OS；`emit` 写宿主磁盘；`writeFile:noop` 阻断 |
+| 回调 wire（P2 追加） | 已捕获 `readFile`/`fileExists`/`directoryExists`/`getAccessibleEntries`/`realpath`/`writeFile`/`removeFile` 的真实请求/响应帧；`fileExists`/`directoryExists`/`getAccessibleEntries`/`realpath` 不接受 `missing`；读回调 error/invalid kind 会使引擎 panic；写回调错误行为见 §5.3（证据 §15） |
+| 宿主 FS + 完整回调串（P2 追加） | 完整读回调 + `writeFile:noop` + `removeFile:noop` 可接受；宿主文件读取确实经过回调；`useOS` 生效；虚拟快照可与之组合；`emit` 不落盘（证据 §15） |
+| tsconfig 读边界（P2 追加） | `tsconfig`、`extends`、`package.json`、`src`/`deps`/项目外 import、`typeRoots`（显式 `types`）均观察到回调读取；未注册读回调会读宿主 FS（证据 §15） |
+| append/chtimes 负结果（P2 追加） | `appendFile`/`chtimes` 不是合法回调名；任何形式都会启动 panic；源码显示二者始终走 base OS FS、无回调支持（证据 §15） |
 | 进程控制 | stdin EOF exit 0；SIGKILL 后 BrokenPipe；SIGTERM 不能及时退出；坏帧 exit 1；短 body 无限等待 |
 | 排除 7.0.2 | 无 `createSnapshot`/租约/`createSourceFile`；握手字段不同；AST v5/header 44；虚拟 FS 行为不同 |
 
@@ -50,17 +56,16 @@
 - hover 对旧 QuickInfo 的 display parts / MarkupContent / 重载分段的等价性。
 - 补全详情、`prepareAutoImports` / `includeSymbol` / 自动导入的完整语义。
 - CRLF、BOM、hashbang、组合字符、孤立 surrogate 的端到端坐标。
-- `appendFile` / `chtimes` 的 CLI 名称、接受形式与 deny 行为；`removeFile:noop` 未单独实测；宿主 FS + 完整回调串的组合。
+- 符号链接/宿主 `realpath` 逃逸的端到端负例；`typeRoots` 在未显式 `types` 时的自动发现语义。
 - Windows/macOS/ARM64 资产与 ABI、`--pipe`、无 `--async` 的 MessagePack 路径。
-- tsconfig/extends/path mapping/typeRoots/package.json 的完整读边界与项目身份。
-- 项目级性能/RSS、多项目并发、长稳、LSP-connected `getCurrentLanguageServerSnapshot` 共享快照。
+- 多项目并发、长稳、LSP-connected `getCurrentLanguageServerSnapshot` 共享快照。
 - `batchRequests` 分页/`continuationToken`、`getResolvedSignature` panic 是否在后续版本修复、PGP 验签。
 
 **结论：本文的“已实测”只覆盖上表；其余都是待 F0/F1 测试证明的合同要求。**
 
 ## 2. F0：引擎固定、制品身份与 schema 探针
 
-### 2.1 唯一允许的发行物 [F0-01]
+### 2.1 唯一候选发行物（维护者条件接受） [F0-01]
 
 | 字段 | 固定值 |
 | --- | --- |
@@ -83,6 +88,8 @@
 
 上表是 F0 的**制品身份**。安装/构建必须在 `assets.lock`/manifest 中同时保存 SRI、tarball SHA-256、可执行文件 SHA-256、`gitHead` 和文件数；运行时必须重新校验 SRI、tarball SHA-256（若读取归档）和可执行文件 SHA-256。SHA-1 只用于与 registry 元数据核对，**不得**作为唯一安全摘要。
 
+**维护者条件接受（2026-11-17）：** 维护者已条件接受 `7.1.0-beta`（`gitHead` 与 SRI 如上固定）作为唯一候选基线；不切换默认后端。该接受不使 ADR 自动变为 accepted，也不使本契约通过；F0 仍须 P2 评审与 G1 关闭后才能生效。若未来以 7.1 stable 替换，必须重新固定同一组制品字段并重跑 2.4/3.3/F0/F1 合同测试，不能只改版本字符串。
+
 `engines.node >= 16.20.0` 只是包元数据；本项目运行时不得要求、启动或探测 Node。不得用 `node` 包装 `lib/tsc`。
 
 ### 2.2 明确排除 7.0.2 与浮动版本 [F0-02]
@@ -97,7 +104,7 @@
 | 虚拟 `fileSystem.kind="full"` + `openFiles` 不能得到虚拟文件内容 | 不满足未保存/不落盘要求 |
 | `--useCaseSensitiveFileNames` 不被接受 | 启动参数不兼容 |
 
-同样禁止 `main`、`next`、`7.1.0-dev.*` 或 registry dist-tag 浮动解析。`7.1.0-beta` 的接受是**显式 beta 风险决策**，必须在 P2 由维护者确认并固定资产；确认前 F0 不生效。若未来改用 7.1 stable，必须重新执行第 2.4、3.3 节探针并重跑 F0/F1 合同测试，不能只改版本字符串。
+同样禁止 `main`、`next`、`7.1.0-dev.*` 或 registry dist-tag 浮动解析。`7.1.0-beta` 的条件接受已由维护者记录（§2.1），但 F0 仍须 P2 评审/G1 关闭后生效；若未来改用 7.1 stable，必须重新执行第 2.4、3.3 节探针并重跑 F0/F1 合同测试，不能只改版本字符串。
 
 ### 2.3 版本与制品预检 [F0-03]
 
@@ -144,6 +151,7 @@ F0 冻结的 schema 标识：**AST protocol version = 9，AST header = 64 字节
 ```
 
 - MUST 使用 `--api` 与 `--async`；不得使用无 `--async` 的 MessagePack 同步路径。
+- `--callbacks` 只允许上串中的读回调与 `writeFile:noop`/`removeFile:noop`；**不得**追加 `appendFile`/`chtimes`（任何形式都会在启动时 panic，见 §5.3）。
 - MUST NOT 传 `--runExternalCode`，也不得通过环境变量、tsconfig 插件或包装脚本间接启用外部代码。
 - MUST NOT 传 `--pipe`、`--timing` 或未在本文冻结的额外 flag；`--timing` 会改变响应字段，未经探针不得启用。
 - `--cwd` 必须是后端拥有的空沙箱根，不是用户项目根；项目文件只通过虚拟快照和资产根出现。探针阶段 cwd 不得含可读项目文件。
@@ -301,19 +309,42 @@ Rust 侧必须使用**类型化请求枚举**构造 method 字符串，不提供
 
 - 启动参数必须注册所有可达读回调：至少 `readFile`、`fileExists`、`directoryExists`、`getAccessibleEntries`、`realpath`（P1-A 实测序列）。
 - “可达”以固定提交 + 固定发行物的源码/二进制审计为准，并覆盖：项目/配置读取、`package.json`、模块解析、`typeRoots`、默认库、声明资产、`realpath`、目录枚举。审计必须列出**每个**读入口；未列入审计的回调视为不可达，需在 P2 重新审计。
-- 每个读回调只允许两个来源：当前快照的虚拟文件表、固定只读资产索引。缺失路径返回 `{kind:"missing"}`（或冻结后的等价失败结果），**不得**返回 `{kind:"useOS"}`。
+- 每个读回调只允许两个数据来源：当前快照的虚拟文件表、固定只读资产索引；**不得**返回 `{kind:"useOS"}`（生产模式）。精确结果形状已由 2026-11-17 P2 追加探针捕获（证据 §15），必须按回调区分：
+
+| 回调 | 引擎接受的结果（`useOS` 仅探针/显式批准时） | 非法/失败行为（实测） |
+| --- | --- | --- |
+| `readFile` | `{"kind":"value","value":"<text>"}`、`{"kind":"missing"}`、`{"kind":"useOS"}` | `missing` 是唯一合法“不存在”结果；`error`/未知 kind 会 panic |
+| `fileExists` | `{"kind":"value","value":true/false}`、`{"kind":"useOS"}` | `missing` 会 panic：`invalid fileExists callback response kind: missing`；不存在必须返回 `value:false` |
+| `directoryExists` | `{"kind":"value","value":true/false}`、`{"kind":"useOS"}` | `missing` 会 panic；不存在必须返回 `value:false` |
+| `getAccessibleEntries` | `{"kind":"value","value":{"files":[],"directories":[],"symlinks":[]}}`、`{"kind":"useOS"}` | `missing` 会 panic；不存在/越界必须返回空 `value` 对象 |
+| `realpath` | `{"kind":"value","value":"<path>"}`、`{"kind":"identity"}`、`{"kind":"useOS"}` | `missing` 会 panic；不得调用 OS realpath；虚拟路径优先 `identity` |
+| `writeFile` / `removeFile` | 见 §5.3 | JSON-RPC error 的行为按操作不同：`writeFile` 在 `emit` 中变成 5033 诊断且不写；`removeFile` 在 `cleanBuild` 中被吞掉并仍列 `filesDeleted`；`kind:"error"`/未知 kind 走 panic 解码路径 |
+
+- 服务端回调 ID 实测为字符串 `"api1"`、`"api2"`……，不是数字；`params` 在读回调中是路径字符串，`writeFile` 是 `{path,data}` 对象，`removeFile` 是路径字符串。客户端必须原样回显 ID。
+- 读回调的 JSON-RPC error、`{"kind":"error"}` 或未知 kind **不能**作为“拒绝读取”的控制信号：实测会使引擎在请求处理 goroutine 中 panic，JSON-RPC 响应为 `-32603` 且 message 带回 Go 栈；不得依赖这种副作用做 fail-closed。写回调的错误行为见 §5.3（同样不可作为 deny）。
 - 未注册回调会直接走 OS（P1-A 实测）。因此“漏注册”是安全失败，不是降级：启动自检必须证明无法读取沙箱外的 canary 文件（内容会改变类型结果），一旦读到即拒绝启动。
 - 回调处理器必须无阻塞、无网络、无引擎递归调用；路径查找前先做 5.4 的规范化/限制。回调日志必须记录规范化后的请求路径与结果类别（命中/缺失/拒绝），用于读路径审计。
-- 成功读取的精确 JSON 形状（content 字段名、二进制编码等）本文不复述；F0 必须以 P1-A 原始日志/固定提交 `callbackfs.go` 冻结，并以 fixture 测试。形状未冻结前不得实现生产回调（见 B-03）。
-- `directoryExists`/`getAccessibleEntries` 只能暴露允许根内的条目；`fileExists("/package.json")`、`directoryExists("/")` 这类引擎探测可回答“否/仅逻辑根”，不得列宿主内容。
-- `realpath` 必须返回虚拟路径的规范形式，仅在快照/资产中存在时成功；不得调用 OS realpath，不得解析宿主符号链接。
+- 引擎的实测探测不只限于项目根：还会 `fileExists` 查询 `src/tsconfig.json`、`jsconfig.json`、父级目录、`/package.json`，`directoryExists` 查询 `/tmp`、`/tmp/opencode`、`/`，`readFile` 读取项目外相对 import、`typeRoots` 和默认库。所有这些必须由回调回答：`fileExists` 返回 `value:false`、`directoryExists` 返回 `value:false`、`getAccessibleEntries` 返回空数组、`readFile` 返回 `missing`；不得列宿主目录或读宿主文件。
+- `realpath` 对项目根和 `typeRoots` 声明文件均会被调用；只能返回虚拟路径的 `value` 或 `identity`，不得解析宿主符号链接。
 
 ### 5.3 写回调与写入口 [F0-17]
 
-- `writeFile:noop`、`removeFile:noop` 必须出现在启动回调串中，并由客户端实现为**不触碰 OS、返回成功**；这是第二道防线，不是权限边界。
-- `appendFile`、`chtimes`（以及固定发行物暴露的任何其它写能力回调）必须注册为**deny**：回调返回错误，绝不写 OS。精确 CLI 名称/接受形式未由 P1-A 验证；F0 必须用真实引擎探针确认。若某个写回调无法注册成 deny、且会回退 OS，则**不得启动**该发行物（阻塞项，见 B-02）。
+- `writeFile:noop`、`removeFile:noop` 必须出现在启动回调串中；P2 追加探针确认完整串被接受，且 `emit` 返回 `emittedFiles` 但宿主目录不产生任何文件。这是第二道防线，不是权限边界。
+- 显式启用 `writeFile`/`removeFile` 回调（不带 `:noop`）时，实测请求为：
+  - `writeFile`：`{"path":"<绝对路径>","data":"<文本>"}`；成功返回 `{"kind":"value"}` 或 `{"kind":"noop"}`。
+  - `removeFile`：`"<绝对路径>"`；成功返回 `{"kind":"value"}` 或 `{"kind":"noop"}`。
+  - `useOS` 会写/删宿主，生产模式禁止。
+- 回调错误不能当 deny 信号：
+  - `writeFile` 返回 JSON-RPC error 时，`emit` 不写文件，但结果是 `emittedFiles: []` + 诊断 `5033 Could not write file ... ipc: remote error`；不得把它当成功。
+  - `removeFile` 返回 JSON-RPC error 时，`cleanBuild` 仍可返回 `status: 0` 且 `filesDeleted` 列出该路径（错误被吞掉、文件实际仍在）；这会掩盖失败。
+  - `{"kind":"error"}`/未知 kind 走 `decodeCallbackResponse` 的 panic 路径。生产上只能返回 `value`/`noop`（写）或依赖白名单不调用。
+- **`appendFile`、`chtimes` 没有可注册的回调。** 已实测 `--callbacks=appendFile`、`appendFile:error`、`appendFile:noop` 均以 `panic: unknown callback name: ...` 在启动阶段失败（exit 2），`chtimes` 同样；源码 `callbackfs.go` 的 `AppendFile`/`Chtimes` 始终委托 base OS FS（证据 §15）。因此：
+  - MUST NOT 把 `appendFile`/`chtimes` 加入 `--callbacks`；加入即无法启动。
+  - 无法用回调 deny 它们；唯一保证是方法白名单（第 4 节）使任何写/append/chtimes 路径不可达，并在运行环境使用最小权限/只读目录作为纵深防御。
+  - 任何允许清单内的方法若实际触发 AppendFile/Chtimes，视为 F0 阻塞缺陷，必须拒绝该会话并复审来源；不得把“没有观察到”当成已阻断。
+  - 补偿控制：后端拥有的 cwd、项目根和资产根必须以最小权限运行（对引擎进程不可写，或位于只读挂载/只读目录）；测试必须在 append/chtimes 假设被触发时验证 OS 拒绝而不是写成功。该控制不能替代方法白名单，只能是第二层。
 - 方法层白名单（第 4 节）是第一道防线：即使写回调配置错误，也不得存在可达的 emit/build/clean/profile 方法。
-- 测试必须对沙箱外 canary 目录/文件做快照前后哈希，断言：允许查询不改动树；误调用被拒绝方法不产生写；`emit` 即使被测试代码尝试也不可写。
+- 测试必须对沙箱外 canary 目录/文件做快照前后哈希，断言：允许查询不改动树；误调用被拒绝方法不产生写；`emit` 即使被测试代码尝试也不可写；`appendFile`/`chtimes` 注册串启动失败。
 
 ### 5.4 路径规范化与限制 [F0-18]
 
@@ -327,13 +358,16 @@ Rust 侧必须使用**类型化请求枚举**构造 method 字符串，不提供
 6. 不调用 OS canonicalize/realpath；Rust 层在 ProjectHost 边界解析宿主符号链接并生成 canonical 虚拟路径；快照内不允许符号链接项。
 7. 允许根：各项目根、`engine/lib` 资产根、`typings/<fixed>` 资产根。前缀匹配必须按**路径组件边界**，不得用字符串前缀（防止 `/proj` 匹配 `/project-evil`）。
 8. `getAccessibleEntries` 只返回允许根内的子项；不得枚举 `/`、用户 home、`node_modules` 或项目外目录。
-9. 任何越界/非法路径：回调返回缺失/拒绝，记录审计事件；不得尝试“修复路径后重试”。
+9. 任何越界/非法路径必须按回调类型 fail-closed：`readFile -> {"kind":"missing"}`；`fileExists -> {"kind":"value","value":false}`；`directoryExists -> {"kind":"value","value":false}`；`getAccessibleEntries -> 空 value`；`realpath -> {"kind":"identity"}`。不得返回 `missing` 给后四种回调（会 panic），不得尝试“修复路径后重试”。
+10. 已实测引擎会探测 `/package.json`、`/tmp`、`/tmp/opencode`、`/` 等根外路径；这些探测必须返回 false/空/identity，不能因为“看起来是根目录”而枚举宿主。允许根之外的真实文件（如项目外相对 import）也必须由回调拒绝，并由诊断/`Partial` 表达，不得读 OS。
 
 ### 5.5 标准库与类型资产 [F0-19]
 
 - 默认库由引擎从**可执行文件同目录的 `lib/`** 读取（P1-A 实测请求 `<exe dir>/lib/lib.esnext.full.d.ts` 及 100+ 个 `.d.ts`）。安装包必须随带只读 `engine/lib/**`。
 - 读回调启用后，`engine/lib/**` 的读取由客户端从**已校验资产索引**提供，不得直接回退 OS；资产索引的每个文件必须有 SHA-256/大小，并与 manifest/`assets.lock` 一致。
 - 小程序声明资产（`typings/miniprogram-api-typings`）同样固定版本、摘要、许可证；版本由 F3 冻结，本文只要求“固定、校验、只读、不联网”。缺失必需资产：启动/探针失败；缺失可选资产：相关查询 `Partial`，不得静默返回“干净”。
+- `typeRoots` 已被实测：配置 `typeRoots` 且显式 `types:["outer"]` 时，引擎通过回调查询 `typeRoots/outer.d.ts`、`typeRoots/outer/index.d.ts`、`outer/package.json`，并对 `index.d.ts` 调用 `realpath`；未显式 `types` 的同配置未观察到 `typeRoots` 读取（不得据此推断所有项目都不读）。因此必须同时支持“显式 `types` 的读取”和“未读取时按缺失/Partial 降级”，不得读 OS 补全。
+- `extends` 可位于项目根之外（实测 `../b12_base/base.json` 通过回调读取）；只允许已批准的虚拟配置/资产，越界时返回配置错误/`Partial`，不得读 OS。
 - 禁止运行时 npm/registry 解析、隐式下载、读取项目 `node_modules`；项目内依赖只能以虚拟快照内容出现。
 - 许可证文件（Apache-2.0 LICENSE/NOTICE、typings LICENSE）必须随包，不得删除或改写。
 
@@ -667,8 +701,8 @@ Hover 由三部分组成，顺序固定：
 | 编号 | 不变量 | 验收 |
 | --- | --- | --- |
 | S1 | 只发送 4.1 白名单方法 | 类型化枚举 + 运行时断言 + fake peer 记录 method |
-| S2 | 无 OS 写：emit/build/clean/profile/heap 不可达；writeFile/removeFile noop；append/chtimes deny | 沙箱树前后哈希、canary、拒绝方法测试 |
-| S3 | 读路径可审计：所有可达回调注册；缺失回调不回落 OS；无 `useOS` | 回调日志覆盖、沙箱外 canary 不可见、symlink 不可逃逸 |
+| S2 | 无 OS 写：emit/build/clean/profile/heap 不可达；writeFile/removeFile noop；append/chtimes 无回调且必须不可达 | 沙箱树前后哈希、canary、拒绝方法测试；append/chtimes 启动参数必须被拒绝 |
+| S3 | 读路径可审计：所有可达回调注册；缺失回调不回落 OS；生产禁用 `useOS`；不存在必须用各回调的合法否定形状 | 回调日志覆盖、沙箱外 canary 不可见、symlink 不可逃逸、`fileExists`/`directoryExists`/`getAccessibleEntries`/`realpath` 的 `missing` 负例 |
 | S4 | 不启用外部代码 | argv 无 `--runExternalCode`；tsconfig `plugins` canary 不执行；无 Node 子进程 |
 | S5 | `noEmit`/`writeFile:noop` **不是** OS 沙箱 | 文档/测试显式断言；即使 noEmit 也不能暴露 emit 方法 |
 | S6 | 路径限制：绝对、规范化、无 `..`/NUL、按组件前缀、资产根只读 | 路径表驱动负例 + 恶意 URI |
@@ -677,7 +711,7 @@ Hover 由三部分组成，顺序固定：
 | S9 | 不在探针前发送项目内容 | 启动顺序测试；失败不读项目 |
 | S10 | 安全失败是显式失败，不是空成功/静默降级 | 所有拒绝路径返回 typed 状态/错误 |
 
-读路径审计至少覆盖：项目 `tsconfig`/`extends`/`paths`/`typeRoots`、`package.json`、模块解析、`node_modules`（仅快照）、默认库、typings、`realpath`、目录枚举、符号链接、`..`/编码路径、canary 文件。写路径审计至少覆盖：`emit`/`emitToString`/`getJavaScriptEmit`/`getDeclarationEmit`、build/clean、profile/heap、writeFile/removeFile/appendFile/chtimes。P1-A 已证明 `emit` 默认可写到项目 cwd 之外，`writeFile:noop` 能阻断；这只是缓解，不是权限模型。
+读路径审计至少覆盖：项目 `tsconfig`/`extends`/`paths`/`typeRoots`、`package.json`、模块解析、`node_modules`（仅快照）、默认库、typings、`realpath`、目录枚举、符号链接、`..`/编码路径、canary 文件。写路径审计至少覆盖：`emit`/`emitToString`/`getJavaScriptEmit`/`getDeclarationEmit`、build/clean、profile/heap、writeFile/removeFile/appendFile/chtimes。P1-A 已证明 `emit` 默认可写到项目 cwd 之外，`writeFile:noop` 能阻断；这只是缓解，不是权限模型。2026-11-17 追加探针进一步确认：完整回调串 + 宿主 FS 下 `useOS` 生效、`emit` 不落盘、虚拟快照可组合；但 `appendFile`/`chtimes` 无法用回调 deny（启动 panic），因此 S2 的写阻断必须额外依赖方法白名单和运行目录最小权限，残余风险记为 B-02 PARTIAL。
 
 ## 12. 合同 ID 与测试挂点
 
@@ -703,7 +737,7 @@ Hover 由三部分组成，顺序固定：
 | F0-14 | 未知/拒绝方法 fail-closed | `crates/wxml-backend-tsgo/tests/f0_protocol.rs` | `unknown_method_fails_closed_without_fallback` | planned |
 | F0-15 | 全虚拟快照/读回调注册 | `crates/wxml-backend-tsgo/src/native/vfs.rs` | `tests::serves_only_full_snapshot_and_registered_callbacks` | planned |
 | F0-16 | 禁止 OS 读回退 | `crates/wxml-backend-tsgo/tests/f0_security.rs` | `unregistered_read_cannot_fall_back_to_os` | planned |
-| F0-17 | write/remove noop、append/chtimes deny | `crates/wxml-backend-tsgo/tests/f0_security.rs` | `write_callbacks_are_noop_or_denied` | planned |
+| F0-17 | write/remove noop；append/chtimes 无回调且必须不可达 | `crates/wxml-backend-tsgo/tests/f0_security.rs` | `write_callbacks_are_noops_and_append_chtimes_are_not_registrable` | planned |
 | F0-18 | 路径规范化/限制 | `crates/wxml-backend-tsgo/src/native/vfs.rs` | `tests::normalizes_and_confines_paths` | planned |
 | F0-19 | 标准库/类型资产读边界 | `crates/wxml-backend-tsgo/tests/f0_security.rs` | `stdlib_and_typings_reads_stay_in_asset_roots` | planned |
 | F0-20 | 关闭/杀进程/回收 | `crates/wxml-backend-tsgo/src/native/supervisor.rs` | `tests::shutdown_closes_stdin_then_kills_and_reaps` | planned |
@@ -742,16 +776,18 @@ Hover 由三部分组成，顺序固定：
 
 LSP 端到端挂点（仍为计划）：`crates/wxml-lsp/tests/native_parity.rs` 覆盖 hover/diagnostics/definition/completion/references/rename 的原文件范围、版本屏障与安全拒绝；它不能替代上述真实原生合同测试，fake peer 也不能替代真实引擎门禁。
 
+2026-11-17 的 P2 追加探针只关闭了 B-02/B-03/B-04/B-12 的**未知性**（并记录了 B-02 的负结果），**没有**把这些 ID 变成已实现测试；上述测试文件和测试名仍全部是 `planned`，不得因探针通过而删除或降级。
+
 ## 13. 开放问题与阻塞项
 
-以下未被 P1-A 证明；在关闭前不得把对应合同项标记为通过。
+以下列出仍开放或已由 2026-11-17 P2 追加探针处理的事项；状态列以追加证据（证据 §15）为准。PASS 只表示该探针范围内的未知项已关闭，不表示合同/测试已验收。
 
 | 编号 | 问题 | 影响 | 阻塞级别 |
 | --- | --- | --- | --- |
-| B-01 | `7.1.0-beta` 是 beta，P2 需维护者显式接受并固定 integrity；当前 ADR 仍 proposed | F0 无法生效 | **F0 阻塞** |
-| B-02 | `appendFile`/`chtimes` 的 CLI 名称、接受形式、deny 行为未实测；无法 deny 且会回退 OS 时不能启动 | F0 安全验收不成立 | **F0 阻塞** |
-| B-03 | FS 回调成功结果的精确 JSON 形状、`getAccessibleEntries`/`realpath` 返回结构未在本文冻结 | 回调无法安全实现 | **F0 阻塞**（需 fixture） |
-| B-04 | 宿主 FS + 完整回调串（读 + 写 noop + append/chtimes deny）组合未实测 | F0 写阻断验收 | **F0 阻塞**（测试） |
+| B-01 | 维护者已条件接受 `7.1.0-beta`，`gitHead`/SRI/sha256 已固定；不切换默认后端，契约仍为 draft，待 P2 评审/G1 | F0 生效条件 | **条件接受（CONDITIONAL）**；契约仍待 P2/G1 |
+| B-02 | 已实测：`appendFile`/`chtimes` 不是合法回调名；`name`、`name:error`、`name:noop` 均启动 panic；源码注释明确“always delegates to base (no callback support)”，是当前 API 的有意能力边界而非临时缺陷。无法回调 deny，只能依赖方法白名单不可达 + 最小权限 | 回调级写阻断不可实现；残余纵深风险 | **PARTIAL（负结果）**；维护者 2026-11-18 接受补偿控制，P3 可启动；不得声称 write-callback deny 已实现 |
+| B-03 | 已捕获 readFile/fileExists/directoryExists/getAccessibleEntries/realpath/writeFile/removeFile 的真实帧；`missing` 只对 readFile 合法；读回调 error/invalid kind 会 panic；writeFile error -> 5033/不写，removeFile error -> status 0/`filesDeleted` 仍列路径 | 回调可按精确形状实现，错误不可当 deny | **PASS**（形状/失败语义已冻结；测试仍 planned） |
+| B-04 | 已实测宿主 FS + 完整回调串：回调确实被调用，`useOS` 生效，readFile `missing` 生效，writeFile/removeFile noop 下 emit 不落盘，虚拟快照可组合；非 read 回调的 `missing` 是非法形状 | F0 写阻断/组合验收 | **PASS**（范围内；非 read `missing` 属 B-03 负例） |
 | B-05 | 完整 Page/Component 原位 shadow、Behavior/props/loops/guards 与原生 checker 未验证 | F1/P4 语义验收 | **F1/P4 阻塞** |
 | B-06 | hover 无 display parts/每 overload 文档；旧 QuickInfo 断言如何映射未决 | F1 hover 保真 | **F1 阻塞**（需产品/测试决定） |
 | B-07 | 补全详情/`prepareAutoImports`/`includeSymbol` 精确参数与可见降级未冻结 | F1 completion 验收 | **F1 阻塞**（若要求详情） |
@@ -759,7 +795,7 @@ LSP 端到端挂点（仍为计划）：`crates/wxml-lsp/tests/native_parity.rs`
 | B-09 | rename 完整性无原生 flag；旧 rename 行为/断言与保守拒绝的等价性未验证 | F1 rename 验收 | **F1 阻塞** |
 | B-10 | 完整 AST msgpack/binder/children 未实现；C0 definition 可用节点表扫描，但其它功能可能依赖 | 后续语义/AST 功能 | 非 C0 阻塞；P3/N 交付 |
 | B-11 | CRLF/BOM/hashbang/孤立 surrogate 的精确 AST 行为未校准 | F1 UTF 验收 | **F1 阻塞**（fixture） |
-| B-12 | tsconfig/extends/paths/typeRoots/package.json 读边界与项目身份未验证 | F0/F1 读安全与项目路由 | **F0/F1 阻塞** |
+| B-12 | 已实测 `tsconfig`、`extends`（项目外）、`package.json`、源码/依赖/项目外 import、`typeRoots`（显式 `types`）的回调读取路径；未注册回调会读宿主 FS；合法缺失形状可阻止 OS 回退；符号链接/自动 typeRoots 仍有残余 | F0/F1 读安全与项目路由 | **PASS（已测配置）**；符号链接/自动发现另测 |
 | B-13 | `updateSnapshot` 增量/project 列表/diff 语义、`openFiles` 重复 fileNames 的完整规则未验证 | F1 更新正确性 | F1 需测试；v1 用全量 VFS 规避 |
 | B-14 | Windows/macOS/ARM64 资产、ABI、大小写、路径语义未验证 | 平台支持范围 | 非 Linux 平台阻塞 |
 | B-15 | 项目级性能/RSS、长稳、并发预算未测 | P5 门禁 | P5 阻塞，非 F0 |
@@ -769,4 +805,6 @@ LSP 端到端挂点（仍为计划）：`crates/wxml-lsp/tests/native_parity.rs`
 | B-19 | `lib/tsc.sig` PGP 验签未执行 | 供应链声明 | 不得声称已验签；非 F0 阻塞 |
 | B-20 | 宿主机 `--cwd`/资产根在真实项目中的布局与权限未做端到端安装验证 | F3/安装 | F3 阻塞 |
 
-**最低关闭顺序建议：** 先关闭 B-01/B-02/B-03/B-04/B-12（F0 才能评审通过），再关闭 B-05/B-06/B-07/B-08/B-09/B-11（F1 才能评审通过）；B-10/B-13–B-20 按阶段处理。任何一项若无法关闭，必须修订 ADR/计划并显式记录，不得用“已降级”或“暂不测试”代替。
+**最低关闭顺序建议：** B-01 已条件接受，B-02 补偿控制已于 2026-11-18 接受，B-03/B-04/B-12 的探针未知项已关闭；B-02 仍为 PARTIAL（回调 deny 不可实现，依赖方法白名单 + 最小权限）。F1 仍须先关闭 B-05/B-06/B-07/B-08/B-09/B-11，B-13 按测试处理；B-10/B-14–B-20 按阶段处理。任何一项若无法关闭，必须修订 ADR/计划并显式记录，不得用“已降级”或“暂不测试”代替。
+
+**P3 启动判断：** B-01 已条件接受，B-02 补偿控制已于 2026-11-18 接受，B-03/B-04/B-12 的探针未知项已关闭；自 2026-11-18 起可以启动 P3 的 native client/FS/AST 骨架（N）。但不得把当前文本称为“已冻结的 F0/F1”：B-02 仍为 PARTIAL，F1 的 B-05/B-06/B-07/B-08/B-09/B-11/B-13 仍未关闭，查询与语义切片继续阻塞；生产安装器属于 P3-D/F3。

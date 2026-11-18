@@ -1043,3 +1043,217 @@ p.stdin.close(); p.wait()
 ## 附：一句话结论
 
 原生 tsgo 7.1.0-beta 的 `--api --async` **可以被 Rust 在无 Node 条件下驱动**，虚拟项目、诊断、类型、符号、文档、补全、引用、AST 关键字段、UTF-16 坐标和进程控制均已实测；但 **7.0.2 稳定版不满足**，且 QuickInfo/Definition/Rename 等旧 API 缺失、node handle 跨快照会静默错位、`emit` 默认可写磁盘。因此 P1 gate A 的结论是：**有条件推进，先修订 ADR 版本策略与 F0/F1 合同，再进入 P2/P3**。
+
+---
+
+## 15. P2 F0 追加探针（2026-11-17）：B-02/B-03/B-04/B-12
+
+状态：P2 合同补充探针，只解决 F0 阻塞项的未知性；不表示合同接受、实现完成或 G1 关闭。
+环境：同一台 Linux x86-64，已解包的 `7.1.0-beta`，路径 `/tmp/opencode/tsgo-spike/extract/7.1.0-beta/package/lib/tsc`；**未下载、未使用 npm/node**。所有脚本与帧记录保留在 `/tmp/opencode/tsgo-spike`，本轮未修改生产源码、测试或 Cargo。
+
+### 15.1 B-02：appendFile / chtimes 回调名
+
+命令：
+
+```sh
+cd /tmp/opencode/tsgo-spike
+python3 probe_b02_cli.py
+```
+
+每次启动参数为：
+
+```text
+<engine> --api --async --cwd /tmp/opencode/tsgo-spike/b02_empty \
+  --useCaseSensitiveFileNames=true --callbacks=<case>
+```
+
+| `--callbacks` | 启动行为 | stderr 首行 | 退出 |
+| --- | --- | --- | --- |
+| `appendFile` | 失败 | `panic: unknown callback name: appendFile` | 2 |
+| `appendFile:error` | 失败 | `panic: unknown callback name: appendFile` | 2 |
+| `appendFile:noop` | 失败 | `panic: unknown callback name: appendFile:noop` | 2 |
+| `chtimes` | 失败 | `panic: unknown callback name: chtimes` | 2 |
+| `chtimes:error` | 失败 | `panic: unknown callback name: chtimes` | 2 |
+| `chtimes:noop` | 失败 | `panic: unknown callback name: chtimes:noop` | 2 |
+| `readFile:error`（对照） | 接受 | 空 | 0（stdin close 后正常退出） |
+| `writeFile:error`（对照） | 接受 | 空 | 0 |
+| `removeFile:error`（对照） | 接受 | 空 | 0 |
+| `foo:error`（对照） | 失败 | `panic: unknown callback name: foo` | 2 |
+
+原始记录：`logs/b02_cli.jsonl`、`logs/b02_*.stderr`。注：append/chtimes 组在 3 s 采样时进程仍存活，关闭 stdin 后以 exit 2 结束；stderr 已出现上述 panic。源码对照（固定提交）：`tsc/internal/api/callbackfs.go` 第 40–49 行只列出 `readFile`、`fileExists`、`directoryExists`、`getAccessibleEntries`、`realpath`、`stat`、`writeFile`、`removeFile`；第 444–447 行 `AppendFile` 始终 `fs.base.AppendFile`，第 474–476 行 `Chtimes` 始终 `fs.base.Chtimes`，均无回调分支。
+
+结论：**B-02 负结果，PARTIAL**。`appendFile`/`chtimes` 没有可注册的 deny 回调；任何 `--callbacks=appendFile*`/`chtimes*` 都会让引擎启动 panic，不能用来做写阻断。唯一可控边界是方法白名单使写路径不可达，加上运行目录最小权限/只读；不得声称“append/chtimes 已由回调 deny”。
+
+### 15.2 B-03：回调 wire 与失败语义
+
+命令：
+
+```sh
+python3 probe_b03.py
+python3 probe_b03_remove.py
+python3 probe_b03_missing.py
+python3 probe_b03_cfg_missing.py
+python3 probe_b03_identity.py
+python3 probe_b03_write_error.py
+python3 probe_b03_remove_error.py
+```
+
+成功帧示例（`logs/b03_read.frames.jsonl`、`logs/b03_write.frames.jsonl`、`logs/b03_remove_tsconfig.frames.jsonl`、`logs/b03_realpath_identity.frames.jsonl`）：
+
+```jsonc
+// readFile：params 是路径字符串
+{"jsonrpc":"2.0","id":"api5","method":"readFile","params":"/tmp/opencode/tsgo-spike/b03_host/main.ts"}
+{"jsonrpc":"2.0","id":"api5","result":{"kind":"value","value":"import { Dep } from \"./dep\";\n..."}}
+// 否定：{"kind":"missing"}；回退：{"kind":"useOS"}
+
+// fileExists / directoryExists：params 是路径字符串
+{"jsonrpc":"2.0","id":"api6","method":"fileExists","params":"/tmp/opencode/tsgo-spike/b03_host/dep.ts"}
+{"jsonrpc":"2.0","id":"api6","result":{"kind":"value","value":true}}
+
+// getAccessibleEntries
+{"jsonrpc":"2.0","id":"api8","method":"getAccessibleEntries","params":"/tmp/opencode/tsgo-spike/b12_host"}
+{"jsonrpc":"2.0","id":"api8","result":{"kind":"value","value":{"files":["package.json","tsconfig.json"],"directories":["deps","src"],"symlinks":[]}}}
+
+// realpath：value 与 identity 都是成功形状
+{"jsonrpc":"2.0","id":"api7","method":"realpath","params":"/tmp/opencode/tsgo-spike/b12_host"}
+{"jsonrpc":"2.0","id":"api7","result":{"kind":"identity"}}
+// 另一次：{"kind":"value","value":"/tmp/opencode/tsgo-spike/b12_host"}
+
+// writeFile：params 是 {path,data}
+{"jsonrpc":"2.0","id":"api8","method":"writeFile","params":{"path":"/tmp/opencode/tsgo-spike/b03_host/out/dep.js","data":"export {};\n"}}
+{"jsonrpc":"2.0","id":"api8","result":{"kind":"noop"}}
+
+// removeFile：params 是路径字符串
+{"jsonrpc":"2.0","id":"api17","method":"removeFile","params":"/tmp/opencode/tsgo-spike/b03_build/out/main.js"}
+{"jsonrpc":"2.0","id":"api17","result":{"kind":"noop"}}
+```
+
+服务端回调 ID 实测是字符串 `api1`、`api2`……，不是数字。`writeFile`/`removeFile` 的 `value`/`noop` 都表示成功；`useOS` 会执行真实写/删，生产禁止。
+
+否定/错误语义（`logs/b03_missing_*.result.json`、`logs/b03_cfg_missing_*.stderr`、`logs/b03_error.frames.jsonl`、`logs/b03_invalid.frames.jsonl`）：
+
+| 回调 | 返回 | 结果 |
+| --- | --- | --- |
+| `readFile` | `{"kind":"missing"}` | 合法，表示不存在 |
+| `fileExists` | `{"kind":"missing"}` | **panic**：`invalid fileExists callback response kind: missing`；创建快照请求返回 `-32603` |
+| `directoryExists` | `{"kind":"missing"}` | **panic**：`invalid directoryExists callback response kind: missing` |
+| `getAccessibleEntries` | `{"kind":"missing"}` | **panic**：`invalid getAccessibleEntries callback response kind: missing` |
+| `realpath` | `{"kind":"missing"}` | **panic**：`invalid realpath callback response kind: missing` |
+| `readFile` | JSON-RPC error `{"code":-32000,...}` | **panic**：`ipc: remote error [-32000]...`，进程/请求失败 |
+| `readFile` | `{"kind":"bogus"}` | **panic**：`invalid readFile callback response kind: bogus` |
+
+写回调的错误行为另有不同（`logs/b03_write_error.frames.jsonl`、`logs/b03_remove_error.frames.jsonl`）：
+
+```jsonc
+// writeFile 返回 JSON-RPC error：不写，emit 结果出现 5033 诊断，emittedFiles 为空
+{"jsonrpc":"2.0","id":"api8","method":"writeFile","params":{"path":".../dep.js","data":"export {};\n"}}
+{"jsonrpc":"2.0","id":"api8","error":{"code":-32000,"message":"probe writeFile error"}}
+// emit => {"emitSkipped":false,"diagnostics":[{code:5033,text:"Could not write file ... ipc: remote error ..."}],"emittedFiles":[]}
+
+// removeFile 返回 JSON-RPC error：cleanBuild 仍 status 0、filesDeleted 仍列出路径，文件实际仍在
+{"jsonrpc":"2.0","id":"api17","method":"removeFile","params":".../out/main.js"}
+{"jsonrpc":"2.0","id":"api17","error":{"code":-32000,"message":"probe removeFile error"}}
+// cleanBuild => {"status":0,"filesDeleted":[".../out/main.js"]}; out/main.js 仍存在
+```
+
+因此回调 error 不是可靠的 deny：写路径会给出失败诊断/被吞掉的结果，删除路径甚至可能报告已删除；生产必须用 `writeFile:noop`/`removeFile:noop` 并且不暴露写方法，不能依赖 error 返回值。
+
+结论：**B-03 PASS**（所列七种回调的成功/否定形状与失败语义均已实测）。重要修正：不存在路径对 `readFile` 用 `missing`，对 `fileExists`/`directoryExists` 必须用 `value:false`，对 `getAccessibleEntries` 用空 `value`，对 `realpath` 用 `identity`；不得把这些回调的 `missing` 当普通失败，也不得用 JSON-RPC error 做拒绝。
+
+### 15.3 B-04：宿主 FS + 完整回调串
+
+命令：
+
+```sh
+python3 probe_b04.py
+```
+
+完整串：
+
+```text
+--callbacks=readFile,fileExists,directoryExists,getAccessibleEntries,realpath,writeFile:noop,removeFile:noop
+```
+
+结果（`logs/b04_*.result.json`、`logs/b04_*.frames.jsonl`）：
+
+| 场景 | 结果 |
+| --- | --- |
+| 宿主项目 + 全部读回调用 `useOS` | 创建快照成功；诊断 `2322 Type 'string' is not assignable to type 'number'`；回调计数 `fileExists=13, directoryExists=1, readFile=93`，证明宿主文件与默认库读取都经过回调 |
+| 宿主项目 + 回调提供内容 | 创建快照成功；诊断 `2322`；回调计数 `fileExists=13, readFile=5, directoryExists=1` |
+| 宿主项目 + 全部读回调用 `missing` | `fileExists` 返回 `missing` 导致 `-32603` panic；**非 read 回调不能用 missing** |
+| 虚拟快照 + 完整串 | `createPrograms` 成功；诊断 `2322`；回调计数 `fileExists=4, directoryExists=2, readFile=2` |
+| 宿主项目 + `emit`（完整串含 write/remove noop） | 返回 `emittedFiles`，但宿主目录仍只有 `main.ts/dep.ts/package.json`，未生成 `.js/.js.map` |
+
+结论：**B-04 PASS**（范围内）。宿主 FS 下读回调确实被调用，`useOS`/`readFile missing` 生效，完整串可与虚拟快照组合，`writeFile:noop`/`removeFile:noop` 阻止 `emit` 落盘；但 `fileExists`/`directoryExists`/`getAccessibleEntries`/`realpath` 的 `missing` 是非法形状（见 B-03）。
+
+### 15.4 B-12：tsconfig/extends/typeRoots/package.json 读边界
+
+命令：
+
+```sh
+python3 probe_b12.py
+python3 probe_b12_typeroots.py
+```
+
+已注册读回调时的实际读取路径（`logs/b12_registered.frames.jsonl`）：
+
+```text
+fileExists  <proj>/src/tsconfig.json
+fileExists  <proj>/src/jsconfig.json
+fileExists  <proj>/tsconfig.json
+readFile    <proj>/tsconfig.json
+fileExists  <proj>/../b12_base/base.json
+readFile    <proj>/../b12_base/base.json
+realpath    <proj>
+getAccessibleEntries <proj>
+getAccessibleEntries <proj>/src
+fileExists  <proj>/src/index.ts
+directoryExists <proj>/src
+fileExists  <proj>/src/package.json
+directoryExists <proj>
+fileExists  <proj>/package.json
+readFile    <proj>/package.json
+readFile    <proj>/src/index.ts
+directoryExists <proj>/../b12_outside
+fileExists  <proj>/../b12_outside/secret.ts
+directoryExists <proj>/deps
+fileExists  <proj>/deps/foo.ts
+fileExists  <proj>/../b12_outside/package.json
+fileExists  <proj>/deps/package.json
+directoryExists /tmp/opencode/tsgo-spike
+directoryExists /tmp/opencode
+directoryExists /tmp
+directoryExists /
+fileExists  /package.json
+readFile    <proj>/../b12_outside/secret.ts
+```
+
+`typeRoots` 追加探针（`logs/b12_typeroots.frames.jsonl`）：显式 `types:["outer"]` 时观察到：
+
+```text
+directoryExists <typeRoots>
+fileExists  <typeRoots>/outer.d.ts
+directoryExists <typeRoots>/outer
+fileExists  <typeRoots>/outer/package.json
+fileExists  <typeRoots>/outer/index.d.ts
+realpath    <typeRoots>/outer/index.d.ts
+readFile    <typeRoots>/outer/index.d.ts
+```
+
+诊断为空，说明回调提供的 `Outer.X` 被采用。未显式 `types` 的同配置未观察到 typeRoots 读取，仍报 `2503 Cannot find namespace 'Outer'`；不能据此推断所有项目都不读 typeRoots。
+
+边界行为：
+
+| 场景 | 结果 | 证据 |
+| --- | --- | --- |
+| 项目外 import 的 `readFile/fileExists` 返回 `missing`/`false` | `2307 Cannot find module ...`，没有读取宿主同名文件的内容 | `logs/b12_outside_missing.result.json` |
+| 所有读回调返回合法缺失（fileExists false、dir false、entries 空、realpath value） | `createSnapshot` 返回 `-32603 failed to create snapshot: no project found for opened file`，未回退 OS | `logs/b12_all_missing.result.json` |
+| **不注册读回调** | 无任何回调；诊断包含 `2322`（项目外 `secret.ts` 的 `number` 被读入），证明读宿主 FS | `logs/b12_unregistered.result.json` |
+
+结论：**B-12 PASS（已测配置）**。`tsconfig`、项目外 `extends`、`package.json`、源码/依赖/项目外相对 import、显式 `types` 的 `typeRoots` 都会通过已注册回调读取；合法缺失形状能阻止 OS 回退；未注册读回调确实读到宿主 FS。残余：符号链接/宿主 realpath 逃逸、未显式 `types` 的自动发现语义仍需单独测试。
+
+### 15.5 与合同的关系
+
+- B-03/B-04/B-12 的未知项已关闭；B-02 是负结果（PARTIAL），不能把 append/chtimes 写成“回调 deny”。
+- 合同仍为 draft；维护者对 `7.1.0-beta` 的条件接受与固定 integrity 不改变 P2/G1 状态。
+- 本节所有脚本/帧只在 `/tmp/opencode/tsgo-spike`，未触碰生产源码、测试、Cargo、计划或 ADR。

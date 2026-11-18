@@ -190,8 +190,9 @@ P7 串行删除旧 Node 实现与当前 TS 测试，再执行全部门禁
 
 - A：有条件 PROCEED。`7.1.0-beta` 是唯一满足快照/虚拟 FS/查询/AST 的版本；`7.0.2` 明确失败。hover/definition/rename 无直接 API，需 F1 组合规则；handle 跨快照错位、`emit` 写盘、更新语义已列为必测风险。证据：`docs/evidence/2026-11-17-tsgo-native-api-spike.md`。
 - B：P0 Rust 基线绿（1297 pass/0 fail/23 ignored，36.5s；fmt/check/clippy 通过）；TS 套件 339 个展开用例，338 pass/1 fail。唯一失败是 `perf.test.ts` 全量并行下冷启动 8325.25 ms；同一测试串行隔离 3/3 绿（1058.25/1005.64/675.60 ms），已裁决采用专用串行 perf gate，阈值与测试内容不变，全量并行结果保留为环境记录。台账 274 静态/339 展开，37 个原 blocked 决策已关闭：36 个 Candidate B/symbol-bridge 为 `obsolete`，1 个 `TS-META-0027` 为 F0 version pin `rewrite`；原位 shadow 用例仍强制。证据：`docs/evidence/2026-11-17-tsgo-migration-baseline.md`、`docs/plans/2026-11-17-tsgo-test-ledger.md`、`docs/plans/tsgo-test-ledger.json`。
-- C：PARTIAL。Node 依赖面、原生入口 `lib/tsc`、7.1.0-beta/7.0.2 资产结构与 manifest v2 状态机已确认；真实 `lib/tsc` 探针由 A 完成，但无 Node 安装器、clean-env 安装和 Zed 冒烟尚未实现。证据：`docs/evidence/2026-11-17-tsgo-delivery-spike.md`。
-- 结论：P2 可以继续修订 ADR/契约与安全设计，但不得开始生产实现。A 为有条件通过，B 的测试处置与 perf gate 已裁决，C 仍为 PARTIAL；G1 未关闭。维护者已于 2026-11-17 有条件接受固定 integrity 的 7.1.0-beta；仍需完成 C 的可执行安装器方案，并冻结 F0–F3 契约。
+- C：PARTIAL PASS（可执行 spike）。Node 依赖面、原生入口 `lib/tsc`、7.1.0-beta/7.0.2 资产结构与 manifest v2 状态机已确认；`/tmp/opencode/tsgo-delivery-spike` 已实测校验、原子安装、失败保持旧版本、N1→N2 升级、回滚、离线安装和无 Node PATH，但生产 Rust 安装器、CI/Zed、平台矩阵与断电持久性仍未完成。证据：`docs/evidence/2026-11-17-tsgo-delivery-spike.md`。
+- B-02：PARTIAL（负结果）。`appendFile`/`chtimes` 无合法回调名，源码明确始终走 base OS FS；维护者 2026-11-18 接受补偿控制（方法白名单 + 运行目录最小权限 + 禁用 emit/external code），不得声称回调级 deny。
+- 结论：P2 入口证据已收口，可启动 P3 的 native client/FS/AST 骨架；F1 查询与语义切片仍受 B-05–B-09/B-11/B-13 阻塞。A 为有条件通过，B 的测试处置与 perf gate 已裁决，C 的可执行安装器方案已由 spike 证明但生产实现转入 P3-D/F3。维护者已于 2026-11-17 有条件接受固定 integrity 的 7.1.0-beta，并于 2026-11-18 接受 B-02 补偿控制；不得把 G1-C 说成全绿。
 
 ### P2：落地 ADR、接口与测试契约
 

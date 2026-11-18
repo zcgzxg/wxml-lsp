@@ -1,7 +1,7 @@
 # ADR-0008: Rust + tsgo 类型后端，移除 Node 依赖
 
 **Date**: 2026-11-17
-**Status**: proposed（用户已选择迁移方向，并已于 2026-11-17 有条件接受 7.1.0-beta 作为唯一候选基线；P2 合同冻结、P1-C 收口与 G1 完成前不升级为 accepted）
+**Status**: proposed（用户已选择迁移方向，并已于 2026-11-17 有条件接受 7.1.0-beta 作为唯一候选基线；2026-11-18 接受 B-02 补偿控制；P2 合同冻结、P1-C 生产实现与 G1 完成前不升级为 accepted）
 **Deciders**: 项目维护者；planner、architect、Rust 测试及交付盘点参与设计
 
 本文记录已采用的迁移方向；接口与能力验证完成前保持 proposed。实施计划见 `docs/plans/2026-11-17-rust-tsgo-migration.md`。本文件不表示迁移、测试或交付已经完成。
@@ -22,7 +22,7 @@
 
 P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、DefinitionAtPosition、Rename、SignatureHelp 等直接方法。hover 由类型字符串、文档注释与 JSDoc 组合；definition 由 `getReferencedSymbolsForNode` 加 AST 解码得到；rename 仅允许 Rust 侧基于完整符号/引用证据的保守编辑，证据不完整时拒绝，不得伪造或降级为不安全编辑。补全的详情/自动导入需 `prepareAutoImports`，其缺失部分必须在 F1 明确为可见降级还是阻塞项。若组合规则不能保持现有可观察语义，先阻塞迁移并修订本 ADR；只有验证同进程 LSP + API 连接确实共享快照且满足同一文件访问策略，才可作为明确批准的替代实现。不得默认改成两个独立类型图。
 
-原生 node handle 不携带快照身份，跨 `updateSnapshot` 可能静默解析到新 AST 的同序号节点。Rust 必须把每个 handle 绑定 `(snapshot id, file path, content hash/node id)`，跨 epoch 一律拒绝，不能缓存到下一快照。未保存内容更新必须使用同一次 `updateSnapshot` 的 `closeFiles` + `openFiles`；仅 layer/full/notification 不会刷新已打开文件。原生 API 暴露 `emit` 等写方法且实测可写宿主磁盘，客户端只允许白名单查询方法，启动时设置 `writeFile:noop`、`removeFile:noop`，读回调 fail-closed，永不启用 `--runExternalCode`；`noEmit`/no-op 不构成 OS 沙箱。
+原生 node handle 不携带快照身份，跨 `updateSnapshot` 可能静默解析到新 AST 的同序号节点。Rust 必须把每个 handle 绑定 `(snapshot id, file path, content hash/node id)`，跨 epoch 一律拒绝，不能缓存到下一快照。未保存内容更新必须使用同一次 `updateSnapshot` 的 `closeFiles` + `openFiles`；仅 layer/full/notification 不会刷新已打开文件。原生 API 暴露 `emit` 等写方法且实测可写宿主磁盘，客户端只允许白名单查询方法，启动时设置 `writeFile:noop`、`removeFile:noop`，读回调 fail-closed，永不启用 `--runExternalCode`；`noEmit`/no-op 不构成 OS 沙箱。2026-11-17 P2 追加探针确认 `appendFile`/`chtimes` 没有可注册的 deny 回调，源码中始终走 base OS FS；因此写阻断不能只依赖回调，必须同时依赖“写方法不可达”的白名单和运行目录最小权限。该残余风险为 B-02 PARTIAL；维护者已于 2026-11-18 显式接受“方法白名单 + 运行目录最小权限 + 禁用 emit/external code”的补偿控制，P3 原生骨架可据此启动，但不得声称已实现回调级 deny。
 
 采用精确的原生发行版本、源码提交、API/AST schema 及平台资产摘要。P1-A 实测稳定版 `7.0.2` 不具备 `createSnapshot`/租约/`createSourceFile`，AST protocol v5（header 44）与候选线不兼容，不能作为本架构基础；当前唯一满足快照、虚拟 FS、查询与 AST 要求的候选是 `7.1.0-beta`（gitHead `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`，AST protocol v9/header 64）。维护者已于 2026-11-17 有条件接受 beta 作为唯一候选基线并固定 integrity；在 P2 合同冻结、P1-C 收口与 G1 完成前保持 proposed，且不切换默认后端。`7.0.2` 不作为回退候选。不使用 `main`、`next` 或浮动版本。版本、协议与类型资产更新作为一个经过测试的变更交付；升级必须重跑 F0/F1 合同测试与 AST schema 探针。旧 Node 安装可在无 Node 条件下由受限旧 schema 读取器识别并迁入原生包；验证成功前保持旧 current 不变，原生版本之间支持校验后的回退，不自动回退激活 Node 包。
 
