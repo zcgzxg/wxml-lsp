@@ -24,6 +24,7 @@ pub mod config;
 pub mod input;
 pub mod native;
 pub mod query;
+pub mod script;
 pub mod shadow;
 
 pub use backend::{BackendError, BackendState, ResultCache, TsgoBackend};
