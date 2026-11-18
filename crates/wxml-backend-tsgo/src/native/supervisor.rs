@@ -2242,9 +2242,27 @@ mod tests {
         let _ = supervisor.shutdown_with_timeout(Duration::from_millis(50));
     }
 
+    #[cfg(unix)]
     #[test]
     fn send_backpressure_poisons_without_leaking_the_writer() {
-        let mut session = spawn_helper("sleep");
+        // Use a standalone sleeper rather than the test binary as the child:
+        // a recursively spawned libtest process can exit early under a loaded
+        // workspace run, which makes the pipe-fill precondition flaky. The
+        // assertions below still require a real blocked pipe, timeout poison
+        // and writer cleanup.
+        let sleep = Path::new("/bin/sleep");
+        assert!(sleep.is_file(), "this test requires /bin/sleep on Unix");
+        let spec = SpawnSpec {
+            program: sleep.to_path_buf(),
+            args: vec!["300".to_owned()],
+            sandbox_root: std::env::temp_dir(),
+            environment: CHILD_ENVIRONMENT.to_vec(),
+        };
+        let mut session = ProcessSession::spawn(&spec, DEFAULT_FRAME_LIMITS).expect("spawn sleep");
+        assert!(
+            matches!(session.try_wait(), Ok(None)),
+            "the sleeper must stay alive for the pipe-fill assertion"
+        );
         let writer_done = Arc::clone(&session.writer_done);
         let body = vec![b'x'; 16 * 1024];
         let mut timed_out = false;
