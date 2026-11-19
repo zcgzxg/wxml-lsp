@@ -22,8 +22,17 @@
 | `green` | 44（真实 Rust 测试证据，未独立 review） |
 | `planned` | 259 |
 | `retired-with-decision` | 36 |
+| `assessed_cases` | 154 |
+| `exact` | 44 |
+| `near_exact` | 3 |
+| `weaker` | 80 |
+| `structural` | 7 |
+| `blocked` | 20 |
 
-计数在 wave-5 回填（2026-11-20）后为 `green` 44 / `planned` 259；P6 回填（2026-11-19）后为 36/267，P5/P5.1 的历史快照见台账 §14。
+计数在 wave-6 回填（2026-11-20）后为 `green` 44 / `planned` 259 /
+`assessed_cases` 154（`exact` 44、`near_exact` 3、`weaker` 80、`structural` 7、
+`blocked` 20）；wave-5 后为 44/259/145，P6 回填（2026-11-19）后为 36/267，
+P5/P5.1 的历史快照见台账 §14，wave-5/wave-6 见 §15/§16。
 
 `obsolete` 不等于“未迁移的通过项”。36 个 Candidate B 用例只作为历史 A/B 证据保留；生产 LSP
 不传 `layoutId`，原位 shadow 用例仍全部强制。`TS-META-0027` 由 F0 引擎/类型资产 pin 测试替代。

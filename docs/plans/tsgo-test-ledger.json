@@ -164,18 +164,18 @@
     },
     "migration_evidence": {
       "assessed_at": "2026-11-20",
-      "implementation_head": "28c5e18eebfc1fe7c5df14e9a3655404185065a2",
+      "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
       "rust_test_command": "cargo test -p wxml-lsp --lib; cargo test -p wxml-lsp --test native_parity; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored; cargo test -p wxml-delivery --test assets_lock_root",
-      "rust_test_result": "wxml-lsp lib 789 passed/0 failed; native_parity 36 passed/0 failed/3 ignored; required native gates 3 passed/0 failed/36 filtered; assets_lock_root 2 passed/0 failed",
-      "assessed_cases": 145,
+      "rust_test_result": "wave-6 ledger-only: cargo test -p wxml-lsp --test native_parity 37 passed/0 failed/26 ignored (task/wave-5 HEAD-only expectation 36 passed/23 ignored; the extra native-edit tests are uncommitted parallel work, not wave-6). No production/test code was changed by this wave.",
+      "assessed_cases": 154,
       "exact": 44,
       "near_exact": 3,
-      "weaker": 74,
+      "weaker": 80,
       "structural": 7,
-      "blocked": 17,
+      "blocked": 20,
       "green_eligible": 44,
       "promoted_to_green": 44,
-      "remaining_planned_without_evidence": 158,
+      "remaining_planned_without_evidence": 149,
       "by_partition": {
         "behaviors": {
           "routed_cases": 22,
@@ -203,15 +203,15 @@
         },
         "components": {
           "routed_cases": 19,
-          "evidence_cases": 9,
+          "evidence_cases": 16,
           "green_cases": 4,
-          "planned_evidence_cases": 5,
-          "unassessed_cases": 10,
+          "planned_evidence_cases": 12,
+          "unassessed_cases": 3,
           "exact": 4,
           "near_exact": 0,
-          "weaker": 1,
+          "weaker": 7,
           "structural": 0,
-          "blocked": 4
+          "blocked": 5
         },
         "definitions": {
           "routed_cases": 5,
@@ -359,15 +359,15 @@
         },
         "symbols_edits": {
           "routed_cases": 21,
-          "evidence_cases": 19,
+          "evidence_cases": 21,
           "green_cases": 5,
-          "planned_evidence_cases": 14,
-          "unassessed_cases": 2,
+          "planned_evidence_cases": 16,
+          "unassessed_cases": 0,
           "exact": 5,
           "near_exact": 0,
           "weaker": 13,
           "structural": 0,
-          "blocked": 1
+          "blocked": 3
         }
       },
       "rust_unit_test_command": "cargo test -p wxml-backend-tsgo --lib",
@@ -2461,7 +2461,7 @@
         "TS-SYMBOLS-0150"
       ],
       "status": "required_not_migrated",
-      "line": 2081,
+      "line": 2086,
       "replacement_test": "crates/wxml-lsp/tests/native_parity/symbols_edits.rs::native_component_property_edit_applies_and_reparses",
       "replacement_kind": "native real-engine LSP E2E",
       "old_test_must_fail_when_engine_missing": true,
@@ -2483,7 +2483,7 @@
         "TS-SYMBOLS-0312"
       ],
       "status": "required_not_migrated",
-      "line": 2568,
+      "line": 2589,
       "replacement_test": "crates/wxml-lsp/tests/native_parity/symbols_edits.rs::native_rejects_cross_namespace_and_dynamic_edits",
       "replacement_kind": "native real-engine LSP E2E security gate",
       "old_test_must_fail_when_engine_missing": true,
@@ -2494,7 +2494,7 @@
     "rust_silent_skips": [
       {
         "file": "crates/wxml-lsp/tests/semantic_tools.rs",
-        "line": 2081,
+        "line": 2086,
         "test": "real_node_lsp_component_property_edit_applies_and_parses",
         "behavior": "Returns early with 'skipping real Node LSP test: build backends/typescript first' when backends/typescript/dist/server.js is absent; the test is not #[ignore], so the ordinary suite reports it as passed without exercising real Node.",
         "baseline_result": "passed (skipped body)",
@@ -2507,7 +2507,7 @@
       },
       {
         "file": "crates/wxml-lsp/tests/semantic_tools.rs",
-        "line": 2169,
+        "line": 2184,
         "test": "real_node_lsp_component_property_edit_applies_and_parses (post-edit check)",
         "behavior": "If node_modules/typescript/bin/tsc is absent, prints 'tsc not installed; skipped post-edit type check' and continues. The typecheck after applying a WorkspaceEdit is therefore optional.",
         "baseline_result": "typecheck ran because node_modules/typescript exists; the skip path is still reachable",
@@ -2520,7 +2520,7 @@
       },
       {
         "file": "crates/wxml-lsp/tests/semantic_tools.rs",
-        "line": 2568,
+        "line": 2589,
         "test": "real_node_lsp_rejects_cross_namespace_and_dynamic_edits",
         "behavior": "Returns early with the same 'skipping real Node LSP test' message when dist/server.js is absent; ordinary suite reports pass.",
         "baseline_result": "passed (skipped body)",
@@ -3816,10 +3816,24 @@
         "rust_tests": [
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
-            "line": 845,
+            "line": 1719,
             "test": "a_generated_only_diagnostic_range_is_partial_and_dropped",
             "fully_qualified": "wxml_lsp::backend_tsgo::tests::a_generated_only_diagnostic_range_is_partial_and_dropped",
             "note": "Asserts the diagnostics result is empty and Partial for a generated-only range, but not the reason or the other capabilities."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 4959,
+            "test": "a_script_owned_diagnostic_is_excluded_and_marks_the_template_partial",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::a_script_owned_diagnostic_is_excluded_and_marks_the_template_partial",
+            "note": "A script-owned diagnostic is dropped from the template set and degrades diagnostics with a path-free script-code reason."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 4987,
+            "test": "a_diagnostic_for_another_file_is_not_published_as_a_template_diagnostic",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::a_diagnostic_for_another_file_is_not_published_as_a_template_diagnostic",
+            "note": "External-file diagnostics are dropped and leave only a path-free other-files Partial reason."
           }
         ]
       }
@@ -4732,14 +4746,14 @@
         "rust_tests": [
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
-            "line": 4452,
+            "line": 4594,
             "test": "trailing_dot_completion_mounts_a_synthetic_query_and_keeps_the_range",
             "fully_qualified": "wxml_lsp::backend_tsgo::tests::trailing_dot_completion_mounts_a_synthetic_query_and_keeps_the_range",
             "note": "Asserts name/age member labels and exact prefix range, but returns Partial rather than TS Supported."
           },
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
-            "line": 4276,
+            "line": 4418,
             "test": "completion_in_an_unclosed_expression_completes_the_typed_prefix",
             "fully_qualified": "wxml_lsp::backend_tsgo::tests::completion_in_an_unclosed_expression_completes_the_typed_prefix",
             "note": "Asserts the typed member completion and empty prefix range, but returns Partial rather than TS Supported."
@@ -4818,10 +4832,17 @@
         "rust_tests": [
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
-            "line": 869,
+            "line": 1744,
             "test": "completion_maps_entries_and_replaces_only_the_typed_prefix",
             "fully_qualified": "wxml_lsp::backend_tsgo::tests::completion_maps_entries_and_replaces_only_the_typed_prefix",
             "note": "Asserts two items, the exact replace start/end for the na prefix, insertText=label, PlainText format, and Partial status."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 4418,
+            "test": "completion_in_an_unclosed_expression_completes_the_typed_prefix",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::completion_in_an_unclosed_expression_completes_the_typed_prefix",
+            "note": "An unclosed member expression still completes the typed prefix with the exact replace range, but the status stays Partial."
           }
         ]
       }
@@ -5375,7 +5396,40 @@
       "capabilities": [
         "diagnostics",
         "messages"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0147",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The component-binding pass asserts one title mismatch at the exact expression range, error severity and a path-free message; the TS per-tag clean/union/literal/array/object matrix plus eight skipped pairs are not covered.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 1233,
+            "test": "mismatched_root_binding_is_an_error_at_the_expression",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::mismatched_root_binding_is_an_error_at_the_expression",
+            "note": "Exact expression range, error severity and title/string/number message for one mismatch."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 1663,
+            "test": "fixture_component_usages_publish_one_property_error",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::fixture_component_usages_publish_one_property_error",
+            "note": "The checked-in component-bindings fixture publishes exactly one property error on the second card."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 6439,
+            "test": "component_binding_diagnostics_are_published_with_shadow_ranges",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::component_binding_diagnostics_are_published_with_shadow_ranges",
+            "note": "Adapter keeps Supported, one exact diagnostic range, error severity and one script type query."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0193",
@@ -5437,7 +5491,26 @@
       "status": "planned",
       "capabilities": [
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0193",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "A two-property card whose bindings all match stays clean and non-Partial, but the TS three-property request, probeProblems, components array and skipped=0 response fields are not asserted.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 1206,
+            "test": "matching_root_binding_is_clean",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::matching_root_binding_is_clean",
+            "note": "Two matching root bindings produce no diagnostics and no Partial reason; both attributes are checked."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0206",
@@ -5505,7 +5578,26 @@
         "diagnostics",
         "mapping",
         "messages"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0206",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Literal and boolean attributes are checked against their attribute ranges with the expected messages, but the TS no-mustache fixture, Supported status and skipped=0 counter are not asserted.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 1289,
+            "test": "literal_and_boolean_checks_use_the_attribute_range",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::literal_and_boolean_checks_use_the_attribute_range",
+            "note": "Literal and boolean diagnostics use the exact attribute ranges and string-literal/boolean-literal messages."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0229",
@@ -5570,7 +5662,26 @@
       "status": "planned",
       "capabilities": [
         "messages"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0229",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Array/Object targets are compared conservatively and a number is rejected for Record<string, any>, but the TS optional User|undefined, Item[]|undefined and absent bindings plus skipped=0 are not covered.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 1612,
+            "test": "array_and_object_targets_are_conservative",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::array_and_object_targets_are_conservative",
+            "note": "Object-vs-Array stays Partial, an array text is clean, and a number is rejected for Record<string, any>."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0251",
@@ -5629,7 +5740,26 @@
       "status": "planned",
       "capabilities": [
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0251",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Missing component files and incomplete or spread properties stay Partial with no invented diagnostics; the TS Component({data}) no-properties-member fixture and response.components=undefined are not asserted.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 1365,
+            "test": "missing_component_or_incomplete_properties_is_partial",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::missing_component_or_incomplete_properties_is_partial",
+            "note": "Missing component path, spread properties and a non-literal component all stay Partial with no diagnostic."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0268",
@@ -5689,7 +5819,33 @@
       "capabilities": [
         "diagnostics",
         "messages"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0268",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The component-binding partial reason is asserted path-free and the mismatch message names only the property and expression, but no test iterates every tag diagnostic to assert the TS path-free invariant.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 6476,
+            "test": "component_binding_any_type_degrades_to_partial",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::component_binding_any_type_degrades_to_partial",
+            "note": "Any-typed binding yields an empty diagnostic set and a path-free Partial reason with the stable prefix."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 1233,
+            "test": "mismatched_root_binding_is_an_error_at_the_expression",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::mismatched_root_binding_is_an_error_at_the_expression",
+            "note": "The sole mismatch message contains only the property name, declared/actual types and bound expression."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0279",
@@ -5751,7 +5907,33 @@
       "status": "planned",
       "capabilities": [
         "messages"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPONENT-0279",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The native in-place path keeps component messages path-free, but the symbol-bridge layout is retired and no native symbol-bridge response exists, so the TS layout-specific assertion cannot be reproduced.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 6476,
+            "test": "component_binding_any_type_degrades_to_partial",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::component_binding_any_type_degrades_to_partial",
+            "note": "In-place Partial reason is path-free; this is not a symbol-bridge response."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 1663,
+            "test": "fixture_component_usages_publish_one_property_error",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::fixture_component_usages_publish_one_property_error",
+            "note": "The fixture message names the property and types; the symbol-bridge layout is not built."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPONENT-0292",
@@ -8072,6 +8254,13 @@
             "test": "every_event_binding_form_hovers_the_exact_handler_token",
             "fully_qualified": "wxml_lsp::semantics::event_definition::tests::every_event_binding_form_hovers_the_exact_handler_token",
             "note": "Covers seven binding forms plus bind:my-event and an unquoted value; each resolves Supported with an exact declaration token and file location."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/full_feature_matrix_editing.rs",
+            "line": 891,
+            "test": "it_15_event_handler_hover_uses_script_facts_without_a_type_backend",
+            "fully_qualified": "full_feature_matrix_editing::it_15_event_handler_hover_uses_script_facts_without_a_type_backend",
+            "note": "A real LSP session answers hover for bindtap, catchtap, capture-bind, capture-catch and mut-bind plus CJK handlers with exact WXML ranges."
           }
         ]
       }
@@ -26136,6 +26325,13 @@
             "test": "component_observers_make_data_paths_partial",
             "fully_qualified": "script_symbol_facts::component_observers_make_data_paths_partial",
             "note": "Shows component observers still force Partial and do not publish observerPath occurrences."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 127,
+            "test": "component_missing_handler_wraps_a_new_methods_object",
+            "fully_qualified": "script_symbol_facts::component_missing_handler_wraps_a_new_methods_object",
+            "note": "Component missing-handler insertion wraps a new methods object at the exact close brace; observerPath is still absent."
           }
         ]
       }
@@ -26839,7 +27035,33 @@
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0299",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Native script facts treat destructuring from this.data as Partial and keep no declaration, while TS requires complete=true plus a declaration for the renamed binding.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 344,
+            "test": "dynamic_data_members_and_escaped_this_data_are_partial",
+            "fully_qualified": "script_symbol_facts::dynamic_data_members_and_escaped_this_data_are_partial",
+            "note": "Destructuring this.data is one of the shapes that forces a Partial data-path answer."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 397,
+            "test": "aliases_destructuring_and_bare_setdata_are_partial",
+            "fully_qualified": "script_symbol_facts::aliases_destructuring_and_bare_setdata_are_partial",
+            "note": "Alias/destructuring fixtures stay incomplete with a destructuring or alias reason."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0312",
@@ -27449,7 +27671,26 @@
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0425",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Native script facts make another script's setData block completeness, the opposite of the TS per-page isolation, so a complete result plus declaration cannot be asserted.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 438,
+            "test": "another_script_setdata_blocks_complete",
+            "fully_qualified": "script_symbol_facts::another_script_setdata_blocks_complete",
+            "note": "Another script's setData yields complete=false with an another-script reason."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0439",

@@ -2,7 +2,7 @@
 
 生成时间：2026-11-17T23:08:57+08:00；P3-S/P4-B 证据与 P5 状态回填：2026-11-18；P5.1 适配器/定义/性能回填：2026-11-19
 
-状态：**green 44 / planned 259 / retired-with-decision 36**（P5 将 32 个 exact-parity 用例提升为 `green`；P5.1 将 1 个 adapter exact 用例提升为 `green`；P6 回填再提升 3 个 exact 用例并登记 2 个 weaker 证据；wave-5 回填再提升 8 个 exact 用例并登记 26 个新证据；3 个 near-exact 保留 `planned` + green recommendation；36 个 Candidate B 不变；未删除任何旧测试）
+状态：**green 44 / planned 259 / retired-with-decision 36**（P5 将 32 个 exact-parity 用例提升为 `green`；P5.1 将 1 个 adapter exact 用例提升为 `green`；P6 回填再提升 3 个 exact 用例并登记 2 个 weaker 证据；wave-5 回填再提升 8 个 exact 用例并登记 26 个新证据；wave-6 不新增 exact `green`，新增 6 个 weaker + 3 个 blocked 证据并追加 4 个既有用例/修正行号；3 个 near-exact 保留 `planned` + green recommendation；36 个 Candidate B 不变；未删除任何旧测试）
 
 基线：`b9616c557e54a06b7d756e516e6dd7c4016664cf`（`tsgo/migration`，包含 `4d59ca7`）
 
@@ -24,6 +24,7 @@ P0 证据：`docs/evidence/2026-11-17-tsgo-migration-baseline.md`
 - P5.1 回填（2026-11-19）：新增 14 个用例证据（114 assessed）；`TS-COMPLETION-0220` 由 P4-C adapter 测试提升为 `green`，其余 13 个保持 `planned`（7 个新增 weaker adapter、4 个 weaker definition、1 个 blocked definition、1 个 structural perf）。P5.1 后为 **33 green / 270 planned / 36 retired-with-decision**；当时仍有 189 个 planned 用例没有 Rust 证据。
 - P6 回填（2026-11-19，实现 HEAD `9a8b65caac38e2d04a08550e0506408f7af967f5`）：event completion 与 trusted type-assets 的 3 个 exact 用例提升为 `green`（`TS-COMPLETION-0175`、`TS-COMPLETION-0193`、`TS-PROBES-0169`）；`TS-META-0009` 与 `TS-SERVER-0237` 登记 weaker 证据，`TS-COMPLETION-0207` 追加新的 native event-completion 证据但仍为 weaker。最终 **36 green / 267 planned / 36 retired-with-decision**；仍有 184 个 planned 用例没有 Rust 证据。逐条见 §14 和 `docs/evidence/2026-11-19-tsgo-ledger-backfill.md`。
 - Wave-5 回填（2026-11-20，实现边界 HEAD `375cde24a61141f2b122bdf6ca9c23fbfc0fb1a6`）：root/trailing-dot completion、event-handler hover、native symbols 与 overlay replay 的 8 个 exact 用例提升为 `green`（`TS-COMPLETION-0127`、`TS-COMPLETION-0153`、`TS-EVENTS-0108`、`TS-SYMBOLS-0061/0150/0215/0226/0312`）；其中 7 个由无证据转为 exact，`TS-EVENTS-0108` 由 blocked 证据转为 exact。另新增 17 个 weaker、1 个 blocked、1 个 structural 证据用例，并对 14 个既有 weaker/structural/blocked 用例追加 wave-5 测试。最终 **44 green / 259 planned / 36 retired-with-decision**；仍有 158 个 planned 用例没有 Rust 证据。逐条见 §15 和 `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave5.md`。
+- Wave-6 回填（2026-11-20，记录 HEAD `1d5222eef18904ee056d7da97de3b011feb65cc8`）：E2E-20 component binding diagnostics、native symbols 边界与 script diagnostics routing 没有新增 exact 证据，因此不提升任何 case；新增 6 个 weaker（`TS-COMPONENT-0147/0193/0206/0229/0251/0268`）和 3 个 blocked（`TS-COMPONENT-0279`、`TS-SYMBOLS-0299/0425`），并对 `TS-ANALYSIS-0297`、`TS-COMPLETION-0104`、`TS-SYMBOLS-0116`、`TS-EVENTS-0108` 追加测试。最终仍为 **44 green / 259 planned / 36 retired-with-decision**；有证据的 planned 从 101 升到 110，无证据从 158 降到 149。逐条见 §16 和 `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave6.md`。
 - 本轮 TS 套件实际执行：339 个，通过 338，失败 1，跳过 0。
 - 计划对账：计划 273 静态 / ~338 展开，实际 **274 / 339**（+1）；原因是 `events.test.ts` 实际 24 个声明而非计划表中的 23。
 - 23 个 Rust `#[ignore]` 测试全部映射到必跑原生命令；2 个 `semantic_tools` 静默 return 路径同样映射；均不计为已迁移。
@@ -149,7 +150,7 @@ P0 证据：`docs/evidence/2026-11-17-tsgo-migration-baseline.md`
 | unit | 114 | 纯函数/codec/验证：locals、guards、rewrite、mapping math、protocol validation。 |
 | parity | 100 | scenario matrix、overlay、mapping/run、性能采样。 |
 
-44 条 `status=green`、259 条 `status=planned`、36 条 `status=retired-with-decision`；`oracle_revision` 已冻结为 `F2 frozen 2026-11-17 (dcc1f15)`；独立 `reviewer` 尚未签署。P5/P5.1/P6/wave-5 只提升 exact-parity 用例；near-exact/weaker/structural/blocked 的逐条证据和状态见 §14/§15。
+44 条 `status=green`、259 条 `status=planned`、36 条 `status=retired-with-decision`；`oracle_revision` 已冻结为 `F2 frozen 2026-11-17 (dcc1f15)`；独立 `reviewer` 尚未签署。P5/P5.1/P6/wave-5/wave-6 只提升 exact-parity 用例；near-exact/weaker/structural/blocked 的逐条证据和状态见 §14/§15/§16。
 
 ## 8. Dirty 必保增量（D1–D7）
 
@@ -717,7 +718,7 @@ cd backends/typescript && npm test   # 需要 Node 24 与已存在的 node_modul
 - 依据：生产 LSP 不传 `layoutId`（`server.ts:152`）；`analysis.ts:59-60,416` 明确默认原位 shadow；Candidate B 只由 matrix/perf/evidence 脚本遍历。
 - 不降低要求：原位 shadow 的 39 个 matrix 用例、协议/映射/诊断/编辑安全/FS 用例继续强制迁移。
 
-## 14. P5/P5.1/P6 Rust 证据与状态回填（历史快照，2026-11-18/19；wave-5 见 §15）
+## 14. P5/P5.1/P6 Rust 证据与状态回填（历史快照，2026-11-18/19；wave-5 见 §15，wave-6 见 §16）
 
 本节保留 P5/P5.1/P6 的历史计数与证据表；当前计数以 §15 和 JSON `counts` 为准。P5 将 **exact parity** 的 32 个用例提升为 `green`；P5.1 追加 P4-C adapter、native definition slice 与 perf budget gate 的逐条证据，只把 1 个 adapter exact 用例（`TS-COMPLETION-0220`）提升为 `green`。P6 回填（2026-11-19）再提升 event completion 与 trusted type-assets 的 3 个 exact 用例，并为 delivery lock/de-Node 登记 weaker 证据。3 个 near-exact 用例按裁决保留 `planned` 并记录 `status_recommendation=green`；其余 weaker/structural/blocked 全部保持 `planned`。未修改生产 Rust、ADR、交付、server/config 或 Cargo。
 
@@ -1058,3 +1059,141 @@ git diff --check
 ```
 
 结果见 `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave5.md`。
+
+## 16. Wave-6 Rust 证据回填（2026-11-20）
+
+### 16.1 边界与结论
+
+- 记录/验证 HEAD：`1d5222eef18904ee056d7da97de3b011feb65cc8`；工作树含并行会话未提交的
+  native edit/CLI 改动，本 wave 没有修改它们，也没有把它们的测试当作 wave-6 证据。
+- 范围：只改 `docs/plans/tsgo-test-ledger.json`、本 Markdown、contract
+  （`docs/reference/tsgo-test-contract.md`）、ledger validator
+  （`crates/wxml-lsp/tests/native_parity/ledger.rs`）、`docs/evidence/README.md` 和
+  `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave6.md`。未修改生产代码、测试源码、
+  Cargo、delivery、Node 或默认后端；未提交。
+- 盘点对象：script diagnostics routing（`814ca5e`）、event handler hover
+  （`3220362`）、E2E-21 non-literal（`4fd45bd`）、native symbols
+  （`304aa20`/`4140e9b`）、PERF-01/STABILITY-01（`8b6ca14`）、E2E-20 component
+  bindings（`04fa0fe`）、native gate wave-5（`2f072a6`）、F3 kill（`28c5e18`），以及
+  `backend_tsgo/tests.rs`、`handlers/diagnostics*`、`semantics/event_definition.rs`、
+  `native_parity/native_engine_real.rs`、`script_symbol_facts.rs`、
+  `component_bindings.rs`、`native_measure.rs` 的新测试。
+- 结论：**没有新的 exact case**。`green` 保持 44，`planned` 保持 259，339 总数与
+  36 retired 不变；`assessed_cases` 145 → 154，`weaker` 74 → 80，
+  `blocked` 17 → 20，`structural` 7，`near_exact` 3，无 Rust 证据的 planned
+  158 → 149。没有因为任何 gate 变绿而提升 case，也没有把 E2E-21 的 template-level
+  `Unsupported` 当作 event-result `Partial`。
+
+### 16.2 新增 exact → `green`（0）
+
+本轮没有 case 满足 exact。重点核对后仍不提升的原因：
+
+- E2E-20 的 component-binding pass 只断言单个 `bad-mustache` 的精确表达式范围/消息、
+  一个 clean 双属性样例、字面量/布尔属性范围和 Array/Object 保守比较；
+  `TS-COMPONENT-0147` 还要求 per-tag clean/union/literal/array/object 全矩阵、8 个
+  skipped tag 和精确的 skipped reason，不能算等价。
+- `TS-COMPONENT-0193` 的 `probeProblems`、`components` 数组和 `skipped=0` 没有
+  native 断言；`TS-COMPONENT-0206` 的 no-mustache fixture、Supported 和 `skipped=0`
+  也没有。
+- `TS-COMPONENT-0229` 未覆盖 `User | undefined` / `Item[] | undefined` 和 absent
+  绑定；`TS-COMPONENT-0251` 没有 `Component({ data })` 无 properties 的 fixture；
+  `TS-COMPONENT-0268` 只断言 Partial reason path-free，没有遍历每条 diagnostic。
+- `TS-SYMBOLS-0299` 与 `TS-SYMBOLS-0425` 的 native 行为与 TS 期望相反（见 §16.3），
+  不能升级。
+
+### 16.3 新增非 exact 证据（9 个新 case）
+
+#### weaker（6）
+
+| Case | Rust test（path:line） | 为什么不是 exact |
+| --- | --- | --- |
+| `TS-COMPONENT-0147` |  crates/wxml-lsp/src/backend_tsgo/component_bindings.rs:1233<br> crates/wxml-lsp/src/backend_tsgo/component_bindings.rs:1663<br> crates/wxml-lsp/src/backend_tsgo/tests.rs:6439 | 单个 title mismatch 的范围/严重度/消息精确；TS 的 21 断言 per-tag 矩阵、union/literal/array/object 和 8 个 skipped pair 未覆盖。 |
+| `TS-COMPONENT-0193` |  crates/wxml-lsp/src/backend_tsgo/component_bindings.rs:1206 | 两个匹配绑定 clean 且非 Partial；TS 的三属性请求、`probeProblems`、`components` 数组和 `skipped=0` 未断言。 |
+| `TS-COMPONENT-0206` |  crates/wxml-lsp/src/backend_tsgo/component_bindings.rs:1289 | literal/boolean 使用精确 attribute range 和消息；TS 的 no-mustache fixture、Supported 和 `skipped=0` 未断言。 |
+| `TS-COMPONENT-0229` |  crates/wxml-lsp/src/backend_tsgo/component_bindings.rs:1612 | Array/Object 保守比较；未覆盖 optional `User \| undefined` / `Item[] \| undefined`、absent 绑定和 `skipped=0`。 |
+| `TS-COMPONENT-0251` |  crates/wxml-lsp/src/backend_tsgo/component_bindings.rs:1365 | missing component/incomplete properties 都 Partial；没有 TS 的 `Component({ data })` 无 properties fixture，也没有 `components=undefined`。 |
+| `TS-COMPONENT-0268` |  crates/wxml-lsp/src/backend_tsgo/tests.rs:6476<br> crates/wxml-lsp/src/backend_tsgo/component_bindings.rs:1233 | Partial reason 已断言 path-free，mismatch 消息只含属性/表达式；没有遍历所有 tag diagnostic 的 TS 断言。 |
+
+#### blocked（3）
+
+| Case | Rust test（path:line） | 缺口 |
+| --- | --- | --- |
+| `TS-COMPONENT-0279` |  crates/wxml-lsp/src/backend_tsgo/tests.rs:6476<br> crates/wxml-lsp/src/backend_tsgo/component_bindings.rs:1663 | native 只保留原位 shadow；symbol-bridge layout 已退役，无法复现该 layout 的 path-free 消息断言。 |
+| `TS-SYMBOLS-0299` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:344<br> crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:397 | native 把 `this.data` 解构视为 Partial 且不给 declaration；TS 要求 renamed destructuring complete=true + declaration。 |
+| `TS-SYMBOLS-0425` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:438 | native 让另一个 script 的 setData 阻断 completeness，与 TS 的 per-page isolation 相反，无法断言 complete=true。 |
+
+完整全限定测试名和逐条 note 以 JSON `cases[].migration_evidence` 为准。
+
+### 16.4 既有用例追加 wave-6 证据（4）
+
+状态/parity 不变：
+
+- `TS-ANALYSIS-0297`（weaker）：新增  `backend_tsgo/tests.rs:4959`、
+   `backend_tsgo/tests.rs:4987`；script-owned / external-file diagnostic 只降级
+  diagnostics 并给 path-free reason，没有断言 hover/definition 仍 Supported。
+- `TS-COMPLETION-0104`（weaker）：新增  `backend_tsgo/tests.rs:4418`；未闭合成员表达式
+  仍用精确 replace range 补全 typed prefix，但状态仍是 Partial。
+- `TS-SYMBOLS-0116`（blocked）：新增  `script_symbol_facts.rs:127`；组件
+  missing-handler 在 options close 上包一层新的 `methods`，`observerPath` 仍缺失。
+- `TS-EVENTS-0108`（green）：新增  `full_feature_matrix_editing.rs:891`；真实 LSP
+  session 对 bindtap/catchtap/capture-bind/capture-catch/mut-bind 和 CJK handler
+  的 hover 范围精确，支持原有 definition exact 证据。
+- `TS-COMPLETION-0078`（weaker）：只修正既有测试行号到  `backend_tsgo/tests.rs:4594`
+  和  `backend_tsgo/tests.rs:4418`，不改变强度。
+
+### 16.5 当前分区计数
+
+| 分区 | routed | 有证据 | green | planned 有证据 | exact | near-exact | weaker | structural | blocked | 无证据 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `behaviors` | 22 | 18 | 1 | 17 | 1 | 2 | 6 | 5 | 4 | 4 |
+| `completion` | 9 | 8 | 5 | 3 | 5 | 0 | 3 | 0 | 0 | 1 |
+| `components` | 19 | 16 | 4 | 12 | 4 | 0 | 7 | 0 | 5 | 3 |
+| `definitions` | 5 | 5 | 0 | 5 | 0 | 0 | 4 | 0 | 1 | 0 |
+| `events` | 24 | 21 | 10 | 11 | 10 | 0 | 10 | 0 | 1 | 3 |
+| `guards_js` | 25 | 11 | 5 | 6 | 5 | 0 | 1 | 0 | 5 | 14 |
+| `hover_docs` | 10 | 3 | 0 | 3 | 0 | 0 | 3 | 0 | 0 | 7 |
+| `loops` | 16 | 9 | 5 | 4 | 5 | 0 | 3 | 0 | 1 | 7 |
+| `mapping_utf16` | 21 | 15 | 6 | 9 | 6 | 0 | 8 | 1 | 0 | 6 |
+| `messages_evidence` | 8 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 8 |
+| `perf_budget` | 1 | 1 | 0 | 1 | 0 | 0 | 0 | 1 | 0 | 0 |
+| `project_overlay` | 20 | 6 | 0 | 6 | 0 | 0 | 6 | 0 | 0 | 14 |
+| `protocol_limits` | 40 | 2 | 0 | 2 | 0 | 0 | 2 | 0 | 0 | 38 |
+| `scenario_matrix` | 43 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 43 |
+| `shadow_rewrite` | 19 | 18 | 3 | 15 | 3 | 1 | 14 | 0 | 0 | 1 |
+| `symbols_edits` | 21 | 21 | 5 | 16 | 5 | 0 | 13 | 0 | 3 | 0 |
+| **合计** | **303** | **154** | **44** | **110** | **44** | **3** | **80** | **7** | **20** | **149** |
+
+### 16.6 未映射的本轮原生面
+
+- **script diagnostics routing**（`814ca5e`）：旧 TS 套件没有独立 `.ts/.js`
+  diagnostics case；只把 script-owned / external-file diagnostic 降级证据追加到
+  `TS-ANALYSIS-0297`，不新增 case，也不把 template diagnostics 混入。
+- **event handler hover**（`3220362`）：`TS-EVENTS-0108` 已由 definition exact 证据
+  提升；本轮追加 IT-15 hover E2E，不重复提升。
+- **E2E-21 non-literal**（`4fd45bd`）：`the_e2e21_non_literal_page_fixture_is_unsupported_not_unavailable`
+  断言的是 template-level `Unsupported`，`TS-EVENTS-0176` 断言 event-result
+  `Partial + reason + no diagnostic`；两者不等价，保持 weaker。
+- **native symbols**（`304aa20`/`4140e9b`）：`TS-SYMBOLS-0061/0150/0215/0226/0312`
+  已 green，其余 symbols 证据保持原强度；`TS-SYMBOLS-0299/0425` 记录 blocked。
+- **PERF-01 / STABILITY-01**（`8b6ca14`）：`native_q2_performance_benchmark` 继续作为
+  `TS-PERF-0012` structural 证据；`native_ten_round_lifecycle_stability` 没有对应
+  TS case，只保留 gate 证据。
+- **E2E-20 component bindings**（`04fa0fe`）：新增 6 weaker + 1 blocked，没有 exact；
+  不把 gate 的 Supported 当作 `TS-COMPONENT-0193` 的 exact。
+- **native gate wave-5**（`2f072a6`）：只更新 gate 证据；`gate_green` 不等于 case green。
+- **F3 kill**（`28c5e18`）：delivery 进程/kill-window 证据，没有 TS oracle case。
+- **document symbols**：旧 TS 套件没有 document-symbol case，不新增 case ID。
+- **Zed smoke**：不是测试迁移 case，不进入 ledger。
+
+### 16.7 验证
+
+```sh
+jq empty docs/plans/tsgo-test-ledger.json
+cargo test -p wxml-lsp --test native_parity
+cargo fmt --all -- --check
+git diff --check
+```
+
+实际结果见 `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave6.md`。工作树并行会话的
+未提交 native-edit 测试会让 `native_parity` 计数高于 HEAD-only 基线；本 wave 没有把它们
+当作 case 证据。
