@@ -1,4 +1,4 @@
-//! F3 remaining acceptance matrix: F3-05/06/08/09/10/11/15/16.
+//! F3 remaining acceptance matrix: F3-05/06/08/09/10/11/12/15/16.
 //!
 //! This suite is deliberately separate from `f3_real_release.rs` so the
 //! already-committed harness is not modified. It reuses only that harness's
@@ -50,6 +50,9 @@ mod support;
 
 #[path = "f3_acceptance/package_guards.rs"]
 mod package_guards;
+
+#[path = "f3_acceptance/cache.rs"]
+mod cache;
 
 #[path = "f3_acceptance/transactions.rs"]
 mod transactions;

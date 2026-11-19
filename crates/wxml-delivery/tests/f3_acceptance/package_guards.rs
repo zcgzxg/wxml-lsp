@@ -1,6 +1,7 @@
 //! F3-05: missing standard library / typings / engine-probe failure.
 //! F3-10: manifest, per-file, license, extra and missing tampering.
-//! F3-11: traversal, symlink, hardlink, PAX and decompression-budget archives.
+//! F3-11: traversal, absolute path, symlink, hardlink, FIFO/device, duplicate,
+//! over-long path, PAX forms and decompression-budget archives.
 
 use std::io::Write as _;
 
@@ -9,6 +10,7 @@ use flate2::write::GzEncoder;
 use tar::{Builder, EntryType, Header};
 use wxml_delivery::manifest::MAX_FILE_BYTES;
 use wxml_delivery::manifest_v2::MINIPROGRAM_TYPINGS_ROOT;
+use wxml_delivery::paths::MAX_PATH_BYTES;
 
 use crate::support::{
     TestDir, Tripwires, VERSION_N1, VERSION_N2, add_extra_file, assert_contains, assert_failure,
@@ -281,11 +283,17 @@ fn f3_11_malicious_real_archive_shapes_fail_before_activation() {
          is under test"
     );
 
-    let cases: [(&str, Vec<u8>, &[&str]); 5] = [
+    let long_path = overlong_path();
+    let cases: Vec<(&str, Vec<u8>, &[&str])> = vec![
         (
             "traversal",
             traversal_archive(),
             &["unsafe", "traversal", "relative path", "path"],
+        ),
+        (
+            "absolute",
+            named_entry_archive("/etc/passwd"),
+            &["absolute", "unsafe", "path"],
         ),
         (
             "symlink",
@@ -298,9 +306,54 @@ fn f3_11_malicious_real_archive_shapes_fail_before_activation() {
             &["unsafe", "hard link", "not a regular file", "link"],
         ),
         (
-            "pax",
+            "fifo",
+            special_entry_archive(EntryType::Fifo, "pipe"),
+            &["not a regular file", "fifo", "unsafe"],
+        ),
+        (
+            "char-device",
+            special_entry_archive(EntryType::Char, "device"),
+            &["not a regular file", "device", "unsafe"],
+        ),
+        (
+            "block-device",
+            special_entry_archive(EntryType::Block, "device"),
+            &["not a regular file", "device", "unsafe"],
+        ),
+        (
+            "duplicate",
+            duplicate_entry_archive(),
+            &["duplicate", "unsafe"],
+        ),
+        (
+            "pax-malformed",
             malformed_pax_archive(),
             &["pax", "unsafe", "archive"],
+        ),
+        (
+            "pax-extension-budget",
+            extension_budget_archive(),
+            &["extension header", "declares", "size"],
+        ),
+        (
+            "pax-size-override",
+            pax_size_override_archive(),
+            &["pax size", "overrides"],
+        ),
+        (
+            "pax-absolute-path",
+            pax_path_archive("/etc/passwd"),
+            &["absolute", "path"],
+        ),
+        (
+            "pax-overlong-path",
+            pax_path_archive(&long_path),
+            &["path-length", "exceeds", "path"],
+        ),
+        (
+            "overlong-gnu-path",
+            long_path_archive(&long_path),
+            &["path-length", "exceeds", "path"],
         ),
         (
             "budget",
@@ -332,7 +385,8 @@ fn f3_11_malicious_real_archive_shapes_fail_before_activation() {
             "F3-11",
             "PASS",
             format!(
-                "{case} archive rejected before activation; bytes={} sha256={}; detail={}",
+                "{case} archive rejected before activation through the real --from-dir installer; \
+                 bytes={} sha256={}; detail={}",
                 bytes.len(),
                 variant.sha256,
                 combined(&output).trim().replace('\n', " | ")
@@ -342,8 +396,8 @@ fn f3_11_malicious_real_archive_shapes_fail_before_activation() {
 
     tripwires.assert_not_executed();
     println!(
-        "F3-11: traversal/symlink/hardlink/PAX/budget archives all used the real installer source \
-         path and failed before activation"
+        "F3-11: traversal/absolute/symlink/hardlink/FIFO/device/duplicate/PAX/over-long-path/\
+         budget archives all used the real installer source path and failed before activation"
     );
 }
 
@@ -357,16 +411,171 @@ fn gzip_builder(build: impl FnOnce(&mut Builder<GzEncoder<Vec<u8>>>)) -> Vec<u8>
 }
 
 fn traversal_archive() -> Vec<u8> {
+    named_entry_archive("../escape")
+}
+
+/// Builds one regular-file entry whose raw 100-byte name field contains
+/// `path` verbatim, bypassing `Header::set_path`'s absolute-path handling.
+fn named_entry_archive(path: &str) -> Vec<u8> {
+    assert!(path.len() <= 100, "raw name field is 100 bytes");
     gzip_builder(|builder| {
         let payload = b"escape\n";
         let mut header = Header::new_gnu();
         header.set_size(u64::try_from(payload.len()).expect("payload size"));
         header.set_mode(0o644);
-        header.as_mut_bytes()[..b"../escape".len()].copy_from_slice(b"../escape");
+        header.as_mut_bytes()[..path.len()].copy_from_slice(path.as_bytes());
         header.set_cksum();
         builder
             .append(&header, &payload[..])
-            .expect("append traversal entry");
+            .expect("append named entry");
+    })
+}
+
+/// Builds one FIFO/character/block-device entry.
+fn special_entry_archive(kind: EntryType, path: &str) -> Vec<u8> {
+    gzip_builder(|builder| {
+        let mut header = Header::new_gnu();
+        header.set_entry_type(kind);
+        header.set_size(0);
+        header.set_mode(0o644);
+        header.set_path(path).expect("special entry path");
+        header.set_cksum();
+        builder
+            .append(&header, &[][..])
+            .expect("append special entry");
+    })
+}
+
+/// Builds the same regular path twice.
+fn duplicate_entry_archive() -> Vec<u8> {
+    gzip_builder(|builder| {
+        for payload in [b"first\n".as_slice(), b"second\n".as_slice()] {
+            let mut header = Header::new_gnu();
+            header.set_size(u64::try_from(payload.len()).expect("duplicate payload size"));
+            header.set_mode(0o644);
+            header
+                .set_path("engine/lib/duplicate.d.ts")
+                .expect("duplicate path");
+            header.set_cksum();
+            builder
+                .append(&header, payload)
+                .expect("append duplicate entry");
+        }
+    })
+}
+
+/// A relative path above `MAX_PATH_BYTES` built from valid-sized components.
+fn overlong_path() -> String {
+    let component = "a".repeat(130);
+    let mut path = String::new();
+    for index in 0..32 {
+        if index > 0 {
+            path.push('/');
+        }
+        path.push_str(&component);
+    }
+    assert!(
+        path.len() > MAX_PATH_BYTES,
+        "fixture path must exceed {MAX_PATH_BYTES} bytes, got {}",
+        path.len()
+    );
+    path
+}
+
+/// GNU long-name extension for an over-long relative path.
+fn long_path_archive(path: &str) -> Vec<u8> {
+    gzip_builder(|builder| {
+        let payload = b"x";
+        let mut header = Header::new_gnu();
+        header.set_size(1);
+        header.set_mode(0o644);
+        builder
+            .append_data(&mut header, path, &payload[..])
+            .expect("append GNU long-path entry");
+    })
+}
+
+/// An `x` extension header that declares more than the 64 KiB PAX budget.
+fn extension_budget_archive() -> Vec<u8> {
+    let mut header = Header::new_gnu();
+    header.set_entry_type(EntryType::XHeader);
+    header.set_size(128 * 1024);
+    header.set_mode(0o644);
+    header.set_mtime(0);
+    header.set_path("pax").expect("pax path");
+    header.set_cksum();
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(header.as_bytes())
+        .expect("write oversized PAX header");
+    encoder
+        .write_all(&[0_u8; 1024])
+        .expect("write oversized PAX preview");
+    encoder.finish().expect("finish PAX budget archive")
+}
+
+/// Builds one valid PAX record with the self-describing length prefix.
+fn pax_record(key: &str, value: &str) -> String {
+    let payload = format!(" {key}={value}\n");
+    let mut length = payload.len() + 1;
+    loop {
+        let record = format!("{length}{payload}");
+        if record.len() == length {
+            return record;
+        }
+        length = record.len();
+    }
+}
+
+/// PAX `size=` that disagrees with the tar header size.
+fn pax_size_override_archive() -> Vec<u8> {
+    let record = pax_record("size", &(MAX_FILE_BYTES + 1).to_string());
+    gzip_builder(|builder| {
+        let mut pax = Header::new_gnu();
+        pax.set_entry_type(EntryType::XHeader);
+        pax.set_size(u64::try_from(record.len()).expect("pax record size"));
+        pax.set_mode(0o644);
+        pax.set_mtime(0);
+        pax.set_path("pax").expect("pax path");
+        pax.set_cksum();
+        builder
+            .append(&pax, record.as_bytes())
+            .expect("append PAX size override");
+        let payload = b"x";
+        let mut header = Header::new_gnu();
+        header.set_size(1);
+        header.set_mode(0o644);
+        header.set_path("payload.d.ts").expect("payload path");
+        header.set_cksum();
+        builder
+            .append(&header, &payload[..])
+            .expect("append PAX size target");
+    })
+}
+
+/// PAX `path=` override, including absolute and over-long values.
+fn pax_path_archive(path: &str) -> Vec<u8> {
+    let record = pax_record("path", path);
+    gzip_builder(|builder| {
+        let mut pax = Header::new_gnu();
+        pax.set_entry_type(EntryType::XHeader);
+        pax.set_size(u64::try_from(record.len()).expect("pax record size"));
+        pax.set_mode(0o644);
+        pax.set_mtime(0);
+        pax.set_path("pax").expect("pax path");
+        pax.set_cksum();
+        builder
+            .append(&pax, record.as_bytes())
+            .expect("append PAX path override");
+        let payload = b"x";
+        let mut header = Header::new_gnu();
+        header.set_size(1);
+        header.set_mode(0o644);
+        header.set_path("payload.d.ts").expect("payload path");
+        header.set_cksum();
+        builder
+            .append(&header, &payload[..])
+            .expect("append PAX path target");
     })
 }
 

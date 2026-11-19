@@ -7,17 +7,18 @@
 use std::fs;
 
 use wxml_delivery::error::DeliveryError;
+use wxml_delivery::manifest::set_mode;
 use wxml_delivery::native_install::FailPoint;
 use wxml_delivery::state::Journal;
 
 use crate::support::{
-    LEGACY_VERSION, TestDir, Tripwires, VERSION_N1, active_version, assert_contains,
+    LEGACY_VERSION, TestDir, Tripwires, VERSION_N1, VERSION_N2, active_version, assert_contains,
     assert_failure, assert_journal_empty, assert_legacy_current, assert_marker_absent,
     assert_state, assert_success, assert_tmp_empty, build_legacy_release, clear_marker, combined,
     evidence, fixture, install_legacy, install_n1, install_with_failpoint, installed_fingerprint,
     installed_versions, installer_bin, legacy_fingerprint, mutate_release, open_root, private_root,
-    remove_typings, run_installer, shared_channel, skip, stage_release_tree, state_bytes, stdout,
-    workspace,
+    remove_typings, run_installer, run_installer_env, shared_channel, skip, stage_release_tree,
+    state_bytes, stdout, upgrade_n2, workspace,
 };
 use wxml_delivery::verify_v2::collect_tree;
 
@@ -431,5 +432,169 @@ fn f3_08_09_15_legacy_migration_inert_env_and_v1_rollback() {
     println!(
         "F3-08/F3-09/F3-15: legacy read-only/environment inertness, successful migration, \
          pre-activation failure, commit/recover and post-switch roll-forward all completed"
+    );
+}
+
+#[test]
+#[ignore = "requires pinned real assets; run with --ignored"]
+#[allow(clippy::too_many_lines)]
+fn f3_15_explicit_binary_precedence_for_install_upgrade_rollback() {
+    let Some(channel) = shared_channel("f3_15_binary_precedence") else {
+        skip(
+            "F3-15",
+            "pinned real assets are absent; set TSGO_NATIVE_TARBALL/TSGO_TYPINGS_TARBALL or WXML_REQUIRE_REAL_ENGINE=1",
+        );
+        return;
+    };
+    let base = TestDir::new("f3-15-precedence");
+    let (work, _home, _tmp) = workspace(&base);
+    let tripwires = Tripwires::install(base.path());
+    let install_bin = installer_bin();
+    let root_path = private_root(&base, "root");
+    let root_text = root_path.to_str().expect("UTF-8 root");
+    let channel_text = channel.channel.to_str().expect("UTF-8 channel");
+
+    assert_success(
+        &install_n1(&install_bin, channel, &root_path, &tripwires, &work),
+        "F3-15 precedence baseline N1",
+    );
+    assert_success(
+        &upgrade_n2(&install_bin, channel, &root_path, &tripwires, &work),
+        "F3-15 precedence baseline N2",
+    );
+    assert_state(&root_path, VERSION_N2, Some(VERSION_N1));
+    let state_before = state_bytes(&root_path);
+    let n1_fingerprint = installed_fingerprint(&root_path, VERSION_N1);
+    let n2_fingerprint = installed_fingerprint(&root_path, VERSION_N2);
+
+    let explicit = base.path().join("explicit-lsp");
+    fs::write(
+        &explicit,
+        b"#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'wxml-lsp 9.9.9\\n'; fi\n",
+    )
+    .expect("write explicit binary");
+    set_mode(&explicit, 0o755).expect("explicit binary mode");
+    let explicit_text = explicit.to_str().expect("UTF-8 explicit binary");
+
+    // A valid absolute WXML_LSP_BIN wins for all three mutating commands: each
+    // one reports precedence and performs no install/upgrade/rollback.
+    let cases: [(&str, Vec<&str>, &str); 3] = [
+        (
+            "install",
+            vec![
+                "install",
+                "--root",
+                root_text,
+                "--from-dir",
+                channel_text,
+                "--version",
+                VERSION_N1,
+                "--offline",
+            ],
+            "No install or download was attempted",
+        ),
+        (
+            "upgrade",
+            vec![
+                "upgrade",
+                "--root",
+                root_text,
+                "--from-dir",
+                channel_text,
+                "--offline",
+            ],
+            "No upgrade or download was attempted",
+        ),
+        (
+            "rollback",
+            vec![
+                "rollback",
+                "--root",
+                root_text,
+                "--to",
+                VERSION_N1,
+                "--offline",
+            ],
+            "No rollback was attempted",
+        ),
+    ];
+    for (command, args, expected) in &cases {
+        let output = run_installer_env(
+            &install_bin,
+            args,
+            &[("WXML_LSP_BIN", explicit_text)],
+            &tripwires,
+            &work,
+            &format!("F3-15 valid WXML_LSP_BIN {command}"),
+        );
+        assert_success(&output, &format!("valid WXML_LSP_BIN {command}"));
+        assert_contains(&output, &[*expected, "takes precedence"]);
+        assert!(
+            !stdout(&output).contains("(native)"),
+            "{command} mutated the root despite WXML_LSP_BIN: {}",
+            stdout(&output)
+        );
+        assert_eq!(state_bytes(&root_path), state_before, "{command}");
+        assert_eq!(
+            installed_fingerprint(&root_path, VERSION_N1),
+            n1_fingerprint,
+            "{command}"
+        );
+        assert_eq!(
+            installed_fingerprint(&root_path, VERSION_N2),
+            n2_fingerprint,
+            "{command}"
+        );
+        evidence(
+            "F3-15",
+            "PASS",
+            format!(
+                "a valid absolute WXML_LSP_BIN made `{command}` report precedence without any \
+                 install/upgrade/rollback; detail={}",
+                combined(&output).trim().replace('\n', " | ")
+            ),
+        );
+    }
+
+    // An invalid WXML_LSP_BIN is a hard error for all three commands; it never
+    // falls back to installing or switching.
+    let missing = base.path().join("missing-lsp");
+    let missing_text = missing.to_str().expect("UTF-8 missing binary");
+    for (command, args, _) in &cases {
+        let output = run_installer_env(
+            &install_bin,
+            args,
+            &[("WXML_LSP_BIN", missing_text)],
+            &tripwires,
+            &work,
+            &format!("F3-15 invalid WXML_LSP_BIN {command}"),
+        );
+        assert_failure(&output, &format!("invalid WXML_LSP_BIN {command}"));
+        assert_contains(&output, &["WXML_LSP_BIN", "invalid"]);
+        assert_eq!(state_bytes(&root_path), state_before, "{command}");
+        assert_eq!(
+            installed_fingerprint(&root_path, VERSION_N1),
+            n1_fingerprint,
+            "{command}"
+        );
+        assert_eq!(
+            installed_fingerprint(&root_path, VERSION_N2),
+            n2_fingerprint,
+            "{command}"
+        );
+        evidence(
+            "F3-15",
+            "PASS",
+            format!(
+                "an invalid WXML_LSP_BIN made `{command}` fail hard with no fallback; detail={}",
+                combined(&output).trim().replace('\n', " | ")
+            ),
+        );
+    }
+
+    tripwires.assert_not_executed();
+    println!(
+        "F3-15: valid WXML_LSP_BIN precedence and invalid-value hard errors were exercised for \
+         install/upgrade/rollback over a real N1/N2 installation"
     );
 }

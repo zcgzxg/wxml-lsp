@@ -11,12 +11,33 @@ use wxml_delivery::state::{Journal, TransactionState};
 
 use crate::support::{
     INSTALL_TIMEOUT, TestDir, Tripwires, VERSION_N1, VERSION_N2, active_version, assert_contains,
-    assert_journal_empty, assert_state, assert_success, assert_tmp_empty, combined, evidence,
-    fixture, install_n1, install_with_failpoint, installed_fingerprint, installed_versions,
-    installer_bin, open_root, private_root, rollback_with_failpoint, run_installer,
-    run_two_installers, shared_channel, skip, stage_release_tree, state_bytes, stdout, upgrade_n2,
-    workspace, write_journal,
+    assert_current_verified, assert_journal_empty, assert_state, assert_success, assert_tmp_empty,
+    combined, evidence, fixture, install_n1, install_with_failpoint, installed_fingerprint,
+    installed_versions, installer_bin, open_root, private_root, rollback_with_failpoint,
+    run_installer, run_two_installers, shared_channel, skip, stage_release_tree, state_bytes,
+    stdout, upgrade_n2, workspace, write_journal,
 };
+
+/// Explicit "current is always valid" sample at one named critical point.
+///
+/// The contract asks that `current` stays resolvable and points at a verified
+/// tree; this suite samples that at every transition instead of claiming
+/// continuous monitoring.
+fn sample_current(root_path: &std::path::Path, version: &str, point: &str) {
+    let files = assert_current_verified(root_path, version);
+    println!(
+        "F3-16 CURRENT-SAMPLE: {point}: current -> versions/{version} \
+         ({files} files verified)"
+    );
+}
+
+/// Returns the stable identity of `state.json`, used to prove a recovery or
+/// rollback did not rewrite it.
+fn state_identity(path: &std::path::Path) -> (u64, i64, i64) {
+    use std::os::unix::fs::MetadataExt;
+    let metadata = fs::metadata(path).expect("state.json metadata");
+    (metadata.ino(), metadata.ctime(), metadata.ctime_nsec())
+}
 
 #[test]
 #[ignore = "requires pinned real assets; run with --ignored"]
@@ -202,6 +223,7 @@ fn f3_16_journal_recovery_concurrent_install_and_corrupt_active_rollback() {
     let staged_root_path = private_root(&base, "staged-root");
     let install = install_n1(&install_bin, channel, &staged_root_path, &tripwires, &work);
     assert_success(&install, "F3-16 staged baseline N1");
+    sample_current(&staged_root_path, VERSION_N1, "staged baseline");
     let staged_root = open_root(&staged_root_path);
     let staged_state = state_bytes(&staged_root_path);
     fs::create_dir_all(staged_root.tmp_dir()).expect("create tmp");
@@ -233,6 +255,7 @@ fn f3_16_journal_recovery_concurrent_install_and_corrupt_active_rollback() {
     assert_eq!(active_version(&staged_root).as_deref(), Some(VERSION_N1));
     assert_journal_empty(&staged_root);
     assert_tmp_empty(&staged_root);
+    sample_current(&staged_root_path, VERSION_N1, "after staged recovery");
     evidence(
         "F3-16",
         "PASS",
@@ -250,6 +273,7 @@ fn f3_16_journal_recovery_concurrent_install_and_corrupt_active_rollback() {
     );
     assert_success(&install, "F3-16 committed baseline N1");
     let committed_root = open_root(&committed_root_path);
+    sample_current(&committed_root_path, VERSION_N1, "committed baseline");
     let n1_fingerprint = installed_fingerprint(&committed_root_path, VERSION_N1);
     let committed_state = state_bytes(&committed_root_path);
     let staged = stage_release_tree(&committed_root, &channel.n2);
@@ -258,6 +282,11 @@ fn f3_16_journal_recovery_concurrent_install_and_corrupt_active_rollback() {
             .unwrap_err();
     assert!(matches!(error, DeliveryError::Runtime(_)), "{error:?}");
     assert_eq!(active_version(&committed_root).as_deref(), Some(VERSION_N1));
+    sample_current(
+        &committed_root_path,
+        VERSION_N1,
+        "after committed-target failpoint",
+    );
     let recover = run_installer(
         &install_bin,
         &[
@@ -286,6 +315,7 @@ fn f3_16_journal_recovery_concurrent_install_and_corrupt_active_rollback() {
         1,
         "the committed journal must be retained as evidence"
     );
+    sample_current(&committed_root_path, VERSION_N1, "after committed recovery");
     evidence(
         "F3-16",
         "PASS",
@@ -303,6 +333,7 @@ fn f3_16_journal_recovery_concurrent_install_and_corrupt_active_rollback() {
     assert_success(&upgrade, "F3-16 explicit upgrade after committed recovery");
     assert_state(&committed_root_path, VERSION_N2, Some(VERSION_N1));
     assert_journal_empty(&committed_root);
+    sample_current(&committed_root_path, VERSION_N2, "explicit upgrade");
     evidence(
         "F3-16",
         "PASS",
@@ -333,11 +364,103 @@ fn f3_16_journal_recovery_concurrent_install_and_corrupt_active_rollback() {
     assert_success(&recover, "recover activated");
     assert_state(&committed_root_path, VERSION_N2, Some(VERSION_N1));
     assert_journal_empty(&committed_root);
+    sample_current(&committed_root_path, VERSION_N2, "after activated recovery");
     evidence(
         "F3-16",
         "PASS",
         "activated journal re-verified the real engine/binary probes and rewrote a missing \
          state.json",
+    );
+
+    // A second `recover` with no journal must be a pure no-op: the journal is
+    // already gone, `current` stays N2, and state.json is not rewritten.
+    let activated_state = state_bytes(&committed_root_path).expect("state.json exists");
+    let activated_identity = state_identity(&state_path);
+    let second = run_installer(
+        &install_bin,
+        &[
+            "recover",
+            "--root",
+            committed_root_path.to_str().expect("UTF-8 root"),
+        ],
+        &tripwires,
+        &work,
+        "recover activated journal a second time",
+    );
+    assert_success(&second, "second recover activated");
+    assert_contains(&second, &["no recovery actions were needed"]);
+    assert_journal_empty(&committed_root);
+    assert_eq!(
+        state_bytes(&committed_root_path).as_deref(),
+        Some(activated_state.as_slice()),
+        "a no-op recovery changed state.json bytes"
+    );
+    assert_eq!(
+        state_identity(&state_path),
+        activated_identity,
+        "a no-op recovery rewrote state.json"
+    );
+    assert_eq!(active_version(&committed_root).as_deref(), Some(VERSION_N2));
+    sample_current(
+        &committed_root_path,
+        VERSION_N2,
+        "second recover (no journal)",
+    );
+    evidence(
+        "F3-16",
+        "PASS",
+        "a second `recover` found no journal, reported no actions and left state.json \
+         byte- and inode-identical with current still 0.2.0",
+    );
+
+    // Re-create the activated journal exactly as a crash after `state.write`
+    // but before journal removal would. `current` and state are already valid,
+    // so recovery must only remove the journal and never rewrite state.
+    write_journal(
+        &committed_root,
+        wxml_delivery::state::TransactionOp::Upgrade,
+        VERSION_N2,
+        Some(VERSION_N1),
+        TransactionState::Activated,
+    );
+    let idempotent = run_installer(
+        &install_bin,
+        &[
+            "recover",
+            "--root",
+            committed_root_path.to_str().expect("UTF-8 root"),
+        ],
+        &tripwires,
+        &work,
+        "recover re-created activated journal with valid state",
+    );
+    assert_success(&idempotent, "idempotent activated recovery");
+    assert_contains(
+        &idempotent,
+        &["valid state already active", "journal removed"],
+    );
+    assert_journal_empty(&committed_root);
+    assert_eq!(
+        state_bytes(&committed_root_path).as_deref(),
+        Some(activated_state.as_slice()),
+        "idempotent activated recovery changed state.json bytes"
+    );
+    assert_eq!(
+        state_identity(&state_path),
+        activated_identity,
+        "idempotent activated recovery rewrote state.json"
+    );
+    assert_eq!(active_version(&committed_root).as_deref(), Some(VERSION_N2));
+    sample_current(
+        &committed_root_path,
+        VERSION_N2,
+        "idempotent activated journal removal",
+    );
+    evidence(
+        "F3-16",
+        "PASS",
+        "a re-created activated journal for the already-valid state was removed without \
+         rewriting state.json; current stayed 0.2.0",
     );
 
     // corrupted active tree: rollback to the verified target.
@@ -370,6 +493,11 @@ fn f3_16_journal_recovery_concurrent_install_and_corrupt_active_rollback() {
         installed_fingerprint(&committed_root_path, VERSION_N1),
         n1_fingerprint,
         "N1 rollback target changed"
+    );
+    sample_current(
+        &committed_root_path,
+        VERSION_N1,
+        "rollback from corrupted active",
     );
     evidence(
         "F3-16",
@@ -410,6 +538,7 @@ fn f3_16_journal_recovery_concurrent_install_and_corrupt_active_rollback() {
     assert_state(&concurrent_root, VERSION_N1, None);
     assert_journal_empty(&concurrent);
     assert_tmp_empty(&concurrent);
+    sample_current(&concurrent_root, VERSION_N1, "concurrent installs");
     evidence(
         "F3-16",
         "PASS",
@@ -417,6 +546,20 @@ fn f3_16_journal_recovery_concurrent_install_and_corrupt_active_rollback() {
             "two concurrent real installs both succeeded under the exclusive root lock; final \
              current={VERSION_N1}"
         ),
+    );
+
+    evidence(
+        "F3-16",
+        "PASS",
+        "current was sampled at 11 explicit critical points and each time resolved to \
+         versions/<v> inside the root and passed a full tree verification; this is sampling, \
+         not continuous monitoring",
+    );
+    evidence(
+        "F3-16",
+        "BLOCKED",
+        "continuous `current` monitoring and power-loss/directory-fsync durability still need \
+         an external supervisor; this suite samples only at transaction boundaries",
     );
 
     tripwires.assert_not_executed();

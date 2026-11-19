@@ -165,8 +165,26 @@ pub fn run_installer(
     work: &Path,
     label: &str,
 ) -> Output {
+    run_installer_env(install_bin, args, &[], tripwires, work, label)
+}
+
+/// Runs one installer with additional explicit environment variables.
+///
+/// Used by the F3-15 precedence cases; every other variable still comes from
+/// the dead-proxy / Node-tripwire baseline.
+pub fn run_installer_env(
+    install_bin: &Path,
+    args: &[&str],
+    env: &[(&str, &str)],
+    tripwires: &Tripwires,
+    work: &Path,
+    label: &str,
+) -> Output {
     let mut command = clean_command(install_bin, tripwires, work);
     command.args(args);
+    for (key, value) in env {
+        command.env(key, value);
+    }
     let output = run_with_deadline(&mut command, INSTALL_TIMEOUT, label);
     tripwires.assert_not_executed();
     output
@@ -342,6 +360,69 @@ pub fn assert_no_activation(root: &Path) {
         assert!(entries.next().is_none(), "staging files were left behind");
     }
     assert_eq!(mode_of(root), 0o700, "install root mode changed");
+}
+
+/// Asserts that `<root>/current` resolves to `versions/<version>` and that the
+/// resolved tree still verifies against its own manifest.
+///
+/// This is the explicit "current is always valid" sampling probe: callers name
+/// each critical point and print the result instead of claiming continuous
+/// monitoring. Returns the verified file count.
+pub fn assert_current_verified(root_path: &Path, version: &str) -> usize {
+    let root = open_root(root_path);
+    assert_eq!(
+        active_version(&root).as_deref(),
+        Some(version),
+        "current does not name {version}"
+    );
+    let link = fs::read_link(root_path.join("current")).expect("read current link");
+    assert_eq!(
+        link,
+        Path::new("versions").join(version),
+        "current must be a relative versions/<version> link"
+    );
+    let versions = fs::canonicalize(root.versions_dir()).expect("canonical versions directory");
+    let resolved = fs::canonicalize(root_path.join("current")).expect("resolve current link");
+    assert!(
+        resolved.starts_with(&versions),
+        "current escapes versions/: {}",
+        resolved.display()
+    );
+    assert_eq!(
+        resolved,
+        fs::canonicalize(root.versions_dir().join(version)).expect("canonical version directory"),
+        "current does not resolve to versions/{version}"
+    );
+    let report = verify_tree_v2(&resolved, expected(version))
+        .expect("the active current tree must verify against its manifest");
+    assert_eq!(report.manifest.package_version, version);
+    report.file_count
+}
+
+/// Returns the installer-written archive cache entry for `version`, if any.
+///
+/// The entry directory name contains the release SHA-256 prefix, so callers
+/// must not construct it; the `entry.json` identity is authoritative.
+pub fn cached_entry(root: &InstallRoot, version: &str) -> Option<(PathBuf, String)> {
+    let directory = wxml_delivery::acquire_v2::native_cache_dir(root);
+    let entries = fs::read_dir(&directory).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(bytes) = fs::read(path.join("entry.json")) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+            continue;
+        };
+        if value["version"].as_str() == Some(version) {
+            let sha256 = value["sha256"].as_str().unwrap_or_default().to_owned();
+            return Some((path, sha256));
+        }
+    }
+    None
 }
 
 /// Asserts the previous current version and its tree are untouched.
