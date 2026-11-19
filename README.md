@@ -176,15 +176,16 @@ references、rename、codeAction、semanticTokens、workspaceSymbol 和 signatur
 
 Q1 已合入本地交付工具，但**没有 marketplace 发布、远端 release 或自动更新**；下载只在用户显式执行安装/升级命令并给出 `--enable-download` 时可用。Zed 扩展本身仍不下载、不解包、不安装服务器；它只接受宿主 OS 的绝对 `WXML_LSP_BIN`。独立安装器负责生成和验证产物，再把稳定的 `current/bin/wxml-lsp` 路径交给扩展。
 
-构建（输出目录必须在仓库外；默认离线，只有显式 `--online` 才允许 cargo/npm 取依赖）：
+构建（输出目录必须在仓库外；默认 cargo 离线，显式 `--online` 只允许 cargo 取依赖；asset 只来自已校验缓存或 `--from-dir`）：
 
 ```bash
-scripts/build-release.sh --output "$HOME/wxml-release"
+# 首次或缓存未命中：--from-dir 提供 assets.lock.json 中精确文件名的两个 tarball
+scripts/build-release.sh --output "$HOME/wxml-release" --from-dir /path/to/locked-tarballs
 # 只检查前置条件，不写文件、不联网
 scripts/build-release.sh --dry-run --output "$HOME/wxml-release"
 ```
 
-脚本拒绝 `--publish`、`--tag`、`--release`、`--upload`，只生成本地版本化目录、`.tar.gz`、checksum、`index.json` 和 `manifest.json`。产物绑定当前 HEAD 的 Rust/Node 协议版本、平台、Node 最低版本和逐文件哈希；旧 release 不能用于新 HEAD 验收。完整命令与布局见 [wxml-delivery README](crates/wxml-delivery/README.md)。
+`build-release.sh` 只生成 schema v2 原生包：不执行 node/npm/npx/pnpm/yarn/bun，也不从 `backends/typescript` 复制 JavaScript。脚本拒绝 `--publish`、`--tag`、`--release`、`--upload`，只生成本地版本化目录、`.tar.gz`、checksum、`index.json`、`manifest.json`、`provenance.json` 和 `THIRD_PARTY_LICENSES.md`。产物绑定当前 HEAD 的 Rust/native engine 协议版本、`linux-x86_64` 平台和逐文件哈希；旧 release 不能用于新 HEAD 验收。完整命令与布局见 [wxml-delivery README](crates/wxml-delivery/README.md)。
 
 安装、升级和回退：
 
@@ -508,7 +509,7 @@ crates/
 └── wxml-lsp                  # LSP 传输、多项目宿主、Node 后端与请求路由（二进制）
 backends/typescript           # C1.1 Node 类型后端
 editors/zed                   # 本地 Zed Dev Extension（独立 workspace）
-scripts/build-release.sh      # 本地构建 Rust/Node/Zed 产物；不发布
+scripts/build-release.sh      # 本地构建 Node-free v2 native 产物；不发布
 tests/fixtures                # AC-001..AC-013 样本
 docs/                         # 参考、ADR、证据
 ```

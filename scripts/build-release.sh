@@ -1,39 +1,64 @@
 #!/usr/bin/env bash
-# Build a reproducible local WXML LSP release for Linux.
+# Build a reproducible, Node-free schema v2 WXML LSP release for Linux x86_64.
 #
 # The script never publishes, tags or uploads anything. It writes only below
-# the user-selected --output directory and a cache outside the repository.
+# the user-selected --output directory and caches outside the repository. It
+# never executes node/nodejs/npm/npx/pnpm/yarn/bun and never copies JavaScript
+# from backends/typescript: the only inputs are the built Rust binaries, the
+# wasm32-wasip2 Zed extension and an already verified asset cache (or the exact
+# locked tarballs through `--from-dir`).
 set -euo pipefail
+umask 022
 
 usage() {
     cat <<'USAGE'
 Usage: scripts/build-release.sh --output DIR [OPTIONS]
 
-Builds the Rust language server + installer, the Node type backend with
-production dependencies, and the wasm32-wasip2 Zed extension, then produces:
+Builds the Node-free schema v2 native package for linux-x86_64:
 
-  <output>/wxml-lsp-<version>-<platform>/
-  <output>/wxml-lsp-<version>-<platform>.tar.gz
-  <output>/wxml-lsp-<version>-<platform>.tar.gz.sha256
+  1. cargo build --release -p wxml-lsp -p wxml-delivery
+  2. cargo build --release --target wasm32-wasip2 (editors/zed)
+  3. wxml-lsp-package provision --lock assets.lock.json --cache DIR
+     (only the verified content-addressed cache or --from-dir tarballs)
+  4. stage bin/wxml-lsp, bin/wxml-lsp-install, zed-extension/, and a generated
+     THIRD_PARTY_LICENSES.md (engine/ and typings/ come from the cache)
+  5. wxml-lsp-package native --input <stage> --output DIR
+  6. wxml-lsp-install verify-package --from-dir DIR and sha256sum -c SHA256SUMS
+
+Artifacts:
+
+  <output>/wxml-lsp-<version>-linux-x86_64/
+  <output>/wxml-lsp-<version>-linux-x86_64.tar.gz
+  <output>/wxml-lsp-<version>-linux-x86_64.tar.gz.sha256
   <output>/index.json
   <output>/SHA256SUMS
 
 Options:
   --output DIR       artifact directory outside the repository (required)
+  --cache DIR        content-addressed asset cache (default:
+                     $WXML_BUILD_CACHE/assets-cache)
+  --from-dir DIR     directory holding the exact locked tarball names; used
+                     only when the cache is cold, never downloads anything
+  --zed-wasm FILE    reuse a prebuilt zed_wxml.wasm instead of building it
+  --skip-zed         fail instead of building the extension (requires --zed-wasm)
+  --protocol-version N  native frame protocol version (default: source constant)
+  --online           allow cargo to fetch missing Rust dependencies (default:
+                     offline; assets are still never downloaded)
   --dry-run          print the plan and prerequisites; write nothing
-  --online           allow cargo/npm to fetch missing dependencies (default:
-                     offline; the release script never contacts a server itself)
   --help             print this message
 
 Environment:
-  CARGO_TARGET_DIR   Rust target directory (default: <cache>/cargo-target)
-  WXML_BUILD_CACHE   staging/cache root (default: $XDG_CACHE_HOME/wxml-lsp-release)
-  SOURCE_DATE_EPOCH  fixed build timestamp for reproducible archives
+  CARGO_TARGET_DIR        Rust target directory (default: <cache>/cargo-target)
+  ZED_CARGO_TARGET_DIR    Zed target directory (default: <cache>/zed-target)
+  WXML_BUILD_CACHE        staging/cache root
+                          (default: $XDG_CACHE_HOME/wxml-lsp-release)
+  WXML_ASSET_CACHE        provisioned asset cache (default: <cache>/assets-cache)
+  SOURCE_DATE_EPOCH       fixed build timestamp for reproducible archives
 
 Remote upload, tag creation and marketplace publishing are deliberately not
-implemented. Any --publish/--tag/--release option fails before building.
-The Zed grammar is bundled only when editors/zed/grammars/wxml.wasm already
-exists; this script never downloads it.
+implemented. Any --publish/--tag/--release/--upload option fails before
+building. The Zed grammar is bundled only when editors/zed/grammars/wxml.wasm
+already exists; this script never downloads it.
 USAGE
 }
 
@@ -52,8 +77,13 @@ shell_quote() {
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 output=""
+assets_cache=""
+from_dir=""
+zed_wasm=""
+skip_zed=0
 dry_run=0
 online=0
+protocol_version=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --output)
@@ -63,6 +93,46 @@ while [ "$#" -gt 0 ]; do
             ;;
         --output=*)
             output="${1#*=}"
+            shift
+            ;;
+        --cache|--assets-cache)
+            [ "$#" -ge 2 ] || die "$1 requires a directory"
+            assets_cache="$2"
+            shift 2
+            ;;
+        --cache=*|--assets-cache=*)
+            assets_cache="${1#*=}"
+            shift
+            ;;
+        --from-dir)
+            [ "$#" -ge 2 ] || die "--from-dir requires a directory"
+            from_dir="$2"
+            shift 2
+            ;;
+        --from-dir=*)
+            from_dir="${1#*=}"
+            shift
+            ;;
+        --zed-wasm)
+            [ "$#" -ge 2 ] || die "--zed-wasm requires a file"
+            zed_wasm="$2"
+            shift 2
+            ;;
+        --zed-wasm=*)
+            zed_wasm="${1#*=}"
+            shift
+            ;;
+        --skip-zed)
+            skip_zed=1
+            shift
+            ;;
+        --protocol-version)
+            [ "$#" -ge 2 ] || die "--protocol-version requires a number"
+            protocol_version="$2"
+            shift 2
+            ;;
+        --protocol-version=*)
+            protocol_version="${1#*=}"
             shift
             ;;
         --dry-run)
@@ -99,53 +169,61 @@ version="$(awk -F'"' '/^version = "/{print $2; exit}' "$repo_root/Cargo.toml")"
 [ -n "$version" ] || die "could not read the workspace version"
 [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]*$ ]] || die "unsafe workspace version"
 
-rust_protocol="$(sed -n 's/^pub const PROTOCOL_VERSION: u64 = \([0-9][0-9]*\);$/\1/p' \
-    "$repo_root/crates/wxml-lsp/src/backend_node/protocol.rs" | head -n1)"
-node_protocol="$(sed -n 's/^export const PROTOCOL_VERSION = \([0-9][0-9]*\);$/\1/p' \
-    "$repo_root/backends/typescript/src/protocol.ts" | head -n1)"
-[ -n "$rust_protocol" ] || die "could not read the Rust protocol version"
-[ -n "$node_protocol" ] || die "could not read the Node protocol version"
-[ "$rust_protocol" = "$node_protocol" ] || die "Rust and Node protocol versions differ"
-
-package_json="$repo_root/backends/typescript/package.json"
-node_minimum="$(sed -n 's/.*"node": *">=\([0-9][0-9.]*\)".*/\1/p' "$package_json" | head -n1)"
-[ -n "$node_minimum" ] || die "could not read the Node minimum version"
-backend_version="$(sed -n 's/^  "version": "\([^"]*\)",$/\1/p' "$package_json" | head -n1)"
-[ -n "$backend_version" ] || die "could not read the backend version"
-zed_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' "$repo_root/editors/zed/extension.toml" | head -n1)"
-[ -n "$zed_version" ] || die "could not read the Zed extension version"
+manifest_v2="$repo_root/crates/wxml-delivery/src/manifest_v2.rs"
+engine_rs="$repo_root/crates/wxml-lsp/src/backend_tsgo/engine.rs"
+assets_lock="$repo_root/assets.lock.json"
+manifest_protocol="$(sed -n 's/^pub const SUPPORTED_NATIVE_PROTOCOL_VERSIONS: &\[u64\] = &\[\([0-9][0-9]*\)\];$/\1/p' \
+    "$manifest_v2" | head -n1)"
+engine_protocol="$(sed -n 's/^const NATIVE_PROTOCOL_VERSION: u64 = \([0-9][0-9]*\);$/\1/p' \
+    "$engine_rs" | head -n1)"
+[ -n "$manifest_protocol" ] || die "could not read the native manifest protocol version"
+[ -n "$engine_protocol" ] || die "could not read the native engine protocol version"
+[ "$manifest_protocol" = "$engine_protocol" ] \
+    || die "native manifest and engine protocol versions differ"
+if [ -z "$protocol_version" ]; then
+    protocol_version="$manifest_protocol"
+fi
+[[ "$protocol_version" =~ ^[0-9]+$ ]] || die "--protocol-version must be a number"
+[ "$protocol_version" = "$manifest_protocol" ] \
+    || die "native protocol $protocol_version is not supported by this packager"
 
 case "$(uname -s)" in
-    Linux) os=linux ;;
-    *) die "only Linux release builds are verified by this project" ;;
+    Linux) ;;
+    *) die "only Linux native release builds are verified by this project" ;;
 esac
 case "$(uname -m)" in
-    x86_64|amd64) arch=x86_64 ;;
-    aarch64|arm64) arch=aarch64 ;;
-    *) die "unsupported architecture: $(uname -m)" ;;
+    x86_64|amd64) ;;
+    *) die "native packages support only linux-x86_64 (host: $(uname -m))" ;;
 esac
-platform="$os-$arch"
+platform="linux-x86_64"
 
 cache_root="${WXML_BUILD_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/wxml-lsp-release}"
 rust_target="${CARGO_TARGET_DIR:-$cache_root/cargo-target}"
 zed_target="${ZED_CARGO_TARGET_DIR:-$cache_root/zed-target}"
-case "$(realpath -m -- "$rust_target")/" in
-    "$repo_real/"*) die "CARGO_TARGET_DIR must be outside the repository" ;;
-esac
-case "$(realpath -m -- "$zed_target")/" in
-    "$repo_real/"*) die "ZED_CARGO_TARGET_DIR must be outside the repository" ;;
-esac
-case "$(realpath -m -- "$cache_root")/" in
-    "$repo_real/"*) die "WXML_BUILD_CACHE must be outside the repository" ;;
-esac
+if [ -z "$assets_cache" ]; then
+    assets_cache="${WXML_ASSET_CACHE:-$cache_root/assets-cache}"
+fi
+for directory in "$rust_target" "$zed_target" "$cache_root" "$assets_cache"; do
+    case "$(realpath -m -- "$directory")/" in
+        "$repo_real/"*) die "build and cache directories must be outside the repository: $directory" ;;
+    esac
+done
+if [ -n "$from_dir" ]; then
+    from_dir="$(realpath -m -- "$from_dir")"
+    [ -d "$from_dir" ] || die "--from-dir is not a directory: $from_dir"
+fi
+if [ -n "$zed_wasm" ]; then
+    zed_wasm="$(realpath -m -- "$zed_wasm")"
+    [ -f "$zed_wasm" ] || die "--zed-wasm is not a file: $zed_wasm"
+fi
+[ "$skip_zed" -eq 0 ] || [ -n "$zed_wasm" ] \
+    || die "--skip-zed requires --zed-wasm FILE"
 
 if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
     [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || die "SOURCE_DATE_EPOCH must be an integer"
     built_at="$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
-    mtime="$SOURCE_DATE_EPOCH"
 else
     built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    mtime=0
 fi
 
 require_tool() {
@@ -154,65 +232,102 @@ require_tool() {
 
 check_prerequisites() {
     require_tool cargo
-    require_tool node
-    require_tool npm
     require_tool realpath
     require_tool sha256sum
-    [ -f "$package_json" ] || die "missing backend package.json"
-    [ -f "$repo_root/crates/wxml-lsp/src/backend_node/protocol.rs" ] || die "missing Rust protocol source"
-    [ -f "$repo_root/backends/typescript/src/protocol.ts" ] || die "missing Node protocol source"
+    require_tool awk
+    require_tool sed
+    require_tool find
+    require_tool sort
+    require_tool install
+    [ -f "$assets_lock" ] || die "missing assets.lock.json"
+    [ -f "$manifest_v2" ] || die "missing native manifest source"
+    [ -f "$engine_rs" ] || die "missing native engine source"
     [ -f "$repo_root/editors/zed/extension.toml" ] || die "missing Zed manifest"
-    if command -v rustup >/dev/null 2>&1; then
+    if [ -z "$zed_wasm" ] && [ "$skip_zed" -eq 0 ] && command -v rustup >/dev/null 2>&1; then
         rustup target list --installed | grep -qx 'wasm32-wasip2' \
-            || die "rustup target wasm32-wasip2 is not installed"
+            || die "rustup target wasm32-wasip2 is not installed (or pass --zed-wasm)"
     fi
-    node_major="${node_minimum%%.*}"
-    node -e 'process.exit(Number(process.versions.node.split(".")[0]) >= Number(process.argv[1]) ? 0 : 1)' \
-        "$node_major" || die "Node.js >= $node_minimum is required to build the backend"
+    if ! command -v node >/dev/null 2>&1; then
+        note "node: absent (native release build does not require it)"
+    else
+        note "node: present on PATH; the build PATH tripwire fails closed if it is executed"
+    fi
 }
 
 if [ "$dry_run" -eq 1 ]; then
     check_prerequisites
-    note "dry-run: no files will be written, no network access, no upload/tag/release"
+    note "dry-run: no files will be written, no upload/tag/release"
     note "  repository: $repo_root"
     note "  output:     $output_abs"
     note "  version:    $version"
     note "  platform:   $platform"
-    note "  protocol:   $rust_protocol"
-    note "  node:       >= $node_minimum"
+    note "  protocol:   $protocol_version"
     note "  target dir: $rust_target"
     note "  zed target: $zed_target"
-    note "  npm:        $([ "$online" -eq 1 ] && echo online || echo offline)"
+    note "  asset cache:$assets_cache"
+    note "  from-dir:   ${from_dir:-<none>}"
+    note "  cargo:      $([ "$online" -eq 1 ] && echo online || echo offline)"
     note "  built-at:   $built_at"
     note "planned steps:"
     note "  1. cargo build --release --locked -p wxml-lsp -p wxml-delivery"
-    note "  2. copy backend sources; npm ci, npm run check, npm run build, npm prune --omit=dev"
-    note "  3. cargo build --manifest-path editors/zed/Cargo.toml --release --target wasm32-wasip2 --locked"
-    note "  4. stage bin/wxml-lsp, bin/wxml-lsp-install, bin/wxml-type-backend/, zed-extension/"
-    note "  5. wxml-lsp-package --input <stage> --output $output_abs"
-    note "  6. wxml-lsp-install verify-package --from-dir $output_abs --version $version"
+    if [ -n "$zed_wasm" ]; then
+        note "  2. reuse Zed wasm: $zed_wasm"
+    else
+        note "  2. cargo build --manifest-path editors/zed/Cargo.toml --release --target wasm32-wasip2 --locked"
+    fi
+    note "  3. wxml-lsp-package provision --lock assets.lock.json --cache $assets_cache [--from-dir DIR]"
+    note "  4. stage native allowlist + generated THIRD_PARTY_LICENSES.md"
+    note "  5. wxml-lsp-package native --input <stage> --output $output_abs"
+    note "  6. wxml-lsp-install verify-package --from-dir $output_abs --version $version --offline"
     note "  7. sha256sum -c SHA256SUMS"
     exit 0
 fi
 
 check_prerequisites
-mkdir -p "$output_abs"
-mkdir -p "$cache_root"
+mkdir -p "$output_abs" "$cache_root"
 stage_root="$(mktemp -d "$cache_root/stage-XXXXXXXX")"
-trap 'rm -rf "$stage_root"' EXIT
 stage="$stage_root/root"
-mkdir -p "$stage/bin" "$stage/zed-extension"
+audit_dir="$stage_root/no-node-path"
+marker="$stage_root/no-node-executed.log"
+cleanup() {
+    local status=$?
+    trap - EXIT
+    if [ -e "$marker" ]; then
+        printf 'error: the release build executed a Node-family tool:\n' >&2
+        sed 's/^/  /' "$marker" >&2
+        [ "$status" -eq 0 ] && status=1
+    fi
+    rm -rf "$stage_root"
+    exit "$status"
+}
+trap cleanup EXIT
+mkdir -p "$stage/bin" "$stage/zed-extension" "$audit_dir"
 
-offline_flag=()
-if [ "$online" -eq 0 ]; then
-    offline_flag=(--offline)
-    export CARGO_NET_OFFLINE=true
-else
-    unset CARGO_NET_OFFLINE
-fi
-npm_offline=(--offline)
+# The build itself must never execute a Node-family tool. The tripwire only
+# covers PATH-name invocations; it is auxiliary evidence, not an execve audit.
+for name in node nodejs npm npx pnpm yarn bun; do
+    {
+        printf '#!/bin/sh\n'
+        printf 'printf "%%s %%s\\n" "$0" "$*" >> %s\n' "$(printf '%q' "$marker")"
+        printf 'exit 99\n'
+    } > "$audit_dir/$name"
+    chmod 755 "$audit_dir/$name"
+done
+export PATH="$audit_dir:$PATH"
+check_no_node() {
+    if [ -e "$marker" ]; then
+        printf 'error: the release build executed a Node-family tool:\n' >&2
+        sed 's/^/  /' "$marker" >&2
+        exit 1
+    fi
+}
+
+offline_flag=(--offline)
 if [ "$online" -eq 1 ]; then
-    npm_offline=()
+    offline_flag=()
+    unset CARGO_NET_OFFLINE
+else
+    export CARGO_NET_OFFLINE=true
 fi
 
 note "building Rust release binaries (version $version, $platform)"
@@ -220,61 +335,111 @@ CARGO_TARGET_DIR="$rust_target" cargo build --release --locked "${offline_flag[@
     -p wxml-lsp -p wxml-delivery
 install -m 0755 "$rust_target/release/wxml-lsp" "$stage/bin/wxml-lsp"
 install -m 0755 "$rust_target/release/wxml-lsp-install" "$stage/bin/wxml-lsp-install"
-
-note "building Node type backend"
-node_work="$stage_root/node-work"
-mkdir -p "$node_work"
-cp -a "$repo_root/backends/typescript/src" "$node_work/src"
-cp "$package_json" "$node_work/package.json"
-cp "$repo_root/backends/typescript/package-lock.json" "$node_work/package-lock.json"
-cp "$repo_root/backends/typescript/tsconfig.json" "$node_work/tsconfig.json"
-cp "$repo_root/backends/typescript/tsconfig.build.json" "$node_work/tsconfig.build.json"
-(
-    cd "$node_work"
-    npm ci --ignore-scripts --no-audit --no-fund "${npm_offline[@]}"
-    npm run check
-    npm run build
-    npm prune --omit=dev --no-audit --no-fund "${npm_offline[@]}"
-)
-find "$node_work/node_modules" -type l -delete
-mkdir -p "$stage/bin/wxml-type-backend"
-cp -a "$node_work/dist/." "$stage/bin/wxml-type-backend/"
-cp "$node_work/package.json" "$stage/bin/wxml-type-backend/package.json"
-cp -a "$node_work/node_modules" "$stage/bin/wxml-type-backend/node_modules"
-[ -f "$stage/bin/wxml-type-backend/server.js" ] || die "Node backend build produced no server.js"
+check_no_node
 
 note "building Zed extension (wasm32-wasip2)"
-CARGO_TARGET_DIR="$zed_target" cargo build --manifest-path "$repo_root/editors/zed/Cargo.toml" \
-    --release --target wasm32-wasip2 --locked "${offline_flag[@]}"
-wasm="$zed_target/wasm32-wasip2/release/zed_wxml.wasm"
-[ -f "$wasm" ] || die "Zed extension build produced no zed_wxml.wasm"
-install -m 0644 "$wasm" "$stage/zed-extension/extension.wasm"
-cp "$repo_root/editors/zed/extension.toml" "$stage/zed-extension/extension.toml"
-cp -a "$repo_root/editors/zed/languages" "$stage/zed-extension/languages"
-if [ -f "$repo_root/editors/zed/initialization-options.schema.json" ]; then
-    cp "$repo_root/editors/zed/initialization-options.schema.json" \
-        "$stage/zed-extension/initialization-options.schema.json"
+if [ -n "$zed_wasm" ]; then
+    install -m 0644 "$zed_wasm" "$stage/zed-extension/extension.wasm"
+else
+    CARGO_TARGET_DIR="$zed_target" cargo build --manifest-path "$repo_root/editors/zed/Cargo.toml" \
+        --release --target wasm32-wasip2 --locked "${offline_flag[@]}"
+    wasm="$zed_target/wasm32-wasip2/release/zed_wxml.wasm"
+    [ -f "$wasm" ] || die "Zed extension build produced no zed_wxml.wasm"
+    install -m 0644 "$wasm" "$stage/zed-extension/extension.wasm"
 fi
+install -m 0644 "$repo_root/editors/zed/extension.toml" "$stage/zed-extension/extension.toml"
+cp -a "$repo_root/editors/zed/languages" "$stage/zed-extension/languages"
+find "$stage/zed-extension/languages" -type f -exec chmod 0644 {} +
+find "$stage/zed-extension/languages" -type d -exec chmod 0755 {} +
 if [ -f "$repo_root/editors/zed/grammars/wxml.wasm" ]; then
     mkdir -p "$stage/zed-extension/grammars"
-    cp "$repo_root/editors/zed/grammars/wxml.wasm" "$stage/zed-extension/grammars/wxml.wasm"
+    install -m 0644 "$repo_root/editors/zed/grammars/wxml.wasm" \
+        "$stage/zed-extension/grammars/wxml.wasm"
 else
     note "warning: editors/zed/grammars/wxml.wasm is absent; the package omits the grammar"
 fi
+check_no_node
 
-note "packaging versioned directory, archive, checksums and index"
-"$rust_target/release/wxml-lsp-package" \
+note "provisioning locked assets from the verified cache or --from-dir"
+packager="$rust_target/release/wxml-lsp-package"
+provision_log="$stage_root/provision.log"
+provision_args=(provision --lock "$assets_lock" --cache "$assets_cache" --offline)
+if [ -n "$from_dir" ]; then
+    provision_args+=(--from-dir "$from_dir")
+fi
+"$packager" "${provision_args[@]}" | tee "$provision_log"
+check_no_node
+
+note "generating THIRD_PARTY_LICENSES.md from the verified payload"
+licenses="$stage/THIRD_PARTY_LICENSES.md"
+asset_keys="$stage_root/asset-keys.txt"
+awk '$1 == "asset:" {
+    name = $2
+    key = ""
+    for (i = 1; i <= NF; i++) {
+        if ($i == "cache-key") {
+            key = $(i + 1)
+        }
+    }
+    if (name != "" && key != "") {
+        print name " " key
+    }
+}' "$provision_log" | LC_ALL=C sort > "$asset_keys"
+[ -s "$asset_keys" ] || die "provision report did not list any verified assets"
+{
+    printf '# Third-party licenses\n\n'
+    printf 'Generated by `scripts/build-release.sh` from the verified provisioning\n'
+    printf 'cache of the committed `assets.lock.json`. This is a build-time\n'
+    printf 'aggregation, not a legal review.\n\n'
+    while read -r name key; do
+        payload="$assets_cache/assets/$name/$key/payload"
+        [ -d "$payload" ] || die "missing verified payload entry: $payload"
+        license_files="$stage_root/licenses-$name.txt"
+        find "$payload" -type f \
+            \( -iname 'LICENSE*' -o -iname 'NOTICE*' -o -iname 'COPYING*' \) \
+            | LC_ALL=C sort > "$license_files"
+        [ -s "$license_files" ] \
+            || die "verified payload for \`$name\` contains no license file"
+        printf '## %s\n\n' "$name"
+        while IFS= read -r file; do
+            relative="${file#"$payload"/}"
+            printf '### `%s`\n\n```text\n' "$relative"
+            cat "$file"
+            printf '\n```\n\n'
+        done < "$license_files"
+    done < "$asset_keys"
+    printf '## Rust dependencies\n\n'
+    printf 'The two Rust binaries are built from this workspace and `Cargo.lock`.\n'
+    printf 'Their transitive dependency licenses are limited by `deny.toml` to\n'
+    printf 'permissive SPDX identifiers (MIT, Apache-2.0, BSD-3-Clause, ISC,\n'
+    printf 'Unicode-3.0, Zlib, ...). Run `cargo deny --offline check` for the\n'
+    printf 'authoritative dependency graph.\n'
+} > "$licenses"
+chmod 0644 "$licenses"
+
+[ ! -e "$stage/engine" ] || die "stage must not supply engine/; it comes from the cache"
+[ ! -e "$stage/typings" ] || die "stage must not supply typings/; they come from the cache"
+if find "$stage" -type f \( -name '*.js' -o -name '*.mjs' -o -name '*.cjs' \
+    -o -name 'server.js' \) | grep -q .; then
+    die "stage contains JavaScript; the native package must stay Node-free"
+fi
+if find "$stage" -type d -name node_modules | grep -q .; then
+    die "stage contains node_modules; the native package must stay Node-free"
+fi
+check_no_node
+
+note "packaging versioned directory, archive, checksums, index and provenance"
+"$packager" native \
     --input "$stage" \
     --output "$output_abs" \
+    --assets-lock "$assets_lock" \
+    --cache "$assets_cache" \
     --release-version "$version" \
     --platform "$platform" \
-    --protocol-version "$rust_protocol" \
-    --node-minimum "$node_minimum" \
-    --backend-version "$backend_version" \
-    --zed-version "$zed_version" \
+    --protocol-version "$protocol_version" \
     --built-at "$built_at" \
-    --mtime "$mtime" \
     --force
+check_no_node
 
 note "verifying generated package with the installer"
 "$rust_target/release/wxml-lsp-install" verify-package \
@@ -288,22 +453,35 @@ note "verifying top-level SHA256SUMS"
     sha256sum -c SHA256SUMS
 )
 
-archive="$output_abs/wxml-lsp-$version-$platform.tar.gz"
+release_dir="$output_abs/wxml-lsp-$version-$platform"
+archive="$release_dir.tar.gz"
 sidecar="$archive.sha256"
+[ -d "$release_dir" ] || die "missing generated release directory"
 [ -f "$archive" ] || die "missing generated archive"
 [ -f "$sidecar" ] || die "missing archive sidecar checksum"
+for required in manifest.json SHA256SUMS provenance.json THIRD_PARTY_LICENSES.md \
+    bin/wxml-lsp bin/wxml-lsp-install zed-extension/extension.wasm \
+    zed-extension/extension.toml; do
+    [ -f "$release_dir/$required" ] || die "release is missing \`$required\`"
+done
+[ -f "$release_dir/engine/lib/tsc" ] || die "release is missing the native engine"
+[ -x "$release_dir/engine/lib/tsc" ] || die "native engine is not executable"
+check_no_node
 
 note ""
-note "release build complete"
-note "  directory: $output_abs/wxml-lsp-$version-$platform"
+note "native release build complete"
+note "  directory: $release_dir"
 note "  archive:   $archive"
 note "  sha256:    $(awk '{print $1}' "$sidecar")"
-note "  manifest:  $output_abs/wxml-lsp-$version-$platform/manifest.json"
+note "  manifest:  $release_dir/manifest.json"
+note "  provenance:$release_dir/provenance.json"
+note "  licenses:  $release_dir/THIRD_PARTY_LICENSES.md"
 note "  index:     $output_abs/index.json"
-note "  installer: $output_abs/wxml-lsp-$version-$platform/bin/wxml-lsp-install"
+note "  installer: $release_dir/bin/wxml-lsp-install"
+note "  node:      not executed (PATH tripwire clean)"
 note ""
 note "to use the staged release without installing:"
-note "  export WXML_LSP_BIN=$(shell_quote "$output_abs/wxml-lsp-$version-$platform/bin/wxml-lsp")"
+note "  export WXML_LSP_BIN=$(shell_quote "$release_dir/bin/wxml-lsp")"
 note "to install it:"
-note "  $(shell_quote "$output_abs/wxml-lsp-$version-$platform/bin/wxml-lsp-install") install --from-dir $(shell_quote "$output_abs") --version $(shell_quote "$version")"
+note "  $(shell_quote "$release_dir/bin/wxml-lsp-install") install --from-dir $(shell_quote "$output_abs") --version $(shell_quote "$version") --offline"
 note "no upload, tag or remote release was created."

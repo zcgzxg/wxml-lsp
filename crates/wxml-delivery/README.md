@@ -4,9 +4,9 @@
 
 ## 组件
 
-- `wxml-lsp-package`：从 staged 目录生成版本化目录、`.tar.gz`、`.sha256`、`SHA256SUMS`、`index.json` 和 `manifest.json`。
+- `wxml-lsp-package`：从 staged 目录生成版本化目录、`.tar.gz`、`.sha256`、`SHA256SUMS`、`index.json` 和 `manifest.json`；`native` 子命令生成 Node-free 的 schema v2 包（含 `provenance.json`）。
 - `wxml-lsp-install`：从 HTTPS/localhost fixture/本地目录安装、升级、回退、校验和查询版本。
-- `scripts/build-release.sh`：构建 Rust、Node 后端和 wasm32-wasip2 Zed 扩展，并调用打包器。默认离线，不访问外网。
+- `scripts/build-release.sh`：构建 Rust 二进制与 wasm32-wasip2 Zed 扩展，从已校验的 asset cache（或 `--from-dir` 锁定的 tarball）调用 `wxml-lsp-package native`。构建过程不执行 node/npm/npx/pnpm/yarn/bun，也不从 `backends/typescript` 复制 JavaScript。
 
 ## 构建
 
@@ -19,31 +19,37 @@ WXML_BUILD_CACHE="$HOME/.cache/wxml-targets/full-local-delivery/build-cache" \
 - `--output` 必须是仓库外目录；仓库内路径会被拒绝。
 - `--dry-run` 只打印计划和前置条件，不写文件。
 - `--publish`、`--tag`、`--release`、`--upload` 在参数解析阶段直接失败。
-- 默认 `cargo`/`npm` 离线；需要取依赖时必须显式 `--online`。
-- `SOURCE_DATE_EPOCH=<unix-seconds>` 会固定 `builtAt` 和 tar mtime，可用于验证两次构建的归档 SHA-256 一致。
-- `npm ci` 使用 `--ignore-scripts`，避免执行锁定依赖的安装生命周期脚本。
+- `--cache DIR` 指向已 provision 的内容寻址 asset cache；缓存未命中时用 `--from-dir DIR` 提供 `assets.lock.json` 中精确文件名的两个 tarball。provision 逐字节校验 size/SHA-256/SRI，缓存损坏时 fail closed，从不下载。
+- 默认 cargo 离线；需要取 Rust 依赖时显式 `--online`。`--online` 只影响 cargo，不会启用任何 npm/Node 路径。
+- `SOURCE_DATE_EPOCH=<unix-seconds>` 会固定 `builtAt`，可用于验证两次构建的归档、`manifest.json`、`index.json` 和 `SHA256SUMS` 一致。
+- 构建脚本在 `PATH` 最前面放置 node/npm/npx/pnpm/yarn/bun tripwire shim；任一被调用即失败。该 shim 只覆盖按名称调用，绝对路径 Node 需要额外的 execve 审计。
 
 产物布局：
 
 ```text
-<output>/wxml-lsp-<version>-<platform>/
+<output>/wxml-lsp-<version>-linux-x86_64/
   bin/wxml-lsp
   bin/wxml-lsp-install
-  bin/wxml-type-backend/server.js
-  bin/wxml-type-backend/package.json
-  bin/wxml-type-backend/node_modules/...
+  engine/lib/tsc
+  engine/lib/*.d.ts
+  engine/LICENSE
+  engine/NOTICE.txt
+  engine/package.json
+  typings/miniprogram-api-typings/...
   zed-extension/extension.wasm
   zed-extension/extension.toml
   zed-extension/languages/...
+  THIRD_PARTY_LICENSES.md
+  provenance.json
   manifest.json
   SHA256SUMS
-<output>/wxml-lsp-<version>-<platform>.tar.gz
-<output>/wxml-lsp-<version>-<platform>.tar.gz.sha256
+<output>/wxml-lsp-<version>-linux-x86_64.tar.gz
+<output>/wxml-lsp-<version>-linux-x86_64.tar.gz.sha256
 <output>/index.json
 <output>/SHA256SUMS
 ```
 
-`manifest.json` 的 v1（legacy）记录包版本、平台、协议版本、Node 最低版本、后端版本、构建时间、Rust/Node/Zed 产物路径及每个文件的 SHA-256、大小和显式权限（`0644`/`0755`）；v2（native）改为记录 `engine`/`typeAssets`/原生二进制，不要求 Node。`index.json` 同样按 schema v1/v2 分派。
+`manifest.json` 的 v2（native）记录 `engine`/`typeAssets`/原生二进制、构建时间和每个文件的 SHA-256、大小和显式权限（`0644`/`0755`）；`provenance.json` 记录 `assets.lock.json` 身份、每个 asset 的 payload tree digest 与 engine 的实测/固定分布事实；`THIRD_PARTY_LICENSES.md` 由构建脚本从已验证 payload 的许可文件生成。v1（legacy）manifest 仅为旧安装只读保留。`index.json` 按 schema v1/v2 分派，`build-release.sh` 只生成 v2。
 
 ## 安装
 
