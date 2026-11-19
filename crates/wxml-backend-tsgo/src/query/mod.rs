@@ -1,5 +1,5 @@
-//! Query presentation seams for hover, diagnostics, definition, completion
-//! and binding facts.
+//! Query presentation seams and pure decision helpers for hover, diagnostics,
+//! definition, completion, binding facts, message cleaning and probe health.
 //!
 //! These DTOs are internal to the new backend; `wxml-lsp` will convert them to
 //! C0 results in `P4`. Every result carries the shared
@@ -14,6 +14,8 @@ pub mod diagnostics;
 pub mod document_symbol;
 pub mod documentation;
 pub mod hover;
+pub mod message;
+pub mod probe_health;
 pub mod references;
 pub mod symbol;
 pub mod type_info;
