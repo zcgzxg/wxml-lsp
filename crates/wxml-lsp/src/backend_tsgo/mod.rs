@@ -773,14 +773,15 @@ impl TsgoBackendAdapter {
         run.result
     }
 
-    /// Answers one trailing-dot member completion through a completion-only
-    /// shadow plan.
+    /// Answers one member completion through a completion-only shadow plan.
     ///
-    /// The script overlay decides whether the root is a declared data field
-    /// first. An unknown root is an explicit `Unsupported`/`Partial` answer; it
-    /// never falls through to a silent empty native list. A mounted prefix is
-    /// queried at a synthetic `.` while the published replacement range stays
-    /// the original typed prefix.
+    /// `prefix` is the bare data root before a trailing dot (`user` in
+    /// `{{ user.`) or before an unclosed typed member prefix (`user` in
+    /// `{{ user.na`). The script overlay decides whether the root is a declared
+    /// data field first. An unknown root is an explicit `Unsupported`/`Partial`
+    /// answer; it never falls through to a silent empty native list. A mounted
+    /// prefix is queried at a synthetic `.` while the published replacement
+    /// range stays the original typed prefix.
     fn completion_member(
         &self,
         request: &CompletionRequest,
@@ -1113,7 +1114,7 @@ impl Backend for TsgoBackendAdapter {
             },
             completion: CapabilityStatus::Partial {
                 reason:
-                    "data-root completion from the Rust script overlay and native expression-member completion are wired; trailing-dot chains are mounted through a completion-only shadow and template-local roots (`item.` inside `wx:for`) are not resolved; prepared auto-import entries are queried but the pinned API exposes no origin or edit, so auto-import items stay Partial and no import edit is offered; the pinned API also has no per-entry documentation, so non-empty native results stay Partial; event-handler completion is served from the Rust script method table without a native session and can be Supported; `this.`/method-body completion, custom component event signatures and handler signature help are not implemented"
+                    "data-root completion from the Rust script overlay and native expression-member completion are wired; a bare data root before a trailing dot (`{{ user. }}`) and an unclosed typed member prefix (`{{ user.na`) are mounted through a completion-only shadow, while member chains before the dot (`user.name.`) and template-local roots (`item.` inside `wx:for`) are not resolved; prepared auto-import entries are queried but the pinned API exposes no origin or edit, so auto-import items stay Partial and no import edit is offered; the pinned API also has no per-entry documentation, so non-empty native results stay Partial; event-handler completion is served from the Rust script method table without a native session and can be Supported; `this.`/method-body completion, custom component event signatures and handler signature help are not implemented"
                         .to_owned(),
             },
         }

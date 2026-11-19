@@ -29,8 +29,11 @@
 //! through a completion-only shadow plan whose valid prefix is mounted and
 //! followed by a synthetic `.` and placeholder; the published replacement
 //! range is still computed from the original text and never covers the
-//! synthetic query bytes. An expression that cannot be completed safely is an
-//! explicit `Unsupported`/`Partial` reason, never a silent empty list.
+//! synthetic query bytes. An unclosed mustache with a typed member prefix
+//! (`{{ user.na`) mounts the bare data root and replaces only `na`; only a bare
+//! root is synthesized, never a member chain such as `user.name.`. An
+//! expression that cannot be completed safely is an explicit
+//! `Unsupported`/`Partial` reason, never a silent empty list.
 
 use wxml_backend_tsgo::input::{
     AnalysisInput, DocumentRevision, ProjectKey, ProjectRoot, SnapshotRevision, SourceFile,
@@ -292,7 +295,10 @@ pub(crate) enum ExpressionSite {
         /// Range replaced by an inserted root; only the typed prefix.
         replace: SourceRange,
     },
-    /// A trailing-dot member access such as `{{ user. }}`.
+    /// A member access with a bare data root prefix.
+    ///
+    /// `{{ user.` has an empty typed prefix; `{{ user.na` (unclosed) has the
+    /// typed prefix `na`. Only the typed prefix is replaced.
     Member {
         /// Valid expression before the trailing dot.
         prefix: String,
@@ -310,8 +316,13 @@ pub(crate) enum ExpressionSite {
 /// Returns `None` when the cursor is not inside a mustache body. A cursor in
 /// the delimiters, outside any mustache or in a literal-only expression is not
 /// a data-root or member site.
+///
+/// A closed mustache with a complete expression keeps the ordinary mounted
+/// fragment path. An unclosed mustache is dropped by the template analyzer, so
+/// a typed member prefix (`{{ user.na`) is mounted as its bare data root and
+/// queried through the same synthetic dot as `{{ user.`.
 pub(crate) fn expression_site(text: &str, offset: u32) -> Option<ExpressionSite> {
-    let (expr_start, expr_end) = mustache_expression_range(text, offset)?;
+    let (expr_start, expr_end, closed) = mustache_expression_range(text, offset)?;
     let cursor = usize::try_from(offset).ok()?;
     let start = usize::try_from(expr_start).ok()?;
     if cursor < start {
@@ -319,8 +330,9 @@ pub(crate) fn expression_site(text: &str, offset: u32) -> Option<ExpressionSite>
         return Some(ExpressionSite::Root { replace });
     }
     let before = text.get(start..cursor)?;
-    let leading_trimmed = before.trim_start();
-    let trimmed = leading_trimmed.trim_end();
+    let body = before.trim_start();
+    let leading = before.len().checked_sub(body.len())?;
+    let trimmed = body.trim_end();
     if trimmed.is_empty() {
         let replace_start = identifier_start(text, offset, expr_start)?;
         let replace = SourceRange::from_bounds(replace_start, offset).ok()?;
@@ -328,39 +340,61 @@ pub(crate) fn expression_site(text: &str, offset: u32) -> Option<ExpressionSite>
     }
     // A root prefix must be the identifier directly before the cursor. A
     // trailing space means the cursor is between tokens, not inside a root.
-    if trimmed.len() == leading_trimmed.len() && is_identifier_text(trimmed) {
+    if trimmed.len() == body.len() && is_identifier_text(trimmed) {
         let replace_start = identifier_start(text, offset, expr_start)?;
         let replace = SourceRange::from_bounds(replace_start, offset).ok()?;
         return Some(ExpressionSite::Root { replace });
     }
     // A complete full expression already has a mounted fragment (or is
     // deliberately unmountable as a literal); let the ordinary native path
-    // answer it instead of synthesizing a query.
+    // answer it instead of synthesizing a query. An unclosed mustache has no
+    // mounted fragment, so only a typed member prefix at the cursor can be
+    // synthesized safely.
     let full_end = usize::try_from(expr_end).ok()?;
     if let Some(full) = text.get(start..full_end) {
         if !full.is_empty() {
             let parsed = parse_expression(full, 0);
             if parsed.errors.is_empty() && !parsed.expr.walk().any(Expr::is_missing) {
-                return if crate::backend_tsgo::input::expression_has_free_root(&parsed.expr, full) {
-                    None
-                } else {
-                    Some(ExpressionSite::Unsupported(
+                if !crate::backend_tsgo::input::expression_has_free_root(&parsed.expr, full) {
+                    return Some(ExpressionSite::Unsupported(
                         "the expression has no data root to complete",
-                    ))
-                };
+                    ));
+                }
+                if closed {
+                    return None;
+                }
             }
         }
     }
-    let chain = before.trim_end();
-    let Some(prefix) = chain.strip_suffix("?.").or_else(|| chain.strip_suffix('.')) else {
+    // Only a chain ending directly at the cursor may be synthesized. A trailing
+    // space or newline makes the intended member ambiguous.
+    if trimmed.len() != body.len() {
+        return Some(ExpressionSite::Unsupported(
+            "the cursor is not immediately after the expression prefix",
+        ));
+    }
+    // An unclosed mustache may still carry a complete expression plus trailing
+    // template text (`{{ user.na</view>`). The typed identifier itself is the
+    // safe prefix; it is mounted as its bare data root.
+    if !closed && body.ends_with(is_identifier_character) {
+        return Some(typed_member_site(text, body, offset, expr_start, leading));
+    }
+    let Some(prefix) = split_member_prefix(body) else {
         return Some(ExpressionSite::Unsupported(
             "the expression before the cursor is not a data root or a member access",
         ));
     };
-    let prefix = prefix.trim_end();
     if prefix.is_empty() {
         return Some(ExpressionSite::Unsupported(
             "the expression before the cursor has no value to complete members on",
+        ));
+    }
+    // The synthetic query is safe only for a bare data root. `user.name.`
+    // would ask members of the value `user.name`, which the native member
+    // path deliberately does not synthesize.
+    if !is_identifier_text(prefix) {
+        return Some(ExpressionSite::Unsupported(
+            "only a bare data root can be completed as a member access",
         ));
     }
     let parsed = parse_expression(prefix, 0);
@@ -375,8 +409,9 @@ pub(crate) fn expression_site(text: &str, offset: u32) -> Option<ExpressionSite>
         ));
     }
     let prefix_len = u32::try_from(prefix.len()).ok()?;
+    let prefix_start = expr_start.checked_add(u32::try_from(leading).ok()?)?;
     let prefix_range =
-        SourceRange::from_bounds(expr_start, expr_start.checked_add(prefix_len)?).ok()?;
+        SourceRange::from_bounds(prefix_start, prefix_start.checked_add(prefix_len)?).ok()?;
     let replace_start = identifier_start(text, offset, expr_start)?;
     let replace = SourceRange::from_bounds(replace_start, offset).ok()?;
     Some(ExpressionSite::Member {
@@ -386,8 +421,102 @@ pub(crate) fn expression_site(text: &str, offset: u32) -> Option<ExpressionSite>
     })
 }
 
+/// Splits the valid expression before a trailing dot or optional-chain dot.
+fn split_member_prefix(chain: &str) -> Option<&str> {
+    chain.strip_suffix("?.").or_else(|| chain.strip_suffix('.'))
+}
+
+/// Classifies `user.na` in an unclosed mustache as a member prefix.
+///
+/// The mount is the bare root `user` plus the synthetic dot used by
+/// `{{ user.`; the published replacement range is still exactly the typed
+/// identifier `na`, never the dot or the unclosed suffix.
+fn typed_member_site(
+    text: &str,
+    body: &str,
+    offset: u32,
+    expr_start: u32,
+    leading: usize,
+) -> ExpressionSite {
+    let Some(typed_start) = identifier_start(text, offset, expr_start) else {
+        return ExpressionSite::Unsupported("the typed member prefix cannot be located");
+    };
+    let Ok(cursor) = usize::try_from(offset) else {
+        return ExpressionSite::Unsupported("the typed member prefix is out of range");
+    };
+    let Ok(typed_start_usize) = usize::try_from(typed_start) else {
+        return ExpressionSite::Unsupported("the typed member prefix is out of range");
+    };
+    let Some(typed) = text.get(typed_start_usize..cursor) else {
+        return ExpressionSite::Unsupported("the typed member prefix is not valid text");
+    };
+    if !is_identifier_text(typed) {
+        return ExpressionSite::Unsupported(
+            "the typed member prefix is not an identifier before the cursor",
+        );
+    }
+    let Some(body_start) = usize::try_from(expr_start)
+        .ok()
+        .and_then(|start| start.checked_add(leading))
+    else {
+        return ExpressionSite::Unsupported("the expression start is out of range");
+    };
+    let Some(relative) = typed_start_usize.checked_sub(body_start) else {
+        return ExpressionSite::Unsupported("the typed member prefix is outside the expression");
+    };
+    let Some(before_typed) = body.get(..relative) else {
+        return ExpressionSite::Unsupported("the typed member prefix is outside the expression");
+    };
+    let Some(prefix) = split_member_prefix(before_typed) else {
+        return ExpressionSite::Unsupported(
+            "the typed prefix is not a member access of a data root",
+        );
+    };
+    if prefix.is_empty() {
+        return ExpressionSite::Unsupported(
+            "the expression before the cursor has no value to complete members on",
+        );
+    }
+    if !is_identifier_text(prefix) {
+        return ExpressionSite::Unsupported(
+            "only a bare data root can be completed as a member access",
+        );
+    }
+    let parsed = parse_expression(prefix, 0);
+    if !parsed.errors.is_empty() || parsed.expr.walk().any(Expr::is_missing) {
+        return ExpressionSite::Unsupported(
+            "the expression before the typed prefix is not a complete expression",
+        );
+    }
+    if !crate::backend_tsgo::input::expression_has_free_root(&parsed.expr, prefix) {
+        return ExpressionSite::Unsupported(
+            "the expression before the typed prefix has no data root to complete",
+        );
+    }
+    let Ok(prefix_len) = u32::try_from(prefix.len()) else {
+        return ExpressionSite::Unsupported("the data root is too long to complete");
+    };
+    let Ok(prefix_start) = u32::try_from(body_start) else {
+        return ExpressionSite::Unsupported("the expression start is out of range");
+    };
+    let Some(prefix_end) = prefix_start.checked_add(prefix_len) else {
+        return ExpressionSite::Unsupported("the data root range overflows");
+    };
+    let Ok(prefix_range) = SourceRange::from_bounds(prefix_start, prefix_end) else {
+        return ExpressionSite::Unsupported("the data root range is invalid");
+    };
+    let Ok(replace) = SourceRange::from_bounds(typed_start, offset) else {
+        return ExpressionSite::Unsupported("the typed member range is invalid");
+    };
+    ExpressionSite::Member {
+        prefix: prefix.to_owned(),
+        prefix_range,
+        replace,
+    }
+}
+
 /// Returns the trimmed expression range of the mustache containing `offset`.
-fn mustache_expression_range(text: &str, offset: u32) -> Option<(u32, u32)> {
+fn mustache_expression_range(text: &str, offset: u32) -> Option<(u32, u32, bool)> {
     let parsed = parse(text);
     for (_, node) in parsed.tree.nodes() {
         if node.kind() != NodeKind::Mustache {
@@ -412,7 +541,7 @@ fn mustache_expression_range(text: &str, offset: u32) -> Option<(u32, u32)> {
             .copied()
             .find(|child| parsed.tree.kind(*child) == Some(NodeKind::MustacheExpr))?;
         let expr = parsed.tree.node(child)?.text_range();
-        return Some((expr.start(), expr.end()));
+        return Some((expr.start(), expr.end(), node.is_closed()));
     }
     None
 }
