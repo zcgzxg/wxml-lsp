@@ -48,12 +48,11 @@ const ENGINE_MODE: u32 = 0o755;
 ///
 /// This is **not** full install verification. The strict manifest projection
 /// checks schema, package, version, platform, protocol and the pinned engine
-/// identity, but it parses without validating `typeAssets`, `binaries`,
-/// `builtAt`, `engine.distributionUrl` and `engine.distributionSize`.
-/// `standard_lib_root` and `typings_root` are not read here;
-/// [`TsgoBackendAdapter::with_install`](super::TsgoBackendAdapter::with_install)
-/// loads and verifies them before any sandbox or session exists. Cross-checking
-/// the manifest `typeAssets` fields remains P6-3-4/F3-03.
+/// identity. `typeAssets`, `binaries` and `builtAt` are validated by the
+/// delivery manifest reader before an install can become `current`; the
+/// runtime independently verifies the standard-library and typings bytes
+/// against the crate pin in [`TsgoBackendAdapter::with_install`](super::TsgoBackendAdapter::with_install).
+/// `standard_lib_root` and `typings_root` are not read during discovery.
 #[derive(Debug, Clone)]
 pub(crate) struct DiscoveredInstall {
     /// Canonical package root (`<install>/versions/<version>`).
@@ -811,6 +810,54 @@ mod tests {
             error,
             super::super::NativeStartupError::Environment(_)
         ));
+        let message = error.to_string();
+        assert!(!message.contains("server.js"), "{message}");
+        assert!(!message.to_ascii_lowercase().contains("node"), "{message}");
+    }
+
+    #[test]
+    fn with_install_rejects_a_missing_typings_root_before_the_sandbox() {
+        let fake = FakeInstall::new();
+        let install = fake.discover().expect("discovered install");
+        fs::remove_dir_all(fake.package.join("typings")).unwrap();
+        let host: Arc<dyn crate::project_host::ProjectHost> =
+            Arc::new(crate::project_host::ProjectState::new());
+        let error = super::super::TsgoBackendAdapter::with_install(host, &install)
+            .expect_err("missing typings must fail closed");
+        assert!(matches!(
+            error,
+            super::super::NativeStartupError::Environment(_)
+        ));
+    }
+
+    #[test]
+    fn discovery_does_not_search_parent_directories_for_a_manifest() {
+        let fake = FakeInstall::new();
+        fs::remove_file(fake.package.join("manifest.json")).unwrap();
+        // A valid-looking manifest above the package root must never be used.
+        fs::write(
+            fake.root.path.join("manifest.json"),
+            serde_json::to_vec_pretty(&fake.manifest_value()).unwrap(),
+        )
+        .unwrap();
+        set_mode(&fake.root.path.join("manifest.json"), 0o644);
+        assert!(matches!(
+            fake.discover(),
+            Err(EngineDiscoveryError::ManifestUnavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn discovery_requires_engine_lib_and_typings_layout_roots() {
+        for (label, path) in [("engine", "engine"), ("engine-lib", "engine/lib")] {
+            let fake = FakeInstall::new();
+            fs::remove_dir_all(fake.package.join(path)).unwrap();
+            let error = fake.discover().expect_err(label);
+            assert!(
+                matches!(error, EngineDiscoveryError::PackageUnsafe { .. }),
+                "{label}: {error:?}"
+            );
+        }
     }
 
     #[test]

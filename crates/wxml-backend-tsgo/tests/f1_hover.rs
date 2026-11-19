@@ -788,6 +788,11 @@ fn real_engine_hover_marks_external_library_declarations_partial() {
     );
     assert_eq!(external.declarations, Vec::new());
     assert!(matches!(external.status, CapabilityStatus::Partial { .. }));
+    let reason = external.status.reason().expect("partial reason");
+    assert!(
+        !reason.contains('/'),
+        "hover status reason leaked an asset path: {reason}"
+    );
 
     session.release().expect("release snapshot");
     session.shutdown().expect("shutdown");

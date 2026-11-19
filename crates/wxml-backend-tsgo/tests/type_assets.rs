@@ -514,10 +514,7 @@ fn environment_vfs_filters_out_of_vfs_resolution_options() {
         serde_json::from_str(vfs.file(vfs.tsconfig_path()).expect("tsconfig").text())
             .expect("tsconfig json");
     let compiler = &tsconfig["compilerOptions"];
-    assert_eq!(
-        compiler["typeRoots"],
-        serde_json::json!(["local-types", "/pkg/typings"])
-    );
+    assert_eq!(compiler["typeRoots"], serde_json::json!(["/pkg/typings"]));
     assert!(compiler.get("baseUrl").is_none());
     assert!(compiler.get("paths").is_none());
     let degradations = vfs.environment_degradations();

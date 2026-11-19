@@ -26,7 +26,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use serde_json::{Value, json};
 use support::TempDir;
 use wxml_delivery::archive::{create_tar_gz, extract_tar_gz_allowlisted};
-use wxml_delivery::assets_lock::canonical_tree_digest;
+use wxml_delivery::assets_lock::{
+    AssetsLock, ENGINE_ASSET_NAME, TYPINGS_ASSET_NAME, canonical_tree_digest,
+};
 use wxml_delivery::error::DeliveryError;
 use wxml_delivery::install::{InstallRoot, check_explicit_binary_precedence};
 use wxml_delivery::manifest::{FileEntry, atomic_write, set_mode, sha256_bytes, sha256_file};
@@ -650,11 +652,340 @@ fn provenance_lock_identity_binds_installed_type_assets() {
     build_fixture(base.path(), VERSION_1);
     write_lock_provenance(base.path(), VERSION_1, None);
     verify_tree_v2(base.path(), expected(VERSION_1)).unwrap();
+    // `read_manifest_v2` itself must reject a lock identity that disagrees
+    // with the manifest payload, not only the full tree verifier.
+    read_manifest_v2(base.path(), expected(VERSION_1)).unwrap();
 
     let bad = "0".repeat(64);
     write_lock_provenance(base.path(), VERSION_1, Some(&bad));
     let error = verify_tree_v2(base.path(), expected(VERSION_1)).unwrap_err();
     assert!(error.to_string().contains("payloadTreeDigest"), "{error}");
+    let error = read_manifest_v2(base.path(), expected(VERSION_1)).unwrap_err();
+    assert!(error.to_string().contains("payloadTreeDigest"), "{error}");
+}
+
+fn real_assets_lock() -> AssetsLock {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets.lock.json");
+    wxml_delivery::provision::read_assets_lock(&path)
+        .expect("repository assets.lock.json")
+        .lock
+}
+
+/// Replaces the synthetic engine/typings payload with the frozen lock table.
+fn manifest_with_real_lock_payload(base: &Path) -> (ManifestV2, AssetsLock) {
+    let mut manifest = build_fixture(base, VERSION_1);
+    let lock = real_assets_lock();
+    let engine = lock.asset(ENGINE_ASSET_NAME).expect("engine asset");
+    let typings = lock.asset(TYPINGS_ASSET_NAME).expect("typings asset");
+    let typings_prefix = format!("{}/", typings.package_root);
+    manifest.files.retain(|file| {
+        !(file.path.starts_with("engine/") || file.path.starts_with(&typings_prefix))
+    });
+    manifest.files.extend(engine.payload.files.iter().cloned());
+    manifest.files.extend(typings.payload.files.iter().cloned());
+    manifest
+        .files
+        .sort_by(|left, right| left.path.cmp(&right.path));
+
+    for (asset, bundle_name, license_files) in [
+        (engine, STANDARD_LIB_ASSET, &engine.license_files),
+        (typings, MINIPROGRAM_TYPINGS_ASSET, &typings.license_files),
+    ] {
+        let bundle = asset
+            .payload
+            .bundles
+            .iter()
+            .find(|bundle| bundle.name == bundle_name)
+            .expect("payload bundle");
+        let declared = manifest
+            .type_assets
+            .iter_mut()
+            .find(|declared| declared.name == bundle_name)
+            .expect("declared type asset");
+        declared.root.clone_from(&bundle.root);
+        declared.include.clone_from(&bundle.include);
+        declared.file_count = bundle.file_count;
+        declared.sha256.clone_from(&bundle.sha256);
+        declared.license_files.clone_from(license_files);
+    }
+    let engine_file = manifest
+        .file("engine/lib/tsc")
+        .expect("lock engine file")
+        .clone();
+    let native = manifest
+        .binaries
+        .iter_mut()
+        .find(|artifact| artifact.kind == NativeArtifactKind::NativeEngine)
+        .expect("native engine artifact");
+    native.sha256 = engine_file.sha256;
+
+    manifest.validate(expected(VERSION_1)).unwrap();
+    (manifest, lock)
+}
+
+#[test]
+fn manifest_cross_checks_type_assets_and_binaries_against_the_lock() {
+    let base = TempDir::new("native-lock-cross-check");
+    let (mut manifest, lock) = manifest_with_real_lock_payload(base.path());
+    manifest.validate_against_lock(&lock).unwrap();
+
+    let mut missing = manifest.clone();
+    missing.files.retain(|file| file.path != "engine/README.md");
+    let error = missing.validate_against_lock(&lock).unwrap_err();
+    assert!(error.to_string().contains("payload table"), "{error}");
+
+    let mut extra = manifest.clone();
+    extra.files.push(FileEntry {
+        path: "engine/lib/extra.txt".to_owned(),
+        sha256: "0".repeat(64),
+        size: 1,
+        mode: "0644".to_owned(),
+    });
+    let error = extra.validate_against_lock(&lock).unwrap_err();
+    assert!(error.to_string().contains("payload table"), "{error}");
+
+    let mut altered = manifest.clone();
+    let readme = altered
+        .files
+        .iter_mut()
+        .find(|file| file.path == "engine/README.md")
+        .unwrap();
+    readme.sha256 = "0".repeat(64);
+    let error = altered.validate_against_lock(&lock).unwrap_err();
+    assert!(error.to_string().contains("payload table"), "{error}");
+
+    let mut wrong_asset = manifest.clone();
+    let standard = wrong_asset
+        .type_assets
+        .iter_mut()
+        .find(|asset| asset.name == STANDARD_LIB_ASSET)
+        .unwrap();
+    standard.file_count += 1;
+    let error = wrong_asset.validate_against_lock(&lock).unwrap_err();
+    assert!(error.to_string().contains("fileCount/sha256"), "{error}");
+
+    let mut wrong_bundle = manifest.clone();
+    let typings = wrong_bundle
+        .type_assets
+        .iter_mut()
+        .find(|asset| asset.name == MINIPROGRAM_TYPINGS_ASSET)
+        .unwrap();
+    typings.root = "typings/other".to_owned();
+    let error = wrong_bundle.validate_against_lock(&lock).unwrap_err();
+    assert!(error.to_string().contains("root/include"), "{error}");
+
+    manifest.engine.version = "7.0.2".to_owned();
+    let error = manifest.validate_against_lock(&lock).unwrap_err();
+    assert!(error.to_string().contains("engine identity"), "{error}");
+}
+
+#[test]
+fn read_manifest_v2_rejects_missing_or_extra_provenance_payload() {
+    let base = TempDir::new("native-provenance-payload");
+    let manifest_path = base.path().join("manifest.json");
+    let mut manifest = build_fixture(base.path(), VERSION_1);
+    manifest.files.push(FileEntry {
+        path: "engine/extra.txt".to_owned(),
+        sha256: sha256_bytes(b"x"),
+        size: 1,
+        mode: "0644".to_owned(),
+    });
+    fs::write(base.path().join("engine/extra.txt"), b"x").unwrap();
+    set_mode(&base.path().join("engine/extra.txt"), 0o644).unwrap();
+    manifest
+        .files
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    atomic_write(&manifest_path, &manifest.to_json().unwrap(), 0o644).unwrap();
+    write_lock_provenance(base.path(), VERSION_1, None);
+    read_manifest_v2(base.path(), expected(VERSION_1)).unwrap();
+
+    let mut manifest = read_manifest_v2(base.path(), expected(VERSION_1)).unwrap();
+    manifest
+        .files
+        .retain(|file| file.path != "engine/extra.txt");
+    atomic_write(&manifest_path, &manifest.to_json().unwrap(), 0o644).unwrap();
+    let error = read_manifest_v2(base.path(), expected(VERSION_1)).unwrap_err();
+    assert!(error.to_string().contains("payload file count"), "{error}");
+
+    let extra_base = TempDir::new("native-provenance-extra");
+    let extra_manifest_path = extra_base.path().join("manifest.json");
+    build_fixture(extra_base.path(), VERSION_1);
+    write_lock_provenance(extra_base.path(), VERSION_1, None);
+    let mut manifest = read_manifest_v2(extra_base.path(), expected(VERSION_1)).unwrap();
+    manifest.files.push(FileEntry {
+        path: "engine/extra2.txt".to_owned(),
+        sha256: "e".repeat(64),
+        size: 1,
+        mode: "0644".to_owned(),
+    });
+    atomic_write(&extra_manifest_path, &manifest.to_json().unwrap(), 0o644).unwrap();
+    let error = read_manifest_v2(extra_base.path(), expected(VERSION_1)).unwrap_err();
+    assert!(error.to_string().contains("payload file count"), "{error}");
+}
+
+#[test]
+fn manifest_type_asset_identity_rejects_missing_extra_and_wrong_entries() {
+    let base = TempDir::new("native-type-asset-matrix");
+    let manifest = build_fixture(&base.path().join("base"), VERSION_1);
+
+    let mut missing = manifest.clone();
+    missing.type_assets.pop();
+    assert!(missing.validate(expected(VERSION_1)).is_err());
+
+    let mut extra = manifest.clone();
+    let mut duplicate = extra.type_assets[0].clone();
+    duplicate.name = "extra-asset".to_owned();
+    extra.type_assets.push(duplicate);
+    let error = extra.validate(expected(VERSION_1)).unwrap_err();
+    assert!(error.to_string().contains("exactly"), "{error}");
+
+    for field in ["root", "include", "file_count", "sha256"] {
+        let mut wrong = manifest.clone();
+        let standard = wrong
+            .type_assets
+            .iter_mut()
+            .find(|asset| asset.name == STANDARD_LIB_ASSET)
+            .unwrap();
+        match field {
+            "root" => standard.root = "engine/other".to_owned(),
+            "include" => standard.include = vec!["*.d.ts".to_owned()],
+            "file_count" => standard.file_count -= 1,
+            "sha256" => standard.sha256 = "0".repeat(64),
+            _ => unreachable!(),
+        }
+        assert!(
+            wrong.validate(expected(VERSION_1)).is_err(),
+            "wrong standard `{field}` was accepted"
+        );
+    }
+
+    let mut missing_file = manifest.clone();
+    missing_file
+        .files
+        .retain(|file| file.path != "engine/lib/lib.d.ts");
+    assert!(missing_file.validate(expected(VERSION_1)).is_err());
+
+    let mut extra_file = manifest.clone();
+    extra_file.files.push(FileEntry {
+        path: "engine/lib/lib.extra.d.ts".to_owned(),
+        sha256: "0".repeat(64),
+        size: 1,
+        mode: "0644".to_owned(),
+    });
+    assert!(extra_file.validate(expected(VERSION_1)).is_err());
+
+    manifest.validate(expected(VERSION_1)).unwrap();
+}
+
+#[test]
+fn manifest_binaries_reject_missing_extra_duplicate_and_mismatched_entries() {
+    let base = TempDir::new("native-binary-matrix");
+    let mut manifest = build_fixture(&base.path().join("base"), VERSION_1);
+    manifest.validate(expected(VERSION_1)).unwrap();
+
+    for name in ["wxml-lsp", "wxml-lsp-install", "tsgo", "zed-extension"] {
+        let mut missing = manifest.clone();
+        missing.binaries.retain(|artifact| artifact.name != name);
+        assert!(
+            missing.validate(expected(VERSION_1)).is_err(),
+            "missing `{name}` was accepted"
+        );
+    }
+
+    let mut duplicate_path = manifest.clone();
+    let mut duplicate = duplicate_path.binaries[0].clone();
+    duplicate.name = "extra-lsp".to_owned();
+    duplicate_path.binaries.push(duplicate);
+    let error = duplicate_path.validate(expected(VERSION_1)).unwrap_err();
+    assert!(
+        error.to_string().contains("declared more than once"),
+        "{error}"
+    );
+
+    let mut extra_native = manifest.clone();
+    let mut native = extra_native
+        .binaries
+        .iter()
+        .find(|artifact| artifact.kind == NativeArtifactKind::NativeEngine)
+        .unwrap()
+        .clone();
+    native.name = "tsgo-extra".to_owned();
+    native.path = "engine/lib/other-tsc".to_owned();
+    extra_native.files.push(FileEntry {
+        path: native.path.clone(),
+        sha256: native.sha256.clone(),
+        size: 1,
+        mode: "0755".to_owned(),
+    });
+    extra_native.binaries.push(native);
+    assert!(extra_native.validate(expected(VERSION_1)).is_err());
+
+    let mut wrong_hash = manifest.clone();
+    wrong_hash.binaries[0].sha256 = "0".repeat(64);
+    let error = wrong_hash.validate(expected(VERSION_1)).unwrap_err();
+    assert!(error.to_string().contains("hash"), "{error}");
+
+    let mut wrong_mode = manifest.clone();
+    wrong_mode
+        .files
+        .iter_mut()
+        .find(|file| file.path == "bin/wxml-lsp")
+        .unwrap()
+        .mode = "0644".to_owned();
+    assert!(wrong_mode.validate(expected(VERSION_1)).is_err());
+
+    let mut protocol = manifest.clone();
+    protocol.binaries[0].protocol_version = Some(2);
+    let error = protocol.validate(expected(VERSION_1)).unwrap_err();
+    assert!(error.to_string().contains("protocolVersion"), "{error}");
+
+    let zed = manifest
+        .binaries
+        .iter_mut()
+        .find(|artifact| artifact.kind == NativeArtifactKind::ZedExtension)
+        .unwrap();
+    zed.protocol_version = Some(2);
+    let error = manifest.validate(expected(VERSION_1)).unwrap_err();
+    assert!(error.to_string().contains("protocolVersion"), "{error}");
+}
+
+#[test]
+fn manifest_built_at_is_strict_utc_rfc3339() {
+    let base = TempDir::new("native-built-at");
+    let manifest = build_fixture(&base.path().join("base"), VERSION_1);
+    for value in [
+        "",
+        "2026-11-18",
+        "2026-11-18T00:00:00",
+        "2026-11-18 00:00:00Z",
+        "2026-11-18T00:00:00+00:00",
+        "2026-11-18T00:00:00z",
+        "2026-11-18t00:00:00Z",
+        "2026-11-18T24:00:00Z",
+        "2026-11-18T00:60:00Z",
+        "2026-11-18T00:00:60Z",
+        "2026-02-30T00:00:00Z",
+        "2026-13-01T00:00:00Z",
+        "0000-01-01T00:00:00Z",
+    ] {
+        let mut wrong = manifest.clone();
+        wrong.built_at = value.to_owned();
+        let error = wrong.validate(expected(VERSION_1)).unwrap_err();
+        assert!(
+            matches!(error, DeliveryError::InvalidPackage(_)),
+            "{value}: {error:?}"
+        );
+    }
+    for value in [
+        "1970-01-01T00:00:00Z",
+        "2024-02-29T23:59:59Z",
+        "2026-11-18T00:00:00Z",
+        "9999-12-31T23:59:59Z",
+    ] {
+        let mut right = manifest.clone();
+        right.built_at = value.to_owned();
+        right.validate(expected(VERSION_1)).unwrap();
+    }
 }
 
 #[test]

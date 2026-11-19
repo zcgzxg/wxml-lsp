@@ -21,8 +21,10 @@
 //! Assets are verified once per process, not re-hashed per request. The
 //! backend still sends the full snapshot file set, including the ~6.4 MiB
 //! asset closure, on every `updateSnapshot`; that is a performance limitation
-//! outside this slice. Compiler `types` entries outside the virtual snapshot
-//! are forwarded without a recorded degradation today.
+//! outside this slice. Compiler `types`/`typeRoots`/`baseUrl`/`paths` entries
+//! that resolve outside the virtual snapshot are reported as explicit,
+//! path-free degradations before the first typed request; document symbols
+//! remain purely syntactic and never inherit that reason.
 //!
 //! # Pin policy
 //!

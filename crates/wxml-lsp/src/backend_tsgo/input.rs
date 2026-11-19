@@ -13,6 +13,7 @@ use wxml_backend_tsgo::input::{
     AnalysisInput, CompilerOptions, DocumentRevision, Language, ProjectKey, ProjectRoot,
     SnapshotRevision, SourceFile, TypeEnvironmentIdentity,
 };
+use wxml_backend_tsgo::native::vfs::environment_degradations_for;
 use wxml_backend_tsgo::shadow::guards::{
     GuardChain as ShadowGuardChain, GuardCondition as ShadowGuardCondition,
     GuardKind as ShadowGuardKind,
@@ -31,7 +32,7 @@ use wxml_types::{
     SourceSnapshot, ViewRevision,
 };
 
-use crate::backend_tsgo::environment::Environment;
+use crate::backend_tsgo::environment::{Environment, degradation_reason};
 use crate::backend_tsgo::mapping::{FragmentMap, ShadowLayout};
 use crate::project_host::{HostError, PreparedView, ProjectHost};
 
@@ -140,6 +141,13 @@ pub(crate) struct RequestPlan {
     pub(crate) syntax_diagnostics: Vec<Diagnostic>,
     /// Stable degradation reason from host/shadow preparation, if any.
     pub(crate) degradation: Option<String>,
+    /// Path-free type-environment degradation computed before any session
+    /// exists.
+    ///
+    /// Only typed queries merge this reason; pure-syntax document symbols use
+    /// [`Self::degradation`] alone so a project `types`/`typeRoots` setting
+    /// cannot make them falsely `Partial`.
+    pub(crate) environment_degradation: Option<String>,
 }
 
 impl RequestPlan {
@@ -348,6 +356,18 @@ pub(crate) fn build_request_plan(
     let project = ProjectKey::new(context.file().project().as_str());
     let (compiler_options, environment_identity) =
         environment_options(environment, &view.compiler_options)?;
+    let environment_degradation = environment.assets().and_then(|assets| {
+        let absolute = files
+            .iter()
+            .map(|file| format!("{}/{}", root.as_str(), file.path()))
+            .collect::<Vec<_>>();
+        degradation_reason(&environment_degradations_for(
+            root.as_str(),
+            &absolute,
+            &compiler_options,
+            assets,
+        ))
+    });
     let identity = RequestIdentity {
         project_revision: context.project_revision(),
         view_revision: context.view_revision(),
@@ -379,6 +399,7 @@ pub(crate) fn build_request_plan(
         ),
         syntax_diagnostics: view.syntax_diagnostics.clone(),
         degradation,
+        environment_degradation,
     })
 }
 

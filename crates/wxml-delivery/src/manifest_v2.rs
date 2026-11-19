@@ -13,7 +13,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
+use crate::assets_lock::{
+    ASSETS_LOCK_SCHEMA_VERSION, AssetsLock, ENGINE_ASSET_NAME, ENGINE_ASSET_ROOT,
+    TYPINGS_ASSET_NAME, canonical_tree_digest,
+};
 use crate::error::{DeliveryError, Result};
 use crate::manifest::{
     FileEntry, MAX_EXTRACTED_BYTES, MAX_FILE_BYTES, MAX_FILES, MAX_MANIFEST_BYTES, PACKAGE_NAME,
@@ -178,6 +183,10 @@ pub const ALLOWED_EXECUTABLES: &[&str] =
     &["bin/wxml-lsp", "bin/wxml-lsp-install", "engine/lib/tsc"];
 /// Required engine license files.
 pub const REQUIRED_ENGINE_LICENSE_FILES: &[&str] = &["engine/LICENSE", "engine/NOTICE.txt"];
+/// Package-relative provenance file generated from `assets.lock.json`.
+const PROVENANCE_PATH: &str = "provenance.json";
+/// Maximum accepted `provenance.json` size.
+const MAX_PROVENANCE_BYTES: u64 = 64 * 1024;
 
 /// Version probe contract for the native engine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -413,6 +422,7 @@ impl ManifestV2 {
             }
         }
         crate::state::validate_rfc3339_utc(&self.built_at)?;
+        validate_built_at_seconds(&self.built_at)?;
         Ok(())
     }
 
@@ -578,9 +588,10 @@ impl ManifestV2 {
     }
 
     fn validate_type_assets(&self) -> Result<()> {
-        if self.type_assets.len() < 2 {
+        if self.type_assets.len() != 2 {
             return Err(DeliveryError::InvalidPackage(
-                "manifest must list standard-library and miniprogram type assets".to_owned(),
+                "manifest must list exactly the standard-library and miniprogram type assets"
+                    .to_owned(),
             ));
         }
         let mut names = BTreeSet::new();
@@ -710,11 +721,18 @@ impl ManifestV2 {
         let mut rust_names = BTreeSet::new();
         let mut native_engines = 0_usize;
         let mut zed_extensions = 0_usize;
+        let mut artifact_paths = BTreeSet::new();
         for artifact in &self.binaries {
             validate_asset_name(&artifact.name)?;
             validate_strict(&artifact.version)?;
             validate_sha256(&artifact.sha256)?;
             validate_relative_path(&artifact.path, false)?;
+            if !artifact_paths.insert(artifact.path.as_str()) {
+                return Err(DeliveryError::InvalidPackage(format!(
+                    "artifact path `{}` is declared more than once",
+                    artifact.path
+                )));
+            }
             let file = self.file(&artifact.path).ok_or_else(|| {
                 DeliveryError::InvalidPackage(format!(
                     "artifact `{}` has no payload file",
@@ -729,6 +747,12 @@ impl ManifestV2 {
             }
             match artifact.kind {
                 NativeArtifactKind::Rust => {
+                    if artifact.protocol_version.is_some() {
+                        return Err(DeliveryError::InvalidPackage(format!(
+                            "Rust artifact `{}` must not declare protocolVersion",
+                            artifact.name
+                        )));
+                    }
                     self.validate_rust_artifact(artifact, file, &mut rust_names)?;
                 }
                 NativeArtifactKind::NativeEngine => {
@@ -736,6 +760,12 @@ impl ManifestV2 {
                     self.validate_native_artifact(artifact, file)?;
                 }
                 NativeArtifactKind::ZedExtension => {
+                    if artifact.protocol_version.is_some() {
+                        return Err(DeliveryError::InvalidPackage(format!(
+                            "Zed artifact `{}` must not declare protocolVersion",
+                            artifact.name
+                        )));
+                    }
                     zed_extensions += 1;
                     Self::validate_zed_artifact(artifact, file)?;
                 }
@@ -845,6 +875,208 @@ impl ManifestV2 {
         Ok(())
     }
 
+    /// Cross-checks this manifest against the frozen `assets.lock.json`.
+    ///
+    /// The packager builds the manifest from the lock's verified payload, and
+    /// the installer verifies the installed tree against its own manifest. This
+    /// method is the single structural gate for that cross-check:
+    ///
+    /// - the lock must contain exactly the native engine and typings assets;
+    /// - each manifest `typeAssets[]` entry must match the lock payload bundle
+    ///   (`root`, `include`, `fileCount`, bundle `sha256`) and the recomputed
+    ///   bundle over `files[]`, including the byte total;
+    /// - `files[]` below each asset `packageRoot` must equal the lock payload
+    ///   table exactly (no missing, extra or altered path/mode/size/digest),
+    ///   and the canonical payload tree digest must equal the lock value;
+    /// - the engine identity (version, commit, tarball SRI/SHA-256/size,
+    ///   license) must match the lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns typed [`DeliveryError::InvalidPackage`] or
+    /// [`DeliveryError::Integrity`] errors for a missing, extra or altered
+    /// asset, bundle, payload table or engine identity.
+    pub fn validate_against_lock(&self, lock: &AssetsLock) -> Result<()> {
+        if lock.schema_version != ASSETS_LOCK_SCHEMA_VERSION {
+            return Err(DeliveryError::InvalidPackage(format!(
+                "assets lock schema {} is not supported",
+                lock.schema_version
+            )));
+        }
+        if lock.assets.len() != 2 {
+            return Err(DeliveryError::InvalidPackage(
+                "assets lock must contain exactly the native engine and typings assets".to_owned(),
+            ));
+        }
+        let engine = lock.asset(ENGINE_ASSET_NAME).ok_or_else(|| {
+            DeliveryError::InvalidPackage("assets lock is missing the native engine".to_owned())
+        })?;
+        let typings = lock.asset(TYPINGS_ASSET_NAME).ok_or_else(|| {
+            DeliveryError::InvalidPackage(
+                "assets lock is missing the miniprogram typings".to_owned(),
+            )
+        })?;
+        let standard = self
+            .type_assets
+            .iter()
+            .find(|asset| asset.name == STANDARD_LIB_ASSET)
+            .ok_or_else(|| {
+                DeliveryError::InvalidPackage(
+                    "manifest is missing `typescript-standard-lib`".to_owned(),
+                )
+            })?;
+        let typings_asset = self
+            .type_assets
+            .iter()
+            .find(|asset| asset.name == MINIPROGRAM_TYPINGS_ASSET)
+            .ok_or_else(|| {
+                DeliveryError::InvalidPackage(
+                    "manifest is missing `miniprogram-api-typings`".to_owned(),
+                )
+            })?;
+        self.validate_lock_type_asset(engine, standard, STANDARD_LIB_ASSET)?;
+        self.validate_lock_type_asset(typings, typings_asset, MINIPROGRAM_TYPINGS_ASSET)?;
+        self.validate_lock_engine(engine)
+    }
+
+    fn validate_lock_type_asset(
+        &self,
+        asset: &crate::assets_lock::Asset,
+        declared: &TypeAsset,
+        bundle_name: &str,
+    ) -> Result<()> {
+        let bundle = asset
+            .payload
+            .bundles
+            .iter()
+            .find(|bundle| bundle.name == bundle_name)
+            .ok_or_else(|| {
+                DeliveryError::InvalidPackage(format!(
+                    "assets lock is missing the `{bundle_name}` payload bundle"
+                ))
+            })?;
+        if declared.root != bundle.root || declared.include != bundle.include {
+            return Err(DeliveryError::Integrity(format!(
+                "type asset `{bundle_name}` root/include do not match assets.lock.json"
+            )));
+        }
+        if declared.file_count != bundle.file_count || declared.sha256 != bundle.sha256 {
+            return Err(DeliveryError::Integrity(format!(
+                "type asset `{bundle_name}` fileCount/sha256 do not match assets.lock.json"
+            )));
+        }
+        let computed = compute_type_asset_bundle(&self.files, &bundle.root, &bundle.include)?;
+        if computed.file_count != bundle.file_count
+            || computed.total_bytes != bundle.total_bytes
+            || computed.sha256 != bundle.sha256
+        {
+            return Err(DeliveryError::Integrity(format!(
+                "type asset `{bundle_name}` payload does not match assets.lock.json"
+            )));
+        }
+        let prefix = format!("{}/", asset.package_root);
+        let manifest_table: BTreeMap<&str, &FileEntry> = self
+            .files
+            .iter()
+            .filter(|file| file.path.starts_with(&prefix))
+            .map(|file| (file.path.as_str(), file))
+            .collect();
+        let lock_table: BTreeMap<&str, &FileEntry> = asset
+            .payload
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file))
+            .collect();
+        if manifest_table != lock_table {
+            return Err(DeliveryError::Integrity(format!(
+                "asset `{bundle_name}` payload table does not match assets.lock.json exactly"
+            )));
+        }
+        self.validate_asset_payload(
+            &asset.name,
+            &asset.package_root,
+            asset.payload.file_count,
+            asset.payload.total_bytes,
+            &asset.payload.tree_digest,
+        )?;
+        if asset.name == ENGINE_ASSET_NAME && asset.package_root != ENGINE_ASSET_ROOT {
+            return Err(DeliveryError::Integrity(
+                "engine asset packageRoot does not match the frozen `engine` root".to_owned(),
+            ));
+        }
+        if asset.name == TYPINGS_ASSET_NAME && asset.package_root != MINIPROGRAM_TYPINGS_ROOT {
+            return Err(DeliveryError::Integrity(
+                "typings asset packageRoot does not match the frozen typings root".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_lock_engine(&self, asset: &crate::assets_lock::Asset) -> Result<()> {
+        let engine = &self.engine;
+        let source_commit = asset.source_commit.as_deref();
+        if engine.version != asset.version
+            || source_commit != Some(engine.source_commit.as_str())
+            || engine.distribution != asset.npm_package
+            || engine.distribution_integrity != asset.tarball.integrity
+            || engine.distribution_sha256 != asset.tarball.sha256
+            || engine.distribution_size != asset.tarball.size
+            || engine.license != asset.license
+        {
+            return Err(DeliveryError::Integrity(
+                "native engine identity does not match assets.lock.json".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Recomputes one asset payload tree from `files[]` and compares it with a
+    /// recorded `packageRoot` identity.
+    ///
+    /// The identity is supplied by `assets.lock.json` during packaging or by
+    /// the lock-derived `provenance.json` during installation. Missing, extra,
+    /// altered or mis-rooted payload files are typed integrity failures.
+    fn validate_asset_payload(
+        &self,
+        label: &str,
+        package_root: &str,
+        file_count: u64,
+        total_bytes: u64,
+        tree_digest: &str,
+    ) -> Result<()> {
+        validate_relative_path(package_root, false)?;
+        validate_sha256(tree_digest)?;
+        let prefix = format!("{package_root}/");
+        let under_root: Vec<FileEntry> = self
+            .files
+            .iter()
+            .filter(|file| file.path.starts_with(&prefix))
+            .cloned()
+            .collect();
+        let actual_count = u64::try_from(under_root.len())
+            .map_err(|_| DeliveryError::SizeLimit("payload file count overflows".to_owned()))?;
+        if actual_count != file_count {
+            return Err(DeliveryError::Integrity(format!(
+                "asset `{label}` payload file count does not match its recorded identity"
+            )));
+        }
+        let actual_bytes = under_root.iter().try_fold(0_u64, |sum, file| {
+            sum.checked_add(file.size)
+                .ok_or_else(|| DeliveryError::SizeLimit("payload bytes overflow".to_owned()))
+        })?;
+        if actual_bytes != total_bytes {
+            return Err(DeliveryError::Integrity(format!(
+                "asset `{label}` payload total bytes do not match its recorded identity"
+            )));
+        }
+        if canonical_tree_digest(&under_root, package_root)? != tree_digest {
+            return Err(DeliveryError::Integrity(format!(
+                "asset `{label}` payloadTreeDigest does not match the recorded identity"
+            )));
+        }
+        Ok(())
+    }
+
     fn validate_required_payload(&self) -> Result<()> {
         let required: &[(&str, &str)] = &[
             ("bin/wxml-lsp", "0755"),
@@ -912,6 +1144,29 @@ impl ManifestV2 {
     }
 }
 
+/// Rejects timestamps that use the RFC 3339 leap-second form `:60Z`.
+///
+/// The shared calendar check accepts `second == 60` because RFC 3339 reserves
+/// it for leap seconds. Delivery timestamps are generated by build systems, so
+/// a leap second is never a legitimate value and is rejected here instead of
+/// being silently normalized.
+fn validate_built_at_seconds(value: &str) -> Result<()> {
+    let bytes = value.as_bytes();
+    if bytes.len() != 20 || bytes.get(19) != Some(&b'Z') {
+        return Err(DeliveryError::InvalidPackage(
+            "timestamp must be UTC RFC 3339 (`YYYY-MM-DDTHH:MM:SSZ`)".to_owned(),
+        ));
+    }
+    let second = u32::from(bytes.get(17).copied().unwrap_or(b'0') - b'0') * 10
+        + u32::from(bytes.get(18).copied().unwrap_or(b'0') - b'0');
+    if second > 59 {
+        return Err(DeliveryError::InvalidPackage(
+            "timestamp must not use the RFC 3339 leap-second form".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_asset_name(value: &str) -> Result<()> {
     if value.is_empty() || value.len() > 64 {
         return Err(DeliveryError::InvalidPackage(
@@ -956,6 +1211,154 @@ fn require_license_files(
     Ok(())
 }
 
+/// Validates the lock-derived identity recorded in `provenance.json`.
+///
+/// Older v2 packages and synthetic fixtures may omit `assetsLockSha256`; those
+/// keep the historical behaviour and are still subject to the byte-free
+/// manifest checks and to [`crate::verify_v2::verify_tree_v2`]. When the field
+/// is present, the recorded asset `packageRoot`/`fileCount`/`totalBytes`/
+/// `payloadTreeDigest` must match `files[]` exactly, so a manifest cannot claim
+/// type assets that disagree with the payload it ships.
+fn validate_provenance_lock_identity(root: &Path, manifest: &ManifestV2) -> Result<()> {
+    if !manifest
+        .files
+        .iter()
+        .any(|file| file.path == PROVENANCE_PATH)
+    {
+        return Ok(());
+    }
+    let bytes = read_limited(&root.join(PROVENANCE_PATH), MAX_PROVENANCE_BYTES)?;
+    let value: Value = serde_json::from_slice(&bytes).map_err(|error| {
+        DeliveryError::Integrity(format!("provenance.json is malformed: {error}"))
+    })?;
+    let object = value.as_object().ok_or_else(|| {
+        DeliveryError::Integrity("provenance.json must be a JSON object".to_owned())
+    })?;
+    let Some(lock_sha256) = object.get("assetsLockSha256") else {
+        return Ok(());
+    };
+    let lock_sha256 = lock_sha256.as_str().ok_or_else(|| {
+        DeliveryError::Integrity("provenance assetsLockSha256 must be a string".to_owned())
+    })?;
+    validate_sha256(lock_sha256).map_err(|_| {
+        DeliveryError::Integrity(
+            "provenance assetsLockSha256 is not a 64-character lowercase SHA-256".to_owned(),
+        )
+    })?;
+    let assets = object
+        .get("assets")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            DeliveryError::Integrity(
+                "provenance assets must be an array when assetsLockSha256 is present".to_owned(),
+            )
+        })?;
+    let expected = [
+        (ENGINE_ASSET_NAME, ENGINE_ASSET_ROOT),
+        (TYPINGS_ASSET_NAME, MINIPROGRAM_TYPINGS_ROOT),
+    ];
+    if assets.len() != expected.len() {
+        return Err(DeliveryError::Integrity(
+            "provenance assets must list exactly the frozen engine and typings assets".to_owned(),
+        ));
+    }
+    for (name, package_root) in expected {
+        let entry = assets
+            .iter()
+            .filter(|asset| asset.get("name").and_then(Value::as_str) == Some(name))
+            .collect::<Vec<_>>();
+        if entry.len() != 1 {
+            return Err(DeliveryError::Integrity(format!(
+                "provenance must list exactly one `{name}` asset"
+            )));
+        }
+        validate_provenance_asset(entry[0], name, package_root, manifest)?;
+    }
+    Ok(())
+}
+
+fn validate_provenance_asset(
+    asset: &Value,
+    name: &str,
+    package_root: &str,
+    manifest: &ManifestV2,
+) -> Result<()> {
+    let object = asset.as_object().ok_or_else(|| {
+        DeliveryError::Integrity(format!("provenance asset `{name}` must be an object"))
+    })?;
+    if provenance_str(object, "packageRoot", name)? != package_root {
+        return Err(DeliveryError::Integrity(format!(
+            "provenance asset `{name}` packageRoot does not match `{package_root}`"
+        )));
+    }
+    let digest = provenance_sha256(object, "payloadTreeDigest", name)?;
+    let file_count = provenance_u64(object, "fileCount", name)?;
+    let total_bytes = provenance_u64(object, "totalBytes", name)?;
+    manifest.validate_asset_payload(name, package_root, file_count, total_bytes, digest)?;
+
+    let tarball = object
+        .get("tarball")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            DeliveryError::Integrity(format!("provenance asset `{name}` is missing tarball"))
+        })?;
+    let integrity = provenance_str(tarball, "integrity", name)?;
+    Sha512Integrity::parse(integrity).map_err(|_| {
+        DeliveryError::Integrity(format!(
+            "provenance asset `{name}` tarball integrity is not a sha512 SRI"
+        ))
+    })?;
+    let tarball_sha256 = provenance_sha256(tarball, "sha256", name)?;
+    let tarball_size = provenance_u64(tarball, "size", name)?;
+    if tarball_size == 0 {
+        return Err(DeliveryError::Integrity(format!(
+            "provenance asset `{name}` tarball size is a zero placeholder"
+        )));
+    }
+    if name == ENGINE_ASSET_NAME
+        && (integrity != manifest.engine.distribution_integrity
+            || tarball_sha256 != manifest.engine.distribution_sha256
+            || tarball_size != manifest.engine.distribution_size)
+    {
+        return Err(DeliveryError::Integrity(
+            "provenance engine tarball identity does not match the manifest".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn provenance_str<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    key: &str,
+    name: &str,
+) -> Result<&'a str> {
+    object.get(key).and_then(Value::as_str).ok_or_else(|| {
+        DeliveryError::Integrity(format!("provenance asset `{name}` is missing string {key}"))
+    })
+}
+
+fn provenance_sha256<'a>(
+    object: &'a serde_json::Map<String, Value>,
+    key: &str,
+    name: &str,
+) -> Result<&'a str> {
+    let value = provenance_str(object, key, name)?;
+    validate_sha256(value).map_err(|_| {
+        DeliveryError::Integrity(format!(
+            "provenance asset `{name}` {key} is not a 64-character lowercase SHA-256"
+        ))
+    })?;
+    Ok(value)
+}
+
+fn provenance_u64(object: &serde_json::Map<String, Value>, key: &str, name: &str) -> Result<u64> {
+    object.get(key).and_then(Value::as_u64).ok_or_else(|| {
+        DeliveryError::Integrity(format!(
+            "provenance asset `{name}` is missing integer {key}"
+        ))
+    })
+}
+
 /// Reads and validates a schema v2 manifest from a package root.
 ///
 /// The schema is detected before deserializing, so a v1 Node manifest cannot
@@ -968,7 +1371,9 @@ fn require_license_files(
 pub fn read_manifest_v2(root: &Path, expected: ExpectedManifestV2<'_>) -> Result<ManifestV2> {
     let path = root.join("manifest.json");
     let bytes = read_limited(&path, MAX_MANIFEST_BYTES)?;
-    parse_manifest_v2(&bytes, expected)
+    let manifest = parse_manifest_v2(&bytes, expected)?;
+    validate_provenance_lock_identity(root, &manifest)?;
+    Ok(manifest)
 }
 
 /// Parses and validates schema v2 manifest bytes.

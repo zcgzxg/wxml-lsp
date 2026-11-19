@@ -343,6 +343,60 @@ fn environment_degradation_is_merged_into_typed_queries_only() {
     );
 }
 
+#[test]
+fn first_request_reports_plan_environment_degradation_before_the_session_opens() {
+    let options = Map::from_iter([
+        (
+            "types".to_owned(),
+            Value::Array(vec![Value::String("node".to_owned())]),
+        ),
+        (
+            "typeRoots".to_owned(),
+            Value::Array(vec![Value::String("/host/types".to_owned())]),
+        ),
+        ("baseUrl".to_owned(), Value::String("/host/base".to_owned())),
+        (
+            "paths".to_owned(),
+            Value::Object(Map::from_iter([(
+                "@/*".to_owned(),
+                Value::Array(vec![Value::String("/host/src/*".to_owned())]),
+            )])),
+        ),
+    ]);
+    let views = TestViews::new(prepared_view(options));
+    // The fake session reports no degradation: the reason must come from the
+    // request plan, not from the opened VFS.
+    let (adapter, counts) = trusted_adapter(views, fake_assets("/engine/lib"), None);
+    let hover = adapter.hover(hover_request(&adapter, 1)).expect("hover");
+    let CapabilityStatus::Partial { reason } = hover.status else {
+        panic!("expected a partial first hover: {:?}", hover.status);
+    };
+    for field in ["types", "typeRoots", "baseUrl", "paths"] {
+        assert!(reason.contains(&format!("{field} (")), "{field}: {reason}");
+    }
+    assert!(
+        !reason.contains('/'),
+        "plan-time environment reason leaked a path: {reason}"
+    );
+    assert_eq!(counts.starts.load(Ordering::SeqCst), 1);
+    assert_eq!(counts.opens.load(Ordering::SeqCst), 1);
+
+    let symbols = adapter
+        .document_symbols(DocumentSymbolsRequest {
+            context: context(&adapter, 1),
+            subject: script_file(),
+        })
+        .expect("document symbols");
+    assert!(
+        !symbols
+            .status
+            .reason()
+            .is_some_and(|reason| reason.contains("type environment")),
+        "pure-syntax document symbols must not inherit the type environment: {:?}",
+        symbols.status
+    );
+}
+
 fn assert_partial(status: CapabilityStatus, needle: &str) {
     match status {
         CapabilityStatus::Partial { reason } => {

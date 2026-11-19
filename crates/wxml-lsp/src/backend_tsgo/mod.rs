@@ -214,8 +214,10 @@ impl TsgoBackendAdapter {
     /// the OS temporary directory; the package root is rejected as a sandbox
     /// base so runtime files never land in the immutable version tree.
     ///
-    /// Engine manifest projection and asset sets are verified independently;
-    /// cross-checking the manifest `typeAssets` fields remains P6-3-4/F3-03.
+    /// Engine manifest projection and asset sets are verified independently:
+    /// the delivery reader validates `typeAssets`/`binaries`/`builtAt` before
+    /// activation, while this constructor re-verifies every mounted
+    /// declaration byte against the crate pin.
     pub(crate) fn with_install(
         host: Arc<dyn crate::project_host::ProjectHost>,
         install: &DiscoveredInstall,
@@ -327,6 +329,7 @@ impl TsgoBackendAdapter {
         self.ensure_open(&mut state, plan)?;
         let mut degradation = plan.degradation.clone();
         if include_environment {
+            merge_reason(&mut degradation, plan.environment_degradation.clone());
             merge_reason(&mut degradation, state.environment_reason.clone());
         }
         let session = state.session.as_mut().ok_or_else(|| {
@@ -514,6 +517,7 @@ impl Backend for TsgoBackendAdapter {
             return Ok(unavailable_diagnostics(syntax, "type backend unavailable"));
         }
         let mut degradation = plan.degradation.clone();
+        merge_reason(&mut degradation, plan.environment_degradation.clone());
         merge_reason(&mut degradation, state.environment_reason.clone());
         let Some(session) = state.session.as_mut() else {
             return Ok(unavailable_diagnostics(syntax, "type backend unavailable"));

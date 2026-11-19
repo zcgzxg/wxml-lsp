@@ -29,7 +29,7 @@ use wxml_backend_tsgo::native::ast::{
 use wxml_backend_tsgo::native::document_symbol::{
     DocumentSymbolEvidence, DocumentSymbolGap as NativeDocumentSymbolGap, DocumentSymbolsEvidence,
 };
-use wxml_backend_tsgo::native::session::DocumentationQuery;
+use wxml_backend_tsgo::native::session::{AutoImportPreparation, DocumentationQuery};
 use wxml_backend_tsgo::native::session::{SessionOptions, TypeQuery};
 use wxml_backend_tsgo::native::strings::{
     Utf8Offset, Utf16Offset, Utf16Position, offset_to_position, utf16_len,
@@ -38,6 +38,7 @@ use wxml_backend_tsgo::native::wire::{
     RawCompletionEntry, RawCompletionLabelDetails, RawCompletionList, RawDiagnostic, RawJsDocTag,
     RawPosition, RawType,
 };
+use wxml_backend_tsgo::query::completion::CompletionQueryOptions;
 use wxml_backend_tsgo::query::definition::{
     DefinitionResult as NativeDefinitionResult, DefinitionTarget as NativeDefinitionTarget,
 };
@@ -306,6 +307,17 @@ enum FakeCompletionOutcome {
     Failure(FakeFailure),
 }
 
+/// Auto-import preparation outcome for the fake session.
+#[derive(Clone, Debug, Default)]
+enum FakeAutoImportPreparation {
+    /// The session does not model preparation (historical behavior).
+    #[default]
+    NotSupported,
+    Prepared,
+    Unavailable(&'static str),
+    Failure(FakeFailure),
+}
+
 #[derive(Clone, Debug)]
 enum FakeDefinitionOutcome {
     CheckedEmpty,
@@ -420,6 +432,7 @@ struct FakeBehavior {
     semantic: FakeDiagnosticOutcome,
     syntactic: FakeDiagnosticOutcome,
     completions: FakeCompletionOutcome,
+    auto_imports: FakeAutoImportPreparation,
     definition: FakeDefinitionOutcome,
     document_symbols: FakeDocumentSymbolOutcome,
     update_failure: Option<FakeFailure>,
@@ -436,6 +449,7 @@ impl Default for FakeBehavior {
             semantic: FakeDiagnosticOutcome::Empty,
             syntactic: FakeDiagnosticOutcome::Empty,
             completions: FakeCompletionOutcome::EmptyList,
+            auto_imports: FakeAutoImportPreparation::default(),
             definition: FakeDefinitionOutcome::CheckedEmpty,
             document_symbols: FakeDocumentSymbolOutcome::CheckedEmpty,
             update_failure: None,
@@ -472,6 +486,8 @@ struct FakeLog {
     hover_evidence_calls: Vec<(String, Utf16Position)>,
     hover_documentation_calls: usize,
     completion_calls: Vec<(String, Utf16Position)>,
+    completion_options: Vec<CompletionQueryOptions>,
+    prepare_auto_import_calls: Vec<String>,
     definition_calls: Vec<(String, Utf16Position)>,
     document_symbol_calls: Vec<String>,
     opened_inputs: Vec<AnalysisInput>,
@@ -712,11 +728,19 @@ impl QuerySession for FakeSession {
         path: &str,
         position: Utf16Position,
     ) -> Result<Option<RawCompletionList>, NativeError> {
-        self.log
-            .lock()
-            .expect("log")
-            .completion_calls
-            .push((path.to_owned(), position));
+        self.completions_with_options(path, position, CompletionQueryOptions::default())
+    }
+
+    fn completions_with_options(
+        &mut self,
+        path: &str,
+        position: Utf16Position,
+        options: CompletionQueryOptions,
+    ) -> Result<Option<RawCompletionList>, NativeError> {
+        let mut log = self.log.lock().expect("log");
+        log.completion_calls.push((path.to_owned(), position));
+        log.completion_options.push(options);
+        drop(log);
         match &self.behavior.completions {
             FakeCompletionOutcome::NoResponse => Ok(None),
             FakeCompletionOutcome::EmptyList => Ok(Some(RawCompletionList {
@@ -731,6 +755,22 @@ impl QuerySession for FakeSession {
                 entries: entries.clone(),
             })),
             FakeCompletionOutcome::Failure(failure) => Err(failure.native()),
+        }
+    }
+
+    fn prepare_auto_imports(&mut self, path: &str) -> Result<AutoImportPreparation, NativeError> {
+        self.log
+            .lock()
+            .expect("log")
+            .prepare_auto_import_calls
+            .push(path.to_owned());
+        match &self.behavior.auto_imports {
+            FakeAutoImportPreparation::NotSupported => Ok(AutoImportPreparation::NotSupported),
+            FakeAutoImportPreparation::Prepared => Ok(AutoImportPreparation::Prepared),
+            FakeAutoImportPreparation::Unavailable(reason) => {
+                Ok(AutoImportPreparation::Unavailable { reason })
+            }
+            FakeAutoImportPreparation::Failure(failure) => Err(failure.native()),
         }
     }
 
@@ -1161,14 +1201,14 @@ fn hover_degrades_when_the_prepared_source_list_is_incomplete() {
 }
 
 #[test]
-fn hover_declaration_gap_keeps_the_backend_partial_reason() {
+fn hover_declaration_gap_redacts_asset_and_host_paths() {
     let behavior = FakeBehavior {
         hover_outcome: FakeHoverOutcome::Evidence(FakeHoverEvidence {
             type_text: Some("string"),
             quality: NativeTypeQuality::Known,
             documentation: None,
             gaps: vec![HoverGap::ExternalDeclaration {
-                path: Some("lib.d.ts".to_owned()),
+                path: Some("/home/alice/.wxml/engine/lib/lib.d.ts".to_owned()),
             }],
             status: None,
         }),
@@ -1187,8 +1227,13 @@ fn hover_declaration_gap_keeps_the_backend_partial_reason() {
     assert_eq!(
         result.status,
         CapabilityStatus::Partial {
-            reason: "declaration `lib.d.ts` is outside the project snapshot".to_owned(),
+            reason: "a declaration is outside the project snapshot".to_owned(),
         }
+    );
+    let reason = result.status.reason().expect("partial reason");
+    assert!(
+        !reason.contains('/') && !reason.contains("alice") && !reason.contains("engine"),
+        "hover reason leaked a host or asset path: {reason}"
     );
     assert_eq!(result.quality, wxml_types::TypeQuality::Known);
     assert_eq!(result.contents, "```ts\nstring\n```");
@@ -1278,7 +1323,7 @@ fn backend_partial_keeps_the_host_degradation_reason() {
     assert_eq!(
         result.status,
         CapabilityStatus::Partial {
-            reason: "declaration `lib.d.ts` is outside the project snapshot; \
+            reason: "a declaration is outside the project snapshot; \
                      the prepared source file list is incomplete"
                 .to_owned(),
         }
@@ -1290,7 +1335,7 @@ fn backend_partial_keeps_the_host_degradation_reason() {
 fn backend_partial_and_range_failure_keep_both_reasons() {
     let status = resolved_status(
         &CapabilityStatus::Partial {
-            reason: "declaration `lib.d.ts` is outside the project snapshot".to_owned(),
+            reason: "a declaration is outside the project snapshot".to_owned(),
         },
         "```ts\nstring\n```",
         None,
@@ -1299,7 +1344,7 @@ fn backend_partial_and_range_failure_keep_both_reasons() {
     assert_eq!(
         status,
         CapabilityStatus::Partial {
-            reason: "declaration `lib.d.ts` is outside the project snapshot; \
+            reason: "a declaration is outside the project snapshot; \
                      the hover range could not be mapped"
                 .to_owned(),
         }
@@ -1567,6 +1612,7 @@ fn completion_maps_entries_and_replaces_only_the_typed_prefix() {
                     sort_text: "11".to_owned(),
                     detail: Some("name: string".to_owned()),
                     label_details: None,
+                    ..RawCompletionEntry::default()
                 },
                 RawCompletionEntry {
                     name: "age".to_owned(),
@@ -1574,6 +1620,7 @@ fn completion_maps_entries_and_replaces_only_the_typed_prefix() {
                     sort_text: "12".to_owned(),
                     detail: None,
                     label_details: None,
+                    ..RawCompletionEntry::default()
                 },
             ],
             incomplete: false,
@@ -1632,6 +1679,191 @@ fn completion_maps_entries_and_replaces_only_the_typed_prefix() {
 }
 
 #[test]
+fn completion_prepares_auto_imports_and_requests_symbols_without_fabricating_edits() {
+    let wxml = "<view>{{ user.na }}</view>";
+    let behavior = FakeBehavior {
+        completions: FakeCompletionOutcome::List {
+            entries: vec![RawCompletionEntry {
+                name: "User".to_owned(),
+                kind: 7,
+                sort_text: "16".to_owned(),
+                insert_text: Some("User".to_owned()),
+                filter_text: Some("User".to_owned()),
+                detail: Some("interface User".to_owned()),
+                label_details: Some(RawCompletionLabelDetails {
+                    detail: None,
+                    description: Some("./model".to_owned()),
+                }),
+                symbol: Some(wxml_backend_tsgo::native::wire::RawSymbol {
+                    name: "User".to_owned(),
+                    flags: 5_242_880,
+                    declarations: vec!["22.262./work/model.ts".to_owned()],
+                    value_declaration: Some("22.262./work/model.ts".to_owned()),
+                    reference: None,
+                }),
+            }],
+            incomplete: false,
+        },
+        auto_imports: FakeAutoImportPreparation::Prepared,
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(wxml, SCRIPT, "user.na"))),
+        behavior,
+    );
+    let cursor = offset_of(wxml, "na") + 2;
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: cursor,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("completion");
+
+    let log = log.lock().expect("log");
+    assert_eq!(log.prepare_auto_import_calls, vec![SCRIPT_PATH.to_owned()]);
+    assert_eq!(
+        log.completion_options,
+        vec![CompletionQueryOptions {
+            include_symbol: true
+        }],
+        "a prepared snapshot must request symbol evidence"
+    );
+    drop(log);
+
+    assert_eq!(result.items.len(), 1);
+    let item = &result.items[0];
+    assert_eq!(item.label, "User");
+    assert_eq!(item.insert_text, "User");
+    assert_eq!(
+        item.insert_text_format,
+        wxml_types::InsertTextFormat::PlainText
+    );
+    assert_eq!(item.documentation, None);
+    // No import statement and no second edit are representable or invented.
+    assert!(!item.insert_text.contains("import "));
+    assert_eq!(item.filter_text.as_deref(), Some("User"));
+    let reason = result.status.reason().expect("partial reason");
+    assert!(reason.contains("auto-import origin"), "{reason}");
+    assert!(
+        !reason.contains("prepareAutoImports"),
+        "a prepared query must not claim auto-imports are unprepared: {reason}"
+    );
+    assert!(reason.contains("documentation"), "{reason}");
+}
+
+#[test]
+fn completion_without_preparation_keeps_auto_imports_unavailable() {
+    let wxml = "<view>{{ user.na }}</view>";
+    let behavior = FakeBehavior {
+        completions: FakeCompletionOutcome::List {
+            entries: vec![RawCompletionEntry {
+                name: "name".to_owned(),
+                kind: 5,
+                sort_text: "11".to_owned(),
+                ..RawCompletionEntry::default()
+            }],
+            incomplete: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(wxml, SCRIPT, "user.na"))),
+        behavior,
+    );
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "na") + 2,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("completion");
+
+    let log = log.lock().expect("log");
+    assert_eq!(log.prepare_auto_import_calls, vec![SCRIPT_PATH.to_owned()]);
+    assert_eq!(
+        log.completion_options,
+        vec![CompletionQueryOptions {
+            include_symbol: false
+        }],
+        "an unprepared snapshot must not request symbols"
+    );
+    drop(log);
+
+    let reason = result.status.reason().expect("partial reason");
+    assert!(reason.contains("prepareAutoImports"), "{reason}");
+    assert_eq!(result.items[0].documentation, None);
+}
+
+#[test]
+fn completion_prepare_failure_is_reported_and_never_supported_empty() {
+    let wxml = "<view>{{ user.na }}</view>";
+    let behavior = FakeBehavior {
+        completions: FakeCompletionOutcome::EmptyList,
+        auto_imports: FakeAutoImportPreparation::Unavailable(
+            "the pinned engine rejected auto-import preparation for this file",
+        ),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(wxml, SCRIPT, "user.na"))),
+        behavior,
+    );
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "na") + 2,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("completion");
+
+    let log = log.lock().expect("log");
+    assert_eq!(
+        log.completion_options,
+        vec![CompletionQueryOptions {
+            include_symbol: false
+        }]
+    );
+    drop(log);
+
+    assert!(result.items.is_empty());
+    assert!(
+        matches!(result.status, CapabilityStatus::Partial { .. }),
+        "a failed preparation must not be a supported empty answer"
+    );
+    let reason = result.status.reason().expect("partial reason");
+    assert!(
+        reason.contains("rejected auto-import preparation"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn completion_prepare_error_is_a_backend_error_not_empty_supported() {
+    let wxml = "<view>{{ user.na }}</view>";
+    let behavior = FakeBehavior {
+        completions: FakeCompletionOutcome::EmptyList,
+        auto_imports: FakeAutoImportPreparation::Failure(FakeFailure::Timeout),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(wxml, SCRIPT, "user.na"))),
+        behavior,
+    );
+    let error = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "na") + 2,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect_err("a hard prepare failure must not fabricate a completion result");
+    assert!(matches!(error, BackendError::Timeout));
+    let log = log.lock().expect("log");
+    assert!(log.completion_calls.is_empty());
+    drop(log);
+}
+
+#[test]
 fn completion_does_not_publish_an_empty_sort_text() {
     let wxml = "<view>{{ user.na }}</view>";
     let behavior = FakeBehavior {
@@ -1642,6 +1874,7 @@ fn completion_does_not_publish_an_empty_sort_text() {
                 sort_text: String::new(),
                 detail: None,
                 label_details: None,
+                ..RawCompletionEntry::default()
             }],
             incomplete: false,
         },
@@ -1680,6 +1913,7 @@ fn completion_tolerates_label_details_if_present() {
                     detail: Some("(value: string): void".to_owned()),
                     description: None,
                 }),
+                ..RawCompletionEntry::default()
             }],
             incomplete: false,
         },
@@ -1717,6 +1951,7 @@ fn completion_unknown_kind_is_plain_value_and_partial() {
                 sort_text: "14".to_owned(),
                 detail: None,
                 label_details: None,
+                ..RawCompletionEntry::default()
             }],
             incomplete: false,
         },
@@ -1753,6 +1988,7 @@ fn completion_keeps_host_degradation_alongside_native_gaps() {
                 sort_text: "11".to_owned(),
                 detail: None,
                 label_details: None,
+                ..RawCompletionEntry::default()
             }],
             incomplete: false,
         },
@@ -1866,6 +2102,7 @@ fn completion_truncation_is_reported() {
             sort_text: "1".to_owned(),
             detail: None,
             label_details: None,
+            ..RawCompletionEntry::default()
         })
         .collect();
     let behavior = FakeBehavior {
@@ -3258,6 +3495,7 @@ fn completion_survives_literal_fragments() {
                 sort_text: "11".to_owned(),
                 detail: None,
                 label_details: None,
+                ..RawCompletionEntry::default()
             }],
             incomplete: false,
         },

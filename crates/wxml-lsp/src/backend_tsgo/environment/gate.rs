@@ -257,6 +257,12 @@ fn assert_native_wx_hover(install: &DiscoveredInstall, assets: &Arc<TypeAssets>)
         "wx.request must resolve: {:?}",
         evidence.status
     );
+    if let Some(reason) = evidence.status.reason() {
+        assert!(
+            !reason.contains('/'),
+            "wx.request status reason leaked an asset path: {reason}"
+        );
+    }
     session.shutdown().expect("clean shutdown");
 }
 

@@ -29,7 +29,7 @@
 //! filesystem. A canary self-check additionally proves that a real host file
 //! outside the root is answered as `missing` for both `readFile` and `stat`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
@@ -199,8 +199,14 @@ impl VirtualFileSystem {
         let (assets, asset_directories, environment_degradations) = if let Some(assets) =
             input.type_assets()
         {
-            let (tsconfig, degradations) =
-                environment_tsconfig_text(&root, &relative_paths, input.compiler_options(), assets);
+            let directories = virtual_directories(&root, files.keys().map(String::as_str), assets);
+            let (tsconfig, degradations) = environment_tsconfig_text(
+                &root,
+                &relative_paths,
+                input.compiler_options(),
+                assets,
+                &directories,
+            );
             files.insert(tsconfig_path.clone(), VirtualFile::new(tsconfig));
             let (assets, directories) = mount_type_assets(&files, assets)?;
             (assets, directories, degradations)
@@ -944,53 +950,132 @@ fn tsconfig_text(relative_paths: &[String]) -> String {
 /// Only `noEmit:true`, the mandatory typings entry/root and the project's
 /// validated options are emitted. `noLib`, `strict`, `target`, `module` and
 /// `skipLibCheck` are never forced; the Node production path does not add
-/// them either. Project `typeRoots`/`baseUrl`/`paths` entries that point
-/// outside the virtual snapshot are dropped and reported as explicit
+/// them either. Project `types`/`typeRoots`/`baseUrl`/`paths` entries that
+/// point outside the virtual snapshot are dropped and reported as explicit
 /// degradations instead of being forwarded to the engine.
 fn environment_tsconfig_text(
     project_root: &str,
     relative_paths: &[String],
     options: &CompilerOptions,
     assets: &TypeAssets,
+    directories: &BTreeSet<String>,
 ) -> (String, Vec<EnvironmentDegradation>) {
+    let config = environment_options(project_root, options, assets, directories);
     let mut compiler = serde_json::Map::new();
-    let mut degradations = Vec::new();
     compiler.insert("noEmit".to_owned(), Value::Bool(true));
-
-    let mut types = options_string_array(options.get("types"));
-    push_unique(&mut types, MINIPROGRAM_TYPINGS.to_owned());
     compiler.insert(
         "types".to_owned(),
-        Value::Array(types.into_iter().map(Value::String).collect()),
+        Value::Array(config.types.into_iter().map(Value::String).collect()),
     );
+    compiler.insert(
+        "typeRoots".to_owned(),
+        Value::Array(config.type_roots.into_iter().map(Value::String).collect()),
+    );
+    if let Some(value) = config.base_url {
+        compiler.insert("baseUrl".to_owned(), value);
+    }
+    if let Some(value) = config.paths {
+        compiler.insert("paths".to_owned(), value);
+    }
+    for (key, value) in options.values() {
+        if matches!(key.as_str(), "types" | "typeRoots" | "baseUrl" | "paths") {
+            continue;
+        }
+        compiler.insert(key.clone(), value.clone());
+    }
+
+    let tsconfig = json!({
+        "compilerOptions": Value::Object(compiler),
+        "files": relative_paths,
+    })
+    .to_string();
+    (tsconfig, config.degradations)
+}
+
+/// Computes the type-environment degradations for one project snapshot.
+///
+/// This is the plan-time counterpart of the VFS configuration: the adapter
+/// calls it before any session exists, so the very first typed request can
+/// report `Partial` when `types`/`typeRoots`/`baseUrl`/`paths` point outside
+/// the virtual snapshot. It is path-free and performs no I/O.
+#[must_use]
+pub fn environment_degradations_for(
+    project_root: &str,
+    project_paths: &[String],
+    options: &CompilerOptions,
+    assets: &TypeAssets,
+) -> Vec<EnvironmentDegradation> {
+    let directories = virtual_directories(
+        project_root,
+        project_paths.iter().map(String::as_str),
+        assets,
+    );
+    environment_options(project_root, options, assets, &directories).degradations
+}
+
+struct EnvironmentOptions {
+    types: Vec<String>,
+    type_roots: Vec<String>,
+    base_url: Option<Value>,
+    paths: Option<Value>,
+    degradations: Vec<EnvironmentDegradation>,
+}
+
+fn environment_options(
+    project_root: &str,
+    options: &CompilerOptions,
+    assets: &TypeAssets,
+    directories: &BTreeSet<String>,
+) -> EnvironmentOptions {
+    let mut degradations = Vec::new();
 
     let mut type_roots = Vec::new();
+    let mut virtual_type_roots = Vec::new();
     for entry in options_string_array(options.get("typeRoots")) {
-        if type_root_is_virtual(project_root, assets, &entry) {
-            type_roots.push(entry);
-        } else {
+        let Some(normalized) = normalize_virtual_entry(project_root, &entry) else {
             push_degradation(
                 &mut degradations,
                 "typeRoots",
                 "entry outside the virtual snapshot",
             );
+            continue;
+        };
+        if !directories.contains(&normalized) {
+            push_degradation(
+                &mut degradations,
+                "typeRoots",
+                "entry outside the virtual snapshot",
+            );
+            continue;
+        }
+        type_roots.push(entry);
+        virtual_type_roots.push(normalized);
+    }
+    let typings_root = assets.typings_root().as_str().to_owned();
+    push_unique(&mut type_roots, typings_root.clone());
+    push_unique(&mut virtual_type_roots, typings_root);
+
+    let mut types = Vec::new();
+    for entry in options_string_array(options.get("types")) {
+        if type_entry_is_virtual(&entry, &virtual_type_roots, directories) {
+            types.push(entry);
+        } else {
+            push_degradation(
+                &mut degradations,
+                "types",
+                "entry outside the virtual snapshot",
+            );
         }
     }
-    push_unique(&mut type_roots, assets.typings_root().as_str().to_owned());
-    compiler.insert(
-        "typeRoots".to_owned(),
-        Value::Array(type_roots.into_iter().map(Value::String).collect()),
-    );
+    push_unique(&mut types, MINIPROGRAM_TYPINGS.to_owned());
 
+    let mut base_url = None;
     let base_url_removed = options
         .get("baseUrl")
         .and_then(Value::as_str)
         .is_some_and(|base| {
-            if base.starts_with('/') {
-                !within_root(project_root, base)
-            } else {
-                base.split('/').any(|component| component == "..")
-            }
+            normalize_virtual_entry(project_root, base)
+                .is_none_or(|base| !directories.contains(&base))
         });
     if base_url_removed {
         push_degradation(
@@ -999,13 +1084,14 @@ fn environment_tsconfig_text(
             "baseUrl outside the virtual snapshot",
         );
     } else if let Some(value) = options.get("baseUrl") {
-        compiler.insert("baseUrl".to_owned(), value.clone());
+        base_url = Some(value.clone());
     }
 
-    if let Some(paths) = options.get("paths").and_then(Value::as_object) {
+    let mut paths = None;
+    if let Some(mapping) = options.get("paths").and_then(Value::as_object) {
         let mut kept = serde_json::Map::new();
         let mut dropped = base_url_removed;
-        for (name, targets) in paths {
+        for (name, targets) in mapping {
             let all_virtual = targets.as_array().is_some_and(|items| {
                 items
                     .iter()
@@ -1026,32 +1112,128 @@ fn environment_tsconfig_text(
             );
         }
         if !kept.is_empty() {
-            compiler.insert("paths".to_owned(), Value::Object(kept));
+            paths = Some(Value::Object(kept));
         }
     }
 
-    for (key, value) in options.values() {
-        if matches!(key.as_str(), "types" | "typeRoots" | "baseUrl" | "paths") {
-            continue;
-        }
-        compiler.insert(key.clone(), value.clone());
+    EnvironmentOptions {
+        types,
+        type_roots,
+        base_url,
+        paths,
+        degradations,
     }
-
-    let tsconfig = json!({
-        "compilerOptions": Value::Object(compiler),
-        "files": relative_paths,
-    })
-    .to_string();
-    (tsconfig, degradations)
 }
 
-fn type_root_is_virtual(project_root: &str, assets: &TypeAssets, entry: &str) -> bool {
-    if !entry.starts_with('/') {
-        return !entry.split('/').any(|component| component == "..");
+/// Normalizes one project-relative or absolute option entry to a virtual path.
+///
+/// Returns `None` for absolute roots that escape every allowed root, control
+/// characters, backslashes and `..` components. Relative entries are resolved
+/// against the synthesized `tsconfig.json` at the project root.
+fn normalize_virtual_entry(project_root: &str, entry: &str) -> Option<String> {
+    if entry.is_empty() || entry.contains('\\') || entry.chars().any(char::is_control) {
+        return None;
     }
-    within_root(project_root, entry)
-        || within_root(assets.standard_lib_root().as_str(), entry)
-        || within_root(assets.typings_root().as_str(), entry)
+    let mut entry = entry;
+    while let Some(rest) = entry.strip_prefix("./") {
+        entry = rest;
+    }
+    let entry = entry.trim_end_matches('/');
+    if entry.is_empty() || entry == "." {
+        return Some(project_root.to_owned());
+    }
+    if entry.starts_with('/') {
+        if entry == "/" {
+            return None;
+        }
+        if entry
+            .split('/')
+            .skip(1)
+            .any(|component| component.is_empty() || component == "." || component == "..")
+        {
+            return None;
+        }
+        return Some(entry.to_owned());
+    }
+    if entry
+        .split('/')
+        .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        return None;
+    }
+    Some(format!("{project_root}/{entry}"))
+}
+
+/// Returns whether one `types` entry resolves inside a virtual type root.
+fn type_entry_is_virtual(
+    entry: &str,
+    virtual_type_roots: &[String],
+    directories: &BTreeSet<String>,
+) -> bool {
+    if entry.is_empty()
+        || entry.contains('/')
+        || entry.contains('\\')
+        || entry.chars().any(char::is_control)
+        || matches!(entry, "." | "..")
+    {
+        return false;
+    }
+    virtual_type_roots
+        .iter()
+        .any(|root| directories.contains(&format!("{root}/{entry}")))
+}
+
+/// Returns the virtual directories that the engine can see.
+///
+/// Project directories are the ancestor closure of `project_paths` below the
+/// project root; asset directories are the ancestor closure of every verified
+/// declaration below its fixed root. Ancestors above those roots are never
+/// inserted, so a missing directory is provably outside the snapshot.
+fn virtual_directories<'a>(
+    project_root: &str,
+    project_paths: impl Iterator<Item = &'a str>,
+    assets: &TypeAssets,
+) -> BTreeSet<String> {
+    let mut directories = BTreeSet::new();
+    directories.insert(project_root.to_owned());
+    for path in project_paths {
+        let mut current = parent_directory(path);
+        while let Some(directory) = current {
+            if !within_root(project_root, directory) {
+                break;
+            }
+            let inserted = directories.insert(directory.to_owned());
+            if !inserted || directory == project_root {
+                break;
+            }
+            current = parent_directory(directory);
+        }
+    }
+    let roots = [
+        assets.standard_lib_root().as_str().to_owned(),
+        assets.typings_root().as_str().to_owned(),
+    ];
+    for root in &roots {
+        directories.insert(root.clone());
+    }
+    for asset in assets.files() {
+        let path = asset.path().as_str();
+        let Some(root) = roots.iter().find(|root| within_root(root, path)) else {
+            continue;
+        };
+        let mut current = parent_directory(path);
+        while let Some(directory) = current {
+            if !within_root(root, directory) {
+                break;
+            }
+            let inserted = directories.insert(directory.to_owned());
+            if !inserted || directory == root.as_str() {
+                break;
+            }
+            current = parent_directory(directory);
+        }
+    }
+    directories
 }
 
 fn path_target_is_virtual(target: &str) -> bool {
@@ -1562,13 +1744,15 @@ mod tests {
         assert_eq!(compiler["allowJs"], true);
         assert_eq!(compiler["checkJs"], false);
         assert_eq!(compiler["lib"], json!(["es2020"]));
-        assert_eq!(
-            compiler["types"],
-            json!(["custom", "miniprogram-api-typings"])
-        );
+        assert_eq!(compiler["types"], json!(["miniprogram-api-typings"]));
         assert_eq!(compiler["typeRoots"], json!(["/pkg/typings"]));
         assert_eq!(value["files"], json!(["main.ts", "model.ts"]));
         assert!(compiler.get("moduleDetection").is_none());
+        assert!(
+            vfs.environment_degradations()
+                .iter()
+                .any(|item| item.field() == "types")
+        );
     }
 
     #[test]
@@ -1633,9 +1817,11 @@ mod tests {
                 }),
             ),
         ]);
-        let vfs =
-            VirtualFileSystem::from_analysis_input(&environment_input(&[("main.ts", "")], options))
-                .expect("environment vfs");
+        let vfs = VirtualFileSystem::from_analysis_input(&environment_input(
+            &[("main.ts", ""), ("types/globals.d.ts", "")],
+            options,
+        ))
+        .expect("environment vfs");
         let value: Value =
             serde_json::from_str(vfs.file(vfs.tsconfig_path()).expect("tsconfig").text())
                 .expect("tsconfig json");
@@ -1673,10 +1859,7 @@ mod tests {
             serde_json::from_str(vfs.file(vfs.tsconfig_path()).expect("tsconfig").text())
                 .expect("tsconfig json");
         let compiler = &value["compilerOptions"];
-        assert_eq!(
-            compiler["typeRoots"],
-            json!(["local-types", "/pkg/typings"])
-        );
+        assert_eq!(compiler["typeRoots"], json!(["/pkg/typings"]));
         assert!(compiler.get("baseUrl").is_none());
         assert!(compiler.get("paths").is_none());
 
@@ -1684,6 +1867,87 @@ mod tests {
         assert!(degradations.iter().any(|item| item.field() == "typeRoots"));
         assert!(degradations.iter().any(|item| item.field() == "baseUrl"));
         assert!(degradations.iter().any(|item| item.field() == "paths"));
+    }
+
+    #[test]
+    fn types_and_relative_type_roots_outside_the_snapshot_are_degraded() {
+        let options = BTreeMap::from([
+            (
+                "typeRoots".to_owned(),
+                json!(["types", "missing-types", "../escape"]),
+            ),
+            (
+                "types".to_owned(),
+                json!([
+                    "miniprogram-api-typings",
+                    "custom",
+                    "../escape",
+                    "/absolute"
+                ]),
+            ),
+        ]);
+        let input = environment_input(
+            &[
+                ("main.ts", "const x = 1;\n"),
+                ("types/local/index.d.ts", "export {};\n"),
+            ],
+            options,
+        );
+        let vfs = VirtualFileSystem::from_analysis_input(&input).expect("environment vfs");
+        let value: Value =
+            serde_json::from_str(vfs.file(vfs.tsconfig_path()).expect("tsconfig").text())
+                .expect("tsconfig json");
+        let compiler = &value["compilerOptions"];
+        assert_eq!(compiler["typeRoots"], json!(["types", "/pkg/typings"]));
+        assert_eq!(compiler["types"], json!(["miniprogram-api-typings"]));
+        let degradations = vfs.environment_degradations();
+        assert!(degradations.iter().any(|item| item.field() == "typeRoots"));
+        assert!(degradations.iter().any(|item| item.field() == "types"));
+        assert!(degradations.iter().all(|item| !item.reason().contains('/')));
+
+        let assets = input.type_assets().expect("trusted assets");
+        let planned = environment_degradations_for(
+            "/work/demo",
+            &[
+                "/work/demo/main.ts".to_owned(),
+                "/work/demo/types/local/index.d.ts".to_owned(),
+            ],
+            input.compiler_options(),
+            assets,
+        );
+        assert_eq!(planned.as_slice(), degradations);
+    }
+
+    #[test]
+    fn types_resolve_under_a_local_virtual_type_root() {
+        let options = BTreeMap::from([
+            ("typeRoots".to_owned(), json!(["types"])),
+            (
+                "types".to_owned(),
+                json!(["local", "miniprogram-api-typings"]),
+            ),
+        ]);
+        let vfs = VirtualFileSystem::from_analysis_input(&environment_input(
+            &[("main.ts", ""), ("types/local/index.d.ts", "export {};\n")],
+            options,
+        ))
+        .expect("environment vfs");
+        let value: Value =
+            serde_json::from_str(vfs.file(vfs.tsconfig_path()).expect("tsconfig").text())
+                .expect("tsconfig json");
+        assert_eq!(
+            value["compilerOptions"]["typeRoots"],
+            json!(["types", "/pkg/typings"])
+        );
+        assert_eq!(
+            value["compilerOptions"]["types"],
+            json!(["local", "miniprogram-api-typings"])
+        );
+        assert!(
+            vfs.environment_degradations()
+                .iter()
+                .all(|item| item.field() != "types")
+        );
     }
 
     #[test]

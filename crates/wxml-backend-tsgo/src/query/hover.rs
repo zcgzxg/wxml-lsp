@@ -121,10 +121,13 @@ impl HoverGap {
             Self::Unsupported { reason }
             | Self::UndecodableDeclaration { reason }
             | Self::Blocked { reason } => reason.clone(),
-            Self::ExternalDeclaration { path } => path.as_ref().map_or_else(
-                || "a declaration could not be bound to the project snapshot".to_owned(),
-                |path| format!("declaration `{path}` is outside the project snapshot"),
-            ),
+            Self::ExternalDeclaration { path: _ } => {
+                // Never render the engine-reported path: it may be an
+                // absolute asset or host path. The stable class is enough for
+                // the LSP status, while the structured gap keeps the path for
+                // internal diagnostics and tests.
+                "a declaration is outside the project snapshot".to_owned()
+            }
             Self::NameMismatchDeclaration { expected } => {
                 format!("a declaration name does not match symbol `{expected}`")
             }
@@ -586,7 +589,7 @@ mod tests {
         };
         assert_eq!(
             reason
-                .matches("could not be bound to the project snapshot")
+                .matches("a declaration is outside the project snapshot")
                 .count(),
             1
         );
