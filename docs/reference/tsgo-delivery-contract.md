@@ -106,7 +106,7 @@ ADR-0008 是否从 proposed 升为 accepted 由 ADR 自身门禁决定，不由�
 | 5 | 归档/解包大小 | packed `10,175,135` B；unpacked `28,450,796` B；`122` 文件 | registry 元数据 | packed 由 1 字节 range 得到；文件数来自发布清单 |
 | 6 | 引擎文件 | `lib/tsc` `24,522,912` B；`116` 个 `lib*.d.ts`（含 `lib.d.ts`）共 `3,870,196` B；`LICENSE` `9,197` B；`NOTICE.txt` `46,827` B；`tsc.sig` `481` B | registry 发布清单 | 未下载真实字节；文件大小以清单为准 |
 | 7 | npm 入口性质 | `typescript` 包的 `bin/tsc` 是 `#!/usr/bin/env node` launcher；平台包无 `bin/`，原生入口是 `lib/tsc` | registry 小文本文件内容 | 这不是本项目运行时验证 |
-| 8 | 类型资产 | `miniprogram-api-typings@5.3.1`：MIT；registry 上游 26 文件、packed `449,429` B、unpacked `2,552,052` B、SRI `sha512-2CirO+C1z5RmKXDqTUSNbuyouHf5d0/KJTt+Qqi1EsiQYs8jlYhq7yWjp6EdTcJpvZzjuefZQCcDixYbrgIqow==`；交付 payload 23 文件/`2,548,075` B（`extract.exclude` 排除 `package.json`、`README-en.md`、`typings.json`） | registry 元数据 + 2026-11-19 本地未打包树只读复核 | 26 是上游身份，23 是 manifest 口径；两者都应在 `assets.lock.json` 冻结，但 lock 尚不存在，tarball SRI/SHA-256 仍未复核（F3-03 BLOCKED） |
+| 8 | 类型资产 | `miniprogram-api-typings@5.3.1`：MIT；registry 上游 26 文件、packed `449,429` B、unpacked `2,552,052` B、SRI `sha512-2CirO+C1z5RmKXDqTUSNbuyouHf5d0/KJTt+Qqi1EsiQYs8jlYhq7yWjp6EdTcJpvZzjuefZQCcDixYbrgIqow==`；交付 payload 23 文件/`2,548,075` B（`extract.exclude` 排除 `package.json`、`README-en.md`、`typings.json`） | registry 元数据 + 2026-11-19 本地未打包树只读复核 | 26 是上游身份，23 是 manifest 口径；两者都已在根 `assets.lock.json` 冻结，tarball SRI/SHA-256 已复核；F3-03 其余项仍 BLOCKED |
 | 9 | 现有 v1 合同 | schema v1 强制 `node` 字段和 `node-backend` artifact；index v1 强制 `nodeMinimumVersion`；`env` 输出 `WXML_TYPE_BACKEND` | 仓库静态事实 | 见 `crates/wxml-delivery/src/manifest.rs`、`bin/wxml-lsp-install.rs` |
 | 10 | 现有校验/安装骨架 | 临时区校验 → `rename` 到 `versions/` → 临时 symlink atomic `rename`；OS 文件锁；`WXML_LSP_BIN` 优先 | 仓库静态事实 | 现有测试为 v1/Node 路径，不能替代 F3 |
 | 11 | 原生进程能力 | `7.1.0-beta` 在 Linux x64 的 `--api --async`、快照、查询、AST v9/header 64 等 | P1-A 运行时证据（独立记录） | 本交付合同未重跑；F0 必须冻结常量 |
@@ -344,7 +344,7 @@ typings 口径：交付 payload 固定 23 文件/`2,548,075` B，bundle 摘要�
 打包器、manifest 校验和安装树校验现在使用**精确的 23 路径 allowlist**（拒绝排除文件、大小写
 变体和同数量替换），并重算 payload 的 `fileCount`/总字节/bundle 摘要，与上述三个冻结值比较；
 `package.json` 仍同时被运行期负向扫描拒绝。上述 23/26 值是本地未打包树的复算候选值，不是 tarball
-provenance；`assets.lock.json` 仍待真实 tarball 冻结（F3-03 BLOCKED）。真实 fixture 一致性测试
+provenance；`assets.lock.json` 已按真实 tarball 冻结（F3-03 其余项仍 BLOCKED）。真实 fixture 一致性测试
 见 `crates/wxml-delivery/tests/typings_payload.rs`（`#[ignore]`，需要
 `WXML_TYPINGS_FIXTURE_DIR`），它不构成 provenance 或 F3-03 关闭证据。
 
@@ -723,7 +723,7 @@ Index 最大 1 MiB，`deny_unknown_fields`。`archive` 只存**文件名**；rel
 
 ### 5.3 构建机 provisioning（`assets.lock.json`）
 
-`assets.lock.json` 是未来仓库文件（当前尚不存在），至少包含：
+`assets.lock.json` 已冻结，见仓库根 `assets.lock.json`，至少包含：
 
 ```json
 {
