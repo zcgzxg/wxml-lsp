@@ -31,6 +31,7 @@ pub mod native_install;
 pub mod package;
 pub mod paths;
 pub mod probe;
+pub mod provision;
 pub mod semver;
 pub mod source;
 pub mod sri;

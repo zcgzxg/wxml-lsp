@@ -11,6 +11,7 @@ use wxml_delivery::semver::validate_strict;
 
 const USAGE: &str = "\
 Usage: wxml-lsp-package [native] --input DIR --output DIR [OPTIONS]
+       wxml-lsp-package provision --lock FILE --cache DIR [OPTIONS]
 
 Without `native`, builds the legacy schema v1 Node package described below.
 With `native`, builds the schema v2 Node-free package described by
@@ -45,6 +46,26 @@ Options:
 This command never uploads artifacts, creates tags/releases or contacts the
 network. The generated index is a local file for a release directory or a
 fixture server.";
+
+const PROVISION_USAGE: &str = "\
+Usage: wxml-lsp-package provision --lock FILE --cache DIR [OPTIONS]
+
+Provisions the assets declared by a repository `assets.lock.json` into an
+immutable, content-addressed cache. This build never downloads:
+
+  --lock FILE               repository assets.lock.json (required)
+  --cache DIR               absolute cache directory (required; 0700 on create)
+  --from-dir DIR            absolute directory containing the exact locked
+                            tarball file names (the only accepted source)
+  --offline                 reserved for scripts; this build is always offline
+                            and never contacts the network
+  --print-plan              print cache keys, hits and sources; write nothing
+  --allow-download          rejected: the HTTPS download path is not implemented
+  --help                    print this message
+
+Every cache hit is re-hashed (provenance, payload files, tree digest and
+bundles); corrupt or foreign entries fail closed and are never repaired in
+place. This command never executes node/npm/npx/pnpm/yarn.";
 
 const NATIVE_USAGE: &str = "\
 Usage: wxml-lsp-package native --input DIR --output DIR [OPTIONS]
@@ -122,6 +143,21 @@ fn run() -> Result<(), String> {
     }
     if first == "--print-platform" {
         println!("{}", host_platform().map_err(|error| error.to_string())?);
+        return Ok(());
+    }
+    if first == "provision" {
+        let Some(options) = parse_provision_options(args)? else {
+            return Ok(());
+        };
+        if options.print_plan {
+            let plan =
+                wxml_delivery::provision::plan(&options).map_err(|error| error.to_string())?;
+            print_provision_plan(&plan);
+        } else {
+            let report =
+                wxml_delivery::provision::provision(&options).map_err(|error| error.to_string())?;
+            print_provision_report(&report);
+        }
         return Ok(());
     }
     if matches!(first.as_str(), "native" | "v2") {
@@ -240,6 +276,85 @@ fn print_report(report: &wxml_delivery::package::BuildReport, dry_run: bool) {
         println!("archive: {}", archive.display());
         println!("sha256: {}", report.sha256);
         println!("size: {} bytes", report.size);
+    }
+}
+
+fn parse_provision_options(
+    mut args: impl Iterator<Item = String>,
+) -> Result<Option<wxml_delivery::provision::ProvisionOptions>, String> {
+    use wxml_delivery::provision::ProvisionOptions;
+
+    let mut lock: Option<PathBuf> = None;
+    let mut cache: Option<PathBuf> = None;
+    let mut from_dir: Option<PathBuf> = None;
+    let mut offline = false;
+    let mut print_plan = false;
+    let mut allow_download = false;
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--lock" => lock = Some(PathBuf::from(take_next(&mut args, "--lock")?)),
+            "--cache" => cache = Some(PathBuf::from(take_next(&mut args, "--cache")?)),
+            "--from-dir" => {
+                from_dir = Some(PathBuf::from(take_next(&mut args, "--from-dir")?));
+            }
+            "--offline" => {
+                offline = true;
+                eprintln!("note: --offline is reserved; this build always runs offline");
+            }
+            "--print-plan" => print_plan = true,
+            "--allow-download" => allow_download = true,
+            "--help" | "-h" => {
+                println!("{PROVISION_USAGE}");
+                return Ok(None);
+            }
+            other => {
+                return Err(format!(
+                    "unexpected argument `{other}`\n\n{PROVISION_USAGE}"
+                ));
+            }
+        }
+    }
+    let lock = lock.ok_or_else(|| "--lock is required".to_owned())?;
+    let cache = cache.ok_or_else(|| "--cache is required".to_owned())?;
+    Ok(Some(ProvisionOptions {
+        lock,
+        cache,
+        from_dir,
+        offline,
+        print_plan,
+        allow_download,
+    }))
+}
+
+fn print_provision_plan(plan: &wxml_delivery::provision::ProvisionPlan) {
+    println!("provision plan: lock sha256 {}", plan.lock_sha256);
+    for asset in &plan.assets {
+        let source = asset.source.map_or("missing", |source| source.label());
+        println!(
+            "asset: {}  cache-key {}  cache {}  source {}  tarball {}",
+            asset.name,
+            asset.cache_key,
+            if asset.cache_hit { "hit" } else { "miss" },
+            source,
+            asset.tarball_file_name
+        );
+    }
+    println!("dry-run: no cache entries written");
+}
+
+fn print_provision_report(report: &wxml_delivery::provision::ProvisionReport) {
+    println!("provisioned: lock sha256 {}", report.lock_sha256);
+    for entry in &report.entries {
+        println!(
+            "asset: {}  source {}  cache-key {}",
+            entry.name,
+            entry.source.label(),
+            entry.cache_key
+        );
+        println!(
+            "payload tree: {}  files {}  bytes {}",
+            entry.payload_tree_digest, entry.file_count, entry.total_bytes
+        );
     }
 }
 
