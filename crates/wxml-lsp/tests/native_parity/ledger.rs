@@ -20,17 +20,19 @@ pub(crate) const LEDGER_RELATIVE_PATH: &str = "docs/plans/tsgo-test-ledger.json"
 /// Frozen expanded registration count.
 pub(crate) const TOTAL_CASES: usize = 339;
 /// Exact-parity cases promoted to `green`; the wave-9 assertion backfill
-/// promoted three more.
-pub(crate) const GREEN_CASES: usize = 58;
-/// Cases still `planned` after the 2026-11-20 wave-9 assertion backfill.
-pub(crate) const PLANNED_CASES: usize = 245;
+/// promoted three more, and the wave-10 follow-up promoted `TS-REWRITE-0207`
+/// plus nine exact-ready cases.
+pub(crate) const GREEN_CASES: usize = 68;
+/// Cases still `planned` after the 2026-11-20 wave-10 exact backfill.
+pub(crate) const PLANNED_CASES: usize = 235;
 /// Frozen retired-with-decision count.
 pub(crate) const RETIRED_CASES: usize = 36;
-/// Near-exact cases intentionally left `planned` with a green recommendation.
-pub(crate) const NEAR_EXACT_CASES: usize = 3;
-/// Weaker evidence cases left `planned` after the 2026-11-20 wave-9 assertion
-/// backfill, which promoted three previously weaker cases to exact.
-pub(crate) const WEAKER_CASES: usize = 70;
+/// Near-exact cases intentionally left `planned` with a green recommendation
+/// after `TS-REWRITE-0207` was promoted to exact.
+pub(crate) const NEAR_EXACT_CASES: usize = 2;
+/// Weaker evidence cases left `planned` after the 2026-11-20 wave-10 ledger
+/// backfill, which registered twelve existing-test weaker candidates.
+pub(crate) const WEAKER_CASES: usize = 82;
 /// Structural evidence cases left `planned` after the wave-6 component-binding
 /// follow-up.
 pub(crate) const STRUCTURAL_CASES: usize = 7;

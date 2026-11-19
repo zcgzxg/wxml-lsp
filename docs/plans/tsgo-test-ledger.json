@@ -164,18 +164,18 @@
     },
     "migration_evidence": {
       "assessed_at": "2026-11-20",
-      "implementation_head": "16e88b24917a34e225a4ec66b6ea0e0751262dc4",
+      "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
       "rust_test_command": "cargo test -p wxml-lsp --lib; cargo test -p wxml-lsp --test native_parity; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored; cargo test -p wxml-delivery --test assets_lock_root",
-      "rust_test_result": "wave-9 ledger backfill: three wave-7 weaker cases with newly complete Rust assertion coverage promoted to exact green (TS-PROBES-0027, TS-ANALYSIS-0139/0174). cargo test -p wxml-lsp --test native_parity 75 passed/0 failed/26 ignored (includes the parallel oracle-manifest and native-gate suites).",
-      "assessed_cases": 160,
-      "exact": 58,
-      "near_exact": 3,
-      "weaker": 70,
+      "rust_test_result": "wave-10 ledger backfill final: twelve wave-9 weaker candidates registered, TS-REWRITE-0207 promoted from near-exact, and nine wave-9 exact-ready cases promoted from planned. green 59 -> 68, planned 244 -> 235, exact 59 -> 68, assessed_cases 172 -> 181 and no-evidence 131 -> 122; near_exact 2, weaker 82, structural 7 and blocked 22 are unchanged.",
+      "assessed_cases": 181,
+      "exact": 68,
+      "near_exact": 2,
+      "weaker": 82,
       "structural": 7,
       "blocked": 22,
-      "green_eligible": 58,
-      "promoted_to_green": 58,
-      "remaining_planned_without_evidence": 143,
+      "green_eligible": 68,
+      "promoted_to_green": 68,
+      "remaining_planned_without_evidence": 122,
       "by_partition": {
         "behaviors": {
           "routed_cases": 22,
@@ -239,11 +239,11 @@
         },
         "guards_js": {
           "routed_cases": 25,
-          "evidence_cases": 13,
-          "green_cases": 7,
+          "evidence_cases": 15,
+          "green_cases": 9,
           "planned_evidence_cases": 6,
-          "unassessed_cases": 12,
-          "exact": 7,
+          "unassessed_cases": 10,
+          "exact": 9,
           "near_exact": 0,
           "weaker": 1,
           "structural": 0,
@@ -251,11 +251,11 @@
         },
         "hover_docs": {
           "routed_cases": 10,
-          "evidence_cases": 7,
-          "green_cases": 2,
+          "evidence_cases": 8,
+          "green_cases": 3,
           "planned_evidence_cases": 5,
-          "unassessed_cases": 3,
-          "exact": 2,
+          "unassessed_cases": 2,
+          "exact": 3,
           "near_exact": 0,
           "weaker": 5,
           "structural": 0,
@@ -263,25 +263,25 @@
         },
         "loops": {
           "routed_cases": 16,
-          "evidence_cases": 9,
+          "evidence_cases": 11,
           "green_cases": 8,
-          "planned_evidence_cases": 1,
-          "unassessed_cases": 7,
+          "planned_evidence_cases": 3,
+          "unassessed_cases": 5,
           "exact": 8,
           "near_exact": 0,
-          "weaker": 0,
+          "weaker": 2,
           "structural": 0,
           "blocked": 1
         },
         "mapping_utf16": {
           "routed_cases": 21,
-          "evidence_cases": 15,
+          "evidence_cases": 18,
           "green_cases": 6,
-          "planned_evidence_cases": 9,
-          "unassessed_cases": 6,
+          "planned_evidence_cases": 12,
+          "unassessed_cases": 3,
           "exact": 6,
           "near_exact": 0,
-          "weaker": 8,
+          "weaker": 11,
           "structural": 1,
           "blocked": 0
         },
@@ -311,48 +311,48 @@
         },
         "project_overlay": {
           "routed_cases": 20,
-          "evidence_cases": 6,
-          "green_cases": 0,
-          "planned_evidence_cases": 6,
-          "unassessed_cases": 14,
-          "exact": 0,
+          "evidence_cases": 9,
+          "green_cases": 1,
+          "planned_evidence_cases": 8,
+          "unassessed_cases": 11,
+          "exact": 1,
           "near_exact": 0,
-          "weaker": 6,
+          "weaker": 8,
           "structural": 0,
           "blocked": 0
         },
         "protocol_limits": {
           "routed_cases": 40,
-          "evidence_cases": 2,
-          "green_cases": 0,
-          "planned_evidence_cases": 2,
-          "unassessed_cases": 38,
-          "exact": 0,
+          "evidence_cases": 9,
+          "green_cases": 5,
+          "planned_evidence_cases": 4,
+          "unassessed_cases": 31,
+          "exact": 5,
           "near_exact": 0,
-          "weaker": 2,
+          "weaker": 4,
           "structural": 0,
           "blocked": 0
         },
         "scenario_matrix": {
           "routed_cases": 43,
-          "evidence_cases": 0,
+          "evidence_cases": 3,
           "green_cases": 0,
-          "planned_evidence_cases": 0,
-          "unassessed_cases": 43,
+          "planned_evidence_cases": 3,
+          "unassessed_cases": 40,
           "exact": 0,
           "near_exact": 0,
-          "weaker": 0,
+          "weaker": 3,
           "structural": 0,
           "blocked": 0
         },
         "shadow_rewrite": {
           "routed_cases": 19,
           "evidence_cases": 18,
-          "green_cases": 3,
-          "planned_evidence_cases": 15,
+          "green_cases": 4,
+          "planned_evidence_cases": 14,
           "unassessed_cases": 1,
-          "exact": 3,
-          "near_exact": 1,
+          "exact": 4,
+          "near_exact": 0,
           "weaker": 14,
           "structural": 0,
           "blocked": 0
@@ -372,17 +372,17 @@
       },
       "rust_unit_test_command": "cargo test -p wxml-backend-tsgo --lib",
       "rust_unit_test_result": "wxml-lsp lib 789 passed, 0 failed, 0 ignored",
-      "near_exact_recommendations": 3,
+      "near_exact_recommendations": 2,
       "statuses": {
-        "planned": 245,
-        "green": 58,
+        "planned": 235,
+        "green": 68,
         "retired-with-decision": 36
       },
       "status_policy": "Only parity=exact cases are green. near_exact, weaker, structural and blocked cases stay planned with status_recommendation recorded; no empty evidence is accepted."
     },
     "statuses": {
-      "planned": 245,
-      "green": 58,
+      "planned": 235,
+      "green": 68,
       "retired-with-decision": 36
     }
   },
@@ -3460,11 +3460,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0196",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Oracle `backends/typescript/test/analysis.test.ts:196` expects target `nmae` to throw `RequestError` with code `bad-fragment`; native replaces that error code with typed `ShadowError::BadExpression` whose detail contains `not a whole identifier`. Rust rejects `nmae`, `nam` and `user.name`, and proves `user` and `name` are accepted whole-token targets with exact offsets.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/rewrite.rs",
+            "line": 774,
+            "test": "case_analysis_0196_target_must_be_a_whole_identifier_in_the_expression",
+            "fully_qualified": "wxml_backend_tsgo::shadow::rewrite::tests::case_analysis_0196_target_must_be_a_whole_identifier_in_the_expression",
+            "note": "Asserts non-whole targets fail as `BadExpression` with `not a whole identifier`, and `user`/`name` succeed at offsets 12 and 17."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0205",
@@ -3534,7 +3553,33 @@
         "hover",
         "locals",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0205",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/analysis.test.ts:205` asserts one local mount whose text is `item.name` with no `__wxml_root.` prefix, one segment, hover quality `any`, zero diagnostics, empty `probeProblems` and Partial hover/diagnostics/definition states. Rust proves the local rewrite and the Partial fallback, but not the mount record or the C1 aggregates.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 85,
+            "test": "case_rewrite_0088_template_locals_are_not_prefixed_anywhere_in_the_expression",
+            "fully_qualified": "shadow_rewrite::case_rewrite_0088_template_locals_are_not_prefixed_anywhere_in_the_expression",
+            "note": "Asserts `!item.done`, `(item).name` and `item.done + item.name` stay byte-identical with locals bound and `local_root` set, so no root prefix is emitted."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 317,
+            "test": "case_locals_0343_a_locals_only_request_still_degrades_to_partial_with_a_typed_reason",
+            "fully_qualified": "shadow_locals_guards::case_locals_0343_a_locals_only_request_still_degrades_to_partial_with_a_typed_reason",
+            "note": "Builds a legacy locals request for `item.name`, asserts Partial with a `could not be resolved` reason and the `const item = undefined as any;` binding."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0226",
@@ -3724,7 +3769,33 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0255",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/analysis.test.ts:255` asserts the default target is the rightmost identifier for `user.name`, `users[0].name` and `user.nmae`, and that the `f0` hover is `typeOnly: \"string\"`. Rust asserts rightmost target offsets and source ranges, but native has no fragment-scoped `target` field or hover type in the same response.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 153,
+            "test": "case_rewrite_0156_repeated_identifiers_keep_the_rightmost_target_offset",
+            "fully_qualified": "shadow_rewrite::case_rewrite_0156_repeated_identifiers_keep_the_rightmost_target_offset",
+            "note": "Default `None` target resolves to the rightmost identifier for `a.a`, `user.user` and `title + title`; asserts the exact derived offset and mapped source range."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 196,
+            "test": "case_rewrite_0183_object_keys_are_not_default_targets",
+            "fully_qualified": "shadow_rewrite::case_rewrite_0183_object_keys_are_not_default_targets",
+            "note": "Asserts `{ title: user.name, flag: true }` selects `name` as the default target, so object keys are not mistaken for the rightmost identifier."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0272",
@@ -4112,11 +4183,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0349",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Oracle `backends/typescript/test/analysis.test.ts:349` expects duplicate fragment ids to throw `RequestError` with the structured `bad-fragment` code; native replaces that with the typed `ShadowError::Invalid { feature: \"fragment.id\" }` and reason `fragment ids must be non-empty and unique`, rejected before any view is built. This is the typed-error replacement for the TS structured error, not a fabricated `RequestError` field.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
+            "line": 2635,
+            "test": "case_analysis_0349_duplicate_fragment_ids_are_a_structured_error",
+            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::case_analysis_0349_duplicate_fragment_ids_are_a_structured_error",
+            "note": "Asserts two `f0` fragments fail with `Invalid { feature: \"fragment.id\" }` and the exact uniqueness reason, with no view produced."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0358",
@@ -6827,14 +6917,14 @@
         "green_eligible": false,
         "status_recommendation": "green",
         "status_applied": "planned",
-        "note": "Same named/re-exported behavior resolution: number type and Supported status (the field is renamed namedCount).",
+        "note": "Native resolves the named behavior import and `shared` re-export alias to `shared.ts`, keeps `namedCount` number/exact with its path and source range, and asserts behavior, registration, data, properties and overall Supported. It does not expose the TS `states.hover.status` string or the `count` fragment hover type, so the case stays near_exact.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
             "line": 254,
             "test": "case_component_0521_named_imports_and_reexport_aliases_resolve_statically",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0521_named_imports_and_reexport_aliases_resolve_statically",
-            "note": "Same named/re-exported behavior resolution: number type and Supported status (the field is renamed namedCount)."
+            "note": "Asserts the aliased `namedCount` fact is number/exact with `shared.ts` path and `namedCount` source range, plus Supported behavior/registration/data/properties/overall; the C1 hover state string is not available."
           }
         ]
       }
@@ -7669,14 +7759,14 @@
         "green_eligible": false,
         "status_recommendation": "green",
         "status_applied": "planned",
-        "note": "Same non-probe __state number type and complete behavior data.",
+        "note": "Native keeps `__state` number/exact with its `index.ts` path and source range, asserts non-probe double-underscore names stay usable, and proves every input to `build.behaviorIncomplete` is false (data, properties, behavior problems) plus Supported status. It does not expose the C1 `behaviorIncomplete` or `states.hover` fields, so the case stays near_exact.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
-            "line": 369,
+            "line": 430,
             "test": "case_component_0763_non_probe_double_underscore_data_names_remain_usable",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0763_non_probe_double_underscore_data_names_remain_usable",
-            "note": "Same non-probe __state number type and complete behavior data."
+            "note": "Asserts `__state` is number/exact with `index.ts` path and source range, behavior data/properties incomplete flags are false, behavior problems are empty and the overall status is Supported."
           }
         ]
       }
@@ -14043,7 +14133,33 @@
       "capabilities": [
         "diagnostics",
         "messages"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MAPPING-0188",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/mapping.test.ts:188` asserts exact diagnostics on `external` and `maybeUser`, `trimmedSyntheticPrefix === true` for both receivers and helper-free messages. Rust proves the nullable-object span maps to the receiver and that a leading prefix is not a crop, but `trimmedSyntheticPrefix` is deliberately an approximation flag in the adapter (false for a pure leading prefix), and `diagnosticsExact` plus the symbol-bridge half are absent.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/mapping.rs",
+            "line": 882,
+            "test": "a_rewritten_expression_maps_the_nullable_object_to_its_identifier",
+            "fully_qualified": "wxml_backend_tsgo::shadow::mapping::tests::a_rewritten_expression_maps_the_nullable_object_to_its_identifier",
+            "note": "Maps the full `__wxml_root.maybeUser` span back to the 9-byte `maybeUser` identifier and maps the whole member expression separately."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/mapping.rs",
+            "line": 860,
+            "test": "a_leading_rewrite_prefix_is_not_an_approximate_crop",
+            "fully_qualified": "wxml_backend_tsgo::shadow::mapping::tests::a_leading_rewrite_prefix_is_not_an_approximate_crop",
+            "note": "Asserts a leading `__wxml_root.` prefix is not reported as an approximate crop, the adapter's intentional divergence from the oracle label."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0208",
@@ -14106,7 +14222,33 @@
         "diagnostics",
         "hover",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MAPPING-0208",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/mapping.test.ts:208` mounts one expression twice, asserts both mappings survive, diagnostics stay deduplicated by code and span, and the `user.name` hover is still `string`. Rust proves two independent mounts and a separate component-diagnostic dedupe, but no test repeats one expression and compares diagnostic counts, and `diagnosticsExact` plus hovers are absent.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 305,
+            "test": "case_mapping_0145_every_mount_carries_an_explicit_synthetic_source_split",
+            "fully_qualified": "shadow_mapping::case_mapping_0145_every_mount_carries_an_explicit_synthetic_source_split",
+            "note": "Builds two fragments and asserts two mount records, each with complete synthetic/source segments and absolute offsets."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 2147,
+            "test": "caps_and_dedup",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::caps_and_dedup",
+            "note": "Asserts an identical component-binding diagnostic published twice collapses to one result and that per-tag output is capped."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MAPPING-0223",
@@ -19957,7 +20099,26 @@
       "capabilities": [
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0215",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/matrix.test.ts:215` asserts hover state `unsupported` with a `/type-only/` reason and zero diagnostics for interface `data` roots in two layouts. Rust asserts the type-only root is `ShadowError::Unsupported { feature: \"data.root\" }`, but not the reason text, the `states` aggregation, the diagnostics list or the symbol-bridge half.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
+            "line": 2357,
+            "test": "non_literal_methods_and_data_are_unsupported",
+            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::non_literal_methods_and_data_are_unsupported",
+            "note": "Asserts `Page({ data: IData })` with a same-file interface fails as `Unsupported { feature: \"data.root\" }` while expression data stays Partial."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MATRIX-0228",
@@ -20019,7 +20180,26 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0228",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/matrix.test.ts:228` asserts a shorthand `data` member is `unsupported` with a `/not a property assignment/` reason and is not reported as missing. Rust has the same `DataRootKind::Unsupported` path and reason, but the test only exercises the type-only branch; the shorthand branch and the C1 `states`/diagnostics aggregates are unasserted.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
+            "line": 2357,
+            "test": "non_literal_methods_and_data_are_unsupported",
+            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::non_literal_methods_and_data_are_unsupported",
+            "note": "Covers the shared `data.root` Unsupported decision for non-object roots; the `Page({ data })` shorthand branch reaches the same arm but has no dedicated assertion."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MATRIX-0239",
@@ -20342,7 +20522,26 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0301",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/matrix.test.ts:301` asserts two page registrations produce Partial with a `/2 page registrations/` reason, registration count 2, the first registration wins and the second `title: 42` is not merged. Rust asserts Partial, count 2 and the reason, but not the winning hover type or the C1 `states` and symbol-bridge halves.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 367,
+            "test": "multiple_registrations_are_partial_and_choose_the_first",
+            "fully_qualified": "shadow_layout::multiple_registrations_are_partial_and_choose_the_first",
+            "note": "Asserts two page registrations yield Partial, `registration.count == 2` and a `2 page registrations` reason while only the first registration is mounted."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MATRIX-0319",
@@ -21052,7 +21251,33 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-OVERLAY-0036",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/overlay.test.ts:36` changes only a JSDoc comment, then asserts the hover type stays `string` and the doc becomes the unsaved text in both layouts. Rust asserts hover type and doc composition and separately that an unsaved script overlay reaches WXML hover, but no test performs a doc-only edit; `docSource` and symbol-bridge are absent.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 1125,
+            "test": "hover_composes_type_documentation_and_jsdoc",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::hover_composes_type_documentation_and_jsdoc",
+            "note": "Asserts the native hover publishes the type fence, comment text and `@deprecated` tag in the documented order."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/zed_sync.rs",
+            "line": 592,
+            "test": "unsaved_script_overlay_reaches_wxml_analysis",
+            "fully_qualified": "zed_sync::unsaved_script_overlay_reaches_wxml_analysis",
+            "note": "Asserts an unsaved script change reaches the WXML hover text and published diagnostics without a disk save."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-OVERLAY-0047",
@@ -21497,14 +21722,33 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "config",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROBES-0048",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Oracle `backends/typescript/test/probes.test.ts:48` asserts the last pragma in the leading comment block wins: `@ts-check` then `@ts-nocheck` yields `check=false`, `noCheck=true` and `neutralizeOffset` at the end of both pragma lines. Rust asserts the same `scan_pragmas` tuple on that fixture (including 28 UTF-16 code units) and covers the reversed order as an extra control.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
+            "line": 2579,
+            "test": "case_probes_0048_the_last_pragma_in_the_leading_block_wins",
+            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::case_probes_0048_the_last_pragma_in_the_leading_block_wins",
+            "note": "Asserts check-then-nocheck disables checking, sets `no_check`, and puts `neutralize_offset` after both pragma lines; the reversed order restores checking."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROBES-0059",
@@ -21555,13 +21799,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "config"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROBES-0059",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Oracle `backends/typescript/test/probes.test.ts:59` asserts `@ts-nocheck` outside the leading comments is ignored, for an ordinary leading comment and for a pragma after code. Rust asserts both scans return `no_check=false` and records that the ordinary comment is consumed while the post-code pragma is not scanned.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
+            "line": 2612,
+            "test": "case_probes_0059_ts_nocheck_outside_the_leading_comments_is_ignored",
+            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::case_probes_0059_ts_nocheck_outside_the_leading_comments_is_ignored",
+            "note": "Asserts an ordinary leading comment does not disable checking and a `@ts-nocheck` after code is not seen; `neutralize_offset` stays at the leading-comment boundary or 0."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROBES-0064",
@@ -22002,7 +22265,26 @@
       "capabilities": [
         "config",
         "project"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROBES-0176",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/probes.test.ts:176` asserts the project file set excludes a sibling model, the unresolved import yields 2307 and `diskReadable()` only lists engine/typings assets. Rust proves virtual-only reads and host-file rejection, but has no `diskReadable()` enumeration; the 2307 observation needs the real checker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/native/vfs.rs",
+            "line": 1385,
+            "test": "reads_only_virtual_files_and_never_host_files",
+            "fully_qualified": "wxml_backend_tsgo::native::vfs::tests::reads_only_virtual_files_and_never_host_files",
+            "note": "Asserts project files are served, missing paths return `missing`, and a real host file outside the root is never readable."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROTOCOL-0021",
@@ -22236,13 +22518,32 @@
       "disposition": "rewrite",
       "disposition_reason": "Old implementation mechanism is replaced (Node LanguageService/C1 envelope/pool); preserve the assertion semantics in a Rust native contract test.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "contract_translated",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROTOCOL-0126",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Oracle `backends/typescript/test/protocol.test.ts:126` asserts protocol v2 accepts a same-name nested binding chain because array order encodes nesting. Rust `group_local_levels` accepts the four bindings, yields two levels with `item`/`index` at each, keeps the inner `item.members` source, and renders the capture helper without a TDZ self-reference.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/locals.rs",
+            "line": 569,
+            "test": "case_protocol_0126_a_same_name_nested_chain_is_accepted_and_groups_two_levels",
+            "fully_qualified": "wxml_backend_tsgo::shadow::locals::tests::case_protocol_0126_a_same_name_nested_chain_is_accepted_and_groups_two_levels",
+            "note": "Asserts a same-name nested chain groups into two ordered levels and renders `__wxml_capture_item_0` before the inner declaration."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROTOCOL-0141",
@@ -22589,13 +22890,32 @@
       "disposition": "rewrite",
       "disposition_reason": "Old implementation mechanism is replaced (Node LanguageService/C1 envelope/pool); preserve the assertion semantics in a Rust native contract test.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "contract_translated",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "compiler"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROTOCOL-0280",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Oracle `backends/typescript/test/protocol.test.ts:280` rejects `allowImportingTsExtensions` as `unsupported-option` and accepts `strictNullChecks=false`, `noUncheckedIndexedAccess=true` and `strictBuiltinIteratorReturn=true`. Rust `CompilerOptions::new` returns typed `InputError::UnsupportedCompilerOption` with the offending key and preserves all three strict switches.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/input.rs",
+            "line": 2102,
+            "test": "case_protocol_0280_unknown_compiler_options_are_rejected_and_strict_switches_pass_through",
+            "fully_qualified": "wxml_backend_tsgo::input::tests::case_protocol_0280_unknown_compiler_options_are_rejected_and_strict_switches_pass_through",
+            "note": "Asserts an unknown option fails with `UnsupportedCompilerOption { key: \"allowImportingTsExtensions\" }` and the three strict switches keep their values."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROTOCOL-0306",
@@ -22717,13 +23037,32 @@
       "disposition": "rewrite",
       "disposition_reason": "Old implementation mechanism is replaced (Node LanguageService/C1 envelope/pool); preserve the assertion semantics in a Rust native contract test.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "contract_translated",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "config"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROTOCOL-0319",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Oracle `backends/typescript/test/protocol.test.ts:319` asserts policy `off` inserts a `nocheck` pragma after a source `@ts-check`, notes the neutralisation and records `jsCheckApplied=off`. Rust asserts the same insertion at UTF-16 13 with length 15, no replacement, the layout note, and the derived text starting with the two pragma lines.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 567,
+            "test": "case_protocol_0319_explicit_off_neutralises_a_source_ts_check_in_the_derived_view",
+            "fully_qualified": "shadow_layout::case_protocol_0319_explicit_off_neutralises_a_source_ts_check_in_the_derived_view",
+            "note": "Asserts `JsCheckPolicy::Off` inserts `// @ts-nocheck\\n` after the source pragma at offset 13 and the derived text keeps the order."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROTOCOL-0329",
@@ -23667,13 +24006,32 @@
       "disposition": "rewrite",
       "disposition_reason": "Old implementation mechanism is replaced (Node LanguageService/C1 envelope/pool); preserve the assertion semantics in a Rust native contract test.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "contract_translated",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "locals"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROTOCOL-0600",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Oracle `backends/typescript/test/protocol.test.ts:600` asserts fragments without `target`/`locals` still validate as the legacy shape. Rust constructs two legacy `FragmentSpec`s with no target, locals, bindings or guards, builds the in-place shadow, and asserts both mounts (`__wxml_root.title` and `__wxml_root.user.name`).",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
+            "line": 2663,
+            "test": "case_protocol_0600_legacy_fragments_without_target_or_locals_still_build",
+            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::case_protocol_0600_legacy_fragments_without_target_or_locals_still_build",
+            "note": "Asserts legacy fragments with empty target/locals/bindings/guards build and mount both expressions with the root prefix."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROTOCOL-0606",
@@ -24772,27 +25130,27 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [],
       "migration_evidence": {
         "case_id": "TS-REWRITE-0207",
-        "assessed_at": "2026-11-18",
-        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
-        "parity": "near_exact",
-        "green_eligible": false,
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "exact",
+        "green_eligible": true,
         "status_recommendation": "green",
-        "status_applied": "planned",
-        "note": "Rust returns a typed Invalid(fragment.range) for the wrong wxmlRange length; this is the native equivalent of the TS RequestError code bad-fragment.",
+        "status_applied": "green",
+        "note": "Oracle `backends/typescript/test/rewrite.test.ts:207` expects `run(request)` to throw a `RequestError` with `code === \"bad-fragment\"` when `wxmlRange` has the wrong byte length. Rust replaces the request error envelope with the typed `ShadowError::Invalid { feature: \"fragment.range\" }` and the exact reason `wxmlRange length 99 does not match expression byte length 5`; the same `title` fragment with the correct 0..5 range builds successfully, so the rejection is length-specific. The error channel differs (native build error vs TS RequestError code), which is the documented mechanism replacement for this case.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
-            "line": 209,
+            "line": 229,
             "test": "case_rewrite_0207_wxmlrange_must_match_the_expression_byte_length",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0207_wxmlrange_must_match_the_expression_byte_length",
-            "note": "Rust returns a typed Invalid(fragment.range) for the wrong wxmlRange length; this is the native equivalent of the TS RequestError code bad-fragment."
+            "note": "Asserts the valid `title` fragment (0..5) builds, then asserts `build_in_place_shadow` returns `Invalid { feature: \"fragment.range\" }` with reason `wxmlRange length 99 does not match expression byte length 5` for the 0..99 range."
           }
         ]
       }
@@ -25479,7 +25837,33 @@
       "status": "planned",
       "capabilities": [
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0349",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/rewrite.test.ts:349` asserts one diagnostic with checker code 2365/2363, the cropped source range, `attribution: \"trimmed-synthetic\"` and Supported diagnostics for three cross-gap expressions. Rust proves the range and approximation flag, but not the code, attribution string or state.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/mapping.rs",
+            "line": 900,
+            "test": "cross_gap_and_right_side_crops_stay_approximate",
+            "fully_qualified": "wxml_backend_tsgo::shadow::mapping::tests::cross_gap_and_right_side_crops_stay_approximate",
+            "note": "Asserts a cross-gap span crops to operand `b` at 4..5 and sets `trimmed_synthetic_prefix`, while a right-side crop stays approximate."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 284,
+            "test": "case_mapping_0126_cross_gap_target_is_used_only_when_fully_inside_the_span",
+            "fully_qualified": "shadow_mapping::case_mapping_0126_cross_gap_target_is_used_only_when_fully_inside_the_span",
+            "note": "Asserts the target identifier is used only when the span fully contains it; a partial overlap falls back to the largest source segment."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0368",
@@ -25884,7 +26268,26 @@
       "status": "planned",
       "capabilities": [
         "transport"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-SERVER-0129",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/server.test.ts:129` asserts unknown method -32601, malformed JSON -32700 with null id, bad analyze params -32602 and a `ping` result `{ok:true}`. Rust asserts -32601/-32700 and null id in a real stdio session; native has no custom `analyze` or `ping` methods, so the params `data.code` and ping contracts have no equivalent.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/lsp.rs",
+            "line": 354,
+            "test": "unknown_methods_and_malformed_json_are_reported",
+            "fully_qualified": "lsp::unknown_methods_and_malformed_json_are_reported",
+            "note": "Asserts a real stdio session replies -32601 to an unknown method and -32700 with `id: null` to malformed JSON, then shuts down cleanly."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SERVER-0150",
@@ -25936,14 +26339,33 @@
       "disposition": "rewrite",
       "disposition_reason": "Old implementation mechanism is replaced (Node LanguageService/C1 envelope/pool); preserve the assertion semantics in a Rust native contract test.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "mechanism_replaced",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "messages",
         "transport"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-SERVER-0150",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Oracle `backends/typescript/test/server.test.ts:150` sends unknown, invalid and valid notifications followed by a request, and asserts the first reply belongs to the request. Rust `handle_incoming` returns no outgoing message for unknown, malformed and valid notifications; the following request receives id 7.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/server.rs",
+            "line": 2564,
+            "test": "case_server_0150_json_rpc_notifications_never_produce_a_response",
+            "fully_qualified": "wxml_lsp::server::tests::case_server_0150_json_rpc_notifications_never_produce_a_response",
+            "note": "Asserts unknown, malformed and valid notifications produce no response and the next request gets the first reply."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SERVER-0171",
@@ -26003,7 +26425,26 @@
       "oracle_type": "assertion",
       "comparison_type": "mechanism_replaced",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SERVER-0171",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/server.test.ts:171` asserts -32602 with `data.code` `bad-params` for a traversing path and `bad-fragment` for a deep expression, plus -32602 for null params. Rust asserts the generic JSON-RPC INVALID_PARAMS code for malformed completion params in a real stdio session; it has no `analyze` `data.code` classification.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/lsp.rs",
+            "line": 771,
+            "test": "invalid_completion_parameters_are_rejected",
+            "fully_qualified": "lsp::invalid_completion_parameters_are_rejected",
+            "note": "Asserts a real stdio session returns -32602 for missing completion params and for a non-numeric position."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SERVER-0203",

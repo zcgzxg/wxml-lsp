@@ -19,24 +19,27 @@
 | `split` | 11 |
 | `obsolete` | 36（Candidate B/symbol-bridge 内部布局） |
 | `blocked-decision` | 0 |
-| `green` | 58（真实 Rust 测试证据，未独立 review） |
-| `planned` | 245 |
+| `green` | 68（真实 Rust 测试证据，未独立 review） |
+| `planned` | 235 |
 | `retired-with-decision` | 36 |
-| `assessed_cases` | 160 |
-| `exact` | 58 |
-| `near_exact` | 3 |
-| `weaker` | 70 |
+| `assessed_cases` | 181 |
+| `exact` | 68 |
+| `near_exact` | 2 |
+| `weaker` | 82 |
 | `structural` | 7 |
 | `blocked` | 22 |
 
-计数在 wave-9 台账回填（2026-11-20）后为 `green` 58 / `planned` 245 /
-`assessed_cases` 160（`exact` 58、`near_exact` 3、`weaker` 70、`structural` 7、
-`blocked` 22），无证据 planned 143；wave-8 断言补齐回填结束时为 55/248/160
+计数在 wave-10 exact 回填（2026-11-20）后为 `green` 68 / `planned` 235 /
+`assessed_cases` 181（`exact` 68、`near_exact` 2、`weaker` 82、`structural` 7、
+`blocked` 22），无证据 planned 122；wave-10 near-exact 跟进结束时为 59/244/172
+（`exact` 59、`near_exact` 2、无证据 131），wave-10 weaker 回填结束时为
+58/245/172（`weaker` 82、无证据 131），wave-9 台账回填结束时为 58/245/160
+（`weaker` 70、无证据 143），wave-8 断言补齐回填结束时为 55/248/160
 （`weaker` 73），wave-7 台账回填结束时为 48/255/160
 （`weaker` 80），wave-6 组件绑定跟进结束时为 48/255/154
 （`weaker` 74、`blocked` 22），wave-6 回填结束时为 44/259/154（`weaker` 80、
 `blocked` 20），wave-5 后为 44/259/145，P6 回填（2026-11-19）后为 36/267，
-P5/P5.1 的历史快照见台账 §14，wave-5/wave-6/组件绑定/wave-7/wave-8/wave-9 见 §15/§16/§17/§19/§21/§22。
+P5/P5.1 的历史快照见台账 §14，wave-5/wave-6/组件绑定/wave-7/wave-8/wave-9/wave-10 见 §15/§16/§17/§19/§21/§22/§23。
 
 `obsolete` 不等于“未迁移的通过项”。36 个 Candidate B 用例只作为历史 A/B 证据保留；生产 LSP
 不传 `layoutId`，原位 shadow 用例仍全部强制。`TS-META-0027` 由 F0 引擎/类型资产 pin 测试替代。
