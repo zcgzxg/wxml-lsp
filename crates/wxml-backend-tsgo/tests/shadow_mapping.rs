@@ -12,6 +12,7 @@
 
 use wxml_backend_tsgo::input::{DocumentRevision, SourceFile};
 use wxml_backend_tsgo::native::strings::Utf16Offset;
+use wxml_backend_tsgo::shadow::ShadowError;
 use wxml_backend_tsgo::shadow::layout::{
     FragmentSpec, JsCheckPolicy, RootKind, ShadowRequest, build_in_place_shadow,
 };
@@ -178,7 +179,16 @@ fn case_mapping_0078_a_mapped_span_never_exceeds_the_recorded_source_range() {
             segment(12, 5, Some(SourceRange::new(2, 4))),
         ],
     );
-    assert!(map_span_to_source(&record, Utf16Offset::new(12), 5).is_err());
+    assert!(
+        matches!(
+            map_span_to_source(&record, Utf16Offset::new(12), 5),
+            Err(ShadowError::MappingSourceMismatch {
+                needed: 5,
+                available: 2
+            })
+        ),
+        "5 text bytes cannot fit 2 source bytes"
+    );
     assert_eq!(
         map_span_to_source(&record, Utf16Offset::new(12), 2)
             .expect("valid")
@@ -199,10 +209,53 @@ fn case_mapping_0091_out_of_bounds_spans_and_non_character_boundaries_are_typed_
     );
     record.target_start_utf16 = 112;
     record.target_length_utf16 = 2;
-    assert!(map_span_to_source(&record, Utf16Offset::new(100), 15).is_err());
-    assert!(map_span_to_source(&record, Utf16Offset::new(99), 2).is_err());
-    assert!(map_span_to_source(&record, Utf16Offset::new(113), 1).is_err());
-    assert!(map_span_to_source(&record, Utf16Offset::new(112), 1).is_err());
+    assert!(
+        matches!(
+            map_span_to_source(&record, Utf16Offset::new(100), 15),
+            Err(ShadowError::PositionOutOfRange {
+                position: 100,
+                length: 114,
+                unit: "utf-16"
+            })
+        ),
+        "end beyond the mount"
+    );
+    assert!(
+        matches!(
+            map_span_to_source(&record, Utf16Offset::new(99), 2),
+            Err(ShadowError::PositionOutOfRange {
+                position: 99,
+                length: 114,
+                unit: "utf-16"
+            })
+        ),
+        "start before the mount"
+    );
+    assert!(
+        matches!(
+            map_span_to_source(&record, Utf16Offset::new(112), 3),
+            Err(ShadowError::PositionOutOfRange {
+                position: 112,
+                length: 114,
+                unit: "utf-16"
+            })
+        ),
+        "target length + 1"
+    );
+    assert!(
+        matches!(
+            map_span_to_source(&record, Utf16Offset::new(113), 1),
+            Err(ShadowError::NotCharBoundary { position: 13 })
+        ),
+        "low-surrogate start"
+    );
+    assert!(
+        matches!(
+            map_span_to_source(&record, Utf16Offset::new(112), 1),
+            Err(ShadowError::NotCharBoundary { position: 13 })
+        ),
+        "high-surrogate end"
+    );
     assert_eq!(
         map_span_to_source(&record, Utf16Offset::new(112), 2)
             .expect("valid")
@@ -245,6 +298,7 @@ fn case_mapping_0126_cross_gap_target_is_used_only_when_fully_inside_the_span() 
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one end-to-end segment audit over both mounts
 fn case_mapping_0145_every_mount_carries_an_explicit_synthetic_source_split() {
     let text = "Page({ data: { user: { name: 'Ada' }, users: [{ name: 'Bo' }] } });";
     let fragments = [
@@ -259,24 +313,64 @@ fn case_mapping_0145_every_mount_carries_an_explicit_synthetic_source_split() {
         JsCheckPolicy::Inherit,
         false,
     );
+    // Original WXML bytes the mount source ranges point into. The first
+    // fragment starts at 0 while the second starts at 20, so the second mount
+    // proves the generated-vs-original split is absolute, not
+    // expression-relative.
+    let mut wxml = [b'.'; 40];
+    wxml[0..9].copy_from_slice(fragments[0].expr.as_bytes());
+    wxml[20..33].copy_from_slice(fragments[1].expr.as_bytes());
+
     assert_eq!(built.view.mounts.len(), 2);
+    let insertion_ids: std::collections::BTreeSet<&str> = built
+        .view
+        .insertions
+        .iter()
+        .map(|insertion| insertion.insertion_id.as_str())
+        .collect();
     for record in &built.view.mounts {
-        assert!(!record.segments.is_empty(), "{}", record.mount_id);
+        assert!(
+            insertion_ids.contains(record.insertion_id.as_str()),
+            "{} must reference a recorded insertion",
+            record.mount_id
+        );
+        assert_eq!(
+            utf16_slice(
+                &built.view.text,
+                record.start_utf16,
+                utf16_len(&record.text)
+            ),
+            record.text,
+            "{} absolute mount offsets point at the mounted text",
+            record.mount_id
+        );
         let mut cursor = record.start_utf16;
         let mut source_bytes = 0_u32;
         let mut has_source = false;
         let mut has_synthetic = false;
+        let mut rebuilt = String::new();
         for segment in &record.segments {
             assert_eq!(segment.start_utf16, cursor, "{}", record.mount_id);
+            let slice = utf16_slice(&built.view.text, segment.start_utf16, segment.length_utf16);
+            rebuilt.push_str(&slice);
             cursor += segment.length_utf16;
-            match segment.source {
-                Some(source) => {
-                    has_source = true;
-                    source_bytes += source.len();
-                }
-                None => has_synthetic = true,
+            if let Some(source) = segment.source {
+                assert!(source.end.get() >= source.start.get());
+                has_source = true;
+                source_bytes += source.len();
+                assert_eq!(
+                    slice.as_bytes(),
+                    &wxml[usize::try_from(source.start.get()).expect("source start")
+                        ..usize::try_from(source.end.get()).expect("source end")],
+                    "{} source segment must be the verbatim expression bytes",
+                    record.mount_id
+                );
+            } else {
+                has_synthetic = true;
+                assert!(!slice.is_empty(), "synthetic segments are non-empty");
             }
         }
+        assert_eq!(rebuilt, record.text, "segments cover the mount");
         assert_eq!(
             cursor,
             record.end_utf16().expect("checked mount end"),
@@ -301,54 +395,316 @@ fn case_mapping_0145_every_mount_carries_an_explicit_synthetic_source_split() {
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one table-driven BOM/pragma policy matrix
 fn case_mapping_0223_bom_is_dropped_whenever_a_pragma_must_be_honoured() {
-    let built = build(
-        "index.js",
-        "\u{FEFF}#!/usr/bin/env node\nComponent({ methods: {} });",
-        RootKind::Component,
-        &[],
-        JsCheckPolicy::Pragma,
-        false,
-    );
-    assert!(!built.view.text.starts_with('\u{FEFF}'));
-    assert!(built.view.text.starts_with("#!"));
-    assert!(built.notes.iter().any(|note| note.contains("BOM dropped")));
-    let bom = built
-        .view
-        .insertions
-        .iter()
-        .find(|insertion| insertion.insertion_id == "bom")
-        .expect("BOM edit");
-    assert_eq!(bom.replace_length_utf16, 1);
+    struct Case {
+        id: &'static str,
+        text: &'static str,
+        policy: JsCheckPolicy,
+        check_js: bool,
+        injected_pragma: bool,
+        /// Exact derived offset of the `// @ts-nocheck` insertion, if any.
+        neutralize_at: Option<u32>,
+    }
+    let cases = [
+        Case {
+            id: "js-bom-check-off",
+            text: "\u{FEFF}#!/usr/bin/env node\n// @ts-check\nPage({ data: { title: '首页' } });",
+            policy: JsCheckPolicy::Off,
+            check_js: true,
+            injected_pragma: false,
+            // Original offset 34 (BOM + shebang + pragma line) minus the
+            // dropped BOM; the insertion sits before `Page`.
+            neutralize_at: Some(33),
+        },
+        Case {
+            id: "js-bom-check-inherit",
+            text: "\u{FEFF}#!/usr/bin/env node\n// @ts-check\nPage({ data: { title: '首页' } });",
+            policy: JsCheckPolicy::Inherit,
+            check_js: false,
+            injected_pragma: false,
+            neutralize_at: None,
+        },
+        Case {
+            id: "js-shebang-bom",
+            text: "\u{FEFF}#!/usr/bin/env node\nPage({ data: { title: '首页' } });",
+            policy: JsCheckPolicy::Pragma,
+            check_js: false,
+            injected_pragma: true,
+            neutralize_at: None,
+        },
+    ];
+    for case in cases {
+        let built = build(
+            "index.js",
+            case.text,
+            RootKind::Page,
+            &[],
+            case.policy,
+            case.check_js,
+        );
+        assert!(!built.view.text.starts_with('\u{FEFF}'), "{}", case.id);
+        assert!(built.view.text.starts_with("#!"), "{}", case.id);
+        assert!(
+            built.notes.iter().any(|note| note.contains("BOM dropped")),
+            "{}: note must explain the drop",
+            case.id
+        );
+        let bom = built
+            .view
+            .insertions
+            .iter()
+            .find(|insertion| insertion.insertion_id == "bom")
+            .unwrap_or_else(|| panic!("{}: BOM replacement must be recorded", case.id));
+        assert_eq!(bom.kind, EditKind::Bom, "{}", case.id);
+        assert_eq!(bom.start_utf16, 0, "{}", case.id);
+        assert_eq!(bom.length_utf16, 0, "{}", case.id);
+        assert_eq!(bom.replace_length_utf16, 1, "{}", case.id);
+
+        let pragma = built
+            .view
+            .insertions
+            .iter()
+            .find(|insertion| insertion.insertion_id == "pragma");
+        if case.injected_pragma {
+            let pragma = pragma.unwrap_or_else(|| panic!("{}: pragma insertion", case.id));
+            assert_eq!(pragma.kind, EditKind::Pragma, "{}", case.id);
+            assert_eq!(pragma.replace_length_utf16, 0, "{}", case.id);
+            assert_eq!(pragma.start_utf16, 20, "{}: after the shebang", case.id);
+            assert_eq!(
+                utf16_slice(&built.view.text, pragma.start_utf16, pragma.length_utf16),
+                "// @ts-check\n",
+                "{}",
+                case.id
+            );
+        } else {
+            assert!(pragma.is_none(), "{}: no injected pragma", case.id);
+        }
+
+        let nocheck = built
+            .view
+            .insertions
+            .iter()
+            .find(|insertion| insertion.insertion_id == "nocheck");
+        if let Some(expected_start) = case.neutralize_at {
+            let nocheck = nocheck.unwrap_or_else(|| panic!("{}: nocheck insertion", case.id));
+            assert_eq!(nocheck.kind, EditKind::Pragma, "{}", case.id);
+            assert_eq!(
+                nocheck.start_utf16, expected_start,
+                "{}: derived offset after the dropped BOM",
+                case.id
+            );
+            assert_eq!(
+                nocheck.replace_length_utf16, 0,
+                "{}: the neutraliser is inserted, not a replacement",
+                case.id
+            );
+            assert_eq!(
+                utf16_slice(&built.view.text, nocheck.start_utf16, nocheck.length_utf16),
+                "// @ts-nocheck\n",
+                "{}",
+                case.id
+            );
+            assert_eq!(
+                utf16_slice(
+                    &built.view.text,
+                    nocheck.start_utf16 + nocheck.length_utf16,
+                    4
+                ),
+                "Page",
+                "{}: the neutraliser is inserted before the registration",
+                case.id
+            );
+        } else {
+            assert!(nocheck.is_none(), "{}: no neutralised pragma", case.id);
+        }
+    }
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one table-driven audit across four layout scenarios
 fn case_mapping_0239_published_evidence_carries_insertions_and_mounts_for_every_run() {
-    let text = "Page({ data: { user: { name: 'Ada' } } });";
-    let fragments = [FragmentSpec::new(
-        "user",
-        "user.name",
-        SourceRange::new(40, 49),
-    )];
-    let built = build(
-        "index.ts",
-        text,
-        RootKind::Page,
-        &fragments,
-        JsCheckPolicy::Inherit,
-        false,
-    );
-    assert!(!built.view.insertions.is_empty());
-    assert!(!built.view.mounts.is_empty());
-    let ids: std::collections::BTreeSet<&str> = built
-        .view
-        .insertions
-        .iter()
-        .map(|insertion| insertion.insertion_id.as_str())
-        .collect();
-    for record in &built.view.mounts {
-        assert!(ids.contains(record.insertion_id.as_str()));
-        assert!(!record.segments.is_empty());
+    struct Scenario {
+        id: &'static str,
+        path: &'static str,
+        text: &'static str,
+        root: RootKind,
+        policy: JsCheckPolicy,
+        check_js: bool,
+        expr: &'static str,
+        origin: u32,
+    }
+    let scenarios = [
+        Scenario {
+            id: "page-basic",
+            path: "index.ts",
+            text: "Page({ data: { user: { name: 'Ada' } } });",
+            root: RootKind::Page,
+            policy: JsCheckPolicy::Inherit,
+            check_js: false,
+            expr: "user.name",
+            origin: 0,
+        },
+        Scenario {
+            id: "component-properties",
+            path: "index.ts",
+            text: "Component({ properties: { title: { type: String, value: '' } }, data: { user: { name: 'Ada' } } });",
+            root: RootKind::Component,
+            policy: JsCheckPolicy::Inherit,
+            check_js: false,
+            expr: "title",
+            origin: 40,
+        },
+        Scenario {
+            id: "js-shebang-bom",
+            path: "index.js",
+            text: "\u{FEFF}#!/usr/bin/env node\nPage({ data: { user: { name: 'Ada' } } });",
+            root: RootKind::Page,
+            policy: JsCheckPolicy::Pragma,
+            check_js: false,
+            expr: "user.name",
+            origin: 0,
+        },
+        Scenario {
+            id: "nullable",
+            path: "index.ts",
+            text: "Page({ data: { maybeUser: null, external: null, users: [] } });",
+            root: RootKind::Page,
+            policy: JsCheckPolicy::Inherit,
+            check_js: false,
+            expr: "users[0].name",
+            origin: 80,
+        },
+    ];
+    for scenario in scenarios {
+        let expr_bytes = u32::try_from(scenario.expr.len()).expect("expression bytes");
+        let fragment = FragmentSpec::new(
+            "f",
+            scenario.expr,
+            SourceRange::new(scenario.origin, scenario.origin + expr_bytes),
+        );
+        let built = build(
+            scenario.path,
+            scenario.text,
+            scenario.root,
+            &[fragment],
+            scenario.policy,
+            scenario.check_js,
+        );
+        assert!(!built.view.insertions.is_empty(), "{}", scenario.id);
+        assert!(!built.view.mounts.is_empty(), "{}", scenario.id);
+        let insertion_ids: std::collections::BTreeSet<&str> = built
+            .view
+            .insertions
+            .iter()
+            .map(|insertion| insertion.insertion_id.as_str())
+            .collect();
+        let mut wxml =
+            vec![b'.'; usize::try_from(scenario.origin + expr_bytes).expect("buffer") + 1];
+        let origin = usize::try_from(scenario.origin).expect("origin");
+        wxml[origin..origin + scenario.expr.len()].copy_from_slice(scenario.expr.as_bytes());
+
+        for record in &built.view.mounts {
+            assert!(
+                insertion_ids.contains(record.insertion_id.as_str()),
+                "{}: mount references a recorded insertion",
+                scenario.id
+            );
+            assert_eq!(
+                record.segments.len(),
+                2,
+                "{}: synthetic + source",
+                scenario.id
+            );
+            assert!(
+                record.segments[0].source.is_none(),
+                "{}: first segment is synthetic",
+                scenario.id
+            );
+            assert_eq!(
+                record.segments[0].start_utf16, record.start_utf16,
+                "{}: the synthetic prefix starts at the mount",
+                scenario.id
+            );
+            assert!(
+                record.segments[0].length_utf16 > 0,
+                "{}: the synthetic prefix is non-empty",
+                scenario.id
+            );
+            let source = record.segments[1]
+                .source
+                .unwrap_or_else(|| panic!("{}: second segment is source", scenario.id));
+            assert_eq!(
+                source.len(),
+                expr_bytes,
+                "{}: source segment covers the expression exactly",
+                scenario.id
+            );
+            assert_eq!(
+                utf16_slice(
+                    &built.view.text,
+                    record.segments[1].start_utf16,
+                    record.segments[1].length_utf16
+                )
+                .as_bytes(),
+                &wxml[usize::try_from(source.start.get()).expect("source start")
+                    ..usize::try_from(source.end.get()).expect("source end")],
+                "{}: source segment is the verbatim expression bytes",
+                scenario.id
+            );
+            let mut cursor = record.start_utf16;
+            let mut rebuilt = String::new();
+            for segment in &record.segments {
+                assert_eq!(
+                    segment.start_utf16, cursor,
+                    "{}: segments are contiguous",
+                    scenario.id
+                );
+                rebuilt.push_str(&utf16_slice(
+                    &built.view.text,
+                    segment.start_utf16,
+                    segment.length_utf16,
+                ));
+                cursor += segment.length_utf16;
+            }
+            assert_eq!(
+                rebuilt, record.text,
+                "{}: segments cover the mounted text",
+                scenario.id
+            );
+            assert_eq!(
+                cursor,
+                record.end_utf16().expect("checked mount end"),
+                "{}: segments cover the mount",
+                scenario.id
+            );
+            assert_eq!(
+                record.segments[0].length_utf16 + record.segments[1].length_utf16,
+                utf16_len(&record.text),
+                "{}: segment lengths sum to the mounted text",
+                scenario.id
+            );
+            assert_eq!(
+                utf16_slice(
+                    &built.view.text,
+                    record.start_utf16,
+                    utf16_len(&record.text)
+                ),
+                record.text,
+                "{}: absolute mount offsets point at the mounted text",
+                scenario.id
+            );
+        }
+        let mut previous_end = 0;
+        for insertion in &built.view.insertions {
+            assert!(
+                insertion.start_utf16 >= previous_end,
+                "{}: insertions do not overlap",
+                scenario.id
+            );
+            previous_end =
+                insertion.start_utf16 + insertion.replace_length_utf16.max(insertion.length_utf16);
+        }
     }
 }
 
@@ -368,6 +724,7 @@ fn case_mapping_0261_mount_target_length_is_published_and_matches_the_mounted_id
         JsCheckPolicy::Inherit,
         false,
     );
+    assert_eq!(built.view.mounts.len(), 1);
     let record = &built.view.mounts[0];
     assert_eq!(record.target_length_utf16, 4);
     assert_eq!(
@@ -377,6 +734,63 @@ fn case_mapping_0261_mount_target_length_is_published_and_matches_the_mounted_id
             record.target_length_utf16
         ),
         "name"
+    );
+    let mapped = map_span_to_source(
+        record,
+        Utf16Offset::new(record.target_start_utf16),
+        record.target_length_utf16,
+    )
+    .expect("mapped target");
+    assert_eq!(mapped.range, Some(SourceRange::new(45, 49)));
+
+    // CJK identifiers are one UTF-16 unit each but three UTF-8 bytes; the
+    // published length follows the mounted text, not the source bytes. The
+    // leading emoji moves every derived offset after an astral character.
+    let text = "/* 😀 */ Page({ data: { 用户: { 名字: '阿' } } });";
+    let expr = "用户.名字";
+    let fragments = [FragmentSpec::new(
+        "cjk",
+        expr,
+        SourceRange::new(60, 60 + u32::try_from(expr.len()).expect("length")),
+    )];
+    let built = build(
+        "index.ts",
+        text,
+        RootKind::Page,
+        &fragments,
+        JsCheckPolicy::Inherit,
+        false,
+    );
+    assert_eq!(built.view.mounts.len(), 1);
+    let record = &built.view.mounts[0];
+    assert_eq!(record.target_length_utf16, 2);
+    assert_eq!(
+        utf16_slice(
+            &built.view.text,
+            record.target_start_utf16,
+            record.target_length_utf16
+        ),
+        "名字"
+    );
+    assert_eq!(
+        utf16_slice(
+            &built.view.text,
+            record.start_utf16,
+            utf16_len(&record.text)
+        ),
+        record.text,
+        "astral characters before the mount do not shift the recorded offsets"
+    );
+    let mapped = map_span_to_source(
+        record,
+        Utf16Offset::new(record.target_start_utf16),
+        record.target_length_utf16,
+    )
+    .expect("mapped target");
+    assert_eq!(
+        mapped.range,
+        Some(SourceRange::new(60 + 7, 60 + 13)),
+        "`名字` starts after `用户.` (7 bytes)"
     );
 }
 
@@ -443,8 +857,18 @@ fn cjk_emoji_and_crlf_offsets_survive_the_whole_layout() {
         JsCheckPolicy::Inherit,
         false,
     );
+    assert_eq!(built.view.mounts.len(), 1);
     let record = &built.view.mounts[0];
     assert_eq!(record.target_length_utf16, 2);
+    assert_eq!(
+        utf16_slice(
+            &built.view.text,
+            record.start_utf16,
+            utf16_len(&record.text)
+        ),
+        record.text,
+        "CRLF line endings and astral characters before the mount do not shift the absolute base"
+    );
     let mapped = map_span_to_source(
         record,
         Utf16Offset::new(record.target_start_utf16),

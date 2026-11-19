@@ -11,11 +11,12 @@
 //! listed in [`BLOCKED_CASES`]; they are deliberately not claimed as migrated.
 
 use wxml_backend_tsgo::input::{DocumentRevision, SourceFile};
+use wxml_backend_tsgo::native::strings::Utf16Offset;
 use wxml_backend_tsgo::shadow::ShadowError;
 use wxml_backend_tsgo::shadow::layout::{
     FragmentSpec, JsCheckPolicy, RootKind, ShadowRequest, build_in_place_shadow,
 };
-use wxml_backend_tsgo::shadow::mapping::{SourceRange, map_span_to_source};
+use wxml_backend_tsgo::shadow::mapping::{MountRecord, SourceRange, map_span_to_source, utf16_len};
 use wxml_backend_tsgo::shadow::rewrite::{
     EditKind, RewriteOptions, ShadowEdit, apply_edits, rewrite_expression,
 };
@@ -150,10 +151,10 @@ fn case_rewrite_0136_member_names_object_keys_strings_and_globals_are_not_rewrit
 
 #[test]
 fn case_rewrite_0156_repeated_identifiers_keep_the_rightmost_target_offset() {
-    for (expr, offset, name) in [
-        ("a.a", 14, "a"),
-        ("user.user", 17, "user"),
-        ("title + title", 32, "title"),
+    for (expr, name, offset, source) in [
+        ("a.a", "a", 14, SourceRange::new(2, 3)),
+        ("user.user", "user", 17, SourceRange::new(5, 9)),
+        ("title + title", "title", 32, SourceRange::new(8, 13)),
     ] {
         let rewritten =
             rewrite_expression(expr, None, &RewriteOptions::default()).expect("valid expression");
@@ -161,14 +162,33 @@ fn case_rewrite_0156_repeated_identifiers_keep_the_rightmost_target_offset() {
             rewritten.target_offset_utf16, offset,
             "target offset of {expr}"
         );
+        let length = utf16_len(name);
         assert_eq!(
-            utf16_slice(
-                &rewritten.text,
-                rewritten.target_offset_utf16,
-                u32::try_from(name.len()).expect("length")
-            ),
+            utf16_slice(&rewritten.text, rewritten.target_offset_utf16, length),
             name
         );
+        let record = MountRecord {
+            mount_id: "f#0".to_owned(),
+            fragment_id: "f".to_owned(),
+            insertion_id: "probe".to_owned(),
+            text: rewritten.text,
+            start_utf16: 0,
+            target_start_utf16: offset,
+            target_length_utf16: length,
+            segments: rewritten.segments,
+        };
+        let mapped = map_span_to_source(
+            &record,
+            Utf16Offset::new(record.target_start_utf16),
+            record.target_length_utf16,
+        )
+        .expect("mapped target");
+        assert_eq!(mapped.range, Some(source), "mapped range of {expr}");
+        assert!(
+            !mapped.trimmed_synthetic_prefix,
+            "{expr}: the target starts in source text"
+        );
+        assert!(!mapped.unattributable, "{expr}");
     }
 }
 
@@ -327,7 +347,7 @@ fn case_rewrite_0309_rewritten_mounts_map_target_spans_and_trim_synthetic_prefix
         .expect("bang mount");
     let mapped = map_span_to_source(
         bang,
-        wxml_backend_tsgo::native::strings::Utf16Offset::new(bang.target_start_utf16),
+        Utf16Offset::new(bang.target_start_utf16),
         bang.target_length_utf16,
     )
     .expect("mapped");
@@ -342,13 +362,62 @@ fn case_rewrite_0309_rewritten_mounts_map_target_spans_and_trim_synthetic_prefix
         .expect("sum mount");
     let mapped = map_span_to_source(
         sum,
-        wxml_backend_tsgo::native::strings::Utf16Offset::new(sum.target_start_utf16),
+        Utf16Offset::new(sum.target_start_utf16),
         sum.target_length_utf16,
     )
     .expect("mapped");
     assert_eq!(
         mapped.range,
-        Some(SourceRange::new(origin + 10 + 13, origin + 10 + 17))
+        Some(SourceRange::new(origin + 10 + 13, origin + 10 + 17)),
+        "`title + user.name` maps the rightmost target"
+    );
+
+    // Start inside the first synthetic prefix, end in the first source piece:
+    // the mapped span is trimmed to the source part.
+    let trimmed =
+        map_span_to_source(sum, Utf16Offset::new(sum.start_utf16 + 5), 9).expect("trimmed prefix");
+    assert!(trimmed.trimmed_synthetic_prefix);
+    assert_eq!(
+        trimmed.range,
+        Some(SourceRange::new(origin + 10, origin + 12))
+    );
+
+    // The second synthetic prefix (`user`) is trimmed the same way.
+    let second =
+        map_span_to_source(sum, Utf16Offset::new(sum.start_utf16 + 25), 10).expect("second prefix");
+    assert!(second.trimmed_synthetic_prefix);
+    assert_eq!(
+        second.range,
+        Some(SourceRange::new(origin + 10 + 8, origin + 10 + 11))
+    );
+
+    // A span crossing a synthetic gap is cropped to the target (a real
+    // operand) instead of being silently dropped.
+    let crossed = map_span_to_source(
+        sum,
+        Utf16Offset::new(sum.start_utf16 + 10),
+        utf16_len(&sum.text) - 10,
+    )
+    .expect("crossed gap");
+    assert!(crossed.trimmed_synthetic_prefix);
+    assert_eq!(
+        crossed.range,
+        Some(SourceRange::new(origin + 10 + 13, origin + 10 + 17)),
+        "`user.name` is the target operand"
+    );
+    assert!(!crossed.unattributable);
+
+    let unary = map_span_to_source(
+        bang,
+        Utf16Offset::new(bang.start_utf16),
+        utf16_len(&bang.text),
+    )
+    .expect("whole unary mount");
+    assert!(unary.trimmed_synthetic_prefix);
+    assert_eq!(
+        unary.range,
+        Some(SourceRange::new(origin + 1, origin + 6)),
+        "`!title` crops to `title`"
     );
 }
 
