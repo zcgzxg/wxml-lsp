@@ -1,7 +1,7 @@
 # WXML LSP：Rust + tsgo 去 Node 迁移执行计划
 
-日期：2026-11-17（执行状态更新 2026-11-19）。状态：执行中；P0/P1 已执行，P2 契约已落地，P3–P6 仅完成部分切片；不是迁移完成报告。
-仓库：`/home/zxg/code/rust/wxml-lsp`。执行工作目录：`/home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration`（分支 `tsgo/migration`）。当前记录基线：HEAD `6358925`。
+日期：2026-11-17（执行状态更新 2026-11-20）。状态：执行中；P0/P1 已执行，P2 契约已落地，P3–P6 仅完成部分切片；不是迁移完成报告。
+仓库：`/home/zxg/code/rust/wxml-lsp`。执行工作目录：`/home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration`（分支 `tsgo/migration`）。当前记录基线：HEAD `0ca4375`（F3 审计，见 §12.7）；§12.1–§12.6 保留各自历史快照。
 
 配套决策草案：`wxml-lsp-adr-0008-rust-tsgo-no-node-draft-2026-11-17.md`。正式计划为本文件，ADR 为 `docs/adr/0008-rust-tsgo-no-node-backend.md`。
 
@@ -531,7 +531,7 @@ G1 仍未关闭；7.1.0-beta 仅由维护者有条件接受并固定 integrity�
 - **P6-3**：backend 数据层已落，但 adapter 尚未接线资产、compilerOptions 或 `js_check`。可信 pin loader 与 `assets.lock.json` 缺失；AC-004 未保存更新旧诊断、TS 版本偏差、adapter 降级均未关闭。
 - **P6-4**：仅 opt-in `--backend native` 与引擎发现/沙箱切片；P6-4b/c、真实包启动、无 Node 进程审计和默认切换均未完成。
 - **F1 hover / document symbols**：hover 只有 backend 组合与 opt-in 真实引擎证据；QuickInfo/overload 文档缺口 BLOCKED。document symbols 只有 DTO/decoder，adapter 与 LSP 路由未接线。
-- **F3**：F3-01～F3-16 无一项关闭；F3-02、F3-03 明确 BLOCKED，B6 仍 BLOCKED。`6358925` 固定的是 payload 身份，不是上游 tarball/provisioning/lock 身份。
+- **F3**（2026-11-19 快照；2026-11-20 审计见 §12.7）：F3-01～F3-16 无一项关闭；F3-02、F3-03 明确 BLOCKED，B6 仍 BLOCKED。`6358925` 固定的是 payload 身份，不是上游 tarball/provisioning/lock 身份。
 - **台账**：33 `green` / 270 `planned` / 36 `retired-with-decision`；本轮没有新增 `green`、`reviewed` 或 `closed`，不得把计划中的 case 标记为通过。余下 270 个 planned 的排期见 [2026-11-19 剩余台账计划](2026-11-19-tsgo-remaining-ledger-plan.md)；该计划本身不提升任何 case 状态。
 - **默认后端与平台**：默认仍是 Node，Node 未删除；G5/G6 未关闭；原生后端只有 Linux x86_64 证据，aarch64/macOS/Windows/musl 未验证，也没有 Zed 原生冒烟。
 
@@ -547,7 +547,7 @@ G1 仍未关闭；7.1.0-beta 仅由维护者有条件接受并固定 integrity�
 
 ### 12.4 明确不声称
 
-- 不声称任何 F3 验收 ID 已关闭；`6358925` 只固定 typings payload 身份，F3-03/B6 仍 BLOCKED。
+- 不声称任何 F3 验收 ID 已关闭（2026-11-19 快照；2026-11-20 的 8 closed / 6 partial / 2 blocked 见 §12.7）；`6358925` 只固定 typings payload 身份，F3-03/B6 当时仍 BLOCKED。
 - 不声称 P6-3、P6-4、G5 或 G6 已关闭；不声称 23 个 ignored gate 或 2 个静默 return 已迁移。
 - 不声称默认后端已切换或 Node 已删除。
 - 不把库/单元测试、入库 fixture 或 opt-in 真实引擎测试当作真实包、CLI 或 Zed 验收。
@@ -619,3 +619,46 @@ G1 仍未关闭；7.1.0-beta 仅由维护者有条件接受并固定 integrity�
 - 其余 20 个 gate 仍未验证；P6-3/P6-4、G5、G6、F3 均未关闭；默认后端仍是 Node。
 - 本次复跑被并行未提交的 trusted type-assets WIP 阻塞（native gate 启动报 `native type assets are unavailable: a required type declaration is missing`），因此绿色结论仍只锚定 `953ee1e` 的既有运行，不是当前工作树结果。
 - 详细证据与限制见 /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/docs/evidence/2026-11-19-tsgo-native-gate-status.md 。
+
+### 12.7 2026-11-20 F3 逐项验收审计
+
+本节只记录 F3 的验收状态，不改变 P6/G5/G6，也不改变默认后端。权威表和关闭条件见
+` docs/reference/tsgo-delivery-contract.md` §9.5；证据索引见
+` docs/evidence/README.md` §3.3。
+
+| 结果 | ID | 说明 |
+| --- | --- | --- |
+| **closed（8）** | F3-01、F3-03、F3-04、F3-05、F3-07、F3-08、F3-10、F3-13 | 真实包/CLI、两次构建同哈希、安装/回滚、ABI 和篡改/恶意归档已覆盖合同子条件；fixture/单点变异已标注 |
+| **partial（6）** | F3-06、F3-09、F3-11、F3-12、F3-15、F3-16 | 有 PASS 证据，但进程级 kill/真实 legacy 包、恶意归档形态、缓存 upgrade/rollback、Zed 变量转发、`activated` 幂等仍缺 |
+| **blocked（2）** | F3-02、F3-14 | 无 `strace`/等价 `execve` 审计；无 Zed UI/查询证据且默认 `--stdio` 仍 Node |
+
+F3 整体仍未通过：`partial` 不是“没有证据”，而是合同子条件未全部满足，不能按 PASS 字样关闭。
+本审计不修改历史证据、不 commit、不删除 Node、不切换默认后端。
+
+### 12.8 2026-11-20 native gate 台账提升（P6-2 第三波）
+
+本节记录 `814ca5e` 之后、尚未提交的 gate 台账切片；§12.6/§12.7 的历史快照不变。
+本次未改生产代码、Node、默认后端、`Cargo.toml` 或任何 `#[ignore]` 属性，也未删除 gate。
+
+| 项 | 状态 |
+| --- | --- |
+| `gate_green` | 16：原 13 个 + `G-P5-E2E-03`、`G-P5-E2E-11`、`G-P5-E2E-16` |
+| `required_not_migrated` | 7：`G-P5-PERF-01`、`G-P5-STABILITY-01`、`G-P5-E2E-01`、`G-P5-E2E-02`、`G-P5-E2E-05`、`G-P5-E2E-20`、`G-P5-E2E-21` |
+| 合计 | 23（不增不减） |
+| 运行证据 | `16 passed / 0 failed / 36 filtered`；运行锚点 `814ca5e` |
+| fail-closed RED | `0 passed / 16 failed / 36 filtered`（不带 `WXML_TEST_NATIVE=1`，各 gate panic，不是 skip） |
+| 触发命令 | `WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/home/zxg/code/rust/wxml-lsp/backends/typescript/node_modules/miniprogram-api-typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1` |
+| 引擎身份 | TypeScript `7.1.0-beta`，AST v9，`lib/tsc` SHA-256 `a183b195…`，size 24,522,912 B |
+| 资产身份 | `engine/lib` 116 个 `lib*.d.ts`；`miniprogram-api-typings` 5.3.1（26 文件 / 20 个 `.d.ts`） |
+| 默认校验 | `cargo test -p wxml-lsp --test native_parity`：36 passed / 0 failed / 16 ignored |
+| case 计数 | 仍为 339 total / 36 `green` / 267 `planned` / 36 `retired-with-decision`；未新增 case 级 `green` |
+
+新增绿色 gate 的依据：`814ca5e` 的 root/trailing-dot completion，`393ff0d` 的
+`optionalTypes` 联合与 guard 精确范围，`0ca4375`/`647dd8d` 的本地 event diagnostics/definition。
+剩余 7 个 gate 的精确阻塞（event hover 缺失、component property binding 无诊断、
+non-literal 页面 `Unavailable` 与旧 `Unsupported` 不同、symbols unsupported、无 native
+perf/stability/restart 基线）见
+` docs/evidence/2026-11-20-tsgo-p6-native-gates-wave3.md` §4。
+
+边界：16 个 replacement 仍 `#[ignore]`；默认 `cargo test` 不运行它们，`gate_green`
+不是默认 CI 绿，也不是 `mandatory_green`；P6/P7、G5/G6/F3 未关闭，默认后端仍是 Node。
