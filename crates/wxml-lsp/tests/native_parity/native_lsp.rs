@@ -123,7 +123,13 @@ impl Session {
             json!({
                 "processId": null,
                 "rootUri": gate.project_uri(),
-                "capabilities": {},
+                // `rename` and the missing-handler quick fix answer a
+                // `WorkspaceEdit.documentChanges`; without this capability the
+                // server correctly refuses both and a gate would see a false
+                // empty result.
+                "capabilities": {
+                    "workspace": {"workspaceEdit": {"documentChanges": true}},
+                },
             }),
         );
         let response = session.response(initialize);
@@ -301,6 +307,20 @@ impl Session {
         self.wait_diagnostics(uri, Some(version))
     }
 
+    /// Applies one full-text overlay change without waiting for diagnostics.
+    ///
+    /// Non-WXML overlays do not publish a diagnostics answer of their own; the
+    /// next hover/definition call observes the updated text.
+    pub(crate) fn change_document(&mut self, uri: &str, text: &str, version: u64) {
+        self.notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {"uri": uri, "version": version},
+                "contentChanges": [{"text": text}],
+            }),
+        );
+    }
+
     fn wait_diagnostics(&mut self, uri: &str, min_version: Option<u64>) -> Value {
         loop {
             let message = self.next_matching(|message| {
@@ -348,6 +368,65 @@ impl Session {
             json!({
                 "textDocument": {"uri": uri},
                 "position": {"line": position.0, "character": position.1},
+            }),
+        );
+        self.response(id)
+    }
+
+    /// Requests references and returns the response frame.
+    pub(crate) fn references(
+        &mut self,
+        uri: &str,
+        position: (u32, u32),
+        include_declaration: bool,
+    ) -> Value {
+        let id = self.request(
+            "textDocument/references",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": position.0, "character": position.1},
+                "context": {"includeDeclaration": include_declaration},
+            }),
+        );
+        self.response(id)
+    }
+
+    /// Requests prepareRename and returns the response frame.
+    pub(crate) fn prepare_rename(&mut self, uri: &str, position: (u32, u32)) -> Value {
+        let id = self.request(
+            "textDocument/prepareRename",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": position.0, "character": position.1},
+            }),
+        );
+        self.response(id)
+    }
+
+    /// Requests rename and returns the response frame.
+    pub(crate) fn rename(&mut self, uri: &str, position: (u32, u32), new_name: &str) -> Value {
+        let id = self.request(
+            "textDocument/rename",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": position.0, "character": position.1},
+                "newName": new_name,
+            }),
+        );
+        self.response(id)
+    }
+
+    /// Requests code actions and returns the response frame.
+    pub(crate) fn code_action(&mut self, uri: &str, range: ((u32, u32), (u32, u32))) -> Value {
+        let id = self.request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": {"uri": uri},
+                "range": {
+                    "start": {"line": range.0.0, "character": range.0.1},
+                    "end": {"line": range.1.0, "character": range.1.1},
+                },
+                "context": {"diagnostics": [], "only": ["quickfix"]},
             }),
         );
         self.response(id)
@@ -477,7 +556,11 @@ fn read_stderr(stderr: ChildStderr, sink: &Arc<Mutex<String>>) {
 
 /// Returns the LSP UTF-16 position of the first `needle`.
 pub(crate) fn lsp_position(text: &str, needle: &str) -> (u32, u32) {
-    let byte = text.find(needle).expect("needle in text");
+    position_at(text, text.find(needle).expect("needle in text"))
+}
+
+/// Returns the LSP UTF-16 position of one UTF-8 byte offset in `text`.
+pub(crate) fn position_at(text: &str, byte: usize) -> (u32, u32) {
     let prefix = &text[..byte];
     let line =
         u32::try_from(prefix.bytes().filter(|byte| *byte == b'\n').count()).expect("line fits");

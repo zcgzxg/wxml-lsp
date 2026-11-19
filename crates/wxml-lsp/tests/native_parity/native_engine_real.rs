@@ -3,8 +3,11 @@
 //! The 2026-11-19 typed-asset slice made real hover and diagnostics available
 //! through `--backend native`. These tests are the native replacements for:
 //!
+//! - `G-P5-E2E-01` / `non_owner_script_overlay_propagates_and_survives_a_node_restart`
+//! - `G-P5-E2E-02` / `real_node_event_handler_diagnostics_definition_and_completion`
 //! - `G-P5-E2E-03` / `real_node_expression_and_event_completion_smoke`
 //! - `G-P5-E2E-04` / `real_node_hover_and_diagnostics_smoke`
+//! - `G-P5-E2E-05` / `real_node_symbols_smoke`
 //! - `G-P5-E2E-06` / `ac001_page_data_and_jsdoc_hover`
 //! - `G-P5-E2E-07` / `ac002_field_typo_diagnostic_and_fix_clear`
 //! - `G-P5-E2E-08` / `ac003_unicode_and_crlf_positions`
@@ -19,6 +22,7 @@
 //! - `G-P5-E2E-17` / `ac008_alias_project_hover_and_definition`
 //! - `G-P5-E2E-18` / `ac008_multi_view_fixture_isolation`
 //! - `G-P5-E2E-19` / `ac008_simultaneous_views_do_not_pollute_each_other`
+//! - `G-P5-E2E-21` / `ac012_event_handlers_basic`
 //! - `G-P5-PERF-01` / `q2_performance_benchmark`
 //! - `G-P5-STABILITY-01` / `ten_round_lifecycle_stability`
 //!
@@ -53,14 +57,23 @@ pub(crate) const NATIVE_GATE_FILE: &str =
 
 /// Ledger gate id -> native replacement test.
 ///
-/// All eighteen are `gate_green` in the ledger with recorded opt-in evidence;
+/// All twenty-two are `gate_green` in the ledger with recorded opt-in evidence;
 /// this map keeps the exact gate/replacement link checked by `native_gates.rs`.
 pub(crate) const GATE_REPLACEMENTS: &[(&str, &str)] = &[
+    (
+        "G-P5-E2E-01",
+        "native_non_owner_overlay_replay_survives_restart",
+    ),
+    (
+        "G-P5-E2E-02",
+        "native_event_handler_hover_diagnostics_definition_completion",
+    ),
     (
         "G-P5-E2E-03",
         "native_expression_and_event_completion_smoke",
     ),
     ("G-P5-E2E-04", "native_hover_and_diagnostics_smoke"),
+    ("G-P5-E2E-05", "native_symbols_smoke"),
     ("G-P5-E2E-06", "native_ac001_page_data_and_jsdoc_hover"),
     (
         "G-P5-E2E-07",
@@ -99,6 +112,7 @@ pub(crate) const GATE_REPLACEMENTS: &[(&str, &str)] = &[
         "G-P5-E2E-19",
         "native_ac008_simultaneous_views_do_not_pollute_each_other",
     ),
+    ("G-P5-E2E-21", "native_ac012_event_handlers_basic"),
     ("G-P5-PERF-01", "native_q2_performance_benchmark"),
     ("G-P5-STABILITY-01", "native_ten_round_lifecycle_stability"),
 ];
@@ -155,7 +169,17 @@ pub(crate) const IGNORED_GATE_TESTS: &[(&str, &str)] = &[
         NATIVE_GATE_FILE,
         "native_ac008_simultaneous_views_do_not_pollute_each_other",
     ),
+    (NATIVE_GATE_FILE, "native_ac012_event_handlers_basic"),
+    (
+        NATIVE_GATE_FILE,
+        "native_event_handler_hover_diagnostics_definition_completion",
+    ),
+    (
+        NATIVE_GATE_FILE,
+        "native_non_owner_overlay_replay_survives_restart",
+    ),
     (NATIVE_GATE_FILE, "native_q2_performance_benchmark"),
+    (NATIVE_GATE_FILE, "native_symbols_smoke"),
     (NATIVE_GATE_FILE, "native_ten_round_lifecycle_stability"),
 ];
 
@@ -464,6 +488,288 @@ fn native_unsaved_wxs_overlay_updates_static_hover_and_completion() {
     gate.tripwire().assert_absent();
 }
 
+/// G-P5-E2E-01: non-owner overlays propagate, update and replay after restart.
+///
+/// Four frozen behaviours from the retired Node gate:
+///
+/// 1. an unsaved non-owner model overlay is visible on the owning template;
+/// 2. closing the overlay restores the disk declaration;
+/// 3. re-opening it is visible again;
+/// 4. a restarted engine replays every still-open overlay, and the **first**
+///    request after the restart already succeeds.
+///
+/// The same test also covers the multi-overlay case and the content-aware
+/// `files_hash`: two overlays stay independent, and a second `didChange` is
+/// visible immediately without a restart.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "native gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
+#[allow(clippy::too_many_lines, reason = "one frozen overlay/replay lifecycle")]
+fn native_non_owner_overlay_replay_survives_restart() {
+    let Some(gate) = NativeGate::require("G-P5-E2E-01") else {
+        return;
+    };
+    gate.write(
+        "app.json",
+        r#"{"pages":["pages/index/index","pages/second/second"],"usingComponents":{}}"#,
+    );
+    let index_text = "{{ user.name }} {{ extra.code }}";
+    gate.write("pages/index/index.wxml", index_text);
+    gate.write(
+        "pages/index/index.ts",
+        "import type { User } from \"../../models/user\";\nimport type { Extra } from \"../../models/extra\";\nPage({ data: { user: null as unknown as User, extra: null as unknown as Extra } });\n",
+    );
+    let second_text = "{{ user.name }}";
+    gate.write("pages/second/second.wxml", second_text);
+    gate.write(
+        "pages/second/second.ts",
+        "import type { User } from \"../../models/user\";\nPage({ data: { user: null as unknown as User } });\n",
+    );
+    gate.write("models/user.ts", "export interface User { name: string }\n");
+    gate.write(
+        "models/extra.ts",
+        "export interface Extra { code: number }\n",
+    );
+    gate.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+
+    let mut session = Session::start(&gate);
+    let index_uri = gate.uri("pages/index/index.wxml");
+    let second_uri = gate.uri("pages/second/second.wxml");
+    let user_uri = gate.uri("models/user.ts");
+    let extra_uri = gate.uri("models/extra.ts");
+    session.open_wxml(&index_uri, index_text, 1);
+    session.open_wxml(&second_uri, second_text, 1);
+
+    let name_before = hover_target_end(
+        &mut session,
+        &index_uri,
+        index_text,
+        "{{ user.name }}",
+        "name",
+    );
+    let name_before_text =
+        native_lsp::hover_markdown("G-P5-E2E-01", "disk model hover", &name_before);
+    assert!(
+        name_before_text.contains("string"),
+        "the disk model must type `name` as string: {}",
+        session.describe(&name_before)
+    );
+    let code_before = hover_target_end(
+        &mut session,
+        &index_uri,
+        index_text,
+        "{{ extra.code }}",
+        "code",
+    );
+    let code_before_text =
+        native_lsp::hover_markdown("G-P5-E2E-01", "disk extra hover", &code_before);
+    assert!(
+        code_before_text.contains("number"),
+        "the disk model must type `code` as number: {}",
+        session.describe(&code_before)
+    );
+
+    // 1. One non-owner overlay becomes visible on both templates.
+    open_overlay(
+        &mut session,
+        &user_uri,
+        "typescript",
+        "export interface User { name: \"OVERLAY\" }\n",
+    );
+    let overlay_name = hover_target_end(
+        &mut session,
+        &index_uri,
+        index_text,
+        "{{ user.name }}",
+        "name",
+    );
+    let overlay_name_text =
+        native_lsp::hover_markdown("G-P5-E2E-01", "overlay model hover", &overlay_name);
+    assert!(
+        overlay_name_text.contains("OVERLAY"),
+        "the overlay must replace the disk declaration: {}",
+        session.describe(&overlay_name)
+    );
+    let second_overlay = hover_target_end(
+        &mut session,
+        &second_uri,
+        second_text,
+        "{{ user.name }}",
+        "name",
+    );
+    assert!(
+        native_lsp::hover_markdown("G-P5-E2E-01", "cross-view overlay hover", &second_overlay)
+            .contains("OVERLAY"),
+        "a non-owner overlay is project-wide: {}",
+        session.describe(&second_overlay)
+    );
+    let untouched = hover_target_end(
+        &mut session,
+        &index_uri,
+        index_text,
+        "{{ extra.code }}",
+        "code",
+    );
+    assert!(
+        native_lsp::hover_markdown("G-P5-E2E-01", "untouched extra hover", &untouched)
+            .contains("number"),
+        "opening one overlay must not hide another file: {}",
+        session.describe(&untouched)
+    );
+
+    // The content-aware files hash: a second same-session overlay text is
+    // visible immediately, without a restart or an explicit close.
+    session.change_document(
+        &user_uri,
+        "export interface User { name: \"OVERLAY_TWO\" }\n",
+        2,
+    );
+    let updated = hover_target_end(
+        &mut session,
+        &index_uri,
+        index_text,
+        "{{ user.name }}",
+        "name",
+    );
+    let updated_text = native_lsp::hover_markdown("G-P5-E2E-01", "updated overlay hover", &updated);
+    assert!(
+        updated_text.contains("OVERLAY_TWO"),
+        "an overlay text change must update the effective files hash: {}",
+        session.describe(&updated)
+    );
+    assert!(
+        !updated_text.contains("\"OVERLAY\""),
+        "the stale overlay text must not win: {}",
+        session.describe(&updated)
+    );
+
+    // 2. Multiple overlays stay independent.
+    open_overlay(
+        &mut session,
+        &extra_uri,
+        "typescript",
+        "export interface Extra { code: \"EXTRA\" }\n",
+    );
+    let extra_overlay = hover_target_end(
+        &mut session,
+        &index_uri,
+        index_text,
+        "{{ extra.code }}",
+        "code",
+    );
+    assert!(
+        native_lsp::hover_markdown("G-P5-E2E-01", "second overlay hover", &extra_overlay)
+            .contains("EXTRA"),
+        "a second overlay must be visible: {}",
+        session.describe(&extra_overlay)
+    );
+    let both = hover_target_end(
+        &mut session,
+        &index_uri,
+        index_text,
+        "{{ user.name }}",
+        "name",
+    );
+    assert!(
+        native_lsp::hover_markdown("G-P5-E2E-01", "both overlays visible", &both)
+            .contains("OVERLAY_TWO"),
+        "the second overlay must not replace the first: {}",
+        session.describe(&both)
+    );
+
+    // 3. Kill the engine: the first request after the restart must replay the
+    //    current overlays and succeed on its own (one-shot dead-session retry).
+    let engines = engine_children(session.pid(), gate.package_root());
+    assert_eq!(
+        engines.len(),
+        1,
+        "the session must hold exactly one engine before the restart: {engines:?}"
+    );
+    let old_engine = engines[0];
+    kill_process(old_engine);
+    wait_gone(&[old_engine], "killed engine");
+    let first = hover_target_end(
+        &mut session,
+        &index_uri,
+        index_text,
+        "{{ user.name }}",
+        "name",
+    );
+    let first_text =
+        native_lsp::hover_markdown("G-P5-E2E-01", "first request after restart", &first);
+    assert!(
+        first_text.contains("OVERLAY_TWO"),
+        "the first request after a restart must replay the open overlay: {}",
+        session.describe(&first)
+    );
+    let extra_after = hover_target_end(
+        &mut session,
+        &index_uri,
+        index_text,
+        "{{ extra.code }}",
+        "code",
+    );
+    assert!(
+        native_lsp::hover_markdown("G-P5-E2E-01", "second overlay after restart", &extra_after)
+            .contains("EXTRA"),
+        "every open overlay must be replayed: {}",
+        session.describe(&extra_after)
+    );
+    let new_engines = engine_children(session.pid(), gate.package_root());
+    assert_eq!(
+        new_engines.len(),
+        1,
+        "the restart must leave exactly one live engine: {new_engines:?}"
+    );
+    assert_ne!(
+        new_engines[0], old_engine,
+        "the restart reused the killed engine process"
+    );
+
+    // 4. Closing the overlay restores the disk declaration, without losing the
+    //    other overlay.
+    session.notify(
+        "textDocument/didClose",
+        json!({"textDocument": {"uri": user_uri}}),
+    );
+    let restored = hover_target_end(
+        &mut session,
+        &index_uri,
+        index_text,
+        "{{ user.name }}",
+        "name",
+    );
+    let restored_text = native_lsp::hover_markdown("G-P5-E2E-01", "restored disk hover", &restored);
+    assert!(
+        restored_text.contains("string"),
+        "closing the overlay must restore the disk declaration: {}",
+        session.describe(&restored)
+    );
+    assert!(
+        !restored_text.contains("OVERLAY"),
+        "the closed overlay must not stay visible: {}",
+        session.describe(&restored)
+    );
+    let extra_kept = hover_target_end(
+        &mut session,
+        &index_uri,
+        index_text,
+        "{{ extra.code }}",
+        "code",
+    );
+    assert!(
+        native_lsp::hover_markdown("G-P5-E2E-01", "remaining overlay", &extra_kept)
+            .contains("EXTRA"),
+        "closing one overlay must not drop another: {}",
+        session.describe(&extra_kept)
+    );
+
+    session.assert_no_node_exec();
+    session.shutdown();
+    gate.assert_no_native_sandbox();
+    gate.tripwire().assert_absent();
+}
+
 /// Fails when a diagnostics payload carries a "type checking is ..." status.
 fn assert_no_status_diagnostic(diagnostics: &Value, context: &str) {
     let values = diagnostics
@@ -521,6 +827,136 @@ fn hover_target_end(
         uri,
         (marker_at.0 + target_at.0, marker_at.1 + target_at.1 + last),
     )
+}
+
+/// Hovers the first byte of `target` inside `marker`.
+fn hover_target_start(
+    session: &mut Session,
+    uri: &str,
+    text: &str,
+    marker: &str,
+    target: &str,
+) -> Value {
+    let marker_at = native_lsp::lsp_position(text, marker);
+    let target_at = native_lsp::lsp_position(marker, target);
+    session.hover(uri, (marker_at.0 + target_at.0, marker_at.1 + target_at.1))
+}
+
+/// Asserts one hover range covers exactly `target` inside `marker`.
+fn assert_hover_token(hover: &Value, text: &str, marker: &str, target: &str, context: &str) {
+    let marker_byte = text
+        .find(marker)
+        .unwrap_or_else(|| panic!("{context}: marker {marker:?} is not in the document"));
+    let target_byte = marker
+        .find(target)
+        .unwrap_or_else(|| panic!("{context}: target {target:?} is not in {marker:?}"));
+    let start = native_lsp::position_at(text, marker_byte + target_byte);
+    let end = native_lsp::position_at(text, marker_byte + target_byte + target.len());
+    assert_eq!(
+        hover["result"]["range"],
+        json!({
+            "start": {"line": start.0, "character": start.1},
+            "end": {"line": end.0, "character": end.1},
+        }),
+        "{context}: hover must cover exactly {target:?}: {hover}"
+    );
+}
+
+/// Returns an LSP position tuple from one JSON position.
+fn json_position(value: &Value) -> (u32, u32) {
+    (
+        u32::try_from(value["line"].as_u64().expect("start line")).expect("line fits"),
+        u32::try_from(value["character"].as_u64().expect("start character"))
+            .expect("character fits"),
+    )
+}
+
+/// Returns both LSP positions of one JSON range.
+fn json_range(value: &Value) -> ((u32, u32), (u32, u32)) {
+    (json_position(&value["start"]), json_position(&value["end"]))
+}
+
+/// Fails when any diagnostic overlaps the exact bytes of `marker`.
+fn assert_no_diagnostic_overlapping(diagnostics: &Value, text: &str, marker: &str, context: &str) {
+    let marker_byte = text
+        .find(marker)
+        .unwrap_or_else(|| panic!("{context}: marker {marker:?} is not in the document"));
+    let start = native_lsp::position_at(text, marker_byte);
+    let end = native_lsp::position_at(text, marker_byte + marker.len());
+    for diagnostic in diagnostics
+        .as_array()
+        .unwrap_or_else(|| panic!("{context}: diagnostics are not an array: {diagnostics}"))
+    {
+        let (diagnostic_start, diagnostic_end) = json_range(&diagnostic["range"]);
+        assert!(
+            !(diagnostic_start < end && start < diagnostic_end),
+            "{context}: {marker:?} produced a diagnostic: {diagnostic}"
+        );
+    }
+}
+
+/// Asserts the document publishes exactly one zero-width degradation warning.
+fn assert_status_warning(diagnostics: &Value, label: &str, context: &str) {
+    let warnings = diagnostics
+        .as_array()
+        .unwrap_or_else(|| panic!("{context}: diagnostics are not an array: {diagnostics}"))
+        .iter()
+        .filter(|diagnostic| diagnostic["severity"] == json!(2))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        warnings.len(),
+        1,
+        "{context}: expected exactly one status warning, got {diagnostics}"
+    );
+    let warning = warnings[0];
+    assert!(
+        warning["message"]
+            .as_str()
+            .is_some_and(|message| message.contains(label)),
+        "{context}: the status warning must say {label:?}: {warning}"
+    );
+    assert_eq!(
+        json_range(&warning["range"]),
+        ((0, 0), (0, 0)),
+        "{context}: the status warning must be zero-width at 0:0: {warning}"
+    );
+}
+
+/// Asserts one location list contains exactly the `token` at UTF-8 `start`.
+fn assert_location_at(
+    locations: &[Value],
+    uri: &str,
+    text: &str,
+    start: usize,
+    token: &str,
+    context: &str,
+) {
+    let expected_start = native_lsp::position_at(text, start);
+    let expected_end = native_lsp::position_at(text, start + token.len());
+    let expected = json!({
+        "start": {"line": expected_start.0, "character": expected_start.1},
+        "end": {"line": expected_end.0, "character": expected_end.1},
+    });
+    assert!(
+        locations
+            .iter()
+            .any(|location| { location["uri"] == json!(uri) && location["range"] == expected }),
+        "{context}: no location covers exactly {token:?} at {start}: {locations:?}"
+    );
+}
+
+/// Returns the edits for one `WorkspaceEdit.documentChanges` URI.
+fn document_change_edits<'a>(edit: &'a Value, uri: &str, context: &str) -> &'a [Value] {
+    let changes = edit["documentChanges"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{context}: no documentChanges: {edit}"));
+    let entry = changes
+        .iter()
+        .find(|entry| entry["textDocument"]["uri"] == json!(uri))
+        .unwrap_or_else(|| panic!("{context}: no documentChanges entry for {uri}: {edit}"));
+    entry["edits"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{context}: entry has no edits: {entry}"))
 }
 
 /// Copies one repository fixture into the disposable gate project.
@@ -1623,6 +2059,693 @@ fn native_expression_and_event_completion_smoke() {
     gate.tripwire().assert_absent();
 }
 
+/// Returns the LSP position of `target` inside `marker`.
+fn token_position(text: &str, marker: &str, target: &str) -> (u32, u32) {
+    let marker_at = native_lsp::lsp_position(text, marker);
+    let target_at = native_lsp::lsp_position(marker, target);
+    (marker_at.0 + target_at.0, marker_at.1 + target_at.1)
+}
+
+/// G-P5-E2E-02: event-handler hover, diagnostics, definition and completion.
+///
+/// This is the native replacement for the retired Node gate. It keeps the old
+/// fixture shape: a page with `onTap`, an arrow handler, a shorthand handler,
+/// a component `methods` owner, and the three degraded binding forms
+/// (`{{ dynamic }}`, empty and non-identifier) that must stay silent.
+///
+/// The hover assertion is the new native capability: `onTap` returns its exact
+/// one-line signature plus `JSDoc`, and `onShorthandTap` returns its shorthand
+/// signature; both ranges cover exactly the handler token in the WXML source.
+#[test]
+#[ignore = "native gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
+#[allow(clippy::too_many_lines, reason = "one frozen event gate fixture")]
+fn native_event_handler_hover_diagnostics_definition_completion() {
+    let Some(gate) = NativeGate::require("G-P5-E2E-02") else {
+        return;
+    };
+    gate.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    gate.write(
+        "pages/index/index.json",
+        r#"{"usingComponents":{"widget":"../../components/widget/widget"}}"#,
+    );
+    let page_text = concat!(
+        "<view bindtap=\"onTap\" catchtap=\"missingHandler\" />\n",
+        "<view onTapPlaceholder=\"\" capture-bind:tap=\"onTap\" mut-bind:tap=\"onTap\" />\n",
+        "<view bindtap=\"{{ dynamicHandler }}\" />\n",
+        "<view catchtap=\"\" />\n",
+        "<view bindtap=\"this.invalid\" />\n",
+        "<view bindtap=\"onArrow\" />\n",
+        "<view bindtap=\"onShorthandTap\" />\n",
+    );
+    gate.write("pages/index/index.wxml", page_text);
+    gate.write(
+        "pages/index/index.ts",
+        concat!(
+            "Page({\n",
+            "  data: { label: 'x' },\n",
+            "  /** 点击处理 😀 */\n",
+            "  onTap(event: { detail: { x: number } }) { void event; },\n",
+            "  onArrow: (event: { detail: { y: number } }) => { void event; },\n",
+            "  onShorthandTap() { const label = 'x'; void label; },\n",
+            "});\n",
+        ),
+    );
+    gate.write("components/widget/widget.json", r#"{"component":true}"#);
+    gate.write(
+        "components/widget/widget.wxml",
+        "<view bindtap=\"onWidgetTap\" /><view bindtap=\"missingWidget\" />",
+    );
+    gate.write(
+        "components/widget/widget.ts",
+        concat!(
+            "Component({\n",
+            "  properties: {},\n",
+            "  methods: {\n",
+            "    onWidgetTap(event: { detail: { z: number } }) { void event; },\n",
+            "    onWidgetArrow: () => {},\n",
+            "  },\n",
+            "});\n",
+        ),
+    );
+    gate.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+
+    let mut session = Session::start(&gate);
+    let uri = gate.uri("pages/index/index.wxml");
+    let diagnostics = session.open_wxml(&uri, page_text, 1);
+    assert_no_status_diagnostic(&diagnostics, "E2E-02 page");
+    let errors = error_diagnostics(&diagnostics);
+    assert_eq!(
+        errors.len(),
+        1,
+        "the page must report only the missing handler: {diagnostics}"
+    );
+    assert_error_at(
+        &diagnostics,
+        page_text,
+        "catchtap=\"missingHandler\"",
+        "missingHandler",
+        "E2E-02 missing handler",
+    );
+    assert!(
+        errors[0]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("missingHandler") && message.contains("tap")),
+        "the missing-handler message must name the handler and the event: {}",
+        errors[0]
+    );
+    for marker in [
+        "bindtap=\"{{ dynamicHandler }}\"",
+        "catchtap=\"\"",
+        "bindtap=\"this.invalid\"",
+    ] {
+        assert_no_diagnostic_overlapping(&diagnostics, page_text, marker, "E2E-02 degraded");
+    }
+
+    let on_tap = hover_target_start(&mut session, &uri, page_text, "bindtap=\"onTap\"", "onTap");
+    let on_tap_text = native_lsp::hover_markdown("G-P5-E2E-02", "onTap hover", &on_tap);
+    assert!(
+        on_tap_text.contains("onTap(event: { detail: { x: number } })"),
+        "onTap hover must carry its exact signature: {}",
+        session.describe(&on_tap)
+    );
+    assert!(
+        on_tap_text.contains("点击处理 😀"),
+        "onTap hover must carry its JSDoc: {}",
+        session.describe(&on_tap)
+    );
+    assert_hover_token(
+        &on_tap,
+        page_text,
+        "bindtap=\"onTap\"",
+        "onTap",
+        "E2E-02 onTap",
+    );
+
+    let shorthand = hover_target_start(
+        &mut session,
+        &uri,
+        page_text,
+        "bindtap=\"onShorthandTap\"",
+        "onShorthandTap",
+    );
+    let shorthand_text =
+        native_lsp::hover_markdown("G-P5-E2E-02", "onShorthandTap hover", &shorthand);
+    assert!(
+        shorthand_text.contains("onShorthandTap()"),
+        "the shorthand handler hover must carry its signature: {}",
+        session.describe(&shorthand)
+    );
+    assert_hover_token(
+        &shorthand,
+        page_text,
+        "bindtap=\"onShorthandTap\"",
+        "onShorthandTap",
+        "E2E-02 onShorthandTap",
+    );
+
+    let on_tap_definition = session.definition(
+        &uri,
+        token_position(page_text, "bindtap=\"onTap\"", "onTap"),
+    );
+    assert_definition_covers(
+        "G-P5-E2E-02",
+        &gate,
+        &on_tap_definition,
+        "pages/index/index.ts",
+        "onTap",
+    );
+    let on_arrow_definition = session.definition(
+        &uri,
+        token_position(page_text, "bindtap=\"onArrow\"", "onArrow"),
+    );
+    assert_definition_covers(
+        "G-P5-E2E-02",
+        &gate,
+        &on_arrow_definition,
+        "pages/index/index.ts",
+        "onArrow",
+    );
+    let missing_definition = session.definition(
+        &uri,
+        token_position(page_text, "catchtap=\"missingHandler\"", "missingHandler"),
+    );
+    assert!(
+        missing_definition["result"].is_null(),
+        "a missing handler is a supported check with no definition: {missing_definition}"
+    );
+
+    let completion_prefix = token_position(page_text, "bindtap=\"onArrow\"", "onArrow");
+    let handlers = session.completion(&uri, (completion_prefix.0, completion_prefix.1 + 3));
+    let labels = completion_labels(&handlers);
+    for label in ["onTap", "onArrow"] {
+        assert!(
+            labels.contains(&label),
+            "missing {label} in {}",
+            session.describe(&handlers)
+        );
+    }
+    assert!(
+        !labels.contains(&"label") && labels.iter().all(|label| !label.starts_with("__wxml_")),
+        "data or synthetic members leaked into event completion: {}",
+        session.describe(&handlers)
+    );
+    let on_tap_item = completion_item(&handlers, "onTap");
+    assert_eq!(
+        on_tap_item["textEdit"]["range"]["start"],
+        json!({
+            "line": completion_prefix.0,
+            "character": completion_prefix.1,
+        }),
+        "event completion must replace the whole handler token: {}",
+        session.describe(&handlers)
+    );
+
+    let widget_text = native_lsp::read_project_file(&gate, "components/widget/widget.wxml");
+    let widget_uri = gate.uri("components/widget/widget.wxml");
+    let widget_diagnostics = session.open_wxml(&widget_uri, &widget_text, 1);
+    let widget_errors = error_diagnostics(&widget_diagnostics);
+    assert_eq!(
+        widget_errors.len(),
+        1,
+        "the component must report only the missing method: {widget_diagnostics}"
+    );
+    assert!(
+        widget_errors[0]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("missingWidget")),
+        "component methods lookup did not flag missingWidget: {}",
+        widget_errors[0]
+    );
+    let widget_definition = session.definition(
+        &widget_uri,
+        token_position(&widget_text, "bindtap=\"onWidgetTap\"", "onWidgetTap"),
+    );
+    assert_definition_covers(
+        "G-P5-E2E-02",
+        &gate,
+        &widget_definition,
+        "components/widget/widget.ts",
+        "onWidgetTap",
+    );
+
+    session.assert_no_node_exec();
+    session.shutdown();
+    gate.tripwire().assert_absent();
+}
+
+/// G-P5-E2E-21: the frozen `events-basic` acceptance fixture.
+///
+/// Covers all four surfaces of the old gate: the three typed hovers with
+/// `JSDoc`, the two missing-handler errors, the 13 definitions (non-null ones
+/// covering the exact declaration token, missing ones a checked `null`), and
+/// the event completion replacement range. The two degradation classes are
+/// asserted through their LSP form: `Partial` and `Unsupported` publish exactly
+/// one zero-width status warning and never an error.
+#[test]
+#[ignore = "native gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
+#[allow(clippy::too_many_lines, reason = "one frozen acceptance fixture")]
+fn native_ac012_event_handlers_basic() {
+    let Some(gate) = NativeGate::require("G-P5-E2E-21") else {
+        return;
+    };
+    copy_fixture(&gate, "events-basic");
+    let index_text = native_lsp::read_project_file(&gate, "pages/index/index.wxml");
+    let widget_text = native_lsp::read_project_file(&gate, "components/widget/widget.wxml");
+    let multi_text = native_lsp::read_project_file(&gate, "pages/multi/multi.wxml");
+    let nonliteral_text = native_lsp::read_project_file(&gate, "pages/nonliteral/nonliteral.wxml");
+
+    let mut session = Session::start(&gate);
+    let index_uri = gate.uri("pages/index/index.wxml");
+    let widget_uri = gate.uri("components/widget/widget.wxml");
+    let multi_uri = gate.uri("pages/multi/multi.wxml");
+    let nonliteral_uri = gate.uri("pages/nonliteral/nonliteral.wxml");
+    let index_diagnostics = session.open_wxml(&index_uri, &index_text, 1);
+    let widget_diagnostics = session.open_wxml(&widget_uri, &widget_text, 1);
+    let multi_diagnostics = session.open_wxml(&multi_uri, &multi_text, 1);
+    let nonliteral_diagnostics = session.open_wxml(&nonliteral_uri, &nonliteral_text, 1);
+
+    // The three typed hovers with their exact range and documentation.
+    for (uri, text, marker, target, documentation) in [
+        (&index_uri, &index_text, "{{ label }}", "label", "页面标签"),
+        (
+            &widget_uri,
+            &widget_text,
+            "{{ title }}",
+            "title",
+            "组件标题",
+        ),
+        (
+            &multi_uri,
+            &multi_text,
+            "{{ firstLabel }}",
+            "firstLabel",
+            "首个注册的标签",
+        ),
+    ] {
+        let hover = hover_target_end(&mut session, uri, text, marker, target);
+        let contents = native_lsp::hover_markdown("G-P5-E2E-21", target, &hover);
+        assert!(
+            contents.contains("string"),
+            "{target} must be string: {}",
+            session.describe(&hover)
+        );
+        assert!(
+            contents.contains(documentation),
+            "{target} must include {documentation:?}: {}",
+            session.describe(&hover)
+        );
+        assert_hover_token(&hover, text, marker, target, "E2E-21 hover");
+    }
+
+    // Page: exactly one error, and silence over every degraded form.
+    assert_no_status_diagnostic(&index_diagnostics, "AC-012 page");
+    let index_errors = error_diagnostics(&index_diagnostics);
+    assert_eq!(
+        index_errors.len(),
+        1,
+        "the page must report only the missing handler: {index_diagnostics}"
+    );
+    assert_error_at(
+        &index_diagnostics,
+        &index_text,
+        "bindtap=\"missingHandler\"",
+        "missingHandler",
+        "AC-012 page missing handler",
+    );
+    for marker in [
+        "bindtap=\"{{dynamicHandler}}\"",
+        "bindtap=\"\"",
+        "bindtap=\"this.onTap\"",
+    ] {
+        assert_no_diagnostic_overlapping(&index_diagnostics, &index_text, marker, "AC-012 page");
+    }
+
+    // Component: one missing-method error; `methods` is the owner table.
+    let widget_errors = error_diagnostics(&widget_diagnostics);
+    assert_eq!(
+        widget_errors.len(),
+        1,
+        "the component must report only the missing method: {widget_diagnostics}"
+    );
+    assert!(
+        widget_errors[0]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("missingWidgetHandler")),
+        "{widget_diagnostics}"
+    );
+    assert_status_warning(
+        &widget_diagnostics,
+        "type checking is partial",
+        "AC-012 widget",
+    );
+
+    // Multiple registrations keep the first owner table and degrade to
+    // Partial: a method that may live in the unread registration is not an
+    // error.
+    let multi_errors = error_diagnostics(&multi_diagnostics);
+    assert!(
+        multi_errors.is_empty(),
+        "pages/multi/multi.wxml fabricated an error: {multi_diagnostics}"
+    );
+    assert_status_warning(
+        &multi_diagnostics,
+        "type checking is partial",
+        "AC-012 multi",
+    );
+
+    // A non-literal root has no analyzable owner object: `Unsupported`, not
+    // `Unavailable`, and no fabricated methods.
+    let nonliteral_errors = error_diagnostics(&nonliteral_diagnostics);
+    assert!(
+        nonliteral_errors.is_empty(),
+        "pages/nonliteral/nonliteral.wxml fabricated an error: {nonliteral_diagnostics}"
+    );
+    assert_status_warning(
+        &nonliteral_diagnostics,
+        "type checking is unsupported",
+        "AC-012 nonliteral",
+    );
+
+    // The 13 frozen definitions: exact declaration tokens, or a checked null.
+    for (file, marker, target, script) in [
+        (
+            "pages/index/index.wxml",
+            "bindtap=\"onShorthandTap\"",
+            "onShorthandTap",
+            "pages/index/index.ts",
+        ),
+        (
+            "pages/index/index.wxml",
+            "catchtap=\"onFunctionTap\"",
+            "onFunctionTap",
+            "pages/index/index.ts",
+        ),
+        (
+            "pages/index/index.wxml",
+            "bind:tap=\"onArrowTap\"",
+            "onArrowTap",
+            "pages/index/index.ts",
+        ),
+        (
+            "pages/index/index.wxml",
+            "capture-bind:tap=\"onCaptureTap\"",
+            "onCaptureTap",
+            "pages/index/index.ts",
+        ),
+        (
+            "pages/index/index.wxml",
+            "capture-catch:tap=\"onCaptureCatchTap\"",
+            "onCaptureCatchTap",
+            "pages/index/index.ts",
+        ),
+        (
+            "pages/index/index.wxml",
+            "mut-bind:tap=\"onMutTap\"",
+            "onMutTap",
+            "pages/index/index.ts",
+        ),
+        (
+            "pages/index/index.wxml",
+            "catch:tap=\"onCatchTap\"",
+            "onCatchTap",
+            "pages/index/index.ts",
+        ),
+        (
+            "components/widget/widget.wxml",
+            "bindtap=\"onWidgetTap\"",
+            "onWidgetTap",
+            "components/widget/widget.ts",
+        ),
+        (
+            "components/widget/widget.wxml",
+            "bindtap=\"onWidgetArrow\"",
+            "onWidgetArrow",
+            "components/widget/widget.ts",
+        ),
+    ] {
+        let (uri, text) = match file {
+            "pages/index/index.wxml" => (&index_uri, &index_text),
+            "components/widget/widget.wxml" => (&widget_uri, &widget_text),
+            other => panic!("unexpected definition file {other}"),
+        };
+        let definition = session.definition(uri, token_position(text, marker, target));
+        assert_definition_covers("G-P5-E2E-21", &gate, &definition, script, target);
+    }
+    for (uri, text, marker, target) in [
+        (
+            &index_uri,
+            &index_text,
+            "bindtap=\"missingHandler\"",
+            "missingHandler",
+        ),
+        (
+            &widget_uri,
+            &widget_text,
+            "bindtap=\"missingWidgetHandler\"",
+            "missingWidgetHandler",
+        ),
+        (
+            &multi_uri,
+            &multi_text,
+            "bindtap=\"onSecondTap\"",
+            "onSecondTap",
+        ),
+        (
+            &nonliteral_uri,
+            &nonliteral_text,
+            "bindtap=\"onNonLiteralTap\"",
+            "onNonLiteralTap",
+        ),
+    ] {
+        let definition = session.definition(uri, token_position(text, marker, target));
+        assert!(
+            definition["result"].is_null(),
+            "{target} must not resolve to a fabricated definition: {definition}"
+        );
+    }
+
+    // Event completion enumerates the owner's methods only.
+    let value_start = token_position(&index_text, "bindtap=\"onShorthandTap\"", "onShorthandTap");
+    let handlers = session.completion(&index_uri, (value_start.0, value_start.1 + 3));
+    let labels = completion_labels(&handlers);
+    for label in ["onShorthandTap", "onFunctionTap", "onArrowTap"] {
+        assert!(
+            labels.contains(&label),
+            "missing {label} in {}",
+            session.describe(&handlers)
+        );
+    }
+    for reserved in ["label", "data", "__wxml_page"] {
+        assert!(
+            !labels.contains(&reserved),
+            "{reserved} leaked into event completion: {}",
+            session.describe(&handlers)
+        );
+    }
+    let shorthand_item = completion_item(&handlers, "onShorthandTap");
+    assert_eq!(
+        shorthand_item["textEdit"]["range"]["start"],
+        json!({"line": value_start.0, "character": value_start.1}),
+        "event completion must replace the whole handler token: {}",
+        session.describe(&handlers)
+    );
+
+    let widget_start = token_position(&widget_text, "bindtap=\"onWidgetTap\"", "onWidgetTap");
+    let widget_handlers = session.completion(&widget_uri, (widget_start.0, widget_start.1 + 6));
+    let widget_labels = completion_labels(&widget_handlers);
+    for label in ["onWidgetTap", "onWidgetArrow"] {
+        assert!(
+            widget_labels.contains(&label),
+            "missing {label} in {}",
+            session.describe(&widget_handlers)
+        );
+    }
+
+    session.assert_no_node_exec();
+    session.shutdown();
+    gate.tripwire().assert_absent();
+}
+
+/// G-P5-E2E-05: native script symbols through their LSP consumers.
+///
+/// `Backend::symbols` is not itself an LSP method; its users are
+/// `textDocument/references`, `prepareRename`, `rename` and the missing-handler
+/// quick fix. All four answer only when the `SymbolResult` is `complete`, so a
+/// green run proves the `DataPath` declaration, the `this.data` read, the
+/// `setData` path segment and the missing `onSave` insertion are exact.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one frozen symbol/reference/rename fixture"
+)]
+#[ignore = "native gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
+fn native_symbols_smoke() {
+    let Some(gate) = NativeGate::require("G-P5-E2E-05") else {
+        return;
+    };
+    gate.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    let wxml = "<view bindtap=\"onTap\">{{ user.name }}</view>\n<view bindtap=\"onSave\"></view>";
+    gate.write("pages/index/index.wxml", wxml);
+    let script = concat!(
+        "Page({\n",
+        "  data: { user: { name: 'Ada' } },\n",
+        "  onLoad() { const label = this.data.user.name; this.setData({ \"user.name\": label }); },\n",
+        "  onTap() {},\n",
+        "});\n",
+    );
+    gate.write("pages/index/index.ts", script);
+    gate.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+
+    let mut session = Session::start(&gate);
+    let uri = gate.uri("pages/index/index.wxml");
+    let script_uri = gate.uri("pages/index/index.ts");
+    session.open_wxml(&uri, wxml, 1);
+    let name_position = token_position(wxml, "{{ user.name }}", "name");
+
+    // DataPath references: declaration, `this.data` read and the `setData`
+    // path segment, plus the WXML token, all exact.
+    let references = session.references(&uri, name_position, true);
+    let locations = references["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("references returned no locations: {references}"));
+    assert_eq!(
+        locations.len(),
+        4,
+        "the script has exactly four proven `name` tokens: {references}"
+    );
+    let declaration = script.find("name: 'Ada'").expect("declaration token");
+    assert_location_at(
+        locations,
+        &script_uri,
+        script,
+        declaration,
+        "name",
+        "E2E-05 declaration",
+    );
+    let read =
+        script.find("this.data.user.name").expect("this.data read") + "this.data.user.".len();
+    assert_location_at(locations, &script_uri, script, read, "name", "E2E-05 read");
+    let set_data = script.find("\"user.name\"").expect("setData key") + 1 + "user.".len();
+    assert_location_at(
+        locations,
+        &script_uri,
+        script,
+        set_data,
+        "name",
+        "E2E-05 setData segment",
+    );
+    let wxml_name = wxml.find("{{ user.name }}").expect("WXML name") + "{{ user.".len();
+    assert_location_at(
+        locations,
+        &uri,
+        wxml,
+        wxml_name,
+        "name",
+        "E2E-05 WXML token",
+    );
+
+    // prepareRename is a checked answer, not a guess.
+    let prepare = session.prepare_rename(&uri, name_position);
+    let expected_start = native_lsp::position_at(wxml, wxml_name);
+    let expected_end = native_lsp::position_at(wxml, wxml_name + "name".len());
+    assert_eq!(
+        prepare["result"]["placeholder"],
+        json!("name"),
+        "prepareRename must name the exact token: {prepare}"
+    );
+    assert_eq!(
+        prepare["result"]["range"],
+        json!({
+            "start": {"line": expected_start.0, "character": expected_start.1},
+            "end": {"line": expected_end.0, "character": expected_end.1},
+        }),
+        "prepareRename must cover exactly `name`: {prepare}"
+    );
+
+    // Rename edits exactly the declaration, the read, the setData segment and
+    // the WXML token; nothing is fabricated and the quotes are kept.
+    let rename = session.rename(&uri, name_position, "displayName");
+    let script_edits = document_change_edits(&rename["result"], &script_uri, "E2E-05 rename");
+    assert_eq!(
+        script_edits.len(),
+        3,
+        "rename must edit the declaration, read and setData segment: {rename}"
+    );
+    for (start, context) in [
+        (declaration, "declaration"),
+        (read, "read"),
+        (set_data, "setData segment"),
+    ] {
+        let position = native_lsp::position_at(script, start);
+        let found = script_edits.iter().find(|edit| {
+            edit["range"]["start"] == json!({"line": position.0, "character": position.1})
+        });
+        let edit = found.unwrap_or_else(|| panic!("{context} edit missing: {rename}"));
+        assert_eq!(edit["newText"], json!("displayName"), "{context}: {rename}");
+    }
+    let wxml_edits = document_change_edits(&rename["result"], &uri, "E2E-05 rename");
+    assert_eq!(
+        wxml_edits.len(),
+        1,
+        "rename must edit exactly one WXML token: {rename}"
+    );
+    assert_eq!(
+        wxml_edits[0]["range"]["start"],
+        json!({"line": expected_start.0, "character": expected_start.1}),
+        "{rename}"
+    );
+    assert_eq!(wxml_edits[0]["newText"], json!("displayName"), "{rename}");
+
+    // Missing `onSave`: the quick fix inserts a handler into the Page options
+    // object at the exact closing-brace offset.
+    let on_save = token_position(wxml, "bindtap=\"onSave\"", "onSave");
+    let on_save_end = native_lsp::position_at(wxml, wxml.find("onSave").expect("onSave") + 6);
+    let actions = session.code_action(&uri, (on_save, on_save_end));
+    let actions = actions["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("codeAction returned no array: {actions}"));
+    assert_eq!(
+        actions.len(),
+        1,
+        "expected one missing-handler fix: {actions:?}"
+    );
+    assert_eq!(
+        actions[0]["title"],
+        json!("Create event handler 'onSave'"),
+        "{actions:?}"
+    );
+    assert_eq!(actions[0]["kind"], json!("quickfix"), "{actions:?}");
+    let fix_edits = document_change_edits(&actions[0]["edit"], &script_uri, "E2E-05 quick fix");
+    assert_eq!(fix_edits.len(), 1, "one insertion edit: {actions:?}");
+    let close = script.rfind("});").expect("options close");
+    let close_position = native_lsp::position_at(script, close);
+    assert_eq!(
+        fix_edits[0]["range"]["start"],
+        json!({"line": close_position.0, "character": close_position.1}),
+        "the insertion must sit on the options closing brace: {actions:?}"
+    );
+    assert_eq!(
+        fix_edits[0]["range"]["end"], fix_edits[0]["range"]["start"],
+        "the quick fix must be a zero-width insertion: {actions:?}"
+    );
+    let insertion = fix_edits[0]["newText"].as_str().expect("insertion text");
+    assert!(insertion.contains("onSave()"), "{insertion}");
+    assert!(
+        !insertion.contains("methods: {"),
+        "a Page handler must not add a Component methods object: {insertion}"
+    );
+
+    session.assert_no_node_exec();
+    session.shutdown();
+    gate.tripwire().assert_absent();
+}
+
 /// G-P5-E2E-11: Behavior data and properties join the component instance type.
 #[test]
 #[ignore = "native gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
@@ -2306,10 +3429,10 @@ fn native_ten_round_lifecycle_stability() {
             "overlay hover before restart",
         );
 
-        // Force a native restart by killing the engine child. The first request
-        // after the crash is recorded, not forced: E2E-01 replay is not a
-        // committed guarantee yet. The second request must start a new session
-        // and replay the open overlay.
+        // Force a native restart by killing the engine child. This gate
+        // records the first request class; the dedicated E2E-01 gate asserts
+        // transparent first-request replay. The second request must start a
+        // new session and replay the open overlay.
         let engines = engine_children(session.pid(), gate.package_root());
         assert_eq!(
             engines.len(),
@@ -2506,11 +3629,11 @@ fn native_ten_round_lifecycle_stability() {
             "cycles": STABILITY_CYCLES,
             "updates_per_cycle": 3,
             "burst_hovers": STABILITY_BURST,
-            "restart": "SIGKILL the engine child; first request recorded, replay required by the second",
+            "restart": "SIGKILL the engine child; the first request class is recorded and the second request must replay the open overlay",
         },
         "restart": {
             "first_request_classes": first_request_classes,
-            "e2e_01_status": "required_not_migrated: transparent first-request replay is not claimed; this gate requires the second request to replay the open overlay",
+            "e2e_01_status": "gate_green in G-P5-E2E-01: native_non_owner_overlay_replay_survives_restart asserts transparent first-request replay; this stability gate records the observed class and requires the second request to replay the open overlay",
         },
         "rounds": rounds,
         "resources": {
@@ -2544,7 +3667,7 @@ fn native_ten_round_lifecycle_stability() {
         },
         "notes": [
             "Every cycle performs three template updates, an unsaved script overlay, a forced engine restart, an overlay release and a diagnostics round-trip.",
-            "The first hover after SIGKILL is observed, not forced to pass: E2E-01 transparent replay is still required_not_migrated.",
+            "The first hover after SIGKILL is observed here; transparent first-request replay is asserted by the dedicated E2E-01 gate, not by this stability budget.",
             "The second request must open a fresh engine and replay the unsaved overlay; a reused PID fails the gate.",
             "The steady RSS sample follows the hover burst and eight settle edits; the cap is applied to the post-warm-up steady baseline, not to the one-time cold working-set step.",
             "The cold-to-steady step is recorded as evidence so it is visible and cannot hide a later sustained increase.",

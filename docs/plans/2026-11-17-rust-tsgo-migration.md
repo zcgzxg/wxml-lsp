@@ -662,3 +662,29 @@ perf/stability/restart 基线）见
 
 边界：16 个 replacement 仍 `#[ignore]`；默认 `cargo test` 不运行它们，`gate_green`
 不是默认 CI 绿，也不是 `mandatory_green`；P6/P7、G5/G6/F3 未关闭，默认后端仍是 Node。
+
+### 12.9 2026-11-20 native gate 台账提升（P6-2 第四波）
+
+本节记录 `8ccebbf` 之后、尚未提交的 gate 台账切片；§12.6/§12.7/§12.8 的历史快照不变。
+本次未改生产代码、Node、默认后端、`Cargo.toml` 或任何 `#[ignore]` 属性，也未删除 gate。
+
+| 项 | 状态 |
+| --- | --- |
+| `gate_green` | 22：原 18 个 + `G-P5-E2E-01`、`G-P5-E2E-02`、`G-P5-E2E-05`、`G-P5-E2E-21` |
+| `required_not_migrated` | 1：`G-P5-E2E-20`（组件属性绑定诊断未实现） |
+| 合计 | 23（不增不减） |
+| 运行证据 | `22 passed / 0 failed / 36 filtered`（`--release`，含 PERF）；运行锚点 `8ccebbf`；57.88 s |
+| fail-closed RED | `0 passed / 22 failed / 36 filtered`（不带 `WXML_TEST_NATIVE=1`，22 个 gate 全部 panic，不是 skip） |
+| 触发命令 | `WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/home/zxg/code/rust/wxml-lsp/backends/typescript/node_modules/miniprogram-api-typings cargo test -p wxml-lsp --test native_parity --release native_engine_real -- --ignored --test-threads=1` |
+| 引擎身份 | TypeScript `7.1.0-beta`，AST v9，`lib/tsc` SHA-256 `a183b195…`，size 24,522,912 B |
+| 资产身份 | `engine/lib` 116 个 `lib*.d.ts`；`miniprogram-api-typings` 5.3.1（26 文件 / 20 个 `.d.ts`） |
+| 默认校验 | `cargo test -p wxml-lsp --test native_parity`：36 passed / 0 failed / 22 ignored |
+| case 计数 | 仍为 339 total / 36 `green` / 267 `planned` / 36 `retired-with-decision`；未新增 case 级 `green` |
+
+新增绿色 gate 的依据：`304aa20` 的 non-owner overlay replay（内容指纹 + 一次死会话重试）与
+Rust script symbols，`3220362` 的 event-handler hover，`4fd45bd` 的非字面量注册
+`Unsupported` 分类。E2E-21 的 `Partial`/`Unsupported` 在 LSP 上以唯一一条零宽状态
+warning 出现；gate 断言零 error + 对应 warning，不把两者混同。
+
+边界：22 个 replacement 仍 `#[ignore]`；默认 `cargo test` 不运行它们，`gate_green`
+不是默认 CI 绿，也不是 `mandatory_green`；P6/P7、G5/G6/F3 未关闭，默认后端仍是 Node。
