@@ -83,6 +83,7 @@ pub struct SnapshotChanges {
     open_projects: Vec<String>,
     close_projects: Vec<String>,
     file_system: Option<SnapshotFileSystem>,
+    prepare_auto_imports: Option<String>,
 }
 
 impl SnapshotChanges {
@@ -95,6 +96,7 @@ impl SnapshotChanges {
             open_projects: Vec::new(),
             close_projects: Vec::new(),
             file_system: None,
+            prepare_auto_imports: None,
         }
     }
 
@@ -133,6 +135,25 @@ impl SnapshotChanges {
         self
     }
 
+    /// Asks the engine to make auto-import indexes ready for one absolute file.
+    ///
+    /// `prepareAutoImports` is a top-level `CreateSnapshotParams` member, so
+    /// [`create_snapshot_params`] emits it at the top level and
+    /// [`update_snapshot_params`] emits it under `changes`. This is the only
+    /// API-level way to enable auto-import completion: an unprepared snapshot
+    /// rejects `includeSymbol:true` with an engine error.
+    #[must_use]
+    pub fn prepare_auto_imports(mut self, path: impl Into<String>) -> Self {
+        self.prepare_auto_imports = Some(path.into());
+        self
+    }
+
+    /// Returns the auto-import preparation path, when set.
+    #[must_use]
+    pub fn prepare_auto_imports_path(&self) -> Option<&str> {
+        self.prepare_auto_imports.as_deref()
+    }
+
     /// Returns the open files.
     #[must_use]
     pub fn open_files(&self) -> &[String] {
@@ -156,6 +177,9 @@ impl SnapshotChanges {
         insert_identifiers(&mut object, "closeProjects", &self.close_projects);
         if let Some(file_system) = &self.file_system {
             object.insert("fileSystem".to_owned(), file_system.to_value());
+        }
+        if let Some(path) = &self.prepare_auto_imports {
+            object.insert("prepareAutoImports".to_owned(), document_identifier(path));
         }
         Value::Object(object)
     }
@@ -228,13 +252,19 @@ pub fn node_params(snapshot: u64, project: &str, node: &str, position: u32) -> V
     })
 }
 
-/// Builds completion params with `includeSymbol: false`.
+/// Builds completion params with an explicit `includeSymbol` flag.
+///
+/// The pinned engine exposes no per-entry auto-import origin or import edit;
+/// `includeSymbol:true` only attaches symbol evidence and **requires** a
+/// snapshot created/updated with `prepareAutoImports`. Sending it on an
+/// unprepared snapshot is an engine error, so callers must prepare first.
 #[must_use]
 pub fn completion_params(
     snapshot: u64,
     project: &str,
     path: &str,
     position: u32,
+    include_symbol: bool,
     trigger: Option<&str>,
 ) -> Value {
     let mut object = Map::new();
@@ -242,7 +272,7 @@ pub fn completion_params(
     object.insert("project".to_owned(), json!(project));
     object.insert("file".to_owned(), document_identifier(path));
     object.insert("position".to_owned(), json!(position));
-    object.insert("includeSymbol".to_owned(), json!(false));
+    object.insert("includeSymbol".to_owned(), json!(include_symbol));
     if let Some(trigger) = trigger {
         object.insert("triggerCharacter".to_owned(), json!(trigger));
     }
@@ -494,10 +524,13 @@ pub struct RawCompletionLabelDetails {
 
 /// One completion entry with the fields the pinned v1 response exposes.
 ///
-/// The 7.1.0-beta artifact emits `name`, `kind` and `sortText`; the optional
-/// `detail` / `labelDetails` fields are tolerated if present but are not
-/// expected.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+/// The 7.1.0-beta artifact emits `name`, `kind`, `sortText` and, when
+/// `includeSymbol:true` was requested on a prepared snapshot, `symbol`. The
+/// optional `insertText` / `filterText` / `detail` / `labelDetails` members are
+/// tolerated when present. There is deliberately no `origin`, `source`,
+/// `data`, `documentation` or `textEdit` member: the pinned response has none,
+/// so an auto-import candidate cannot be identified or edited from this DTO.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawCompletionEntry {
     /// Display name.
@@ -508,6 +541,12 @@ pub struct RawCompletionEntry {
     /// Native sort text.
     #[serde(default)]
     pub sort_text: String,
+    /// Native insertion text; may use snippet syntax.
+    #[serde(default)]
+    pub insert_text: Option<String>,
+    /// Native filter text.
+    #[serde(default)]
+    pub filter_text: Option<String>,
     /// Native short detail (type/signature text) when a future artifact
     /// supplies it; 7.1.0-beta emits none.
     #[serde(default)]
@@ -515,6 +554,14 @@ pub struct RawCompletionEntry {
     /// Optional label details tolerated from a future artifact.
     #[serde(default)]
     pub label_details: Option<RawCompletionLabelDetails>,
+    /// Symbol evidence; only populated when the request set
+    /// `includeSymbol:true` on a snapshot prepared for auto-imports.
+    ///
+    /// This is not an auto-import origin: ordinary imported members carry a
+    /// symbol too. Handles and file names inside it are engine internals and
+    /// must never be published.
+    #[serde(default)]
+    pub symbol: Option<RawSymbol>,
 }
 
 /// One completion list.
@@ -589,6 +636,30 @@ mod tests {
     }
 
     #[test]
+    fn prepare_auto_imports_is_a_document_identifier_on_create_and_update() {
+        let changes = SnapshotChanges::new().prepare_auto_imports("/work/main.ts");
+        assert_eq!(changes.prepare_auto_imports_path(), Some("/work/main.ts"));
+
+        let create = create_snapshot_params(&changes);
+        assert_eq!(
+            create["prepareAutoImports"],
+            json!({"uri": "file:///work/main.ts"})
+        );
+        assert_eq!(create["prepareAutoImports"]["uri"], "file:///work/main.ts");
+
+        let update = update_snapshot_params(9, &changes);
+        assert_eq!(
+            update["changes"]["prepareAutoImports"],
+            json!({"uri": "file:///work/main.ts"})
+        );
+
+        // An unset path must not be sent as `null` or an empty object.
+        let plain = create_snapshot_params(&SnapshotChanges::new());
+        assert!(plain.get("prepareAutoImports").is_none());
+        assert!(SnapshotChanges::new().prepare_auto_imports_path().is_none());
+    }
+
+    #[test]
     fn query_params_use_integers_and_document_identifiers() {
         assert_eq!(
             file_params(1, "/dev/null/inferred", "/work/main.ts", Some(42)),
@@ -608,7 +679,7 @@ mod tests {
             })
         );
         assert_eq!(
-            completion_params(1, "p", "/work/main.ts", 3, Some(".")),
+            completion_params(1, "p", "/work/main.ts", 3, false, Some(".")),
             json!({
                 "snapshot": 1,
                 "project": "p",
@@ -617,6 +688,10 @@ mod tests {
                 "includeSymbol": false,
                 "triggerCharacter": ".",
             })
+        );
+        assert_eq!(
+            completion_params(1, "p", "/work/main.ts", 3, true, None)["includeSymbol"],
+            json!(true)
         );
     }
 
@@ -736,6 +811,55 @@ mod tests {
         );
         assert!(completions.entries[1].detail.is_none());
         assert!(completions.entries[1].label_details.is_none());
+    }
+
+    #[test]
+    fn parses_completion_symbol_and_insert_text_evidence() {
+        let completions: RawCompletionList = parse_response(json!({
+            "isIncomplete": false,
+            "entries": [
+                {
+                    "name": "User",
+                    "kind": 8,
+                    "sortText": "16",
+                    "insertText": "User",
+                    "filterText": "User",
+                    "detail": "interface User",
+                    "symbol": {
+                        "name": "User",
+                        "flags": 5_242_880,
+                        "declarations": ["22.262./work/model.ts"],
+                        "reference": {
+                            "id": 281_474_976_711_001_u64,
+                            "kind": 1,
+                            "project": "/work/tsconfig.json",
+                            "snapshot": 3,
+                        },
+                    },
+                },
+            ],
+        }))
+        .expect("completions");
+        let entry = &completions.entries[0];
+        assert_eq!(entry.insert_text.as_deref(), Some("User"));
+        assert_eq!(entry.filter_text.as_deref(), Some("User"));
+        let symbol = entry.symbol.as_ref().expect("symbol evidence");
+        assert_eq!(symbol.name, "User");
+        assert_eq!(symbol.flags, 5_242_880);
+        assert_eq!(symbol.declarations.len(), 1);
+    }
+
+    #[test]
+    fn an_entry_without_symbol_fields_keeps_them_absent() {
+        let completions: RawCompletionList = parse_response(json!({
+            "isIncomplete": false,
+            "entries": [{"name": "name", "kind": 5, "sortText": "11"}],
+        }))
+        .expect("completions");
+        let entry = &completions.entries[0];
+        assert!(entry.insert_text.is_none());
+        assert!(entry.filter_text.is_none());
+        assert!(entry.symbol.is_none());
     }
 
     #[test]

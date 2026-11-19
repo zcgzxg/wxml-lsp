@@ -1,27 +1,70 @@
 //! Completion query DTOs and native mapping.
 //!
 //! The pinned 7.1.0-beta API exposes one completion method,
-//! `getCompletionsAtPosition`. Its emitted entries carry only `name`, `kind`
-//! (an LSP `CompletionItemKind` number) and `sortText`; optional `detail` /
-//! `labelDetails` fields are tolerated when present in a future pinned
-//! artifact but are not expected from 7.1.0-beta. The API has no
-//! `getCompletionEntryDetails`, no per-entry documentation field and no
-//! display parts. Auto-import entries require `includeSymbol:true` plus a
-//! snapshot created with `prepareAutoImports`; this adapter creates snapshots
-//! without that parameter and does not request symbols. Non-empty results
-//! therefore stay `Partial` with typed
+//! `getCompletionsAtPosition`. Its emitted entries carry `name`, `kind` (an LSP
+//! `CompletionItemKind` number), `sortText`, optional `insertText` /
+//! `filterText` / `detail` / `labelDetails` and, when `includeSymbol:true` was
+//! requested on a **prepared** snapshot, a `symbol`.
+//!
+//! Auto-import entries need both a snapshot created (or updated) with
+//! `prepareAutoImports` and `includeSymbol:true`; an unprepared snapshot
+//! rejects `includeSymbol:true` with an engine error. The response still has no
+//! per-entry auto-import origin (`origin`/`source`/`data`/`isImportStatementCompletion`),
+//! no `textEdit`, no `additionalTextEdits`, no `documentation`/`displayParts`
+//! and no `getCompletionEntryDetails` method. A prepared query therefore stays
+//! `Partial` with [`CompletionGap::AutoImportOriginUnavailable`]: candidates are
+//! real engine entries, but none of them can be *marked* as an editable
+//! auto-import, and this mapper never synthesizes an import statement.
+//!
+//! Non-empty unprepared results stay `Partial` with
 //! [`CompletionGap::DocumentationUnavailable`] and
-//! [`CompletionGap::AutoImportsUnavailable`] gaps. A `null` response is a
-//! response gap and maps to an empty `Partial` result with
-//! [`CompletionGap::NoResponse`]; only an explicit empty list is a checked
-//! empty `Supported` answer. A transport or engine failure is propagated
-//! instead.
+//! [`CompletionGap::AutoImportsUnavailable`]. A `null` response is a response
+//! gap and maps to an empty `Partial` result with [`CompletionGap::NoResponse`];
+//! only an explicit empty list is a checked empty `Supported` answer. A
+//! transport or engine failure is propagated instead.
 
 use wxml_types::{CapabilityStatus, CompletionItemKind, MAX_COMPLETION_ITEMS};
 
 use crate::input::ProjectKey;
 use crate::native::strings::Utf16Position;
 use crate::native::wire::RawCompletionList;
+
+/// Whether the snapshot was prepared for auto-imports when the query ran.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum AutoImportContext {
+    /// Not prepared (or preparation failed), so no symbol evidence was
+    /// requested.
+    ///
+    /// Auto-import candidates may still be returned through the engine's
+    /// request-local lazy clone, but the pinned entry exposes no origin, so
+    /// they cannot be identified either way.
+    #[default]
+    Unavailable,
+    /// The snapshot was prepared for this file and `includeSymbol:true` was
+    /// requested.
+    ///
+    /// The pinned entry still has no auto-import origin, so the result reports
+    /// [`CompletionGap::AutoImportOriginUnavailable`] and no candidate becomes
+    /// an editable auto-import.
+    Prepared,
+}
+
+/// Options for one native completion request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CompletionQueryOptions {
+    /// Ask the engine to attach symbol evidence to entries.
+    ///
+    /// This is only safe on a snapshot prepared with `prepareAutoImports`; on
+    /// an unprepared snapshot the engine returns an error instead of a list.
+    pub include_symbol: bool,
+}
+
+impl CompletionQueryOptions {
+    /// Options that request symbol evidence from a prepared snapshot.
+    pub const SYMBOLS: Self = Self {
+        include_symbol: true,
+    };
+}
 
 /// Returns the shared C0 completion cap (`wxml_types::MAX_COMPLETION_ITEMS`).
 #[must_use]
@@ -42,10 +85,11 @@ pub struct CompletionQuery {
 
 /// A reason a native completion result is not complete.
 ///
-/// The first four variants describe the response itself. The last two are
-/// stable capability gaps of the pinned v1 completion path: the API has no
-/// per-entry documentation, and auto-imports need a snapshot created with
-/// `prepareAutoImports`.
+/// The first four variants describe the response itself. The remaining
+/// variants are stable capability gaps of the pinned v1 completion path: there
+/// is no per-entry documentation, an unprepared snapshot has no prepared
+/// auto-import index, a prepared entry still has no auto-import origin/import
+/// edit, and snippet insert text cannot be published as plain text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompletionGap {
     /// The engine answered `null` instead of a completion list, so the result
@@ -59,9 +103,16 @@ pub enum CompletionGap {
     UnknownKind,
     /// The pinned completion API exposes no per-entry documentation.
     DocumentationUnavailable,
-    /// Auto-import entries require `includeSymbol:true` and a snapshot created
-    /// with `prepareAutoImports`.
+    /// Auto-import entries require a snapshot prepared with `prepareAutoImports`
+    /// and `includeSymbol:true`.
     AutoImportsUnavailable,
+    /// The snapshot was prepared, but the pinned entry has no auto-import
+    /// origin or import edit, so no candidate can be marked as an editable
+    /// auto-import.
+    AutoImportOriginUnavailable,
+    /// A completion `insertText` uses snippet syntax; it is not published as
+    /// plain text and the entry falls back to its label.
+    InsertTextFormatUnknown,
 }
 
 impl CompletionGap {
@@ -81,8 +132,29 @@ impl CompletionGap {
             Self::AutoImportsUnavailable => {
                 "auto-import completion entries require a snapshot created with prepareAutoImports"
             }
+            Self::AutoImportOriginUnavailable => {
+                "the pinned completion entry exposes no auto-import origin or import edit, so an auto-import candidate cannot be marked as editable"
+            }
+            Self::InsertTextFormatUnknown => {
+                "a completion insertText uses snippet syntax and is published as plain label text"
+            }
         }
     }
+}
+
+/// Symbol evidence attached to one prepared completion entry.
+///
+/// This is identity/flags evidence only. The engine declaration handles and
+/// file descriptors are deliberately not carried: they contain absolute engine
+/// paths and are not an auto-import origin.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompletionSymbolEvidence {
+    /// Symbol name reported by the engine.
+    pub name: String,
+    /// Engine symbol flags.
+    pub flags: u64,
+    /// Number of declaration handles; the handles themselves are not kept.
+    pub declaration_count: usize,
 }
 
 /// One completion entry.
@@ -99,6 +171,17 @@ pub struct CompletionEntry {
     pub kind: CompletionItemKind,
     /// Native sort text.
     pub sort_text: String,
+    /// Native `insertText` when it is non-empty plain text.
+    ///
+    /// Snippet-shaped values are dropped (and reported as
+    /// [`CompletionGap::InsertTextFormatUnknown`]) instead of being inserted
+    /// literally.
+    pub insert_text: Option<String>,
+    /// Native `filterText` when present.
+    pub filter_text: Option<String>,
+    /// Symbol evidence, only when `includeSymbol:true` was requested on a
+    /// prepared snapshot.
+    pub symbol: Option<CompletionSymbolEvidence>,
 }
 
 /// Completion result.
@@ -121,17 +204,32 @@ pub struct CompletionResult {
     pub truncated: bool,
 }
 
-/// Maps one raw completion response.
+/// Maps one raw completion response without auto-import preparation.
 ///
 /// Native `null` is not a checked answer: it maps to an empty `Partial`
 /// result with [`CompletionGap::NoResponse`], never to a supported empty list.
 /// A list keeps the native order and `sortText`, maps the pinned LSP kind
 /// enum, and preserves native `detail` / `labelDetails.detail` when a future
-/// artifact emits them. The pinned API has no documentation and this path does
-/// not request auto-imports, so non-empty results stay `Partial` with explicit
+/// artifact emits them. Non-empty results stay `Partial` with explicit
 /// [`CompletionGap`]s.
 #[must_use]
 pub fn map_completions(raw: Option<&RawCompletionList>) -> CompletionResult {
+    map_completions_with(raw, AutoImportContext::Unavailable)
+}
+
+/// Maps one raw completion response with the auto-import context it was
+/// requested under.
+///
+/// The context only changes the *status gap*: a prepared snapshot replaces
+/// [`CompletionGap::AutoImportsUnavailable`] with
+/// [`CompletionGap::AutoImportOriginUnavailable`]. No entry is ever marked as
+/// an auto-import, and no import edit is invented, because the pinned entry has
+/// no origin and no `textEdit`/`data`/`additionalTextEdits`.
+#[must_use]
+pub fn map_completions_with(
+    raw: Option<&RawCompletionList>,
+    auto_imports: AutoImportContext,
+) -> CompletionResult {
     let Some(raw) = raw else {
         let gaps = vec![CompletionGap::NoResponse];
         return CompletionResult {
@@ -143,19 +241,44 @@ pub fn map_completions(raw: Option<&RawCompletionList>) -> CompletionResult {
     };
 
     let truncated = raw.entries.len() > MAX_COMPLETION_ITEMS;
+    let mut snippet_insert_text = false;
     let entries: Vec<CompletionEntry> = raw
         .entries
         .iter()
         .take(MAX_COMPLETION_ITEMS)
-        .map(|entry| CompletionEntry {
-            label: entry.name.clone(),
-            detail: entry
-                .detail
-                .clone()
-                .or_else(|| entry.label_details.as_ref()?.detail.clone()),
-            native_kind: entry.kind,
-            kind: map_kind(entry.kind).unwrap_or(CompletionItemKind::Value),
-            sort_text: entry.sort_text.clone(),
+        .map(|entry| {
+            let insert_text = entry.insert_text.as_deref().and_then(|text| {
+                if plain_insert_text(text) {
+                    Some(text.to_owned())
+                } else {
+                    snippet_insert_text = true;
+                    None
+                }
+            });
+            CompletionEntry {
+                label: entry.name.clone(),
+                detail: entry
+                    .detail
+                    .clone()
+                    .or_else(|| entry.label_details.as_ref()?.detail.clone()),
+                native_kind: entry.kind,
+                kind: map_kind(entry.kind).unwrap_or(CompletionItemKind::Value),
+                sort_text: entry.sort_text.clone(),
+                insert_text,
+                filter_text: entry
+                    .filter_text
+                    .as_deref()
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned),
+                symbol: entry
+                    .symbol
+                    .as_ref()
+                    .map(|symbol| CompletionSymbolEvidence {
+                        name: symbol.name.clone(),
+                        flags: symbol.flags,
+                        declaration_count: symbol.declarations.len(),
+                    }),
+            }
         })
         .collect();
 
@@ -172,9 +295,15 @@ pub fn map_completions(raw: Option<&RawCompletionList>) -> CompletionResult {
     {
         gaps.push(CompletionGap::UnknownKind);
     }
+    if snippet_insert_text {
+        gaps.push(CompletionGap::InsertTextFormatUnknown);
+    }
     if !entries.is_empty() {
         gaps.push(CompletionGap::DocumentationUnavailable);
-        gaps.push(CompletionGap::AutoImportsUnavailable);
+        gaps.push(match auto_imports {
+            AutoImportContext::Unavailable => CompletionGap::AutoImportsUnavailable,
+            AutoImportContext::Prepared => CompletionGap::AutoImportOriginUnavailable,
+        });
     }
     let status = status_from(&gaps);
 
@@ -184,6 +313,14 @@ pub fn map_completions(raw: Option<&RawCompletionList>) -> CompletionResult {
         gaps,
         truncated,
     }
+}
+
+/// Returns whether `insertText` is literal text this mapper may publish.
+///
+/// Snippet-shaped values (`$1`, `${1:name}`) are rejected so they are never
+/// inserted literally; the adapter falls back to the entry label instead.
+fn plain_insert_text(text: &str) -> bool {
+    !text.is_empty() && !text.contains('$')
 }
 
 /// Maps a pinned LSP `CompletionItemKind` number to the C0 presentation kind.
@@ -237,8 +374,11 @@ mod tests {
             name: name.to_owned(),
             kind,
             sort_text: "11".to_owned(),
+            insert_text: None,
+            filter_text: None,
             detail: None,
             label_details: None,
+            symbol: None,
         }
     }
 
@@ -399,5 +539,123 @@ mod tests {
             ]
         );
         assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    }
+
+    #[test]
+    fn a_prepared_list_reports_origin_unavailable_instead_of_auto_imports_unavailable() {
+        let raw = list(vec![entry("User", 7)], false);
+        let result = map_completions_with(Some(&raw), AutoImportContext::Prepared);
+        assert_eq!(
+            result.gaps,
+            vec![
+                CompletionGap::DocumentationUnavailable,
+                CompletionGap::AutoImportOriginUnavailable,
+            ]
+        );
+        assert!(!result.gaps.contains(&CompletionGap::AutoImportsUnavailable));
+        let reason = result.status.reason().expect("partial reason");
+        assert!(reason.contains("auto-import origin"), "{reason}");
+        assert!(reason.contains("documentation"), "{reason}");
+        // No per-entry auto-import marker exists in the DTO surface.
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].label, "User");
+    }
+
+    #[test]
+    fn a_prepared_checked_empty_list_is_still_supported() {
+        let raw = list(Vec::new(), false);
+        let result = map_completions_with(Some(&raw), AutoImportContext::Prepared);
+        assert_eq!(result.entries, Vec::new());
+        assert_eq!(result.gaps, Vec::new());
+        assert_eq!(result.status, CapabilityStatus::Supported);
+    }
+
+    #[test]
+    fn a_prepared_null_response_is_still_no_response() {
+        let result = map_completions_with(None, AutoImportContext::Prepared);
+        assert_eq!(result.gaps, vec![CompletionGap::NoResponse]);
+        assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    }
+
+    #[test]
+    fn completion_maps_plain_insert_and_filter_text_but_rejects_snippets() {
+        let plain = RawCompletionEntry {
+            insert_text: Some("User".to_owned()),
+            filter_text: Some("User".to_owned()),
+            ..entry("User", 7)
+        };
+        let snippet_text = String::from_utf8(b"User${1:name}".to_vec()).expect("ascii snippet");
+        let snippet = RawCompletionEntry {
+            insert_text: Some(snippet_text),
+            filter_text: Some("User".to_owned()),
+            ..entry("User", 7)
+        };
+        let raw = list(vec![plain, snippet], false);
+        let result = map_completions(Some(&raw));
+        assert_eq!(result.entries[0].insert_text.as_deref(), Some("User"));
+        assert_eq!(result.entries[0].filter_text.as_deref(), Some("User"));
+        assert_eq!(result.entries[1].insert_text, None);
+        assert_eq!(result.entries[1].filter_text.as_deref(), Some("User"));
+        assert_eq!(
+            result.gaps,
+            vec![
+                CompletionGap::InsertTextFormatUnknown,
+                CompletionGap::DocumentationUnavailable,
+                CompletionGap::AutoImportsUnavailable,
+            ]
+        );
+    }
+
+    #[test]
+    fn completion_symbol_evidence_keeps_no_engine_paths() {
+        use crate::native::wire::RawSymbolReference;
+
+        let with_symbol = RawCompletionEntry {
+            symbol: Some(crate::native::wire::RawSymbol {
+                name: "User".to_owned(),
+                flags: 5_242_880,
+                declarations: vec![
+                    "22.262./work/model.ts".to_owned(),
+                    "23.262./work/other.ts".to_owned(),
+                ],
+                value_declaration: Some("22.262./work/model.ts".to_owned()),
+                reference: Some(RawSymbolReference {
+                    id: 7,
+                    kind: 1,
+                    file: None,
+                    snapshot: Some(2),
+                    project: Some("/work/tsconfig.json".to_owned()),
+                }),
+            }),
+            ..entry("User", 7)
+        };
+        let raw = list(vec![with_symbol], false);
+        let result = map_completions_with(Some(&raw), AutoImportContext::Prepared);
+        let symbol = result.entries[0].symbol.as_ref().expect("symbol evidence");
+        assert_eq!(symbol.name, "User");
+        assert_eq!(symbol.flags, 5_242_880);
+        assert_eq!(symbol.declaration_count, 2);
+        let debug = format!("{symbol:?}");
+        assert!(
+            !debug.contains("/work") && !debug.contains("22.262"),
+            "symbol evidence must not retain engine paths or handles: {debug}"
+        );
+    }
+
+    #[test]
+    fn an_entry_is_never_marked_as_an_auto_import() {
+        // The DTO has no auto-import field, so this test freezes the shape:
+        // only the result-level gap may mention auto-imports.
+        let raw = list(vec![entry("User", 7)], false);
+        let result = map_completions_with(Some(&raw), AutoImportContext::Prepared);
+        assert_eq!(result.entries[0].label, "User");
+        assert_eq!(result.entries[0].insert_text, None);
+        assert_eq!(result.entries[0].filter_text, None);
+        assert!(result.entries[0].symbol.is_none());
+        assert!(
+            result
+                .gaps
+                .contains(&CompletionGap::AutoImportOriginUnavailable)
+        );
     }
 }

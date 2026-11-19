@@ -37,6 +37,16 @@
 //! `getSymbolAtPosition`, a same-snapshot Identifier node,
 //! `getReferencedSymbolsForNode` and declaration-handle AST decoding without
 //! publishing a raw handle as a location.
+//!
+//! Auto-import completion needs a snapshot prepared with `prepareAutoImports`
+//! before `getCompletionsAtPosition` may set `includeSymbol:true` (the engine
+//! rejects the flag on an unprepared snapshot).
+//! [`NativeSession::open_project_with_auto_imports`] prepares at creation and
+//! [`NativeSession::prepare_auto_imports`] rotates the current snapshot on
+//! demand in the same process; the prepared file follows later
+//! [`NativeSession::update_project`] snapshots. The pinned response still has no
+//! per-entry auto-import origin or import edit, so prepared results remain
+//! `Partial`.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
@@ -81,6 +91,7 @@ use crate::native::wire::{
     update_snapshot_params,
 };
 use crate::native::{NativeError, UnavailableReason};
+use crate::query::completion::CompletionQueryOptions;
 use crate::query::documentation::map_documentation;
 use crate::query::hover::{
     DeclarationInsert, HoverDeclaration, HoverEvidence, HoverGap, HoverSymbolFacts,
@@ -119,6 +130,38 @@ pub struct NativeEpoch {
     pub snapshot: EngineSnapshotId,
     /// Rust host snapshot revision.
     pub revision: SnapshotRevision,
+}
+
+/// Outcome of enabling auto-imports for one file.
+///
+/// The pinned 7.1.0-beta engine only exposes `prepareAutoImports` at snapshot
+/// creation/update time; there is no per-request switch. [`Self::Prepared`] is
+/// therefore the precondition for sending `includeSymbol:true`, which the
+/// engine rejects on an unprepared snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoImportPreparation {
+    /// The current snapshot is prepared for this file.
+    Prepared,
+    /// The engine does not expose or rejected preparation.
+    ///
+    /// Completion may continue without `includeSymbol`, but must report the
+    /// reason and must never claim auto-imports are available.
+    Unavailable {
+        /// Bounded reason without paths or engine text.
+        reason: &'static str,
+    },
+    /// The session does not implement preparation (fakes, decorators).
+    ///
+    /// The adapter keeps the historical status and does not treat this as a
+    /// failed request.
+    NotSupported,
+}
+
+/// Cached proof that one engine snapshot is prepared for one absolute file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AutoImportCache {
+    path: String,
+    snapshot: EngineSnapshotId,
 }
 
 /// Raw result of a combined type query.
@@ -364,6 +407,7 @@ pub struct NativeSession {
     initialize: Option<InitializeResult>,
     options: SessionOptions,
     ledger: SnapshotLedger,
+    auto_imports: Option<AutoImportCache>,
 }
 
 impl NativeSession {
@@ -402,6 +446,7 @@ impl NativeSession {
             initialize: None,
             options,
             ledger: SnapshotLedger::default(),
+            auto_imports: None,
         };
 
         if let Err(error) = session.handshake() {
@@ -666,6 +711,7 @@ impl NativeSession {
                 &project,
                 probe_path,
                 probe_offset,
+                false,
                 None,
             ),
             deadline,
@@ -681,6 +727,35 @@ impl NativeSession {
     /// Rejects an already-open snapshot, invalid paths, or a protocol/session
     /// failure. The engine snapshot id and Rust revision are stored together.
     pub fn open_project(&mut self, input: &AnalysisInput) -> Result<(), NativeError> {
+        self.open_project_inner(input, None)
+    }
+
+    /// Creates the snapshot for `input` already prepared for auto-imports.
+    ///
+    /// `prepare_path` is a project-relative source path. It must exist in the
+    /// input; the resolved absolute path is sent as the top-level
+    /// `prepareAutoImports` member, which is the only way the pinned engine
+    /// enables auto-import completion. The cached preparation follows later
+    /// [`Self::update_project`] calls so auto-imports do not require a fresh
+    /// prepare for every snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Same as [`Self::open_project`], plus an invalid or out-of-project
+    /// `prepare_path`.
+    pub fn open_project_with_auto_imports(
+        &mut self,
+        input: &AnalysisInput,
+        prepare_path: &str,
+    ) -> Result<(), NativeError> {
+        self.open_project_inner(input, Some(prepare_path))
+    }
+
+    fn open_project_inner(
+        &mut self,
+        input: &AnalysisInput,
+        prepare_path: Option<&str>,
+    ) -> Result<(), NativeError> {
         if self.epoch.is_some() {
             return Err(NativeError::InvalidParams {
                 reason: "a snapshot is already open",
@@ -689,8 +764,11 @@ impl NativeSession {
 
         let vfs = VirtualFileSystem::from_analysis_input(input).map_err(|error| map_vfs(&error))?;
         self.check_snapshot_budget(&vfs)?;
+        let prepare = prepare_path
+            .map(|path| Self::prepare_absolute_path(&vfs, path))
+            .transpose()?;
         let type_environment = input.type_environment_identity();
-        let changes = Self::create_changes(&vfs);
+        let changes = Self::create_changes(&vfs, prepare.as_deref());
         let tsconfig = vfs.tsconfig_path().to_owned();
         // Install the VFS before createSnapshot: the engine may resolve
         // modules while applying the request, and callbacks must see the same
@@ -737,6 +815,10 @@ impl NativeSession {
         self.project_key = Some(input.project().clone());
         self.project_root = Some(input.root().as_str().to_owned());
         self.type_environment = type_environment;
+        self.auto_imports = prepare.map(|path| AutoImportCache {
+            path,
+            snapshot: snapshot_id,
+        });
         self.dispatch.clear_abandoned();
         if let Err(error) = self.enforce_live_cap() {
             self.epoch = None;
@@ -744,6 +826,7 @@ impl NativeSession {
             self.project_key = None;
             self.project_root = None;
             self.type_environment = None;
+            self.auto_imports = None;
             self.vfs = None;
             return Err(error);
         }
@@ -789,20 +872,16 @@ impl NativeSession {
 
         let vfs = VirtualFileSystem::from_analysis_input(input).map_err(|error| map_vfs(&error))?;
         self.check_snapshot_budget(&vfs)?;
+        // Keep an enabled auto-import preparation alive across snapshots by
+        // resending it in `changes`; drop it when the file left the project.
+        let prepare = self
+            .auto_imports
+            .as_ref()
+            .map(|cache| cache.path.clone())
+            .filter(|path| vfs.contains(path));
         let old = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
-        let old_sources: Vec<String> = old.source_paths().map(str::to_owned).collect();
-        let new_sources: Vec<String> = vfs.source_paths().map(str::to_owned).collect();
         let tsconfig = vfs.tsconfig_path().to_owned();
-        let mut changes = SnapshotChanges::new()
-            .close_project(old.tsconfig_path())
-            .open_project(vfs.tsconfig_path())
-            .with_file_system(SnapshotFileSystem::full(vfs.snapshot_files()));
-        for path in old_sources {
-            changes = changes.close_file(path);
-        }
-        for path in new_sources {
-            changes = changes.open_file(path);
-        }
+        let changes = update_changes(old, &vfs, prepare.as_deref());
 
         // The engine applies the new full filesystem during this request;
         // answer callbacks from the new table and restore the old one on
@@ -853,6 +932,10 @@ impl NativeSession {
         });
         self.project_id = Some(project);
         self.type_environment = type_environment;
+        self.auto_imports = prepare.map(|path| AutoImportCache {
+            path,
+            snapshot: snapshot_id,
+        });
         self.dispatch.clear_abandoned();
 
         let release = self.release_snapshot(epoch.snapshot, Deadline::release());
@@ -887,6 +970,7 @@ impl NativeSession {
         self.project_root = None;
         self.type_environment = None;
         self.vfs = None;
+        self.auto_imports = None;
         self.dispatch.clear_abandoned();
         first_error.map_or(Ok(()), Err)
     }
@@ -938,6 +1022,7 @@ impl NativeSession {
         self.epoch = None;
         self.project_id = None;
         self.type_environment = None;
+        self.auto_imports = None;
         result
     }
 
@@ -1405,10 +1490,10 @@ impl NativeSession {
             }
             if let Some(cause) = &drops.reference {
                 gaps.push(match cause {
-                    DroppedHandleCause::OutOfSnapshot(path) => HoverGap::Unsupported {
-                        reason: format!(
-                            "the symbol documentation reference `{path}` is outside the current snapshot"
-                        ),
+                    DroppedHandleCause::OutOfSnapshot(_) => HoverGap::Unsupported {
+                        reason:
+                            "the symbol documentation reference is outside the current snapshot"
+                                .to_owned(),
                     },
                     DroppedHandleCause::Unknown => HoverGap::Unsupported {
                         reason: "the symbol documentation reference could not be bound".to_owned(),
@@ -2004,6 +2089,109 @@ impl NativeSession {
         parse_response(value)
     }
 
+    /// Returns whether the current snapshot is prepared for `path`.
+    #[must_use]
+    pub fn is_prepared_for_auto_imports(&self, path: &str) -> bool {
+        let (Some(epoch), Some(vfs), Some(cache)) =
+            (self.epoch, self.vfs.as_ref(), self.auto_imports.as_ref())
+        else {
+            return false;
+        };
+        cache.snapshot == epoch.snapshot
+            && vfs
+                .absolute_path(path)
+                .is_ok_and(|absolute| absolute == cache.path)
+    }
+
+    /// Enables auto-import completion for one project-relative file.
+    ///
+    /// A cached `(engine snapshot, absolute path)` pair is reused, so a
+    /// keystroke never re-prepares the same snapshot. Otherwise a prepare-only
+    /// `updateSnapshot` (`changes.prepareAutoImports`) rotates the engine
+    /// snapshot in the same process, releases the previous snapshot and
+    /// enforces the live-snapshot cap. The Rust revision does not change.
+    ///
+    /// Engine-level refusals (unsupported method, rejected prepare path) are
+    /// returned as [`AutoImportPreparation::Unavailable`] so completion can
+    /// stay functional without symbols; transport/protocol failures propagate.
+    ///
+    /// # Errors
+    ///
+    /// Requires an open snapshot and a file inside it. A malformed snapshot
+    /// response, timeout, poisoned session or missing snapshot propagates.
+    pub fn prepare_auto_imports(
+        &mut self,
+        path: &str,
+    ) -> Result<AutoImportPreparation, NativeError> {
+        let (epoch, _project, absolute) = self.file_context(path)?;
+        if self
+            .auto_imports
+            .as_ref()
+            .is_some_and(|cache| cache.snapshot == epoch.snapshot && cache.path == absolute)
+        {
+            return Ok(AutoImportPreparation::Prepared);
+        }
+        let tsconfig = self
+            .vfs
+            .as_ref()
+            .ok_or(NativeError::NoSnapshot)?
+            .tsconfig_path()
+            .to_owned();
+        let changes = SnapshotChanges::new().prepare_auto_imports(absolute.clone());
+        let value = match self.call(
+            NativeMethod::UpdateSnapshot,
+            update_snapshot_params(epoch.snapshot.get(), &changes),
+            Deadline::snapshot(self.limits),
+            None,
+        ) {
+            Ok(value) => value,
+            Err(NativeError::Unsupported { .. }) => {
+                return Ok(AutoImportPreparation::Unavailable {
+                    reason: "the pinned engine has no auto-import preparation",
+                });
+            }
+            Err(NativeError::EngineError { .. }) => {
+                return Ok(AutoImportPreparation::Unavailable {
+                    reason: "the pinned engine rejected auto-import preparation for this file",
+                });
+            }
+            Err(error) => return Err(error),
+        };
+        let snapshot = match parse_snapshot(&value) {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.poison_session();
+                return Err(error);
+            }
+        };
+        let snapshot_id = EngineSnapshotId::new(snapshot.snapshot());
+        if snapshot_id == epoch.snapshot {
+            self.poison_session();
+            return Err(NativeError::Protocol(
+                "prepareAutoImports reused the current snapshot id".to_owned(),
+            ));
+        }
+        self.ledger.track(snapshot_id);
+        if let Some(project) = select_project(&snapshot, &tsconfig) {
+            self.project_id = Some(project);
+        }
+        self.epoch = Some(NativeEpoch {
+            generation: self.generation,
+            snapshot: snapshot_id,
+            revision: epoch.revision,
+        });
+        self.auto_imports = Some(AutoImportCache {
+            path: absolute,
+            snapshot: snapshot_id,
+        });
+        self.dispatch.clear_abandoned();
+        let release = self.release_snapshot(epoch.snapshot, Deadline::release());
+        let cap = self.enforce_live_cap();
+        release?;
+        cap?;
+        Ok(AutoImportPreparation::Prepared)
+    }
+
     /// Returns completions at a UTF-16 position with `includeSymbol: false`.
     ///
     /// # Errors
@@ -2013,6 +2201,27 @@ impl NativeSession {
         &mut self,
         path: &str,
         position: Utf16Position,
+    ) -> Result<Option<RawCompletionList>, NativeError> {
+        self.completions_with_options(path, position, CompletionQueryOptions::default())
+    }
+
+    /// Returns completions at a UTF-16 position with explicit request options.
+    ///
+    /// `include_symbol:true` must only be used after
+    /// [`Self::prepare_auto_imports`] returned
+    /// [`AutoImportPreparation::Prepared`]; the engine rejects it on an
+    /// unprepared snapshot. The response still carries no auto-import origin or
+    /// import edit.
+    ///
+    /// # Errors
+    ///
+    /// Requires an open snapshot and a valid position, and propagates engine
+    /// or transport failures.
+    pub fn completions_with_options(
+        &mut self,
+        path: &str,
+        position: Utf16Position,
+        options: CompletionQueryOptions,
     ) -> Result<Option<RawCompletionList>, NativeError> {
         let (epoch, project, absolute) = self.file_context(path)?;
         let offset = self.position_offset(&absolute, position)?;
@@ -2024,6 +2233,7 @@ impl NativeSession {
                 &project,
                 &absolute,
                 offset,
+                options.include_symbol,
                 trigger.as_deref(),
             ),
             Deadline::request(self.limits),
@@ -2123,14 +2333,28 @@ impl NativeSession {
         }
     }
 
-    fn create_changes(vfs: &VirtualFileSystem) -> SnapshotChanges {
+    fn create_changes(vfs: &VirtualFileSystem, prepare: Option<&str>) -> SnapshotChanges {
         let mut changes = SnapshotChanges::new()
             .open_project(vfs.tsconfig_path())
             .with_file_system(SnapshotFileSystem::full(vfs.snapshot_files()));
+        if let Some(path) = prepare {
+            changes = changes.prepare_auto_imports(path.to_owned());
+        }
         for path in vfs.source_paths() {
             changes = changes.open_file(path);
         }
         changes
+    }
+
+    /// Resolves a project-relative auto-import path to a snapshot file.
+    fn prepare_absolute_path(vfs: &VirtualFileSystem, path: &str) -> Result<String, NativeError> {
+        let absolute = vfs.absolute_path(path).map_err(|error| map_vfs(&error))?;
+        if vfs.file(&absolute).is_none() {
+            return Err(NativeError::InvalidParams {
+                reason: "auto-import path is not in the open snapshot",
+            });
+        }
+        Ok(absolute)
     }
 
     fn file_context(&self, path: &str) -> Result<(NativeEpoch, String, String), NativeError> {
@@ -2364,6 +2588,29 @@ fn check_request_budget(vfs: &VirtualFileSystem, limit: usize) -> Result<(), Nat
     } else {
         Ok(())
     }
+}
+
+/// Builds the `updateSnapshot` changes, including an enabled auto-import
+/// preparation and the required close/reopen pairs.
+fn update_changes(
+    old: &VirtualFileSystem,
+    new: &VirtualFileSystem,
+    prepare: Option<&str>,
+) -> SnapshotChanges {
+    let mut changes = SnapshotChanges::new()
+        .close_project(old.tsconfig_path())
+        .open_project(new.tsconfig_path())
+        .with_file_system(SnapshotFileSystem::full(new.snapshot_files()));
+    if let Some(path) = prepare {
+        changes = changes.prepare_auto_imports(path.to_owned());
+    }
+    for path in old.source_paths() {
+        changes = changes.close_file(path);
+    }
+    for path in new.source_paths() {
+        changes = changes.open_file(path);
+    }
+    changes
 }
 
 /// Selects the configured project (tsconfig path) or the first project.

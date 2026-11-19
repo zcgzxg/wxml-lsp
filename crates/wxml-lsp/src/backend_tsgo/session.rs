@@ -7,9 +7,12 @@
 use wxml_backend_tsgo::input::AnalysisInput;
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::document_symbol::DocumentSymbolsEvidence;
-use wxml_backend_tsgo::native::session::{NativeSession, SessionOptions, TypeQuery};
+use wxml_backend_tsgo::native::session::{
+    AutoImportPreparation, NativeSession, SessionOptions, TypeQuery,
+};
 use wxml_backend_tsgo::native::strings::Utf16Position;
 use wxml_backend_tsgo::native::wire::{RawCompletionList, RawDiagnostic};
+use wxml_backend_tsgo::query::completion::CompletionQueryOptions;
 use wxml_backend_tsgo::query::definition::{
     DefinitionResult as NativeDefinitionResult, map_definition,
 };
@@ -106,6 +109,31 @@ pub(crate) trait QuerySession: Send {
         path: &str,
         position: Utf16Position,
     ) -> Result<Option<RawCompletionList>, NativeError>;
+
+    /// Returns native completions with explicit request options.
+    ///
+    /// The default ignores the options so fakes and decorators that do not
+    /// model `includeSymbol` keep their historical behavior. Production
+    /// sessions override it and forward to
+    /// [`NativeSession::completions_with_options`].
+    fn completions_with_options(
+        &mut self,
+        path: &str,
+        position: Utf16Position,
+        _options: CompletionQueryOptions,
+    ) -> Result<Option<RawCompletionList>, NativeError> {
+        self.completions(path, position)
+    }
+
+    /// Enables auto-import preparation for one project-relative script path.
+    ///
+    /// The default reports [`AutoImportPreparation::NotSupported`] so a fake or
+    /// decorator that does not model native snapshots does not change the
+    /// historical completion status. [`LiveQuerySession`] forwards to
+    /// [`NativeSession::prepare_auto_imports`].
+    fn prepare_auto_imports(&mut self, _path: &str) -> Result<AutoImportPreparation, NativeError> {
+        Ok(AutoImportPreparation::NotSupported)
+    }
 
     /// Returns decoded definition targets at one UTF-16 position.
     fn definition(
@@ -221,6 +249,20 @@ impl QuerySession for LiveQuerySession {
         position: Utf16Position,
     ) -> Result<Option<RawCompletionList>, NativeError> {
         self.session.completions(path, position)
+    }
+
+    fn completions_with_options(
+        &mut self,
+        path: &str,
+        position: Utf16Position,
+        options: CompletionQueryOptions,
+    ) -> Result<Option<RawCompletionList>, NativeError> {
+        self.session
+            .completions_with_options(path, position, options)
+    }
+
+    fn prepare_auto_imports(&mut self, path: &str) -> Result<AutoImportPreparation, NativeError> {
+        self.session.prepare_auto_imports(path)
     }
 
     fn definition(

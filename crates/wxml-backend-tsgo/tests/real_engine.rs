@@ -21,9 +21,11 @@ use wxml_backend_tsgo::input::{
 };
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::handles::NodeHandle;
-use wxml_backend_tsgo::native::session::{NativeSession, SessionOptions};
+use wxml_backend_tsgo::native::session::{AutoImportPreparation, NativeSession, SessionOptions};
 use wxml_backend_tsgo::native::strings::{Utf16Position, position_to_offset};
-use wxml_backend_tsgo::query::completion::map_completions;
+use wxml_backend_tsgo::query::completion::{
+    AutoImportContext, CompletionGap, CompletionQueryOptions, map_completions, map_completions_with,
+};
 use wxml_backend_tsgo::query::definition::map_definition;
 use wxml_backend_tsgo::query::diagnostics::{DiagnosticSeverity, map_diagnostics};
 use wxml_backend_tsgo::query::documentation::map_documentation;
@@ -644,6 +646,228 @@ fn real_engine_definition_decodes_declaration_identifier_ranges() {
                 ..usize::try_from(interface_end).expect("end")
         ),
         Some("User")
+    );
+
+    session.release().expect("release snapshot");
+    session.shutdown().expect("shutdown");
+}
+
+/// Completion fixture with an unimported `User` from a second module.
+const AUTO_IMPORT_MAIN: &str = "const value: Us\n";
+const AUTO_IMPORT_MODEL: &str = "export interface User {\n    name: string;\n}\n";
+/// Zero-based line/UTF-16 column directly after `Us`.
+const AUTO_IMPORT_POSITION: Utf16Position = position(0, 15);
+
+fn auto_import_input(root: &str, revision: u64) -> AnalysisInput {
+    let files = vec![
+        SourceFile::new("main.ts", AUTO_IMPORT_MAIN, DocumentRevision::new(1)).expect("main.ts"),
+        SourceFile::new("model.ts", AUTO_IMPORT_MODEL, DocumentRevision::new(1)).expect("model.ts"),
+    ];
+    AnalysisInput::new(
+        ProjectKey::new("real-engine-auto-import"),
+        ProjectRoot::new(root).expect("project root"),
+        SnapshotRevision::new(revision),
+        files,
+    )
+    .expect("analysis input")
+}
+
+fn real_engine_bin() -> Option<std::path::PathBuf> {
+    let Ok(bin) = std::env::var("TSGO_BIN") else {
+        let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
+        assert!(
+            !required,
+            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1; \
+             set it to the pinned 7.1.0-beta lib/tsc"
+        );
+        eprintln!(
+            "real-engine auto-import gate skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc \
+             (or WXML_REQUIRE_REAL_ENGINE=1 to make this a hard gate)"
+        );
+        return None;
+    };
+    let executable = std::path::PathBuf::from(bin);
+    assert!(
+        executable.is_file(),
+        "TSGO_BIN does not point at a file: {}",
+        executable.display()
+    );
+    Some(executable)
+}
+
+fn auto_import_cleanup(tag: &str) -> (std::path::PathBuf, Cleanup) {
+    let sandbox = std::env::temp_dir().join(unique(tag));
+    std::fs::create_dir_all(&sandbox).expect("sandbox");
+    let guard = Cleanup(sandbox.clone());
+    (sandbox, guard)
+}
+
+#[test]
+fn real_engine_completion_auto_import_needs_a_prepared_snapshot() {
+    let Some(executable) = real_engine_bin() else {
+        return;
+    };
+    let (sandbox, _sandbox_guard) = auto_import_cleanup("auto-import-sandbox");
+    let project_root = format!("/tmp/opencode/{}", unique("auto-import-project"));
+
+    let mut session =
+        NativeSession::start(SessionOptions::new(executable, sandbox)).expect("start real engine");
+    let first = auto_import_input(&project_root, 1);
+    session
+        .open_project_with_auto_imports(&first, "main.ts")
+        .expect("open prepared project");
+    assert!(session.is_prepared_for_auto_imports("main.ts"));
+    assert_eq!(session.live_snapshot_count(), 1);
+
+    let raw = session
+        .completions_with_options(
+            "main.ts",
+            AUTO_IMPORT_POSITION,
+            CompletionQueryOptions::SYMBOLS,
+        )
+        .expect("prepared symbol completion");
+    let raw = raw.expect("prepared completion must return a list");
+    let names: Vec<&str> = raw
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    eprintln!("prepared completion entries: {names:?}");
+    let user = raw
+        .entries
+        .iter()
+        .find(|entry| entry.name == "User")
+        .expect("the prepared snapshot must offer the unimported User");
+    eprintln!(
+        "User entry: insertText={:?} filterText={:?} detail={:?} symbol={}",
+        user.insert_text,
+        user.filter_text,
+        user.detail,
+        user.symbol.is_some()
+    );
+    // API fact: `includeSymbol:true` is accepted on a prepared snapshot, but
+    // the pinned engine does not attach a symbol to this auto-import candidate.
+    // Symbol evidence is optional per entry and must never be treated as an
+    // auto-import origin.
+    let mapped = map_completions_with(Some(&raw), AutoImportContext::Prepared);
+    assert!(
+        mapped
+            .gaps
+            .contains(&CompletionGap::AutoImportOriginUnavailable),
+        "a prepared list must report the origin gap: {:?}",
+        mapped.gaps
+    );
+    assert!(!mapped.gaps.contains(&CompletionGap::AutoImportsUnavailable));
+    let user_entry = mapped
+        .entries
+        .iter()
+        .find(|entry| entry.label == "User")
+        .expect("mapped User entry");
+    if let Some(symbol) = &user_entry.symbol {
+        let debug = format!("{symbol:?}");
+        assert!(
+            !debug.contains("/tmp/opencode") && !debug.contains("model.ts"),
+            "symbol evidence must not publish engine paths: {debug}"
+        );
+    }
+
+    // A second preparation for the same file/snapshot is a cache hit.
+    let prepared_snapshot = session.epoch().expect("epoch").snapshot;
+    assert_eq!(
+        session.prepare_auto_imports("main.ts").expect("cache hit"),
+        AutoImportPreparation::Prepared
+    );
+    assert_eq!(session.epoch().expect("epoch").snapshot, prepared_snapshot);
+    assert_eq!(session.live_snapshot_count(), 1);
+
+    // The preparation is carried into later snapshots without a new prepare.
+    let second = auto_import_input(&project_root, 2);
+    session.update_project(&second).expect("update project");
+    assert!(session.is_prepared_for_auto_imports("main.ts"));
+    assert_eq!(session.live_snapshot_count(), 1);
+    let updated = session
+        .completions_with_options(
+            "main.ts",
+            AUTO_IMPORT_POSITION,
+            CompletionQueryOptions::SYMBOLS,
+        )
+        .expect("prepared completion after update")
+        .expect("completion list after update");
+    assert!(
+        updated.entries.iter().any(|entry| entry.name == "User"),
+        "the prepared index must survive update_project: {:?}",
+        updated
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>()
+    );
+
+    session.release().expect("release snapshot");
+    session.shutdown().expect("shutdown");
+}
+
+#[test]
+fn real_engine_unprepared_symbol_completion_fails_closed() {
+    let Some(executable) = real_engine_bin() else {
+        return;
+    };
+    let (sandbox, _sandbox_guard) = auto_import_cleanup("auto-import-unprepared-sandbox");
+    let project_root = format!("/tmp/opencode/{}", unique("auto-import-unprepared-project"));
+
+    let mut session =
+        NativeSession::start(SessionOptions::new(executable, sandbox)).expect("start real engine");
+    let input = auto_import_input(&project_root, 1);
+    session
+        .open_project(&input)
+        .expect("open unprepared project");
+    assert!(!session.is_prepared_for_auto_imports("main.ts"));
+
+    let result = session.completions_with_options(
+        "main.ts",
+        AUTO_IMPORT_POSITION,
+        CompletionQueryOptions::SYMBOLS,
+    );
+    match result {
+        Err(error) => eprintln!("unprepared includeSymbol error: {error}"),
+        Ok(list) => panic!(
+            "an unprepared includeSymbol:true query must fail closed, got {:?}",
+            list.map(|list| {
+                list.entries
+                    .into_iter()
+                    .map(|entry| entry.name)
+                    .collect::<Vec<_>>()
+            })
+        ),
+    }
+
+    // Prepare-only rotation keeps the process and releases the old snapshot.
+    let before = session.epoch().expect("epoch").snapshot;
+    assert_eq!(
+        session.prepare_auto_imports("main.ts").expect("prepare"),
+        AutoImportPreparation::Prepared
+    );
+    let after = session.epoch().expect("epoch").snapshot;
+    assert_ne!(before, after, "prepare must rotate the engine snapshot");
+    assert_eq!(session.live_snapshot_count(), 1);
+
+    // The prepare-only `updateSnapshot` keeps the same project/file set: the
+    // auto-import candidate must now be reachable with symbols requested.
+    let raw = session
+        .completions_with_options(
+            "main.ts",
+            AUTO_IMPORT_POSITION,
+            CompletionQueryOptions::SYMBOLS,
+        )
+        .expect("completion after on-demand prepare")
+        .expect("completion list after on-demand prepare");
+    assert!(
+        raw.entries.iter().any(|entry| entry.name == "User"),
+        "the on-demand prepare must expose the unimported User: {:?}",
+        raw.entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect::<Vec<_>>()
     );
 
     session.release().expect("release snapshot");

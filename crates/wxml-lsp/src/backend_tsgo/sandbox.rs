@@ -32,9 +32,10 @@ use wxml_backend_tsgo::input::AnalysisInput;
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::UnavailableReason;
 use wxml_backend_tsgo::native::document_symbol::DocumentSymbolsEvidence;
-use wxml_backend_tsgo::native::session::{SessionOptions, TypeQuery};
+use wxml_backend_tsgo::native::session::{AutoImportPreparation, SessionOptions, TypeQuery};
 use wxml_backend_tsgo::native::strings::Utf16Position;
 use wxml_backend_tsgo::native::wire::{RawCompletionList, RawDiagnostic};
+use wxml_backend_tsgo::query::completion::CompletionQueryOptions;
 use wxml_backend_tsgo::query::definition::DefinitionResult as NativeDefinitionResult;
 use wxml_backend_tsgo::query::hover::HoverEvidence;
 
@@ -397,6 +398,19 @@ impl QuerySession for SandboxedSession {
         self.inner.completions(path, position)
     }
 
+    fn completions_with_options(
+        &mut self,
+        path: &str,
+        position: Utf16Position,
+        options: CompletionQueryOptions,
+    ) -> Result<Option<RawCompletionList>, NativeError> {
+        self.inner.completions_with_options(path, position, options)
+    }
+
+    fn prepare_auto_imports(&mut self, path: &str) -> Result<AutoImportPreparation, NativeError> {
+        self.inner.prepare_auto_imports(path)
+    }
+
     fn definition(
         &mut self,
         path: &str,
@@ -682,7 +696,7 @@ mod tests {
         assert_eq!(
             evidence.status,
             CapabilityStatus::Partial {
-                reason: "declaration `lib.d.ts` is outside the project snapshot".to_owned(),
+                reason: "a declaration is outside the project snapshot".to_owned(),
             }
         );
     }
