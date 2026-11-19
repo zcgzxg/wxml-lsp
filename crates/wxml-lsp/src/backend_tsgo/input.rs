@@ -36,10 +36,36 @@ use crate::backend_tsgo::environment::{Environment, degradation_reason};
 use crate::backend_tsgo::mapping::{FragmentMap, ShadowLayout};
 use crate::project_host::{HostError, PreparedView, ProjectHost};
 
+/// Why a standalone script view could not be prepared.
+///
+/// The distinction is user-visible: an unsupported document keeps the
+/// `Unsupported` capability semantics (it is not a project script), while a
+/// host that cannot produce the project facts at all is `Unavailable`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ScriptViewError {
+    /// The document is not an analyzable project script.
+    Unsupported(String),
+    /// The host could not provide the project script facts.
+    Unavailable(String),
+}
+
 /// Supplies the effective project view for one template snapshot.
 pub(crate) trait ViewProvider: Send + Sync {
     /// Prepares the view or returns a path-free host error.
     fn prepare(&self, snapshot: &SourceSnapshot) -> Result<PreparedView, HostError>;
+
+    /// Prepares the project fact set for one standalone `.ts`/`.js` document.
+    ///
+    /// The returned view carries the project's effective script files and
+    /// compiler options. Template fragments, template syntax diagnostics and
+    /// `status_hint` are template-specific and must not be merged into a
+    /// script result. The default rejects hosts that cannot answer for a
+    /// standalone script.
+    fn prepare_script(&self, _file: &FileId) -> Result<PreparedView, ScriptViewError> {
+        Err(ScriptViewError::Unsupported(
+            "script views are not provided by this host".to_owned(),
+        ))
+    }
 }
 
 /// Prepares one host view, mapping host failures to a typed backend error.
@@ -77,6 +103,67 @@ impl std::fmt::Debug for HostViewProvider {
 impl ViewProvider for HostViewProvider {
     fn prepare(&self, snapshot: &SourceSnapshot) -> Result<PreparedView, HostError> {
         self.host.analysis(snapshot)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one linear host template selection and snapshot pipeline"
+    )]
+    fn prepare_script(&self, file: &FileId) -> Result<PreparedView, ScriptViewError> {
+        if self.host.file_text(file).is_none() {
+            return Err(ScriptViewError::Unsupported(
+                "the script is not part of the open project".to_owned(),
+            ));
+        }
+        let template = match self.host.view_for_script(file) {
+            Ok(target) => target.wxml,
+            Err(_) => self
+                .host
+                .view_templates(file)
+                .and_then(|templates| {
+                    templates
+                        .templates
+                        .iter()
+                        .find_map(|template| self.host.view_for_file(&template.file).ok())
+                        .map(|target| target.wxml)
+                })
+                .ok_or_else(|| {
+                    ScriptViewError::Unsupported(
+                        "the project has no page or component template".to_owned(),
+                    )
+                })?,
+        };
+        let template_file = self.host.file_id(&template).map_err(|_| {
+            ScriptViewError::Unsupported(
+                "the project template has no stable file identity".to_owned(),
+            )
+        })?;
+        let snapshot = if let Some(snapshot) = self.host.source(&template_file) {
+            snapshot
+        } else {
+            // The template is only used to obtain the project-wide script file
+            // set and compiler options; a closed template contributes no
+            // fragment data to a script result.
+            let text = self.host.file_text(&template_file).ok_or_else(|| {
+                ScriptViewError::Unsupported("the project template could not be read".to_owned())
+            })?;
+            let revision = self.host.file_revision(&template_file).unwrap_or(0);
+            Arc::new(SourceSnapshot::new(
+                template_file,
+                SourceRevision::new(revision),
+                SnapshotId::new(revision),
+                text,
+            ))
+        };
+        self.host.analysis(&snapshot).map_err(|error| match error {
+            HostError::Unsupported { reason } => ScriptViewError::Unsupported(reason.to_owned()),
+            HostError::NoProject | HostError::InvalidUri => ScriptViewError::Unsupported(
+                "the script is not part of a discovered project view".to_owned(),
+            ),
+            HostError::ProjectOpen | HostError::Configuration(_) | HostError::Read => {
+                ScriptViewError::Unavailable("the project view is unavailable".to_owned())
+            }
+        })
     }
 }
 
@@ -186,6 +273,155 @@ impl RequestPlan {
             .iter()
             .find(|file| file.path() == path)
             .map(SourceFile::text)
+    }
+}
+
+impl OpenPlan for RequestPlan {
+    fn plan_identity(&self) -> PlanIdentity {
+        PlanIdentity::Template(self.identity.clone())
+    }
+
+    fn input(&self, revision: SnapshotRevision) -> Result<AnalysisInput, BackendError> {
+        Self::input(self, revision)
+    }
+
+    fn degradation(&self) -> Option<String> {
+        self.degradation.clone()
+    }
+
+    fn environment_degradation(&self) -> Option<String> {
+        self.environment_degradation.clone()
+    }
+
+    fn environment_identity(&self) -> Option<&TypeEnvironmentIdentity> {
+        self.identity.environment.as_ref()
+    }
+}
+
+/// Identity of one open native input, regardless of the request subject.
+///
+/// Template and script requests share the adapter's single session but must
+/// never be treated as the same snapshot.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PlanIdentity {
+    /// A WXML template plus its in-place shadow.
+    Template(RequestIdentity),
+    /// A standalone project script without a shadow.
+    Script(ScriptIdentity),
+}
+
+impl PlanIdentity {
+    /// Returns the configured type environment of this input.
+    pub(crate) const fn environment(&self) -> Option<&TypeEnvironmentIdentity> {
+        match self {
+            Self::Template(identity) => identity.environment.as_ref(),
+            Self::Script(identity) => identity.environment.as_ref(),
+        }
+    }
+}
+
+/// Identity of one standalone script input snapshot.
+///
+/// This deliberately has no fragment or template field: a script result must
+/// not depend on the template that happened to provide the project file list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ScriptIdentity {
+    /// Project revision supplied with the request.
+    pub(crate) project_revision: ProjectRevision,
+    /// View revision supplied with the request.
+    pub(crate) view_revision: ViewRevision,
+    /// Script file identity.
+    pub(crate) source: FileId,
+    /// Script content revision.
+    pub(crate) source_revision: SourceRevision,
+    /// Script snapshot id.
+    pub(crate) source_snapshot: SnapshotId,
+    /// Project-relative script path.
+    pub(crate) script_path: String,
+    /// Effective script byte length.
+    pub(crate) script_bytes: usize,
+    /// Stable hash of the project file paths and revisions sent to the engine.
+    pub(crate) files_hash: u64,
+    /// Normalized project root.
+    pub(crate) project_root: String,
+    /// Configured type environment, if the adapter is trusted.
+    pub(crate) environment: Option<TypeEnvironmentIdentity>,
+}
+
+/// Operations the adapter's session owner needs from one input plan.
+pub(crate) trait OpenPlan {
+    /// Returns the identity used to decide whether an update is needed.
+    fn plan_identity(&self) -> PlanIdentity;
+    /// Builds the bounded native input at `revision`.
+    fn input(&self, revision: SnapshotRevision) -> Result<AnalysisInput, BackendError>;
+    /// Host degradation that applies to this request.
+    fn degradation(&self) -> Option<String>;
+    /// Path-free type-environment degradation for typed requests.
+    fn environment_degradation(&self) -> Option<String>;
+    /// Configured type environment of this input.
+    fn environment_identity(&self) -> Option<&TypeEnvironmentIdentity>;
+}
+
+/// One standalone script request plan before a native revision is assigned.
+#[derive(Debug)]
+pub(crate) struct ScriptRequestPlan {
+    /// Input identity used for cache comparison.
+    pub(crate) identity: ScriptIdentity,
+    project: ProjectKey,
+    root: ProjectRoot,
+    files: Vec<SourceFile>,
+    environment: Environment,
+    compiler_options: CompilerOptions,
+    /// Project-relative path of the requested script.
+    pub(crate) path: String,
+    /// Stable degradation reason from host preparation, if any.
+    pub(crate) degradation: Option<String>,
+    /// Path-free type-environment degradation computed before any session.
+    pub(crate) environment_degradation: Option<String>,
+}
+
+impl ScriptRequestPlan {
+    /// Builds the bounded native input at `revision`.
+    pub(crate) fn input(&self, revision: SnapshotRevision) -> Result<AnalysisInput, BackendError> {
+        let built = match &self.environment {
+            Environment::Trusted(assets) => AnalysisInput::with_environment(
+                self.project.clone(),
+                self.root.clone(),
+                revision,
+                self.files.clone(),
+                self.compiler_options.clone(),
+                Arc::clone(assets),
+            ),
+            Environment::Legacy => AnalysisInput::new(
+                self.project.clone(),
+                self.root.clone(),
+                revision,
+                self.files.clone(),
+            ),
+        };
+        built.map_err(|error| input_error(&error))
+    }
+}
+
+impl OpenPlan for ScriptRequestPlan {
+    fn plan_identity(&self) -> PlanIdentity {
+        PlanIdentity::Script(self.identity.clone())
+    }
+
+    fn input(&self, revision: SnapshotRevision) -> Result<AnalysisInput, BackendError> {
+        Self::input(self, revision)
+    }
+
+    fn degradation(&self) -> Option<String> {
+        self.degradation.clone()
+    }
+
+    fn environment_degradation(&self) -> Option<String> {
+        self.environment_degradation.clone()
+    }
+
+    fn environment_identity(&self) -> Option<&TypeEnvironmentIdentity> {
+        self.identity.environment.as_ref()
     }
 }
 
@@ -356,18 +592,8 @@ pub(crate) fn build_request_plan(
     let project = ProjectKey::new(context.file().project().as_str());
     let (compiler_options, environment_identity) =
         environment_options(environment, &view.compiler_options)?;
-    let environment_degradation = environment.assets().and_then(|assets| {
-        let absolute = files
-            .iter()
-            .map(|file| format!("{}/{}", root.as_str(), file.path()))
-            .collect::<Vec<_>>();
-        degradation_reason(&environment_degradations_for(
-            root.as_str(),
-            &absolute,
-            &compiler_options,
-            assets,
-        ))
-    });
+    let environment_degradation =
+        environment_degradation(environment, &root, &files, &compiler_options);
     let identity = RequestIdentity {
         project_revision: context.project_revision(),
         view_revision: context.view_revision(),
@@ -401,6 +627,196 @@ pub(crate) fn build_request_plan(
         degradation,
         environment_degradation,
     })
+}
+
+/// Builds one standalone script plan without a template shadow.
+///
+/// The target text is the request snapshot's text, not the host's prepared
+/// copy, so the engine checks exactly the document the client sees. Other
+/// project files keep their effective prepared text. Template fragments and
+/// template syntax diagnostics are intentionally absent, and the template's
+/// degradation hint is not merged.
+#[allow(clippy::too_many_lines, reason = "one linear script input pipeline")]
+pub(crate) fn build_script_request_plan(
+    provider: &dyn ViewProvider,
+    context: &RequestContext,
+    environment: &Environment,
+) -> Result<ScriptRequestPlan, ScriptViewError> {
+    let snapshot = context.source();
+    let path = context.file().path().to_owned();
+    if Language::from_path(&path).is_none() {
+        return Err(ScriptViewError::Unsupported(
+            "only TypeScript and JavaScript project scripts are analyzed".to_owned(),
+        ));
+    }
+    let view = provider.prepare_script(context.file())?;
+    let mut degradation = None;
+    if !view.source_complete {
+        merge_reason(
+            &mut degradation,
+            Some("the prepared project source list is incomplete".to_owned()),
+        );
+    }
+    if view.files.is_empty() {
+        return Err(ScriptViewError::Unavailable(
+            "the project has no analyzable script sources".to_owned(),
+        ));
+    }
+
+    let mut files = Vec::with_capacity(view.files.len() + 1);
+    let mut target_found = false;
+    for prepared in view.files.iter() {
+        let file_path = prepared.path.as_str();
+        if Language::from_path(file_path).is_none() {
+            merge_reason(
+                &mut degradation,
+                Some(format!(
+                    "script `{file_path}` was omitted because its language is not supported"
+                )),
+            );
+            continue;
+        }
+        let target_file = file_path == path;
+        let text = if target_file {
+            target_found = true;
+            snapshot.text().to_owned()
+        } else {
+            prepared.text.to_string()
+        };
+        let revision = if target_file {
+            snapshot.revision().get()
+        } else {
+            prepared.source_revision
+        };
+        match SourceFile::new(file_path, text, DocumentRevision::new(revision)) {
+            Ok(file) => files.push(file),
+            Err(error) => {
+                if target_file {
+                    return Err(ScriptViewError::Unavailable(
+                        "the requested script is not representable by the native input".to_owned(),
+                    ));
+                }
+                merge_reason(
+                    &mut degradation,
+                    Some(format!("script `{file_path}` was omitted: {error}")),
+                );
+            }
+        }
+    }
+
+    if !target_found {
+        if view.source_complete {
+            return Err(ScriptViewError::Unavailable(
+                "the requested script is missing from the prepared project sources".to_owned(),
+            ));
+        }
+        // The host reported an incomplete list, so the target may simply have
+        // been dropped by a budget. The request snapshot is authoritative and
+        // is added explicitly; the incomplete list stays a Partial reason.
+        let target = SourceFile::new(
+            path.clone(),
+            snapshot.text().to_owned(),
+            DocumentRevision::new(snapshot.revision().get()),
+        )
+        .map_err(|_| {
+            ScriptViewError::Unavailable(
+                "the requested script is not representable by the native input".to_owned(),
+            )
+        })?;
+        files.push(target);
+        merge_reason(
+            &mut degradation,
+            Some(
+                "the requested script was missing from an incomplete project source list"
+                    .to_owned(),
+            ),
+        );
+    }
+
+    let root = ProjectRoot::new(view.project_root.as_os_str().to_str().ok_or_else(|| {
+        ScriptViewError::Unavailable("the project root is not valid UTF-8".to_owned())
+    })?)
+    .map_err(|_| {
+        ScriptViewError::Unavailable(
+            "the project root is not supported by the native input".to_owned(),
+        )
+    })?;
+    let project = ProjectKey::new(context.file().project().as_str());
+    let (compiler_options, environment_identity) =
+        environment_options(environment, &view.compiler_options).map_err(|_| {
+            ScriptViewError::Unavailable(
+                "project compiler options are not supported by the native input".to_owned(),
+            )
+        })?;
+    let environment_degradation =
+        environment_degradation(environment, &root, &files, &compiler_options);
+    let identity = ScriptIdentity {
+        project_revision: context.project_revision(),
+        view_revision: context.view_revision(),
+        source: context.file().clone(),
+        source_revision: snapshot.revision(),
+        source_snapshot: snapshot.snapshot(),
+        script_path: path.clone(),
+        script_bytes: snapshot.text().len(),
+        files_hash: input_files_hash(&files),
+        project_root: root.as_str().to_owned(),
+        environment: environment_identity,
+    };
+    Ok(ScriptRequestPlan {
+        identity,
+        project,
+        root,
+        files,
+        environment: environment.clone(),
+        compiler_options,
+        path,
+        degradation,
+        environment_degradation,
+    })
+}
+
+/// Computes the path-free type-environment degradation for one input file set.
+fn environment_degradation(
+    environment: &Environment,
+    root: &ProjectRoot,
+    files: &[SourceFile],
+    compiler_options: &CompilerOptions,
+) -> Option<String> {
+    environment.assets().and_then(|assets| {
+        let absolute = files
+            .iter()
+            .map(|file| format!("{}/{}", root.as_str(), file.path()))
+            .collect::<Vec<_>>();
+        degradation_reason(&environment_degradations_for(
+            root.as_str(),
+            &absolute,
+            compiler_options,
+            assets,
+        ))
+    })
+}
+
+/// Hashes the sorted `(path, revision)` pairs of one input file set.
+fn input_files_hash(files: &[SourceFile]) -> u64 {
+    const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut entries = files
+        .iter()
+        .map(|file| (file.path(), file.revision().get()))
+        .collect::<Vec<_>>();
+    entries.sort_unstable();
+    let mut hash = FNV_OFFSET_BASIS;
+    for (path, revision) in entries {
+        for byte in path.as_bytes().iter().copied().chain([0xff]) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+        for byte in revision.to_le_bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    }
+    hash
 }
 
 /// Fragments that can be mounted, plus counts of the two rejection reasons.

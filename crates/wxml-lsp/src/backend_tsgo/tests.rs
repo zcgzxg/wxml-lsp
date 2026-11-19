@@ -9,6 +9,7 @@
     clippy::panic,
     clippy::unwrap_used,
     clippy::assert_is_empty,
+    clippy::significant_drop_tightening,
     clippy::too_many_lines
 )]
 
@@ -192,6 +193,13 @@ impl ViewProvider for FakeViews {
     fn prepare(&self, _snapshot: &SourceSnapshot) -> Result<PreparedView, HostError> {
         Ok(self.view.clone())
     }
+
+    fn prepare_script(
+        &self,
+        _file: &FileId,
+    ) -> Result<PreparedView, super::input::ScriptViewError> {
+        Ok(self.view.clone())
+    }
 }
 
 struct FailingViews;
@@ -294,6 +302,7 @@ struct FakeDiagnostic {
     code: i64,
     category: i64,
     message: &'static str,
+    file_name: Option<&'static str>,
 }
 
 #[derive(Clone, Debug)]
@@ -436,6 +445,7 @@ struct FakeBehavior {
     definition: FakeDefinitionOutcome,
     document_symbols: FakeDocumentSymbolOutcome,
     update_failure: Option<FakeFailure>,
+    start_failure: Option<FakeFailure>,
     type_gate: Option<Arc<SlowGate>>,
     definition_gate: Option<Arc<SlowGate>>,
 }
@@ -453,6 +463,7 @@ impl Default for FakeBehavior {
             definition: FakeDefinitionOutcome::CheckedEmpty,
             document_symbols: FakeDocumentSymbolOutcome::CheckedEmpty,
             update_failure: None,
+            start_failure: None,
             type_gate: None,
             definition_gate: None,
         }
@@ -482,6 +493,8 @@ struct FakeLog {
     shutdowns: usize,
     semantic_calls: usize,
     syntactic_calls: usize,
+    semantic_paths: Vec<String>,
+    syntactic_paths: Vec<String>,
     type_calls: Vec<(String, Utf16Position)>,
     hover_evidence_calls: Vec<(String, Utf16Position)>,
     hover_documentation_calls: usize,
@@ -516,6 +529,9 @@ impl FakeFactory {
 impl super::session::SessionFactory for FakeFactory {
     fn start(&self) -> Result<Box<dyn QuerySession>, NativeError> {
         self.log.lock().expect("log").starts += 1;
+        if let Some(failure) = &self.behavior.start_failure {
+            return Err(failure.native());
+        }
         Ok(Box::new(FakeSession {
             behavior: self.behavior.clone(),
             log: Arc::clone(&self.log),
@@ -630,6 +646,7 @@ impl FakeSession {
                         Some(RawDiagnostic {
                             code: spec.code,
                             category: spec.category,
+                            file_name: spec.file_name.map(str::to_owned),
                             pos: Some(i64::from(start_units)),
                             end: Some(i64::from(end_units)),
                             start_position: Some(RawPosition {
@@ -672,12 +689,20 @@ impl QuerySession for FakeSession {
     }
 
     fn semantic_diagnostics(&mut self, path: &str) -> Result<Vec<RawDiagnostic>, NativeError> {
-        self.log.lock().expect("log").semantic_calls += 1;
+        {
+            let mut log = self.log.lock().expect("log");
+            log.semantic_calls += 1;
+            log.semantic_paths.push(path.to_owned());
+        }
         self.raw_diagnostics(path, &self.behavior.semantic)
     }
 
     fn syntactic_diagnostics(&mut self, path: &str) -> Result<Vec<RawDiagnostic>, NativeError> {
-        self.log.lock().expect("log").syntactic_calls += 1;
+        {
+            let mut log = self.log.lock().expect("log");
+            log.syntactic_calls += 1;
+            log.syntactic_paths.push(path.to_owned());
+        }
         self.raw_diagnostics(path, &self.behavior.syntactic)
     }
 
@@ -950,6 +975,22 @@ fn context_with_epoch(
         )),
     )
     .expect("context")
+}
+
+fn script_context(adapter: &TsgoBackendAdapter, path: &str, text: &str) -> RequestContext {
+    let file = FileId::new(project(), path).expect("script file");
+    RequestContext::new(
+        ProjectRevision::new(project(), 1),
+        ViewRevision::new(1),
+        adapter.epoch(),
+        Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(2),
+            text,
+        )),
+    )
+    .expect("script context")
 }
 
 fn offset_of(wxml: &str, needle: &str) -> u32 {
@@ -1481,12 +1522,14 @@ fn diagnostics_map_semantic_and_syntactic_ranges() {
             code: 2339,
             category: 1,
             message: "Property 'name' does not exist.",
+            file_name: None,
         }]),
         syntactic: FakeDiagnosticOutcome::Diagnostics(vec![FakeDiagnostic {
             needle: "user.name",
             code: 1109,
             category: 1,
             message: "syntax",
+            file_name: None,
         }]),
         ..FakeBehavior::default()
     };
@@ -1584,6 +1627,7 @@ fn a_generated_only_diagnostic_range_is_partial_and_dropped() {
             code: 1000,
             category: 1,
             message: "generated probe error",
+            file_name: None,
         }]),
         ..FakeBehavior::default()
     };
@@ -3701,13 +3745,14 @@ fn an_unknown_file_path_is_a_typed_error_not_a_clean_list() {
 }
 
 #[test]
-fn a_script_owned_diagnostic_is_dropped_from_a_template_result() {
+fn a_script_owned_diagnostic_is_excluded_and_marks_the_template_partial() {
     let behavior = FakeBehavior {
         semantic: FakeDiagnosticOutcome::Diagnostics(vec![FakeDiagnostic {
             needle: "data: { user",
             code: 999,
             category: 1,
             message: "script error",
+            file_name: None,
         }]),
         ..FakeBehavior::default()
     };
@@ -3721,7 +3766,376 @@ fn a_script_owned_diagnostic_is_dropped_from_a_template_result() {
         })
         .expect("diagnostics");
     assert_eq!(result.diagnostics, Vec::new());
+    let CapabilityStatus::Partial { reason } = result.status else {
+        panic!("script-owned diagnostics must not leave a clean Supported template");
+    };
+    assert!(reason.contains("script code"), "{reason}");
+}
+
+#[test]
+fn a_diagnostic_for_another_file_is_not_published_as_a_template_diagnostic() {
+    let behavior = FakeBehavior {
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![FakeDiagnostic {
+            needle: "user.name",
+            code: 2304,
+            category: 1,
+            message: "external declaration error",
+            file_name: Some("/work/demo/node_modules/typings/index.d.ts"),
+        }]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, WXML),
+        })
+        .expect("diagnostics");
+    assert_eq!(result.diagnostics, Vec::new());
+    let CapabilityStatus::Partial { reason } = result.status else {
+        panic!("external-file diagnostics must degrade the template");
+    };
+    assert!(reason.contains("other files"), "{reason}");
+    assert!(!reason.contains('/'), "reason leaked a path: {reason}");
+}
+
+#[test]
+fn script_diagnostics_publish_the_script_itself_and_ignore_template_facts() {
+    const SCRIPT_ERROR: &str =
+        "const x: string = 1;\nPage({ data: { user: { name: \"Ada\" } } });\n";
+    let mut view = prepared_view(WXML, SCRIPT_ERROR, "user.name");
+    view.syntax_diagnostics = vec![syntax_diagnostic(WXML, "view", "template syntax")];
+    view.status_hint = Some(CapabilityStatus::Partial {
+        reason: "template-only hint".to_owned(),
+    });
+    let behavior = FakeBehavior {
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![FakeDiagnostic {
+            needle: "x: string",
+            code: 2322,
+            category: 1,
+            message: "Type 'number' is not assignable to type 'string'.",
+            file_name: Some("/work/demo/pages/index/index.ts"),
+        }]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: script_context(&adapter, SCRIPT_PATH, SCRIPT_ERROR),
+        })
+        .expect("script diagnostics");
     assert_eq!(result.status, CapabilityStatus::Supported);
+    assert_eq!(result.diagnostics.len(), 1);
+    let diagnostic = &result.diagnostics[0];
+    let expected = offset_of(SCRIPT_ERROR, "x: string");
+    assert_eq!(diagnostic.range.start(), expected);
+    assert_eq!(
+        diagnostic.range.end(),
+        expected + u32::try_from("x: string".len()).expect("range length")
+    );
+    assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+    assert_eq!(diagnostic.code.as_deref(), Some("2322"));
+    assert_eq!(
+        diagnostic.message,
+        "Type 'number' is not assignable to type 'string'."
+    );
+    assert!(
+        !result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == "template syntax")
+    );
+    assert!(
+        !result
+            .status
+            .reason()
+            .is_some_and(|reason| reason.contains("template-only")),
+        "template degradation must not leak into a script result: {:?}",
+        result.status
+    );
+
+    let log = log.lock().expect("log");
+    assert_eq!(log.starts, 1);
+    assert_eq!(log.opens, 1);
+    assert_eq!(log.semantic_paths, vec![SCRIPT_PATH.to_owned()]);
+    assert_eq!(log.syntactic_paths, vec![SCRIPT_PATH.to_owned()]);
+    let input = log.opened_inputs.first().expect("opened input");
+    let file = input.file(SCRIPT_PATH).expect("script in input");
+    assert_eq!(file.text(), SCRIPT_ERROR);
+    assert!(
+        !file.text().contains("__wxml_check_0"),
+        "script diagnostics must not send the template shadow"
+    );
+}
+
+#[test]
+fn script_diagnostics_map_utf16_positions_to_script_bytes() {
+    const SCRIPT_UNICODE: &str = "// 😀 中文\nconst 名字: string = 1;\n";
+    let behavior = FakeBehavior {
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![FakeDiagnostic {
+            needle: "名字: string",
+            code: 2322,
+            category: 1,
+            message: "unicode type error",
+            file_name: Some("/work/demo/pages/index/index.ts"),
+        }]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(
+            WXML,
+            SCRIPT_UNICODE,
+            "user.name",
+        ))),
+        behavior,
+    );
+    let result = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: script_context(&adapter, SCRIPT_PATH, SCRIPT_UNICODE),
+        })
+        .expect("script diagnostics");
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    let expected = u32::try_from(SCRIPT_UNICODE.find("名字").expect("name token")).expect("offset");
+    assert_eq!(result.diagnostics[0].range.start(), expected);
+    assert_eq!(
+        result.diagnostics[0].range.end(),
+        expected + u32::try_from("名字: string".len()).expect("length")
+    );
+}
+
+#[test]
+fn script_diagnostics_exclude_other_file_diagnostics() {
+    let behavior = FakeBehavior {
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![
+            FakeDiagnostic {
+                needle: "Page",
+                code: 2322,
+                category: 1,
+                message: "requested file error",
+                file_name: Some("/work/demo/pages/index/index.ts"),
+            },
+            FakeDiagnostic {
+                needle: "data: { user",
+                code: 2304,
+                category: 1,
+                message: "external declaration error",
+                file_name: Some("/work/demo/node_modules/typings/index.d.ts"),
+            },
+        ]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let result = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: script_context(&adapter, SCRIPT_PATH, SCRIPT),
+        })
+        .expect("script diagnostics");
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].code.as_deref(), Some("2322"));
+    let CapabilityStatus::Partial { reason } = result.status else {
+        panic!("external diagnostics must degrade the script result");
+    };
+    assert!(reason.contains("other files"), "{reason}");
+    assert!(!reason.contains('/'), "reason leaked a path: {reason}");
+}
+
+#[test]
+fn script_diagnostics_reject_non_script_documents_without_opening_a_session() {
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        FakeBehavior::default(),
+    );
+    let result = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: context(&adapter, WXML),
+        })
+        .expect("script diagnostics");
+    assert_eq!(result.diagnostics, Vec::new());
+    let CapabilityStatus::Unsupported { reason } = result.status else {
+        panic!("a template document must not be checked as a script");
+    };
+    assert!(reason.contains("TypeScript"), "{reason}");
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn script_and_template_diagnostics_share_one_session_without_mixing_inputs() {
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        FakeBehavior::default(),
+    );
+    let template = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, WXML),
+        })
+        .expect("template diagnostics");
+    assert_eq!(template.status, CapabilityStatus::Supported);
+    let script = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: script_context(&adapter, SCRIPT_PATH, SCRIPT),
+        })
+        .expect("script diagnostics");
+    assert_eq!(script.status, CapabilityStatus::Supported);
+
+    {
+        let log = log.lock().expect("log");
+        assert_eq!(log.starts, 1);
+        assert_eq!(log.opens, 1);
+        assert_eq!(log.updates, 1);
+        let input = log.updated_inputs.last().expect("script update");
+        assert_eq!(input.file(SCRIPT_PATH).expect("script file").text(), SCRIPT);
+        assert!(
+            !input
+                .file(SCRIPT_PATH)
+                .expect("script file")
+                .text()
+                .contains("__wxml_check_0")
+        );
+    }
+
+    let _ = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: script_context(&adapter, SCRIPT_PATH, SCRIPT),
+        })
+        .expect("cached script diagnostics");
+    {
+        let log = log.lock().expect("log");
+        assert_eq!(
+            log.updates, 1,
+            "an identical script plan must reuse the snapshot"
+        );
+    }
+
+    let _ = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, WXML),
+        })
+        .expect("template diagnostics again");
+    {
+        let log = log.lock().expect("log");
+        assert_eq!(log.updates, 2);
+        let input = log.updated_inputs.last().expect("template update");
+        assert!(
+            input
+                .file(SCRIPT_PATH)
+                .expect("shadow script")
+                .text()
+                .contains("__wxml_check_0"),
+            "a template request must restore the shadow input"
+        );
+    }
+}
+
+#[test]
+fn script_diagnostics_report_a_non_project_script_as_unsupported() {
+    let (adapter, log) = adapter_with(Arc::new(FailingViews), FakeBehavior::default());
+    let result = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: script_context(&adapter, SCRIPT_PATH, SCRIPT),
+        })
+        .expect("script diagnostics");
+    assert_eq!(result.diagnostics, Vec::new());
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Unsupported { .. }
+    ));
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn script_diagnostics_fail_closed_when_the_engine_is_missing() {
+    let behavior = FakeBehavior {
+        start_failure: Some(FakeFailure::Exited),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let result = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: script_context(&adapter, SCRIPT_PATH, SCRIPT),
+        })
+        .expect("script diagnostics must not return Err");
+    assert_eq!(result.diagnostics, Vec::new());
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Unavailable { .. }
+    ));
+    assert_eq!(log.lock().expect("log").starts, 1);
+}
+
+#[test]
+fn script_diagnostics_missing_target_is_not_a_supported_empty_result() {
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(empty_view(WXML, Vec::new()))),
+        FakeBehavior::default(),
+    );
+    let result = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: script_context(&adapter, SCRIPT_PATH, SCRIPT),
+        })
+        .expect("script diagnostics");
+    assert_eq!(result.diagnostics, Vec::new());
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Unavailable { .. }
+    ));
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn script_diagnostics_with_an_incomplete_source_list_are_partial() {
+    let mut view = prepared_view(WXML, SCRIPT, "user.name");
+    view.source_complete = false;
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let result = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: script_context(&adapter, SCRIPT_PATH, SCRIPT),
+        })
+        .expect("script diagnostics");
+    assert_eq!(result.diagnostics, Vec::new());
+    let CapabilityStatus::Partial { reason } = result.status else {
+        panic!("an incomplete project source list must not be a clean script");
+    };
+    assert!(reason.contains("incomplete"), "{reason}");
+}
+
+#[test]
+fn script_diagnostics_accept_allow_js_documents() {
+    const JS_PATH: &str = "pages/index/index.js";
+    const JS: &str = "const x = 1;\nPage({ data: {} });\n";
+    let mut view = empty_view(WXML, vec![prepared_file(JS_PATH, JS)]);
+    view.compiler_options =
+        serde_json::Map::from_iter([("allowJs".to_owned(), serde_json::Value::Bool(true))]);
+    let behavior = FakeBehavior {
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![FakeDiagnostic {
+            needle: "x = 1",
+            code: 2322,
+            category: 1,
+            message: "javascript type error",
+            file_name: Some("/work/demo/pages/index/index.js"),
+        }]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: script_context(&adapter, JS_PATH, JS),
+        })
+        .expect("javascript diagnostics");
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].code.as_deref(), Some("2322"));
+    assert_eq!(
+        log.lock().expect("log").semantic_paths,
+        vec![JS_PATH.to_owned()]
+    );
 }
 
 #[test]
@@ -3791,6 +4205,98 @@ fn optional_real_engine_hover_smoke() {
         offset_of(WXML, "name") + u32::try_from("name".len()).expect("length")
     );
     assert!(result.contents.contains("string"));
+}
+
+#[test]
+fn optional_real_engine_script_diagnostics_smoke() {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let Ok(bin) = std::env::var("TSGO_BIN") else {
+        let required = matches!(
+            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
+            Ok("1" | "true")
+        );
+        assert!(
+            !required,
+            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
+        );
+        eprintln!(
+            "optional real-engine script-diagnostics test skipped: set TSGO_BIN to the pinned \
+             7.1.0-beta lib/tsc"
+        );
+        return;
+    };
+    let executable = PathBuf::from(&bin);
+    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let sandbox = std::env::temp_dir().join(format!(
+        "wxml-tsgo-adapter-script-diagnostics-{}-{count}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&sandbox).expect("sandbox");
+    let _cleanup = Cleanup(sandbox.clone());
+
+    let wxml = "<view>{{ title }}</view>";
+    let script = "const x: string = 1;\nPage({ data: { title: \"hi\" } });\n";
+    let globals = "declare function Page(options: {\n  data: { title: string };\n  __wxml_check_0(this: { data: { title: string } }): void;\n}): void;\n";
+    let files = vec![
+        prepared_file(SCRIPT_PATH, script),
+        prepared_file("globals.d.ts", globals),
+    ];
+    let views = Arc::new(FakeViews::new(prepared_view_with_files(
+        wxml, "title", files,
+    )));
+    let adapter = TsgoBackendAdapter::new(
+        PinnedEngine::pinned(),
+        views,
+        Arc::new(super::session::NativeSessionFactory::new(
+            SessionOptions::new(executable, sandbox),
+        )),
+    );
+    let result = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: script_context(&adapter, SCRIPT_PATH, script),
+        })
+        .expect("real engine script diagnostics");
+    eprintln!(
+        "real engine script diagnostics: status={:?} diagnostics={:?}",
+        result.status, result.diagnostics
+    );
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Supported,
+        "the real engine must answer both script diagnostic sources"
+    );
+    let error = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("2322"))
+        .expect("the real engine must report TS2322 for the script type error");
+    let expected = offset_of(script, "x: string");
+    assert_eq!(error.range.start(), expected);
+    assert_eq!(
+        error.range.end(),
+        expected + u32::try_from("x".len()).expect("length")
+    );
+    assert_eq!(error.severity, DiagnosticSeverity::Error);
+    assert!(
+        error.message.contains("not assignable to type 'string'"),
+        "{}",
+        error.message
+    );
+
+    let template = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, wxml),
+        })
+        .expect("template diagnostics");
+    assert!(
+        !template
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("2322")),
+        "the script type error must not be published against the template: {:?}",
+        template.diagnostics
+    );
 }
 
 #[test]

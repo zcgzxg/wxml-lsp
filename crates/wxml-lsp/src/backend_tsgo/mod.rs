@@ -42,6 +42,11 @@
 //! expression. The adapter does not fake locations or edits and does not call a
 //! Node fallback.
 //!
+//! Standalone script diagnostics are implemented at the adapter seam
+//! ([`TsgoBackendAdapter::script_diagnostics`]) without a shadow or template
+//! syntax. The server does not schedule script URIs yet; that routing needs a
+//! backend/DTO decision and remains explicitly blocked.
+//!
 //! Native document symbols are wired for the prepared view's **owning script**
 //! only. `NativeSession::document_symbols` returns hierarchical symbols with
 //! verified name tokens; [`Backend::document_symbols`] maps their shadow ranges
@@ -99,10 +104,14 @@ use wxml_types::{
     HoverRequest, HoverResult, SymbolRequest, SymbolResult,
 };
 
+use self::diagnostics::DiagnosticsRun;
 use self::engine::DiscoveredInstall;
 use self::environment::Environment;
 use self::event_completion::EventCandidateCache;
-use self::input::{RequestIdentity, RequestPlan, ViewProvider, build_request_plan, merge_reason};
+use self::input::{
+    OpenPlan, PlanIdentity, RequestPlan, ScriptViewError, ViewProvider, build_request_plan,
+    build_script_request_plan, merge_reason,
+};
 use self::sandbox::SandboxSessionFactory;
 use self::session::{NativeSessionFactory, QuerySession, SessionFactory};
 
@@ -295,13 +304,20 @@ impl TsgoBackendAdapter {
         build_request_plan(self.views.as_ref(), context, &self.environment)
     }
 
+    fn prepare_script(
+        &self,
+        context: &wxml_types::RequestContext,
+    ) -> Result<input::ScriptRequestPlan, ScriptViewError> {
+        build_script_request_plan(self.views.as_ref(), context, &self.environment)
+    }
+
     /// Runs one purely syntactic query without the session environment reason.
     ///
     /// `document_symbols` cannot be affected by a degraded type environment,
     /// so this path neither clones nor merges `environment_reason`.
     fn with_session<R>(
         &self,
-        plan: &RequestPlan,
+        plan: &dyn OpenPlan,
         operation: impl FnOnce(&mut dyn QuerySession) -> Result<R, BackendError>,
     ) -> Result<R, BackendError> {
         self.with_session_mode(plan, false, |session, _degradation| operation(session))
@@ -313,7 +329,7 @@ impl TsgoBackendAdapter {
     /// opens a degraded VFS already reports `Partial`.
     fn with_session_environment<R>(
         &self,
-        plan: &RequestPlan,
+        plan: &dyn OpenPlan,
         operation: impl FnOnce(&mut dyn QuerySession, Option<String>) -> Result<R, BackendError>,
     ) -> Result<R, BackendError> {
         self.with_session_mode(plan, true, operation)
@@ -321,15 +337,15 @@ impl TsgoBackendAdapter {
 
     fn with_session_mode<R>(
         &self,
-        plan: &RequestPlan,
+        plan: &dyn OpenPlan,
         include_environment: bool,
         operation: impl FnOnce(&mut dyn QuerySession, Option<String>) -> Result<R, BackendError>,
     ) -> Result<R, BackendError> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         self.ensure_open(&mut state, plan)?;
-        let mut degradation = plan.degradation.clone();
+        let mut degradation = plan.degradation();
         if include_environment {
-            merge_reason(&mut degradation, plan.environment_degradation.clone());
+            merge_reason(&mut degradation, plan.environment_degradation());
             merge_reason(&mut degradation, state.environment_reason.clone());
         }
         let session = state.session.as_mut().ok_or_else(|| {
@@ -371,11 +387,11 @@ impl TsgoBackendAdapter {
     fn ensure_open(
         &self,
         state: &mut AdapterState,
-        plan: &RequestPlan,
+        plan: &dyn OpenPlan,
     ) -> Result<(), BackendError> {
         self.drop_invalidated(state);
         if let Some(open) = &state.open {
-            if open.identity == plan.identity && state.session.is_some() {
+            if open.identity == plan.plan_identity() && state.session.is_some() {
                 return Ok(());
             }
         }
@@ -415,7 +431,7 @@ impl TsgoBackendAdapter {
     fn update_existing(
         &self,
         state: &mut AdapterState,
-        plan: &RequestPlan,
+        plan: &dyn OpenPlan,
         input: &AnalysisInput,
     ) -> Result<bool, BackendError> {
         let Some(session) = state.session.as_mut() else {
@@ -450,7 +466,7 @@ impl TsgoBackendAdapter {
     fn start_and_open(
         &self,
         state: &mut AdapterState,
-        plan: &RequestPlan,
+        plan: &dyn OpenPlan,
         input: &AnalysisInput,
     ) -> Result<(), BackendError> {
         // No session exists yet, so no environment degradation can survive.
@@ -472,6 +488,93 @@ impl TsgoBackendAdapter {
         state.session = Some(session);
         state.open = Some(OpenProject::new(plan, input));
         Ok(())
+    }
+
+    /// Returns native diagnostics for one standalone project script.
+    ///
+    /// This is the adapter seam for the future `DocumentRoute::Script`
+    /// dispatch; the LSP server does not call it yet. It never merges template
+    /// syntax diagnostics, never opens a shadow and never invents an empty
+    /// `Supported` result:
+    ///
+    /// - a non-script/non-project document is `Unsupported` with no entries;
+    /// - a missing engine or failed session is `Unavailable`;
+    /// - diagnostics for other files (for example external declarations) are
+    ///   excluded and degrade the result to `Partial`;
+    /// - an engine-owned empty list for both sources is a genuine
+    ///   `Supported` clean result.
+    pub(crate) fn script_diagnostics(
+        &self,
+        request: &DiagnosticsRequest,
+    ) -> Result<DiagnosticsResult, BackendError> {
+        if !self.epoch_matches(&request.context) {
+            return Err(BackendError::Cancelled);
+        }
+        let plan = match self.prepare_script(&request.context) {
+            Ok(plan) => plan,
+            Err(ScriptViewError::Unsupported(reason)) => {
+                return Ok(DiagnosticsResult {
+                    diagnostics: Vec::new(),
+                    status: CapabilityStatus::Unsupported { reason },
+                });
+            }
+            Err(ScriptViewError::Unavailable(reason)) => {
+                return Ok(DiagnosticsResult {
+                    diagnostics: Vec::new(),
+                    status: CapabilityStatus::Unavailable { reason },
+                });
+            }
+        };
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if self.ensure_open(&mut state, &plan).is_err() {
+            return Ok(unavailable_script_diagnostics("type backend unavailable"));
+        }
+        let mut degradation = plan.degradation.clone();
+        merge_reason(&mut degradation, plan.environment_degradation.clone());
+        merge_reason(&mut degradation, state.environment_reason.clone());
+        let Some(session) = state.session.as_mut() else {
+            return Ok(unavailable_script_diagnostics("type backend unavailable"));
+        };
+        let run = diagnostics::script_diagnostics(
+            session.as_mut(),
+            &plan.identity.project_root,
+            &plan.path,
+            request.context.source(),
+            degradation.as_deref(),
+        );
+        Ok(self.finish_diagnostics(state, run, || {
+            unavailable_script_diagnostics("request cancelled")
+        }))
+    }
+
+    /// Drops a dead session after one diagnostics run and returns the result.
+    fn finish_diagnostics(
+        &self,
+        mut state: std::sync::MutexGuard<'_, AdapterState>,
+        run: DiagnosticsRun,
+        cancelled: impl FnOnce() -> DiagnosticsResult,
+    ) -> DiagnosticsResult {
+        let current = self.epoch.load(Ordering::SeqCst);
+        let invalidated = state.generation != current;
+        let dead = if invalidated || run.fatal {
+            let session = state.session.take();
+            state.open = None;
+            state.environment_reason = None;
+            if invalidated {
+                state.generation = current;
+            }
+            session
+        } else {
+            None
+        };
+        drop(state);
+        if let Some(session) = dead {
+            session.shutdown();
+        }
+        if invalidated {
+            return cancelled();
+        }
+        run.result
     }
 }
 
@@ -526,30 +629,13 @@ impl Backend for TsgoBackendAdapter {
             session.as_mut(),
             &plan.layout,
             &script_path,
+            &plan.identity.project_root,
             &syntax,
             degradation.as_deref(),
         );
-        let current = self.epoch.load(Ordering::SeqCst);
-        let invalidated = state.generation != current;
-        let dead = if invalidated || run.fatal {
-            let session = state.session.take();
-            state.open = None;
-            state.environment_reason = None;
-            if invalidated {
-                state.generation = current;
-            }
-            session
-        } else {
-            None
-        };
-        drop(state);
-        if let Some(session) = dead {
-            session.shutdown();
-        }
-        if invalidated {
-            return Ok(unavailable_diagnostics(syntax, "request cancelled"));
-        }
-        Ok(run.result)
+        Ok(self.finish_diagnostics(state, run, || {
+            unavailable_diagnostics(syntax, "request cancelled")
+        }))
     }
 
     fn definition(&self, request: DefinitionRequest) -> Result<DefinitionResult, BackendError> {
@@ -665,17 +751,17 @@ impl Backend for TsgoBackendAdapter {
             },
             diagnostics: CapabilityStatus::Partial {
                 reason:
-                    "host syntax plus native fragment diagnostics are wired; event-handler and component diagnostics are not covered"
+                    "host syntax plus native fragment diagnostics are wired; standalone script diagnostics are available at the adapter seam but the server does not route script documents to them yet; event-handler and component diagnostics are not covered"
                         .to_owned(),
             },
             definition: CapabilityStatus::Partial {
                 reason:
-                    "native expression-member definition is wired; event-handler, component and non-expression targets are not covered"
+                    "native expression-member definition is wired; event-handler definitions are served by host static semantics; component and non-expression targets are not covered"
                         .to_owned(),
             },
             completion: CapabilityStatus::Partial {
                 reason:
-                    "expression-member completion is native; the pinned API has no per-entry documentation and auto-imports need prepareAutoImports at snapshot creation, so non-empty native results stay Partial; event-handler completion is served from the Rust script method table without a native session and can be Supported; `this.`/method-body completion, custom component event signatures and handler signature help are not implemented"
+                    "expression-member completion is native; prepared auto-import entries are queried but the pinned API exposes no origin or edit, so auto-import items stay Partial and no import edit is offered; the pinned API also has no per-entry documentation, so non-empty native results stay Partial; event-handler completion is served from the Rust script method table without a native session and can be Supported; `this.`/method-body completion, custom component event signatures and handler signature help are not implemented"
                         .to_owned(),
             },
         }
@@ -707,15 +793,15 @@ impl AdapterState {
 }
 
 struct OpenProject {
-    identity: RequestIdentity,
+    identity: PlanIdentity,
     project: ProjectKey,
     root: String,
 }
 
 impl OpenProject {
-    fn new(plan: &RequestPlan, input: &AnalysisInput) -> Self {
+    fn new(plan: &dyn OpenPlan, input: &AnalysisInput) -> Self {
         Self {
-            identity: plan.identity.clone(),
+            identity: plan.plan_identity(),
             project: input.project().clone(),
             root: input.root().as_str().to_owned(),
         }
@@ -726,11 +812,11 @@ impl OpenProject {
 ///
 /// The environment identity and project/root must be byte-identical; only
 /// source/view revisions may differ.
-fn same_open_project(state: &AdapterState, plan: &RequestPlan, input: &AnalysisInput) -> bool {
+fn same_open_project(state: &AdapterState, plan: &dyn OpenPlan, input: &AnalysisInput) -> bool {
     state.open.as_ref().is_some_and(|open| {
         open.project == *input.project()
             && open.root == input.root().as_str()
-            && open.identity.environment == plan.identity.environment
+            && open.identity.environment() == plan.environment_identity()
     })
 }
 
@@ -783,6 +869,10 @@ fn unavailable_diagnostics(
             reason: reason.to_owned(),
         },
     }
+}
+
+fn unavailable_script_diagnostics(reason: &str) -> DiagnosticsResult {
+    unavailable_diagnostics(Vec::new(), reason)
 }
 
 pub(crate) fn map_native_error(error: NativeError) -> BackendError {

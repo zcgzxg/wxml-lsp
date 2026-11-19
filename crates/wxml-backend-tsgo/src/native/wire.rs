@@ -337,6 +337,14 @@ pub struct RawDiagnostic {
     pub code: i64,
     /// Numeric category (`0` warning, `1` error, `2` suggestion, `3` message).
     pub category: i64,
+    /// Engine file the diagnostic belongs to, when the response carries one.
+    ///
+    /// `getSemanticDiagnostics` is requested for one file, but the pinned
+    /// response shape allows a different owner (for example an external
+    /// declaration). Callers must not assume every entry belongs to the
+    /// queried file when this field is present.
+    #[serde(default)]
+    pub file_name: Option<String>,
     /// Engine UTF-16 full-start offset, when present.
     #[serde(default)]
     pub pos: Option<i64>,
@@ -710,7 +718,16 @@ mod tests {
         }))
         .expect("diagnostic");
         assert_eq!(diagnostic.code, 2339);
+        assert_eq!(diagnostic.file_name.as_deref(), Some("/work/main.ts"));
         assert_eq!(diagnostic.start_position.expect("start").line, 3);
+
+        let unnamed: RawDiagnostic = parse_response(json!({
+            "code": 1109,
+            "category": 1,
+            "text": "expected expression",
+        }))
+        .expect("diagnostic without fileName");
+        assert_eq!(unnamed.file_name, None);
 
         let symbol: RawSymbol = parse_response(json!({
             "name": "u",

@@ -76,22 +76,63 @@ pub struct DiagnosticsResult {
 /// A clean `Supported` result requires both the semantic and syntactic calls
 /// to have succeeded and every retained range to be inside `text`. Callers must
 /// never pass only the semantic list and present the result as complete.
+///
+/// Without file identity this function treats every response entry as
+/// belonging to the queried file. Use [`map_diagnostics_for_file`] when the
+/// engine may report diagnostics for another file.
 #[must_use]
 pub fn map_diagnostics(
     semantic: &[RawDiagnostic],
     syntactic: &[RawDiagnostic],
     text: &str,
 ) -> DiagnosticsResult {
+    map_diagnostics_impl(semantic, syntactic, text, None)
+}
+
+/// Maps diagnostics for one explicitly identified project file.
+///
+/// Entries whose `fileName` resolves to a different project file (for example
+/// an external declaration) are never published against `text`; they are
+/// counted in a path-free `Partial` reason. A missing `fileName` keeps the
+/// historical assumption that the engine answered for the requested file.
+///
+/// `project_root` is used only to normalize the absolute paths in the native
+/// response; it is never included in the result.
+#[must_use]
+pub fn map_diagnostics_for_file(
+    semantic: &[RawDiagnostic],
+    syntactic: &[RawDiagnostic],
+    text: &str,
+    project_root: &str,
+    path: &str,
+) -> DiagnosticsResult {
+    map_diagnostics_impl(semantic, syntactic, text, Some((project_root, path)))
+}
+
+fn map_diagnostics_impl(
+    semantic: &[RawDiagnostic],
+    syntactic: &[RawDiagnostic],
+    text: &str,
+    requested: Option<(&str, &str)>,
+) -> DiagnosticsResult {
     let mut diagnostics = Vec::new();
     let mut seen = BTreeSet::new();
     let mut partial = false;
     let mut truncated = false;
+    let mut excluded = 0usize;
 
     for diagnostic in semantic.iter().chain(syntactic) {
+        if requested
+            .is_some_and(|(root, path)| file_owner(diagnostic, root, path) == FileOwner::Other)
+        {
+            excluded = excluded.saturating_add(1);
+            continue;
+        }
         let Some(mapped) = map_one(diagnostic, text, &mut partial) else {
             continue;
         };
         let key = (
+            file_identity(diagnostic, requested),
             mapped.code,
             mapped.start,
             mapped.end,
@@ -107,22 +148,88 @@ pub fn map_diagnostics(
         diagnostics.push(mapped);
     }
 
-    let status = if partial || truncated {
-        CapabilityStatus::Partial {
-            reason: if truncated {
-                "diagnostic cap reached; file may have more results".to_owned()
-            } else {
-                "some diagnostics were dropped by range or category validation".to_owned()
-            },
-        }
-    } else {
+    let mut reasons = Vec::new();
+    if truncated {
+        reasons.push("diagnostic cap reached; file may have more results".to_owned());
+    }
+    if excluded > 0 {
+        reasons.push(format!(
+            "{excluded} diagnostic(s) for other files were excluded"
+        ));
+    }
+    if partial {
+        reasons.push("some diagnostics were dropped by range or category validation".to_owned());
+    }
+    let status = if reasons.is_empty() {
         CapabilityStatus::Supported
+    } else {
+        CapabilityStatus::Partial {
+            reason: reasons.join("; "),
+        }
     };
 
     DiagnosticsResult {
         diagnostics,
         status,
     }
+}
+
+/// Whether a native diagnostic belongs to the queried file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileOwner {
+    /// The queried file (or no `fileName` was supplied).
+    Requested,
+    /// A different project file or an absolute path outside the project root.
+    Other,
+}
+
+fn file_owner(raw: &RawDiagnostic, project_root: &str, path: &str) -> FileOwner {
+    let Some(name) = raw.file_name.as_deref() else {
+        return FileOwner::Requested;
+    };
+    let name = normalize_file_name(name);
+    let path = normalize_file_name(path);
+    if name == path {
+        return FileOwner::Requested;
+    }
+    let root = normalize_file_name(project_root);
+    let root = root.trim_end_matches('/');
+    if let Some(relative) = name
+        .strip_prefix(root)
+        .and_then(|rest| rest.strip_prefix('/'))
+    {
+        return if relative == path {
+            FileOwner::Requested
+        } else {
+            FileOwner::Other
+        };
+    }
+    FileOwner::Other
+}
+
+/// Returns the identity used by the deduplication key.
+///
+/// When the caller identified the requested file, every retained entry is
+/// already known to belong to it, so the requested path is the stable identity
+/// even if the engine omitted `fileName` on one of the two sources. Without an
+/// explicit owner, the raw `fileName` is the only available identity.
+fn file_identity(raw: &RawDiagnostic, requested: Option<(&str, &str)>) -> String {
+    if let Some((_, path)) = requested {
+        return normalize_file_name(path);
+    }
+    raw.file_name
+        .as_deref()
+        .map(normalize_file_name)
+        .unwrap_or_default()
+}
+
+fn normalize_file_name(path: &str) -> String {
+    let path = path.strip_prefix("file://").unwrap_or(path);
+    let mut normalized = path.replace('\\', "/");
+    while let Some(rest) = normalized.strip_prefix("./") {
+        normalized = rest.to_owned();
+    }
+    normalized
 }
 
 fn map_one(raw: &RawDiagnostic, text: &str, partial: &mut bool) -> Option<NativeDiagnostic> {
@@ -255,10 +362,36 @@ mod tests {
         RawDiagnostic {
             code,
             category,
+            file_name: None,
             pos,
             end,
             start_position: start.map(|(line, character)| RawPosition { line, character }),
             end_position: end_position.map(|(line, character)| RawPosition { line, character }),
+            text: text.to_owned(),
+        }
+    }
+
+    fn raw_at_file(
+        file_name: Option<&str>,
+        code: i64,
+        start: (i64, i64),
+        end: (i64, i64),
+        text: &str,
+    ) -> RawDiagnostic {
+        RawDiagnostic {
+            code,
+            category: 1,
+            file_name: file_name.map(str::to_owned),
+            pos: (start.0 == 0).then_some(start.1),
+            end: (end.0 == 0).then_some(end.1),
+            start_position: Some(RawPosition {
+                line: start.0,
+                character: start.1,
+            }),
+            end_position: Some(RawPosition {
+                line: end.0,
+                character: end.1,
+            }),
             text: text.to_owned(),
         }
     }
@@ -325,6 +458,90 @@ mod tests {
         assert_eq!(result.diagnostics.len(), 1);
         assert_eq!(result.diagnostics[0].severity, DiagnosticSeverity::Unknown);
         assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    }
+
+    #[test]
+    fn excludes_diagnostics_for_other_files_and_reports_a_path_free_reason() {
+        let text = "const x: string = 1;\n";
+        let requested = raw_at_file(
+            Some("/work/demo/pages/index/index.ts"),
+            2322,
+            (0, 6),
+            (0, 7),
+            "requested",
+        );
+        let external = raw_at_file(
+            Some("/work/demo/node_modules/typings/index.d.ts"),
+            2304,
+            (0, 6),
+            (0, 7),
+            "external",
+        );
+        let result = map_diagnostics_for_file(
+            &[requested, external],
+            &[],
+            text,
+            "/work/demo",
+            "pages/index/index.ts",
+        );
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].code, 2322);
+        let CapabilityStatus::Partial { reason } = result.status else {
+            panic!(
+                "external diagnostics must degrade the result: {:?}",
+                result.status
+            );
+        };
+        assert!(reason.contains("other files"), "{reason}");
+        assert!(!reason.contains('/'), "reason leaked a path: {reason}");
+    }
+
+    #[test]
+    fn a_missing_file_name_is_the_requested_file() {
+        let text = "const x: string = 1;\n";
+        let unnamed = raw_at_file(None, 2322, (0, 6), (0, 7), "requested");
+        let result =
+            map_diagnostics_for_file(&[unnamed], &[], text, "/work/demo", "pages/index/index.ts");
+        assert_eq!(result.status, CapabilityStatus::Supported);
+        assert_eq!(result.diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn deduplicates_the_same_diagnostic_with_and_without_a_file_name() {
+        let text = "const x: string = 1;\n";
+        let named = raw_at_file(
+            Some("/work/demo/pages/index/index.ts"),
+            2322,
+            (0, 6),
+            (0, 7),
+            "same",
+        );
+        let unnamed = raw_at_file(None, 2322, (0, 6), (0, 7), "same");
+        let result = map_diagnostics_for_file(
+            &[named],
+            &[unnamed],
+            text,
+            "/work/demo",
+            "pages/index/index.ts",
+        );
+        assert_eq!(result.status, CapabilityStatus::Supported);
+        assert_eq!(result.diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn a_relative_file_name_matches_the_requested_path() {
+        let text = "const x: string = 1;\n";
+        let relative = raw_at_file(
+            Some("./pages/index/index.ts"),
+            2322,
+            (0, 6),
+            (0, 7),
+            "requested",
+        );
+        let result =
+            map_diagnostics_for_file(&[relative], &[], text, "/work/demo", "pages/index/index.ts");
+        assert_eq!(result.status, CapabilityStatus::Supported);
+        assert_eq!(result.diagnostics.len(), 1);
     }
 
     #[test]

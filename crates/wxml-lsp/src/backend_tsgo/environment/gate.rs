@@ -47,8 +47,8 @@ use wxml_backend_tsgo::native::strings::Utf16Position;
 use wxml_backend_tsgo::query::type_info::TypeQuality as NativeTypeQuality;
 use wxml_project::ProjectPath;
 use wxml_types::{
-    Backend, CapabilityStatus, HoverRequest, RequestContext, SnapshotId, SourceRevision,
-    SourceSnapshot, TypeQuality, ViewRevision,
+    Backend, CapabilityStatus, DiagnosticSeverity, DiagnosticsRequest, HoverRequest,
+    RequestContext, SnapshotId, SourceRevision, SourceSnapshot, TypeQuality, ViewRevision,
 };
 
 use super::fakes::{
@@ -384,6 +384,189 @@ fn optional_real_with_install_adapter_hovers_a_project_symbol() {
         range.end(),
         offset_of(WXML, "name") + u32::try_from("name".len()).unwrap()
     );
+}
+
+#[test]
+#[allow(clippy::too_many_lines, reason = "one end-to-end host script gate")]
+fn optional_real_project_script_diagnostics_use_the_host_view() {
+    let Some(install) = real_install() else {
+        return;
+    };
+    let dir = TempDir::new("script-diagnostics");
+    fs::create_dir_all(dir.0.join("pages/index")).expect("project dirs");
+    fs::write(dir.0.join("app.json"), r#"{"pages":["pages/index/index"]}"#).expect("app.json");
+    let wxml = "<view>{{ title }}</view>";
+    let script = "const x: string = 1;\nPage({ data: { title: \"hi\" } });\n";
+    let model = "export const model: string = 1;\n";
+    fs::write(dir.0.join("pages/index/index.wxml"), wxml).expect("wxml");
+    fs::write(dir.0.join("pages/index/index.ts"), script).expect("script");
+    fs::write(dir.0.join("model.ts"), model).expect("model script");
+    let host = Arc::new(ProjectState::new());
+    let uri = format!("file://{}", dir.0.display());
+    host.open_root(Some(&uri)).expect("open real project");
+    let adapter =
+        TsgoBackendAdapter::with_install(Arc::clone(&host) as Arc<dyn ProjectHost>, &install)
+            .expect("with_install loads assets");
+
+    let script_path = ProjectPath::new("pages/index/index.ts").expect("script path");
+    let script_file = host.file_id(&script_path).expect("script file");
+    let result = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: RequestContext::new(
+                host.project_revision(),
+                ViewRevision::new(1),
+                adapter.epoch(),
+                Arc::new(SourceSnapshot::new(
+                    script_file,
+                    SourceRevision::new(1),
+                    SnapshotId::new(1),
+                    script,
+                )),
+            )
+            .expect("script context"),
+        })
+        .expect("real project script diagnostics");
+    eprintln!(
+        "real project script diagnostics: status={:?} diagnostics={:?}",
+        result.status, result.diagnostics
+    );
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Supported,
+        "the host view must provide both script diagnostic sources"
+    );
+    let error = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("2322"))
+        .expect("the real engine must report TS2322 through the host view");
+    assert_eq!(error.range.start(), 6);
+    assert_eq!(error.range.end(), 7);
+    assert_eq!(error.severity, DiagnosticSeverity::Error);
+
+    // A plain project module has no owning WXML view; the host must still
+    // supply the project file set for it.
+    let model_path = ProjectPath::new("model.ts").expect("model path");
+    let model_file = host.file_id(&model_path).expect("model file");
+    let model_result = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: RequestContext::new(
+                host.project_revision(),
+                ViewRevision::new(1),
+                adapter.epoch(),
+                Arc::new(SourceSnapshot::new(
+                    model_file,
+                    SourceRevision::new(1),
+                    SnapshotId::new(3),
+                    model,
+                )),
+            )
+            .expect("model context"),
+        })
+        .expect("real non-owning script diagnostics");
+    let model_error = model_result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("2322"))
+        .expect("the real engine must check a non-owning project module");
+    let expected_model = u32::try_from(model.find("model:").expect("model token")).expect("offset");
+    assert_eq!(model_error.range.start(), expected_model);
+    assert_eq!(model_error.range.end(), expected_model + 5);
+
+    let wxml_path = ProjectPath::new("pages/index/index.wxml").expect("wxml path");
+    let wxml_file = host.file_id(&wxml_path).expect("wxml file");
+    let template = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: RequestContext::new(
+                host.project_revision(),
+                ViewRevision::new(1),
+                adapter.epoch(),
+                Arc::new(SourceSnapshot::new(
+                    wxml_file,
+                    SourceRevision::new(1),
+                    SnapshotId::new(2),
+                    wxml,
+                )),
+            )
+            .expect("template context"),
+        })
+        .expect("real project template diagnostics");
+    assert!(
+        !template
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code.as_deref() == Some("2322")),
+        "the script error must not be published against the template: {:?}",
+        template.diagnostics
+    );
+}
+
+#[test]
+fn optional_real_project_script_diagnostics_check_allow_js() {
+    let Some(install) = real_install() else {
+        return;
+    };
+    let dir = TempDir::new("script-diagnostics-js");
+    fs::create_dir_all(dir.0.join("pages/index")).expect("project dirs");
+    fs::write(dir.0.join("app.json"), r#"{"pages":["pages/index/index"]}"#).expect("app.json");
+    fs::write(
+        dir.0.join("tsconfig.json"),
+        r#"{"compilerOptions":{"allowJs":true,"checkJs":true}}"#,
+    )
+    .expect("tsconfig.json");
+    let wxml = "<view>{{ title }}</view>";
+    let script = "/** @type {string} */\nconst x = 1;\nPage({ data: { title: \"hi\" } });\n";
+    fs::write(dir.0.join("pages/index/index.wxml"), wxml).expect("wxml");
+    fs::write(dir.0.join("pages/index/index.js"), script).expect("script");
+    let host = Arc::new(ProjectState::new());
+    let uri = format!("file://{}", dir.0.display());
+    host.open_root(Some(&uri)).expect("open real project");
+    let adapter =
+        TsgoBackendAdapter::with_install(Arc::clone(&host) as Arc<dyn ProjectHost>, &install)
+            .expect("with_install loads assets");
+
+    let script_path = ProjectPath::new("pages/index/index.js").expect("script path");
+    let script_file = host.file_id(&script_path).expect("script file");
+    let result = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: RequestContext::new(
+                host.project_revision(),
+                ViewRevision::new(1),
+                adapter.epoch(),
+                Arc::new(SourceSnapshot::new(
+                    script_file,
+                    SourceRevision::new(1),
+                    SnapshotId::new(1),
+                    script,
+                )),
+            )
+            .expect("script context"),
+        })
+        .expect("real allowJs script diagnostics");
+    eprintln!(
+        "real allowJs script diagnostics: status={:?} diagnostics={:?}",
+        result.status, result.diagnostics
+    );
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Supported,
+        "the trusted project options must check the JavaScript document"
+    );
+    let error = result
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.code.as_deref() == Some("2322"))
+        .expect("the real engine must report the JSDoc type error in the .js script");
+    let expected = u32::try_from(
+        script
+            .find("const x")
+            .expect("variable declaration")
+            .saturating_add("const ".len()),
+    )
+    .expect("offset");
+    assert_eq!(error.range.start(), expected);
+    assert_eq!(error.range.end(), expected + 1);
+    assert_eq!(error.severity, DiagnosticSeverity::Error);
 }
 
 #[test]
