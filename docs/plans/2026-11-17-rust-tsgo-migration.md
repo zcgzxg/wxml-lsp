@@ -1,7 +1,7 @@
 # WXML LSP：Rust + tsgo 去 Node 迁移执行计划
 
-日期：2026-11-17。状态：设计中；只读调查与计划产物，不是迁移完成报告。  
-仓库：`/home/zxg/code/rust/wxml-lsp`。执行工作目录：`/home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration`（分支 `tsgo/migration`）。
+日期：2026-11-17（执行状态更新 2026-11-19）。状态：执行中；P0/P1 已执行，P2 契约已落地，P3–P6 仅完成部分切片；不是迁移完成报告。
+仓库：`/home/zxg/code/rust/wxml-lsp`。执行工作目录：`/home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration`（分支 `tsgo/migration`）。当前记录基线：HEAD `6358925`。
 
 配套决策草案：`wxml-lsp-adr-0008-rust-tsgo-no-node-draft-2026-11-17.md`。正式计划为本文件，ADR 为 `docs/adr/0008-rust-tsgo-no-node-backend.md`。
 
@@ -484,11 +484,15 @@ P1-C 证明旧→新的可行路径；P6/P7 用真实本地包重跑全部转换
 | 并行冲突/资源争用 | 单文件 owner、合同基线、独立 target、受限 worker/编译并发 |
 | 发布 ABI/离线/旧 schema 回归 | P1-C/P6/P7 真实包验证；不扩大未经验证的平台宣称 |
 
-当前下一步：P2 冻结 F0–F3 契约、完成安全评审与 P1-C 安装器收口；随后从 P3 开始建立 Rust 原生客户端、原位 shadow 和 parity 测试骨架。未通过 G1/P2 前不得大规模翻译 TS 语义代码或删除 Node。
+当前下一步：完成 P6-3 的 adapter 资产 handoff（`VerifiedInstall` → `TypeAssets` → `AnalysisInput::with_environment`、compilerOptions、`js_check`、diagnostics/hover），并关闭 F3-03 的可信 pin loader/`assets.lock.json`；随后处理 P6-4 残余（fd/`openat` TOCTOU、真实包/无 Node 进程审计）、document-symbol adapter/LSP 接线和 QuickInfo/overload 文档缺口。P6-2 的 gate 转换仍须按 S0–S8 逐项完成；23 个 `#[ignore]` 与 2 个静默 return 在替代测试 `mandatory_green` 前不得删除或计入通过。P6/P7 的默认切换与 Node 删除不在下一步范围内。详见 §12.3。
 
 ## 12. 执行状态、证据与边界
 
-正式计划与 ADR-0008 已提交到迁移 worktree 的 `b9616c5`。P0/P1 已在 `tsgo/migration` 分支执行，证据位于：
+正式计划与 ADR-0008 已提交到迁移 worktree 的 `b9616c5`。P0/P1 已执行；P2 契约已落盘；P3–P6 只完成下列切片。截至 2026-11-19（HEAD `6358925`），迁移未完成，默认后端仍是 Node。
+
+### 12.1 P0/P1 证据（历史）
+
+P0/P1 的原始记录不变：
 
 - `docs/evidence/2026-11-17-tsgo-workspace-baseline.md`：workspace/工具链/Backend 边界基线。
 - `docs/evidence/2026-11-17-tsgo-migration-baseline.md`：Rust/TS 基线、339 个展开 TS 用例、perf 串行复跑。
@@ -496,4 +500,48 @@ P1-C 证明旧→新的可行路径；P6/P7 用真实本地包重跑全部转换
 - `docs/evidence/2026-11-17-tsgo-delivery-spike.md`：无 Node 资产、安装/回滚状态机与平台事实。
 - `docs/plans/2026-11-17-tsgo-test-ledger.md` 与 `tsgo-test-ledger.json`：逐用例迁移台账、fixture v1 hash、ignored/静默跳过映射。
 
-当前边界：未修改生产源码，未删除 Node，未安装或切换原生后端，未声称迁移完成。G1 仍未关闭；7.1.0-beta 已由维护者有条件接受并固定 integrity。P2 可继续起草/冻结 F0–F3 契约与安全设计，P3 生产骨架必须等待 C 的可执行安装器方案和契约评审。
+G1 仍未关闭；7.1.0-beta 仅由维护者有条件接受并固定 integrity。P2 的 F0–F3 文档已落盘，但合同整体冻结、F3 验收与 P5 安全门禁均未关闭。
+
+### 12.2 P2–P6 已提交切片
+
+“证据层级”只说明该提交能证明什么；任何库/单元结果都不自动升级为 LSP adapter、CLI、真实包或 Zed 验收。下表只列 P6 入口以来需要记录的最新切片；P3/P4 的历史证据与逐用例状态仍以台账和 `docs/reference/tsgo-*` 为准。
+
+| 提交 | 切片 | 已提交内容 | 证据层级 | 不能证明 |
+| --- | --- | --- | --- | --- |
+| `0e7c672` | P6-2 gate 转换计划 | 23 个 `#[ignore]` 的逐项处置、3 个 enable-now / 8 个 keep-gated / 12 个 delete-at-P7、2 个静默 return + 可选 `tsc` → 3 个强制原生 gate、S0–S9 | 计划（无运行） | 0/23 gate 绿；未删除旧测试、未修改 `#[ignore]`、未切换默认后端 |
+| `2c6d39e` | P6-3 后端类型资产 | `AnalysisInput::with_environment`、33 个 compiler option key、`TypeAssets`/`TypeAssetsPin`、full VFS 资产表、116 stdlib + 20 typings `.d.ts`、environment tsconfig；`crates/wxml-backend-tsgo/tests/type_assets.rs` 10 个测试 | 库/单元 + opt-in 真实引擎；`type_assets` 真实门禁记录为 10/10 passed（含 2 个 opt-in 真实引擎用例；本轮未重跑） | adapter 仍调用 `AnalysisInput::new`（ /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/src/backend_tsgo/input.rs:121 ），`js_check` 仍为 `Inherit`（ /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/src/backend_tsgo/input.rs:202 ）；未证明 LSP/CLI/Zed 或真实包；可信 pin loader、F3-03、AC-004、TS 6.0.3 vs 7.1.0-beta 偏差仍开放 |
+| `abf0046` | P6-4a 引擎发现/沙箱/opt-in | `engine.rs` 从安装树发现并校验 `manifest.json`/`engine/lib/tsc`；`sandbox.rs` 每 session 新建 `0700` 沙箱；`wxml-lsp --stdio --backend native`；默认 `--stdio` 仍构造 `NodeBackend` | CLI/库层 | P6-4b 真实资产启动、P6-4c 真实包/无 Node 进程审计、默认切换均未完成；fd/`openat` 沙箱加固仍 BLOCKED，残留路径校验到 spawn 的 TOCTOU |
+| `31d6d29` | F1 hover 证据与 Markdown 组合 | 三段式 Markdown 顺序、checked-empty/`Unsupported`/`Partial` 区分、声明范围双坐标；`crates/wxml-backend-tsgo/tests/f1_hover.rs` 11 个测试 | 库/单元；2 个真实引擎测试为 opt-in，`WXML_REQUIRE_REAL_ENGINE=1` 才转硬门禁 | 无 `getQuickInfoAtPosition`；QuickInfo display parts、逐 overload 文档/分段仍 BLOCKED；未证明 adapter 端到端 hover/降级 |
+| `6eb6f26` | Native document symbols DTO | `wxml-types` 新增 `DocumentSymbol*` DTO 与默认 `Backend::document_symbols`；`wxml-backend-tsgo` 解码 v9 document symbols，保留 UTF-16/UTF-8 范围与 gap/truncation | 库/单元 | adapter/LSP 路由未接线；脚本文档的 view/reverse lookup、snapshot 身份与 `DocumentRoute::Script` 仍是前置；WXML `structure.rs` outline 不变 |
+| `6358925` | typings payload 身份强制 | 23 文件 allowlist、`2,548,075 B`、bundle 摘要 `ba3eb83410db79bd80727e9f38eef7cf0f0a3a3c7fde02f8d14467cf95bab46b`、精确 payload 路径、入库的 5.3.1 fixture；manifest/verify/打包器重算并比较 | 交付库/单元（入库 fixture）；`typings_payload.rs` 为 opt-in 真实树检查 | 真实上游 tarball 的 SRI/SHA-256/size、provisioning、`assets.lock.json`、clean-env/ABI、包级验收未完成；F3-03/B6 仍 BLOCKED，不关闭任何 F3 ID |
+
+### 12.3 当前门禁与下一步
+
+当前门禁事实：
+
+- **Gate 债**：23 个 `#[ignore]` 全部仍为 gate debt；`semantic_tools` 的 2 个静默 return 与可选 `tsc` 分支仍在。按 `0e7c672` 计划，它们只有在替代测试 `mandatory_green` 且 review 后才能删除/关闭。
+- **P6-3**：backend 数据层已落，但 adapter 尚未接线资产、compilerOptions 或 `js_check`。可信 pin loader 与 `assets.lock.json` 缺失；AC-004 未保存更新旧诊断、TS 版本偏差、adapter 降级均未关闭。
+- **P6-4**：仅 opt-in `--backend native` 与引擎发现/沙箱切片；P6-4b/c、真实包启动、无 Node 进程审计和默认切换均未完成。
+- **F1 hover / document symbols**：hover 只有 backend 组合与 opt-in 真实引擎证据；QuickInfo/overload 文档缺口 BLOCKED。document symbols 只有 DTO/decoder，adapter 与 LSP 路由未接线。
+- **F3**：F3-01～F3-16 无一项关闭；F3-02、F3-03 明确 BLOCKED，B6 仍 BLOCKED。`6358925` 固定的是 payload 身份，不是上游 tarball/provisioning/lock 身份。
+- **台账**：33 `green` / 270 `planned` / 36 `retired-with-decision`；本轮没有新增 `green`、`reviewed` 或 `closed`，不得把计划中的 case 标记为通过。余下 270 个 planned 的排期见 [2026-11-19 剩余台账计划](2026-11-19-tsgo-remaining-ledger-plan.md)；该计划本身不提升任何 case 状态。
+- **默认后端与平台**：默认仍是 Node，Node 未删除；G5/G6 未关闭；原生后端只有 Linux x86_64 证据，aarch64/macOS/Windows/musl 未验证，也没有 Zed 原生冒烟。
+
+下一步按依赖顺序：
+
+1. **P6-3 adapter handoff**：`VerifiedInstall` → `TypeAssets` → `AnalysisInput::with_environment`；透传 compilerOptions，修正 `js_check`，接入 adapter diagnostics/hover；补 loader 的缺失/篡改/symlink/预算测试。
+2. **F3-03 可信资产链**：真实 typings tarball 的 SRI/SHA-256/size、provisioning、`assets.lock.json`，再由打包器/安装器交叉校验；构建真实 v2 包并跑 clean-env/ABI 验收。
+3. **P6-4 残余**：fd/`openat` 沙箱加固；真实资产启动（P6-4b）；真实包 + `strace`/PATH tripwire 的无 Node 进程审计（P6-4c）。4a 的 opt-in 结果不能替代 4c。
+4. **F1 查询缺口**：按合同决定 QuickInfo display parts/逐 overload 文档的实现或显式 `Partial`；不得伪造缺失能力。
+5. **Document symbols 路由**：补脚本 → view 反向查找与 snapshot 身份，接 adapter/`DocumentRoute::Script`；WXML outline 保持静态。
+6. **P6-2 gate 转换**：按 S0–S8 逐项落地；23 个 `#[ignore]` 在替代测试 `mandatory_green` 前不得移除；2 个静默 return + 可选 `tsc` 必须变成 3 个强制原生 gate，并加负向 fail-closed 测试。
+7. **P6-8/P7**：只有在 G5/G6 关闭、真实包/安装/回滚/Zed 验收完成后，才切换默认后端和删除 Node；本轮不执行。
+
+### 12.4 明确不声称
+
+- 不声称任何 F3 验收 ID 已关闭；`6358925` 只固定 typings payload 身份，F3-03/B6 仍 BLOCKED。
+- 不声称 P6-3、P6-4、G5 或 G6 已关闭；不声称 23 个 ignored gate 或 2 个静默 return 已迁移。
+- 不声称默认后端已切换或 Node 已删除。
+- 不把库/单元测试、入库 fixture 或 opt-in 真实引擎测试当作真实包、CLI 或 Zed 验收。
+- 不把 `planned` ledger case 标记为 `green`、`reviewed` 或 `closed`。
+- 不声称 Linux x86_64 之外的平台支持，也不声称原生 Zed 冒烟已完成。

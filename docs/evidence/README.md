@@ -1,6 +1,6 @@
 # 证据索引与记录规则
 
-更新日期：2026-11-17。
+更新日期：2026-11-19。
 
 本目录保存支撑设计判断的最小证据。结论、环境、方法、限制和原始数据都在仓库内，不把本机临时目录或外部仓库当作唯一证据来源。
 
@@ -32,10 +32,22 @@
 | 2026-11-17 | [tsgo 迁移测试基线](2026-11-17-tsgo-migration-baseline.md) | Rust workspace / TS 339 用例 | E1 | Rust 1297 pass/0 fail/23 ignored；TS 338/339，唯一失败为全量并行 perf 8325.25ms；isolated 串行 3/3 绿；台账 274 静态/339 展开 |
 | 2026-11-17 | [tsgo 原生 API 能力验证](2026-11-17-tsgo-native-api-spike.md) | 7.1.0-beta Linux x64 | E1 | 无 Node `--api --async`、虚拟快照、诊断/类型/符号/文档/补全/引用可用；AST v9 部分解码；无 QuickInfo/Definition/Rename 直接 API；7.0.2 排除；脚本仅在临时目录 |
 | 2026-11-17 | [tsgo 无 Node 交付验证](2026-11-17-tsgo-delivery-spike.md) | 7.1.0-beta / miniprogram-api-typings 5.3.1 | E0 | 资产身份、SRI、无 Node 入口与安装/回滚状态机设计；未下载安装，安装器与 clean-env 验收仍待执行 |
+| 2026-11-18 | [P6-3 原生类型资产实施计划](2026-11-18-tsgo-native-type-assets-plan.md) | `b0a108f` / 7.1.0-beta | E0 | 只读审计：full VFS 必须挂载 116 个 stdlib 与 20 个 typings `.d.ts`；真实引擎探针可解析 `wx`/`Page`/`Component`/`getApp`；P6-3 未完成，AC-004 旧诊断、TS 6.0.3/7.1.0-beta 偏差和真实资产布局仍阻塞 |
+| 2026-11-18 | [P6-3 LSP adapter 类型资产接线计划](2026-11-18-tsgo-adapter-type-assets-plan.md) | `4ad3459` | E0 | 只读审计：backend 已具备 `AnalysisInput::with_environment`，adapter 仍调用 `AnalysisInput::new`，没有 loader/compilerOptions/jsCheck 接线；给出有序接线与回滚步骤 |
+| 2026-11-18 | [P6-4 原生引擎发现与可启动性计划](2026-11-18-tsgo-native-engine-discovery-plan.md) | `558beb9` | E0 | P6-4a 可实施、P6-4b/c BLOCKED；默认仍是 Node；本文不声称原生后端可启动 |
+| 2026-11-18 | [F1 completion auto-import/逐项文档计划](2026-11-18-tsgo-completion-autoimport-plan.md) | `a17794a` / `5541ee0` | E0 | auto-import 未实现；逐项文档被固定 API 阻塞；F1-21/B-07 仍开放，非空补全仍为 `Partial` |
+| 2026-11-18 | [F3-03 资产锁与 provisioning 设计](2026-11-18-tsgo-f3-asset-lock-plan.md) | `5541ee0` / `f7b9ef7` | E0 | 仓库无 `assets.lock.json`；当时 26/23 typings 口径冲突（后由 `6358925` 固定为 payload 23）；F3-03 仍 BLOCKED |
+| 2026-11-18 | [F3-02 干净环境/进程审计](2026-11-18-tsgo-f3-clean-env.md) | `8490a92` | E1 | 真实资产安装、干净 PATH、网络/挂载隔离和 fixture 升级回滚 PASS；`execve/execveat` 审计与原生 stdio LSP 会话 BLOCKED，F3-02 仍 BLOCKED |
+| 2026-11-18 | [P5 安全审计](2026-11-18-tsgo-p5-security.md) | `d6e8f41` | E1 | 方法白名单、VFS 读边界、进程清理和 AST/句柄预算 PASS；运行目录最小权限第二层与 `--runExternalCode` 全验证 BLOCKED；license 门禁当时 BLOCKED（后续根 `deny.toml` 已补，P5 其余项仍 BLOCKED）；G5 未通过 |
+| 2026-11-18 | [P6/P7 默认切换与去 Node 审计](2026-11-18-tsgo-p6-cutover-audit.md) | `69e13fb` | E0 | 默认 `--stdio` 仍构造 `NodeBackend`；记录 8 个硬阻塞；该审计时 P6/P7 未开始，不删除 Node |
+| 2026-11-18 | [P7 mandatory gates triage](2026-11-18-tsgo-p7-gates-triage.md) | `8490a92` | E1 | 23 个 `#[ignore]` 在 Node 24 下单跑全通过；0 enable-now / 11 keep-gated / 12 delete-at-P7；`semantic_tools` 2 个静默 return 与可选 `tsc` 分支复现 |
+| 2026-11-18 | [Native document symbols DTO 计划](2026-11-18-tsgo-document-symbols-dto-plan.md) | `497380c` | E0 | 推荐独立 `Backend::document_symbols`（Option B）；DTO/decoder 未接 adapter/LSP，脚本路由与 reverse lookup 仍是前置；F1 未关闭 |
+| 2026-11-18 | [tsgo typings 26 vs 23 裁决](2026-11-18-tsgo-typings-26-23-decision.md) | `f6f175f` | E1 | 交付 payload 定为 23 文件 / 2,548,075 B / `ba3eb83…`，上游身份保留 26 文件；lock 与真实 tarball 未冻结，F3-03 仍 BLOCKED |
+| 2026-11-18/19 | [P6-2 mandatory-gate 转换计划](2026-11-18-tsgo-p6-gate-conversion-plan.md) | `f6f175f` | E0 | 0/23 gate 绿；3 enable-now / 8 keep-gated / 12 delete-at-P7；2 个静默 return + 可选 `tsc` 转为 3 个强制原生 gate；S0–S9 与 no-false-green 规则 |
 
 ## 3. 当前门禁基线（2026-11-17，W4 最终）
 
-以下是 W4 最终快照，不替代各记录的原始结论。W2、W3、Q1 的计数只作历史，不与 W4 混用。Rust + tsgo 迁移的 P0/P1 基线见 §3.1；该迁移尚未完成，不能把本节 W4 的 Node 结果当作原生后端结果。
+以下是 W4 最终快照，不替代各记录的原始结论。W2、W3、Q1 的计数只作历史，不与 W4 混用。Rust + tsgo 迁移的 P0/P1 基线见 §3.1，P6 实施状态见 §3.2；该迁移尚未完成，不能把本节 W4 的 Node 结果当作原生后端结果。
 
 | 项 | 命令 | 当前结果 |
 | --- | --- | --- |
@@ -84,6 +96,38 @@ release/发布者签名。W4 的 Linux Zed 冒烟是手工安装最终发布包�
 
 G1 尚未关闭；7.1.0-beta 的接受与 integrity 固定、可执行安装器和 F0–F3 契约冻结是 P3 前置。
 
+## 3.2 Rust + tsgo 迁移 P6 实施状态（2026-11-19，HEAD `6358925`）
+
+本节记录已提交切片的当前状态，不替代各证据记录，也不把库级测试当作真实资产、CLI 或 Zed 验收。工作树中存在未提交的 P6-3 adapter/document-symbol 接线 WIP（不属于 HEAD `6358925`）；这些改动不是本节事实，也不作为通过证据。
+
+| 提交 | 切片 | 已提交内容 | 当前可证明 | 仍未关闭 |
+| --- | --- | --- | --- | --- |
+| `2c6d39e` | P6-3 后端类型资产 | `AnalysisInput::with_environment`、33 个 compiler option key、`TypeAssets`/`TypeAssetsPin`、full VFS 资产表、116 stdlib + 20 typings `.d.ts`、environment tsconfig；`crates/wxml-backend-tsgo/tests/type_assets.rs` 10 个测试 | 库/单元与真实引擎层：`type_assets` 真实门禁记录为 10/10 passed（其中 2 个为 opt-in 真实引擎用例；本轮未重跑）。可解析 `wx`/`Page`/`Component`/`getApp`，缺资产 fail-closed | adapter 仍调用 `AnalysisInput::new`（ /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/src/backend_tsgo/input.rs:121 ），`js_check` 仍为 `Inherit`（ /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/src/backend_tsgo/input.rs:202 ）；可信 pin loader、F3-03、AC-004 未保存更新旧诊断、TS 6.0.3 vs 7.1.0-beta 偏差、adapter 降级均未关闭 |
+| `abf0046` | P6-4a 引擎发现/沙箱/opt-in | `engine.rs` 从安装树发现并校验 `manifest.json`/`engine/lib/tsc`；`sandbox.rs` 每 session 新建 `0700` 沙箱；`wxml-lsp --stdio --backend native`；默认 `--stdio` 仍为 `NodeBackend` | CLI/库层：`--backend native` 失败闭合，未验证包时不回退 Node；默认路径未改变 | fd/`openat` 沙箱加固仍 BLOCKED，存在路径校验到 spawn 的残余 TOCTOU；P6-4b 真实资产启动、P6-4c 真实包/无 Node 进程审计、默认切换均未完成 |
+| `31d6d29` | F1 hover 证据与 Markdown 组合 | 三段式 Markdown 顺序、checked-empty/`Unsupported`/`Partial` 区分、声明范围双坐标；`crates/wxml-backend-tsgo/tests/f1_hover.rs` 11 个测试 | 库/单元层：9 个纯组合测试；2 个真实引擎测试仅在 `TSGO_BIN` 可用时运行，`WXML_REQUIRE_REAL_ENGINE=1` 才转为硬门禁 | 无 `getQuickInfoAtPosition`；QuickInfo display parts、逐 overload 文档/分段仍 BLOCKED；组件缺失等降级仍需 adapter 合同 |
+| `6eb6f26` | Native document symbols DTO | `wxml-types` 新增 `DocumentSymbol*` DTO 与默认 `Backend::document_symbols`；`wxml-backend-tsgo` 解码 v9 document symbols，保留 UTF-16/UTF-8 范围与 gap/truncation | 库/单元层：DTO 默认 `Unsupported`、decoder 与映射测试；不会把空结果伪装成 supported | adapter 与 LSP 路由未接线；脚本文档的 view/reverse lookup、snapshot 身份与 `DocumentRoute::Script` 仍是前置；`structure.rs` 的 WXML outline 不变 |
+| `6358925` | typings payload 身份强制 | 23 文件 allowlist、`2,548,075 B`、bundle 摘要 `ba3eb83…`、精确 payload 路径、入库的 5.3.1 fixture；manifest/verify/打包器重算并比较 | 交付库/单元层：hermetic fixture 下的打包/清单/安装树负向测试；`typings_payload.rs` 仍是对真实 5.3.1 树的 opt-in 一致性检查 | 真实上游 tarball 的 SRI/SHA-256/size、provisioning、`assets.lock.json`、clean-env/ABI、包级验收未完成；**F3-03/B6 仍 BLOCKED**，不关闭任何 F3 ID |
+| `0e7c672` | P6-2 gate 转换计划 | 23 个 `#[ignore]` 的逐项处置、3 个 enable-now/8 个 keep-gated/12 个 delete-at-P7、2 个静默 return + 可选 `tsc` → 3 个强制原生 gate、S0–S9 | 计划层：gate 状态与 case 状态分离，定义 `required_not_migrated → replacement_authored → replacement_red → gate_green → mandatory_green → replacement_reviewed → old_test_removed → closed` | 0/23 gate 绿；23 ignored + 2 个静默 return（另有可选 `tsc` 分支）仍是 gate debt；未删除旧测试、未改 `#[ignore]`、未切换默认后端 |
+
+当前门禁口径：
+
+| 项 | 状态 |
+| --- | --- |
+| F3-01～F3-16 | 无一项关闭；F3-02、F3-03 明确 BLOCKED，F3-09 仅有 fixture 级证据 |
+| P6-3 | 未完成：backend 数据层已落，adapter 资产 handoff 未接线 |
+| P6-4 | P6-4a opt-in 切片已落；P6-4b/c BLOCKED |
+| G5 / G6 | 均未关闭；G7 不在当前范围 |
+| 默认后端 | 仍为 Node；`--backend native` 只是 opt-in |
+| ignored / silent | 23 个 `#[ignore]`；`semantic_tools` 2 个静默 return；可选 `tsc` 分支仍在 |
+| 迁移台账 | 33 `green` / 270 `planned` / 36 `retired-with-decision`；本轮没有新增 `green`、`reviewed` 或 `closed` |
+| 平台 | 仅 Linux x86_64 有证据；aarch64/macOS/Windows/musl 未验证 |
+
+证据层级说明：
+
+- **库/单元**：`type_assets`、`f1_hover` 纯测试、document-symbol DTO/decoder 测试只证明 Rust 数据层与映射，不证明 LSP adapter、CLI 或编辑器行为。
+- **真实资产/CLI**：F3-02 的安装/干净 PATH/网络隔离是真实资产级证据，但 `execve` 审计与原生 stdio 会话仍缺；交付测试多为入库 fixture。
+- **Zed/UI**：原生后端没有 Zed 运行时或标准安装冒烟证据；不得引用历史 Node/W4 的 Zed 结果代替。
+
 ## 4. 维护规则
 
 1. 每条记录至少包含：日期、对象与版本、环境、方法、结果、限制、对项目决策的影响、数据位置。
@@ -109,6 +153,8 @@ docs/evidence/
 ├── full-feature-w2.md
 ├── full-feature-w3.md
 ├── full-feature-final.md
+├── 2026-11-17-tsgo-*.md          # 迁移 workspace/测试基线、原生 API、交付 spike
+├── 2026-11-18-tsgo-*.md          # P5/P6/P7 计划、F3 资产/clean-env、hover/symbols/typings
 └── data/
     ├── typescript-language-service/
     ├── existing-wxml-lsp-audit/
