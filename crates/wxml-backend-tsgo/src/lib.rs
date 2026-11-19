@@ -21,6 +21,7 @@
 //! implement `wxml_types::Backend`; the future adapter owns the conversion to
 //! C0 request/result DTOs.
 
+pub mod asset_loader;
 pub mod backend;
 pub mod config;
 pub mod input;

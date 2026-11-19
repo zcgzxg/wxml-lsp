@@ -28,6 +28,11 @@
 //! roots, required declarations, per-file SHA-256/size, version and the
 //! 256-file/8-MiB budget. The legacy [`AnalysisInput::new`] constructor is
 //! reserved for probes and old tests and carries no assets.
+//!
+//! [`TypeAssets::load_trusted`] is the only disk-reading entry point: it walks
+//! the caller-supplied engine and typings roots, rejects unsafe entries, hashes
+//! every declaration and then runs the same pin validation as
+//! [`TypeAssets::new`]. It does not verify an install or the delivery manifest.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -527,10 +532,14 @@ impl TypeAssetsPin {
 
 /// Verified TypeScript standard library and mini-program typings.
 ///
-/// This is a pure in-memory value: constructing it performs no disk I/O. A
-/// production loader reads and hashes the pinned package once, then shares the
-/// value through an [`Arc`] for every snapshot. Construction requires a
-/// [`TypeAssetsPin`] and recomputes counts, byte totals and bundle digests.
+/// [`Self::new`] is a pure in-memory value: it performs no disk I/O and only
+/// re-validates text that a caller already read. [`Self::load_trusted`] is the
+/// trusted disk loader: it reads the two pinned package roots, rejects unsafe
+/// entries, hashes every declaration and then runs the same validation as
+/// [`Self::new`]. A production host reads and hashes the pinned package once,
+/// then shares the value through an [`Arc`] for every snapshot. Construction
+/// requires a [`TypeAssetsPin`] and recomputes counts, byte totals and bundle
+/// digests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeAssets {
     standard_lib_root: AssetPath,
@@ -948,6 +957,93 @@ pub enum TypeAssetError {
     #[error("required type asset is missing: {path}")]
     MissingRequired {
         /// Missing path.
+        path: String,
+    },
+    /// A trusted asset root does not exist on disk.
+    #[error("type-asset root is missing: {root}")]
+    MissingRoot {
+        /// Missing root.
+        root: String,
+    },
+    /// A trusted asset root exists but is not a directory.
+    #[error("type-asset root is not a directory: {root}")]
+    RootNotDirectory {
+        /// Rejected root.
+        root: String,
+    },
+    /// A trusted asset tree contains a symbolic link.
+    #[error("type-asset entry is a symbolic link: {path}")]
+    Symlink {
+        /// Rejected entry.
+        path: String,
+    },
+    /// A trusted asset tree contains a file that is not a regular file.
+    #[error("type-asset entry is not a regular file: {path}")]
+    NonRegularFile {
+        /// Rejected entry.
+        path: String,
+    },
+    /// A trusted asset tree contains an unexpected entry.
+    #[error("unexpected type-asset entry `{path}`: {reason}")]
+    UnexpectedEntry {
+        /// Rejected entry.
+        path: String,
+        /// Stable rejection reason.
+        reason: &'static str,
+    },
+    /// A trusted declaration has more than one hard link.
+    #[error("type-asset file has multiple hard links: {path}")]
+    HardLink {
+        /// Rejected entry.
+        path: String,
+    },
+    /// A file name in a trusted asset tree is not portable or safe.
+    #[error("unsafe type-asset entry name `{path}`: {reason}")]
+    UnsafeName {
+        /// Rejected entry.
+        path: String,
+        /// Stable rejection reason.
+        reason: &'static str,
+    },
+    /// A path in a trusted asset tree is not valid UTF-8.
+    #[error("type-asset path is not valid UTF-8: {path}")]
+    NonUtf8Path {
+        /// Lossy rendering of the rejected path.
+        path: String,
+    },
+    /// A declaration file is not valid UTF-8 text.
+    #[error("type-asset file is not valid UTF-8: {path}")]
+    NonUtf8Content {
+        /// Rejected entry.
+        path: String,
+    },
+    /// Two trusted entries collide on a case-insensitive file system.
+    #[error("type-asset entries collide case-insensitively: {first} and {second}")]
+    CaseCollision {
+        /// First path in traversal order.
+        first: String,
+        /// Colliding path.
+        second: String,
+    },
+    /// Reading a trusted asset tree failed.
+    #[error("type-asset I/O failed for {path}: {source}")]
+    AssetIo {
+        /// Rejected entry.
+        path: String,
+        /// Underlying I/O error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// A declaration changed identity or length while it was being read.
+    #[error("type-asset file changed while being read: {path}")]
+    AssetChanged {
+        /// Rejected entry.
+        path: String,
+    },
+    /// A trusted asset tree is nested more deeply than asset paths may be.
+    #[error("type-asset directory nesting is too deep: {path}")]
+    NestingTooDeep {
+        /// Rejected directory.
         path: String,
     },
 }
@@ -1723,7 +1819,7 @@ fn is_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn hex_lower(bytes: &[u8]) -> String {
+pub(crate) fn hex_lower(bytes: &[u8]) -> String {
     const DIGITS: &[u8; 16] = b"0123456789abcdef";
     let mut encoded = String::with_capacity(bytes.len() * 2);
     for &byte in bytes {
