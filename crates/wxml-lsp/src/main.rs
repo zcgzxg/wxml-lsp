@@ -9,37 +9,47 @@ use std::sync::Arc;
 
 use wxml_lsp::backend_node::{NodeBackend, NodeBackendConfig};
 use wxml_lsp::project_host::ProjectState;
-use wxml_lsp::{run_stdio, run_stdio_native, run_stdio_with_host, version};
+use wxml_lsp::{
+    run_stdio, run_stdio_native, run_stdio_native_default, run_stdio_with_host, version,
+};
 use wxml_types::{CapabilityStatus, HoverResult, MarkupKind, MockBackend, TypeQuality};
 
 const USAGE: &str = "\
-Usage: wxml-lsp [--stdio [--backend node|native] [--mock]]
+Usage: wxml-lsp [--stdio [--backend native|node] [--mock]]
 
 Without arguments the server prints this usage. `--version` prints the build
 version and `--help` prints this message.
 
 Options:
   --stdio              serve the Language Server Protocol over stdin/stdout
-  --backend <backend>  type backend for --stdio: node (default) or native
+  --backend <backend>  type backend for --stdio: native (default) or node
   --mock               use the in-process mock backend (requires --stdio)
   --version            print the build version
   --help               print this message
 
-`--backend native` is the opt-in native engine. It requires the running
-executable to be installed as <package>/bin/wxml-lsp with a verified
-manifest.json, engine/lib/tsc and the pinned standard-library and
-mini-program typings. Discovery or asset verification failure fails closed
-before the LSP handshake and never falls back to Node.
+`--stdio` without `--backend` uses the native engine from the installed
+package. When the running executable is not installed as
+<package>/bin/wxml-lsp, it serves HostOnly: template syntax, formatting,
+structure, event facts and script symbol facts work, while type queries answer
+Unavailable. Once the installed layout exists, discovery and asset failures
+fail closed before the LSP handshake; there is no Node fallback.
 
-Environment:
+`--backend native` is the strict native selector: it requires the installed
+package and fails closed when discovery, manifest verification, the pinned
+engine or the type assets are missing, unsafe or mismatched.
+
+`--backend node` is the deprecated transitional Node backend. Only this mode
+reads the Node environment below.
+
+Environment (Node backend only):
   WXML_NODE                node executable name or absolute path (default: node)
   WXML_TYPE_BACKEND        absolute server.js path; relative values are rejected
   WXML_BACKEND_DIR         absolute backend directory; relative values are rejected
   WXML_ANALYZE_TIMEOUT_MS  per-request timeout (default: 15000)
   WXML_TEMPLATE_CHECK      off | pragma | inherit (default: pragma)
 
-Without WXML_TYPE_BACKEND the server probes only executable-relative install
-layouts (backends/typescript/dist/server.js or wxml-type-backend/server.js)
+Without WXML_TYPE_BACKEND the Node backend probes only executable-relative
+install layouts (backends/typescript/dist/server.js or wxml-type-backend/server.js)
 and never the process working directory. Set an absolute path for development.";
 
 /// One parsed command-line action.
@@ -49,11 +59,13 @@ enum Action {
     Version,
     /// Print usage.
     Help,
-    /// Serve with the default Node backend.
-    Stdio,
+    /// Serve with the default native selector (`HostOnly` when not installed).
+    Default,
+    /// Serve with the deprecated Node backend.
+    Node,
     /// Serve with the in-process mock backend.
     Mock,
-    /// Serve with the opt-in native backend.
+    /// Serve with the strict native backend.
     Native,
 }
 
@@ -85,7 +97,8 @@ fn run() -> Result<ExitCode, String> {
             println!("{USAGE}");
             Ok(ExitCode::SUCCESS)
         }
-        Ok(Action::Stdio) => serve_real(),
+        Ok(Action::Default) => serve_default(),
+        Ok(Action::Node) => serve_node(),
         Ok(Action::Mock) => serve_mock(),
         Ok(Action::Native) => serve_native(),
         Err(message) => {
@@ -159,7 +172,8 @@ fn parse_stdio<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<Action, St
 
     match (backend, mock) {
         (Some(BackendChoice::Native), false) => Ok(Action::Native),
-        (None | Some(BackendChoice::Node), false) => Ok(Action::Stdio),
+        (Some(BackendChoice::Node), false) => Ok(Action::Node),
+        (None, false) => Ok(Action::Default),
         (None, true) => Ok(Action::Mock),
         (Some(_), true) => Err("`--mock` cannot be combined with `--backend`".to_owned()),
     }
@@ -178,8 +192,18 @@ fn serve_mock() -> Result<ExitCode, String> {
     Ok(exit_code(outcome))
 }
 
-/// Runs the real project host and Node type backend over stdio.
-fn serve_real() -> Result<ExitCode, String> {
+/// Runs the default `--stdio` selector.
+///
+/// A verified install always serves the native engine. `NotInstalled` degrades
+/// to `HostOnly`; every other discovery or asset failure is returned before the
+/// LSP handshake. This function never constructs the Node backend.
+fn serve_default() -> Result<ExitCode, String> {
+    let outcome = run_stdio_native_default().map_err(|error| error.to_string())?;
+    Ok(exit_code(outcome))
+}
+
+/// Runs the deprecated Node backend over stdio.
+fn serve_node() -> Result<ExitCode, String> {
     let host = Arc::new(ProjectState::new());
     let backend = Arc::new(NodeBackend::new(
         NodeBackendConfig::from_env(),
@@ -189,10 +213,10 @@ fn serve_real() -> Result<ExitCode, String> {
     Ok(exit_code(outcome))
 }
 
-/// Runs the opt-in native backend over stdio.
+/// Runs the strict native backend over stdio.
 ///
 /// Discovery and sandbox validation fail before `initialize`; this function
-/// never constructs the Node backend.
+/// never constructs the Node backend and never degrades to `HostOnly`.
 fn serve_native() -> Result<ExitCode, String> {
     let outcome = run_stdio_native().map_err(|error| error.to_string())?;
     Ok(exit_code(outcome))
@@ -216,8 +240,8 @@ mod tests {
     }
 
     #[test]
-    fn stdio_defaults_to_node() {
-        assert_eq!(parse(["--stdio"]), Ok(Action::Stdio));
+    fn stdio_defaults_to_native() {
+        assert_eq!(parse(["--stdio"]), Ok(Action::Default));
     }
 
     #[test]
@@ -230,7 +254,7 @@ mod tests {
 
     #[test]
     fn parses_explicit_node_backend() {
-        assert_eq!(parse(["--stdio", "--backend", "node"]), Ok(Action::Stdio));
+        assert_eq!(parse(["--stdio", "--backend", "node"]), Ok(Action::Node));
     }
 
     #[test]

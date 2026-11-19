@@ -5,13 +5,13 @@
 //! epoch invalidation can be exercised without starting a native process.
 
 use wxml_backend_tsgo::input::AnalysisInput;
-use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::document_symbol::DocumentSymbolsEvidence;
 use wxml_backend_tsgo::native::session::{
     AutoImportPreparation, NativeSession, SessionOptions, TypeQuery,
 };
 use wxml_backend_tsgo::native::strings::Utf16Position;
 use wxml_backend_tsgo::native::wire::{RawCompletionList, RawDiagnostic};
+use wxml_backend_tsgo::native::{NativeError, UnavailableReason};
 use wxml_backend_tsgo::query::completion::CompletionQueryOptions;
 use wxml_backend_tsgo::query::definition::{
     DefinitionResult as NativeDefinitionResult, map_definition,
@@ -195,6 +195,24 @@ impl SessionFactory for NativeSessionFactory {
     fn start(&self) -> Result<Box<dyn QuerySession>, NativeError> {
         let session = NativeSession::start(self.options.clone())?;
         Ok(Box::new(LiveQuerySession { session }))
+    }
+}
+
+/// Session factory for the `HostOnly` selector.
+///
+/// `HostOnly` means the running executable is not inside an installed package,
+/// so there is no engine to start. The adapter short-circuits every
+/// session-backed query before this factory is consulted; returning a typed
+/// `Unavailable` here keeps that invariant fail-closed if the short-circuit is
+/// ever bypassed.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct HostOnlySessionFactory;
+
+impl SessionFactory for HostOnlySessionFactory {
+    fn start(&self) -> Result<Box<dyn QuerySession>, NativeError> {
+        Err(NativeError::Unavailable {
+            reason: UnavailableReason::ArtifactMismatch,
+        })
     }
 }
 

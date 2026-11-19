@@ -67,7 +67,7 @@ use wxml_types::{
 use super::hover::resolved_status;
 use super::input::ViewProvider;
 use super::session::{HoverDocumentation, QuerySession};
-use super::{BACKEND_ID, TsgoBackendAdapter};
+use super::{BACKEND_ID, HOST_ONLY_REASON, TsgoBackendAdapter};
 use crate::project_host::{
     HostError, PreparedFile, PreparedView, ProjectHost, ProjectState, ViewTarget,
 };
@@ -3997,6 +3997,148 @@ fn the_e2e21_non_literal_page_fixture_is_unsupported_not_unavailable() {
         matches!(multi.status, CapabilityStatus::Partial { .. }),
         "multi registrations must stay Partial, got {:?}",
         multi.status
+    );
+}
+
+/// `HostOnly` must keep static template and script facts and answer every
+/// session-backed query with the stable `Unavailable` reason.
+///
+/// This is the adapter-level contract behind `wxml-lsp --stdio` when the
+/// executable is not inside an installed package: no engine, no type assets and
+/// no legacy Node environment, but no fabricated type success either.
+#[test]
+fn host_only_serves_static_facts_and_reports_type_queries_unavailable() {
+    use crate::project_host::{ProjectHost, ProjectState};
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("tests/fixtures/events-basic")
+        .canonicalize()
+        .expect("events-basic fixture root");
+    let host = Arc::new(ProjectState::new());
+    host.open_root(Some(&format!("file://{}", root.display())))
+        .expect("open the events-basic fixture");
+    let adapter = TsgoBackendAdapter::without_engine(host.clone());
+
+    let capabilities = adapter.capabilities();
+    for status in [
+        &capabilities.hover,
+        &capabilities.diagnostics,
+        &capabilities.definition,
+        &capabilities.completion,
+    ] {
+        assert!(
+            matches!(status, CapabilityStatus::Partial { .. }),
+            "HostOnly must advertise a partial, never complete, capability: {status:?}"
+        );
+        assert!(
+            status
+                .reason()
+                .is_some_and(|reason| reason.contains(HOST_ONLY_REASON)),
+            "HostOnly capability reason must name the missing engine: {status:?}"
+        );
+    }
+
+    let relative = "pages/index/index.wxml";
+    let path = project_path(relative);
+    let file = ProjectHost::file_id(host.as_ref(), &path).expect("fixture file id");
+    let target = ProjectHost::view_for(host.as_ref(), &path).expect("fixture view");
+    let template = std::fs::read_to_string(root.join(relative)).expect("fixture template");
+    let context_for = |text: &str, snapshot: u64| {
+        RequestContext::new(
+            ProjectHost::project_revision(host.as_ref()),
+            target.view_revision,
+            adapter.epoch(),
+            Arc::new(SourceSnapshot::new(
+                file.clone(),
+                SourceRevision::new(1),
+                SnapshotId::new(snapshot),
+                text,
+            )),
+        )
+        .expect("request context")
+    };
+
+    let hover = adapter
+        .hover(HoverRequest {
+            context: context_for(&template, 1),
+            offset: offset_of(&template, "label"),
+        })
+        .expect_err("HostOnly hover must not fabricate a type");
+    assert!(
+        matches!(&hover, BackendError::Unavailable(reason) if reason == HOST_ONLY_REASON),
+        "{hover:?}"
+    );
+
+    let definition = adapter
+        .definition(DefinitionRequest {
+            context: context_for(&template, 2),
+            offset: offset_of(&template, "label"),
+        })
+        .expect_err("HostOnly definition must not fabricate a location");
+    assert!(
+        matches!(&definition, BackendError::Unavailable(reason) if reason == HOST_ONLY_REASON),
+        "{definition:?}"
+    );
+
+    let diagnostics = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context_for(&template, 3),
+        })
+        .expect("diagnostics never return Err");
+    assert!(
+        matches!(diagnostics.status, CapabilityStatus::Unavailable { .. }),
+        "HostOnly diagnostics must not claim a completed type check: {:?}",
+        diagnostics.status
+    );
+
+    let malformed = "<view>";
+    let syntax = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context_for(malformed, 4),
+        })
+        .expect("syntax diagnostics never return Err");
+    assert!(
+        matches!(syntax.status, CapabilityStatus::Unavailable { .. }),
+        "HostOnly syntax diagnostics must stay Unavailable for the type part: {:?}",
+        syntax.status
+    );
+    assert!(
+        !syntax.diagnostics.is_empty(),
+        "template syntax diagnostics must keep working in HostOnly"
+    );
+
+    let event_text = "<view bindtap=\"on\" />";
+    let event_completion = adapter
+        .completion(CompletionRequest {
+            context: context_for(event_text, 5),
+            offset: offset_of(event_text, "on") + 2,
+            kind: CompletionKind::EventHandler,
+        })
+        .expect("event completion does not open a session");
+    assert!(
+        event_completion
+            .items
+            .iter()
+            .any(|item| item.label == "onShorthandTap"),
+        "script method facts must keep working: {:?}",
+        event_completion.items
+    );
+
+    let script_path = project_path("pages/index/index.ts");
+    let script_file =
+        ProjectHost::file_id(host.as_ref(), &script_path).expect("fixture script file id");
+    let symbols = adapter
+        .symbols(SymbolRequest {
+            context: context_for(&template, 6),
+            subject: script_file,
+            query: SymbolQuery::DataRoots,
+        })
+        .expect("script symbol facts do not open a session");
+    assert!(
+        symbols.fields.iter().any(|field| field.name == "label"),
+        "script data roots must keep working: {:?}",
+        symbols.fields
     );
 }
 

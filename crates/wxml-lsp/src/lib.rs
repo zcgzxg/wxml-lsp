@@ -42,10 +42,10 @@
 #![allow(clippy::redundant_pub_crate)]
 
 pub mod backend_node;
-// Opt-in native backend: only `--backend native` selects it. It discovers a
-// verified install, loads the pinned type assets once and serves sandboxed
-// native sessions; the default `--stdio` path still constructs
-// `backend_node::NodeBackend`.
+// Native backend. `--stdio` without `--backend` selects it and falls back to
+// HostOnly only when the executable is not inside an installed package;
+// `--backend native` requires the verified install and fails closed. The
+// legacy Node backend is reachable only through `--backend node`.
 pub(crate) mod backend_tsgo;
 pub(crate) mod completion;
 pub mod configuration;
@@ -65,12 +65,15 @@ pub(crate) mod workspace;
 
 pub use server::{ServerError, ServerOutcome, run_stdio, run_stdio_with_host, run_with_host};
 
-// Opt-in native startup. The default `--stdio` path remains Node; these
-// exports exist so the binary can select native explicitly and report a typed,
-// path-free failure when discovery, type-asset loading, sandbox creation or the
-// transport fails.
+// Native startup. `run_stdio_native_default` is the default `--stdio` path: it
+// serves the verified install and degrades to HostOnly only when the executable
+// is not installed. `run_stdio_native` is the strict `--backend native` path.
+// `run_stdio_host_only` serves static WXML features without an engine and
+// answers type queries as unavailable. All exports report typed, path-free
+// failures.
 pub use backend_tsgo::{
-    EngineDiscoveryError, EnvironmentLoadError, NativeStartupError, SandboxError, run_stdio_native,
+    EngineDiscoveryError, EnvironmentLoadError, NativeStartupError, SandboxError,
+    run_stdio_host_only, run_stdio_native, run_stdio_native_default,
 };
 
 /// Returns the version reported by `wxml-lsp --version`.

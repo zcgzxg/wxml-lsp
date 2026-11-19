@@ -112,6 +112,11 @@ impl Session {
     fn start_with_server(project: &TempProject, paths: &BackendPaths, server: &Path) -> Self {
         let mut child = Command::new(BIN)
             .arg("--stdio")
+            // These are the legacy Node gates: the default `--stdio` selector
+            // is native/HostOnly since P6-8, and the legacy environment is only
+            // read by the explicit transitional Node backend.
+            .arg("--backend")
+            .arg("node")
             .current_dir(project.root())
             .env("WXML_TYPE_BACKEND", server)
             .env("WXML_BACKEND_DIR", &paths.backend_dir)

@@ -1,12 +1,16 @@
-//! Opt-in `wxml_types::Backend` adapter for the native `tsgo` backend.
+//! `wxml_types::Backend` adapter for the native `tsgo` backend.
 //!
 //! # Scope and safety
 //!
-//! This module is not constructed by `server.rs`, `project_host.rs` or the
-//! configuration defaults. The only native entry point is the explicit
-//! [`run_stdio_native`] selector used by `wxml-lsp --stdio --backend native`;
-//! `--stdio` without that flag still constructs the Node backend. The existing
-//! Node backend stays untouched and remains the default.
+//! This module is constructed by the `--stdio` selectors in `main.rs` and is
+//! never selected by `server.rs`, `project_host.rs` or the configuration
+//! defaults. `--stdio` without `--backend` uses [`run_stdio_native_default`]:
+//! it serves the verified native engine when the running executable is inside
+//! an installed package and falls back to [`run_stdio_host_only`] **only** when
+//! discovery reports [`EngineDiscoveryError::NotInstalled`]. Every other
+//! discovery or asset failure fails closed. `--backend native` uses the strict
+//! [`run_stdio_native`] selector, and `--backend node` is the only path that
+//! constructs the legacy Node backend.
 //!
 //! The adapter owns a [`NativeSession`](wxml_backend_tsgo::native::session::NativeSession)
 //! lazily. Every request converts the host's effective template snapshot into
@@ -25,11 +29,20 @@
 //!
 //! # Type environment
 //!
-//! [`run_stdio_native`] loads the pinned type assets once through
-//! `TsgoBackendAdapter::with_install`, before any sandbox or session exists.
-//! A missing, unsafe or pin-mismatched tree aborts startup; there is no Node
-//! or legacy fallback. `new` and `with_host` remain legacy test/probe
-//! constructors and are not reachable from the production selector.
+//! [`run_stdio_native`] and [`run_stdio_native_default`] load the pinned type
+//! assets once through `TsgoBackendAdapter::with_install`, before any sandbox
+//! or session exists. A missing, unsafe or pin-mismatched tree aborts startup;
+//! there is no Node or legacy fallback. `HostOnly` never loads assets and never
+//! reads the legacy Node environment: it serves the static host layer with a
+//! session factory that cannot start an engine.
+//!
+//! [`run_stdio_host_only`] exists only for the default selector's
+//! `NotInstalled` state. Its type queries return `Unavailable` with a stable
+//! reason; template syntax, formatting, structure, event facts and script
+//! symbol facts keep working. It is not a Node fallback.
+//!
+//! `new` and `with_host` remain legacy test/probe constructors and are not
+//! reachable from the production selectors.
 //!
 //! Only Linux x86-64 with POSIX absolute roots is supported: Windows
 //! drive-letter/UNC roots, non-UTF-8 roots, symlinks, hard links and
@@ -74,7 +87,7 @@
 
 #![allow(
     dead_code,
-    reason = "opt-in native selector: legacy constructors/query seams and manifest \
+    reason = "native selectors: legacy constructors/query seams and manifest \
               projections are test- or forward-compatibility-only"
 )]
 
@@ -125,16 +138,29 @@ use self::input::{
     build_request_plan, build_script_request_plan, merge_reason,
 };
 use self::sandbox::SandboxSessionFactory;
-use self::session::{NativeSessionFactory, QuerySession, SessionFactory};
+use self::session::{HostOnlySessionFactory, NativeSessionFactory, QuerySession, SessionFactory};
 
 /// Stable backend identity used in [`BackendEpoch`].
 pub(crate) const BACKEND_ID: &str = "tsgo-native";
 
-/// Why the opt-in native startup path could not begin serving.
+/// Stable reason reported by the `HostOnly` selector.
+///
+/// The text is path-free and shared by request results and the startup log, so
+/// a user can tell that static WXML features are available while type checking
+/// is not.
+pub(crate) const HOST_ONLY_REASON: &str = "native engine is not installed";
+
+/// Capability reason advertised by `HostOnly`.
+///
+/// `HostOnly` still answers static template, event and script-fact queries, so
+/// the capability stays `Partial` rather than `Supported` or `Unavailable`.
+const HOST_ONLY_CAPABILITY_REASON: &str = "native engine is not installed; static template, event and script-fact queries remain available, while type-backed queries are unavailable";
+
+/// Why a native startup path could not begin serving.
 ///
 /// Messages are path-free and stable enough for stderr. A failure never
-/// constructs the Node backend or probes a JavaScript backend; the selector
-/// fails closed.
+/// constructs the Node backend or probes a JavaScript backend; the selectors
+/// fail closed.
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum NativeStartupError {
@@ -152,9 +178,11 @@ pub enum NativeStartupError {
     Server(#[from] crate::ServerError),
 }
 
-/// Serves the LSP over stdio with the opt-in native backend.
+/// Serves the LSP over stdio with the strict native backend.
 ///
-/// Discovery starts at the running executable and requires
+/// This is the explicit `--backend native` selector: it never degrades to
+/// `HostOnly` and never constructs the Node backend. Discovery starts at the
+/// running executable and requires
 /// `<package>/bin/wxml-lsp` with a verified manifest and `engine/lib/tsc`.
 /// This function also loads and verifies the pinned standard-library and
 /// mini-program typings once, before any sandbox or session exists. Missing,
@@ -168,19 +196,67 @@ pub fn run_stdio_native() -> Result<crate::ServerOutcome, NativeStartupError> {
     crate::server::run_stdio_with_host(Arc::new(adapter), host).map_err(NativeStartupError::Server)
 }
 
+/// Serves the LSP over stdio with the default native selector.
+///
+/// The running executable is discovered as `<package>/bin/wxml-lsp` and the
+/// verified engine plus pinned type assets are loaded exactly like
+/// [`run_stdio_native`]. The only degradation is
+/// [`EngineDiscoveryError::NotInstalled`]: the executable is not inside an
+/// installed package, so the process starts [`run_stdio_host_only`] instead of
+/// failing. Every other discovery, asset, sandbox or transport error is
+/// returned unchanged; there is no Node or legacy fallback.
+pub fn run_stdio_native_default() -> Result<crate::ServerOutcome, NativeStartupError> {
+    let install = match engine::discover_from_current_exe() {
+        Ok(install) => install,
+        Err(EngineDiscoveryError::NotInstalled) => {
+            crate::server::log(format_args!(
+                "{HOST_ONLY_REASON}; serving static WXML features only"
+            ));
+            return run_stdio_host_only().map_err(NativeStartupError::Server);
+        }
+        Err(error) => return Err(NativeStartupError::Discovery(error)),
+    };
+    let host = Arc::new(crate::project_host::ProjectState::new());
+    let adapter = TsgoBackendAdapter::with_install(host.clone(), &install)?;
+    crate::server::run_stdio_with_host(Arc::new(adapter), host).map_err(NativeStartupError::Server)
+}
+
+/// Serves the LSP over stdio with the native `HostOnly` adapter.
+///
+/// `HostOnly` never discovers an engine, never loads type assets, never creates a
+/// sandbox and never reads `WXML_NODE`, `WXML_TYPE_BACKEND` or
+/// `WXML_BACKEND_DIR`. Static template, style, event and script-symbol features
+/// keep working; every session-backed query returns `Unavailable` with
+/// [`HOST_ONLY_REASON`]. It is not a Node fallback.
+///
+/// # Errors
+///
+/// Returns [`crate::ServerError`] only for transport or thread startup failures.
+pub fn run_stdio_host_only() -> Result<crate::ServerOutcome, crate::ServerError> {
+    let host = Arc::new(crate::project_host::ProjectState::new());
+    let adapter = TsgoBackendAdapter::without_engine(host.clone());
+    crate::server::run_stdio_with_host(Arc::new(adapter), host)
+}
+
 /// One reusable session operation for the restart retry path.
 type SessionOperation<'a, R> =
     dyn FnMut(&mut dyn QuerySession, Option<String>) -> Result<R, BackendError> + 'a;
 
-/// Opt-in adapter between the LSP project host and the native session.
+/// Adapter between the LSP project host and the native session.
 ///
-/// Construction is explicit. No default server path constructs it, so adding
-/// this type does not select the native backend.
+/// Construction is explicit. Only the `--stdio` native selectors construct it,
+/// and only the `HostOnly` selector leaves `engine_unavailable` set.
 pub(crate) struct TsgoBackendAdapter {
     engine: PinnedEngine,
     views: Arc<dyn ViewProvider>,
     sessions: Arc<dyn SessionFactory>,
     environment: Environment,
+    /// When set, every session-backed query fails closed with this reason.
+    ///
+    /// `HostOnly` sets it because discovery reported `NotInstalled`; the static
+    /// host layer never opens a session, so no engine process or type asset is
+    /// reached.
+    engine_unavailable: Option<&'static str>,
     state: Mutex<AdapterState>,
     /// Last script-method candidate list used by event-handler completion.
     ///
@@ -249,6 +325,27 @@ impl TsgoBackendAdapter {
         ))
     }
 
+    /// Creates the `HostOnly` adapter for a package that is not installed.
+    ///
+    /// No engine is discovered, no type assets are loaded and no sandbox is
+    /// created. The legacy [`Environment::Legacy`] mode is reused deliberately:
+    /// it carries no assets, so a session can never be opened with a partial
+    /// type environment. [`Self::ensure_open`] short-circuits every
+    /// session-backed query with [`HOST_ONLY_REASON`].
+    #[must_use]
+    pub(crate) fn without_engine(host: Arc<dyn crate::project_host::ProjectHost>) -> Self {
+        Self {
+            engine: PinnedEngine::pinned(),
+            views: Arc::new(input::HostViewProvider::new(host)),
+            sessions: Arc::new(HostOnlySessionFactory),
+            environment: Environment::legacy(),
+            engine_unavailable: Some(HOST_ONLY_REASON),
+            state: Mutex::new(AdapterState::new(1)),
+            event_cache: Mutex::new(None),
+            epoch: AtomicU64::new(1),
+        }
+    }
+
     /// Starts and immediately stops one native session without entering the
     /// LSP transport.
     ///
@@ -288,6 +385,7 @@ impl TsgoBackendAdapter {
             views,
             sessions,
             environment,
+            engine_unavailable: None,
             state: Mutex::new(AdapterState::new(1)),
             event_cache: Mutex::new(None),
             epoch: AtomicU64::new(1),
@@ -485,6 +583,9 @@ impl TsgoBackendAdapter {
         state: &mut AdapterState,
         plan: &dyn OpenPlan,
     ) -> Result<(), BackendError> {
+        if let Some(reason) = self.engine_unavailable {
+            return Err(BackendError::Unavailable(reason.to_owned()));
+        }
         self.drop_invalidated(state);
         if let Some(open) = &state.open {
             if open.identity == plan.plan_identity() && state.session.is_some() {
@@ -980,6 +1081,20 @@ impl Backend for TsgoBackendAdapter {
     /// `Supported`/`Partial`/`Unsupported` status per request. No capability
     /// entry here claims a complete script outline.
     fn capabilities(&self) -> BackendCapabilities {
+        if self.engine_unavailable.is_some() {
+            // Static template, event and script-fact queries still answer, so
+            // this is `Partial`, not `Supported`: every type-backed request is
+            // `Unavailable` and no result claims a completed type check.
+            let status = CapabilityStatus::Partial {
+                reason: HOST_ONLY_CAPABILITY_REASON.to_owned(),
+            };
+            return BackendCapabilities {
+                hover: status.clone(),
+                diagnostics: status.clone(),
+                definition: status.clone(),
+                completion: status,
+            };
+        }
         BackendCapabilities {
             hover: CapabilityStatus::Partial {
                 reason:
