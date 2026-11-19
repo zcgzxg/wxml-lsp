@@ -1,19 +1,19 @@
-# P7-0 预删除冻结（2026-11-20，HEAD `75040c2`）
+# P7-0 预删除冻结（2026-11-20，HEAD `2ce4626`）
 
 ## 0. 身份、边界与结论
 
 - Worktree：`/home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration`。
-- 本次冻结基线 HEAD：`75040c2`（`test(tsgo): freeze legacy oracle and backfill parity ledger`）。
-- 上一版冻结记录的是 `52ae408` 基线 / `807a157` 实际 HEAD。`75040c2` 已提交 oracle manifest、wave-7/wave-8 ledger 回填和 parity 归档读取，因此按 `75040c2` 重新生成。`backends/typescript` 与 `backend_node` 的树哈希没有变化；变化集中在 ledger 计数、`ledger.rs`/`fixture_hash.rs` 行号和 TS oracle 绑定方式。
+- 本次冻结基线 HEAD：`2ce4626`（`test(p7): close out legacy ledger with scoped waiver`）。
+- 上一版冻结记录的是 `52ae408` 基线 / `807a157` 实际 HEAD。`2ce4626` 已提交 oracle manifest、wave-7/wave-8 ledger 回填和 parity 归档读取，因此按 `2ce4626` 重新生成。`backends/typescript` 与 `backend_node` 的树哈希没有变化；变化集中在 ledger 计数、`ledger.rs`/`fixture_hash.rs` 行号和 TS oracle 绑定方式。
 - 冻结时共享工作树有并行未提交改动（`docs/evidence/README.md`、`scripts/build-release.sh` 以及其它 shadow/tests WIP），都不在冻结路径内；`git status --porcelain -- <冻结路径>` 为空。
 - 性质：**只读冻结切片**。只修改 `docs/evidence/data/legacy-p7-freeze.json`、`scripts/p7-freeze.sh` 和本文；不修改 ledger、oracle manifest、README、N2 build、生产代码、Cargo、CI 或默认 backend；不删除文件；不 commit；不启动 review。
 
 **结论先行：**
 
-1. 本次按 `75040c2` 重新冻结：`backends/typescript` 99 个 tracked 文件 + 34 个 `dist` 文件、`backend_node` 8 个文件、23 个旧 `#[ignore]` gate、15 个 v1 写路径、5 个 legacy 环境变量、2 个 silent return + 1 个可选 `tsc` 分支。
+1. 本次按 `2ce4626` 重新冻结：`backends/typescript` 99 个 tracked 文件 + 34 个 `dist` 文件、`backend_node` 8 个文件、23 个旧 `#[ignore]` gate、15 个 v1 写路径、5 个 legacy 环境变量、2 个 silent return + 1 个可选 `tsc` 分支。
 2. **P7-2 的 archive 绑定已经落地**：`ledger.rs` 和 `fixture_hash.rs` 以 `docs/plans/tsgo-legacy-oracle-manifest.json` 为权威；live `backends/typescript/test|samples` 存在时重哈希，不存在时走 Frozen 模式。P7-0 的“ledger/fixture 解耦”子项因此可以标为完成。
 3. **P7-0 整体仍是 partial**：`p7-pre-delete` tag、独立的 legacy-node-tests 清单、`native_gates.rs` 的 `old_test_removed` 支持仍未完成。
-4. **删除仍然 BLOCKED**：ledger 仍是 **55 green / 248 planned / 36 retired**；23 个 gate 仍是 `#[ignore]`；live TS 树仍在；v1 写路径和 2 个 silent return 仍在。
+4. **删除仍然 BLOCKED**：ledger 仍是 **109 green / 0 planned / 130 reviewed / 29 waived / 71 retired**；23 个 gate 仍是 `#[ignore]`；live TS 树仍在；v1 写路径和 2 个 silent return 仍在。
 
 ---
 
@@ -48,7 +48,7 @@
 完整 23 行在 JSON 的 `old_ignored_gates.gates[]`。每个 gate 固定：
 
 - `gate_id`、`file`、`test`、`fully_qualified`（集成测试二进制名 + `::` + 函数名）；
-- `line_ignore` 与 `line_fn`（HEAD `75040c2` 的工作树行号）；
+- `line_ignore` 与 `line_fn`（HEAD `2ce4626` 的工作树行号）；
 - `status`、`mandatory_green=false`、`replacement_reviewed=false`、`old_test_present=true`；
 - `replacement_test`、`replacement_kind`、`old_reason`；
 - `p7_action`（`delete` 或 `retarget`）；
@@ -65,7 +65,7 @@
 | `performance_bench.rs` | 1 | 1 retarget |
 | `q2_stability.rs` | 1 | 1 retarget |
 
-合计 23：12 `delete` / 11 `retarget`。所有 23 个 gate 的 ledger 状态都是 `gate_green`，但它们在源码里仍是 `#[ignore]`；`gate_green` 是 opt-in native job 的结果，不是 `mandatory_green`。行号在 `75040c2` 上未变化。
+合计 23：12 `delete` / 11 `retarget`。所有 23 个 gate 的 ledger 状态都是 `gate_green`，但它们在源码里仍是 `#[ignore]`；`gate_green` 是 opt-in native job 的结果，不是 `mandatory_green`。行号在 `2ce4626` 上未变化。
 
 Node 依赖按文件分为三类：
 
@@ -120,7 +120,7 @@ JSON `v1_delivery.write_paths[]` 固定 15 个写路径符号，`keep_paths[]` �
 
 ### 1.7 Legacy TS oracle 归档绑定
 
-`75040c2` 新增并提交了 `docs/plans/tsgo-legacy-oracle-manifest.json`，`ledger.rs`/`fixture_hash.rs` 现在以它为权威：
+`75040c2` 新增并提交了 `docs/plans/tsgo-legacy-oracle-manifest.json`；当前冻结 HEAD `2ce4626` 上 `ledger.rs`/`fixture_hash.rs` 仍以它为权威：
 
 | 项 | 值 |
 | --- | --- |
@@ -159,7 +159,7 @@ JSON `v1_delivery.write_paths[]` 固定 15 个写路径符号，`keep_paths[]` �
 3. 条目按 root-relative path 的原始字节排序，显式 `LC_ALL=C`。
 4. 每个文件的输入是 `relative_path + NUL + raw_file_bytes + NUL`；所有条目顺序拼接后取 SHA-256，小写 hex。
 5. `bytes` 是原始字节数；`files[]` 的 `path` 是树根相对路径。
-6. 行号是 HEAD `75040c2` 的工作树行号；`--check` 会重新定位 `fn`、`#[ignore]`、v1 anchor、legacy env anchor、silent return anchor 和 legacy oracle anchor，任何移动都会失败。
+6. 行号是 HEAD `2ce4626` 的工作树行号；`--check` 会重新定位 `fn`、`#[ignore]`、v1 anchor、legacy env anchor、silent return anchor 和 legacy oracle anchor，任何移动都会失败。
 
 **行尾**：哈希读取工作树原始字节。LF checkout 是当前基线；CRLF checkout 会改变所有哈希，和既有 fixture gate 的 LF 说明一致。
 
@@ -171,16 +171,15 @@ JSON `v1_delivery.write_paths[]` 固定 15 个写路径符号，`keep_paths[]` �
 
 ### 3.1 P7-1（台账归零）
 
-本冻结只记录 **55 green / 248 planned / 36 retired** 和 23 个 gate 的当前状态，不推进任何 case，也不把 `gate_green` 写成 `mandatory_green` 或 `reviewed`。P7-1 仍需：
+本冻结记录 **109 green / 0 planned / 130 reviewed / 29 waived / 71 retired** 的 owner-scoped closeout 和 23 个 gate 的当前状态；`reviewed`/`waived` 明确不是 green。P7-1 仍需：
 
-- `planned=0`（或书面 G5 waiver）；
 - 23 个 gate 全部 `mandatory_green` + `replacement_reviewed`；
 - 2 个 silent return 被替换，可选 `tsc` 分支删除；
 - 只有完成这些，P7-3 的删除才有 F2 依据。
 
 ### 3.2 P7-2（归档旧 TS oracle）
 
-`75040c2` 已提交 archive manifest 和 read-side 绑定。当前状态：
+`2ce4626` 已提交 archive manifest 和 read-side 绑定。当前状态：
 
 - `ledger.rs` 通过 `oracle_manifest::load_manifest` 读取 manifest，再用 `verify_legacy_oracle` 选择 Live/Frozen；
 - `fixture_hash.rs` 的 `legacy_archived=true` 允许 `backends/typescript/test`/`samples` 缺失；
@@ -191,7 +190,7 @@ P7-2 剩余的字节/哈希工作已由 manifest 覆盖；P7-4 仍要把 35 个 
 
 ### 3.3 与 P7-3..P7-5 的关系
 
-- P7-3 删除 `backend_node/**` 和 12 个 delete-at-P7 旧测试，前置是 P7-1/P7-2 和默认 native/HostOnly；P7-2 已落地，P7-1 未完成。
+- P7-3 删除 `backend_node/**` 和 12 个 delete-at-P7 旧测试，前置是 P7-2、默认 native/HostOnly 和 gate mandatory/review；P7-2 已落地，P7-1 closeout 已达成但 mandatory gate 仍未完成。
 - P7-4 删除旧 TS 实现/测试/构建，前置是 archive manifest 和 samples 迁移。
 - P7-5 删除 v1 写路径，前置是 F3-08/F3-09 的真实 legacy 证据；本冻结明确保留 3 个只读/原生边界。
 
@@ -201,10 +200,10 @@ P7-2 剩余的字节/哈希工作已由 manifest 覆盖；P7-4 仍要把 35 个 
 
 | # | 条件 | 当前证据 |
 | ---: | --- | --- |
-| 1 | Ledger 未归零 | `55 green / 248 planned / 36 retired`（339 total）；`exact=55`，其余 planned 仍混有 `near_exact`/`weaker`/`structural`/`blocked` 证据 |
+| 1 | Ledger closeout 已达成（reviewed/waived 非 green） | `109 green / 0 planned / 130 reviewed / 29 waived / 71 retired`（339 total）；`exact=109`；owner scope waiver 见 `2026-11-20-tsgo-p7-closeout-ledger.md` |
 | 2 | 23 个旧 gate 仍 `#[ignore]` | 23 `gate_green` / 0 `required_not_migrated`，但 `mandatory_green=false`、`replacement_reviewed=false`、`old_test_present=true` |
 | 3 | native job 不是 required | `.github/workflows/ci.yml:156-158` 的 `native-gates` 只在 `workflow_dispatch` + `inputs.native_gates` 时运行；默认 CI 不跑 23 gate |
-| 4 | `native_gates.rs` 仍要求旧测试存在 | `IGNORED_GATE_COUNT=23`；没有 `old_test_removed`，删除旧 `#[ignore]` 会让 `native_parity` 先红 |
+| 4 | `native_gates.rs` 仍要求旧测试存在 | `IGNORED_GATE_COUNT=23`；已支持 `old_test_removed`，但当前 23 gate 仍 `old_test_present=true`，尚未标记删除 |
 | 5 | live TS 树仍在 | `backends/typescript/test` 22 文件 / 253,965 B；`samples` 35 文件 / 6,069 B；P7-4 samples 迁移未完成 |
 | 6 | v1 写路径仍可达 | 15 个写路径符号仍在；`wxml-lsp-package` 无子命令仍是 v1；`install`/`upgrade` 仍有 schema v1 分支 |
 | 7 | `semantic_tools` 仍有静默/可选分支 | 2 个 `return;` + 1 个 `if tsc.exists()` |
@@ -221,8 +220,8 @@ P7-2 剩余的字节/哈希工作已由 manifest 覆盖；P7-4 仍要把 35 个 
 - [x] 冻结 `backends/typescript`（tracked + dist）与 `backend_node` 的文件/树身份；
 - [x] 冻结 23 个旧 gate 的 FQ test ID、文件、行、Node 依赖、replacement 和 P7 动作；
 - [x] 冻结 v1 写路径、legacy env、2 个 silent return + `tsc` 分支；
-- [x] `ledger.rs` 读 archive manifest（`75040c2`）；
-- [x] `fixture_hash.rs` 支持 legacy tree archived（`75040c2`）；
+- [x] `ledger.rs` 读 archive manifest（`2ce4626`）；
+- [x] `fixture_hash.rs` 支持 legacy tree archived（`2ce4626`）；
 - [x] 提供只读生成/校验脚本和证据索引。
 
 P7-0 仍未完成：
@@ -237,12 +236,12 @@ P7-0 整体完成仍要另开实现提交。
 
 ## 6. 验证
 
-在当前共享工作树（HEAD `75040c2`，冻结路径无未提交改动）执行：
+在当前共享工作树（HEAD `2ce4626`，冻结路径无未提交改动）执行：
 
 | 命令 | 结果 |
 | --- | --- |
 | `bash -n scripts/p7-freeze.sh` | 通过 |
-| `scripts/p7-freeze.sh --check` | `p7-freeze: OK (75040c2…; tracked trees and local dist match docs/evidence/data/legacy-p7-freeze.json)`，exit 0 |
+| `scripts/p7-freeze.sh --check` | `p7-freeze: OK (2ce4626…; tracked trees and local dist match docs/evidence/data/legacy-p7-freeze.json)`，exit 0 |
 | `jq empty docs/evidence/data/legacy-p7-freeze.json` | 通过 |
 | `git diff --check` | 通过 |
 
@@ -252,15 +251,15 @@ P7-0 整体完成仍要另开实现提交。
 - 缺失冻结文件或字节/行 drift 会以非零退出；
 - 脚本不执行 Node/npm/cargo，不删除文件，不写临时文件。
 
-共享工作树有 `docs/evidence/README.md`、N2 `scripts/build-release.sh` 以及其它并行 WIP 的未提交改动，但都不在冻结路径内，因此不影响 `--check`。README 的 P7-0 索引行仍是上一版 `807a157` / `48/255/36`，按任务要求未修改；主线程提交时需要同步为 `75040c2` / `55/248/36`。
+共享工作树中不在冻结路径内的并发 WIP 不影响 `--check`。README 的 P7-0 索引行需在最终文档同步时更新为 `2ce4626` / `109/0/130/29/71`。
 
 ---
 
 ## 7. 明确不声称
 
 - 不声称 P7-0 已完成；只完成冻结清单/校验器及 P7-2 读侧确认。
-- 不声称 P7-1 已完成；ledger 仍是 55/248/36。
+- 不声称 P7-1 已完成；ledger closeout 已达成（109/0/130/29/71），但 23 个 gate 仍非 mandatory/reviewed。
 - 不声称 23 个 gate 已 `mandatory_green` 或 reviewed；它们仍是 opt-in `#[ignore]`。
 - 不声称可以删除 `backends/typescript/**`、`backend_node/**`、旧 gate 或 v1 写路径。
-- 不声称 F3-06/F3-09 或 G5/G6/G7 已关闭。
+- F3-06/F3-09 已在 F3 合同中关闭（16/0/0）；本文件不额外声称 G5/G6/G7 已关闭。
 - 不声称 `dist/` 或 `node_modules/` 是仓库跟踪内容；`dist/` 是本地构建产物，`node_modules/` 被明确排除。

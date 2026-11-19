@@ -1,6 +1,6 @@
 {
   "schema": "wxml-tsgo-p7-freeze/1",
-  "generated_at": "2026-11-20T07:02:47+08:00",
+  "generated_at": "2026-11-20T07:05:38+08:00",
   "generated_by": "scripts/p7-freeze.sh",
   "algorithm": {
     "name": "p7-freeze-tree-v1",
@@ -15,11 +15,11 @@
     "line_endings": "raw working-tree bytes; a CRLF checkout changes every hash"
   },
   "commit": {
-    "requested_head": "b65d76ce22e0e262a16c8134740acfb58ff93ab3",
-    "head": "b65d76ce22e0e262a16c8134740acfb58ff93ab3",
-    "head_subject": "docs: record P7 scope deletion and waiver plans",
+    "requested_head": "2ce462667b0309046829e8a7c29657fb968ae4b1",
+    "head": "2ce462667b0309046829e8a7c29657fb968ae4b1",
+    "head_subject": "test(p7): close out legacy ledger with scoped waiver",
     "branch": "tsgo/migration",
-    "frozen_paths_clean": false,
+    "frozen_paths_clean": true,
     "frozen_path_diff_requested_to_head": "empty (verified with git diff --quiet)"
   },
   "trees": {

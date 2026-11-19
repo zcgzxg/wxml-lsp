@@ -37,7 +37,7 @@ export LC_ALL=C
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 FROZEN_JSON="$REPO_ROOT/docs/evidence/data/legacy-p7-freeze.json"
-DEFAULT_REQUESTED_HEAD='b65d76ce22e0e262a16c8134740acfb58ff93ab3'
+DEFAULT_REQUESTED_HEAD='2ce462667b0309046829e8a7c29657fb968ae4b1'
 
 CHECK=0
 ALLOW_DIRTY=0
