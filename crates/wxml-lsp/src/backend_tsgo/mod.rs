@@ -17,12 +17,20 @@
 //! missing owning script, mapping gaps and native failures are typed errors or
 //! explicit degraded statuses; they never become a supported empty result.
 //!
-//! The exposed [`BackendEpoch`] advances on [`Backend::invalidate`] and when a
-//! fatal native failure drops the session. A normal lazy start or snapshot
-//! update does not advance it: the server has already stamped the in-flight
-//! request, and input changes are guarded by [`RequestIdentity`] plus the C0
-//! project/view/source revision checks. Advancing during a successful request
-//! would make the server discard a valid result.
+//! # Type environment
+//!
+//! [`run_stdio_native`] loads the pinned type assets once through
+//! `TsgoBackendAdapter::with_install`, before any sandbox or session exists.
+//! A missing, unsafe or pin-mismatched tree aborts startup; there is no Node
+//! or legacy fallback. `new` and `with_host` remain legacy test/probe
+//! constructors and are not reachable from the production selector.
+//!
+//! Only Linux x86-64 with POSIX absolute roots is supported: Windows
+//! drive-letter/UNC roots, non-UTF-8 roots, symlinks, hard links and
+//! non-regular files are rejected (fail closed).
+//! The exposed [`BackendEpoch`] advances on [`Backend::invalidate`] and fatal
+//! native failures, not on a lazy start or snapshot update: the in-flight
+//! request is already stamped and [`RequestIdentity`] guards input changes.
 //!
 //! # Blocked capabilities
 //!
@@ -43,25 +51,16 @@
 //! candidates and mapping drops are reported as `Partial`; native `Unsupported`
 //! stays `Unsupported` rather than an empty success.
 //!
-//! # Platform limits
-//!
-//! The native input layer accepts Unix absolute project roots and
-//! `/`-separated relative paths only. Windows drive-letter/UNC roots and
-//! non-UTF-8 project roots are rejected as `Unavailable`; cross-platform path
-//! support remains BLOCKED until the native contract and assets cover it.
-//!
 //! # Test seams
 //!
-//! [`ViewProvider`] and [`SessionFactory`] are internal seams. Unit tests use a
-//! fake session to exercise hover/diagnostics/completion/definition mapping,
-//! no-false-clean statuses and epoch invalidation without a native binary. The
-//! optional real engine test is gated by `TSGO_BIN` and
-//! `WXML_REQUIRE_REAL_ENGINE=1`.
+//! [`ViewProvider`] and [`SessionFactory`] are internal seams: unit tests use
+//! a fake session, the real install gate needs `TSGO_BIN`,
+//! `TSGO_TYPINGS_ROOT` and `WXML_REQUIRE_REAL_ENGINE=1`.
 
 #![allow(
     dead_code,
-    reason = "P6-4a implements opt-in discovery/startup; the default path still selects Node, \
-              and type-asset roots stay unused until the P6-3 handoff"
+    reason = "opt-in native selector: legacy constructors/query seams and manifest \
+              projections are test- or forward-compatibility-only"
 )]
 
 pub(crate) mod completion;
@@ -69,6 +68,7 @@ pub(crate) mod definition;
 pub(crate) mod diagnostics;
 pub(crate) mod document_symbol;
 pub(crate) mod engine;
+pub(crate) mod environment;
 pub(crate) mod hover;
 pub(crate) mod input;
 pub(crate) mod mapping;
@@ -76,6 +76,7 @@ pub(crate) mod sandbox;
 pub(crate) mod session;
 
 pub use self::engine::EngineDiscoveryError;
+pub use self::environment::EnvironmentLoadError;
 pub use self::sandbox::SandboxError;
 
 #[cfg(test)]
@@ -98,7 +99,8 @@ use wxml_types::{
 };
 
 use self::engine::DiscoveredInstall;
-use self::input::{RequestIdentity, RequestPlan, ViewProvider, build_request_plan};
+use self::environment::Environment;
+use self::input::{RequestIdentity, RequestPlan, ViewProvider, build_request_plan, merge_reason};
 use self::sandbox::SandboxSessionFactory;
 use self::session::{NativeSessionFactory, QuerySession, SessionFactory};
 
@@ -111,10 +113,14 @@ pub(crate) const BACKEND_ID: &str = "tsgo-native";
 /// constructs the Node backend or probes a JavaScript backend; the selector
 /// fails closed.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum NativeStartupError {
     /// The running executable is not installed with a verified pinned engine.
     #[error("native engine discovery failed: {0}")]
     Discovery(#[from] EngineDiscoveryError),
+    /// The verified pinned type assets could not be loaded.
+    #[error("native type assets are unavailable: {0}")]
+    Environment(#[from] EnvironmentLoadError),
     /// A private per-session sandbox could not be validated or created.
     #[error("native sandbox is unavailable: {0}")]
     Sandbox(#[from] SandboxError),
@@ -127,12 +133,11 @@ pub enum NativeStartupError {
 ///
 /// Discovery starts at the running executable and requires
 /// `<package>/bin/wxml-lsp` with a verified manifest and `engine/lib/tsc`.
-/// Missing, corrupt or unsafe installations return [`NativeStartupError`]
-/// before the LSP `initialize` exchange; there is no Node fallback.
-///
-/// This is the P6-4a scaffold: sessions still use the legacy no-asset
-/// `AnalysisInput`, so the result is not production-ready and P6-3 type assets
-/// are not wired.
+/// This function also loads and verifies the pinned standard-library and
+/// mini-program typings once, before any sandbox or session exists. Missing,
+/// corrupt or unsafe installations or assets return [`NativeStartupError`]
+/// before the LSP `initialize` exchange; there is no Node fallback and no
+/// legacy no-asset session.
 pub fn run_stdio_native() -> Result<crate::ServerOutcome, NativeStartupError> {
     let install = engine::discover_from_current_exe()?;
     let host = Arc::new(crate::project_host::ProjectState::new());
@@ -156,6 +161,7 @@ pub(crate) struct TsgoBackendAdapter {
     engine: PinnedEngine,
     views: Arc<dyn ViewProvider>,
     sessions: Arc<dyn SessionFactory>,
+    environment: Environment,
     state: Mutex<AdapterState>,
     epoch: AtomicU64,
 }
@@ -165,6 +171,7 @@ impl std::fmt::Debug for TsgoBackendAdapter {
         formatter
             .debug_struct("TsgoBackendAdapter")
             .field("engine", &self.engine)
+            .field("environment", &self.environment)
             .field("epoch", &self.epoch.load(Ordering::SeqCst))
             .finish_non_exhaustive()
     }
@@ -173,8 +180,9 @@ impl std::fmt::Debug for TsgoBackendAdapter {
 impl TsgoBackendAdapter {
     /// Creates an adapter around explicit session options.
     ///
-    /// The caller owns executable and sandbox verification; this constructor
-    /// performs none. The opt-in startup path uses [`Self::with_install`].
+    /// The caller owns executable, asset and sandbox verification; this
+    /// constructor performs none and always uses [`Environment::Legacy`]. The
+    /// opt-in production startup path uses [`Self::with_install`].
     #[must_use]
     pub(crate) fn with_host(
         host: Arc<dyn crate::project_host::ProjectHost>,
@@ -187,24 +195,28 @@ impl TsgoBackendAdapter {
         )
     }
 
-    /// Creates the opt-in adapter from a discovered install.
+    /// Creates the opt-in production adapter from a discovered install.
     ///
-    /// Every native session gets a fresh private sandbox below the OS
-    /// temporary directory. The package root is rejected as a sandbox base so
-    /// runtime files never land in the immutable version tree.
+    /// The pinned standard-library and typings assets are loaded and verified
+    /// once, before any sandbox or session exists, so a missing or
+    /// pin-mismatched asset tree fails startup instead of producing a legacy
+    /// session. Every native session then gets a fresh private sandbox below
+    /// the OS temporary directory; the package root is rejected as a sandbox
+    /// base so runtime files never land in the immutable version tree.
     ///
-    /// Discovery is engine-only: type assets, binaries and `typings_root` are
-    /// not re-verified here. P6-3/P6-4b own that verification before a
-    /// production native session may claim asset coverage.
+    /// Engine manifest projection and asset sets are verified independently;
+    /// cross-checking the manifest `typeAssets` fields remains P6-3-4/F3-03.
     pub(crate) fn with_install(
         host: Arc<dyn crate::project_host::ProjectHost>,
         install: &DiscoveredInstall,
-    ) -> Result<Self, SandboxError> {
+    ) -> Result<Self, NativeStartupError> {
+        let environment = environment::load_environment(install)?;
         let sessions = SandboxSessionFactory::new(install.engine.clone(), &install.package_root)?;
-        Ok(Self::new(
+        Ok(Self::new_with_environment(
             PinnedEngine::pinned(),
             Arc::new(input::HostViewProvider::new(host)),
             Arc::new(sessions),
+            environment,
         ))
     }
 
@@ -221,17 +233,32 @@ impl TsgoBackendAdapter {
         Ok(())
     }
 
-    /// Creates an adapter with explicit view/session seams.
+    /// Creates a legacy adapter with explicit view/session seams.
+    ///
+    /// `new` and [`Self::with_host`] never mount type assets; only
+    /// [`Self::new_with_environment`] can construct a trusted adapter.
     #[must_use]
     pub(crate) fn new(
         engine: PinnedEngine,
         views: Arc<dyn ViewProvider>,
         sessions: Arc<dyn SessionFactory>,
     ) -> Self {
+        Self::new_with_environment(engine, views, sessions, Environment::legacy())
+    }
+
+    /// Creates an adapter with an explicit type environment.
+    #[must_use]
+    pub(crate) fn new_with_environment(
+        engine: PinnedEngine,
+        views: Arc<dyn ViewProvider>,
+        sessions: Arc<dyn SessionFactory>,
+        environment: Environment,
+    ) -> Self {
         Self {
             engine,
             views,
             sessions,
+            environment,
             state: Mutex::new(AdapterState::new(1)),
             epoch: AtomicU64::new(1),
         }
@@ -252,20 +279,49 @@ impl TsgoBackendAdapter {
     }
 
     fn prepare(&self, context: &wxml_types::RequestContext) -> Result<RequestPlan, BackendError> {
-        build_request_plan(self.views.as_ref(), context)
+        build_request_plan(self.views.as_ref(), context, &self.environment)
     }
 
+    /// Runs one purely syntactic query without the session environment reason.
+    ///
+    /// `document_symbols` cannot be affected by a degraded type environment,
+    /// so this path neither clones nor merges `environment_reason`.
     fn with_session<R>(
         &self,
         plan: &RequestPlan,
         operation: impl FnOnce(&mut dyn QuerySession) -> Result<R, BackendError>,
     ) -> Result<R, BackendError> {
+        self.with_session_mode(plan, false, |session, _degradation| operation(session))
+    }
+
+    /// Runs one typed query and merges the open-session environment reason.
+    ///
+    /// The reason is read after [`Self::ensure_open`] so the first request that
+    /// opens a degraded VFS already reports `Partial`.
+    fn with_session_environment<R>(
+        &self,
+        plan: &RequestPlan,
+        operation: impl FnOnce(&mut dyn QuerySession, Option<String>) -> Result<R, BackendError>,
+    ) -> Result<R, BackendError> {
+        self.with_session_mode(plan, true, operation)
+    }
+
+    fn with_session_mode<R>(
+        &self,
+        plan: &RequestPlan,
+        include_environment: bool,
+        operation: impl FnOnce(&mut dyn QuerySession, Option<String>) -> Result<R, BackendError>,
+    ) -> Result<R, BackendError> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         self.ensure_open(&mut state, plan)?;
+        let mut degradation = plan.degradation.clone();
+        if include_environment {
+            merge_reason(&mut degradation, state.environment_reason.clone());
+        }
         let session = state.session.as_mut().ok_or_else(|| {
             BackendError::Unavailable("native session was not established".to_owned())
         })?;
-        let outcome = operation(session.as_mut());
+        let outcome = operation(session.as_mut(), degradation);
         let current = self.epoch.load(Ordering::SeqCst);
         let invalidated = state.generation != current;
         let fatal = matches!(
@@ -275,6 +331,7 @@ impl TsgoBackendAdapter {
         let dead = if invalidated {
             let session = state.session.take();
             state.open = None;
+            state.environment_reason = None;
             state.generation = current;
             session
         } else if fatal {
@@ -282,6 +339,7 @@ impl TsgoBackendAdapter {
             state.generation = next;
             let session = state.session.take();
             state.open = None;
+            state.environment_reason = None;
             session
         } else {
             None
@@ -309,35 +367,56 @@ impl TsgoBackendAdapter {
         }
         let revision = next_revision(state)?;
         let input = plan.input(revision)?;
+        // A trusted adapter must never start or update a session from a legacy
+        // no-asset input (and a legacy adapter must never mount assets). The
+        // check runs before any session/sandbox exists, so a mismatch cannot
+        // silently degrade the type environment.
+        if input.has_type_environment() != self.environment.is_trusted() {
+            return Err(BackendError::Unavailable(
+                "type environment does not match request input".to_owned(),
+            ));
+        }
 
         if state.session.is_none() {
             return self.start_and_open(state, plan, &input);
         }
-        let same_project = state.open.as_ref().is_some_and(|open| {
-            open.project == *input.project() && open.root == input.root().as_str()
-        });
-        if same_project {
-            let Some(session) = state.session.as_mut() else {
-                return Err(BackendError::Unavailable(
-                    "native session disappeared".to_owned(),
-                ));
-            };
-            if session.update_project(&input).is_ok() {
-                if self.epoch.load(Ordering::SeqCst) != state.generation {
-                    self.drop_invalidated(state);
-                    return Err(BackendError::Cancelled);
-                }
-                state.open = Some(OpenProject::new(plan, &input));
-                return Ok(());
-            }
+        if same_open_project(state, plan, &input) && self.update_existing(state, plan, &input)? {
+            return Ok(());
         }
-        // A failed update or a project/root change cannot be repaired in place:
-        // stop the old session and open the new input from scratch.
+        // A failed update, a project/root change or any environment/option
+        // change cannot be repaired in place: stop the old session and open the
+        // new input from scratch.
         if let Some(session) = state.session.take() {
             session.shutdown();
         }
         state.open = None;
+        state.environment_reason = None;
         self.start_and_open(state, plan, &input)
+    }
+
+    /// Updates the open snapshot when only source/view revisions changed.
+    ///
+    /// Returns `false` when the backend rejected the update, which makes the
+    /// caller restart; environment and project changes never reach this path.
+    fn update_existing(
+        &self,
+        state: &mut AdapterState,
+        plan: &RequestPlan,
+        input: &AnalysisInput,
+    ) -> Result<bool, BackendError> {
+        let Some(session) = state.session.as_mut() else {
+            return Ok(false);
+        };
+        if session.update_project(input).is_err() {
+            return Ok(false);
+        }
+        if self.epoch.load(Ordering::SeqCst) != state.generation {
+            self.drop_invalidated(state);
+            return Err(BackendError::Cancelled);
+        }
+        state.environment_reason = session.environment_degradation();
+        state.open = Some(OpenProject::new(plan, input));
+        Ok(true)
     }
 
     /// Drops a session whose generation was invalidated while it was busy.
@@ -348,6 +427,7 @@ impl TsgoBackendAdapter {
         }
         state.generation = current;
         state.open = None;
+        state.environment_reason = None;
         if let Some(session) = state.session.take() {
             session.shutdown();
         }
@@ -359,6 +439,8 @@ impl TsgoBackendAdapter {
         plan: &RequestPlan,
         input: &AnalysisInput,
     ) -> Result<(), BackendError> {
+        // No session exists yet, so no environment degradation can survive.
+        state.environment_reason = None;
         let mut session = self.sessions.start().map_err(map_native_error)?;
         if let Err(error) = session.open_project(input) {
             session.shutdown();
@@ -369,8 +451,10 @@ impl TsgoBackendAdapter {
             session.shutdown();
             state.generation = current;
             state.open = None;
+            state.environment_reason = None;
             return Err(BackendError::Cancelled);
         }
+        state.environment_reason = session.environment_degradation();
         state.session = Some(session);
         state.open = Some(OpenProject::new(plan, input));
         Ok(())
@@ -391,8 +475,7 @@ impl Backend for TsgoBackendAdapter {
         }
         let plan = self.prepare(&request.context)?;
         let script_path = plan.identity.script_path.clone();
-        let degradation = plan.degradation.clone();
-        self.with_session(&plan, |session| {
+        self.with_session_environment(&plan, |session, degradation| {
             hover::hover(
                 session,
                 &plan.layout,
@@ -414,12 +497,13 @@ impl Backend for TsgoBackendAdapter {
             ));
         };
         let script_path = plan.identity.script_path.clone();
-        let degradation = plan.degradation.clone();
         let syntax = merged_syntax(&plan.syntax_diagnostics, request.context.source());
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if self.ensure_open(&mut state, &plan).is_err() {
             return Ok(unavailable_diagnostics(syntax, "type backend unavailable"));
         }
+        let mut degradation = plan.degradation.clone();
+        merge_reason(&mut degradation, state.environment_reason.clone());
         let Some(session) = state.session.as_mut() else {
             return Ok(unavailable_diagnostics(syntax, "type backend unavailable"));
         };
@@ -435,6 +519,7 @@ impl Backend for TsgoBackendAdapter {
         let dead = if invalidated || run.fatal {
             let session = state.session.take();
             state.open = None;
+            state.environment_reason = None;
             if invalidated {
                 state.generation = current;
             }
@@ -460,8 +545,7 @@ impl Backend for TsgoBackendAdapter {
         let Some(position) = definition::query_position(&plan.layout, request.offset)? else {
             return Ok(definition::outside_expression());
         };
-        let degradation = plan.degradation.clone();
-        self.with_session(&plan, |session| {
+        self.with_session_environment(&plan, |session, degradation| {
             definition::definition(session, &plan, position, degradation.as_deref())
         })
     }
@@ -483,8 +567,7 @@ impl Backend for TsgoBackendAdapter {
         }
         let plan = self.prepare(&request.context)?;
         let script_path = plan.identity.script_path.clone();
-        let degradation = plan.degradation.clone();
-        self.with_session(&plan, |session| {
+        self.with_session_environment(&plan, |session, degradation| {
             completion::completion(
                 session,
                 &plan.layout,
@@ -536,6 +619,7 @@ impl Backend for TsgoBackendAdapter {
             |mut state| {
                 state.generation = next;
                 state.open = None;
+                state.environment_reason = None;
                 state.session.take()
             },
         );
@@ -582,6 +666,11 @@ impl Backend for TsgoBackendAdapter {
 struct AdapterState {
     session: Option<Box<dyn QuerySession>>,
     open: Option<OpenProject>,
+    /// VFS environment degradation of the currently open session.
+    ///
+    /// Refreshed after a successful open/update and cleared whenever the
+    /// session is dropped, invalidated or restarted.
+    environment_reason: Option<String>,
     next_revision: u64,
     generation: u64,
 }
@@ -591,6 +680,7 @@ impl AdapterState {
         Self {
             session: None,
             open: None,
+            environment_reason: None,
             next_revision: 0,
             generation,
         }
@@ -611,6 +701,18 @@ impl OpenProject {
             root: input.root().as_str().to_owned(),
         }
     }
+}
+
+/// Returns whether the open snapshot can be advanced in place.
+///
+/// The environment identity and project/root must be byte-identical; only
+/// source/view revisions may differ.
+fn same_open_project(state: &AdapterState, plan: &RequestPlan, input: &AnalysisInput) -> bool {
+    state.open.as_ref().is_some_and(|open| {
+        open.project == *input.project()
+            && open.root == input.root().as_str()
+            && open.identity.environment == plan.identity.environment
+    })
 }
 
 fn next_revision(state: &mut AdapterState) -> Result<SnapshotRevision, BackendError> {

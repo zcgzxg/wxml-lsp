@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
 
 use wxml_backend_tsgo::input::{
-    AnalysisInput, DocumentRevision, Language, ProjectKey, ProjectRoot, SnapshotRevision,
-    SourceFile,
+    AnalysisInput, CompilerOptions, DocumentRevision, Language, ProjectKey, ProjectRoot,
+    SnapshotRevision, SourceFile, TypeEnvironmentIdentity,
 };
 use wxml_backend_tsgo::shadow::guards::{
     GuardChain as ShadowGuardChain, GuardCondition as ShadowGuardCondition,
@@ -31,6 +31,7 @@ use wxml_types::{
     SourceSnapshot, ViewRevision,
 };
 
+use crate::backend_tsgo::environment::Environment;
 use crate::backend_tsgo::mapping::{FragmentMap, ShadowLayout};
 use crate::project_host::{HostError, PreparedView, ProjectHost};
 
@@ -94,6 +95,12 @@ pub(crate) struct RequestIdentity {
     pub(crate) project_root: String,
     /// Number of fragments mounted in the shadow.
     pub(crate) fragment_count: usize,
+    /// Configured type environment, if the adapter is trusted.
+    ///
+    /// `None` is the legacy no-asset mode; `Some` must stay byte-identical for
+    /// an in-place `update_project` and forces a session restart when any
+    /// asset root, pin field or compiler-option digest changes.
+    pub(crate) environment: Option<TypeEnvironmentIdentity>,
 }
 
 /// One request plan before a native snapshot revision is assigned.
@@ -104,6 +111,13 @@ pub(crate) struct RequestPlan {
     project: ProjectKey,
     root: ProjectRoot,
     files: Vec<SourceFile>,
+    /// Configured type environment for this plan.
+    ///
+    /// This is an enum, not an `Option` fallback: a trusted plan always builds
+    /// an [`AnalysisInput::with_environment`] input.
+    environment: Environment,
+    /// Validated compiler options used by a trusted environment.
+    compiler_options: CompilerOptions,
     /// Exact host file identity for every path sent to the native session.
     file_ids: BTreeMap<String, FileId>,
     /// Template-to-shadow mapping for this request.
@@ -118,13 +132,23 @@ pub(crate) struct RequestPlan {
 impl RequestPlan {
     /// Builds the bounded native input at `revision`.
     pub(crate) fn input(&self, revision: SnapshotRevision) -> Result<AnalysisInput, BackendError> {
-        AnalysisInput::new(
-            self.project.clone(),
-            self.root.clone(),
-            revision,
-            self.files.clone(),
-        )
-        .map_err(|error| input_error(&error))
+        let built = match &self.environment {
+            Environment::Trusted(assets) => AnalysisInput::with_environment(
+                self.project.clone(),
+                self.root.clone(),
+                revision,
+                self.files.clone(),
+                self.compiler_options.clone(),
+                Arc::clone(assets),
+            ),
+            Environment::Legacy => AnalysisInput::new(
+                self.project.clone(),
+                self.root.clone(),
+                revision,
+                self.files.clone(),
+            ),
+        };
+        built.map_err(|error| input_error(&error))
     }
 
     /// Returns the host file identity for a path sent to the native session.
@@ -149,6 +173,7 @@ impl RequestPlan {
 pub(crate) fn build_request_plan(
     provider: &dyn ViewProvider,
     context: &RequestContext,
+    environment: &Environment,
 ) -> Result<RequestPlan, BackendError> {
     let snapshot = context.source();
     let view = provider
@@ -310,6 +335,8 @@ pub(crate) fn build_request_plan(
     })?)
     .map_err(|error| input_error(&error))?;
     let project = ProjectKey::new(context.file().project().as_str());
+    let (compiler_options, environment_identity) =
+        environment_options(environment, &view.compiler_options)?;
     let identity = RequestIdentity {
         project_revision: context.project_revision(),
         view_revision: context.view_revision(),
@@ -322,6 +349,7 @@ pub(crate) fn build_request_plan(
         view_id: view.view_id.clone(),
         project_root: root.as_str().to_owned(),
         fragment_count: fragment_maps.len(),
+        environment: environment_identity,
     };
 
     Ok(RequestPlan {
@@ -329,6 +357,8 @@ pub(crate) fn build_request_plan(
         project,
         root,
         files,
+        environment: environment.clone(),
+        compiler_options,
         file_ids,
         layout: ShadowLayout::new(
             snapshot.text().to_owned(),
@@ -537,7 +567,33 @@ fn guard_chain(chain: &GuardChain) -> ShadowGuardChain {
     }
 }
 
-fn merge_reason(target: &mut Option<String>, reason: Option<String>) {
+/// Validates the view's compiler options for a trusted environment.
+///
+/// Legacy plans keep the historical empty option set so their behavior is
+/// unchanged. A trusted plan converts every option before any session exists;
+/// an unsupported key or value fails the request instead of silently dropping
+/// configuration.
+fn environment_options(
+    environment: &Environment,
+    view_options: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(CompilerOptions, Option<TypeEnvironmentIdentity>), BackendError> {
+    if !environment.is_trusted() {
+        return Ok((CompilerOptions::default(), None));
+    }
+    let values = view_options
+        .iter()
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    let options = CompilerOptions::new(values).map_err(|error| {
+        BackendError::Unavailable(format!(
+            "project compiler options are not supported by the native input: {error}"
+        ))
+    })?;
+    let identity = environment.identity(&options);
+    Ok((options, identity))
+}
+
+pub(crate) fn merge_reason(target: &mut Option<String>, reason: Option<String>) {
     let Some(reason) = reason else {
         return;
     };

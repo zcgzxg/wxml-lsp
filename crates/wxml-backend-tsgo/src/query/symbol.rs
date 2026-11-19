@@ -110,14 +110,16 @@ mod tests {
                 RawSymbolReference {
                     id: 7,
                     kind: 0,
-                    file: RawSourceFileDescriptor {
+                    file: Some(RawSourceFileDescriptor {
                         file_name: "/work/main.ts".to_owned(),
                         path: "/work/main.ts".to_owned(),
                         content_hash: "engine-hash".to_owned(),
                         parse_options_key: "0".to_owned(),
                         script_kind: 3,
                         node_id: "1".to_owned(),
-                    },
+                    }),
+                    snapshot: None,
+                    project: None,
                 },
                 crate::native::handles::SymbolReferenceBinding::new(
                     SessionGeneration::new(1),

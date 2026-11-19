@@ -1173,62 +1173,95 @@ impl NativeSession {
         Ok((bound, drops))
     }
 
-    /// Binds a content-addressed symbol reference to the current epoch.
+    /// Binds a symbol reference to the current epoch.
+    ///
+    /// The pinned engine emits two owner forms: file-owned references carry a
+    /// full source descriptor and are bound by content hash; snapshot-owned
+    /// references carry `snapshot` + `project` and are bound by the current
+    /// engine snapshot and project id. Any other or incomplete combination is
+    /// rejected.
     ///
     /// # Errors
     ///
-    /// Rejects a reference whose path is not a normalized file inside the
-    /// current snapshot, or whose descriptor fields are incomplete.
+    /// Rejects a file reference whose path is not normalized, is outside the
+    /// snapshot, or has incomplete descriptor fields, and a snapshot reference
+    /// from another snapshot or project.
     pub fn bind_symbol_reference(
         &self,
         reference: &RawSymbolReference,
     ) -> Result<BoundSymbolReference, NativeError> {
         let epoch = self.epoch.ok_or(NativeError::NoSnapshot)?;
-        let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
-        crate::native::handles::validate_absolute_path(&reference.file.path).map_err(|_| {
-            NativeError::InvalidHandle {
-                reason: "symbol reference path is not normalized",
-            }
-        })?;
-        if reference.file.file_name != reference.file.path {
-            return Err(NativeError::InvalidHandle {
-                reason: "symbol reference file names disagree",
-            });
-        }
-        if reference.file.content_hash.is_empty()
-            || reference.file.parse_options_key.is_empty()
-            || reference.file.node_id.is_empty()
-        {
-            return Err(NativeError::InvalidHandle {
-                reason: "symbol reference descriptor is incomplete",
-            });
-        }
-        if !vfs.contains(&reference.file.path) {
-            return Err(NativeError::InvalidHandle {
-                reason: "symbol reference is outside the open snapshot",
-            });
-        }
-        let file = vfs
-            .file(&reference.file.path)
-            .ok_or(NativeError::InvalidHandle {
-                reason: "symbol reference is not in the open snapshot",
+        let binding = if reference.is_file_owned() {
+            self.bind_file_owned_reference(reference, epoch.snapshot)?
+        } else if reference.is_snapshot_owned() {
+            let snapshot = reference.snapshot.ok_or_else(|| {
+                invalid_reference("snapshot-owned symbol reference has no snapshot")
             })?;
-        let binding = SymbolReferenceBinding::new(
-            self.generation,
-            epoch.snapshot,
-            reference.file.path.clone(),
-            file.hash().to_owned(),
-            reference.file.content_hash.clone(),
-            reference.file.parse_options_key.clone(),
-            reference.file.node_id.clone(),
-            reference.id,
-            reference.kind,
-        );
+            let project = reference.project.as_deref().ok_or_else(|| {
+                invalid_reference("snapshot-owned symbol reference has no project")
+            })?;
+            if snapshot != epoch.snapshot.get() || Some(project) != self.project_id.as_deref() {
+                return Err(invalid_reference(
+                    "symbol reference snapshot binding does not match the open project",
+                ));
+            }
+            SymbolReferenceBinding::snapshot_owned(
+                self.generation,
+                epoch.snapshot,
+                project.to_owned(),
+                reference.id,
+                reference.kind,
+            )
+        } else {
+            return Err(invalid_reference("symbol reference owner is incomplete"));
+        };
         Ok(BoundSymbolReference::new(reference.clone(), binding))
     }
 
-    /// Rejects a symbol reference that no longer matches the current epoch,
-    /// file content or descriptor identity.
+    fn bind_file_owned_reference(
+        &self,
+        reference: &RawSymbolReference,
+        snapshot: EngineSnapshotId,
+    ) -> Result<SymbolReferenceBinding, NativeError> {
+        let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
+        let file = reference
+            .file_descriptor()
+            .ok_or_else(|| invalid_reference("file-owned symbol reference has no file"))?;
+        crate::native::handles::validate_absolute_path(&file.path)
+            .map_err(|_| invalid_reference("symbol reference path is not normalized"))?;
+        if file.file_name != file.path {
+            return Err(invalid_reference("symbol reference file names disagree"));
+        }
+        if file.content_hash.is_empty()
+            || file.parse_options_key.is_empty()
+            || file.node_id.is_empty()
+        {
+            return Err(invalid_reference(
+                "symbol reference descriptor is incomplete",
+            ));
+        }
+        if !vfs.contains(&file.path) {
+            return Err(invalid_reference(
+                "symbol reference is outside the open snapshot",
+            ));
+        }
+        let open = vfs
+            .file(&file.path)
+            .ok_or_else(|| invalid_reference("symbol reference is not in the open snapshot"))?;
+        Ok(SymbolReferenceBinding::new(
+            self.generation,
+            snapshot,
+            file.path.clone(),
+            open.hash().to_owned(),
+            file.content_hash.clone(),
+            file.parse_options_key.clone(),
+            file.node_id.clone(),
+            reference.id,
+            reference.kind,
+        ))
+    }
+
+    /// Rejects a symbol reference that no longer matches the current epoch.
     ///
     /// # Errors
     ///
@@ -1239,10 +1272,12 @@ impl NativeSession {
     ) -> Result<(), NativeError> {
         let epoch = self.epoch.ok_or(NativeError::NoSnapshot)?;
         let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
-        let Some(file) = vfs.file(reference.binding().normalized_file_path()) else {
-            return Err(NativeError::StaleHandle);
-        };
-        if reference.is_current(self.generation, epoch.snapshot, file.hash()) {
+        let file_hash = reference
+            .binding()
+            .normalized_file_path()
+            .and_then(|path| vfs.file(path))
+            .map(|file| file.hash().to_owned());
+        if reference.is_current(self.generation, epoch.snapshot, file_hash.as_deref()) {
             Ok(())
         } else {
             Err(NativeError::StaleHandle)
@@ -2617,7 +2652,11 @@ fn dropped_reference_cause(
     reference: &RawSymbolReference,
     vfs: &VirtualFileSystem,
 ) -> DroppedHandleCause {
-    let file = &reference.file;
+    let Some(file) = reference.file_descriptor() else {
+        // A snapshot-owned reference is either bindable or genuinely unknown;
+        // it never proves an out-of-snapshot file on its own.
+        return DroppedHandleCause::Unknown;
+    };
     if crate::native::handles::validate_absolute_path(&file.path).is_err()
         || file.file_name != file.path
         || file.content_hash.is_empty()
@@ -2631,6 +2670,11 @@ fn dropped_reference_cause(
     } else {
         DroppedHandleCause::Unknown
     }
+}
+
+/// Builds a stable malformed-reference error.
+const fn invalid_reference(reason: &'static str) -> NativeError {
+    NativeError::InvalidHandle { reason }
 }
 
 /// Returns the UTF-8 slice for a UTF-16 AST range, if both ends are boundaries.
@@ -3526,14 +3570,16 @@ const count = 1;
         let reference = |path: &str| RawSymbolReference {
             id: 7,
             kind: 0,
-            file: RawSourceFileDescriptor {
+            file: Some(RawSourceFileDescriptor {
                 file_name: path.to_owned(),
                 path: path.to_owned(),
                 content_hash: "hash".to_owned(),
                 parse_options_key: "0".to_owned(),
                 script_kind: 3,
                 node_id: "1".to_owned(),
-            },
+            }),
+            snapshot: None,
+            project: None,
         };
 
         assert_eq!(
@@ -3542,14 +3588,14 @@ const count = 1;
         );
 
         let mut incomplete = reference("/pkg/lib.d.ts");
-        incomplete.file.content_hash.clear();
+        incomplete.file.as_mut().expect("file").content_hash.clear();
         assert_eq!(
             dropped_reference_cause(&incomplete, &vfs),
             DroppedHandleCause::Unknown
         );
 
         let mut malformed = reference("relative/lib.d.ts");
-        malformed.file.file_name = "relative/lib.d.ts".to_owned();
+        malformed.file.as_mut().expect("file").file_name = "relative/lib.d.ts".to_owned();
         assert_eq!(
             dropped_reference_cause(&malformed, &vfs),
             DroppedHandleCause::Unknown

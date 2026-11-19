@@ -3490,7 +3490,10 @@ fn a_script_owned_diagnostic_is_dropped_from_a_template_result() {
 fn optional_real_engine_hover_smoke() {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
+        let required = matches!(
+            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
+            Ok("1" | "true")
+        );
         assert!(
             !required,
             "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
@@ -3556,7 +3559,10 @@ fn optional_real_engine_hover_smoke() {
 fn optional_real_engine_definition_smoke() {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
+        let required = matches!(
+            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
+            Ok("1" | "true")
+        );
         assert!(
             !required,
             "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
@@ -3647,7 +3653,10 @@ export {};
 fn optional_real_engine_completion_smoke() {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
+        let required = matches!(
+            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
+            Ok("1" | "true")
+        );
         assert!(
             !required,
             "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
@@ -3729,7 +3738,10 @@ export {};
 fn optional_real_engine_adapter_document_symbols_smoke() {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
+        let required = matches!(
+            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
+            Ok("1" | "true")
+        );
         assert!(
             !required,
             "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"

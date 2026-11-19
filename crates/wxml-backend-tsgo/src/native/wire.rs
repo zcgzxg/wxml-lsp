@@ -366,17 +366,66 @@ pub struct RawSymbol {
     pub reference: Option<RawSymbolReference>,
 }
 
-/// Content-addressed symbol reference accepted by documentation calls.
+/// `SymbolOwnerKind.File`: the reference carries a full source-file descriptor.
+pub const SYMBOL_OWNER_FILE: u64 = 0;
+
+/// `SymbolOwnerKind.Snapshot`: the engine interns the symbol in the response
+/// snapshot, so the reference carries `snapshot` and `project` instead of a
+/// source-file descriptor.
+pub const SYMBOL_OWNER_SNAPSHOT: u64 = 1;
+
+/// Symbol reference accepted by documentation and symbol queries.
+///
+/// The pinned engine emits two owner forms behind the same field:
+///
+/// - file-owned (`kind = 0`): a full [`RawSourceFileDescriptor`] with content
+///   hash, parse-options key and node id;
+/// - snapshot-owned (`kind = 1`): `snapshot` + `project` with no file
+///   descriptor. The engine interns the symbol in that snapshot, and a
+///   cross-snapshot reference is rejected by the engine itself.
+///
+/// Both forms are serialized back unchanged; absent optional fields are
+/// omitted so the engine receives the same shape it produced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawSymbolReference {
     /// Engine symbol id.
     pub id: u64,
-    /// Symbol kind.
+    /// Owner kind; see [`SYMBOL_OWNER_FILE`] and [`SYMBOL_OWNER_SNAPSHOT`].
     #[serde(default)]
     pub kind: u64,
-    /// Source-file descriptor.
-    pub file: RawSourceFileDescriptor,
+    /// Source-file descriptor for a file-owned reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<RawSourceFileDescriptor>,
+    /// Snapshot id for a snapshot-owned reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<u64>,
+    /// Project id for a snapshot-owned reference.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project: Option<String>,
+}
+
+impl RawSymbolReference {
+    /// Returns the file descriptor of a file-owned reference.
+    #[must_use]
+    pub const fn file_descriptor(&self) -> Option<&RawSourceFileDescriptor> {
+        self.file.as_ref()
+    }
+
+    /// Returns whether this is a complete file-owned reference.
+    #[must_use]
+    pub const fn is_file_owned(&self) -> bool {
+        self.kind == SYMBOL_OWNER_FILE && self.file.is_some()
+    }
+
+    /// Returns whether this is a complete snapshot-owned reference.
+    #[must_use]
+    pub const fn is_snapshot_owned(&self) -> bool {
+        self.kind == SYMBOL_OWNER_SNAPSHOT
+            && self.file.is_none()
+            && self.snapshot.is_some()
+            && self.project.is_some()
+    }
 }
 
 /// Source-file descriptor embedded in a symbol reference.
@@ -609,7 +658,7 @@ mod tests {
         assert_eq!(symbol.name, "u");
         let reference = symbol.reference.expect("reference");
         assert_eq!(
-            reference.file.content_hash,
+            reference.file.as_ref().expect("file").content_hash,
             "ed07a28c52d39dfef9c12945c739f284"
         );
         let encoded = serde_json::to_value(&reference).expect("serialize reference");
@@ -625,6 +674,37 @@ mod tests {
         .expect("completions");
         assert_eq!(completions.entries.len(), 2);
         assert_eq!(completions.entries[0].sort_text, "11");
+    }
+
+    #[test]
+    fn snapshot_owned_symbol_reference_deserializes_without_a_file() {
+        let symbol: RawSymbol = parse_response(json!({
+            "name": "name",
+            "flags": 33_554_436,
+            "checkFlags": 2306,
+            "declarations": ["38.304./work/demo/pages/index/index.ts"],
+            "valueDeclaration": "38.304./work/demo/pages/index/index.ts",
+            "reference": {
+                "id": 281_474_976_711_565_u64,
+                "kind": 1,
+                "project": "/work/demo/tsconfig.json",
+                "snapshot": 2,
+            },
+        }))
+        .expect("snapshot-owned symbol");
+        let reference = symbol.reference.expect("reference");
+        assert!(reference.is_snapshot_owned());
+        assert!(!reference.is_file_owned());
+        assert_eq!(reference.snapshot, Some(2));
+        assert_eq!(
+            reference.project.as_deref(),
+            Some("/work/demo/tsconfig.json")
+        );
+
+        let encoded = serde_json::to_value(&reference).expect("serialize reference");
+        assert!(encoded.get("file").is_none());
+        assert_eq!(encoded["project"], "/work/demo/tsconfig.json");
+        assert_eq!(encoded["snapshot"], 2);
     }
 
     #[test]

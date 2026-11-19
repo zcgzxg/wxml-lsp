@@ -409,6 +409,10 @@ impl QuerySession for SandboxedSession {
         self.inner.document_symbols(path)
     }
 
+    fn environment_degradation(&self) -> Option<String> {
+        self.inner.environment_degradation()
+    }
+
     fn shutdown(self: Box<Self>) {
         let Self { inner, sandbox } = *self;
         inner.shutdown();

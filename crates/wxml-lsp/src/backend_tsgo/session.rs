@@ -120,6 +120,15 @@ pub(crate) trait QuerySession: Send {
     /// shadow-to-original mapping.
     fn document_symbols(&mut self, path: &str) -> Result<DocumentSymbolsEvidence, NativeError>;
 
+    /// Returns a stable reason when the open type environment is degraded.
+    ///
+    /// The default `None` keeps legacy and fake sessions unchanged. Production
+    /// sessions forward the explicit VFS degradations of the currently open
+    /// snapshot; the reason never contains host paths or user option values.
+    fn environment_degradation(&self) -> Option<String> {
+        None
+    }
+
     /// Releases the snapshot and stops the process.
     fn shutdown(self: Box<Self>);
 }
@@ -225,6 +234,10 @@ impl QuerySession for LiveQuerySession {
 
     fn document_symbols(&mut self, path: &str) -> Result<DocumentSymbolsEvidence, NativeError> {
         self.session.document_symbols(path)
+    }
+
+    fn environment_degradation(&self) -> Option<String> {
+        super::environment::degradation_reason(self.session.environment_degradations())
     }
 
     fn shutdown(self: Box<Self>) {

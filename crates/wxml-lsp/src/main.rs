@@ -25,11 +25,11 @@ Options:
   --version            print the build version
   --help               print this message
 
-`--backend native` is the opt-in P6-4a native engine. It requires the running
+`--backend native` is the opt-in native engine. It requires the running
 executable to be installed as <package>/bin/wxml-lsp with a verified
-manifest.json and engine/lib/tsc, and it fails closed without falling back to
-Node. Type assets are not wired yet (P6-3), so native queries are not
-production-ready.
+manifest.json, engine/lib/tsc and the pinned standard-library and
+mini-program typings. Discovery or asset verification failure fails closed
+before the LSP handshake and never falls back to Node.
 
 Environment:
   WXML_NODE                node executable name or absolute path (default: node)

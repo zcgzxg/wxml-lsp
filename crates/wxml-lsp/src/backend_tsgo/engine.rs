@@ -6,10 +6,10 @@
 //! directory, backend environment variables or a package outside the running
 //! executable's own tree, and it never falls back to the Node backend.
 //!
-//! This is the P6-4a scaffold. It validates the manifest identity that
-//! `wxml-lsp` can check without the shared manifest crate. Type assets remain
-//! owned by P6-3 and are not loaded here; the returned roots are informational
-//! until P6-3 verifies them.
+//! This is the P6-4a scaffold plus the P6-4b asset handoff. It validates the
+//! manifest identity that `wxml-lsp` can check without the shared manifest
+//! crate. Type assets are not read here; the adapter loads and verifies the
+//! returned roots before it creates a sandbox or session.
 
 use std::fs::{self, File};
 use std::io::{self, Read};
@@ -50,21 +50,32 @@ const ENGINE_MODE: u32 = 0o755;
 /// checks schema, package, version, platform, protocol and the pinned engine
 /// identity, but it parses without validating `typeAssets`, `binaries`,
 /// `builtAt`, `engine.distributionUrl` and `engine.distributionSize`.
-/// `typings_root` is reported but not checked. P6-3/P6-4b must re-verify those
-/// roots and assets before a production native session may use them.
-///
-/// `standard_lib_root` and `typings_root` are informational for the later P6-3
-/// handoff; P6-4a does not read, hash or claim those assets.
+/// `standard_lib_root` and `typings_root` are not read here;
+/// [`TsgoBackendAdapter::with_install`](super::TsgoBackendAdapter::with_install)
+/// loads and verifies them before any sandbox or session exists. Cross-checking
+/// the manifest `typeAssets` fields remains P6-3-4/F3-03.
 #[derive(Debug, Clone)]
 pub(crate) struct DiscoveredInstall {
     /// Canonical package root (`<install>/versions/<version>`).
     pub(crate) package_root: PathBuf,
     /// Canonical `<package>/engine/lib/tsc`.
     pub(crate) engine: PathBuf,
-    /// `<package>/engine/lib`; unverified until P6-3.
+    /// `<package>/engine/lib`; verified against the built-in pin by the adapter.
     pub(crate) standard_lib_root: PathBuf,
-    /// `<package>/typings`; unverified until P6-3.
+    /// `<package>/typings`; verified against the built-in pin by the adapter.
     pub(crate) typings_root: PathBuf,
+}
+
+impl DiscoveredInstall {
+    /// Returns the engine `lib` directory that must contain the pinned library.
+    pub(crate) fn standard_lib_root(&self) -> &Path {
+        &self.standard_lib_root
+    }
+
+    /// Returns the directory that must contain `miniprogram-api-typings`.
+    pub(crate) fn typings_root(&self) -> &Path {
+        &self.typings_root
+    }
 }
 
 /// Why the running executable's package tree cannot supply the pinned engine.
@@ -789,14 +800,17 @@ mod tests {
     }
 
     #[test]
-    fn with_install_builds_a_managed_adapter_from_a_discovered_install() {
+    fn with_install_rejects_a_package_without_pinned_assets() {
         let fake = FakeInstall::new();
         let install = fake.discover().expect("discovered install");
         let host: Arc<dyn crate::project_host::ProjectHost> =
             Arc::new(crate::project_host::ProjectState::new());
-        let adapter = super::super::TsgoBackendAdapter::with_install(host, &install)
-            .expect("adapter construction probes a private sandbox base");
-        drop(adapter);
+        let error = super::super::TsgoBackendAdapter::with_install(host, &install)
+            .expect_err("a package without pinned assets must fail before the sandbox");
+        assert!(matches!(
+            error,
+            super::super::NativeStartupError::Environment(_)
+        ));
     }
 
     #[test]
@@ -1135,10 +1149,17 @@ mod tests {
         ));
     }
 
+    fn require_engine() -> bool {
+        matches!(
+            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
+            Ok("1" | "true")
+        )
+    }
+
     fn fake_install_with_real_engine() -> Option<FakeInstall> {
         let Ok(bin) = std::env::var("TSGO_BIN") else {
             assert!(
-                std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() != Ok("1"),
+                !require_engine(),
                 "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
             );
             eprintln!(
@@ -1172,6 +1193,39 @@ mod tests {
         }
     }
 
+    /// Resolves the real typings package from `TSGO_TYPINGS_ROOT`.
+    ///
+    /// Both the containing `node_modules`/`typings` directory and the
+    /// `miniprogram-api-typings` package directory itself are accepted.
+    fn real_typings_package() -> Option<PathBuf> {
+        let root = std::env::var_os("TSGO_TYPINGS_ROOT")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("TSGO_ASSET_ROOT")
+                    .filter(|value| !value.is_empty())
+                    .map(|asset| PathBuf::from(asset).join("typings"))
+            })?;
+        let package =
+            if root.file_name().and_then(|name| name.to_str()) == Some("miniprogram-api-typings") {
+                root
+            } else {
+                root.join("miniprogram-api-typings")
+            };
+        package.is_dir().then_some(package)
+    }
+
+    fn copy_real_typings(fake: &FakeInstall) -> bool {
+        let Some(package) = real_typings_package() else {
+            return false;
+        };
+        copy_tree(
+            &package,
+            &fake.package.join("typings/miniprogram-api-typings"),
+        );
+        true
+    }
+
     #[test]
     fn optional_real_pinned_engine_discovers() {
         let Some(fake) = fake_install_with_real_engine() else {
@@ -1186,11 +1240,23 @@ mod tests {
         let Some(fake) = fake_install_with_real_engine() else {
             return;
         };
+        if !copy_real_typings(&fake) {
+            assert!(
+                !require_engine(),
+                "TSGO_TYPINGS_ROOT (or TSGO_ASSET_ROOT/typings) must provide the pinned \
+                 miniprogram-api-typings when WXML_REQUIRE_REAL_ENGINE=1"
+            );
+            eprintln!(
+                "optional real trusted-asset session test skipped: set TSGO_TYPINGS_ROOT to the \
+                 directory that contains miniprogram-api-typings"
+            );
+            return;
+        }
         let install = discover_at(&fake.executable).expect("discover pinned engine");
         let host: Arc<dyn crate::project_host::ProjectHost> =
             Arc::new(crate::project_host::ProjectState::new());
         let adapter = super::super::TsgoBackendAdapter::with_install(host, &install)
-            .expect("adapter with managed sandbox");
+            .expect("adapter with managed sandbox and pinned assets");
         adapter
             .start_and_stop_session_for_test()
             .expect("successful native session start and shutdown");

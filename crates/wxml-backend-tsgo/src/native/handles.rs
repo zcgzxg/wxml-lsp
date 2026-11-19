@@ -257,20 +257,48 @@ impl SymbolBinding {
     }
 }
 
-/// Full epoch binding for a content-addressed symbol reference.
+/// Owner of one bound symbol reference.
 ///
-/// The reference's own `contentHash`, `parseOptionsKey`, `nodeId`, symbol id
-/// and symbol kind are recorded here and compared again before every send, so
-/// a mutated or cross-epoch descriptor is rejected locally.
+/// File-owned symbols carry the full source-file descriptor used for content
+/// binding. Snapshot-owned symbols are interned by the engine in the open
+/// snapshot and carry `snapshot` + `project` instead; the engine rejects a
+/// reference from another snapshot, so the local binding records that
+/// snapshot/project pair.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SymbolReferenceOwner {
+    /// File-owned symbol with a content-addressed source descriptor.
+    File {
+        /// Normalized query/file path.
+        normalized_file_path: String,
+        /// Rust content hash recorded at bind time.
+        content_hash_or_node_id: String,
+        /// Engine content hash recorded at bind time.
+        engine_content_hash: String,
+        /// Engine parse-options key.
+        parse_options_key: String,
+        /// Engine source-file node id.
+        node_id: String,
+    },
+    /// Snapshot-owned symbol interned in the engine's open snapshot.
+    Snapshot {
+        /// Project id the symbol belongs to.
+        project: String,
+    },
+}
+
+/// Full epoch binding for a content-addressed or snapshot-owned symbol
+/// reference.
+///
+/// File-owned references record `contentHash`, `parseOptionsKey`, `nodeId`,
+/// symbol id and symbol kind, and compare them again before every send.
+/// Snapshot-owned references record the symbol id/kind and the project id; the
+/// engine snapshot is already part of the binding, so a cross-snapshot
+/// reference is rejected locally.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SymbolReferenceBinding {
     pub(crate) session_generation: SessionGeneration,
     pub(crate) engine_snapshot_id: EngineSnapshotId,
-    pub(crate) normalized_file_path: String,
-    pub(crate) content_hash_or_node_id: String,
-    pub(crate) engine_content_hash: String,
-    pub(crate) parse_options_key: String,
-    pub(crate) node_id: String,
+    pub(crate) owner: SymbolReferenceOwner,
     pub(crate) symbol_id: u64,
     pub(crate) symbol_kind: u64,
 }
@@ -291,11 +319,29 @@ impl SymbolReferenceBinding {
         Self {
             session_generation,
             engine_snapshot_id,
-            normalized_file_path,
-            content_hash_or_node_id,
-            engine_content_hash,
-            parse_options_key,
-            node_id,
+            owner: SymbolReferenceOwner::File {
+                normalized_file_path,
+                content_hash_or_node_id,
+                engine_content_hash,
+                parse_options_key,
+                node_id,
+            },
+            symbol_id,
+            symbol_kind,
+        }
+    }
+
+    pub(crate) const fn snapshot_owned(
+        session_generation: SessionGeneration,
+        engine_snapshot_id: EngineSnapshotId,
+        project: String,
+        symbol_id: u64,
+        symbol_kind: u64,
+    ) -> Self {
+        Self {
+            session_generation,
+            engine_snapshot_id,
+            owner: SymbolReferenceOwner::Snapshot { project },
             symbol_id,
             symbol_kind,
         }
@@ -313,33 +359,57 @@ impl SymbolReferenceBinding {
         self.engine_snapshot_id
     }
 
-    /// Returns the normalized file path of the referenced source file.
+    /// Returns the referenced file path for a file-owned reference.
     #[must_use]
-    pub fn normalized_file_path(&self) -> &str {
-        &self.normalized_file_path
-    }
-
-    /// Returns the Rust content hash recorded at bind time.
-    #[must_use]
-    pub fn content_hash_or_node_id(&self) -> &str {
-        &self.content_hash_or_node_id
+    pub fn normalized_file_path(&self) -> Option<&str> {
+        match &self.owner {
+            SymbolReferenceOwner::File {
+                normalized_file_path,
+                ..
+            } => Some(normalized_file_path),
+            SymbolReferenceOwner::Snapshot { .. } => None,
+        }
     }
 
     fn is_current(
         &self,
         generation: SessionGeneration,
         snapshot: EngineSnapshotId,
-        content_hash: &str,
+        file_hash: Option<&str>,
         reference: &RawSymbolReference,
     ) -> bool {
-        self.session_generation == generation
-            && self.engine_snapshot_id == snapshot
-            && self.content_hash_or_node_id == content_hash
-            && self.engine_content_hash == reference.file.content_hash
-            && self.parse_options_key == reference.file.parse_options_key
-            && self.node_id == reference.file.node_id
-            && self.symbol_id == reference.id
-            && self.symbol_kind == reference.kind
+        if self.session_generation != generation
+            || self.engine_snapshot_id != snapshot
+            || self.symbol_id != reference.id
+            || self.symbol_kind != reference.kind
+        {
+            return false;
+        }
+        match &self.owner {
+            SymbolReferenceOwner::File {
+                normalized_file_path,
+                content_hash_or_node_id,
+                engine_content_hash,
+                parse_options_key,
+                node_id,
+            } => {
+                let Some(file) = reference.file.as_ref() else {
+                    return false;
+                };
+                reference.kind == crate::native::wire::SYMBOL_OWNER_FILE
+                    && file_hash == Some(content_hash_or_node_id.as_str())
+                    && engine_content_hash == &file.content_hash
+                    && parse_options_key == &file.parse_options_key
+                    && node_id == &file.node_id
+                    && normalized_file_path == &file.path
+            }
+            SymbolReferenceOwner::Snapshot { project } => {
+                reference.kind == crate::native::wire::SYMBOL_OWNER_SNAPSHOT
+                    && reference.file.is_none()
+                    && reference.snapshot == Some(self.engine_snapshot_id.get())
+                    && reference.project.as_deref() == Some(project.as_str())
+            }
+        }
     }
 }
 
@@ -378,10 +448,10 @@ impl BoundSymbolReference {
         &self,
         generation: SessionGeneration,
         snapshot: EngineSnapshotId,
-        content_hash: &str,
+        file_hash: Option<&str>,
     ) -> bool {
         self.binding
-            .is_current(generation, snapshot, content_hash, &self.reference)
+            .is_current(generation, snapshot, file_hash, &self.reference)
     }
 }
 
@@ -583,15 +653,17 @@ mod tests {
     fn reference() -> RawSymbolReference {
         RawSymbolReference {
             id: 42,
-            kind: 7,
-            file: crate::native::wire::RawSourceFileDescriptor {
+            kind: crate::native::wire::SYMBOL_OWNER_FILE,
+            file: Some(crate::native::wire::RawSourceFileDescriptor {
                 file_name: "/work/main.ts".to_owned(),
                 path: "/work/main.ts".to_owned(),
                 content_hash: "engine-hash".to_owned(),
                 parse_options_key: "0".to_owned(),
                 script_kind: 3,
                 node_id: "9".to_owned(),
-            },
+            }),
+            snapshot: None,
+            project: None,
         }
     }
 
@@ -605,8 +677,39 @@ mod tests {
             "0".to_owned(),
             "9".to_owned(),
             42,
-            7,
+            crate::native::wire::SYMBOL_OWNER_FILE,
         )
+    }
+
+    fn snapshot_reference() -> RawSymbolReference {
+        RawSymbolReference {
+            id: 281_474_976_711_565,
+            kind: crate::native::wire::SYMBOL_OWNER_SNAPSHOT,
+            file: None,
+            snapshot: Some(3),
+            project: Some("/work/tsconfig.json".to_owned()),
+        }
+    }
+
+    #[test]
+    fn snapshot_owned_reference_binding_checks_snapshot_and_project() {
+        let reference = snapshot_reference();
+        let binding = SymbolReferenceBinding::snapshot_owned(
+            SessionGeneration::new(1),
+            EngineSnapshotId::new(3),
+            "/work/tsconfig.json".to_owned(),
+            reference.id,
+            reference.kind,
+        );
+        let bound = BoundSymbolReference::new(reference.clone(), binding.clone());
+        assert!(bound.is_current(SessionGeneration::new(1), EngineSnapshotId::new(3), None));
+        assert!(!bound.is_current(SessionGeneration::new(1), EngineSnapshotId::new(4), None));
+        assert!(!bound.is_current(SessionGeneration::new(2), EngineSnapshotId::new(3), None));
+
+        let mut wrong_project = reference;
+        wrong_project.project = Some("/other/tsconfig.json".to_owned());
+        let wrong = BoundSymbolReference::new(wrong_project, binding);
+        assert!(!wrong.is_current(SessionGeneration::new(1), EngineSnapshotId::new(3), None));
     }
 
     #[test]
@@ -616,7 +719,7 @@ mod tests {
         assert!(bound.is_current(
             SessionGeneration::new(1),
             EngineSnapshotId::new(3),
-            "rust-hash"
+            Some("rust-hash")
         ));
 
         reference.kind = 8;
@@ -624,19 +727,23 @@ mod tests {
         assert!(!mutated.is_current(
             SessionGeneration::new(1),
             EngineSnapshotId::new(3),
-            "rust-hash"
+            Some("rust-hash")
         ));
 
         assert!(!bound.is_current(
             SessionGeneration::new(2),
             EngineSnapshotId::new(3),
-            "rust-hash"
+            Some("rust-hash")
         ));
         assert!(!bound.is_current(
             SessionGeneration::new(1),
             EngineSnapshotId::new(4),
-            "rust-hash"
+            Some("rust-hash")
         ));
-        assert!(!bound.is_current(SessionGeneration::new(1), EngineSnapshotId::new(3), "other"));
+        assert!(!bound.is_current(
+            SessionGeneration::new(1),
+            EngineSnapshotId::new(3),
+            Some("other")
+        ));
     }
 }
