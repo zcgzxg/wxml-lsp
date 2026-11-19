@@ -10,6 +10,9 @@ pub(crate) mod lifecycle;
 pub(crate) mod mode_diagnostics;
 pub(crate) mod styles;
 
+#[cfg(test)]
+mod capability_gate_tests;
+
 use serde_json::{Map, Value};
 use wxml_text::{Position, SourceRange};
 use wxml_types::{CapabilityStatus, DiagnosticSeverity, TypeQuality};
@@ -313,6 +316,20 @@ pub(crate) const fn status_label(status: &CapabilityStatus) -> &'static str {
         CapabilityStatus::Unknown { .. } => "unknown",
         _ => "unknown",
     }
+}
+
+/// Returns `true` when a backend capability can answer requests.
+///
+/// [`CapabilityStatus::Partial`] is available: the backend answers some
+/// inputs and reports the limits on each result, so it must still receive the
+/// request. `Unsupported`, `Disabled`, `Unavailable` and `Unknown` cannot
+/// answer; dispatching them would turn a known gap into a misleading empty
+/// result.
+pub(crate) const fn backend_available(status: &CapabilityStatus) -> bool {
+    matches!(
+        status,
+        CapabilityStatus::Supported | CapabilityStatus::Partial { .. }
+    )
 }
 
 /// Stable label for a type quality.

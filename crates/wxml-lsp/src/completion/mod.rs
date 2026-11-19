@@ -236,7 +236,7 @@ impl Server {
                 vec![Outgoing::success(id, completion_list(document, &result))]
             }
             Route::Backend(kind) => {
-                if !self.capabilities.completion.is_supported() {
+                if !crate::handlers::backend_available(&self.capabilities.completion) {
                     log(format_args!(
                         "completion backend is unavailable; returning an empty list"
                     ));

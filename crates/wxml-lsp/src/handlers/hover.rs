@@ -393,7 +393,7 @@ impl Server {
         if let Some(response) = self.local_hover_response(&id, params.as_ref()) {
             return response;
         }
-        if !self.capabilities.hover.is_supported() {
+        if !super::backend_available(&self.capabilities.hover) {
             log(format_args!(
                 "hover backend is unavailable; returning a static-only empty result"
             ));
@@ -410,7 +410,7 @@ impl Server {
         if let Some(response) = self.local_definition_response(&id, params.as_ref()) {
             return response;
         }
-        if !self.capabilities.definition.is_supported() {
+        if !super::backend_available(&self.capabilities.definition) {
             log(format_args!(
                 "definition backend is unavailable; returning a static-only empty result"
             ));
