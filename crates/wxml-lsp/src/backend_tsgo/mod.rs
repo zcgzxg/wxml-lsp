@@ -33,6 +33,14 @@
 //! expression. The adapter does not fake locations or edits and does not call a
 //! Node fallback.
 //!
+//! Native document symbols are implemented in `wxml-backend-tsgo`
+//! (`NativeSession::document_symbols` + `query::document_symbol`), but they are
+//! not wired here: the C0 [`wxml_types::SymbolRequest`] models data-root,
+//! data-path and event-handler script facts, and [`wxml_types::SymbolResult`]
+//! has no document-symbol tree, range or kind field. Mapping a document-symbol
+//! tree into those DTOs would fabricate a different feature, so the adapter
+//! keeps returning `Unsupported`.
+//!
 //! # Platform limits
 //!
 //! The native input layer accepts Unix absolute project roots and
@@ -85,8 +93,11 @@ use self::session::{NativeSessionFactory, QuerySession, SessionFactory};
 pub(crate) const BACKEND_ID: &str = "tsgo-native";
 
 /// Reason returned for symbols until script symbol facts are wired.
-pub(crate) const SYMBOLS_UNSUPPORTED: &str =
-    "native script symbol extraction is not wired into the backend";
+///
+/// Native document symbols are implemented in `wxml-backend-tsgo`, but the C0
+/// request/result DTOs model data-root/event-handler script facts rather than a
+/// document-symbol tree, so they cannot carry that result without faking it.
+pub(crate) const SYMBOLS_UNSUPPORTED: &str = "native script symbol facts are not wired; document symbols are not representable by the C0 SymbolRequest/SymbolResult DTOs";
 
 /// Opt-in adapter between the LSP project host and the native session.
 ///

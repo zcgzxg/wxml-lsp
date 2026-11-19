@@ -163,10 +163,403 @@ pub enum AstError {
     /// A `next`/`parent` link is out of range or cyclic.
     #[error("AST node link is outside the node table or cyclic")]
     NodeLinkInvalid,
+    /// A string-pool identifier is valid WTF-8 but not valid Rust UTF-8.
+    ///
+    /// The pinned encoder stores JavaScript strings as WTF-8, so a lone
+    /// surrogate is well-formed wire data that cannot become a Rust `String`.
+    #[error("AST identifier text is not valid UTF-8")]
+    NameNotUtf8,
 }
 
 /// Node kind of an Identifier in the frozen v9 schema.
 pub const IDENTIFIER_KIND: u32 = 79;
+
+/// Node kind of a `NodeList` in the frozen v9 schema.
+pub const NODE_LIST_KIND: u32 = u32::MAX;
+
+/// Node kind of a `SourceFile` in the frozen v9 schema.
+pub const SOURCE_FILE_KIND: u32 = 308;
+
+/// Node kind of a `StringLiteral`.
+pub const STRING_LITERAL_KIND: u32 = 10;
+
+/// Node kind of a `NumericLiteral`.
+pub const NUMERIC_LITERAL_KIND: u32 = 8;
+
+/// Node kind of an `ArrayBindingPattern`.
+pub const ARRAY_BINDING_PATTERN_KIND: u32 = 207;
+
+/// Node kind of an `ObjectBindingPattern`.
+pub const OBJECT_BINDING_PATTERN_KIND: u32 = 208;
+
+// The following node kinds are the pinned 7.1.0-beta AST v9 encoder values.
+// They are *not* TypeScript's public `SyntaxKind` numbers: the native encoder
+// uses its own enum. Each value was verified against a decoded `getSourceFile`
+// payload from the pinned artifact. Keep them frozen with the schema.
+
+/// `FunctionDeclaration`.
+pub const FUNCTION_DECLARATION_KIND: u32 = 264;
+/// `ClassDeclaration`.
+pub const CLASS_DECLARATION_KIND: u32 = 265;
+/// `InterfaceDeclaration`.
+pub const INTERFACE_DECLARATION_KIND: u32 = 266;
+/// `TypeAliasDeclaration`.
+pub const TYPE_ALIAS_DECLARATION_KIND: u32 = 267;
+/// `EnumDeclaration`.
+pub const ENUM_DECLARATION_KIND: u32 = 268;
+/// `ModuleDeclaration` (`namespace` and `module`).
+pub const MODULE_DECLARATION_KIND: u32 = 269;
+/// `ModuleBlock`.
+pub const MODULE_BLOCK_KIND: u32 = 270;
+/// `VariableStatement`.
+pub const VARIABLE_STATEMENT_KIND: u32 = 245;
+/// `VariableDeclarationList`.
+pub const VARIABLE_DECLARATION_LIST_KIND: u32 = 263;
+/// `VariableDeclaration`.
+pub const VARIABLE_DECLARATION_KIND: u32 = 262;
+/// `ImportEqualsDeclaration`.
+pub const IMPORT_EQUALS_DECLARATION_KIND: u32 = 273;
+/// `ImportDeclaration`.
+pub const IMPORT_DECLARATION_KIND: u32 = 274;
+/// `ExportAssignment`.
+pub const EXPORT_ASSIGNMENT_KIND: u32 = 279;
+/// `ExportDeclaration`.
+pub const EXPORT_DECLARATION_KIND: u32 = 280;
+/// `NamespaceExportDeclaration`.
+pub const NAMESPACE_EXPORT_DECLARATION_KIND: u32 = 272;
+/// `PropertyDeclaration`.
+pub const PROPERTY_DECLARATION_KIND: u32 = 174;
+/// `MethodSignature`.
+pub const METHOD_SIGNATURE_KIND: u32 = 175;
+/// `MethodDeclaration`.
+pub const METHOD_DECLARATION_KIND: u32 = 176;
+/// `ClassStaticBlockDeclaration`.
+pub const CLASS_STATIC_BLOCK_KIND: u32 = 177;
+/// `Constructor`.
+pub const CONSTRUCTOR_KIND: u32 = 178;
+/// `GetAccessor`.
+pub const GET_ACCESSOR_KIND: u32 = 179;
+/// `SetAccessor`.
+pub const SET_ACCESSOR_KIND: u32 = 180;
+/// `CallSignature`.
+pub const CALL_SIGNATURE_KIND: u32 = 181;
+/// `ConstructSignature`.
+pub const CONSTRUCT_SIGNATURE_KIND: u32 = 182;
+/// `IndexSignature`.
+pub const INDEX_SIGNATURE_KIND: u32 = 183;
+/// `PropertySignature`.
+pub const PROPERTY_SIGNATURE_KIND: u32 = 173;
+/// `EnumMember`.
+pub const ENUM_MEMBER_KIND: u32 = 307;
+
+/// One decoded node-table record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AstNode {
+    /// Node-table index.
+    pub index: u32,
+    /// Node kind.
+    pub kind: u32,
+    /// Full start, including leading trivia, in UTF-16 code units.
+    pub pos: u32,
+    /// Exclusive token end in UTF-16 code units.
+    pub end: u32,
+    /// Node index of the next sibling, or `0`.
+    pub next: u32,
+    /// Node index of the parent, or `0`.
+    pub parent: u32,
+    /// Encoded children mask, string-pool index or extended-data offset.
+    pub data: u32,
+    /// Node flags.
+    pub flags: u32,
+}
+
+/// One decoded identifier name with its exact source token range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AstName {
+    /// String-pool text decoded as UTF-8.
+    pub text: String,
+    /// Exact token range; leading trivia in the identifier node is trimmed.
+    pub range: AstRange,
+}
+
+/// The declared name slot of one declaration node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AstNameSlot {
+    /// The named-child property is absent.
+    Missing,
+    /// The name slot is a decodable Identifier.
+    Identifier(AstName),
+    /// The name slot is present but is not an Identifier (string, numeric,
+    /// computed name, binding pattern, ...). The contained value is the actual
+    /// child node kind.
+    NotIdentifier {
+        /// Observed name-slot node kind.
+        kind: u32,
+    },
+}
+
+/// A validated v9 AST tree reader.
+///
+/// The reader borrows one decoded `getSourceFile` payload and validates every
+/// node record it touches. It never follows `next`/`parent` links without a
+/// bound, and it never allocates from untrusted counts beyond the already
+/// validated string/node table caps in [`AstHeader::parse`].
+#[derive(Debug, Clone, Copy)]
+pub struct AstTree<'a> {
+    payload: &'a [u8],
+    header: AstHeader,
+    source_utf16_len: u32,
+}
+
+impl<'a> AstTree<'a> {
+    /// Validates the header and creates a tree reader for `payload`.
+    ///
+    /// `source_utf16_len` is the UTF-16 length of the *same* source snapshot
+    /// that produced the payload; node ranges are checked against it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AstError`] for a malformed header. Node records are validated
+    /// lazily by [`Self::node`].
+    pub fn parse(payload: &'a [u8], source_utf16_len: u32) -> Result<Self, AstError> {
+        let header = AstHeader::parse(payload)?;
+        Ok(Self {
+            payload,
+            header,
+            source_utf16_len,
+        })
+    }
+
+    /// Returns the validated header.
+    #[must_use]
+    pub const fn header(&self) -> AstHeader {
+        self.header
+    }
+
+    /// Returns one validated node record.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AstError`] for a nil/out-of-range index, a malformed record,
+    /// an inverted/out-of-source range, or an out-of-table link.
+    pub fn node(&self, index: u32) -> Result<AstNode, AstError> {
+        if index == 0 || index >= self.header.nnodes {
+            return Err(AstError::NodeIndexOutOfRange);
+        }
+        let base = node_base(&self.header, index)?;
+        let kind = read_u32(self.payload, base).ok_or(AstError::SectionOrder)?;
+        let pos = read_u32(self.payload, base + 4).ok_or(AstError::SectionOrder)?;
+        let end = read_u32(self.payload, base + 8).ok_or(AstError::SectionOrder)?;
+        let next = read_u32(self.payload, base + 12).ok_or(AstError::SectionOrder)?;
+        let parent = read_u32(self.payload, base + 16).ok_or(AstError::SectionOrder)?;
+        let data = read_u32(self.payload, base + 20).ok_or(AstError::SectionOrder)?;
+        let flags = read_u32(self.payload, base + 24).ok_or(AstError::SectionOrder)?;
+        if pos > end {
+            return Err(AstError::NodeRangeInvalid);
+        }
+        if end > self.source_utf16_len {
+            return Err(AstError::NodeRangeOutOfSource);
+        }
+        if next > self.header.nnodes || (parent != 0 && parent >= self.header.nnodes) {
+            return Err(AstError::NodeLinkInvalid);
+        }
+        Ok(AstNode {
+            index,
+            kind,
+            pos,
+            end,
+            next,
+            parent,
+            data,
+            flags,
+        })
+    }
+
+    /// Returns the exclusive end of one node's subtree.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AstError`] for an out-of-range index or malformed links.
+    pub fn subtree_end(&self, index: u32) -> Result<u32, AstError> {
+        if index == 0 || index >= self.header.nnodes {
+            return Err(AstError::NodeIndexOutOfRange);
+        }
+        subtree_end(self.payload, &self.header, index)
+    }
+
+    /// Returns the direct children of one node in source order.
+    ///
+    /// `NodeList` nodes appear as ordinary children; use [`Self::list_items`] to
+    /// expand one. The walk follows each child's subtree end, so it is linear
+    /// in the number of direct children and the depth of the last child.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AstError`] for malformed links or records.
+    pub fn direct_children(&self, node: AstNode) -> Result<Vec<AstNode>, AstError> {
+        let end = self.subtree_end(node.index)?;
+        let mut children = Vec::new();
+        let mut current = node.index.checked_add(1).ok_or(AstError::NodeLinkInvalid)?;
+        while current < end {
+            let child = self.node(current)?;
+            if child.parent != node.index {
+                return Err(AstError::NodeLinkInvalid);
+            }
+            children.push(child);
+            let next = self.subtree_end(current)?;
+            if next <= current || next > end {
+                return Err(AstError::NodeLinkInvalid);
+            }
+            current = next;
+        }
+        if current != end {
+            return Err(AstError::NodeLinkInvalid);
+        }
+        Ok(children)
+    }
+
+    /// Expands one `NodeList` into its direct items.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AstError::NodeKindMismatch`] for a non-`NodeList` node and
+    /// propagates link/record failures.
+    pub fn list_items(&self, list: AstNode) -> Result<Vec<AstNode>, AstError> {
+        if list.kind != NODE_LIST_KIND {
+            return Err(AstError::NodeKindMismatch {
+                index: list.index,
+                expected: NODE_LIST_KIND,
+                observed: list.kind,
+            });
+        }
+        self.direct_children(list)
+    }
+
+    /// Returns the child encoded at one children-mask property bit.
+    ///
+    /// The low byte of a children-data word is the mask of present named
+    /// properties, in the same order as the encoded direct children. This is
+    /// how a container's member list is selected without guessing from node
+    /// kinds.
+    ///
+    /// Provenance: the mask comes from the pinned 7.1.0-beta generated encoder
+    /// (`getChildrenPropertyMask`), and the direct-child order matches that
+    /// generated property order. Callers must pass the bit for the specific
+    /// declaration kind; see `native::document_symbol::name_slot_bit` for the
+    /// documented table.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AstError::InvalidNodeData`] when the node does not carry
+    /// children data, or [`AstError::NodeLinkInvalid`] when the mask and the
+    /// direct children disagree.
+    pub fn child_property(&self, node: AstNode, bit: u8) -> Result<Option<AstNode>, AstError> {
+        if bit >= 8 {
+            return Err(AstError::NodeLinkInvalid);
+        }
+        if node.data & 0xC000_0000 != 0 {
+            return Err(AstError::InvalidNodeData);
+        }
+        let mask = node.data & 0xFF;
+        if mask & (1u32 << bit) == 0 {
+            return Ok(None);
+        }
+        let children = self.direct_children(node)?;
+        let mut remaining = children.into_iter();
+        for current_bit in 0..8u8 {
+            if mask & (1u32 << current_bit) == 0 {
+                continue;
+            }
+            let Some(child) = remaining.next() else {
+                return Err(AstError::NodeLinkInvalid);
+            };
+            if current_bit == bit {
+                return Ok(Some(child));
+            }
+        }
+        if remaining.next().is_some() {
+            return Err(AstError::NodeLinkInvalid);
+        }
+        Ok(None)
+    }
+
+    /// Returns the named-child property at one children-mask bit as a name
+    /// slot.
+    ///
+    /// This is the only declaration-name accessor. It never falls back to the
+    /// first Identifier anywhere in the subtree: a destructuring
+    /// `VariableDeclaration` has an `ObjectBindingPattern`/`ArrayBindingPattern`
+    /// in its name slot, and a class property with a string name has a
+    /// `StringLiteral` there. Both must be reported as gaps, while the
+    /// initializer `Identifier` (`config`/`fallback`) must never be published
+    /// as the symbol name.
+    ///
+    /// # Errors
+    ///
+    /// Returns structural [`AstError`] values for malformed links/records. A
+    /// candidate-local Identifier decode failure is returned as a
+    /// non-structural [`AstError`] so the caller can skip only that
+    /// declaration.
+    pub fn name_slot(&self, node: AstNode, bit: u8) -> Result<AstNameSlot, AstError> {
+        match self.child_property(node, bit)? {
+            None => Ok(AstNameSlot::Missing),
+            Some(child) if child.kind == IDENTIFIER_KIND => {
+                self.identifier_name(child).map(AstNameSlot::Identifier)
+            }
+            Some(child) => Ok(AstNameSlot::NotIdentifier { kind: child.kind }),
+        }
+    }
+
+    /// Returns the decoded string-pool bytes addressed by a node data word.
+    ///
+    /// # Errors
+    ///
+    /// Propagates string-index/range failures from the frozen schema.
+    pub fn string_data(&self, data: u32) -> Result<&'a [u8], AstError> {
+        string_bytes(self.payload, &self.header, data)
+    }
+
+    /// Finds the root `SourceFile` node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AstError::NodeKindMismatch`] when no `SourceFile` exists and
+    /// propagates node-record failures while searching.
+    pub fn source_file(&self) -> Result<AstNode, AstError> {
+        let first = self.node(1)?;
+        if first.kind == SOURCE_FILE_KIND {
+            return Ok(first);
+        }
+        for index in 2..self.header.nnodes {
+            let node = self.node(index)?;
+            if node.kind == SOURCE_FILE_KIND {
+                return Ok(node);
+            }
+        }
+        Err(AstError::NodeKindMismatch {
+            index: 1,
+            expected: SOURCE_FILE_KIND,
+            observed: first.kind,
+        })
+    }
+
+    fn identifier_name(&self, node: AstNode) -> Result<AstName, AstError> {
+        let bytes = self.string_data(node.data)?;
+        let text = std::str::from_utf8(bytes).map_err(|_| AstError::NameNotUtf8)?;
+        let token_units = u32::try_from(text.encode_utf16().count()).unwrap_or(u32::MAX);
+        if token_units == 0 || node.end < token_units {
+            return Err(AstError::NodeRangeInvalid);
+        }
+        let start = node.end - token_units;
+        if start < node.pos {
+            return Err(AstError::NodeRangeInvalid);
+        }
+        Ok(AstName {
+            text: text.to_owned(),
+            range: AstRange::new(start, node.end),
+        })
+    }
+}
 
 /// Half-open UTF-16 code-unit range decoded from an AST node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,6 +594,7 @@ impl AstError {
                 | Self::NodeKindMismatch { .. }
                 | Self::NodeRangeInvalid
                 | Self::NodeRangeOutOfSource
+                | Self::NameNotUtf8
         )
     }
 }
@@ -1145,6 +1539,7 @@ mod tests {
         );
         assert!(!AstError::NodeRangeInvalid.is_structural());
         assert!(!AstError::NodeRangeOutOfSource.is_structural());
+        assert!(!AstError::NameNotUtf8.is_structural());
     }
 
     #[test]
@@ -1229,5 +1624,233 @@ mod tests {
             decode_base64("****").expect_err("alphabet"),
             Base64Error::InvalidCharacter
         );
+    }
+
+    #[test]
+    fn ast_tree_validates_indices_ranges_links_and_source_boundaries() {
+        let payload = tree_payload(&[b"x"], &[[0; 7], [308, 0, 10, 0, 0, 0x8000_0000, 0]]);
+        let tree = AstTree::parse(&payload, 10).expect("tree");
+        assert_eq!(tree.header().nnodes, 2);
+        assert_eq!(tree.node(1).expect("source").kind, SOURCE_FILE_KIND);
+        assert_eq!(
+            tree.node(0).expect_err("nil"),
+            AstError::NodeIndexOutOfRange
+        );
+        assert_eq!(
+            tree.node(99).expect_err("range"),
+            AstError::NodeIndexOutOfRange
+        );
+        assert_eq!(
+            tree.subtree_end(0).expect_err("nil end"),
+            AstError::NodeIndexOutOfRange
+        );
+
+        let inverted = tree_payload(&[b"x"], &[[0; 7], [308, 5, 4, 0, 0, 0x8000_0000, 0]]);
+        assert_eq!(
+            AstTree::parse(&inverted, 10)
+                .expect("tree")
+                .node(1)
+                .expect_err("inverted"),
+            AstError::NodeRangeInvalid
+        );
+
+        let out = tree_payload(&[b"x"], &[[0; 7], [308, 0, 11, 0, 0, 0x8000_0000, 0]]);
+        assert_eq!(
+            AstTree::parse(&out, 10)
+                .expect("tree")
+                .node(1)
+                .expect_err("out of source"),
+            AstError::NodeRangeOutOfSource
+        );
+
+        let bad_parent = tree_payload(&[b"x"], &[[0; 7], [308, 0, 10, 0, 2, 0x8000_0000, 0]]);
+        assert_eq!(
+            AstTree::parse(&bad_parent, 10)
+                .expect("tree")
+                .node(1)
+                .expect_err("parent"),
+            AstError::NodeLinkInvalid
+        );
+    }
+
+    #[test]
+    fn ast_tree_expands_lists_and_validates_children_masks() {
+        let payload = tree_payload(
+            &[b"f"],
+            &[
+                [0; 7],
+                [308, 0, 10, 0, 0, 0x8000_0000, 0],
+                [NODE_LIST_KIND, 0, 10, 0, 1, 1, 0],
+                [FUNCTION_DECLARATION_KIND, 0, 10, 0, 2, 1 << 2, 0],
+                [IDENTIFIER_KIND, 0, 1, 0, 3, string_word(0), 0],
+            ],
+        );
+        let tree = AstTree::parse(&payload, 10).expect("tree");
+        let source = tree.source_file().expect("source");
+        let children = tree.direct_children(source).expect("children");
+        assert_eq!(children.len(), 1);
+        let list = children[0];
+        assert_eq!(list.kind, NODE_LIST_KIND);
+        let items = tree.list_items(list).expect("items");
+        assert_eq!(items.len(), 1);
+        let function = items[0];
+        assert_eq!(function.kind, FUNCTION_DECLARATION_KIND);
+        assert_eq!(
+            tree.name_slot(function, 2).expect("name"),
+            AstNameSlot::Identifier(AstName {
+                text: "f".to_owned(),
+                range: AstRange::new(0, 1),
+            })
+        );
+        assert_eq!(
+            tree.child_property(function, 2)
+                .expect("bit")
+                .expect("child")
+                .kind,
+            IDENTIFIER_KIND
+        );
+        assert!(tree.child_property(function, 3).expect("absent").is_none());
+        assert_eq!(
+            tree.child_property(function, 8).expect_err("bit"),
+            AstError::NodeLinkInvalid
+        );
+        assert_eq!(
+            tree.child_property(source, 0).expect_err("extended data"),
+            AstError::InvalidNodeData
+        );
+        assert!(matches!(
+            tree.list_items(function),
+            Err(AstError::NodeKindMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn ast_tree_name_slots_do_not_fall_back_to_initializer_identifiers() {
+        // Real masks from the pinned encoder:
+        // VariableDeclaration data 0x09 = name(bit0) + initializer(bit3);
+        // PropertyDeclaration data 0x12 = name(bit1) + initializer(bit4);
+        // ClassDeclaration data 0x12 = name(bit1) + members(bit4).
+        let destructuring = tree_payload(
+            &[b"config"],
+            &[
+                [0; 7],
+                [262, 0, 20, 0, 0, 0x09, 0],
+                [208, 5, 10, 3, 1, 1, 0],
+                [79, 13, 20, 0, 1, string_word(0), 0],
+            ],
+        );
+        let tree = AstTree::parse(&destructuring, 20).expect("tree");
+        assert_eq!(
+            tree.name_slot(tree.node(1).expect("declaration"), 0)
+                .expect("slot"),
+            AstNameSlot::NotIdentifier { kind: 208 }
+        );
+
+        let string_property = tree_payload(
+            &[b"fallback"],
+            &[
+                [0; 7],
+                [174, 0, 20, 0, 0, 0x12, 0],
+                [10, 1, 4, 3, 1, 0x8000_0000, 0],
+                [79, 12, 20, 0, 1, string_word(0), 0],
+            ],
+        );
+        let tree = AstTree::parse(&string_property, 20).expect("tree");
+        let property = tree.node(1).expect("declaration");
+        assert_eq!(
+            tree.name_slot(property, 1).expect("name slot"),
+            AstNameSlot::NotIdentifier { kind: 10 }
+        );
+        // The initializer bit still resolves to its Identifier; this proves a
+        // first-Identifier fallback would have published `fallback`.
+        assert!(matches!(
+            tree.name_slot(property, 4).expect("initializer"),
+            AstNameSlot::Identifier(AstName { text, .. }) if text == "fallback"
+        ));
+
+        let class = tree_payload(
+            &[b"C"],
+            &[
+                [0; 7],
+                [265, 0, 10, 0, 0, 0x12, 0],
+                [79, 6, 7, 3, 1, string_word(0), 0],
+                [NODE_LIST_KIND, 8, 10, 0, 1, 0, 0],
+            ],
+        );
+        let tree = AstTree::parse(&class, 10).expect("tree");
+        let class = tree.node(1).expect("class");
+        assert!(matches!(
+            tree.name_slot(class, 1).expect("name"),
+            AstNameSlot::Identifier(AstName { text, .. }) if text == "C"
+        ));
+        assert_eq!(
+            tree.name_slot(class, 4).expect("members"),
+            AstNameSlot::NotIdentifier {
+                kind: NODE_LIST_KIND
+            }
+        );
+        assert_eq!(
+            tree.name_slot(class, 2).expect("absent"),
+            AstNameSlot::Missing
+        );
+    }
+
+    #[test]
+    fn ast_tree_name_reports_undecodable_tokens_and_missing_source_file() {
+        let payload = tree_payload(
+            &[b"x"],
+            &[
+                [0; 7],
+                [308, 0, 1, 0, 0, 0x8000_0000, 0],
+                [IDENTIFIER_KIND, 0, 1, 0, 1, 0, 0],
+            ],
+        );
+        let tree = AstTree::parse(&payload, 1).expect("tree");
+        assert_eq!(
+            tree.identifier_name(tree.node(2).expect("identifier"))
+                .expect_err("data"),
+            AstError::InvalidNodeData
+        );
+
+        let invalid = [0xFFu8];
+        let payload = tree_payload(
+            &[&invalid],
+            &[
+                [0; 7],
+                [308, 0, 1, 0, 0, 0x8000_0000, 0],
+                [IDENTIFIER_KIND, 0, 1, 0, 1, 0x4000_0000, 0],
+            ],
+        );
+        let tree = AstTree::parse(&payload, 1).expect("tree");
+        assert_eq!(
+            tree.identifier_name(tree.node(2).expect("identifier"))
+                .expect_err("utf8"),
+            AstError::NameNotUtf8
+        );
+
+        let payload = tree_payload(
+            &[b"name"],
+            &[
+                [0; 7],
+                [308, 0, 4, 0, 0, 0x8000_0000, 0],
+                [IDENTIFIER_KIND, 0, 2, 0, 1, string_word(0), 0],
+            ],
+        );
+        let tree = AstTree::parse(&payload, 4).expect("tree");
+        assert_eq!(
+            tree.identifier_name(tree.node(2).expect("identifier"))
+                .expect_err("range"),
+            AstError::NodeRangeInvalid
+        );
+
+        let payload = tree_payload(
+            &[b"x"],
+            &[[0; 7], [IDENTIFIER_KIND, 0, 1, 0, 0, string_word(0), 0]],
+        );
+        let tree = AstTree::parse(&payload, 1).expect("tree");
+        assert!(matches!(
+            tree.source_file(),
+            Err(AstError::NodeKindMismatch { .. })
+        ));
     }
 }

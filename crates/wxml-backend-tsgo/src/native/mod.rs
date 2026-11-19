@@ -14,7 +14,9 @@
 //! - [`vfs`]: a read-only in-memory filesystem that never falls back to the
 //!   host;
 //! - [`handles`], [`ast`], [`strings`] and [`wire`]: epoch-bound node handles,
-//!   v9 AST header validation, UTF-16/UTF-8 conversion and wire DTOs.
+//!   v9 AST header validation, UTF-16/UTF-8 conversion and wire DTOs;
+//! - [`document_symbol`]: conservative document-symbol extraction from the
+//!   same-snapshot AST.
 //!
 //! No native engine artifact is downloaded by this crate's tests; the
 //! real-engine gate runs when `TSGO_BIN` points at the pinned executable, and
@@ -23,6 +25,7 @@
 //! exposed to a server yet.
 
 pub mod ast;
+pub mod document_symbol;
 pub mod framing;
 pub mod handles;
 pub mod protocol;

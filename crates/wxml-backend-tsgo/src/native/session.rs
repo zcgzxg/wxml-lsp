@@ -42,9 +42,10 @@ use serde_json::Value;
 use crate::config::{MAX_LIVE_SNAPSHOTS, PinnedEngine};
 use crate::input::{AnalysisInput, ProjectKey, SnapshotRevision};
 use crate::native::ast::{
-    AstError, AstHeader, AstRange, IDENTIFIER_KIND, decode_base64, find_declaration_name,
+    AstError, AstHeader, AstRange, AstTree, IDENTIFIER_KIND, decode_base64, find_declaration_name,
     find_identifier, node_span,
 };
+use crate::native::document_symbol::DocumentSymbolsEvidence;
 use crate::native::framing::{DEFAULT_FRAME_LIMITS, FrameLimits, FrameRole};
 use crate::native::handles::{
     BoundNodeHandle, BoundSymbol, BoundSymbolReference, EngineSnapshotId, HandleBinding,
@@ -1571,6 +1572,44 @@ impl NativeSession {
         parse_optional(value)
     }
 
+    /// Returns native document symbols for one project-relative file.
+    ///
+    /// The AST and the source text are captured from the same current epoch.
+    /// A changed snapshot or file content is rejected as
+    /// [`NativeError::StaleSnapshot`] instead of combining bytes from different
+    /// revisions. The returned evidence is still raw: callers must map it with
+    /// `query::document_symbol::map_document_symbols` and preserve `Partial`.
+    ///
+    /// # Errors
+    ///
+    /// Requires an open snapshot and a file inside it. Transport, deadline,
+    /// stale-snapshot and structural AST failures propagate.
+    pub fn document_symbols(&mut self, path: &str) -> Result<DocumentSymbolsEvidence, NativeError> {
+        let (epoch, _project, absolute) = self.file_context(path)?;
+        let (source, content_hash) = {
+            let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
+            let file = vfs.file(&absolute).ok_or(NativeError::InvalidParams {
+                reason: "file is not in the open snapshot",
+            })?;
+            (file.text().to_owned(), file.hash().to_owned())
+        };
+        let payload = self.get_source_ast(&absolute)?;
+
+        let current_hash = self
+            .vfs
+            .as_ref()
+            .and_then(|vfs| vfs.file(&absolute))
+            .map(crate::native::vfs::VirtualFile::hash);
+        if !document_symbol_binding_is_current(self.epoch, current_hash, epoch, &content_hash) {
+            return Err(NativeError::StaleSnapshot);
+        }
+
+        let source_utf16_len = utf16_len(&source);
+        let ast = AstTree::parse(&payload, source_utf16_len).map_err(document_symbol_ast_error)?;
+        crate::native::document_symbol::document_symbols(&ast, &source)
+            .map_err(document_symbol_ast_error)
+    }
+
     /// Binds a raw handle to the current epoch and file content.
     ///
     /// # Errors
@@ -1836,6 +1875,20 @@ fn snapshot_is_current(
     expected.is_none() || current == expected
 }
 
+/// Returns whether a document-symbol query still sees the epoch and content it
+/// captured before `getSourceFile`.
+fn document_symbol_binding_is_current(
+    current_epoch: Option<NativeEpoch>,
+    current_hash: Option<&str>,
+    captured_epoch: NativeEpoch,
+    captured_hash: &str,
+) -> bool {
+    snapshot_is_current(
+        current_epoch.map(|epoch| epoch.snapshot),
+        Some(captured_epoch.snapshot),
+    ) && current_hash == Some(captured_hash)
+}
+
 /// Rejects an input whose serialized snapshot request cannot fit the budget.
 ///
 /// The estimate is a conservative upper bound (JSON escaping, paths, URI
@@ -2019,6 +2072,14 @@ fn definition_ast_error(error: AstError) -> NativeError {
     }
 }
 
+/// Document-symbol AST failures are protocol failures.
+///
+/// The walker records declaration-local problems in its evidence; an error that
+/// escapes is a payload/source/header mismatch, not one bad candidate.
+fn document_symbol_ast_error(_error: AstError) -> NativeError {
+    NativeError::Protocol("engine AST schema mismatch".to_owned())
+}
+
 /// Returns whether a declaration decode failure is local and should degrade the
 /// answer to `Partial` instead of aborting the whole definition query.
 ///
@@ -2114,7 +2175,11 @@ fn map_vfs(error: &VfsError) -> NativeError {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::assert_is_empty)]
+
     use super::*;
+    use crate::query::document_symbol::{DocumentSymbolKind, map_document_symbols};
+    use wxml_types::CapabilityStatus;
 
     #[test]
     fn project_selection_prefers_the_configuration() {
@@ -2146,6 +2211,39 @@ mod tests {
             Some(EngineSnapshotId::new(4))
         ));
         assert!(!snapshot_is_current(None, Some(current)));
+    }
+
+    #[test]
+    fn document_symbols_require_the_captured_epoch_and_content_hash() {
+        let epoch = NativeEpoch {
+            generation: SessionGeneration::new(1),
+            snapshot: EngineSnapshotId::new(3),
+            revision: SnapshotRevision::new(1),
+        };
+        assert!(document_symbol_binding_is_current(
+            Some(epoch),
+            Some("hash"),
+            epoch,
+            "hash"
+        ));
+        assert!(!document_symbol_binding_is_current(
+            Some(NativeEpoch {
+                snapshot: EngineSnapshotId::new(4),
+                ..epoch
+            }),
+            Some("hash"),
+            epoch,
+            "hash"
+        ));
+        assert!(!document_symbol_binding_is_current(
+            Some(epoch),
+            Some("new-hash"),
+            epoch,
+            "hash"
+        ));
+        assert!(!document_symbol_binding_is_current(
+            None, None, epoch, "hash"
+        ));
     }
 
     #[test]
@@ -2388,5 +2486,349 @@ mod tests {
             bounds.start <= 6 && 6 < bounds.end,
             "a position inside the escape must remain inside the accepted span"
         );
+    }
+
+    struct TempTree(PathBuf);
+
+    impl Drop for TempTree {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn real_engine_doc_symbol_session(
+        tag: &str,
+        source: &str,
+    ) -> Option<(NativeSession, TempTree)> {
+        use crate::input::{DocumentRevision, ProjectRoot, SourceFile as InputSourceFile};
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+        let Ok(bin) = std::env::var("TSGO_BIN") else {
+            let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
+            assert!(
+                !required,
+                "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1; \
+                 set it to the pinned 7.1.0-beta lib/tsc"
+            );
+            eprintln!(
+                "real-engine document-symbol test `{tag}` skipped: set TSGO_BIN to the pinned \
+                 7.1.0-beta lib/tsc (or WXML_REQUIRE_REAL_ENGINE=1 to make this a hard gate)"
+            );
+            return None;
+        };
+        let executable = std::path::Path::new(&bin);
+        assert!(
+            executable.is_file(),
+            "TSGO_BIN does not point at a file: {bin}"
+        );
+
+        let suffix = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let sandbox = std::env::temp_dir().join(format!(
+            "wxml-tsgo-doc-symbols-{tag}-sandbox-{}-{suffix}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&sandbox).expect("sandbox");
+        let guard = TempTree(sandbox.clone());
+
+        let project_root = format!(
+            "/tmp/opencode/wxml-tsgo-doc-symbols-{tag}-project-{}-{suffix}",
+            std::process::id()
+        );
+        let input = AnalysisInput::new(
+            ProjectKey::new("doc-symbols"),
+            ProjectRoot::new(&project_root).expect("project root"),
+            SnapshotRevision::new(1),
+            vec![
+                InputSourceFile::new("main.ts", source, DocumentRevision::new(1)).expect("main.ts"),
+            ],
+        )
+        .expect("analysis input");
+
+        let mut session =
+            NativeSession::start(SessionOptions::new(executable, sandbox)).expect("start engine");
+        session.open_project(&input).expect("open project");
+        Some((session, guard))
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn real_engine_document_symbols_are_exact_and_ordered() {
+        let source = r#"// 😀 文档
+export function greet(name: string): string { return name; }
+export class User {
+  name: string = "";
+  greet(): string { return this.name; }
+}
+export interface Shape {
+  area(): number;
+}
+const count = 1;
+"#;
+        let Some((mut session, _sandbox)) = real_engine_doc_symbol_session("exact", source) else {
+            return;
+        };
+        let evidence = session
+            .document_symbols("main.ts")
+            .expect("native document symbols");
+        let result = map_document_symbols(&evidence);
+        println!(
+            "document symbols: {:?} status={:?}",
+            result
+                .symbols
+                .iter()
+                .map(|symbol| (&symbol.name, symbol.kind))
+                .collect::<Vec<_>>(),
+            result.status
+        );
+
+        assert_eq!(result.status, CapabilityStatus::Supported);
+        assert!(!result.truncated);
+        assert_eq!(result.skipped, 0);
+        assert!(result.gaps.is_empty());
+        assert_eq!(
+            result
+                .symbols
+                .iter()
+                .map(|symbol| (symbol.name.as_str(), symbol.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                ("greet", DocumentSymbolKind::Function),
+                ("User", DocumentSymbolKind::Class),
+                ("Shape", DocumentSymbolKind::Interface),
+                ("count", DocumentSymbolKind::Variable),
+            ]
+        );
+
+        let greet = &result.symbols[0];
+        assert_eq!(greet.range.start.get(), 0);
+        assert_eq!(greet.range.end.get(), 75);
+        assert_eq!(greet.utf16.start.get(), 0);
+        assert_eq!(greet.utf16.end.get(), 69);
+        assert_eq!(greet.selection_range.start.get(), 31);
+        assert_eq!(greet.selection_range.end.get(), 36);
+        assert_eq!(greet.selection_utf16.start.get(), 25);
+        assert_eq!(greet.selection_utf16.end.get(), 30);
+
+        let user = &result.symbols[1];
+        assert_eq!(user.range.start.get(), 75);
+        assert_eq!(user.range.end.get(), 158);
+        assert_eq!(user.utf16.start.get(), 69);
+        assert_eq!(user.utf16.end.get(), 152);
+        assert_eq!(user.selection_range.start.get(), 89);
+        assert_eq!(user.selection_range.end.get(), 93);
+        assert_eq!(user.selection_utf16.start.get(), 83);
+        assert_eq!(user.selection_utf16.end.get(), 87);
+        assert_eq!(
+            user.children
+                .iter()
+                .map(|symbol| (symbol.name.as_str(), symbol.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                ("name", DocumentSymbolKind::Property),
+                ("greet", DocumentSymbolKind::Method),
+            ]
+        );
+        assert_eq!(user.children[0].selection_range.start.get(), 98);
+        assert_eq!(user.children[0].selection_range.end.get(), 102);
+        assert_eq!(user.children[0].selection_utf16.start.get(), 92);
+        assert_eq!(user.children[0].selection_utf16.end.get(), 96);
+        assert_eq!(user.children[1].selection_range.start.get(), 119);
+        assert_eq!(user.children[1].selection_range.end.get(), 124);
+        assert_eq!(user.children[1].selection_utf16.start.get(), 113);
+        assert_eq!(user.children[1].selection_utf16.end.get(), 118);
+
+        let shape = &result.symbols[2];
+        assert_eq!(shape.range.start.get(), 158);
+        assert_eq!(shape.range.end.get(), 203);
+        assert_eq!(shape.utf16.start.get(), 152);
+        assert_eq!(shape.utf16.end.get(), 197);
+        assert_eq!(shape.children.len(), 1);
+        assert_eq!(shape.children[0].name, "area");
+        assert_eq!(shape.children[0].kind, DocumentSymbolKind::Method);
+        assert_eq!(shape.children[0].selection_range.start.get(), 186);
+        assert_eq!(shape.children[0].selection_range.end.get(), 190);
+        assert_eq!(shape.children[0].selection_utf16.start.get(), 180);
+        assert_eq!(shape.children[0].selection_utf16.end.get(), 184);
+
+        let count = &result.symbols[3];
+        assert_eq!(count.range.start.get(), 209);
+        assert_eq!(count.range.end.get(), 219);
+        assert_eq!(count.utf16.start.get(), 203);
+        assert_eq!(count.utf16.end.get(), 213);
+        assert_eq!(count.selection_range.start.get(), 210);
+        assert_eq!(count.selection_range.end.get(), 215);
+        assert_eq!(count.selection_utf16.start.get(), 204);
+        assert_eq!(count.selection_utf16.end.get(), 209);
+
+        let _ = session.shutdown();
+    }
+
+    #[test]
+    fn real_engine_document_symbols_reject_destructuring_and_string_names() {
+        use crate::native::ast::{
+            OBJECT_BINDING_PATTERN_KIND, PROPERTY_DECLARATION_KIND, STRING_LITERAL_KIND,
+            VARIABLE_DECLARATION_KIND,
+        };
+
+        let source = "const { a } = config;\nclass C { \"x\" = fallback; }\n";
+        let Some((mut session, _sandbox)) = real_engine_doc_symbol_session("name-slots", source)
+        else {
+            return;
+        };
+        let evidence = session
+            .document_symbols("main.ts")
+            .expect("native document symbols");
+        let result = map_document_symbols(&evidence);
+
+        assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+        assert_eq!(result.skipped, 2);
+        assert_eq!(result.symbols.len(), 1);
+        assert_eq!(result.symbols[0].name, "C");
+        assert!(result.symbols[0].children.is_empty());
+        assert!(
+            !result
+                .symbols
+                .iter()
+                .any(|symbol| matches!(symbol.name.as_str(), "config" | "fallback" | "x"))
+        );
+        assert!(result.gaps.iter().any(|gap| {
+            gap.node_kind == VARIABLE_DECLARATION_KIND
+                && gap.name_kind == Some(OBJECT_BINDING_PATTERN_KIND)
+                && gap.reason == "name slot is not an Identifier"
+        }));
+        assert!(result.gaps.iter().any(|gap| {
+            gap.node_kind == PROPERTY_DECLARATION_KIND
+                && gap.name_kind == Some(STRING_LITERAL_KIND)
+                && gap.reason == "name slot is not an Identifier"
+        }));
+
+        let _ = session.shutdown();
+    }
+
+    #[test]
+    fn real_engine_document_symbols_keep_nested_namespace_children() {
+        let source = "namespace A.B { const inner = 1; }\n";
+        let Some((mut session, _sandbox)) =
+            real_engine_doc_symbol_session("nested-namespace", source)
+        else {
+            return;
+        };
+        let evidence = session
+            .document_symbols("main.ts")
+            .expect("native document symbols");
+        let result = map_document_symbols(&evidence);
+
+        assert_eq!(result.status, CapabilityStatus::Supported);
+        assert_eq!(result.skipped, 0);
+        assert!(result.gaps.is_empty());
+        assert_eq!(result.symbols.len(), 1);
+        let module_a = &result.symbols[0];
+        assert_eq!(module_a.name, "A");
+        assert_eq!(module_a.kind, DocumentSymbolKind::Module);
+        assert_eq!(module_a.range.start.get(), 0);
+        assert_eq!(module_a.range.end.get(), 34);
+        assert_eq!(module_a.selection_range.start.get(), 10);
+        assert_eq!(module_a.selection_range.end.get(), 11);
+        assert_eq!(module_a.children.len(), 1);
+        let module_b = &module_a.children[0];
+        assert_eq!(module_b.name, "B");
+        assert_eq!(module_b.kind, DocumentSymbolKind::Module);
+        assert_eq!(module_b.range.start.get(), 12);
+        assert_eq!(module_b.range.end.get(), 34);
+        assert_eq!(module_b.selection_range.start.get(), 12);
+        assert_eq!(module_b.selection_range.end.get(), 13);
+        assert_eq!(module_b.children.len(), 1);
+        let inner = &module_b.children[0];
+        assert_eq!(inner.name, "inner");
+        assert_eq!(inner.kind, DocumentSymbolKind::Variable);
+        assert_eq!(inner.range.start.get(), 21);
+        assert_eq!(inner.range.end.get(), 31);
+        assert_eq!(inner.selection_range.start.get(), 22);
+        assert_eq!(inner.selection_range.end.get(), 27);
+
+        let _ = session.shutdown();
+    }
+
+    #[test]
+    fn real_engine_document_symbols_keep_nested_class_interface_enum_members() {
+        let source = "namespace A { class C { x = 1 } interface I { y: number } enum E { Z } }\n";
+        let Some((mut session, _sandbox)) =
+            real_engine_doc_symbol_session("nested-members", source)
+        else {
+            return;
+        };
+        let evidence = session
+            .document_symbols("main.ts")
+            .expect("native document symbols");
+        let result = map_document_symbols(&evidence);
+
+        assert_eq!(result.status, CapabilityStatus::Supported);
+        assert_eq!(result.skipped, 0);
+        assert!(result.gaps.is_empty());
+        assert_eq!(result.symbols.len(), 1);
+        let module_a = &result.symbols[0];
+        assert_eq!(module_a.name, "A");
+        assert_eq!(module_a.range.start.get(), 0);
+        assert_eq!(module_a.range.end.get(), 72);
+        assert_eq!(module_a.selection_range.start.get(), 10);
+        assert_eq!(module_a.selection_range.end.get(), 11);
+        assert_eq!(
+            module_a
+                .children
+                .iter()
+                .map(|symbol| (symbol.name.as_str(), symbol.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                ("C", DocumentSymbolKind::Class),
+                ("I", DocumentSymbolKind::Interface),
+                ("E", DocumentSymbolKind::Enum),
+            ]
+        );
+
+        let class_c = &module_a.children[0];
+        assert_eq!(class_c.range.start.get(), 13);
+        assert_eq!(class_c.range.end.get(), 31);
+        assert_eq!(class_c.selection_range.start.get(), 20);
+        assert_eq!(class_c.selection_range.end.get(), 21);
+        assert_eq!(class_c.children.len(), 1);
+        let member_x = &class_c.children[0];
+        assert_eq!(member_x.name, "x");
+        assert_eq!(member_x.kind, DocumentSymbolKind::Property);
+        assert_eq!(member_x.range.start.get(), 23);
+        assert_eq!(member_x.range.end.get(), 29);
+        assert_eq!(member_x.selection_range.start.get(), 24);
+        assert_eq!(member_x.selection_range.end.get(), 25);
+
+        let interface_i = &module_a.children[1];
+        assert_eq!(interface_i.range.start.get(), 31);
+        assert_eq!(interface_i.range.end.get(), 57);
+        assert_eq!(interface_i.selection_range.start.get(), 42);
+        assert_eq!(interface_i.selection_range.end.get(), 43);
+        assert_eq!(interface_i.children.len(), 1);
+        let member_y = &interface_i.children[0];
+        assert_eq!(member_y.name, "y");
+        assert_eq!(member_y.kind, DocumentSymbolKind::Property);
+        assert_eq!(member_y.range.start.get(), 45);
+        assert_eq!(member_y.range.end.get(), 55);
+        assert_eq!(member_y.selection_range.start.get(), 46);
+        assert_eq!(member_y.selection_range.end.get(), 47);
+
+        let enum_e = &module_a.children[2];
+        assert_eq!(enum_e.range.start.get(), 57);
+        assert_eq!(enum_e.range.end.get(), 70);
+        assert_eq!(enum_e.selection_range.start.get(), 63);
+        assert_eq!(enum_e.selection_range.end.get(), 64);
+        assert_eq!(enum_e.children.len(), 1);
+        let member_z = &enum_e.children[0];
+        assert_eq!(member_z.name, "Z");
+        assert_eq!(member_z.kind, DocumentSymbolKind::EnumMember);
+        assert_eq!(member_z.range.start.get(), 66);
+        assert_eq!(member_z.range.end.get(), 68);
+        assert_eq!(member_z.selection_range.start.get(), 67);
+        assert_eq!(member_z.selection_range.end.get(), 68);
+
+        let _ = session.shutdown();
     }
 }
