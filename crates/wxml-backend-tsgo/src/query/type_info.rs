@@ -69,13 +69,14 @@ pub fn map_type_query(raw: &TypeQuery) -> TypeResult {
     }
 
     let intrinsic = info.intrinsic_name.as_deref().unwrap_or_default();
-    let quality = if intrinsic == "error" {
-        TypeQuality::Unknown
-    } else if intrinsic == "any" || text == "any" {
-        TypeQuality::Any
-    } else {
-        TypeQuality::Known
-    };
+    let quality =
+        if intrinsic == "error" || intrinsic == "unknown" || text == "error" || text == "unknown" {
+            TypeQuality::Unknown
+        } else if intrinsic == "any" || text == "any" {
+            TypeQuality::Any
+        } else {
+            TypeQuality::Known
+        };
 
     TypeResult {
         info: Some(TypeInfo {
@@ -124,6 +125,33 @@ mod tests {
         let known = map_type_query(&query(Some(67), None, Some("User")));
         assert_eq!(known.quality, TypeQuality::Known);
         assert_eq!(known.info.expect("info").text, "User");
+    }
+
+    #[test]
+    fn literal_unknown_is_unknown_quality_not_known() {
+        let result = map_type_query(&query(Some(68), None, Some("unknown")));
+        assert_eq!(result.quality, TypeQuality::Unknown);
+        assert_eq!(result.info.as_ref().expect("info").text, "unknown");
+        assert_eq!(result.status, CapabilityStatus::Supported);
+    }
+
+    #[test]
+    fn intrinsic_unknown_is_unknown_quality_even_with_other_text() {
+        let result = map_type_query(&query(Some(69), Some("unknown"), Some("User | unknown")));
+        assert_eq!(result.quality, TypeQuality::Unknown);
+        assert_eq!(result.info.as_ref().expect("info").text, "User | unknown");
+    }
+
+    #[test]
+    fn literal_error_and_empty_text_stay_unknown() {
+        let literal = map_type_query(&query(Some(70), None, Some("error")));
+        assert_eq!(literal.quality, TypeQuality::Unknown);
+        assert_eq!(literal.info.as_ref().expect("info").text, "error");
+
+        let empty = map_type_query(&query(Some(71), None, Some("   ")));
+        assert_eq!(empty.quality, TypeQuality::Unknown);
+        assert!(empty.info.is_none());
+        assert!(matches!(empty.status, CapabilityStatus::Partial { .. }));
     }
 
     #[test]

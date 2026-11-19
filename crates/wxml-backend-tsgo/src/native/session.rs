@@ -80,6 +80,14 @@ use crate::native::wire::{
     update_snapshot_params,
 };
 use crate::native::{NativeError, UnavailableReason};
+use crate::query::documentation::map_documentation;
+use crate::query::hover::{
+    DeclarationInsert, HoverDeclaration, HoverEvidence, HoverGap, HoverSymbolFacts,
+    MAX_HOVER_DECLARATIONS, insert_declaration,
+};
+use crate::query::type_info::map_type_query;
+use crate::script::symbols::Utf16Range;
+use crate::shadow::mapping::SourceRange;
 
 /// Static session options.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,6 +215,17 @@ impl DefinitionEvidence {
             truncated: false,
         }
     }
+}
+
+/// One declaration-handle decode outcome for hover evidence.
+#[derive(Debug)]
+enum HoverDeclarationOutcome {
+    /// The handle decoded into a verified declaration name token.
+    Decoded(HoverDeclaration),
+    /// The handle points outside the project snapshot.
+    External(String),
+    /// The handle could not be decoded into a verified token.
+    Undecodable(String),
 }
 
 /// Both diagnostic sources for one file.
@@ -1197,6 +1216,275 @@ impl NativeSession {
             comment_failed,
             tags_failed,
         })
+    }
+
+    /// Composes truthful hover evidence for one position.
+    ///
+    /// The answer aggregates `getTypeAtPosition`/`typeToString`,
+    /// `getSymbolAtPosition`, `getDocumentationComment`/`getJsDocTags` and
+    /// declaration decoding from the same snapshot AST. No native method outside
+    /// the frozen allowlist is used and no host file is read.
+    ///
+    /// Every declaration handle is decoded into its declaration's name token;
+    /// targets are deduplicated by `(path, start, end)` and capped at
+    /// [`MAX_HOVER_DECLARATIONS`]. A declaration outside the project snapshot
+    /// (a standard-library or mounted type-asset declaration) or an
+    /// undecodable declaration is recorded as a typed gap and degrades the
+    /// answer instead of disappearing.
+    ///
+    /// The session epoch, snapshot and query-file content hash captured before
+    /// the calls are re-checked before returning. A changed snapshot yields
+    /// [`NativeError::StaleSnapshot`]; a symbol bound to different content
+    /// yields [`NativeError::StaleHandle`].
+    ///
+    /// # Errors
+    ///
+    /// Requires an open snapshot and a valid position. Transport, deadline and
+    /// session failures propagate; per-declaration decode failures do not.
+    pub fn hover_evidence(
+        &mut self,
+        path: &str,
+        position: Utf16Position,
+    ) -> Result<HoverEvidence, NativeError> {
+        let (epoch, _project, absolute) = self.file_context(path)?;
+        let content_hash = {
+            let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
+            let file = vfs.file(&absolute).ok_or(NativeError::InvalidParams {
+                reason: "file is not in the open snapshot",
+            })?;
+            file.hash().to_owned()
+        };
+
+        let type_result = map_type_query(&self.type_query(path, position)?);
+        let mut gaps = Vec::new();
+        if let Some(reason) = type_result.status.reason() {
+            gaps.push(HoverGap::Unsupported {
+                reason: format!("type query is incomplete: {reason}"),
+            });
+        }
+
+        let symbol = self.symbol_at_position(path, position)?;
+        let mut documentation = None;
+        if let Some(facts) = &symbol {
+            if facts.dropped_declarations() > 0 {
+                gaps.push(HoverGap::ExternalDeclaration { path: None });
+            }
+            if facts.reference_dropped() {
+                gaps.push(HoverGap::Unsupported {
+                    reason: "the symbol documentation reference is outside the current snapshot"
+                        .to_owned(),
+                });
+            }
+            if let Some(reference) = facts.reference() {
+                documentation = Some(map_documentation(&self.documentation(reference)?));
+            }
+        }
+
+        let declarations = match &symbol {
+            Some(facts) => self.decode_hover_declarations(facts, &mut gaps)?,
+            None => Vec::new(),
+        };
+
+        self.verify_hover_epoch(epoch, &absolute, &content_hash, symbol.as_ref())?;
+
+        let symbol = symbol.map(|facts| HoverSymbolFacts {
+            name: facts.name().to_owned(),
+            flags: facts.flags(),
+            declarations: facts.declarations().to_vec(),
+        });
+        let mut evidence = HoverEvidence {
+            type_info: type_result.info,
+            type_quality: type_result.quality,
+            symbol,
+            documentation,
+            declarations,
+            status: wxml_types::CapabilityStatus::Supported,
+            gaps,
+        };
+        evidence.finalize_status();
+        Ok(evidence)
+    }
+
+    /// Decodes a symbol's declaration handles into verified project-relative
+    /// name-token targets.
+    fn decode_hover_declarations(
+        &mut self,
+        symbol: &BoundSymbol,
+        gaps: &mut Vec<HoverGap>,
+    ) -> Result<Vec<HoverDeclaration>, NativeError> {
+        let epoch = self.epoch.ok_or(NativeError::NoSnapshot)?;
+        let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
+        let query_file = vfs
+            .file(symbol.binding().normalized_file_path())
+            .ok_or(NativeError::StaleHandle)?;
+        if !symbol.is_current(self.generation, epoch.snapshot, query_file.hash()) {
+            return Err(NativeError::StaleHandle);
+        }
+
+        let mut declarations = Vec::new();
+        let mut cache = BTreeMap::new();
+        let mut cache_bytes = 0usize;
+        let mut truncated = false;
+        for declaration in symbol.declarations() {
+            let outcome = self.decode_hover_declaration(
+                declaration,
+                symbol.name(),
+                &mut cache,
+                &mut cache_bytes,
+            )?;
+            let target = match outcome {
+                HoverDeclarationOutcome::Decoded(target) => target,
+                HoverDeclarationOutcome::External(path) => {
+                    gaps.push(HoverGap::ExternalDeclaration { path: Some(path) });
+                    continue;
+                }
+                HoverDeclarationOutcome::Undecodable(reason) => {
+                    gaps.push(HoverGap::UndecodableDeclaration { reason });
+                    continue;
+                }
+            };
+            match insert_declaration(&mut declarations, target) {
+                DeclarationInsert::Inserted | DeclarationInsert::Duplicate => {}
+                DeclarationInsert::Truncated => {
+                    truncated = true;
+                    break;
+                }
+            }
+        }
+        if truncated {
+            gaps.push(HoverGap::TruncatedDeclarations {
+                limit: MAX_HOVER_DECLARATIONS,
+            });
+        }
+        Ok(declarations)
+    }
+
+    /// Decodes one epoch-bound declaration handle into its name-token target.
+    fn decode_hover_declaration(
+        &mut self,
+        declaration: &BoundNodeHandle,
+        expected_name: &str,
+        cache: &mut BTreeMap<String, Option<Vec<u8>>>,
+        cache_bytes: &mut usize,
+    ) -> Result<HoverDeclarationOutcome, NativeError> {
+        match self.validate_handle(declaration) {
+            Ok(()) => {}
+            Err(NativeError::InvalidHandle { .. } | NativeError::StaleHandle) => {
+                return Ok(HoverDeclarationOutcome::Undecodable(
+                    "declaration handle is outside the current snapshot".to_owned(),
+                ));
+            }
+            Err(error) => return Err(error),
+        }
+        let absolute = declaration.binding().normalized_file_path.clone();
+        {
+            let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
+            let Some(file) = vfs.file(&absolute) else {
+                return Ok(HoverDeclarationOutcome::External(absolute));
+            };
+            if declaration.binding().content_hash_or_node_id.as_str() != file.hash() {
+                return Err(NativeError::StaleSnapshot);
+            }
+        }
+
+        let payload = if let Some(entry) = cache.get(&absolute) {
+            match entry {
+                Some(payload) => payload,
+                None => {
+                    return Ok(HoverDeclarationOutcome::Undecodable(
+                        "declaration AST exceeds the hover cache budget".to_owned(),
+                    ));
+                }
+            }
+        } else {
+            match self.get_source_ast(&absolute) {
+                Ok(payload) => {
+                    let total = cache_bytes.saturating_add(payload.len());
+                    if total > MAX_DEFINITION_AST_CACHE_BYTES {
+                        cache.insert(absolute.clone(), None);
+                        return Ok(HoverDeclarationOutcome::Undecodable(
+                            "declaration AST exceeds the hover cache budget".to_owned(),
+                        ));
+                    }
+                    *cache_bytes = total;
+                    cache.insert(absolute.clone(), Some(payload));
+                    match cache.get(&absolute) {
+                        Some(Some(payload)) => payload,
+                        _ => {
+                            return Ok(HoverDeclarationOutcome::Undecodable(
+                                "declaration AST is unavailable".to_owned(),
+                            ));
+                        }
+                    }
+                }
+                Err(error) if definition_decode_error(&error) => {
+                    cache.insert(absolute.clone(), None);
+                    return Ok(HoverDeclarationOutcome::Undecodable(
+                        "declaration AST is unavailable".to_owned(),
+                    ));
+                }
+                Err(error) => return Err(error),
+            }
+        };
+
+        let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
+        let Some(file) = vfs.file(&absolute) else {
+            return Ok(HoverDeclarationOutcome::External(absolute));
+        };
+        let source_len = utf16_len(file.text());
+        let range = match find_declaration_name(
+            payload,
+            declaration.handle().encoder_index,
+            declaration.handle().kind,
+            expected_name,
+            source_len,
+        ) {
+            Ok(Some(range)) => range,
+            Err(error) if error.is_structural() => return Err(definition_ast_error(error)),
+            Ok(None) | Err(_) => {
+                return Ok(HoverDeclarationOutcome::Undecodable(
+                    "declaration name token could not be decoded".to_owned(),
+                ));
+            }
+        };
+        let Ok(path) = self.project_relative_path(&absolute) else {
+            return Ok(HoverDeclarationOutcome::External(absolute));
+        };
+        match definition_target_from_ast(path, file.text(), range, expected_name) {
+            Some(target) => Ok(HoverDeclarationOutcome::Decoded(HoverDeclaration {
+                path: target.path,
+                range: SourceRange::new(target.start_utf8.get(), target.end_utf8.get()),
+                utf16: Utf16Range::new(target.start_utf16.get(), target.end_utf16.get()),
+            })),
+            None => Ok(HoverDeclarationOutcome::Undecodable(
+                "declaration token does not match the symbol name".to_owned(),
+            )),
+        }
+    }
+
+    /// Rejects hover evidence assembled across a changed epoch or content hash.
+    fn verify_hover_epoch(
+        &self,
+        epoch: NativeEpoch,
+        absolute: &str,
+        content_hash: &str,
+        symbol: Option<&BoundSymbol>,
+    ) -> Result<(), NativeError> {
+        let current = self.epoch.ok_or(NativeError::NoSnapshot)?;
+        if current != epoch {
+            return Err(NativeError::StaleSnapshot);
+        }
+        let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
+        let file = vfs.file(absolute).ok_or(NativeError::StaleSnapshot)?;
+        if file.hash() != content_hash {
+            return Err(NativeError::StaleSnapshot);
+        }
+        if let Some(symbol) = symbol {
+            if !symbol.is_current(self.generation, current.snapshot, content_hash) {
+                return Err(NativeError::StaleHandle);
+            }
+        }
+        Ok(())
     }
 
     /// Returns referenced symbols for the symbol at a position.
