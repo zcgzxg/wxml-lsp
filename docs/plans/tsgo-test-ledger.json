@@ -164,17 +164,17 @@
     },
     "migration_evidence": {
       "assessed_at": "2026-11-20",
-      "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
+      "implementation_head": "0bf666b994163d2a44a4b87b0b8bb5d4e9101bf1",
       "rust_test_command": "cargo test -p wxml-lsp --lib; cargo test -p wxml-lsp --test native_parity; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored; cargo test -p wxml-delivery --test assets_lock_root",
-      "rust_test_result": "wave-6 ledger-only: cargo test -p wxml-lsp --test native_parity 37 passed/0 failed/26 ignored (task/wave-5 HEAD-only expectation 36 passed/23 ignored; the extra native-edit tests are uncommitted parallel work, not wave-6). No production/test code was changed by this wave.",
+      "rust_test_result": "wave-6 component-binding follow-up: cargo test -p wxml-lsp --lib backend_tsgo::component_bindings 22 passed/0 failed; cargo test -p wxml-lsp --test native_parity 37 passed/0 failed/26 ignored. Four cases promoted to exact/green; two remain blocked.",
       "assessed_cases": 154,
-      "exact": 44,
+      "exact": 48,
       "near_exact": 3,
-      "weaker": 80,
+      "weaker": 74,
       "structural": 7,
-      "blocked": 20,
-      "green_eligible": 44,
-      "promoted_to_green": 44,
+      "blocked": 22,
+      "green_eligible": 48,
+      "promoted_to_green": 48,
       "remaining_planned_without_evidence": 149,
       "by_partition": {
         "behaviors": {
@@ -204,14 +204,14 @@
         "components": {
           "routed_cases": 19,
           "evidence_cases": 16,
-          "green_cases": 4,
-          "planned_evidence_cases": 12,
+          "green_cases": 8,
+          "planned_evidence_cases": 8,
           "unassessed_cases": 3,
-          "exact": 4,
+          "exact": 8,
           "near_exact": 0,
-          "weaker": 7,
+          "weaker": 1,
           "structural": 0,
-          "blocked": 5
+          "blocked": 7
         },
         "definitions": {
           "routed_cases": 5,
@@ -374,15 +374,15 @@
       "rust_unit_test_result": "wxml-lsp lib 789 passed, 0 failed, 0 ignored",
       "near_exact_recommendations": 3,
       "statuses": {
-        "planned": 259,
-        "green": 44,
+        "planned": 255,
+        "green": 48,
         "retired-with-decision": 36
       },
       "status_policy": "Only parity=exact cases are green. near_exact, weaker, structural and blocked cases stay planned with status_recommendation recorded; no empty evidence is accepted."
     },
     "statuses": {
-      "planned": 259,
-      "green": 44,
+      "planned": 255,
+      "green": 48,
       "retired-with-decision": 36
     }
   },
@@ -5389,10 +5389,10 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "messages"
@@ -5400,33 +5400,33 @@
       "migration_evidence": {
         "case_id": "TS-COMPONENT-0147",
         "assessed_at": "2026-11-20",
-        "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "The component-binding pass asserts one title mismatch at the exact expression range, error severity and a path-free message; the TS per-tag clean/union/literal/array/object matrix plus eight skipped pairs are not covered.",
+        "implementation_head": "0bf666b994163d2a44a4b87b0b8bb5d4e9101bf1",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The native matrix now covers the full TS per-tag set: valid/literal/boolean/undeclared clean tags, the union and literal/boolean/array/object messages at their exact ranges, all eight skipped usages (including the unmounted no-match range), and the exact Partial reason with the first three tag.attribute pairs. Native has no per-tag response array, so each clean/skipped tag is asserted one usage at a time; a skipped usage would flip the status to Partial, so the same result/absence classification is pinned.",
         "rust_tests": [
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
-            "line": 1233,
-            "test": "mismatched_root_binding_is_an_error_at_the_expression",
-            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::mismatched_root_binding_is_an_error_at_the_expression",
-            "note": "Exact expression range, error severity and title/string/number message for one mismatch."
+            "line": 1647,
+            "test": "component_binding_matrix_matches_the_typescript_oracle",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::component_binding_matrix_matches_the_typescript_oracle",
+            "note": "Full per-tag matrix: 11 real queries, six exact range/message diagnostics, six clean usages, eight skipped usages and the exact first-three Partial reason."
           },
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
-            "line": 1663,
+            "line": 2291,
             "test": "fixture_component_usages_publish_one_property_error",
             "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::fixture_component_usages_publish_one_property_error",
-            "note": "The checked-in component-bindings fixture publishes exactly one property error on the second card."
+            "note": "The checked-in component-bindings fixture still publishes exactly one property error on the second card through the real prepared view."
           },
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
             "line": 6439,
             "test": "component_binding_diagnostics_are_published_with_shadow_ranges",
             "fully_qualified": "wxml_lsp::backend_tsgo::tests::component_binding_diagnostics_are_published_with_shadow_ranges",
-            "note": "Adapter keeps Supported, one exact diagnostic range, error severity and one script type query."
+            "note": "Adapter wiring keeps Supported, one exact diagnostic range, error severity and one script type query for the component pass."
           }
         ]
       }
@@ -5495,16 +5495,23 @@
       "migration_evidence": {
         "case_id": "TS-COMPONENT-0193",
         "assessed_at": "2026-11-20",
-        "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
-        "parity": "weaker",
+        "implementation_head": "0bf666b994163d2a44a4b87b0b8bb5d4e9101bf1",
+        "parity": "blocked",
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "A two-property card whose bindings all match stays clean and non-Partial, but the TS three-property request, probeProblems, components array and skipped=0 response fields are not asserted.",
+        "note": "The three bindings now produce no diagnostics, three mounts, three real queries and a None/Supported status, which covers the clean per-tag result and skipped=0 semantics. The TS probeProblems=[] assertion is Node probe-helper/root health; the native shadow has no probe anchors or probeProblems surface, so that one assertion has no native counterpart and the case cannot be called exact without fabricating a vacuous check.",
         "rust_tests": [
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
-            "line": 1206,
+            "line": 1771,
+            "test": "fully_checkable_component_request_stays_supported",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::fully_checkable_component_request_stays_supported",
+            "note": "Three declared properties, three mounts and three queries stay clean and Supported; no skipped check."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 1523,
             "test": "matching_root_binding_is_clean",
             "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::matching_root_binding_is_clean",
             "note": "Two matching root bindings produce no diagnostics and no Partial reason; both attributes are checked."
@@ -5569,10 +5576,10 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "completion",
         "diagnostics",
@@ -5582,16 +5589,23 @@
       "migration_evidence": {
         "case_id": "TS-COMPONENT-0206",
         "assessed_at": "2026-11-20",
-        "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "Literal and boolean attributes are checked against their attribute ranges with the expected messages, but the TS no-mustache fixture, Supported status and skipped=0 counter are not asserted.",
+        "implementation_head": "0bf666b994163d2a44a4b87b0b8bb5d4e9101bf1",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Literal bindings are checked without any mustache: the fixture has no {{ expression and no mount (layout fragment count zero), one diagnostic at the whole attribute range with the exact number/string-literal message, and a None/Supported status, which also proves the skipped counter is zero.",
         "rust_tests": [
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
-            "line": 1289,
+            "line": 1806,
+            "test": "literal_binding_without_any_mustache_is_checked",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::literal_binding_without_any_mustache_is_checked",
+            "note": "No-mustache fixture: zero mounts, one exact attribute-range string-literal error, Supported status and no skipped check."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 1606,
             "test": "literal_and_boolean_checks_use_the_attribute_range",
             "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::literal_and_boolean_checks_use_the_attribute_range",
             "note": "Literal and boolean diagnostics use the exact attribute ranges and string-literal/boolean-literal messages."
@@ -5666,16 +5680,23 @@
       "migration_evidence": {
         "case_id": "TS-COMPONENT-0229",
         "assessed_at": "2026-11-20",
-        "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
-        "parity": "weaker",
+        "implementation_head": "0bf666b994163d2a44a4b87b0b8bb5d4e9101bf1",
+        "parity": "blocked",
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Array/Object targets are compared conservatively and a number is rejected for Record<string, any>, but the TS optional User|undefined, Item[]|undefined and absent bindings plus skipped=0 are not covered.",
+        "note": "Item[] | undefined and a pure undefined binding are proven clean, but the pinned type wire carries only whole-type flags plus text, with no structural flag per union constituent. A named User constituent cannot be proven to satisfy Object or to reject String, so the TS optional-object clean result and the expects string, got User | undefined diagnostic remain Partial skips. Guessing object-ness from the name would be fabrication.",
         "rust_tests": [
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
-            "line": 1612,
+            "line": 1843,
+            "test": "optional_named_union_members_remain_partial_not_guessed",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::optional_named_union_members_remain_partial_not_guessed",
+            "note": "Item[] | undefined and undefined bindings stay clean; both User | undefined cases stay Partial with the exact skipped details."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 2240,
             "test": "array_and_object_targets_are_conservative",
             "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::array_and_object_targets_are_conservative",
             "note": "Object-vs-Array stays Partial, an array text is clean, and a number is rejected for Record<string, any>."
@@ -5734,29 +5755,36 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics"
       ],
       "migration_evidence": {
         "case_id": "TS-COMPONENT-0251",
         "assessed_at": "2026-11-20",
-        "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "Missing component files and incomplete or spread properties stay Partial with no invented diagnostics; the TS Component({data}) no-properties-member fixture and response.components=undefined are not asserted.",
+        "implementation_head": "0bf666b994163d2a44a4b87b0b8bb5d4e9101bf1",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "A Component({ data }) script with no properties member is skipped as a whole: no diagnostic is invented, no type query runs, and the status is Partial with the bare tag as the coverage detail. That is the native projection of response.components === undefined and a Partial diagnostics state for the only usage.",
         "rust_tests": [
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
-            "line": 1365,
+            "line": 1919,
+            "test": "component_without_properties_member_is_skipped_not_guessed",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::component_without_properties_member_is_skipped_not_guessed",
+            "note": "Component({ data }) has no properties: no diagnostic, no query and an exact Partial reason naming the bare tag."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 1993,
             "test": "missing_component_or_incomplete_properties_is_partial",
             "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::missing_component_or_incomplete_properties_is_partial",
-            "note": "Missing component path, spread properties and a non-literal component all stay Partial with no diagnostic."
+            "note": "Missing components, spread properties and non-literal declarations stay Partial with no diagnostic."
           }
         ]
       }
@@ -5812,10 +5840,10 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "messages"
@@ -5823,26 +5851,33 @@
       "migration_evidence": {
         "case_id": "TS-COMPONENT-0268",
         "assessed_at": "2026-11-20",
-        "implementation_head": "1d5222eef18904ee056d7da97de3b011feb65cc8",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "The component-binding partial reason is asserted path-free and the mismatch message names only the property and expression, but no test iterates every tag diagnostic to assert the TS path-free invariant.",
+        "implementation_head": "0bf666b994163d2a44a4b87b0b8bb5d4e9101bf1",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Every diagnostic produced by the full matrix (mustache, literal and boolean messages) is iterated and asserted to contain no slash; the Partial reason is path-free as well. This is the same per-diagnostic invariant as the TS case, not just one sample message.",
         "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 1941,
+            "test": "component_diagnostics_never_leak_a_path",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::component_diagnostics_never_leak_a_path",
+            "note": "Iterates all six matrix diagnostics and the Partial reason, asserting none contains a slash."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 1550,
+            "test": "mismatched_root_binding_is_an_error_at_the_expression",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::mismatched_root_binding_is_an_error_at_the_expression",
+            "note": "The sole mismatch message contains only the property name, declared/actual types and bound expression."
+          },
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
             "line": 6476,
             "test": "component_binding_any_type_degrades_to_partial",
             "fully_qualified": "wxml_lsp::backend_tsgo::tests::component_binding_any_type_degrades_to_partial",
             "note": "Any-typed binding yields an empty diagnostic set and a path-free Partial reason with the stable prefix."
-          },
-          {
-            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
-            "line": 1233,
-            "test": "mismatched_root_binding_is_an_error_at_the_expression",
-            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::mismatched_root_binding_is_an_error_at_the_expression",
-            "note": "The sole mismatch message contains only the property name, declared/actual types and bound expression."
           }
         ]
       }

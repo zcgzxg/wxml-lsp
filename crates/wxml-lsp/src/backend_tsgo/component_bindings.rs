@@ -977,9 +977,15 @@ mod tests {
     const SCRIPT_PATH: &str = "pages/index/index.ts";
     const CARD_PATH: &str = "components/card/card.ts";
     const BADGE_PATH: &str = "components/badge/badge.ts";
+    const BARE_PATH: &str = "bare.ts";
+    const PLAIN_PATH: &str = "plain.ts";
+    const SPREAD_PATH: &str = "spread.ts";
     const PAGE_SCRIPT: &str =
         "Page({\n  data: { pageTitle: '首页', total: 3, user: { name: 'Ada' } },\n});\n";
     const CARD_SCRIPT: &str = "Component({\n  properties: {\n    title: { type: String },\n    count: { type: Number },\n  },\n});\n";
+    const MATRIX_CARD_SCRIPT: &str = "Component({\n  properties: {\n    title: { type: String },\n    count: { type: Number },\n    active: { type: Boolean },\n    score: { type: String, optionalTypes: [Number] },\n    loose: { type: null },\n    items: { type: Array },\n    meta: { type: Object },\n    handler: { type: Function },\n  },\n});\n";
+    const PLAIN_COMPONENT_SCRIPT: &str = "const shared = {};\nComponent({ properties: shared });\n";
+    const SPREAD_COMPONENT_SCRIPT: &str = "const base = { title: { type: String } };\nComponent({ properties: { ...base, count: { type: Number } } });\n";
 
     type Answers = Vec<Option<(&'static str, u64)>>;
 
@@ -1202,6 +1208,317 @@ mod tests {
         );
     }
 
+    /// One attribute in the wave-6 `componentBindings.test.ts` matrix.
+    #[derive(Clone, Copy)]
+    enum MatrixValue {
+        Mustache(&'static str),
+        /// A mustache whose recorded range is deliberately not mounted.
+        UnmountedMustache(&'static str, usize, usize),
+        Literal(&'static str),
+        Boolean,
+        Mixed(&'static str),
+    }
+
+    #[derive(Clone, Copy)]
+    struct MatrixAttribute {
+        name: &'static str,
+        value: MatrixValue,
+    }
+
+    struct MatrixUsage {
+        tag: &'static str,
+        component: Option<&'static str>,
+        attributes: Vec<MatrixAttribute>,
+    }
+
+    struct MatrixFixture {
+        wxml: String,
+        usages: Vec<ComponentUsage>,
+        ranges: Vec<SourceRange>,
+    }
+
+    fn matrix_attribute(name: &'static str, value: MatrixValue) -> MatrixAttribute {
+        MatrixAttribute { name, value }
+    }
+
+    /// Builds the same usage set as the TS per-tag component-binding case.
+    ///
+    /// The WXML text is generated together with the byte ranges so every
+    /// `ComponentAttribute` is a real slice of the template, exactly as the
+    /// template analyzer would publish it.
+    fn matrix_fixture() -> MatrixFixture {
+        let specs = vec![
+            MatrixUsage {
+                tag: "valid",
+                component: Some(CARD_PATH),
+                attributes: vec![
+                    matrix_attribute("title", MatrixValue::Mustache("pageTitle")),
+                    matrix_attribute("count", MatrixValue::Mustache("total")),
+                    matrix_attribute("active", MatrixValue::Mustache("flag")),
+                    matrix_attribute("score", MatrixValue::Mustache("pageTitle")),
+                ],
+            },
+            MatrixUsage {
+                tag: "valid-literal",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute("title", MatrixValue::Literal("hello"))],
+            },
+            MatrixUsage {
+                tag: "valid-boolean",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute("active", MatrixValue::Boolean)],
+            },
+            MatrixUsage {
+                tag: "bad-mustache",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute("title", MatrixValue::Mustache("total"))],
+            },
+            MatrixUsage {
+                tag: "bad-union",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute("score", MatrixValue::Mustache("flag"))],
+            },
+            MatrixUsage {
+                tag: "bad-literal",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute("count", MatrixValue::Literal("3"))],
+            },
+            MatrixUsage {
+                tag: "bad-boolean",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute("count", MatrixValue::Boolean)],
+            },
+            MatrixUsage {
+                tag: "any-prop",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute("loose", MatrixValue::Mustache("total"))],
+            },
+            MatrixUsage {
+                tag: "function-prop",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute(
+                    "handler",
+                    MatrixValue::Mustache("pageTitle"),
+                )],
+            },
+            MatrixUsage {
+                tag: "array-ok",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute("items", MatrixValue::Mustache("list"))],
+            },
+            MatrixUsage {
+                tag: "array-bad",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute(
+                    "items",
+                    MatrixValue::Mustache("pageTitle"),
+                )],
+            },
+            MatrixUsage {
+                tag: "object-ok",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute("meta", MatrixValue::Mustache("meta"))],
+            },
+            MatrixUsage {
+                tag: "object-bad",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute("meta", MatrixValue::Mustache("total"))],
+            },
+            MatrixUsage {
+                tag: "undeclared",
+                component: Some(CARD_PATH),
+                attributes: vec![
+                    matrix_attribute("title", MatrixValue::Mustache("pageTitle")),
+                    matrix_attribute("class", MatrixValue::Literal("x")),
+                    matrix_attribute("unknown", MatrixValue::Mustache("total")),
+                ],
+            },
+            MatrixUsage {
+                tag: "mixed",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute(
+                    "title",
+                    MatrixValue::Mixed("Hi {{ total }}"),
+                )],
+            },
+            MatrixUsage {
+                tag: "missing-component",
+                component: Some("missing.ts"),
+                attributes: vec![matrix_attribute(
+                    "title",
+                    MatrixValue::Mustache("pageTitle"),
+                )],
+            },
+            MatrixUsage {
+                tag: "no-properties",
+                component: Some(PLAIN_PATH),
+                attributes: vec![matrix_attribute(
+                    "title",
+                    MatrixValue::Mustache("pageTitle"),
+                )],
+            },
+            MatrixUsage {
+                tag: "incomplete-properties",
+                component: Some(SPREAD_PATH),
+                attributes: vec![matrix_attribute(
+                    "title",
+                    MatrixValue::Mustache("pageTitle"),
+                )],
+            },
+            MatrixUsage {
+                tag: "no-file-id",
+                component: None,
+                attributes: vec![matrix_attribute(
+                    "title",
+                    MatrixValue::Mustache("pageTitle"),
+                )],
+            },
+            MatrixUsage {
+                tag: "no-match",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute(
+                    "title",
+                    MatrixValue::UnmountedMustache("total", 9999, 10_005),
+                )],
+            },
+        ];
+
+        let mut wxml = String::from("<view>");
+        let mut usages = Vec::new();
+        let mut ranges = Vec::new();
+        for spec in specs {
+            wxml.push('<');
+            wxml.push_str(spec.tag);
+            let mut attributes = Vec::new();
+            for attribute in spec.attributes {
+                wxml.push(' ');
+                let attribute_start = wxml.len();
+                wxml.push_str(attribute.name);
+                let (value_kind, expr_text, expr_range) = match attribute.value {
+                    MatrixValue::Mustache(expr) => {
+                        wxml.push_str("=\"{{ ");
+                        let start = wxml.len();
+                        wxml.push_str(expr);
+                        let end = wxml.len();
+                        wxml.push_str(" }}\"");
+                        let range = source_range(start, end);
+                        ranges.push(range);
+                        (
+                            AttributeValueKind::Mustache,
+                            Some(expr.to_owned()),
+                            Some(range),
+                        )
+                    }
+                    MatrixValue::UnmountedMustache(expr, start, end) => {
+                        wxml.push_str("=\"{{ ");
+                        wxml.push_str(expr);
+                        wxml.push_str(" }}\"");
+                        (
+                            AttributeValueKind::Mustache,
+                            Some(expr.to_owned()),
+                            Some(source_range(start, end)),
+                        )
+                    }
+                    MatrixValue::Literal(value) => {
+                        wxml.push_str("=\"");
+                        wxml.push_str(value);
+                        wxml.push('"');
+                        (AttributeValueKind::Literal, None, None)
+                    }
+                    MatrixValue::Boolean => (AttributeValueKind::Boolean, None, None),
+                    MatrixValue::Mixed(text) => {
+                        wxml.push_str("=\"");
+                        wxml.push_str(text);
+                        wxml.push('"');
+                        (AttributeValueKind::Mixed, None, None)
+                    }
+                };
+                attributes.push(ComponentAttribute {
+                    name: attribute.name.to_owned(),
+                    value_kind,
+                    expr_text,
+                    expr_range,
+                    attribute_range: source_range(attribute_start, wxml.len()),
+                });
+            }
+            wxml.push_str(" />");
+            usages.push(usage(spec.tag, spec.component, attributes));
+        }
+        wxml.push_str("</view>");
+        MatrixFixture {
+            wxml,
+            usages,
+            ranges,
+        }
+    }
+
+    fn matrix_files() -> Vec<PreparedFile> {
+        vec![
+            prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+            prepared_file(CARD_PATH, MATRIX_CARD_SCRIPT),
+            prepared_file(PLAIN_PATH, PLAIN_COMPONENT_SCRIPT),
+            prepared_file(SPREAD_PATH, SPREAD_COMPONENT_SCRIPT),
+        ]
+    }
+
+    fn matrix_answers() -> Answers {
+        vec![
+            Some(("string", 0)),
+            Some(("number", 0)),
+            Some(("boolean", 0)),
+            Some(("string", 0)),
+            Some(("number", 0)),
+            Some(("boolean", 0)),
+            Some(("string[]", 0)),
+            Some(("string", 0)),
+            Some(("{ a: string }", 0)),
+            Some(("number", 0)),
+            Some(("string", 0)),
+        ]
+    }
+
+    fn run_matrix(
+        fixture: &MatrixFixture,
+    ) -> (ComponentBindingDiagnostics, Vec<(String, Utf16Position)>) {
+        let layout = shadow(&fixture.wxml, &fixture.ranges);
+        let view = build_view(matrix_files(), fixture.usages.clone());
+        run(&layout, &view, matrix_answers())
+    }
+
+    fn run_matrix_usage(
+        fixture: &MatrixFixture,
+        tag: &str,
+        answers: Answers,
+    ) -> (ComponentBindingDiagnostics, Vec<(String, Utf16Position)>) {
+        let usage = fixture
+            .usages
+            .iter()
+            .find(|usage| usage.tag == tag)
+            .expect("matrix usage")
+            .clone();
+        let layout = shadow(&fixture.wxml, &fixture.ranges);
+        let view = build_view(matrix_files(), vec![usage]);
+        run(&layout, &view, answers)
+    }
+
+    fn matrix_attribute_of<'a>(
+        fixture: &'a MatrixFixture,
+        tag: &str,
+        name: &str,
+    ) -> &'a ComponentAttribute {
+        fixture
+            .usages
+            .iter()
+            .find(|usage| usage.tag == tag)
+            .and_then(|usage| {
+                usage
+                    .attributes
+                    .iter()
+                    .find(|attribute| attribute.name == name)
+            })
+            .expect("matrix attribute")
+    }
+
     #[test]
     fn matching_root_binding_is_clean() {
         let wxml = r#"<view><card title="{{ pageTitle }}" count="{{ total }}" /></view>"#;
@@ -1324,6 +1641,317 @@ mod tests {
             title_error.message
         );
         assert!(result.status.is_none(), "{:?}", result.status);
+    }
+
+    #[test]
+    fn component_binding_matrix_matches_the_typescript_oracle() {
+        let fixture = matrix_fixture();
+        let (result, calls) = run_matrix(&fixture);
+        assert_eq!(calls.len(), 11, "{calls:?}");
+        assert_eq!(result.diagnostics.len(), 6, "{:?}", result.diagnostics);
+
+        let expected = [
+            (
+                "bad-mustache",
+                "title",
+                "component property \"title\" expects string, got number (bound expression \"total\")",
+            ),
+            (
+                "bad-union",
+                "score",
+                "component property \"score\" expects string | number, got boolean (bound expression \"flag\")",
+            ),
+            (
+                "bad-literal",
+                "count",
+                "component property \"count\" expects number, got string literal",
+            ),
+            (
+                "bad-boolean",
+                "count",
+                "component property \"count\" expects number, got boolean literal",
+            ),
+            (
+                "array-bad",
+                "items",
+                "component property \"items\" expects any[], got string (bound expression \"pageTitle\")",
+            ),
+            (
+                "object-bad",
+                "meta",
+                "component property \"meta\" expects Record<string, any>, got number (bound expression \"total\")",
+            ),
+        ];
+        for (tag, name, message) in expected {
+            let attribute = matrix_attribute_of(&fixture, tag, name);
+            let range = attribute.expr_range.unwrap_or(attribute.attribute_range);
+            let diagnostic = result
+                .diagnostics
+                .iter()
+                .find(|diagnostic| diagnostic.range == range)
+                .unwrap_or_else(|| panic!("{tag}.{name}: {:?}", result.diagnostics));
+            assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+            assert_eq!(diagnostic.message, message, "{tag}.{name}");
+        }
+
+        let CapabilityStatus::Partial { reason } = result.status.as_ref().expect("partial") else {
+            panic!("expected Partial");
+        };
+        assert_eq!(
+            reason,
+            "some component bindings could not be resolved and were not checked (any-prop.loose, function-prop.handler, mixed.title)"
+        );
+
+        // Every tag that TS reports with an empty diagnostic list is checked
+        // and clean; a native skip would turn the status Partial, so a None
+        // status proves the usage was not silently dropped.
+        let clean: Vec<(&str, Answers, usize)> = vec![
+            (
+                "valid",
+                vec![
+                    Some(("string", 0)),
+                    Some(("number", 0)),
+                    Some(("boolean", 0)),
+                    Some(("string", 0)),
+                ],
+                4,
+            ),
+            ("valid-literal", Vec::new(), 0),
+            ("valid-boolean", Vec::new(), 0),
+            ("undeclared", vec![Some(("string", 0))], 1),
+            ("array-ok", vec![Some(("string[]", 0))], 1),
+            ("object-ok", vec![Some(("{ a: string }", 0))], 1),
+        ];
+        for (tag, answers, queries) in clean {
+            let (clean_result, clean_calls) = run_matrix_usage(&fixture, tag, answers);
+            assert!(
+                clean_result.diagnostics.is_empty(),
+                "{tag}: {:?}",
+                clean_result.diagnostics
+            );
+            assert!(
+                clean_result.status.is_none(),
+                "{tag}: {:?}",
+                clean_result.status
+            );
+            assert_eq!(clean_calls.len(), queries, "{tag}");
+        }
+
+        // The eight skipped usages must not become clean results. Native has
+        // no per-tag response array, so the exact coverage gap is pinned for
+        // each usage separately.
+        let skipped = vec![
+            ("any-prop", "any-prop.loose"),
+            ("function-prop", "function-prop.handler"),
+            ("mixed", "mixed.title"),
+            ("missing-component", "missing-component"),
+            ("no-properties", "no-properties"),
+            ("incomplete-properties", "incomplete-properties"),
+            ("no-file-id", "no-file-id"),
+            ("no-match", "no-match.title"),
+        ];
+        for (tag, detail) in skipped {
+            let (skipped_result, skipped_calls) = run_matrix_usage(&fixture, tag, Vec::new());
+            assert!(skipped_calls.is_empty(), "{tag}");
+            assert!(
+                skipped_result.diagnostics.is_empty(),
+                "{tag}: {:?}",
+                skipped_result.diagnostics
+            );
+            let CapabilityStatus::Partial { reason } =
+                skipped_result.status.as_ref().expect("partial")
+            else {
+                panic!("{tag} must be Partial");
+            };
+            assert_eq!(reason, &format!("{SKIPPED_PREFIX} ({detail})"), "{tag}");
+        }
+    }
+
+    #[test]
+    fn fully_checkable_component_request_stays_supported() {
+        let wxml = r#"<view><valid title="{{ pageTitle }}" count="{{ total }}" items="{{ list }}" /></view>"#;
+        let title = mustache_attr(wxml, "title", r#"title="{{ pageTitle }}""#, "pageTitle");
+        let count = mustache_attr(wxml, "count", r#"count="{{ total }}""#, "total");
+        let items = mustache_attr(wxml, "items", r#"items="{{ list }}""#, "list");
+        let ranges = [
+            title.expr_range.expect("title"),
+            count.expr_range.expect("count"),
+            items.expr_range.expect("items"),
+        ];
+        let layout = shadow(wxml, &ranges);
+        assert_eq!(layout.fragment_count(), 3);
+        let files = vec![
+            prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+            prepared_file(CARD_PATH, MATRIX_CARD_SCRIPT),
+        ];
+        let view = build_view(
+            files,
+            vec![usage("valid", Some(CARD_PATH), vec![title, count, items])],
+        );
+        let (result, calls) = run(
+            &layout,
+            &view,
+            vec![
+                Some(("string", 0)),
+                Some(("number", 0)),
+                Some(("string[]", 0)),
+            ],
+        );
+        assert_eq!(calls.len(), 3);
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.status.is_none(), "{:?}", result.status);
+    }
+
+    #[test]
+    fn literal_binding_without_any_mustache_is_checked() {
+        let wxml = r#"<view><badge count="oops" /></view>"#;
+        assert!(!wxml.contains("{{"));
+        let count = literal_attr(wxml, "count", r#"count="oops""#);
+        let start = usize::try_from(count.attribute_range.start()).expect("start");
+        let end = usize::try_from(count.attribute_range.end()).expect("end");
+        assert_eq!(
+            wxml.get(start..end),
+            Some(r#"count="oops""#),
+            "the diagnostic range must be the attribute slice"
+        );
+        let layout = shadow(wxml, &[]);
+        assert_eq!(layout.fragment_count(), 0);
+        let view = build_view(
+            vec![
+                prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+                prepared_file(
+                    BADGE_PATH,
+                    "Component({ properties: { count: { type: Number } } });\n",
+                ),
+            ],
+            vec![usage("badge", Some(BADGE_PATH), vec![count.clone()])],
+        );
+        let (result, calls) = run(&layout, &view, Vec::new());
+        assert!(calls.is_empty());
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        let diagnostic = &result.diagnostics[0];
+        assert_eq!(diagnostic.range, count.attribute_range);
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert_eq!(
+            diagnostic.message,
+            "component property \"count\" expects number, got string literal"
+        );
+        assert!(result.status.is_none(), "{:?}", result.status);
+    }
+
+    #[test]
+    fn optional_named_union_members_remain_partial_not_guessed() {
+        let wxml = r#"<view><card meta="{{ maybeUser }}" /><card items="{{ maybeList }}" /><card count="{{ nothing }}" /><card title="{{ maybeUser }}" /></view>"#;
+        let (object, next) = mustache_attr_at(
+            wxml,
+            "meta",
+            r#"<card meta="{{ maybeUser }}" />"#,
+            "maybeUser",
+            0,
+        );
+        let (array, next) = mustache_attr_at(
+            wxml,
+            "items",
+            r#"<card items="{{ maybeList }}" />"#,
+            "maybeList",
+            next,
+        );
+        let (absent, next) = mustache_attr_at(
+            wxml,
+            "count",
+            r#"<card count="{{ nothing }}" />"#,
+            "nothing",
+            next,
+        );
+        let (mismatch, _) = mustache_attr_at(
+            wxml,
+            "title",
+            r#"<card title="{{ maybeUser }}" />"#,
+            "maybeUser",
+            next,
+        );
+        let ranges = [
+            object.expr_range.expect("object"),
+            array.expr_range.expect("array"),
+            absent.expr_range.expect("absent"),
+            mismatch.expr_range.expect("mismatch"),
+        ];
+        let layout = shadow(wxml, &ranges);
+        let files = vec![
+            prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+            prepared_file(CARD_PATH, MATRIX_CARD_SCRIPT),
+        ];
+        let view = build_view(
+            files,
+            vec![
+                usage("optional-object", Some(CARD_PATH), vec![object]),
+                usage("optional-array", Some(CARD_PATH), vec![array]),
+                usage("absent", Some(CARD_PATH), vec![absent]),
+                usage("optional-mismatch", Some(CARD_PATH), vec![mismatch]),
+            ],
+        );
+        let (result, calls) = run(
+            &layout,
+            &view,
+            vec![
+                Some(("User | undefined", 0)),
+                Some(("Item[] | undefined", 0)),
+                Some(("undefined", 0)),
+                Some(("User | undefined", 0)),
+            ],
+        );
+        assert_eq!(calls.len(), 4);
+        // `Item[] | undefined` and pure `undefined` are proven clean, but a
+        // named `User` constituent carries no structural flag on the pinned
+        // wire. TS expects it to satisfy Object and to reject String; native
+        // must stay Partial instead of guessing.
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        let CapabilityStatus::Partial { reason } = result.status.as_ref().expect("partial") else {
+            panic!("expected Partial");
+        };
+        assert_eq!(
+            reason,
+            "some component bindings could not be resolved and were not checked (optional-object.meta, optional-mismatch.title)"
+        );
+    }
+
+    #[test]
+    fn component_without_properties_member_is_skipped_not_guessed() {
+        let wxml = r#"<view><bare title="{{ pageTitle }}" /></view>"#;
+        let title = mustache_attr(wxml, "title", r#"title="{{ pageTitle }}""#, "pageTitle");
+        let layout = shadow(wxml, &[title.expr_range.expect("expr")]);
+        let view = build_view(
+            vec![
+                prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+                prepared_file(BARE_PATH, "Component({ data: { state: 'idle' } });\n"),
+            ],
+            vec![usage("bare", Some(BARE_PATH), vec![title])],
+        );
+        let (result, calls) = run(&layout, &view, Vec::new());
+        assert!(calls.is_empty());
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        let CapabilityStatus::Partial { reason } = result.status.as_ref().expect("partial") else {
+            panic!("expected Partial");
+        };
+        assert_eq!(reason, &format!("{SKIPPED_PREFIX} (bare)"));
+        assert!(!reason.contains('/'), "{reason}");
+    }
+
+    #[test]
+    fn component_diagnostics_never_leak_a_path() {
+        let fixture = matrix_fixture();
+        let (result, _) = run_matrix(&fixture);
+        assert_eq!(result.diagnostics.len(), 6, "{:?}", result.diagnostics);
+        for diagnostic in &result.diagnostics {
+            assert!(
+                !diagnostic.message.contains('/'),
+                "path-free message: {}",
+                diagnostic.message
+            );
+        }
+        if let Some(CapabilityStatus::Partial { reason }) = &result.status {
+            assert!(!reason.contains('/'), "{reason}");
+        }
     }
 
     #[test]

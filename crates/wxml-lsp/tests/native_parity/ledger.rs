@@ -19,20 +19,24 @@ pub(crate) const LEDGER_RELATIVE_PATH: &str = "docs/plans/tsgo-test-ledger.json"
 
 /// Frozen expanded registration count.
 pub(crate) const TOTAL_CASES: usize = 339;
-/// Exact-parity cases promoted to `green`; wave-6 added no new exact case.
-pub(crate) const GREEN_CASES: usize = 44;
-/// Cases still `planned` after the 2026-11-20 wave-6 backfill.
-pub(crate) const PLANNED_CASES: usize = 259;
+/// Exact-parity cases promoted to `green`; the wave-6 component-binding
+/// follow-up promoted four more.
+pub(crate) const GREEN_CASES: usize = 48;
+/// Cases still `planned` after the 2026-11-20 wave-6 component-binding follow-up.
+pub(crate) const PLANNED_CASES: usize = 255;
 /// Frozen retired-with-decision count.
 pub(crate) const RETIRED_CASES: usize = 36;
 /// Near-exact cases intentionally left `planned` with a green recommendation.
 pub(crate) const NEAR_EXACT_CASES: usize = 3;
-/// Weaker evidence cases left `planned` after the 2026-11-20 wave-6 backfill.
-pub(crate) const WEAKER_CASES: usize = 80;
-/// Structural evidence cases left `planned` after the 2026-11-20 wave-6 backfill.
+/// Weaker evidence cases left `planned` after the wave-6 component-binding
+/// follow-up.
+pub(crate) const WEAKER_CASES: usize = 74;
+/// Structural evidence cases left `planned` after the wave-6 component-binding
+/// follow-up.
 pub(crate) const STRUCTURAL_CASES: usize = 7;
-/// Blocked evidence cases left `planned` after the 2026-11-20 wave-6 backfill.
-pub(crate) const BLOCKED_CASES: usize = 20;
+/// Blocked evidence cases left `planned` after the wave-6 component-binding
+/// follow-up.
+pub(crate) const BLOCKED_CASES: usize = 22;
 
 /// Partitions named by the test contract. P3-T creates all 16 skeletons.
 pub(crate) const PARTITION_NAMES: &[&str] = &[
