@@ -69,14 +69,13 @@ pub fn map_type_query(raw: &TypeQuery) -> TypeResult {
     }
 
     let intrinsic = info.intrinsic_name.as_deref().unwrap_or_default();
-    let quality =
-        if intrinsic == "error" || intrinsic == "unknown" || text == "error" || text == "unknown" {
-            TypeQuality::Unknown
-        } else if intrinsic == "any" || text == "any" {
-            TypeQuality::Any
-        } else {
-            TypeQuality::Known
-        };
+    let quality = if intrinsic == "error" || intrinsic == "unknown" || text == "unknown" {
+        TypeQuality::Unknown
+    } else if intrinsic == "any" || text == "any" {
+        TypeQuality::Any
+    } else {
+        TypeQuality::Known
+    };
 
     TypeResult {
         info: Some(TypeInfo {
@@ -143,10 +142,13 @@ mod tests {
     }
 
     #[test]
-    fn literal_error_and_empty_text_stay_unknown() {
-        let literal = map_type_query(&query(Some(70), None, Some("error")));
-        assert_eq!(literal.quality, TypeQuality::Unknown);
-        assert_eq!(literal.info.as_ref().expect("info").text, "error");
+    fn user_error_text_is_known_but_engine_error_and_empty_stay_unknown() {
+        // A user-declared type named `error` has no `intrinsicName`; its text
+        // alone must stay known. Error and unknown intrinsics are classified
+        // separately by their engine identity.
+        let user_error = map_type_query(&query(Some(70), None, Some("error")));
+        assert_eq!(user_error.quality, TypeQuality::Known);
+        assert_eq!(user_error.info.as_ref().expect("info").text, "error");
 
         let empty = map_type_query(&query(Some(71), None, Some("   ")));
         assert_eq!(empty.quality, TypeQuality::Unknown);

@@ -39,7 +39,7 @@ pub struct SymbolResult {
 ///
 /// `Supported` requires every declaration and the reference, when present, to
 /// have been bound to the current epoch. `Partial` means the symbol exists but
-/// some handles were outside the snapshot and were dropped.
+/// some handles could not be bound and were dropped.
 #[must_use]
 pub fn map_symbol(raw: Option<BoundSymbol>) -> SymbolResult {
     let Some(symbol) = raw else {
@@ -53,7 +53,7 @@ pub fn map_symbol(raw: Option<BoundSymbol>) -> SymbolResult {
         CapabilityStatus::Supported
     } else {
         CapabilityStatus::Partial {
-            reason: "some symbol handles are outside the current snapshot".to_owned(),
+            reason: "some symbol handles could not be bound to the current snapshot".to_owned(),
         }
     };
 
@@ -158,7 +158,11 @@ mod tests {
     #[test]
     fn dropped_handles_make_the_symbol_partial() {
         let result = map_symbol(Some(symbol(1, false)));
-        assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+        let CapabilityStatus::Partial { reason } = &result.status else {
+            panic!("expected partial");
+        };
+        assert!(!reason.contains("outside the current snapshot"));
+        assert!(reason.contains("could not be bound"));
         let result = map_symbol(Some(symbol(0, true)));
         assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
     }

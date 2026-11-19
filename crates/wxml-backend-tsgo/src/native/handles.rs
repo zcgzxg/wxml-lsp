@@ -453,7 +453,7 @@ impl BoundSymbol {
         self.reference.as_ref()
     }
 
-    /// Returns how many declaration handles were outside the current snapshot.
+    /// Returns how many declaration handles could not be bound.
     #[must_use]
     pub const fn dropped_declarations(&self) -> usize {
         self.dropped_declarations

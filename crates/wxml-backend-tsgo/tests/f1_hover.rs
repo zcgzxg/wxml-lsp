@@ -262,7 +262,7 @@ fn declaration_targets_keep_both_coordinate_systems_and_the_shared_cap() {
     assert_eq!(MAX_HOVER_DECLARATIONS, 16);
 }
 
-const MAIN: &str = r#"import { User as Person, fmt } from "./model";
+const MAIN: &str = r#"import { User as Person, fmt, error } from "./model";
 /** 😀 文档 */
 const 用户: Person = { name: "张三 😀", age: 1 };
 用户.name;
@@ -271,6 +271,8 @@ const anyValue: any = 1;
 anyValue;
 const unknownValue: unknown = 1;
 unknownValue;
+const err: error = new error();
+err;
 
 "#;
 
@@ -291,6 +293,10 @@ export function fmt(value: string): string;
 /** Format a number. */
 export function fmt(value: number): number;
 export function fmt(value: string | number): string | number { return value; }
+/** A class literally named error. */
+export class error {
+  value: number = 1;
+}
 ";
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -568,7 +574,7 @@ fn real_engine_hover_evidence_preserves_type_docs_tags_and_declaration_ranges() 
         .hover_evidence("main.ts", position_at(MAIN, "Person"))
         .expect("alias hover");
     println!(
-        "alias: symbol={:?} quality={:?} type={:?} decls={:?} status={:?}",
+        "alias: symbol={:?} quality={:?} type={:?} decls={:?} symbol_decls={} gaps={:?} status={:?}",
         alias.symbol.as_ref().map(|symbol| symbol.name.as_str()),
         alias.type_quality,
         alias.type_info.as_ref().map(|info| info.text.as_str()),
@@ -577,11 +583,29 @@ fn real_engine_hover_evidence_preserves_type_docs_tags_and_declaration_ranges() 
             .iter()
             .map(|declaration| declaration.path.as_str())
             .collect::<Vec<_>>(),
+        alias
+            .symbol
+            .as_ref()
+            .map_or(0, |symbol| symbol.declarations.len()),
+        alias.gaps,
         alias.status
     );
     assert_eq!(
         alias.symbol.as_ref().map(|symbol| symbol.name.as_str()),
         Some("Person")
+    );
+    assert_eq!(alias.declarations.len(), 1);
+    assert!(
+        !alias
+            .gaps
+            .iter()
+            .any(|gap| matches!(gap, HoverGap::UndecodableDeclaration { .. }))
+    );
+    assert_eq!(
+        alias.status,
+        CapabilityStatus::Unsupported {
+            reason: "no type or documentation evidence is available at the position".to_owned(),
+        }
     );
     let alias_declaration = alias
         .declarations
@@ -620,6 +644,17 @@ fn real_engine_hover_evidence_preserves_type_docs_tags_and_declaration_ranges() 
     let overload_markdown = compose_hover_markdown(&overload);
     assert_eq!(overload_markdown.matches("```").count(), 2);
     assert!(!overload_markdown.contains("(property)"));
+    let overload_docs = overload
+        .documentation
+        .as_ref()
+        .expect("overload documentation was queried");
+    assert_eq!(
+        overload_docs.comment.as_deref(),
+        Some(""),
+        "the pinned engine returns a checked-empty overload comment; \
+         this must not be fabricated into text"
+    );
+    assert_eq!(overload_docs.tags, Vec::new());
 
     // Explicit any is shown literally; unknown is never wrapped in a type
     // fence, even if documentation is available.
@@ -650,6 +685,36 @@ fn real_engine_hover_evidence_preserves_type_docs_tags_and_declaration_ranges() 
     );
     assert!(matches!(empty.status, CapabilityStatus::Unsupported { .. }));
     assert_eq!(compose_hover_markdown(&empty), "");
+
+    // A user-declared class whose text is literally `error` is a Known type;
+    // the text alone must not be treated as the engine's error intrinsic.
+    let class_error = session
+        .hover_evidence("main.ts", position(10, 1))
+        .expect("class error hover");
+    println!(
+        "class-error: symbol={:?} quality={:?} type={:?} status={:?}",
+        class_error
+            .symbol
+            .as_ref()
+            .map(|symbol| symbol.name.as_str()),
+        class_error.type_quality,
+        class_error
+            .type_info
+            .as_ref()
+            .map(|info| info.text.as_str()),
+        class_error.status
+    );
+    assert_eq!(class_error.type_quality, TypeQuality::Known);
+    assert_eq!(
+        class_error
+            .type_info
+            .as_ref()
+            .expect("class error type")
+            .text
+            .as_str(),
+        "error"
+    );
+    assert!(compose_hover_markdown(&class_error).starts_with("```ts\nerror\n```"));
 
     session.release().expect("release snapshot");
     session.shutdown().expect("shutdown");
@@ -707,12 +772,19 @@ fn real_engine_hover_marks_external_library_declarations_partial() {
         "number"
     );
     assert!(
-        external
+        external.gaps.iter().any(|gap| matches!(
+            gap,
+            HoverGap::ExternalDeclaration { path: Some(path) }
+                if path.ends_with("lib.es5.d.ts")
+        )),
+        "the standard-library declaration must be reported with its proven path: {:?}",
+        external.gaps
+    );
+    assert!(
+        !external
             .gaps
             .iter()
-            .any(|gap| matches!(gap, HoverGap::ExternalDeclaration { .. })),
-        "the standard-library declaration must be reported as a typed gap: {:?}",
-        external.gaps
+            .any(|gap| matches!(gap, HoverGap::UndecodableDeclaration { .. }))
     );
     assert_eq!(external.declarations, Vec::new());
     assert!(matches!(external.status, CapabilityStatus::Partial { .. }));

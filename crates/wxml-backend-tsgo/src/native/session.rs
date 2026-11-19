@@ -41,6 +41,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde_json::Value;
@@ -226,6 +227,61 @@ enum HoverDeclarationOutcome {
     External(String),
     /// The handle could not be decoded into a verified token.
     Undecodable(String),
+    /// The declaration's name token does not match the queried symbol.
+    NameMismatch(String),
+}
+
+/// Fixed upper bound on declaration handles inspected for one hover.
+///
+/// Only the first [`MAX_HOVER_DECLARATION_SCAN`] symbol declarations are
+/// decoded, so a hostile or synthetic symbol cannot trigger an unbounded number
+/// of AST fetches or token scans. Hitting the cap is reported as
+/// [`HoverGap::TruncatedDeclarationScan`].
+const MAX_HOVER_DECLARATION_SCAN: usize = 64;
+
+/// Cause of a symbol handle that could not be bound.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DroppedHandleCause {
+    /// The raw handle names a file that is definitely outside the project
+    /// snapshot (for example a standard-library or type-asset declaration).
+    OutOfSnapshot(String),
+    /// The handle was malformed or the cause cannot be proven.
+    Unknown,
+}
+
+/// Dropped symbol handles with a truthful cause.
+#[derive(Debug, Default)]
+struct SymbolDrops {
+    declarations: Vec<DroppedHandleCause>,
+    value_declaration: Option<DroppedHandleCause>,
+    reference: Option<DroppedHandleCause>,
+}
+
+/// Cached AST state for hover declaration decoding.
+#[derive(Debug)]
+enum HoverAstCacheEntry {
+    /// The decoded v9 AST payload, shared cheaply with the current lookup.
+    Ast(Arc<Vec<u8>>),
+    /// The next payload would exceed the shared AST cache budget.
+    BudgetExceeded,
+    /// The AST could not be obtained for a local, non-structural reason.
+    Unavailable,
+}
+
+/// One hover AST cache lookup outcome.
+#[derive(Debug)]
+enum HoverAstLookup {
+    /// Payload shared from the per-query cache.
+    Payload(Arc<Vec<u8>>),
+    /// The payload is unavailable for a non-structural reason.
+    Unavailable(String),
+}
+
+/// Result of the bounded hover declaration scan.
+#[derive(Debug)]
+struct HoverDeclarationScan {
+    declarations: Vec<HoverDeclaration>,
+    gaps: Vec<HoverGap>,
 }
 
 /// Both diagnostic sources for one file.
@@ -1010,6 +1066,18 @@ impl NativeSession {
         path: &str,
         position: Utf16Position,
     ) -> Result<Option<BoundSymbol>, NativeError> {
+        let Some(symbol) = self.raw_symbol_at_position(path, position)? else {
+            return Ok(None);
+        };
+        self.bind_symbol(&symbol, path).map(Some)
+    }
+
+    /// Returns the raw (unbound) symbol at a UTF-16 position.
+    fn raw_symbol_at_position(
+        &mut self,
+        path: &str,
+        position: Utf16Position,
+    ) -> Result<Option<RawSymbol>, NativeError> {
         let (epoch, project, absolute) = self.file_context(path)?;
         let offset = self.position_offset(&absolute, position)?;
         let value = self.call(
@@ -1018,21 +1086,30 @@ impl NativeSession {
             Deadline::request(self.limits),
             Some(epoch.snapshot),
         )?;
-        let symbol: Option<RawSymbol> = parse_optional(value)?;
-        symbol
-            .map(|symbol| self.bind_symbol(&symbol, path))
-            .transpose()
+        parse_optional(value)
     }
 
     /// Binds a raw symbol and its handles to the current epoch.
     ///
-    /// Declarations outside the current snapshot are omitted and recorded as a
-    /// degradation; malformed handles and hard session failures propagate.
+    /// Declarations that cannot be bound (outside the current snapshot or
+    /// malformed) are omitted and recorded as a degradation; hard session
+    /// failures propagate.
     ///
     /// # Errors
     ///
-    /// Requires an open snapshot and rejects a malformed symbol reference.
+    /// Requires an open snapshot and a project-relative query path. Malformed
+    /// or out-of-snapshot handles are dropped and counted, not propagated.
     pub fn bind_symbol(&self, symbol: &RawSymbol, path: &str) -> Result<BoundSymbol, NativeError> {
+        self.bind_symbol_with_drops(symbol, path)
+            .map(|(symbol, _drops)| symbol)
+    }
+
+    /// Binds a raw symbol and returns the dropped-handle causes.
+    fn bind_symbol_with_drops(
+        &self,
+        symbol: &RawSymbol,
+        path: &str,
+    ) -> Result<(BoundSymbol, SymbolDrops), NativeError> {
         let epoch = self.epoch.ok_or(NativeError::NoSnapshot)?;
         let vfs = self.vfs.as_ref().ok_or(NativeError::NoSnapshot)?;
         let absolute = vfs.absolute_path(path).map_err(|error| map_vfs(&error))?;
@@ -1046,6 +1123,7 @@ impl NativeSession {
             file.hash().to_owned(),
         );
 
+        let mut drops = SymbolDrops::default();
         let mut declarations = Vec::new();
         let mut dropped_declarations = 0usize;
         for raw in &symbol.declarations {
@@ -1053,6 +1131,7 @@ impl NativeSession {
                 Ok(handle) => declarations.push(handle),
                 Err(NativeError::InvalidHandle { .. }) => {
                     dropped_declarations = dropped_declarations.saturating_add(1);
+                    drops.declarations.push(dropped_handle_cause(raw, vfs));
                 }
                 Err(error) => return Err(error),
             }
@@ -1062,6 +1141,7 @@ impl NativeSession {
                 Ok(handle) => Some(handle),
                 Err(NativeError::InvalidHandle { .. }) => {
                     dropped_declarations = dropped_declarations.saturating_add(1);
+                    drops.value_declaration = Some(dropped_handle_cause(raw, vfs));
                     None
                 }
                 Err(error) => return Err(error),
@@ -1071,13 +1151,16 @@ impl NativeSession {
         let (reference, reference_dropped) = match symbol.reference.as_ref() {
             Some(raw) => match self.bind_symbol_reference(raw) {
                 Ok(reference) => (Some(reference), false),
-                Err(NativeError::InvalidHandle { .. }) => (None, true),
+                Err(NativeError::InvalidHandle { .. }) => {
+                    drops.reference = Some(dropped_reference_cause(raw, vfs));
+                    (None, true)
+                }
                 Err(error) => return Err(error),
             },
             None => (None, false),
         };
 
-        Ok(BoundSymbol::new(
+        let bound = BoundSymbol::new(
             symbol.name.clone(),
             symbol.flags,
             declarations,
@@ -1086,7 +1169,8 @@ impl NativeSession {
             dropped_declarations,
             reference_dropped,
             binding,
-        ))
+        );
+        Ok((bound, drops))
     }
 
     /// Binds a content-addressed symbol reference to the current epoch.
@@ -1227,15 +1311,20 @@ impl NativeSession {
     ///
     /// Every declaration handle is decoded into its declaration's name token;
     /// targets are deduplicated by `(path, start, end)` and capped at
-    /// [`MAX_HOVER_DECLARATIONS`]. A declaration outside the project snapshot
-    /// (a standard-library or mounted type-asset declaration) or an
-    /// undecodable declaration is recorded as a typed gap and degrades the
-    /// answer instead of disappearing.
+    /// [`MAX_HOVER_DECLARATIONS`]. At most `MAX_HOVER_DECLARATION_SCAN`
+    /// declaration handles are inspected, so many declarations cannot trigger
+    /// unbounded AST fetches or token scans. A declaration proven to be outside
+    /// the project snapshot (a standard-library or mounted type-asset
+    /// declaration) is recorded as an external gap. A stale, malformed or
+    /// otherwise unbound handle, or a declaration whose name does not match the
+    /// symbol, is recorded as its own degraded gap and counted; it is never
+    /// relabeled as a proven external declaration.
     ///
     /// The session epoch, snapshot and query-file content hash captured before
-    /// the calls are re-checked before returning. A changed snapshot yields
-    /// [`NativeError::StaleSnapshot`]; a symbol bound to different content
-    /// yields [`NativeError::StaleHandle`].
+    /// the calls are re-checked before returning. Only declaration handles carry
+    /// epoch binding; the type and documentation values are plain query facts.
+    /// The hover token range is intentionally absent; selecting it from the
+    /// request is the adapter's responsibility.
     ///
     /// # Errors
     ///
@@ -1263,18 +1352,36 @@ impl NativeSession {
             });
         }
 
-        let symbol = self.symbol_at_position(path, position)?;
-        let mut documentation = None;
-        if let Some(facts) = &symbol {
-            if facts.dropped_declarations() > 0 {
-                gaps.push(HoverGap::ExternalDeclaration { path: None });
+        let raw_symbol = self.raw_symbol_at_position(path, position)?;
+        let (symbol, drops) = match raw_symbol {
+            Some(raw) => {
+                let (symbol, drops) = self.bind_symbol_with_drops(&raw, path)?;
+                (Some(symbol), Some(drops))
             }
-            if facts.reference_dropped() {
-                gaps.push(HoverGap::Unsupported {
-                    reason: "the symbol documentation reference is outside the current snapshot"
-                        .to_owned(),
+            None => (None, None),
+        };
+        let mut documentation = None;
+        if let Some(drops) = &drops {
+            for cause in &drops.declarations {
+                push_dropped_declaration_gap(cause, &mut gaps);
+            }
+            if let Some(cause) = &drops.value_declaration {
+                push_dropped_declaration_gap(cause, &mut gaps);
+            }
+            if let Some(cause) = &drops.reference {
+                gaps.push(match cause {
+                    DroppedHandleCause::OutOfSnapshot(path) => HoverGap::Unsupported {
+                        reason: format!(
+                            "the symbol documentation reference `{path}` is outside the current snapshot"
+                        ),
+                    },
+                    DroppedHandleCause::Unknown => HoverGap::Unsupported {
+                        reason: "the symbol documentation reference could not be bound".to_owned(),
+                    },
                 });
             }
+        }
+        if let Some(facts) = &symbol {
             if let Some(reference) = facts.reference() {
                 documentation = Some(map_documentation(&self.documentation(reference)?));
             }
@@ -1321,42 +1428,19 @@ impl NativeSession {
             return Err(NativeError::StaleHandle);
         }
 
-        let mut declarations = Vec::new();
         let mut cache = BTreeMap::new();
         let mut cache_bytes = 0usize;
-        let mut truncated = false;
-        for declaration in symbol.declarations() {
-            let outcome = self.decode_hover_declaration(
-                declaration,
+        let handles = symbol.declarations();
+        let scan = scan_hover_declarations(handles.len(), |index| {
+            self.decode_hover_declaration(
+                &handles[index],
                 symbol.name(),
                 &mut cache,
                 &mut cache_bytes,
-            )?;
-            let target = match outcome {
-                HoverDeclarationOutcome::Decoded(target) => target,
-                HoverDeclarationOutcome::External(path) => {
-                    gaps.push(HoverGap::ExternalDeclaration { path: Some(path) });
-                    continue;
-                }
-                HoverDeclarationOutcome::Undecodable(reason) => {
-                    gaps.push(HoverGap::UndecodableDeclaration { reason });
-                    continue;
-                }
-            };
-            match insert_declaration(&mut declarations, target) {
-                DeclarationInsert::Inserted | DeclarationInsert::Duplicate => {}
-                DeclarationInsert::Truncated => {
-                    truncated = true;
-                    break;
-                }
-            }
-        }
-        if truncated {
-            gaps.push(HoverGap::TruncatedDeclarations {
-                limit: MAX_HOVER_DECLARATIONS,
-            });
-        }
-        Ok(declarations)
+            )
+        })?;
+        gaps.extend(scan.gaps);
+        Ok(scan.declarations)
     }
 
     /// Decodes one epoch-bound declaration handle into its name-token target.
@@ -1364,14 +1448,14 @@ impl NativeSession {
         &mut self,
         declaration: &BoundNodeHandle,
         expected_name: &str,
-        cache: &mut BTreeMap<String, Option<Vec<u8>>>,
+        cache: &mut BTreeMap<String, HoverAstCacheEntry>,
         cache_bytes: &mut usize,
     ) -> Result<HoverDeclarationOutcome, NativeError> {
         match self.validate_handle(declaration) {
             Ok(()) => {}
             Err(NativeError::InvalidHandle { .. } | NativeError::StaleHandle) => {
                 return Ok(HoverDeclarationOutcome::Undecodable(
-                    "declaration handle is outside the current snapshot".to_owned(),
+                    "declaration handle is stale or invalid for the current snapshot".to_owned(),
                 ));
             }
             Err(error) => return Err(error),
@@ -1387,43 +1471,10 @@ impl NativeSession {
             }
         }
 
-        let payload = if let Some(entry) = cache.get(&absolute) {
-            match entry {
-                Some(payload) => payload,
-                None => {
-                    return Ok(HoverDeclarationOutcome::Undecodable(
-                        "declaration AST exceeds the hover cache budget".to_owned(),
-                    ));
-                }
-            }
-        } else {
-            match self.get_source_ast(&absolute) {
-                Ok(payload) => {
-                    let total = cache_bytes.saturating_add(payload.len());
-                    if total > MAX_DEFINITION_AST_CACHE_BYTES {
-                        cache.insert(absolute.clone(), None);
-                        return Ok(HoverDeclarationOutcome::Undecodable(
-                            "declaration AST exceeds the hover cache budget".to_owned(),
-                        ));
-                    }
-                    *cache_bytes = total;
-                    cache.insert(absolute.clone(), Some(payload));
-                    match cache.get(&absolute) {
-                        Some(Some(payload)) => payload,
-                        _ => {
-                            return Ok(HoverDeclarationOutcome::Undecodable(
-                                "declaration AST is unavailable".to_owned(),
-                            ));
-                        }
-                    }
-                }
-                Err(error) if definition_decode_error(&error) => {
-                    cache.insert(absolute.clone(), None);
-                    return Ok(HoverDeclarationOutcome::Undecodable(
-                        "declaration AST is unavailable".to_owned(),
-                    ));
-                }
-                Err(error) => return Err(error),
+        let payload = match self.hover_ast_lookup(&absolute, cache, cache_bytes)? {
+            HoverAstLookup::Payload(payload) => payload,
+            HoverAstLookup::Unavailable(reason) => {
+                return Ok(HoverDeclarationOutcome::Undecodable(reason));
             }
         };
 
@@ -1433,7 +1484,7 @@ impl NativeSession {
         };
         let source_len = utf16_len(file.text());
         let range = match find_declaration_name(
-            payload,
+            payload.as_slice(),
             declaration.handle().encoder_index,
             declaration.handle().kind,
             expected_name,
@@ -1441,9 +1492,14 @@ impl NativeSession {
         ) {
             Ok(Some(range)) => range,
             Err(error) if error.is_structural() => return Err(definition_ast_error(error)),
-            Ok(None) | Err(_) => {
+            Ok(None) => {
+                return Ok(HoverDeclarationOutcome::NameMismatch(
+                    expected_name.to_owned(),
+                ));
+            }
+            Err(_) => {
                 return Ok(HoverDeclarationOutcome::Undecodable(
-                    "declaration name token could not be decoded".to_owned(),
+                    "declaration AST node could not be decoded".to_owned(),
                 ));
             }
         };
@@ -1456,9 +1512,60 @@ impl NativeSession {
                 range: SourceRange::new(target.start_utf8.get(), target.end_utf8.get()),
                 utf16: Utf16Range::new(target.start_utf16.get(), target.end_utf16.get()),
             })),
-            None => Ok(HoverDeclarationOutcome::Undecodable(
-                "declaration token does not match the symbol name".to_owned(),
+            None => Ok(HoverDeclarationOutcome::NameMismatch(
+                expected_name.to_owned(),
             )),
+        }
+    }
+
+    /// Returns a cached hover AST payload or a truthful unavailability reason.
+    fn hover_ast_lookup(
+        &mut self,
+        absolute: &str,
+        cache: &mut BTreeMap<String, HoverAstCacheEntry>,
+        cache_bytes: &mut usize,
+    ) -> Result<HoverAstLookup, NativeError> {
+        if let Some(entry) = cache.get(absolute) {
+            match entry {
+                HoverAstCacheEntry::Ast(payload) => {
+                    return Ok(HoverAstLookup::Payload(Arc::clone(payload)));
+                }
+                HoverAstCacheEntry::BudgetExceeded => {
+                    return Ok(HoverAstLookup::Unavailable(
+                        "declaration AST exceeds the shared AST cache budget".to_owned(),
+                    ));
+                }
+                HoverAstCacheEntry::Unavailable => {
+                    return Ok(HoverAstLookup::Unavailable(
+                        "declaration AST is unavailable".to_owned(),
+                    ));
+                }
+            }
+        }
+        match self.get_source_ast(absolute) {
+            Ok(payload) => {
+                let total = cache_bytes.saturating_add(payload.len());
+                if total > MAX_DEFINITION_AST_CACHE_BYTES {
+                    cache.insert(absolute.to_owned(), HoverAstCacheEntry::BudgetExceeded);
+                    return Ok(HoverAstLookup::Unavailable(
+                        "declaration AST exceeds the shared AST cache budget".to_owned(),
+                    ));
+                }
+                *cache_bytes = total;
+                let payload = Arc::new(payload);
+                cache.insert(
+                    absolute.to_owned(),
+                    HoverAstCacheEntry::Ast(Arc::clone(&payload)),
+                );
+                Ok(HoverAstLookup::Payload(payload))
+            }
+            Err(error) if definition_decode_error(&error) => {
+                cache.insert(absolute.to_owned(), HoverAstCacheEntry::Unavailable);
+                Ok(HoverAstLookup::Unavailable(
+                    "declaration AST is unavailable".to_owned(),
+                ))
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -1756,7 +1863,7 @@ impl NativeSession {
         };
         let source_len = utf16_len(file.text());
         let range = match find_declaration_name(
-            payload,
+            payload.as_slice(),
             bound.handle().encoder_index,
             bound.handle().kind,
             expected_name,
@@ -2423,6 +2530,109 @@ const fn require_identifier_kind(identifier: &BoundNodeHandle) -> Result<(), Nat
     }
 }
 
+/// Scans at most [`MAX_HOVER_DECLARATION_SCAN`] declaration handles.
+///
+/// The scan stops early when [`MAX_HOVER_DECLARATIONS`] distinct targets have
+/// been collected. Both limits are reported as typed gaps so a bounded answer
+/// is never mistaken for a complete one.
+fn scan_hover_declarations<F>(
+    declaration_count: usize,
+    mut decode: F,
+) -> Result<HoverDeclarationScan, NativeError>
+where
+    F: FnMut(usize) -> Result<HoverDeclarationOutcome, NativeError>,
+{
+    let scan_limit = declaration_count.min(MAX_HOVER_DECLARATION_SCAN);
+    let mut declarations = Vec::new();
+    let mut gaps = Vec::new();
+    let mut target_truncated = false;
+    for index in 0..scan_limit {
+        if declarations.len() >= MAX_HOVER_DECLARATIONS {
+            target_truncated = true;
+            break;
+        }
+        match decode(index)? {
+            HoverDeclarationOutcome::Decoded(target) => {
+                match insert_declaration(&mut declarations, target) {
+                    DeclarationInsert::Inserted | DeclarationInsert::Duplicate => {}
+                    DeclarationInsert::Truncated => {
+                        target_truncated = true;
+                        break;
+                    }
+                }
+            }
+            HoverDeclarationOutcome::External(path) => {
+                gaps.push(HoverGap::ExternalDeclaration { path: Some(path) });
+            }
+            HoverDeclarationOutcome::Undecodable(reason) => {
+                gaps.push(HoverGap::UndecodableDeclaration { reason });
+            }
+            HoverDeclarationOutcome::NameMismatch(expected) => {
+                gaps.push(HoverGap::NameMismatchDeclaration { expected });
+            }
+        }
+    }
+    if target_truncated {
+        gaps.push(HoverGap::TruncatedDeclarations {
+            limit: MAX_HOVER_DECLARATIONS,
+        });
+    } else if declaration_count > scan_limit {
+        gaps.push(HoverGap::TruncatedDeclarationScan {
+            limit: MAX_HOVER_DECLARATION_SCAN,
+        });
+    }
+    Ok(HoverDeclarationScan { declarations, gaps })
+}
+
+/// Adds a typed gap for one unbound declaration handle.
+fn push_dropped_declaration_gap(cause: &DroppedHandleCause, gaps: &mut Vec<HoverGap>) {
+    gaps.push(match cause {
+        DroppedHandleCause::OutOfSnapshot(path) => HoverGap::ExternalDeclaration {
+            path: Some(path.clone()),
+        },
+        DroppedHandleCause::Unknown => HoverGap::UndecodableDeclaration {
+            reason: "a symbol declaration handle could not be bound to the current snapshot"
+                .to_owned(),
+        },
+    });
+}
+
+/// Classifies a declaration handle that [`NativeSession::bind_handle`] rejected.
+///
+/// A parsed handle whose file is definitely absent from the project VFS is a
+/// proven out-of-snapshot declaration (standard library or mounted asset). A
+/// malformed handle, or one whose path cannot be trusted, stays `Unknown`.
+fn dropped_handle_cause(raw: &str, vfs: &VirtualFileSystem) -> DroppedHandleCause {
+    match NodeHandle::parse(raw) {
+        Ok(handle) if vfs.file(&handle.path).is_none() => {
+            DroppedHandleCause::OutOfSnapshot(handle.path)
+        }
+        _ => DroppedHandleCause::Unknown,
+    }
+}
+
+/// Classifies a symbol reference that [`NativeSession::bind_symbol_reference`]
+/// rejected without claiming a cause that was not proven.
+fn dropped_reference_cause(
+    reference: &RawSymbolReference,
+    vfs: &VirtualFileSystem,
+) -> DroppedHandleCause {
+    let file = &reference.file;
+    if crate::native::handles::validate_absolute_path(&file.path).is_err()
+        || file.file_name != file.path
+        || file.content_hash.is_empty()
+        || file.parse_options_key.is_empty()
+        || file.node_id.is_empty()
+    {
+        return DroppedHandleCause::Unknown;
+    }
+    if vfs.file(&file.path).is_none() {
+        DroppedHandleCause::OutOfSnapshot(file.path.clone())
+    } else {
+        DroppedHandleCause::Unknown
+    }
+}
+
 /// Returns the UTF-8 slice for a UTF-16 AST range, if both ends are boundaries.
 fn utf16_slice(text: &str, range: AstRange) -> Option<&str> {
     let start = utf16_to_utf8(text, Utf16Offset::new(range.start)).ok()?;
@@ -2574,7 +2784,7 @@ mod tests {
                     InputSourceFile::new("main.ts", "", DocumentRevision::new(1)).expect("main.ts"),
                 ],
                 CompilerOptions::default(),
-                std::sync::Arc::new(fixture_assets(tag)),
+                Arc::new(fixture_assets(tag)),
             )
             .expect("environment input")
         };
@@ -3281,5 +3491,137 @@ const count = 1;
         assert_eq!(member_z.selection_range.end.get(), 68);
 
         let _ = session.shutdown();
+    }
+
+    #[test]
+    fn dropped_handle_cause_distinguishes_out_of_snapshot_from_malformed() {
+        let vfs = VirtualFileSystem::from_root_and_files(
+            "/work",
+            [("/work/main.ts".to_owned(), "const x = 1;\n".to_owned())],
+        )
+        .expect("vfs");
+        assert_eq!(
+            dropped_handle_cause("15.174./pkg/lib.d.ts", &vfs),
+            DroppedHandleCause::OutOfSnapshot("/pkg/lib.d.ts".to_owned())
+        );
+        assert_eq!(
+            dropped_handle_cause("15.174./work/main.ts", &vfs),
+            DroppedHandleCause::Unknown
+        );
+        assert_eq!(
+            dropped_handle_cause("not-a-handle", &vfs),
+            DroppedHandleCause::Unknown
+        );
+    }
+
+    #[test]
+    fn dropped_reference_cause_does_not_claim_out_of_snapshot_for_malformed_metadata() {
+        use crate::native::wire::RawSourceFileDescriptor;
+
+        let vfs = VirtualFileSystem::from_root_and_files(
+            "/work",
+            [("/work/main.ts".to_owned(), "const x = 1;\n".to_owned())],
+        )
+        .expect("vfs");
+        let reference = |path: &str| RawSymbolReference {
+            id: 7,
+            kind: 0,
+            file: RawSourceFileDescriptor {
+                file_name: path.to_owned(),
+                path: path.to_owned(),
+                content_hash: "hash".to_owned(),
+                parse_options_key: "0".to_owned(),
+                script_kind: 3,
+                node_id: "1".to_owned(),
+            },
+        };
+
+        assert_eq!(
+            dropped_reference_cause(&reference("/pkg/lib.d.ts"), &vfs),
+            DroppedHandleCause::OutOfSnapshot("/pkg/lib.d.ts".to_owned())
+        );
+
+        let mut incomplete = reference("/pkg/lib.d.ts");
+        incomplete.file.content_hash.clear();
+        assert_eq!(
+            dropped_reference_cause(&incomplete, &vfs),
+            DroppedHandleCause::Unknown
+        );
+
+        let mut malformed = reference("relative/lib.d.ts");
+        malformed.file.file_name = "relative/lib.d.ts".to_owned();
+        assert_eq!(
+            dropped_reference_cause(&malformed, &vfs),
+            DroppedHandleCause::Unknown
+        );
+    }
+
+    fn hover_declaration(index: u32) -> HoverDeclaration {
+        let start = index * 8;
+        HoverDeclaration {
+            path: "model.ts".to_owned(),
+            range: SourceRange::new(start, start + 4),
+            utf16: Utf16Range::new(start, start + 4),
+        }
+    }
+
+    #[test]
+    fn hover_declaration_scan_is_bounded_by_scan_and_target_caps() {
+        let mut calls = 0;
+        let duplicates = scan_hover_declarations(10_000, |_| {
+            calls += 1;
+            Ok(HoverDeclarationOutcome::Decoded(hover_declaration(0)))
+        })
+        .expect("scan");
+        assert_eq!(calls, MAX_HOVER_DECLARATION_SCAN);
+        assert_eq!(duplicates.declarations.len(), 1);
+        assert!(duplicates.gaps.iter().any(|gap| matches!(
+            gap,
+            HoverGap::TruncatedDeclarationScan { limit } if *limit == MAX_HOVER_DECLARATION_SCAN
+        )));
+
+        calls = 0;
+        let unique = scan_hover_declarations(10_000, |index| {
+            calls += 1;
+            Ok(HoverDeclarationOutcome::Decoded(hover_declaration(
+                u32::try_from(index).expect("index"),
+            )))
+        })
+        .expect("scan");
+        assert_eq!(calls, MAX_HOVER_DECLARATIONS);
+        assert_eq!(unique.declarations.len(), MAX_HOVER_DECLARATIONS);
+        assert!(unique.gaps.iter().any(|gap| matches!(
+            gap,
+            HoverGap::TruncatedDeclarations { limit } if *limit == MAX_HOVER_DECLARATIONS
+        )));
+        assert!(
+            !unique
+                .gaps
+                .iter()
+                .any(|gap| matches!(gap, HoverGap::TruncatedDeclarationScan { .. }))
+        );
+    }
+
+    #[test]
+    fn alias_name_mismatch_is_not_reported_as_undecodable() {
+        let scan = scan_hover_declarations(2, |index| {
+            if index == 0 {
+                Ok(HoverDeclarationOutcome::Decoded(hover_declaration(0)))
+            } else {
+                Ok(HoverDeclarationOutcome::NameMismatch("Person".to_owned()))
+            }
+        })
+        .expect("scan");
+        assert_eq!(scan.declarations.len(), 1);
+        assert!(scan
+            .gaps
+            .iter()
+            .any(|gap| matches!(gap, HoverGap::NameMismatchDeclaration { expected } if expected == "Person")));
+        assert!(
+            !scan
+                .gaps
+                .iter()
+                .any(|gap| matches!(gap, HoverGap::UndecodableDeclaration { .. }))
+        );
     }
 }
