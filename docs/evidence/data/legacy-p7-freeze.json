@@ -1,6 +1,6 @@
 {
   "schema": "wxml-tsgo-p7-freeze/1",
-  "generated_at": "2026-11-20T04:08:00+08:00",
+  "generated_at": "2026-11-20T05:38:29+08:00",
   "generated_by": "scripts/p7-freeze.sh",
   "algorithm": {
     "name": "p7-freeze-tree-v1",
@@ -15,11 +15,11 @@
     "line_endings": "raw working-tree bytes; a CRLF checkout changes every hash"
   },
   "commit": {
-    "requested_head": "75040c2b7e8cf45b6cf7fdf7d5adbbf5afd54239",
-    "head": "75040c2b7e8cf45b6cf7fdf7d5adbbf5afd54239",
-    "head_subject": "test(tsgo): freeze legacy oracle and backfill parity ledger",
+    "requested_head": "befba03e60f9c65e20e75b0c4c873d828fcb61b3",
+    "head": "befba03e60f9c65e20e75b0c4c873d828fcb61b3",
+    "head_subject": "fix(tsgo): accept behavior trailing commas and backfill parity",
     "branch": "tsgo/migration",
-    "frozen_paths_clean": true,
+    "frozen_paths_clean": false,
     "frozen_path_diff_requested_to_head": "empty (verified with git diff --quiet)"
   },
   "trees": {
@@ -1229,8 +1229,8 @@
         "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
         "test": "ac001_page_data_and_jsdoc_hover",
         "fully_qualified": "stdio_type_loop::ac001_page_data_and_jsdoc_hover",
-        "line_ignore": 504,
-        "line_fn": 505,
+        "line_ignore": 111,
+        "line_fn": 112,
         "status": "gate_green",
         "mandatory_green": false,
         "replacement_reviewed": false,
@@ -1240,28 +1240,30 @@
         "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
         "p7_action": "retarget",
         "node_dependency": {
-          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
-          "opt_in": "WXML_TEST_NODE=1",
-          "backend_script": "backends/typescript/dist/server.js",
-          "backend_dir": "backends/typescript",
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
           "env": [
-            "WXML_TEST_NODE",
-            "WXML_TYPE_BACKEND",
-            "WXML_BACKEND_DIR",
-            "WXML_TEST_EXTERNAL_BACKEND"
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
           ],
           "node_minimum": null,
-          "source": "test helper"
+          "source": "native_package.rs disposable fixture"
         },
-        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+        "file_sha256": "e51899c291eded7ec0f7f52fa3619c1d6791331a20c40f7363b1ac13dfdd4bc3"
       },
       {
         "gate_id": "G-P5-E2E-07",
         "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
         "test": "ac002_field_typo_diagnostic_and_fix_clear",
         "fully_qualified": "stdio_type_loop::ac002_field_typo_diagnostic_and_fix_clear",
-        "line_ignore": 606,
-        "line_fn": 607,
+        "line_ignore": 148,
+        "line_fn": 149,
         "status": "gate_green",
         "mandatory_green": false,
         "replacement_reviewed": false,
@@ -1271,28 +1273,30 @@
         "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
         "p7_action": "retarget",
         "node_dependency": {
-          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
-          "opt_in": "WXML_TEST_NODE=1",
-          "backend_script": "backends/typescript/dist/server.js",
-          "backend_dir": "backends/typescript",
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
           "env": [
-            "WXML_TEST_NODE",
-            "WXML_TYPE_BACKEND",
-            "WXML_BACKEND_DIR",
-            "WXML_TEST_EXTERNAL_BACKEND"
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
           ],
           "node_minimum": null,
-          "source": "test helper"
+          "source": "native_package.rs disposable fixture"
         },
-        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+        "file_sha256": "e51899c291eded7ec0f7f52fa3619c1d6791331a20c40f7363b1ac13dfdd4bc3"
       },
       {
         "gate_id": "G-P5-E2E-08",
         "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
         "test": "ac003_unicode_and_crlf_positions",
         "fully_qualified": "stdio_type_loop::ac003_unicode_and_crlf_positions",
-        "line_ignore": 658,
-        "line_fn": 659,
+        "line_ignore": 188,
+        "line_fn": 189,
         "status": "gate_green",
         "mandatory_green": false,
         "replacement_reviewed": false,
@@ -1302,28 +1306,30 @@
         "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
         "p7_action": "retarget",
         "node_dependency": {
-          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
-          "opt_in": "WXML_TEST_NODE=1",
-          "backend_script": "backends/typescript/dist/server.js",
-          "backend_dir": "backends/typescript",
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
           "env": [
-            "WXML_TEST_NODE",
-            "WXML_TYPE_BACKEND",
-            "WXML_BACKEND_DIR",
-            "WXML_TEST_EXTERNAL_BACKEND"
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
           ],
           "node_minimum": null,
-          "source": "test helper"
+          "source": "native_package.rs disposable fixture"
         },
-        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+        "file_sha256": "e51899c291eded7ec0f7f52fa3619c1d6791331a20c40f7363b1ac13dfdd4bc3"
       },
       {
         "gate_id": "G-P5-E2E-09",
         "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
         "test": "ac011_unknown_owner_degrades_honestly",
         "fully_qualified": "stdio_type_loop::ac011_unknown_owner_degrades_honestly",
-        "line_ignore": 780,
-        "line_fn": 781,
+        "line_ignore": 229,
+        "line_fn": 230,
         "status": "gate_green",
         "mandatory_green": false,
         "replacement_reviewed": false,
@@ -1333,28 +1339,30 @@
         "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
         "p7_action": "retarget",
         "node_dependency": {
-          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
-          "opt_in": "WXML_TEST_NODE=1",
-          "backend_script": "backends/typescript/dist/server.js",
-          "backend_dir": "backends/typescript",
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
           "env": [
-            "WXML_TEST_NODE",
-            "WXML_TYPE_BACKEND",
-            "WXML_BACKEND_DIR",
-            "WXML_TEST_EXTERNAL_BACKEND"
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
           ],
           "node_minimum": null,
-          "source": "test helper"
+          "source": "native_package.rs disposable fixture"
         },
-        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+        "file_sha256": "e51899c291eded7ec0f7f52fa3619c1d6791331a20c40f7363b1ac13dfdd4bc3"
       },
       {
         "gate_id": "G-P5-E2E-10",
         "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
         "test": "ac013_component_properties_hover",
         "fully_qualified": "stdio_type_loop::ac013_component_properties_hover",
-        "line_ignore": 706,
-        "line_fn": 707,
+        "line_ignore": 279,
+        "line_fn": 280,
         "status": "gate_green",
         "mandatory_green": false,
         "replacement_reviewed": false,
@@ -1364,28 +1372,30 @@
         "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
         "p7_action": "retarget",
         "node_dependency": {
-          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
-          "opt_in": "WXML_TEST_NODE=1",
-          "backend_script": "backends/typescript/dist/server.js",
-          "backend_dir": "backends/typescript",
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
           "env": [
-            "WXML_TEST_NODE",
-            "WXML_TYPE_BACKEND",
-            "WXML_BACKEND_DIR",
-            "WXML_TEST_EXTERNAL_BACKEND"
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
           ],
           "node_minimum": null,
-          "source": "test helper"
+          "source": "native_package.rs disposable fixture"
         },
-        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+        "file_sha256": "e51899c291eded7ec0f7f52fa3619c1d6791331a20c40f7363b1ac13dfdd4bc3"
       },
       {
         "gate_id": "G-P5-E2E-11",
         "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
         "test": "component_behavior_data_and_properties_work_over_stdio",
         "fully_qualified": "stdio_type_loop::component_behavior_data_and_properties_work_over_stdio",
-        "line_ignore": 947,
-        "line_fn": 948,
+        "line_ignore": 352,
+        "line_fn": 353,
         "status": "gate_green",
         "mandatory_green": false,
         "replacement_reviewed": false,
@@ -1395,28 +1405,30 @@
         "old_reason": "requires the real server binary and Node fixture; set WXML_TEST_NODE=1",
         "p7_action": "retarget",
         "node_dependency": {
-          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
-          "opt_in": "WXML_TEST_NODE=1",
-          "backend_script": "backends/typescript/dist/server.js",
-          "backend_dir": "backends/typescript",
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
           "env": [
-            "WXML_TEST_NODE",
-            "WXML_TYPE_BACKEND",
-            "WXML_BACKEND_DIR",
-            "WXML_TEST_EXTERNAL_BACKEND"
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
           ],
           "node_minimum": null,
-          "source": "test helper"
+          "source": "native_package.rs disposable fixture"
         },
-        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+        "file_sha256": "e51899c291eded7ec0f7f52fa3619c1d6791331a20c40f7363b1ac13dfdd4bc3"
       },
       {
         "gate_id": "G-P5-E2E-12",
         "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
         "test": "static_wxs_and_template_semantics_work_over_stdio",
         "fully_qualified": "stdio_type_loop::static_wxs_and_template_semantics_work_over_stdio",
-        "line_ignore": 836,
-        "line_fn": 837,
+        "line_ignore": 434,
+        "line_fn": 435,
         "status": "gate_green",
         "mandatory_green": false,
         "replacement_reviewed": false,
@@ -1426,28 +1438,30 @@
         "old_reason": "requires the real server binary and Node fixture; set WXML_TEST_NODE=1",
         "p7_action": "retarget",
         "node_dependency": {
-          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
-          "opt_in": "WXML_TEST_NODE=1",
-          "backend_script": "backends/typescript/dist/server.js",
-          "backend_dir": "backends/typescript",
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
           "env": [
-            "WXML_TEST_NODE",
-            "WXML_TYPE_BACKEND",
-            "WXML_BACKEND_DIR",
-            "WXML_TEST_EXTERNAL_BACKEND"
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
           ],
           "node_minimum": null,
-          "source": "test helper"
+          "source": "native_package.rs disposable fixture"
         },
-        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+        "file_sha256": "e51899c291eded7ec0f7f52fa3619c1d6791331a20c40f7363b1ac13dfdd4bc3"
       },
       {
         "gate_id": "G-P5-E2E-13",
         "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
         "test": "static_wxs_answers_survive_an_unavailable_type_backend",
         "fully_qualified": "stdio_type_loop::static_wxs_answers_survive_an_unavailable_type_backend",
-        "line_ignore": 1083,
-        "line_fn": 1084,
+        "line_ignore": 530,
+        "line_fn": 531,
         "status": "gate_green",
         "mandatory_green": false,
         "replacement_reviewed": false,
@@ -1457,28 +1471,30 @@
         "old_reason": "requires the real server binary; set WXML_TEST_NODE=1",
         "p7_action": "retarget",
         "node_dependency": {
-          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
-          "opt_in": "WXML_TEST_NODE=1",
-          "backend_script": "backends/typescript/dist/server.js",
-          "backend_dir": "backends/typescript",
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
           "env": [
-            "WXML_TEST_NODE",
-            "WXML_TYPE_BACKEND",
-            "WXML_BACKEND_DIR",
-            "WXML_TEST_EXTERNAL_BACKEND"
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
           ],
           "node_minimum": null,
-          "source": "test helper"
+          "source": "native_package.rs disposable fixture"
         },
-        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+        "file_sha256": "e51899c291eded7ec0f7f52fa3619c1d6791331a20c40f7363b1ac13dfdd4bc3"
       },
       {
         "gate_id": "G-P5-E2E-14",
         "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
         "test": "unsaved_wxs_overlay_updates_static_hover_and_completion",
         "fully_qualified": "stdio_type_loop::unsaved_wxs_overlay_updates_static_hover_and_completion",
-        "line_ignore": 1013,
-        "line_fn": 1014,
+        "line_ignore": 613,
+        "line_fn": 614,
         "status": "gate_green",
         "mandatory_green": false,
         "replacement_reviewed": false,
@@ -1488,20 +1504,22 @@
         "old_reason": "requires the real server binary and Node fixture; set WXML_TEST_NODE=1",
         "p7_action": "retarget",
         "node_dependency": {
-          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
-          "opt_in": "WXML_TEST_NODE=1",
-          "backend_script": "backends/typescript/dist/server.js",
-          "backend_dir": "backends/typescript",
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
           "env": [
-            "WXML_TEST_NODE",
-            "WXML_TYPE_BACKEND",
-            "WXML_BACKEND_DIR",
-            "WXML_TEST_EXTERNAL_BACKEND"
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
           ],
           "node_minimum": null,
-          "source": "test helper"
+          "source": "native_package.rs disposable fixture"
         },
-        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+        "file_sha256": "e51899c291eded7ec0f7f52fa3619c1d6791331a20c40f7363b1ac13dfdd4bc3"
       },
       {
         "gate_id": "G-P5-E2E-15",
@@ -1867,8 +1885,7 @@
         "name": "WXML_TEST_EXTERNAL_BACKEND",
         "kind": "test-only opt-in; deleted with the old Node gates",
         "files": [
-          "crates/wxml-lsp/tests/real_node.rs",
-          "crates/wxml-lsp/tests/stdio_type_loop.rs"
+          "crates/wxml-lsp/tests/real_node.rs"
         ]
       },
       {
@@ -1877,7 +1894,6 @@
         "files": [
           "crates/wxml-lsp/tests/real_node.rs",
           "crates/wxml-lsp/tests/wave5_acceptance.rs",
-          "crates/wxml-lsp/tests/stdio_type_loop.rs",
           "crates/wxml-lsp/tests/performance_bench.rs",
           "crates/wxml-lsp/tests/q2_stability.rs"
         ]
@@ -2139,20 +2155,20 @@
       {
         "file": "crates/wxml-lsp/tests/native_parity/ledger.rs",
         "symbol": "verify_legacy_oracle",
-        "line": 1426,
+        "line": 1667,
         "anchor": "&workspace.join(oracle_manifest::LEGACY_TEST_SOURCE_ROOT),",
         "what": "ledger passes the legacy root to the oracle verifier",
         "kind": "mode-selection",
-        "file_sha256": "1ea41dd7c21d46d36e9912c28079e544894ceba1c7eccb05a09876963f4b5985"
+        "file_sha256": "f423cacb0527c2a2c137e2ddf711d0afc8352ecbf7ed247c18b9b363954f0c03"
       },
       {
         "file": "crates/wxml-lsp/tests/native_parity/ledger.rs",
         "symbol": "live_root",
-        "line": 1438,
+        "line": 1679,
         "anchor": "let live_root = workspace.join(oracle_manifest::LEGACY_TEST_SOURCE_ROOT);",
         "what": "live root existence selects Live vs Frozen",
         "kind": "mode-selection",
-        "file_sha256": "1ea41dd7c21d46d36e9912c28079e544894ceba1c7eccb05a09876963f4b5985"
+        "file_sha256": "f423cacb0527c2a2c137e2ddf711d0afc8352ecbf7ed247c18b9b363954f0c03"
       },
       {
         "file": "crates/wxml-lsp/tests/native_parity/oracle_manifest.rs",
@@ -2257,8 +2273,8 @@
     },
     {
       "path": "crates/wxml-lsp/tests/native_parity.rs",
-      "bytes": 10984,
-      "sha256": "3b030bfb1ce74de3514c7b2fa8271e9fee3ea352aa3ae87202bf7b970f0115ce"
+      "bytes": 11955,
+      "sha256": "240079a2fea28fb6769d9abf489225f7d4aac2b74356ae12727c8bb6392dd243"
     },
     {
       "path": "crates/wxml-lsp/tests/native_parity/fixture_hash.rs",
@@ -2267,8 +2283,8 @@
     },
     {
       "path": "crates/wxml-lsp/tests/native_parity/ledger.rs",
-      "bytes": 63884,
-      "sha256": "1ea41dd7c21d46d36e9912c28079e544894ceba1c7eccb05a09876963f4b5985"
+      "bytes": 74430,
+      "sha256": "f423cacb0527c2a2c137e2ddf711d0afc8352ecbf7ed247c18b9b363954f0c03"
     },
     {
       "path": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs",
@@ -2277,8 +2293,8 @@
     },
     {
       "path": "crates/wxml-lsp/tests/native_parity/native_gates.rs",
-      "bytes": 34586,
-      "sha256": "fc55a72ce21786cd75d0ff5758773d43a5443217d4f663b23706aed788631974"
+      "bytes": 60677,
+      "sha256": "c1b6ac07022379fca5f5fd78f99ff262208ab5c16acb880115046d0533c1aa63"
     },
     {
       "path": "crates/wxml-lsp/tests/native_parity/oracle_manifest.rs",
@@ -2292,8 +2308,8 @@
     },
     {
       "path": "crates/wxml-lsp/tests/native_parity/symbols_edits.rs",
-      "bytes": 29747,
-      "sha256": "83a757622abb3f5365c46aa5af0393d84b9ac5aa2ccf7997a2758591c4ca2e70"
+      "bytes": 31303,
+      "sha256": "850b906a46e8dc098b6a0ee3273180883b577a012fb8888b571ebe299217f454"
     },
     {
       "path": "crates/wxml-lsp/tests/performance_bench.rs",
@@ -2317,8 +2333,8 @@
     },
     {
       "path": "crates/wxml-lsp/tests/stdio_type_loop.rs",
-      "bytes": 39172,
-      "sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+      "bytes": 23944,
+      "sha256": "e51899c291eded7ec0f7f52fa3619c1d6791331a20c40f7363b1ac13dfdd4bc3"
     },
     {
       "path": "crates/wxml-lsp/tests/wave5_acceptance.rs",
@@ -2333,9 +2349,9 @@
   ],
   "blocking_state": {
     "ledger": {
-      "green": 55,
-      "planned": 248,
-      "retired": 36,
+      "green": 83,
+      "planned": 218,
+      "retired": 38,
       "total": 339,
       "ignored_gate_green": 23,
       "ignored_gate_required": 0,
@@ -2364,7 +2380,7 @@
     },
     "deletion_allowed": false,
     "blocked_by": [
-      "ledger is 55 green / 248 planned / 36 retired, not 0 planned",
+      "ledger is 83 green / 218 planned / 38 retired, not 0 planned",
       "all 23 old gates are still #[ignore]; gate_green is opt-in, not mandatory_green",
       "no replacement_reviewed evidence exists for the 23 gates",
       "native_gates.rs still requires the 23 old #[ignore] tests; old_test_removed is not implemented",

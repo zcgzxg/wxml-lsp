@@ -9,6 +9,8 @@
 #   scripts/p7-freeze.sh                 # print the freeze JSON to stdout
 #   scripts/p7-freeze.sh --check         # compare the worktree to the frozen JSON
 #   scripts/p7-freeze.sh --output FILE   # write the JSON outside the repository
+#   scripts/p7-freeze.sh --allow-dirty   # generate from an intentionally dirty
+#                                        # retarget worktree (never with --check)
 #
 # `--check` reads docs/evidence/data/legacy-p7-freeze.json and fails when a
 # frozen path is missing, a file hash changed, a tree digest changed, an old
@@ -35,13 +37,14 @@ export LC_ALL=C
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 FROZEN_JSON="$REPO_ROOT/docs/evidence/data/legacy-p7-freeze.json"
-DEFAULT_REQUESTED_HEAD='75040c2b7e8cf45b6cf7fdf7d5adbbf5afd54239'
+DEFAULT_REQUESTED_HEAD='befba03e60f9c65e20e75b0c4c873d828fcb61b3'
 
 CHECK=0
+ALLOW_DIRTY=0
 OUTPUT=''
 
 usage() {
-  sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -67,6 +70,9 @@ while (($# > 0)); do
     --output=*)
       OUTPUT=${1#*=}
       ;;
+    --allow-dirty)
+      ALLOW_DIRTY=1
+      ;;
     -h | --help)
       usage
       exit 0
@@ -80,6 +86,9 @@ done
 
 if ((CHECK == 1)) && [[ -n $OUTPUT ]]; then
   die '--check and --output are mutually exclusive'
+fi
+if ((CHECK == 1)) && ((ALLOW_DIRTY == 1)); then
+  die '--allow-dirty is only for generation; --check already reads the worktree'
 fi
 
 for tool in git jq sha256sum realpath awk grep find sort wc cat date; do
@@ -136,10 +145,13 @@ FROZEN_PATHS=(
 if ! git -C "$REPO_ROOT" diff --quiet "$REQUESTED_HEAD" HEAD -- "${FROZEN_PATHS[@]}"; then
   die "frozen paths changed between $REQUESTED_HEAD and $HEAD; freeze the reviewed baseline deliberately"
 fi
-if ((CHECK == 0)) && [[ -n $(git -C "$REPO_ROOT" status --porcelain -- "${FROZEN_PATHS[@]}") ]]; then
-  die 'frozen paths have uncommitted changes; commit or revert them before freezing'
+FROZEN_STATUS=$(git -C "$REPO_ROOT" status --porcelain -- "${FROZEN_PATHS[@]}")
+if ((CHECK == 0)) && [[ -n $FROZEN_STATUS ]]; then
+  ((ALLOW_DIRTY == 1)) ||
+    die 'frozen paths have uncommitted changes; commit or revert them before freezing (or pass --allow-dirty for an intentional retarget slice)'
+  printf 'p7-freeze: note: generating from a dirty worktree (--allow-dirty); the JSON records frozen_paths_clean=false\n' >&2
 fi
-if ((CHECK == 1)) && [[ -n $(git -C "$REPO_ROOT" status --porcelain -- "${FROZEN_PATHS[@]}") ]]; then
+if ((CHECK == 1)) && [[ -n $FROZEN_STATUS ]]; then
   printf 'p7-freeze: note: frozen paths have uncommitted changes; checking the worktree as requested\n' >&2
 fi
 
@@ -323,13 +335,14 @@ node_dependency_json() {
       ;;
     crates/wxml-lsp/tests/stdio_type_loop.rs)
       jq -cn '{
-        boundary:"spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
-        opt_in:"WXML_TEST_NODE=1",
-        backend_script:"backends/typescript/dist/server.js",
-        backend_dir:"backends/typescript",
-        env:["WXML_TEST_NODE","WXML_TYPE_BACKEND","WXML_BACKEND_DIR","WXML_TEST_EXTERNAL_BACKEND"],
+        p7_state:"retargeted-native",
+        boundary:"spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+        opt_in:"WXML_TEST_NATIVE=1",
+        backend_script:null,
+        backend_dir:null,
+        env:["WXML_TEST_NATIVE","WXML_REQUIRE_REAL_ENGINE","TSGO_BIN","TSGO_ASSET_ROOT","TSGO_TYPINGS_ROOT"],
         node_minimum:null,
-        source:"test helper"
+        source:"native_package.rs disposable fixture"
       }'
       ;;
     crates/wxml-lsp/tests/performance_bench.rs)
@@ -493,8 +506,8 @@ EOF
 
 GATE_ONLY_ENV_JSON=$(
   cat <<'EOF' |
-WXML_TEST_NODE|crates/wxml-lsp/tests/real_node.rs|crates/wxml-lsp/tests/wave5_acceptance.rs|crates/wxml-lsp/tests/stdio_type_loop.rs|crates/wxml-lsp/tests/performance_bench.rs|crates/wxml-lsp/tests/q2_stability.rs
-WXML_TEST_EXTERNAL_BACKEND|crates/wxml-lsp/tests/real_node.rs|crates/wxml-lsp/tests/stdio_type_loop.rs
+WXML_TEST_NODE|crates/wxml-lsp/tests/real_node.rs|crates/wxml-lsp/tests/wave5_acceptance.rs|crates/wxml-lsp/tests/performance_bench.rs|crates/wxml-lsp/tests/q2_stability.rs
+WXML_TEST_EXTERNAL_BACKEND|crates/wxml-lsp/tests/real_node.rs
 EOF
   while IFS='|' read -r name file1 file2 file3 file4 file5; do
     files=()
@@ -656,6 +669,7 @@ JSON=$(
     --arg head_subject "$HEAD_SUBJECT" \
     --arg branch "$BRANCH" \
     --arg requested_head "$REQUESTED_HEAD" \
+    --argjson frozen_paths_clean "$([[ -z $FROZEN_STATUS ]] && printf true || printf false)" \
     --argjson trees "$TREES_JSON" \
     --argjson gates "$GATES_JSON" \
     --argjson silent "$SILENT_JSON" \
@@ -689,7 +703,7 @@ JSON=$(
         head:$head,
         head_subject:$head_subject,
         branch:$branch,
-        frozen_paths_clean:true,
+        frozen_paths_clean:$frozen_paths_clean,
         frozen_path_diff_requested_to_head:"empty (verified with git diff --quiet)"
       },
       trees:$trees,

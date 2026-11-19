@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # P7 native gate runner.
 #
-# Runs the 26 opt-in native gates against the pinned TypeScript 7.1.0-beta
-# engine and fails closed when any input, identity check, build or gate fails.
+# Runs the 35 opt-in native gates (23 native engine + 3 symbols/edits + 9 stdio
+# shells) against the pinned TypeScript 7.1.0-beta engine and fails closed when
+# any input, identity check, build or gate fails.
 #
 # Required:
 #   --package DIR    installed v2 native package containing engine/lib/tsc and
@@ -17,7 +18,7 @@
 #                    /tmp/opencode/native-gates/<UTC timestamp>); must be
 #                    outside the repository
 #   --skip-build     reuse an existing release build
-#   --verify-no-node run scripts/verify-no-node.sh after the 26 gates
+#   --verify-no-node run scripts/verify-no-node.sh after the 35 gates
 #   --installer FILE wxml-lsp-install binary (required with --verify-no-node)
 #   --install-root DIR install root (required with --verify-no-node)
 #   -h, --help       show this help
@@ -36,7 +37,7 @@
 # pinned engine and typings.
 #
 # Exit codes:
-#   0  all 26 gates passed (and the optional no-Node check, when requested)
+#   0  all 35 gates passed (and the optional no-Node check, when requested)
 #   1  the build, a gate, or the optional no-Node check failed
 #   2  a required input is missing, relative, unpinned, or unsafe
 
@@ -51,7 +52,8 @@ EXPECTED_ENGINE_SHA256='a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e2
 EXPECTED_ENGINE_SIZE=24522912
 NATIVE_ENGINE_GATES=23
 NATIVE_EDIT_GATES=3
-EXPECTED_NATIVE_GATES=$((NATIVE_ENGINE_GATES + NATIVE_EDIT_GATES))
+NATIVE_STDIO_GATES=9
+EXPECTED_NATIVE_GATES=$((NATIVE_ENGINE_GATES + NATIVE_EDIT_GATES + NATIVE_STDIO_GATES))
 
 PACKAGE=''
 ENGINE=''
@@ -66,8 +68,8 @@ usage() {
     cat <<'EOF'
 P7 native gate runner.
 
-Runs the 23 native_engine_real gates and the 3 symbols_edits gates, in that
-order, with --ignored --test-threads=1.
+Runs the 23 native_engine_real gates, the 3 symbols_edits gates and the 9
+stdio_type_loop shells, in that order, with --ignored --test-threads=1.
 
 Required:
   --package DIR     installed v2 native package containing engine/lib/tsc and
@@ -326,15 +328,20 @@ GATE_SUMMARY=()
 
 run_gate() {
     local name=$1
-    local filter=$2
-    local expected=$3
-    local log=$4
+    local target=$2
+    local filter=$3
+    local expected=$4
+    local log=$5
     local rc=0
     local line=''
     local passed=''
+    local -a filter_args=()
+    if [ -n "$filter" ]; then
+        filter_args=("$filter")
+    fi
 
     (cd "$REPO_ROOT" && "${ENV_ARGS[@]}" cargo test --release -p wxml-lsp \
-        --test native_parity "$filter" -- --ignored --test-threads=1) \
+        --test "$target" "${filter_args[@]}" -- --ignored --test-threads=1) \
         >"$log" 2>&1 || rc=$?
 
     line=$(grep -E '^test result: (ok|FAILED)\.' "$log" | tail -n 1 || true)
@@ -358,13 +365,17 @@ run_gate() {
 }
 
 PASSED_GATE_TESTS=0
-if run_gate 'native_parity::native_engine_real' 'native_engine_real' \
+if run_gate 'native_parity::native_engine_real' 'native_parity' 'native_engine_real' \
     "$NATIVE_ENGINE_GATES" "$OUTPUT/01-native-engine-real.log"; then
     PASSED_GATE_TESTS=$((PASSED_GATE_TESTS + NATIVE_ENGINE_GATES))
 fi
-if run_gate 'native_parity::symbols_edits' 'symbols_edits' \
+if run_gate 'native_parity::symbols_edits' 'native_parity' 'symbols_edits' \
     "$NATIVE_EDIT_GATES" "$OUTPUT/02-symbols-edits.log"; then
     PASSED_GATE_TESTS=$((PASSED_GATE_TESTS + NATIVE_EDIT_GATES))
+fi
+if run_gate 'stdio_type_loop' 'stdio_type_loop' '' \
+    "$NATIVE_STDIO_GATES" "$OUTPUT/03-stdio-type-loop.log"; then
+    PASSED_GATE_TESTS=$((PASSED_GATE_TESTS + NATIVE_STDIO_GATES))
 fi
 
 NO_NODE_STATUS='NOT_REQUESTED'
@@ -373,14 +384,14 @@ if [ "$VERIFY_NO_NODE" = "1" ]; then
     (cd "$REPO_ROOT" && env -u WXML_TEST_NATIVE_PACKAGE \
         WXML_REQUIRE_REAL_ENGINE=1 "TSGO_BIN=$ENGINE" \
         scripts/verify-no-node.sh --installer "$INSTALLER" --root "$INSTALL_ROOT") \
-        >"$OUTPUT/03-verify-no-node.log" 2>&1 || NO_NODE_RC=$?
+        >"$OUTPUT/04-verify-no-node.log" 2>&1 || NO_NODE_RC=$?
     if [ "$NO_NODE_RC" -eq 0 ]; then
         NO_NODE_STATUS='PASS'
         printf 'NO_NODE_SCOPE: PASS (installer scope)\n'
     else
         NO_NODE_STATUS="FAIL(rc=$NO_NODE_RC)"
         printf 'NO_NODE_SCOPE: FAIL rc=%s\n' "$NO_NODE_RC" >&2
-        tail -n 60 "$OUTPUT/03-verify-no-node.log" >&2 || true
+        tail -n 60 "$OUTPUT/04-verify-no-node.log" >&2 || true
     fi
 fi
 
