@@ -11,6 +11,7 @@
     clippy::assert_is_empty,
     clippy::expect_used,
     clippy::redundant_pub_crate,
+    clippy::single_match_else,
     clippy::too_many_lines,
     clippy::unwrap_used
 )]
@@ -62,6 +63,8 @@ mod perf_budget;
 mod project_overlay;
 #[path = "native_parity/protocol_limits.rs"]
 mod protocol_limits;
+#[path = "native_parity/real_matrix.rs"]
+mod real_matrix;
 #[path = "native_parity/scenario_matrix.rs"]
 mod scenario_matrix;
 #[path = "native_parity/shadow_rewrite.rs"]
@@ -170,6 +173,21 @@ const SYMBOLS_EDITS_MIGRATED_CASES: &[&str] = &[
     "native_rejects_cross_namespace_and_dynamic_edits",
 ];
 
+const SCENARIO_MATRIX_MIGRATED_CASES: &[&str] = &[
+    "real_matrix_manifest_is_frozen_and_oracle_derived",
+    "real_matrix_comparator_rejects_missing_shifted_and_perturbed_results",
+    "real_matrix_in_place_matches_frozen_oracle",
+    "real_matrix_known_gaps_are_characterized",
+    "real_matrix_top_level_cases",
+];
+
+/// The file that declares the `scenario_matrix` migrated tests.
+///
+/// The ledger target stays `scenario_matrix.rs` (43 routed cases); the real
+/// engine tests live in the sibling `real_matrix.rs` so the thin wrapper keeps
+/// the target path stable while the tests can use the crate harness modules.
+const SCENARIO_MATRIX_TEST_FILE: &str = "real_matrix.rs";
+
 #[test]
 fn partition_skeletons_match_manifest_and_fail_closed() {
     let ledger_value = ledger::load_ledger();
@@ -181,10 +199,10 @@ fn partition_skeletons_match_manifest_and_fail_closed() {
     let mut total = 0_usize;
 
     for skeleton in PARTITIONS {
-        let expected = if skeleton.module == "symbols_edits" {
-            SYMBOLS_EDITS_MIGRATED_CASES
-        } else {
-            &[]
+        let expected = match skeleton.module {
+            "symbols_edits" => SYMBOLS_EDITS_MIGRATED_CASES,
+            "scenario_matrix" => SCENARIO_MATRIX_MIGRATED_CASES,
+            _ => &[],
         };
         assert_eq!(
             skeleton.migrated_cases, expected,
@@ -290,7 +308,11 @@ fn partition_modules_declare_only_listed_tests() {
     let workspace = ledger::workspace_root();
     let partition_root = workspace.join("crates/wxml-lsp/tests/native_parity");
     for skeleton in PARTITIONS {
-        let path = partition_root.join(format!("{}.rs", skeleton.module));
+        let path = if skeleton.module == "scenario_matrix" {
+            partition_root.join(SCENARIO_MATRIX_TEST_FILE)
+        } else {
+            partition_root.join(format!("{}.rs", skeleton.module))
+        };
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
         let lines: Vec<&str> = source.lines().collect();

@@ -1,0 +1,2 @@
+# Byte-exact historical fixtures: CRLF and BOM are part of the oracle.
+samples/** -text

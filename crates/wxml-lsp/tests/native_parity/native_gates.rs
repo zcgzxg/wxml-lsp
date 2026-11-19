@@ -49,6 +49,7 @@ use crate::fixture_hash::collect_tree_files;
 use crate::ledger;
 use crate::native_engine_real::{GATE_REPLACEMENTS, IGNORED_GATE_TESTS, NATIVE_GATE_FILE};
 use crate::oracle_manifest::{self, LegacySourceMode};
+use crate::real_matrix::IGNORED_MATRIX_TESTS;
 use crate::source_scan;
 use crate::symbols_edits::{IGNORED_GATE_TESTS as NATIVE_EDIT_GATE_TESTS, NATIVE_EDIT_GATE_FILE};
 
@@ -143,6 +144,14 @@ fn declared_native_gate_tests() -> BTreeSet<(String, String)> {
 /// The exact ignored native edit gates declared by `symbols_edits`.
 fn declared_native_edit_gate_tests() -> BTreeSet<(String, String)> {
     NATIVE_EDIT_GATE_TESTS
+        .iter()
+        .map(|(file, function)| ((*file).to_owned(), (*function).to_owned()))
+        .collect()
+}
+
+/// The exact ignored required-native matrix tests declared by `real_matrix`.
+fn declared_real_matrix_tests() -> BTreeSet<(String, String)> {
+    IGNORED_MATRIX_TESTS
         .iter()
         .map(|(file, function)| ((*file).to_owned(), (*function).to_owned()))
         .collect()
@@ -775,6 +784,7 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
 
     let native = declared_native_gate_tests();
     let edit = declared_native_edit_gate_tests();
+    let matrix = declared_real_matrix_tests();
     assert_eq!(
         native.len(),
         IGNORED_GATE_TESTS.len(),
@@ -786,15 +796,21 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
         "the declared native edit gate list has duplicates"
     );
     assert_eq!(
+        matrix.len(),
+        IGNORED_MATRIX_TESTS.len(),
+        "the declared real-matrix gate list has duplicates"
+    );
+    assert_eq!(
         count,
-        gates.len() - removals.removed.len() + native.len() + edit.len(),
-        "found {count} #[ignore] lines but the ledger records {} old gates ({} removed) plus {} native gate tests and {} native edit gates",
+        gates.len() - removals.removed.len() + native.len() + edit.len() + matrix.len(),
+        "found {count} #[ignore] lines but the ledger records {} old gates ({} removed) plus {} native gate tests, {} native edit gates and {} required matrix tests",
         gates.len(),
         removals.removed.len(),
         native.len(),
-        edit.len()
+        edit.len(),
+        matrix.len()
     );
-    for (file, function) in native.iter().chain(edit.iter()) {
+    for (file, function) in native.iter().chain(edit.iter()).chain(matrix.iter()) {
         assert!(
             actual.remove(&(file.clone(), function.clone())),
             "declared native gate {file}::{function} must be an #[ignore] test"

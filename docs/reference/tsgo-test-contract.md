@@ -19,20 +19,28 @@
 | `split` | 11 |
 | `obsolete` | 37（36 个历史 Candidate B + wave-11 `TS-COMPONENT-0774`） |
 | `blocked-decision` | 0 |
-| `green` | 83（真实 Rust 测试证据，未独立 review） |
-| `planned` | 218 |
+| `green` | 109（真实 Rust 测试证据，未独立 review） |
+| `planned` | 192 |
 | `retired-with-decision` | 38 |
-| `assessed_cases` | 209 |
-| `exact` | 83 |
+| `assessed_cases` | 248 |
+| `exact` | 109 |
 | `near_exact` | 3 |
-| `weaker` | 100 |
+| `weaker` | 96 |
 | `structural` | 7 |
-| `blocked` | 16 |
+| `blocked` | 33 |
 
-计数在 wave-11 blocked followup（2026-11-20，基线 HEAD `1c89338`）后为
-`green` 83 / `planned` 218 / `retired-with-decision` 38，`assessed_cases` 209
-（`exact` 83、`near_exact` 3、`weaker` 100、`structural` 7、`blocked` 16），
-无证据 planned 92。该步把 `TS-COMPONENT-0292` 提升为 exact `green`，
+计数在 wave-11 matrix backfill（2026-11-20，验证 HEAD `1c89338` + 未提交
+`real_matrix.rs`）后为 `green` 109 / `planned` 192 / `retired-with-decision` 38，
+`assessed_cases` 248（`exact` 109、`near_exact` 3、`weaker` 96、`structural` 7、
+`blocked` 33），无证据 planned 53。该步把 22 个 in-place + 4 个顶层 in-place
+半边提升为 exact `green`，并把 11 个 in-place + 6 个顶层 blocked 半边登记为
+`parity=blocked`、`blocked_by=checker`（DOCS 4、STATE 8、PROBE 2、ROOT 2、
+CHECKER 1）。`scenario_matrix` 从 4 evidence/39 unassessed 变为 43 evidence/
+26 green/17 blocked；projection SHA 固定为 `9d47f7d0…`。`methods-nonliteral`
+的语义修复见 ` docs/evidence/2026-11-20-tsgo-matrix-semantic-gaps.md`。此前 wave-11 blocked
+followup（2026-11-20，基线 HEAD `1c89338`）后为 `green` 83 / `planned` 218 /
+`retired-with-decision` 38，`assessed_cases` 209（`exact` 83、`near_exact` 3、
+`weaker` 100、`structural` 7、`blocked` 16），无证据 planned 92。该步把 `TS-COMPONENT-0292` 提升为 exact `green`，
 把 `TS-EVENTS-0188` 登记为 near_exact（唯一差异 `fileId`→`EventDefinition.path`），
 并把 `TS-COMPONENT-0193`、`TS-GUARDS-0201`、`TS-LOCALS-0343`、`TS-COMPONENT-0498`
 从 `blocked` 重新登记为 `weaker`（`blocked` 22→16）。此前 wave-11 exact 回填

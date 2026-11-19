@@ -165,134 +165,134 @@
     },
     "migration_evidence": {
       "assessed_at": "2026-11-20",
-      "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
-      "rust_test_command": "cargo test -p wxml-lsp --lib; cargo test -p wxml-backend-tsgo --lib; cargo test -p wxml-backend-tsgo --test shadow_layout; cargo test -p wxml-lsp --test native_parity; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored; cargo test -p wxml-delivery --test assets_lock_root",
-      "rust_test_result": "wave-11 blocked followup: TS-COMPONENT-0292 promoted planned -> exact green; TS-EVENTS-0188 registered near_exact (planned, green recommendation); TS-COMPONENT-0193, TS-GUARDS-0201, TS-LOCALS-0343 and TS-COMPONENT-0498 registered weaker (planned). green 82 -> 83, planned 219 -> 218, exact 82 -> 83, near_exact 2 -> 3, weaker 96 -> 100, blocked 22 -> 16; assessed_cases 209, structural 7, retired 38 and no-evidence 92 unchanged.",
-      "assessed_cases": 209,
-      "exact": 83,
+      "implementation_head": "befba03e60f9c65e20e75b0c4c873d828fcb61b3",
+      "rust_test_command": "cargo test -p wxml-lsp --lib; cargo test -p wxml-backend-tsgo --lib; cargo test -p wxml-backend-tsgo --test shadow_layout; cargo test -p wxml-lsp --test native_parity; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored; cargo test -p wxml-delivery --test assets_lock_root; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity real_matrix -- --ignored; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity real_matrix -- --ignored; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity real_matrix -- --ignored; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity real_matrix -- --ignored; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity real_matrix -- --ignored; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity real_matrix -- --ignored; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity real_matrix -- --ignored; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity real_matrix -- --ignored",
+      "rust_test_result": "wave-11 matrix backfill: 22 in-place + 4 top-level matrix cases promoted to exact green after the methods-nonliteral semantic fix; 11 in-place + 6 top-level gaps registered blocked (docs 4, state 8, probe 2, root 2, checker 1); green 83 -> 109, planned 218 -> 192, exact 83 -> 109, weaker 100 -> 96, blocked 16 -> 33, assessed_cases 209 -> 248; no-evidence planned 92 -> 53; retired 38 unchanged.",
+      "assessed_cases": 248,
+      "exact": 109,
       "near_exact": 3,
-      "weaker": 100,
+      "weaker": 96,
       "structural": 7,
-      "blocked": 16,
-      "green_eligible": 83,
-      "promoted_to_green": 83,
-      "remaining_planned_without_evidence": 92,
+      "blocked": 33,
+      "green_eligible": 109,
+      "promoted_to_green": 109,
+      "remaining_planned_without_evidence": 53,
       "by_partition": {
         "behaviors": {
           "routed_cases": 21,
           "evidence_cases": 18,
-          "green_cases": 2,
-          "planned_evidence_cases": 16,
-          "unassessed_cases": 3,
-          "exact": 2,
-          "near_exact": 2,
-          "weaker": 7,
           "structural": 5,
-          "blocked": 2
+          "exact": 2,
+          "green_cases": 2,
+          "weaker": 7,
+          "near_exact": 2,
+          "blocked": 2,
+          "planned_evidence_cases": 16,
+          "unassessed_cases": 3
         },
         "completion": {
           "routed_cases": 9,
           "evidence_cases": 9,
+          "weaker": 4,
+          "exact": 5,
           "green_cases": 5,
           "planned_evidence_cases": 4,
           "unassessed_cases": 0,
-          "exact": 5,
           "near_exact": 0,
-          "weaker": 4,
           "structural": 0,
           "blocked": 0
         },
         "components": {
           "routed_cases": 19,
           "evidence_cases": 16,
+          "exact": 8,
           "green_cases": 8,
+          "weaker": 2,
+          "blocked": 6,
           "planned_evidence_cases": 8,
           "unassessed_cases": 3,
-          "exact": 8,
           "near_exact": 0,
-          "weaker": 2,
-          "structural": 0,
-          "blocked": 6
+          "structural": 0
         },
         "definitions": {
           "routed_cases": 5,
           "evidence_cases": 5,
+          "weaker": 4,
+          "blocked": 1,
           "green_cases": 0,
           "planned_evidence_cases": 5,
           "unassessed_cases": 0,
           "exact": 0,
           "near_exact": 0,
-          "weaker": 4,
-          "structural": 0,
-          "blocked": 1
+          "structural": 0
         },
         "events": {
           "routed_cases": 24,
           "evidence_cases": 21,
+          "exact": 13,
           "green_cases": 13,
+          "weaker": 7,
+          "near_exact": 1,
           "planned_evidence_cases": 8,
           "unassessed_cases": 3,
-          "exact": 13,
-          "near_exact": 1,
-          "weaker": 7,
           "structural": 0,
           "blocked": 0
         },
         "guards_js": {
           "routed_cases": 25,
           "evidence_cases": 20,
+          "exact": 14,
           "green_cases": 14,
+          "blocked": 4,
+          "weaker": 2,
           "planned_evidence_cases": 6,
           "unassessed_cases": 5,
-          "exact": 14,
           "near_exact": 0,
-          "weaker": 2,
-          "structural": 0,
-          "blocked": 4
+          "structural": 0
         },
         "hover_docs": {
           "routed_cases": 10,
           "evidence_cases": 10,
+          "weaker": 6,
+          "exact": 4,
           "green_cases": 4,
           "planned_evidence_cases": 6,
           "unassessed_cases": 0,
-          "exact": 4,
           "near_exact": 0,
-          "weaker": 6,
           "structural": 0,
           "blocked": 0
         },
         "loops": {
           "routed_cases": 16,
           "evidence_cases": 11,
+          "weaker": 3,
+          "exact": 8,
           "green_cases": 8,
           "planned_evidence_cases": 3,
           "unassessed_cases": 5,
-          "exact": 8,
           "near_exact": 0,
-          "weaker": 3,
           "structural": 0,
           "blocked": 0
         },
         "mapping_utf16": {
           "routed_cases": 21,
           "evidence_cases": 19,
-          "green_cases": 6,
-          "planned_evidence_cases": 13,
-          "unassessed_cases": 2,
           "exact": 6,
-          "near_exact": 0,
+          "green_cases": 6,
           "weaker": 12,
           "structural": 1,
+          "planned_evidence_cases": 13,
+          "unassessed_cases": 2,
+          "near_exact": 0,
           "blocked": 0
         },
         "messages_evidence": {
           "routed_cases": 8,
           "evidence_cases": 5,
+          "exact": 5,
           "green_cases": 5,
           "planned_evidence_cases": 0,
           "unassessed_cases": 3,
-          "exact": 5,
           "near_exact": 0,
           "weaker": 0,
           "structural": 0,
@@ -301,89 +301,89 @@
         "perf_budget": {
           "routed_cases": 1,
           "evidence_cases": 1,
+          "structural": 1,
           "green_cases": 0,
           "planned_evidence_cases": 1,
           "unassessed_cases": 0,
           "exact": 0,
           "near_exact": 0,
           "weaker": 0,
-          "structural": 1,
           "blocked": 0
         },
         "project_overlay": {
           "routed_cases": 20,
           "evidence_cases": 12,
+          "weaker": 9,
+          "exact": 3,
           "green_cases": 3,
           "planned_evidence_cases": 9,
           "unassessed_cases": 8,
-          "exact": 3,
           "near_exact": 0,
-          "weaker": 9,
           "structural": 0,
           "blocked": 0
         },
         "protocol_limits": {
           "routed_cases": 39,
           "evidence_cases": 18,
+          "weaker": 13,
+          "exact": 5,
           "green_cases": 5,
           "planned_evidence_cases": 13,
           "unassessed_cases": 21,
-          "exact": 5,
           "near_exact": 0,
-          "weaker": 13,
           "structural": 0,
           "blocked": 0
         },
         "scenario_matrix": {
           "routed_cases": 43,
-          "evidence_cases": 4,
-          "green_cases": 0,
-          "planned_evidence_cases": 4,
-          "unassessed_cases": 39,
-          "exact": 0,
+          "evidence_cases": 43,
+          "exact": 26,
+          "green_cases": 26,
+          "blocked": 17,
+          "planned_evidence_cases": 17,
+          "unassessed_cases": 0,
           "near_exact": 0,
-          "weaker": 4,
-          "structural": 0,
-          "blocked": 0
+          "weaker": 0,
+          "structural": 0
         },
         "shadow_rewrite": {
           "routed_cases": 19,
           "evidence_cases": 19,
+          "weaker": 14,
+          "exact": 5,
           "green_cases": 5,
           "planned_evidence_cases": 14,
           "unassessed_cases": 0,
-          "exact": 5,
           "near_exact": 0,
-          "weaker": 14,
           "structural": 0,
           "blocked": 0
         },
         "symbols_edits": {
           "routed_cases": 21,
           "evidence_cases": 21,
+          "exact": 5,
           "green_cases": 5,
+          "weaker": 13,
+          "blocked": 3,
           "planned_evidence_cases": 16,
           "unassessed_cases": 0,
-          "exact": 5,
           "near_exact": 0,
-          "weaker": 13,
-          "structural": 0,
-          "blocked": 3
+          "structural": 0
         }
       },
       "rust_unit_test_command": "cargo test -p wxml-backend-tsgo --lib",
       "rust_unit_test_result": "wxml-lsp lib 789 passed, 0 failed, 0 ignored",
       "near_exact_recommendations": 3,
       "statuses": {
-        "planned": 218,
-        "green": 83,
+        "planned": 192,
+        "green": 109,
         "retired-with-decision": 38
       },
       "status_policy": "Only parity=exact cases are green. near_exact, weaker, structural and blocked cases stay planned with status_recommendation recorded; no empty evidence is accepted."
     },
     "statuses": {
-      "planned": 218,
-      "green": 83,
+      "planned": 192,
+      "green": 109,
       "retired-with-decision": 38
     }
   },
@@ -14862,11 +14862,90 @@
       "disposition": "split",
       "disposition_reason": "In-place-shadow run-without-throwing assertion ports; symbol-bridge is evidence-only.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0092",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Top-level `TS-MATRIX-0092` in-place exact half; symbol-bridge is retired/out of scope. Projection 9d47f7d0e951; asserts all 33 in-place scenarios build without throwing; symbol-bridge half retired and outside this case; doesNotThrow only; checker values are covered by the 22 in-place cases.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts the `TS-MATRIX-0092` top-level classification and frozen scenario set."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2711,
+            "test": "real_matrix_top_level_cases",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_top_level_cases",
+            "note": "Asserts the `TS-MATRIX-0092` in-place exact half: all 33 in-place scenarios build without throwing; symbol-bridge half retired and outside this case; doesNotThrow only; checker values are covered by the 22 in-place cases."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs all 33 in-place scenarios and asserts the no-throw aggregate plus the 22 exact / 11 blocked split."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0092",
+          "layout": "in-place-half",
+          "scenarios": [
+            "page-basic",
+            "page-export-empty",
+            "page-cjs",
+            "page-esm",
+            "page-closure",
+            "component-properties",
+            "component-module",
+            "component-js",
+            "properties-spread",
+            "multi-registration",
+            "js-jsdoc-pragma",
+            "js-jsdoc-off",
+            "js-checkjs",
+            "ts-nocheck",
+            "js-nocheck",
+            "js-shebang-bom",
+            "interface-root",
+            "interface-root-import",
+            "nullable",
+            "cross-file-overlay",
+            "alias-project",
+            "component-data-cross-file",
+            "crlf-script",
+            "data-shorthand",
+            "js-source-check-off",
+            "js-source-check-inherit",
+            "methods-nonliteral",
+            "unchecked-index",
+            "nullable-no-strict-null",
+            "no-implicit-this-off",
+            "js-bom-check-off",
+            "js-bom-check-inherit",
+            "unicode-crlf"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:92",
+          "oracle_assertions": [
+            "all 33 in-place scenarios build without throwing",
+            "symbol-bridge half retired and outside this case",
+            "doesNotThrow only; checker values are covered by the 22 in-place cases"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-PAGE_BASIC-IN_PLACE_SHADOW",
@@ -14938,7 +15017,53 @@
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-PAGE_BASIC-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "blocked_by": "checker",
+        "blocked_group": "docs",
+        "observed": "build Supported; diagnostic 2339@134-138; hover title=string doc=页面标题 and user.name=string doc=用户显示名称; definition user.name=script; introduced=[]; perturbs=false. Native has no documentationSource DTO.",
+        "expected": "Old oracle has the same values plus documentationSource=quickinfo for both documented queries.",
+        "note": "DOCS gap: checker values are exact but the old oracle additionally freezes documentationSource=quickinfo, which native does not publish. The checker half is executed but exact parity is not claimed.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts `page-basic` remains frozen with its expected diagnostics and oracle ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes blocked `page-basic` (docs): observed and expected facts are recorded without claiming exact parity."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-PAGE_BASIC-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "page-basic"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics 2339@134-138",
+            "hover title type=string doc=页面标题; user.name type=string doc=用户显示名称; user.nmae type=None doc=<none>",
+            "definition user.name=script",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-PAGE_BASIC-SYMBOL_BRIDGE",
@@ -15087,15 +15212,56 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-PAGE_EXPORT_EMPTY-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `page-export-empty` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics 2339@134-138; hover title type=string doc=页面标题; user.name type=string doc=用户显示名称; user.nmae type=None doc=<none>; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `page-export-empty` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `page-export-empty` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-PAGE_EXPORT_EMPTY-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "page-export-empty"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics 2339@134-138",
+            "hover title type=string doc=页面标题; user.name type=string doc=用户显示名称; user.nmae type=None doc=<none>",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-PAGE_EXPORT_EMPTY-SYMBOL_BRIDGE",
@@ -15243,15 +15409,56 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-PAGE_CJS-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `page-cjs` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics 2339@134-138; hover title type=string doc=页面标题; user.name type=string doc=用户显示名称; user.nmae type=None doc=<none>; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `page-cjs` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `page-cjs` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-PAGE_CJS-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "page-cjs"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics 2339@134-138",
+            "hover title type=string doc=页面标题; user.name type=string doc=用户显示名称; user.nmae type=None doc=<none>",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-PAGE_CJS-SYMBOL_BRIDGE",
@@ -15399,15 +15606,56 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-PAGE_ESM-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `page-esm` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics 2339@134-138; hover title type=string doc=页面标题; user.name type=string doc=用户显示名称; user.nmae type=None doc=<none>; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `page-esm` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `page-esm` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-PAGE_ESM-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "page-esm"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics 2339@134-138",
+            "hover title type=string doc=页面标题; user.name type=string doc=用户显示名称; user.nmae type=None doc=<none>",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-PAGE_ESM-SYMBOL_BRIDGE",
@@ -15563,7 +15811,52 @@
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-PAGE_CLOSURE-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "blocked_by": "checker",
+        "blocked_group": "checker",
+        "observed": "build Partial reason `data` member is not an inline object literal; DataRootKind::Expression; two mounts still hover config.title=string and user.name=string with expected docs; zero diagnostics.",
+        "expected": "Old oracle reports Supported; the native shadow does not support the generic identity({...}) data root.",
+        "note": "CHECKER gap: native classifies the generic identity({...}) data root as Expression and returns Partial; the old oracle supports it. The checker half is executed but exact parity is not claimed.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts `page-closure` remains frozen with its expected diagnostics and oracle ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes blocked `page-closure` (checker): observed and expected facts are recorded without claiming exact parity."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-PAGE_CLOSURE-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "page-closure"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics none",
+            "hover config.title type=string doc=页面标题; user.name type=string doc=用户显示名称",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-PAGE_CLOSURE-SYMBOL_BRIDGE",
@@ -15721,7 +16014,53 @@
         "hover",
         "props",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-COMPONENT_PROPERTIES-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "blocked_by": "checker",
+        "blocked_group": "docs",
+        "observed": "build Supported; diagnostic 2339@130-138; hover title=string | number doc=标题，支持字符串或数字 and state=string; definition title=generated; introduced=[]; perturbs=false. Native has no documentationSource DTO.",
+        "expected": "Old oracle has the same checker values plus documentationSource=copied for title.",
+        "note": "DOCS gap: checker values and generated definition are exact, but the old oracle freezes documentationSource=copied and native has no such DTO. The checker half is executed but exact parity is not claimed.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts `component-properties` remains frozen with its expected diagnostics and oracle ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes blocked `component-properties` (docs): observed and expected facts are recorded without claiming exact parity."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-COMPONENT_PROPERTIES-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "component-properties"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics 2339@130-138",
+            "hover title type=string | number doc=标题，支持字符串或数字; state type=string doc=内部状态; subtitle type=None doc=<none>",
+            "definition title=generated",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-COMPONENT_PROPERTIES-SYMBOL_BRIDGE",
@@ -15871,16 +16210,57 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "props",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-COMPONENT_MODULE-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `component-module` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics 2339@130-138; hover title type=string | number doc=标题，支持字符串或数字; state type=string doc=内部状态; subtitle type=None doc=<none>; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `component-module` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `component-module` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-COMPONENT_MODULE-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "component-module"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics 2339@130-138",
+            "hover title type=string | number doc=标题，支持字符串或数字; state type=string doc=内部状态; subtitle type=None doc=<none>",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-COMPONENT_MODULE-SYMBOL_BRIDGE",
@@ -16038,7 +16418,52 @@
         "hover",
         "props",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-COMPONENT_JS-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "blocked_by": "checker",
+        "blocked_group": "docs",
+        "observed": "build Supported; diagnostic 2339@130-138; hover title=string | number doc=标题，支持字符串或数字 and state=string; introduced=[]; perturbs=false. Native has no documentationSource DTO.",
+        "expected": "Old oracle has the same checker values plus documentationSource=copied for title.",
+        "note": "DOCS gap: checker values are exact, but the old oracle freezes documentationSource=copied and native has no such DTO. The checker half is executed but exact parity is not claimed.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts `component-js` remains frozen with its expected diagnostics and oracle ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes blocked `component-js` (docs): observed and expected facts are recorded without claiming exact parity."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-COMPONENT_JS-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "component-js"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics 2339@130-138",
+            "hover title type=string | number doc=标题，支持字符串或数字; state type=string doc=内部状态; subtitle type=None doc=<none>",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-COMPONENT_JS-SYMBOL_BRIDGE",
@@ -16187,16 +16612,58 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "props",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-PROPERTIES_SPREAD-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `properties-spread` (projection 9d47f7d0e951): states hover=partial diagnostics=partial definition=partial; diagnosticsExact=true; diagnostics none; hover partial skips query values; introduced=[] perturbs=false registration.count>=1; build=Partial reason=/spread assignment/. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `properties-spread` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `properties-spread` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-PROPERTIES_SPREAD-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "properties-spread"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=partial diagnostics=partial definition=partial",
+            "diagnosticsExact=true; diagnostics none",
+            "hover partial skips query values",
+            "introduced=[] perturbs=false registration.count>=1",
+            "build=Partial reason=/spread assignment/"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-PROPERTIES_SPREAD-SYMBOL_BRIDGE",
@@ -16345,15 +16812,57 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-MULTI_REGISTRATION-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `multi-registration` (projection 9d47f7d0e951): states hover=partial diagnostics=partial definition=partial; diagnosticsExact=true; diagnostics none; hover partial skips query values; introduced=[] perturbs=false registration.count>=1; build=Partial reason=/2 page registrations/. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `multi-registration` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `multi-registration` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-MULTI_REGISTRATION-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "multi-registration"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=partial diagnostics=partial definition=partial",
+            "diagnosticsExact=true; diagnostics none",
+            "hover partial skips query values",
+            "introduced=[] perturbs=false registration.count>=1",
+            "build=Partial reason=/2 page registrations/"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-MULTI_REGISTRATION-SYMBOL_BRIDGE",
@@ -16501,16 +17010,57 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "config",
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-JS_JSDOC_PRAGMA-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `js-jsdoc-pragma` (projection 9d47f7d0e951): states hover=supported diagnostics=partial definition=supported; diagnosticsExact=true; diagnostics 2339@140-144; hover greeting type=string doc=问候语; user.name type=string doc=用户显示名称; user.nmae type=None doc=<none>; introduced=[2322] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `js-jsdoc-pragma` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `js-jsdoc-pragma` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-JS_JSDOC_PRAGMA-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "js-jsdoc-pragma"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=partial definition=supported",
+            "diagnosticsExact=true; diagnostics 2339@140-144",
+            "hover greeting type=string doc=问候语; user.name type=string doc=用户显示名称; user.nmae type=None doc=<none>",
+            "introduced=[2322] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-JS_JSDOC_PRAGMA-SYMBOL_BRIDGE",
@@ -16667,7 +17217,52 @@
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-JS_JSDOC_OFF-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "blocked_by": "checker",
+        "blocked_group": "state",
+        "observed": "build Supported; jsCheckApplied=Off; zero diagnostics; hover greeting=string doc=问候语 and user.name=string doc=用户显示名称.",
+        "expected": "Old oracle requires diagnostics status disabled with a /checkJs|policy/ reason; the adapter still publishes Supported.",
+        "note": "STATE gap: the checker half proves jsCheckApplied=Off and zero diagnostics, but the adapter does not publish Diagnostics=Disabled. The checker half is executed but exact parity is not claimed.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts `js-jsdoc-off` remains frozen with its expected diagnostics and oracle ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes blocked `js-jsdoc-off` (state): observed and expected facts are recorded without claiming exact parity."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-JS_JSDOC_OFF-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "js-jsdoc-off"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=disabled definition=supported",
+            "diagnosticsExact=true; diagnostics none",
+            "hover greeting type=string doc=问候语; user.name type=string doc=用户显示名称",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-JS_JSDOC_OFF-SYMBOL_BRIDGE",
@@ -16815,16 +17410,57 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "config",
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-JS_CHECKJS-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `js-checkjs` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics 2339@140-144; hover greeting type=string doc=问候语; user.name type=string doc=用户显示名称; user.nmae type=None doc=<none>; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `js-checkjs` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `js-checkjs` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-JS_CHECKJS-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "js-checkjs"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics 2339@140-144",
+            "hover greeting type=string doc=问候语; user.name type=string doc=用户显示名称; user.nmae type=None doc=<none>",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-JS_CHECKJS-SYMBOL_BRIDGE",
@@ -16982,7 +17618,52 @@
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-TS_NOCHECK-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "blocked_by": "checker",
+        "blocked_group": "state",
+        "observed": "build Supported; jsCheckApplied=Off; zero diagnostics; hover title=string doc=页面标题.",
+        "expected": "Old oracle requires diagnostics status disabled with a `@ts-nocheck` reason; the adapter still publishes Supported.",
+        "note": "STATE gap: the checker half proves jsCheckApplied=Off and zero diagnostics, but the adapter does not publish Diagnostics=Disabled. The checker half is executed but exact parity is not claimed.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts `ts-nocheck` remains frozen with its expected diagnostics and oracle ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes blocked `ts-nocheck` (state): observed and expected facts are recorded without claiming exact parity."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-TS_NOCHECK-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "ts-nocheck"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=disabled definition=supported",
+            "diagnosticsExact=true; diagnostics none",
+            "hover title type=string doc=页面标题",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-TS_NOCHECK-SYMBOL_BRIDGE",
@@ -17139,7 +17820,52 @@
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-JS_NOCHECK-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "blocked_by": "checker",
+        "blocked_group": "state",
+        "observed": "build Supported; jsCheckApplied=Off; zero diagnostics; hover greeting=string doc=问候语.",
+        "expected": "Old oracle requires diagnostics status disabled with a `@ts-nocheck` reason; the adapter still publishes Supported.",
+        "note": "STATE gap: the checker half proves jsCheckApplied=Off and zero diagnostics, but the adapter does not publish Diagnostics=Disabled. The checker half is executed but exact parity is not claimed.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts `js-nocheck` remains frozen with its expected diagnostics and oracle ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes blocked `js-nocheck` (state): observed and expected facts are recorded without claiming exact parity."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-JS_NOCHECK-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "js-nocheck"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=disabled definition=supported",
+            "diagnosticsExact=true; diagnostics none",
+            "hover greeting type=string doc=问候语",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-JS_NOCHECK-SYMBOL_BRIDGE",
@@ -17287,15 +18013,56 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-JS_SHEBANG_BOM-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `js-shebang-bom` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics 2339@91-98; hover title type=string doc=页面标题; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `js-shebang-bom` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `js-shebang-bom` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-JS_SHEBANG_BOM-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "js-shebang-bom"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics 2339@91-98",
+            "hover title type=string doc=页面标题",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-JS_SHEBANG_BOM-SYMBOL_BRIDGE",
@@ -17443,15 +18210,57 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-INTERFACE_ROOT-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `interface-root` (projection 9d47f7d0e951): states hover=unsupported diagnostics=unsupported definition=unsupported; diagnosticsExact=true; diagnostics none; hover unsupported skips query values; introduced=[] perturbs=false registration.count>=1; build=Unsupported feature=data.root reason=/type-only/. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `interface-root` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `interface-root` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-INTERFACE_ROOT-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "interface-root"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=unsupported diagnostics=unsupported definition=unsupported",
+            "diagnosticsExact=true; diagnostics none",
+            "hover unsupported skips query values",
+            "introduced=[] perturbs=false registration.count>=1",
+            "build=Unsupported feature=data.root reason=/type-only/"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-INTERFACE_ROOT-SYMBOL_BRIDGE",
@@ -17607,7 +18416,52 @@
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-INTERFACE_ROOT_IMPORT-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "blocked_by": "checker",
+        "blocked_group": "root",
+        "observed": "build Partial; DataRootKind::Expression; zero diagnostics; introduced=[].",
+        "expected": "Old oracle requires all three states unsupported with reason /type-only/; native does not classify imported aliases as a checker data root.",
+        "note": "ROOT gap: the imported alias stays DataRootKind::Expression/Partial; the old oracle requires checker-based type-only Unsupported. The checker half is executed but exact parity is not claimed.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts `interface-root-import` remains frozen with its expected diagnostics and oracle ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes blocked `interface-root-import` (root): observed and expected facts are recorded without claiming exact parity."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-INTERFACE_ROOT_IMPORT-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "interface-root-import"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=unsupported diagnostics=unsupported definition=unsupported",
+            "diagnosticsExact=true; diagnostics none",
+            "hover unsupported skips query values",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-INTERFACE_ROOT_IMPORT-SYMBOL_BRIDGE",
@@ -17755,15 +18609,56 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-NULLABLE-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `nullable` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics 18047@45-54, 18046@98-106; hover users[0].name type=string doc=用户显示名称; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `nullable` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `nullable` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-NULLABLE-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "nullable"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics 18047@45-54, 18046@98-106",
+            "hover users[0].name type=string doc=用户显示名称",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-NULLABLE-SYMBOL_BRIDGE",
@@ -17911,16 +18806,58 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "definition",
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-CROSS_FILE_OVERLAY-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `cross-file-overlay` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics none; hover user.name type=string doc=用户显示名称; definition user.name=external; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `cross-file-overlay` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `cross-file-overlay` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-CROSS_FILE_OVERLAY-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "cross-file-overlay"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics none",
+            "hover user.name type=string doc=用户显示名称",
+            "definition user.name=external",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-CROSS_FILE_OVERLAY-SYMBOL_BRIDGE",
@@ -18069,17 +19006,59 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "definition",
         "diagnostics",
         "hover",
         "project",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-ALIAS_PROJECT-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `alias-project` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics none; hover user.name type=string doc=用户显示名称; definition user.name=external; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `alias-project` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `alias-project` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-ALIAS_PROJECT-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "alias-project"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics none",
+            "hover user.name type=string doc=用户显示名称",
+            "definition user.name=external",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-ALIAS_PROJECT-SYMBOL_BRIDGE",
@@ -18229,17 +19208,59 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "definition",
         "diagnostics",
         "hover",
         "props",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-COMPONENT_DATA_CROSS_FILE-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `component-data-cross-file` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics none; hover user.name type=string doc=用户显示名称; title type=string doc=标题; definition user.name=external; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `component-data-cross-file` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `component-data-cross-file` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-COMPONENT_DATA_CROSS_FILE-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "component-data-cross-file"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics none",
+            "hover user.name type=string doc=用户显示名称; title type=string doc=标题",
+            "definition user.name=external",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-COMPONENT_DATA_CROSS_FILE-SYMBOL_BRIDGE",
@@ -18389,15 +19410,56 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-CRLF_SCRIPT-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `crlf-script` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics 2339@95-99; hover user.name type=string doc=用户显示名称; user.nmae type=None doc=<none>; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `crlf-script` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `crlf-script` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-CRLF_SCRIPT-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "crlf-script"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics 2339@95-99",
+            "hover user.name type=string doc=用户显示名称; user.nmae type=None doc=<none>",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-CRLF_SCRIPT-SYMBOL_BRIDGE",
@@ -18545,15 +19607,57 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-DATA_SHORTHAND-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `data-shorthand` (projection 9d47f7d0e951): states hover=unsupported diagnostics=unsupported definition=unsupported; diagnosticsExact=true; diagnostics none; hover unsupported skips query values; introduced=[] perturbs=false registration.count>=1; build=Unsupported feature=data.root reason=/not a property assignment/. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `data-shorthand` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `data-shorthand` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-DATA_SHORTHAND-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "data-shorthand"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=unsupported diagnostics=unsupported definition=unsupported",
+            "diagnosticsExact=true; diagnostics none",
+            "hover unsupported skips query values",
+            "introduced=[] perturbs=false registration.count>=1",
+            "build=Unsupported feature=data.root reason=/not a property assignment/"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-DATA_SHORTHAND-SYMBOL_BRIDGE",
@@ -18709,7 +19813,52 @@
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-JS_SOURCE_CHECK_OFF-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "blocked_by": "checker",
+        "blocked_group": "state",
+        "observed": "build Supported; jsCheckApplied=Off; zero diagnostics; hover title=string doc=页面标题.",
+        "expected": "Old oracle requires diagnostics status disabled with a policy/off reason; the adapter still publishes Supported.",
+        "note": "STATE gap: the checker half proves jsCheckApplied=Off and zero diagnostics, but the adapter does not publish Diagnostics=Disabled. The checker half is executed but exact parity is not claimed.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts `js-source-check-off` remains frozen with its expected diagnostics and oracle ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes blocked `js-source-check-off` (state): observed and expected facts are recorded without claiming exact parity."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-JS_SOURCE_CHECK_OFF-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "js-source-check-off"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=disabled definition=supported",
+            "diagnosticsExact=true; diagnostics none",
+            "hover title type=string doc=页面标题",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-JS_SOURCE_CHECK_OFF-SYMBOL_BRIDGE",
@@ -18857,15 +20006,56 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-JS_SOURCE_CHECK_INHERIT-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `js-source-check-inherit` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics 2339@91-98; hover title type=string doc=页面标题; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `js-source-check-inherit` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `js-source-check-inherit` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-JS_SOURCE_CHECK_INHERIT-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "js-source-check-inherit"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics 2339@91-98",
+            "hover title type=string doc=页面标题",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-JS_SOURCE_CHECK_INHERIT-SYMBOL_BRIDGE",
@@ -19013,16 +20203,65 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "props",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-METHODS_NONLITERAL-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The semantic fix is pinned by `crates/wxml-backend-tsgo/tests/shadow_layout.rs::case_matrix_0102_non_literal_component_methods_are_partial_without_a_probe`; Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `methods-nonliteral` (projection 9d47f7d0e951): states hover=partial diagnostics=partial definition=partial; diagnosticsExact=true; diagnostics none; hover partial skips query values; introduced=[] perturbs=false registration.count>=1; build=Partial reason=/object literal/; no probe, no mounts. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `methods-nonliteral` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `methods-nonliteral` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 470,
+            "test": "case_matrix_0102_non_literal_component_methods_are_partial_without_a_probe",
+            "fully_qualified": "shadow_layout::case_matrix_0102_non_literal_component_methods_are_partial_without_a_probe",
+            "note": "Asserts non-literal component methods build Partial with the exact reason, original text, no probe and no mounts."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-METHODS_NONLITERAL-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "methods-nonliteral"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=partial diagnostics=partial definition=partial",
+            "diagnosticsExact=true; diagnostics none",
+            "hover partial skips query values",
+            "introduced=[] perturbs=false registration.count>=1",
+            "build=Partial reason=/object literal/; no probe, no mounts"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-METHODS_NONLITERAL-SYMBOL_BRIDGE",
@@ -19171,15 +20410,55 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-UNCHECKED_INDEX-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `unchecked-index` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics 2532@44-52; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `unchecked-index` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `unchecked-index` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-UNCHECKED_INDEX-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "unchecked-index"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics 2532@44-52",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-UNCHECKED_INDEX-SYMBOL_BRIDGE",
@@ -19327,15 +20606,56 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-NULLABLE_NO_STRICT_NULL-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `nullable-no-strict-null` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics none; hover maybeUser.name type=string doc=<none>; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `nullable-no-strict-null` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `nullable-no-strict-null` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-NULLABLE_NO_STRICT_NULL-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "nullable-no-strict-null"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics none",
+            "hover maybeUser.name type=string doc=<none>",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-NULLABLE_NO_STRICT_NULL-SYMBOL_BRIDGE",
@@ -19491,7 +20811,52 @@
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-NO_IMPLICIT_THIS_OFF-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "blocked_by": "checker",
+        "blocked_group": "probe",
+        "observed": "build Supported; hover title=any; zero diagnostics; introduced=[].",
+        "expected": "Old oracle requires all three states unavailable with reason /probe root/; native has no probe-health gate.",
+        "note": "PROBE gap: the checker proves the probe root is any, but native has no probe-health layer to publish Unavailable. The checker half is executed but exact parity is not claimed.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts `no-implicit-this-off` remains frozen with its expected diagnostics and oracle ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes blocked `no-implicit-this-off` (probe): observed and expected facts are recorded without claiming exact parity."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-NO_IMPLICIT_THIS_OFF-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "no-implicit-this-off"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=unavailable diagnostics=unavailable definition=unavailable",
+            "diagnosticsExact=true; diagnostics none",
+            "hover unavailable skips query values",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-NO_IMPLICIT_THIS_OFF-SYMBOL_BRIDGE",
@@ -19647,7 +21012,52 @@
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-JS_BOM_CHECK_OFF-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "blocked_by": "checker",
+        "blocked_group": "state",
+        "observed": "build Supported; jsCheckApplied=Off; zero diagnostics; hover title=string doc=页面标题 after BOM removal.",
+        "expected": "Old oracle requires diagnostics status disabled with a policy/off reason; the adapter still publishes Supported.",
+        "note": "STATE gap: the checker half proves BOM+shebang+source pragma handling with jsCheckApplied=Off and zero diagnostics, but the adapter does not publish Diagnostics=Disabled. The checker half is executed but exact parity is not claimed.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts `js-bom-check-off` remains frozen with its expected diagnostics and oracle ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes blocked `js-bom-check-off` (state): observed and expected facts are recorded without claiming exact parity."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-JS_BOM_CHECK_OFF-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "js-bom-check-off"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=disabled definition=supported",
+            "diagnosticsExact=true; diagnostics none",
+            "hover title type=string doc=页面标题",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-JS_BOM_CHECK_OFF-SYMBOL_BRIDGE",
@@ -19795,15 +21205,56 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-JS_BOM_CHECK_INHERIT-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `js-bom-check-inherit` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics 2339@91-98; hover title type=string doc=页面标题; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `js-bom-check-inherit` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `js-bom-check-inherit` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-JS_BOM_CHECK_INHERIT-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "js-bom-check-inherit"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics 2339@91-98",
+            "hover title type=string doc=页面标题",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-JS_BOM_CHECK_INHERIT-SYMBOL_BRIDGE",
@@ -19951,15 +21402,56 @@
       "disposition": "direct",
       "disposition_reason": "Selected architecture (in-place shadow); scenario expectation ports to native parity.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0102-UNICODE_CRLF-IN_PLACE_SHADOW",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Required-native in-place run against pinned 7.1.0-beta asserts the frozen projection for scenario `unicode-crlf` (projection 9d47f7d0e951): states hover=supported diagnostics=supported definition=supported; diagnosticsExact=true; diagnostics 2339@103-107; hover user.name type=string doc=用户显示名称; 标题 type=string doc=标题; user.nmae type=None doc=<none>; introduced=[] perturbs=false registration.count>=1. Expected data comes from the TypeScript 6.0.3 oracle; no native replay or BLESS path is used.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the frozen projection SHA and asserts the `unicode-crlf` scenario, query, fragment and diagnostic ranges."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2476,
+            "test": "real_matrix_in_place_matches_frozen_oracle",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_in_place_matches_frozen_oracle",
+            "note": "Runs the pinned engine and asserts `unicode-crlf` build facts, diagnostics, hover, definition, perturbs and introduced diagnostics."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0102-UNICODE_CRLF-IN_PLACE_SHADOW",
+          "layout": "in-place-shadow",
+          "scenarios": [
+            "unicode-crlf"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:102",
+          "oracle_assertions": [
+            "states hover=supported diagnostics=supported definition=supported",
+            "diagnosticsExact=true; diagnostics 2339@103-107",
+            "hover user.name type=string doc=用户显示名称; 标题 type=string doc=标题; user.nmae type=None doc=<none>",
+            "introduced=[] perturbs=false registration.count>=1"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0102-UNICODE_CRLF-SYMBOL_BRIDGE",
@@ -20269,21 +21761,47 @@
       "migration_evidence": {
         "case_id": "TS-MATRIX-0215",
         "assessed_at": "2026-11-20",
-        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
-        "parity": "weaker",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Oracle `backends/typescript/test/matrix.test.ts:215` asserts hover state `unsupported` with a `/type-only/` reason and zero diagnostics for interface `data` roots in two layouts. Rust asserts the type-only root is `ShadowError::Unsupported { feature: \"data.root\" }`, but not the reason text, the `states` aggregation, the diagnostics list or the symbol-bridge half.",
+        "blocked_by": "checker",
+        "blocked_group": "root",
+        "observed": "interface-root is Unsupported type-only; interface-root-import is Partial/Expression with zero diagnostics.",
+        "expected": "both scenarios are Unsupported type-only across both layouts.",
+        "note": "ROOT gap: the imported alias remains Partial/Expression while the old oracle requires checker-based type-only Unsupported. Only the in-place half is in scope; symbol-bridge remains retired.",
         "rust_tests": [
           {
-            "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
-            "line": 2357,
-            "test": "non_literal_methods_and_data_are_unsupported",
-            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::non_literal_methods_and_data_are_unsupported",
-            "note": "Asserts `Page({ data: IData })` with a same-file interface fails as `Unsupported { feature: \"data.root\" }` while expression data stays Partial."
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts the `TS-MATRIX-0215` blocked classification and scenario set."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes the `TS-MATRIX-0215` checker half and records the observed/expected gap without claiming exact parity."
           }
-        ]
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0215",
+          "layout": "in-place-half",
+          "scenarios": [
+            "interface-root",
+            "interface-root-import"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:215",
+          "oracle_assertions": [
+            "interface-root unsupported with /type-only/",
+            "interface-root-import unsupported with /type-only/",
+            "zero diagnostics"
+          ]
+        }
       }
     },
     {
@@ -20340,31 +21858,52 @@
       "disposition": "split",
       "disposition_reason": "Both layouts assert shorthand data is unsupported; in-place-shadow ports, symbol-bridge evidence-only.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "hover"
       ],
       "migration_evidence": {
         "case_id": "TS-MATRIX-0228",
         "assessed_at": "2026-11-20",
-        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "Oracle `backends/typescript/test/matrix.test.ts:228` asserts a shorthand `data` member is `unsupported` with a `/not a property assignment/` reason and is not reported as missing. Rust has the same `DataRootKind::Unsupported` path and reason, but the test only exercises the type-only branch; the shorthand branch and the C1 `states`/diagnostics aggregates are unasserted.",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Top-level `TS-MATRIX-0228` in-place exact half; symbol-bridge is retired/out of scope. Projection 9d47f7d0e951; asserts data-shorthand unsupported with /not a property assignment/; reason is not /no `data` member/; zero diagnostics.",
         "rust_tests": [
           {
-            "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
-            "line": 2357,
-            "test": "non_literal_methods_and_data_are_unsupported",
-            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::non_literal_methods_and_data_are_unsupported",
-            "note": "Covers the shared `data.root` Unsupported decision for non-object roots; the `Page({ data })` shorthand branch reaches the same arm but has no dedicated assertion."
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts the `TS-MATRIX-0228` top-level classification and frozen scenario set."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2711,
+            "test": "real_matrix_top_level_cases",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_top_level_cases",
+            "note": "Asserts the `TS-MATRIX-0228` in-place exact half: data-shorthand unsupported with /not a property assignment/; reason is not /no `data` member/; zero diagnostics."
           }
-        ]
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0228",
+          "layout": "in-place-half",
+          "scenarios": [
+            "data-shorthand"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:228",
+          "oracle_assertions": [
+            "data-shorthand unsupported with /not a property assignment/",
+            "reason is not /no `data` member/",
+            "zero diagnostics"
+          ]
+        }
       }
     },
     {
@@ -20431,7 +21970,52 @@
         "config",
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0239",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "blocked_by": "checker",
+        "blocked_group": "state",
+        "observed": "js-jsdoc-off: build Supported, jsCheckApplied=Off, zero diagnostics, hover greeting=string.",
+        "expected": "hover supported and diagnostics disabled with /checkJs|policy/.",
+        "note": "STATE gap: checker half is exact, but Diagnostics=Disabled is not published. Only the in-place half is in scope; symbol-bridge remains retired.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts the `TS-MATRIX-0239` blocked classification and scenario set."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes the `TS-MATRIX-0239` checker half and records the observed/expected gap without claiming exact parity."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0239",
+          "layout": "in-place-half",
+          "scenarios": [
+            "js-jsdoc-off"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:239",
+          "oracle_assertions": [
+            "hover supported",
+            "diagnostics disabled with /checkJs|policy/",
+            "zero diagnostics",
+            "greeting type string"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0252",
@@ -20498,7 +22082,53 @@
         "config",
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0252",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "blocked_by": "checker",
+        "blocked_group": "state",
+        "observed": "js-source-check-off: Off with zero diagnostics; inherit: 2339@91-98 and title=string.",
+        "expected": "off half is disabled; inherit half publishes 2339.",
+        "note": "STATE gap: the off half is proven Off, but Diagnostics=Disabled is not published. Only the in-place half is in scope; symbol-bridge remains retired.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts the `TS-MATRIX-0252` blocked classification and scenario set."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes the `TS-MATRIX-0252` checker half and records the observed/expected gap without claiming exact parity."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0252",
+          "layout": "in-place-half",
+          "scenarios": [
+            "js-source-check-off",
+            "js-source-check-inherit"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:252",
+          "oracle_assertions": [
+            "jsCheckApplied off and inherit",
+            "off publishes zero diagnostics",
+            "inherit publishes 2339@91-98",
+            "title type string"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0271",
@@ -20561,35 +22191,46 @@
       "migration_evidence": {
         "case_id": "TS-MATRIX-0271",
         "assessed_at": "2026-11-20",
-        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
-        "parity": "weaker",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Oracle `backends/typescript/test/matrix.test.ts:271` hovers a component property and expects the declared `string | number` union, the copied JSDoc text and `documentationSource = copied` for both candidate layouts. Native derives the same union and JSDoc into hover for the in-place layout, but has no `documentationSource` field and no second layout.",
+        "blocked_by": "checker",
+        "blocked_group": "docs",
+        "observed": "component-properties: title string | number and documentation match; no documentationSource DTO.",
+        "expected": "documentationSource=copied is required by the old oracle.",
+        "note": "DOCS gap: the checker union and documentation are exact, but documentationSource=copied is not a native DTO. Only the in-place half is in scope; symbol-bridge remains retired.",
         "rust_tests": [
           {
-            "path": "crates/wxml-lsp/src/backend_tsgo/hover/tests.rs",
-            "line": 113,
-            "test": "a_declared_union_replaces_an_under_reported_native_type",
-            "fully_qualified": "wxml_lsp::backend_tsgo::hover::tests::a_declared_union_replaces_an_under_reported_native_type",
-            "note": "Applies the declared property type to hover evidence and replaces an under-reported native `string` with the declared `string | number` union."
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts the `TS-MATRIX-0271` blocked classification and scenario set."
           },
           {
-            "path": "crates/wxml-lsp/src/backend_tsgo/hover/tests.rs",
-            "line": 597,
-            "test": "the_template_plan_merges_behavior_optional_types_into_hover_facts",
-            "fully_qualified": "wxml_lsp::backend_tsgo::hover::tests::the_template_plan_merges_behavior_optional_types_into_hover_facts",
-            "note": "Builds the request plan and asserts the declared property `cardTitle` carries `string | number` into the derived layout and hover facts."
-          },
-          {
-            "path": "crates/wxml-lsp/tests/component_intelligence.rs",
-            "line": 515,
-            "test": "unsaved_component_properties_update_static_queries",
-            "fully_qualified": "component_intelligence::unsaved_component_properties_update_static_queries",
-            "note": "An unsaved component with `optionalTypes` yields completion detail `number | string` plus the JSDoc text in documentation and hover."
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes the `TS-MATRIX-0271` checker half and records the observed/expected gap without claiming exact parity."
           }
-        ]
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0271",
+          "layout": "in-place-half",
+          "scenarios": [
+            "component-properties"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:271",
+          "oracle_assertions": [
+            "title type string | number",
+            "documentation 标题，支持字符串或数字",
+            "documentationSource copied"
+          ]
+        }
       }
     },
     {
@@ -20657,7 +22298,52 @@
       "capabilities": [
         "config",
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0283",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "blocked_by": "checker",
+        "blocked_group": "state",
+        "observed": "js-bom-check-off: Off with zero diagnostics; inherit: 2339@91-98.",
+        "expected": "off half is disabled; inherit half publishes 2339.",
+        "note": "STATE gap: the off half is proven Off, but Diagnostics=Disabled is not published. Only the in-place half is in scope; symbol-bridge remains retired.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts the `TS-MATRIX-0283` blocked classification and scenario set."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes the `TS-MATRIX-0283` checker half and records the observed/expected gap without claiming exact parity."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0283",
+          "layout": "in-place-half",
+          "scenarios": [
+            "js-bom-check-off",
+            "js-bom-check-inherit"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:283",
+          "oracle_assertions": [
+            "jsCheckApplied off and inherit",
+            "off publishes zero diagnostics",
+            "inherit publishes 2339@91-98"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0301",
@@ -20715,31 +22401,52 @@
       "disposition": "split",
       "disposition_reason": "Both layouts assert first-registration-wins; in-place-shadow ports, symbol-bridge evidence-only.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "hover"
       ],
       "migration_evidence": {
         "case_id": "TS-MATRIX-0301",
         "assessed_at": "2026-11-20",
-        "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "Oracle `backends/typescript/test/matrix.test.ts:301` asserts two page registrations produce Partial with a `/2 page registrations/` reason, registration count 2, the first registration wins and the second `title: 42` is not merged. Rust asserts Partial, count 2 and the reason, but not the winning hover type or the C1 `states` and symbol-bridge halves.",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Top-level `TS-MATRIX-0301` in-place exact half; symbol-bridge is retired/out of scope. Projection 9d47f7d0e951; asserts multi-registration build Partial with /2 page registrations/; registration.count == 2; title type string (first registration wins).",
         "rust_tests": [
           {
-            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
-            "line": 367,
-            "test": "multiple_registrations_are_partial_and_choose_the_first",
-            "fully_qualified": "shadow_layout::multiple_registrations_are_partial_and_choose_the_first",
-            "note": "Asserts two page registrations yield Partial, `registration.count == 2` and a `2 page registrations` reason while only the first registration is mounted."
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts the `TS-MATRIX-0301` top-level classification and frozen scenario set."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2711,
+            "test": "real_matrix_top_level_cases",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_top_level_cases",
+            "note": "Asserts the `TS-MATRIX-0301` in-place exact half: multi-registration build Partial with /2 page registrations/; registration.count == 2; title type string (first registration wins)."
           }
-        ]
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0301",
+          "layout": "in-place-half",
+          "scenarios": [
+            "multi-registration"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:301",
+          "oracle_assertions": [
+            "multi-registration build Partial with /2 page registrations/",
+            "registration.count == 2",
+            "title type string (first registration wins)"
+          ]
+        }
       }
     },
     {
@@ -20797,14 +22504,55 @@
       "disposition": "split",
       "disposition_reason": "Both layouts assert option switches change the derived check; in-place-shadow ports, symbol-bridge evidence-only.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0319",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Top-level `TS-MATRIX-0319` in-place exact half; symbol-bridge is retired/out of scope. Projection 9d47f7d0e951; asserts unchecked-index diagnostic 2532@44-52; nullable-no-strict-null has no 18047; maybeUser.name type string.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts the `TS-MATRIX-0319` top-level classification and frozen scenario set."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2711,
+            "test": "real_matrix_top_level_cases",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_top_level_cases",
+            "note": "Asserts the `TS-MATRIX-0319` in-place exact half: unchecked-index diagnostic 2532@44-52; nullable-no-strict-null has no 18047; maybeUser.name type string."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0319",
+          "layout": "in-place-half",
+          "scenarios": [
+            "unchecked-index",
+            "nullable-no-strict-null"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:319",
+          "oracle_assertions": [
+            "unchecked-index diagnostic 2532@44-52",
+            "nullable-no-strict-null has no 18047",
+            "maybeUser.name type string"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MATRIX-0335",
@@ -20867,7 +22615,51 @@
       "capabilities": [
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0335",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "blocked_by": "checker",
+        "blocked_group": "probe",
+        "observed": "no-implicit-this-off: build Supported, title any, zero diagnostics.",
+        "expected": "all states unavailable with /probe root/.",
+        "note": "PROBE gap: the checker proves the root is any, but probe health is not published. Only the in-place half is in scope; symbol-bridge remains retired.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 1941,
+            "test": "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_manifest_is_frozen_and_oracle_derived",
+            "note": "Recomputes the projection and asserts the `TS-MATRIX-0335` blocked classification and scenario set."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/real_matrix.rs",
+            "line": 2663,
+            "test": "real_matrix_known_gaps_are_characterized",
+            "fully_qualified": "native_parity::real_matrix::real_matrix_known_gaps_are_characterized",
+            "note": "Characterizes the `TS-MATRIX-0335` checker half and records the observed/expected gap without claiming exact parity."
+          }
+        ],
+        "scenario_matrix": {
+          "case": "TS-MATRIX-0335",
+          "layout": "in-place-half",
+          "scenarios": [
+            "no-implicit-this-off"
+          ],
+          "projection_sha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+          "oracle_test": "backends/typescript/test/matrix.test.ts:335",
+          "oracle_assertions": [
+            "all three states unavailable with /probe root/",
+            "title type any",
+            "zero diagnostics"
+          ]
+        }
+      }
     },
     {
       "case_id": "TS-MESSAGES-0005",

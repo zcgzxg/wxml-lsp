@@ -10,7 +10,10 @@
 //! verbatim outside the probe (and optional pragma/BOM edits). The layout never
 //! falls back to a non-shadow view: an unsupported registration shape returns
 //! [`ShadowError::Unsupported`] and a malformed request returns
-//! [`ShadowError::Invalid`].
+//! [`ShadowError::Invalid`]. A component whose `methods` member cannot host the
+//! probe is the deliberate exception: it returns a `Partial` build with the
+//! original script and no mounts, because the TypeScript oracle treats that as
+//! a coverage gap rather than an unsupported script.
 //!
 //! # What is scanned
 //!
@@ -67,6 +70,9 @@ pub const PROPS_PREFIX: &str = "__wxml_props_0.";
 
 const METHOD_INDENT: &str = "      ";
 const BODY_INDENT: &str = "        ";
+/// Reported when a component `methods` member cannot host the injected probe.
+const METHODS_NOT_LITERAL_REASON: &str =
+    "component `methods` is not an object literal; the in-place probe cannot be mounted";
 /// Bound one malformed import scan; exceeding it fails closed as "shadowed".
 const MAX_IMPORT_SCAN_TOKENS: usize = 4_096;
 
@@ -888,7 +894,61 @@ fn build_in_place_shadow_inner(
     body.push(METHOD_INDENT);
     body.push("},\n  ");
 
-    let placement = probe_placement(&script, &registration)?;
+    let placement = match probe_placement(&script, &registration) {
+        Ok(placement) => placement,
+        Err(ShadowError::Unsupported {
+            feature: "component.methods",
+            reason,
+        }) => {
+            // A component `methods` member that is not an object literal cannot
+            // host the probe, but that is a coverage gap, not an unsupported
+            // script: the TypeScript oracle reports `Partial`, analyses the
+            // script as-is and mounts no fragment. Returning `Unsupported`
+            // here would turn the same gap into a hard backend failure.
+            //
+            // The oracle publishes the probe-placement problem as the single
+            // reason; other coverage gaps stay visible as notes instead of
+            // changing the public Partial reason.
+            if !reasons.is_empty() {
+                notes.push(format!("additional coverage gaps: {}", reasons.join("; ")));
+            }
+            notes.push(
+                "the in-place probe is not mounted; the script is analysed without template fragments"
+                    .to_owned(),
+            );
+            let js_check_applied = match js_check_applied {
+                JsCheckApplied::Off => JsCheckApplied::Off,
+                JsCheckApplied::Pragma | JsCheckApplied::Inherit => JsCheckApplied::Inherit,
+            };
+            let assembled = apply_edits(request.script.text(), &[])?;
+            let map = ShadowMap::new(request.script.text(), &assembled);
+            let view = DerivedView {
+                original: request.script.text().to_owned(),
+                text: assembled.text,
+                edits: assembled.edits,
+                insertions: Vec::new(),
+                mounts: Vec::new(),
+                generated_declarations: Vec::new(),
+                probe_anchors: ProbeAnchors::default(),
+                map,
+            };
+            return Ok(BuiltShadow {
+                script_path: request.script.path().to_owned(),
+                status: BuildStatus::Partial,
+                reason: Some(reason),
+                notes,
+                js_check_applied,
+                registration: RegistrationInfo {
+                    kind: registration.kind,
+                    count: registration_count,
+                },
+                data_root,
+                properties,
+                view,
+            });
+        }
+        Err(error) => return Err(error),
+    };
     let (probe_text, wrapper_shift) = if placement.wrap_in_methods {
         (
             format!("\n    methods: {{\n  {}    }},\n  ", body.text),
@@ -1475,7 +1535,7 @@ fn probe_placement(
         if methods.kind != MemberKind::Property {
             return Err(ShadowError::Unsupported {
                 feature: "component.methods",
-                reason: "component `methods` is not a property assignment".to_owned(),
+                reason: METHODS_NOT_LITERAL_REASON.to_owned(),
             });
         }
         if let Some((open, _close)) = object_bounds(script, methods) {
@@ -1486,9 +1546,7 @@ fn probe_placement(
         }
         return Err(ShadowError::Unsupported {
             feature: "component.methods",
-            reason:
-                "component `methods` is not an object literal; the in-place probe cannot be mounted"
-                    .to_owned(),
+            reason: METHODS_NOT_LITERAL_REASON.to_owned(),
         });
     }
     Ok(ProbePlacement {
@@ -2354,16 +2412,19 @@ mod tests {
     }
 
     #[test]
-    fn non_literal_methods_and_data_are_unsupported() {
-        let methods =
-            build("Component({ methods: shared });", RootKind::Component).expect_err("unsupported");
-        assert!(matches!(
-            methods,
-            ShadowError::Unsupported {
-                feature: "component.methods",
-                ..
-            }
-        ));
+    fn non_literal_methods_are_partial_and_expression_data_is_partial() {
+        let methods = build("Component({ methods: shared });", RootKind::Component)
+            .expect("non-literal methods build partially");
+        assert_eq!(methods.status, BuildStatus::Partial);
+        assert_eq!(
+            methods.reason.as_deref(),
+            Some(
+                "component `methods` is not an object literal; the in-place probe cannot be mounted"
+            )
+        );
+        assert_eq!(methods.view.mounts.len(), 0);
+        assert_eq!(methods.view.insertions.len(), 0);
+        assert_eq!(methods.view.text, "Component({ methods: shared });");
         let data = build("Page({ data: sharedData });", RootKind::Page)
             .expect("expression data is partial");
         assert_eq!(data.status, BuildStatus::Partial);

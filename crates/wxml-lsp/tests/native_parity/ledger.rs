@@ -23,11 +23,13 @@ pub(crate) const TOTAL_CASES: usize = 339;
 /// promoted three more, the wave-10 follow-up promoted `TS-REWRITE-0207` plus
 /// nine exact-ready cases, the wave-10 conditional follow-up promoted
 /// `TS-ANALYSIS-0184` plus `TS-REWRITE-0197`, the wave-11 exact backfill
-/// promoted `TS-ANALYSIS-0315/0332` plus ten messages/probes cases, and the
-/// wave-11 blocked followup promoted `TS-COMPONENT-0292`.
-pub(crate) const GREEN_CASES: usize = 83;
-/// Cases still `planned` after the 2026-11-20 wave-11 blocked followup.
-pub(crate) const PLANNED_CASES: usize = 218;
+/// promoted `TS-ANALYSIS-0315/0332` plus ten messages/probes cases, the
+/// wave-11 blocked followup promoted `TS-COMPONENT-0292`, and the wave-11
+/// matrix backfill promoted 22 in-place plus 4 top-level matrix cases after the
+/// `methods-nonliteral` semantic fix.
+pub(crate) const GREEN_CASES: usize = 109;
+/// Cases still `planned` after the 2026-11-20 wave-11 matrix backfill.
+pub(crate) const PLANNED_CASES: usize = 192;
 /// Frozen retired-with-decision count: the 2026-11-17 Candidate-B decision
 /// (36 cases) plus the wave-11 `TS-COMPONENT-0774` and `TS-META-0027` cases.
 pub(crate) const RETIRED_CASES: usize = 38;
@@ -45,15 +47,18 @@ pub(crate) const NEAR_EXACT_CASES: usize = 3;
 /// Weaker evidence cases left `planned` after the 2026-11-20 wave-10 ledger
 /// backfill, which registered twelve existing-test weaker candidates, plus the
 /// wave-10b backfill of the thirteen remaining B-class candidates, the
-/// wave-10 conditional `TS-ANALYSIS-0161` registration, and the wave-11
-/// blocked followup (0193/0201/0343/0498).
-pub(crate) const WEAKER_CASES: usize = 100;
+/// wave-10 conditional `TS-ANALYSIS-0161` registration, the wave-11 blocked
+/// followup (0193/0201/0343/0498), and the wave-11 matrix backfill, which
+/// reclassified the four matrix weaker cases.
+pub(crate) const WEAKER_CASES: usize = 96;
 /// Structural evidence cases left `planned` after the wave-6 component-binding
 /// follow-up.
 pub(crate) const STRUCTURAL_CASES: usize = 7;
 /// Blocked evidence cases left `planned` after the wave-6 component-binding
-/// follow-up; the wave-11 blocked followup reclassified six of them.
-pub(crate) const BLOCKED_CASES: usize = 16;
+/// follow-up; the wave-11 blocked followup reclassified six of them, and the
+/// wave-11 matrix backfill registered 11 in-place plus 6 top-level matrix
+/// gaps as `blocked_by=checker`.
+pub(crate) const BLOCKED_CASES: usize = 33;
 
 /// Partitions named by the test contract. P3-T creates all 16 skeletons.
 pub(crate) const PARTITION_NAMES: &[&str] = &[
@@ -101,6 +106,13 @@ const ALLOWED_STATUSES: &[&str] = &["planned", "green", "retired-with-decision"]
 const ALLOWED_ORACLE_TYPES: &[&str] = &["assertion", "unit", "parity"];
 const ALLOWED_PARITIES: &[&str] = &["exact", "near_exact", "weaker", "structural", "blocked"];
 const ALLOWED_RECOMMENDATIONS: &[&str] = &["green", "planned"];
+/// Frozen SHA-256 of the matrix projection consumed by `real_matrix.rs`.
+pub(crate) const MATRIX_PROJECTION_SHA256: &str =
+    "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911";
+/// Matrix evidence layouts: frozen in-place shadow, or the top-level in-place half.
+const ALLOWED_MATRIX_LAYOUTS: &[&str] = &["in-place-shadow", "in-place-half"];
+/// Product/checker groups behind a `blocked_by=checker` matrix case.
+const ALLOWED_MATRIX_BLOCKED_GROUPS: &[&str] = &["docs", "state", "probe", "root", "checker"];
 /// Retirement scopes accepted by the wave-11 `retirement_decision` extension.
 /// Adding a scope requires extending this list, the test contract and the
 /// affected case together; an unknown scope must never slip through.
@@ -1481,6 +1493,10 @@ fn ledger_migration_evidence_is_complete_and_consistent() {
             );
         }
 
+        if case_id.starts_with("TS-MATRIX") {
+            validate_matrix_evidence(case_id, evidence, parity);
+        }
+
         match parity {
             "exact" => {
                 assert!(eligible, "{case_id} exact parity must be green eligible");
@@ -1645,6 +1661,130 @@ fn ledger_migration_evidence_is_complete_and_consistent() {
                 "{module}.{key} drifted from the actual cases"
             );
         }
+    }
+}
+
+/// Validates the frozen matrix projection and the shared required-native
+/// evidence for every `TS-MATRIX-*` case.
+///
+/// The per-case `target_rust_test` stays the ledger routing placeholder used
+/// by all 43 matrix cases; the actual engine assertions live in
+/// `native_parity/real_matrix.rs` and are named explicitly in `rust_tests`.
+fn validate_matrix_evidence(case_id: &str, evidence: &Map<String, Value>, parity: &str) {
+    let matrix = required_object(evidence, "scenario_matrix", case_id);
+    assert_eq!(
+        required_str(matrix, "case", case_id),
+        case_id,
+        "{case_id} matrix evidence names another case"
+    );
+    assert_eq!(
+        required_str(matrix, "projection_sha256", case_id),
+        MATRIX_PROJECTION_SHA256,
+        "{case_id} matrix projection SHA drifted"
+    );
+    let layout = required_str(matrix, "layout", case_id);
+    assert!(
+        ALLOWED_MATRIX_LAYOUTS.contains(&layout),
+        "{case_id} has unexpected matrix layout {layout:?}"
+    );
+    let scenarios = required_array(matrix, "scenarios", case_id);
+    assert!(!scenarios.is_empty(), "{case_id} has no matrix scenarios");
+    assert!(
+        scenarios
+            .iter()
+            .all(|scenario| scenario.as_str().is_some_and(|value| !value.is_empty())),
+        "{case_id} matrix scenarios must be non-empty strings"
+    );
+    let assertions = required_array(matrix, "oracle_assertions", case_id);
+    assert!(
+        !assertions.is_empty(),
+        "{case_id} has no matrix oracle assertions"
+    );
+    assert!(
+        assertions
+            .iter()
+            .all(|assertion| assertion.as_str().is_some_and(|value| !value.is_empty())),
+        "{case_id} matrix oracle assertions must be non-empty strings"
+    );
+
+    if let Some(stem) = case_id
+        .strip_prefix("TS-MATRIX-0102-")
+        .and_then(|stem| stem.strip_suffix("-IN_PLACE_SHADOW"))
+    {
+        let expected = stem.to_ascii_lowercase().replace('_', "-");
+        assert_eq!(
+            layout, "in-place-shadow",
+            "{case_id} in-place case must use the frozen layout"
+        );
+        assert_eq!(
+            scenarios,
+            &[Value::String(expected)],
+            "{case_id} matrix scenario does not match its case id"
+        );
+    } else {
+        assert_eq!(
+            layout, "in-place-half",
+            "{case_id} top-level case must use the in-place half"
+        );
+    }
+
+    if parity == "blocked" {
+        assert_eq!(
+            required_str(evidence, "blocked_by", case_id),
+            "checker",
+            "{case_id} matrix blocked evidence must stay checker-owned"
+        );
+        let group = required_str(evidence, "blocked_group", case_id);
+        assert!(
+            ALLOWED_MATRIX_BLOCKED_GROUPS.contains(&group),
+            "{case_id} has unexpected matrix blocked group {group:?}"
+        );
+        assert!(
+            !required_str(evidence, "observed", case_id).is_empty(),
+            "{case_id} matrix blocked evidence needs an observed fact"
+        );
+        assert!(
+            !required_str(evidence, "expected", case_id).is_empty(),
+            "{case_id} matrix blocked evidence needs an expected oracle fact"
+        );
+    } else {
+        assert!(
+            evidence.get("blocked_by").is_none(),
+            "{case_id} exact matrix evidence must not carry blocked_by"
+        );
+        assert!(
+            evidence.get("blocked_group").is_none(),
+            "{case_id} exact matrix evidence must not carry blocked_group"
+        );
+    }
+
+    let required_tests: &[&str] = match (parity, case_id.contains("-IN_PLACE_SHADOW")) {
+        ("exact", true) => &[
+            "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "real_matrix_in_place_matches_frozen_oracle",
+        ],
+        ("exact", false) => &[
+            "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "real_matrix_top_level_cases",
+        ],
+        ("blocked", _) => &[
+            "real_matrix_manifest_is_frozen_and_oracle_derived",
+            "real_matrix_known_gaps_are_characterized",
+        ],
+        _ => &[],
+    };
+    let tests = required_array(evidence, "rust_tests", case_id);
+    for required in required_tests {
+        assert!(
+            tests.iter().any(|test| {
+                test.get("test").and_then(Value::as_str) == Some(*required)
+                    && test
+                        .get("path")
+                        .and_then(Value::as_str)
+                        .is_some_and(|path| path.ends_with("native_parity/real_matrix.rs"))
+            }),
+            "{case_id} matrix evidence is missing required test {required}"
+        );
     }
 }
 

@@ -446,16 +446,11 @@ fn unsupported_registration_shapes_are_typed() {
         ),
         ("Page(sharedOptions);", "registration"),
         ("function f(Page) { Page({ data: {} }); }", "registration"),
-        ("Component({ methods: shared });", "component.methods"),
     ] {
         let error = build(
             "index.ts",
             text,
-            if text.starts_with("Component") {
-                RootKind::Component
-            } else {
-                RootKind::Page
-            },
+            RootKind::Page,
             &[],
             JsCheckPolicy::Inherit,
             false,
@@ -469,6 +464,72 @@ fn unsupported_registration_shapes_are_typed() {
             "{text:?}: {error}"
         );
     }
+}
+
+#[test]
+fn case_matrix_0102_non_literal_component_methods_are_partial_without_a_probe() {
+    for text in [
+        "const shared = { onTap() {} };\nComponent({ methods: shared });\n",
+        "const methods = { onTap() {} };\nComponent({ methods });\n",
+    ] {
+        let fragments = [FragmentSpec::new("title", "title", SourceRange::new(0, 5))];
+        let built = build(
+            "index.ts",
+            text,
+            RootKind::Component,
+            &fragments,
+            JsCheckPolicy::Inherit,
+            false,
+        )
+        .expect("non-literal methods build partially");
+        assert_eq!(built.status, BuildStatus::Partial);
+        assert_eq!(
+            built.reason.as_deref(),
+            Some(
+                "component `methods` is not an object literal; the in-place probe cannot be mounted"
+            )
+        );
+        assert_eq!(built.view.text, text, "the original script stays verbatim");
+        assert_eq!(built.data_root, DataRootKind::Absent);
+        assert!(
+            built.view.mounts.is_empty(),
+            "no fragment can be mounted without the probe"
+        );
+        assert!(built.view.insertions.is_empty());
+        assert_eq!(built.registration.kind, RootKind::Component);
+        assert_eq!(built.registration.count, 1);
+    }
+}
+
+#[test]
+fn case_matrix_0102_page_closure_expression_data_stays_partial_with_mounts() {
+    let text = "function identity<T>(value: T): T { return value; }\n\
+                Page({ data: identity({ title: 'x' }) });\n";
+    let fragments = [FragmentSpec::new("title", "title", SourceRange::new(0, 5))];
+    let built = build(
+        "index.ts",
+        text,
+        RootKind::Page,
+        &fragments,
+        JsCheckPolicy::Inherit,
+        false,
+    )
+    .expect("expression data root builds partially");
+    assert_eq!(built.status, BuildStatus::Partial);
+    assert_eq!(built.data_root, DataRootKind::Expression);
+    assert!(
+        built
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("inline object literal")),
+        "{:?}",
+        built.reason
+    );
+    assert_eq!(
+        built.view.mounts.len(),
+        1,
+        "the probe still mounts the fragment even when field roots are unknown"
+    );
 }
 
 #[test]
