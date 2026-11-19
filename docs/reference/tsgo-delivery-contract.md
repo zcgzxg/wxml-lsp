@@ -8,7 +8,7 @@
 > `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`、linux-x64 SRI/`lib/tsc` SHA-256 见 §2）作为唯一
 > 候选基线。临时 Python spike 已执行一次可执行安装器证明，见
 > [P1-C 证据 §11](../evidence/2026-11-17-tsgo-delivery-spike.md)；该证明**不是**生产安装器，
-> 不改变本文 draft/未接受状态。当前 F3 进度为 **12 closed / 2 partial / 2 blocked**（F3-02/14
+> 不改变本文 draft/未接受状态。当前 F3 进度为 **13 closed / 2 partial / 1 blocked**（F3-14
 > blocked，F3-06/09 partial），见 §9.5。
 
 **关系**：[ADR-0007](../adr/0007-local-delivery-trust-model.md)（accepted，信任/离线/原子安装/回滚规则继续有效）；
@@ -1327,7 +1327,7 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 | ID | 结果 | 关键证据（文件 + 测试/命令） | 仍缺 |
 | --- | --- | --- | --- |
 | F3-01 | **closed** | ` crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `real_release_install_verify_current_env_without_node`（干净 PATH、`--offline`、`env` 仅一行）；` scripts/f3-real-release.sh --network-isolate`；旧 clean-env 的 ` crates/wxml-delivery/tests/real_asset.rs` `installs_pinned_real_engine_without_path_node`（PATH 无 node 名） | 无合同项。网络是 netns/死代理级证明，不是 `connect` 审计（F3-02 范围）。 |
-| F3-02 | **blocked** | 主机 `command -v strace/ltrace/perf/bpftrace/auditctl` 全空；PATH tripwire 与 `/proc` 观察见 ` docs/evidence/2026-11-19-tsgo-f3-real-release.md` §4/§9 | `strace -f -e trace=execve,execveat` 原始日志，覆盖 `install`/`upgrade`/`rollback` 与 stdio LSP 会话；PATH shim 不能替代。 |
+| F3-02 | **closed** | ` crates/wxml-delivery/tests/f3_exec_audit.rs` + `tests/f3_exec_audit/**` + `scripts/f3-exec-audit.sh`：test-only ptrace（`PTRACE_TRACEME`+`PTRACE_O_TRACEEXEC/FORK/VFORK/CLONE/EXITKILL`）记录真实 installer/LSP 的 execve；真实运行 installer 10 exec、native LSP 3 exec，无 node/npm/npx/yarn/pnpm/bun、无 `server.js`、无 `WXML_TYPE_BACKEND`，全部绝对路径；日志 `/tmp/opencode/f3-exec-audit-evidence/`。 | 无合同项。合规平台为 Linux x86_64；非 Linux/无 ptrace 权限时显式 BLOCKED，不能替代成 PASS。 |
 | F3-03 | **closed** | ` crates/wxml-delivery/tests/f3_real_release/package.rs` 的 `two_real_release_builds_are_byte_identical` 与 `pinned_real_assets_provision_from_the_frozen_lock`；两次构建 archive/manifest/index/SHA256SUMS 逐字节一致；157 文件、无 `node_modules`/JS/`wxml-type-backend`、`SHA256SUMS` 与许可文件齐全 | 无合同项。包内 `bin/wxml-lsp` 非 HEAD 可复现构建（见审计基线）；无签名/发布通道（非 F3-03 条件）。 |
 | F3-04 | **closed** | ` crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `real_release_install_verify_current_env_without_node`：空根安装、`verify_tree_v2`、原子 `current`、`state.json`、空 `tmp/`、`verify` 通过 | 无合同项；同样受 dirty-tree `bin/wxml-lsp` 说明限制。 |
 | F3-05 | **closed** | ` crates/wxml-delivery/tests/f3_acceptance/package_guards.rs` 的 `f3_05_missing_assets_and_probe_failure_fail_before_activation`（缺 stdlib、缺 typings、探针输出错误三例）；archive SRI 由 ` crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `tampered_real_release_archive_fails_before_activation` 覆盖 | 无合同项。三例是真实包 + 单点受控变异，不是已发布缺陷包；archive SRI 只在空根验证。 |
@@ -1346,9 +1346,9 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 对 `2026-11-19-tsgo-f3-real-release.md` 的“可按合同评审关闭”逐项复核：F3-03/04/07/13 维持
 `closed`。后续 `50e4a21`/`040898c` 补上了缓存驱动 upgrade/rollback、恶意归档完整形态、Zed
 legacy 变量移除、activated 幂等与 `WXML_LSP_BIN` 升级/回滚优先级，因此 F3-11/12/15/16
-升为 `closed`。当前为 **12 closed / 2 partial / 2 blocked**：F3-06/09 仍缺真实第二版本与
-进程级 SIGKILL，F3-02 缺 execve 审计，F3-14 缺 Zed UI。F3-05/10 的单点变异性质保留并已
-标注，不作为“真实发布缺陷”证据。
+升为 `closed`。`f2952c2` 的 ptrace exec audit 补齐 F3-02 的 execve 证据，因此升为
+**13 closed / 2 partial / 1 blocked**：F3-06/09 仍缺真实第二版本与进程级 SIGKILL，F3-14
+缺 Zed UI。F3-05/10 的单点变异性质保留并已标注，不作为“真实发布缺陷”证据。
 
 ## 10. 未决阻塞与不承诺事项
 
@@ -1356,8 +1356,8 @@ legacy 变量移除、activated 幂等与 `WXML_LSP_BIN` 升级/回滚优先级�
 
 | ID | 2026-11-17 状态 | 阻塞 | 影响 | 退出条件 |
 | --- | --- | --- | --- | --- |
-| B1 | **PARTIAL**（2026-11-20：F3 12 closed / 2 partial / 2 blocked） | v2 库与 `wxml-lsp-install` 的 install/verify/upgrade/rollback/recover、本地 `--from-dir` 获取、state/journal、legacy 读取器已实现；F3-01/03/04/05/07/08/10/11/12/13/15/16 已按证据关闭；F3-02/14 blocked，F3-06/09 partial；`strace`、Zed UI、生产 failpoint 与真实第二版本仍缺 | 生产 native 安装/升级/回滚仍未全部验收 | D 包 Rust 实现并关闭 F3-01～F3-12；fixture 不能替代真实资产 |
-| B2 | **PARTIAL**（spike clean-env） | 无 Node PATH、offline、进程审计已在 spike 上执行；Rust build/test/CI/Zed 未在 clean-env 运行；F3-01 已关闭，F3-02 仍因无 `strace` blocked | 生产无 Node 门禁未关闭 | Rust 构建/测试/发布/CI/Zed 在无 Node 环境通过 F3-01/02/12 |
+| B1 | **PARTIAL**（2026-11-20：F3 13 closed / 2 partial / 1 blocked） | v2 库与 `wxml-lsp-install` 的 install/verify/upgrade/rollback/recover、本地 `--from-dir` 获取、state/journal、legacy 读取器已实现；F3-01/02/03/04/05/07/08/10/11/12/13/15/16 已按证据关闭；F3-14 blocked，F3-06/09 partial；Zed UI、生产 failpoint 与真实第二版本仍缺 | 生产 native 安装/升级/回滚仍未全部验收 | D 包 Rust 实现并关闭 F3-01～F3-12；fixture 不能替代真实资产 |
+| B2 | **PARTIAL**（spike clean-env） | 无 Node PATH、offline、ptrace exec 审计已在 spike 上执行；Rust build/test/CI/Zed 未在 clean-env 运行；F3-01/02 已关闭 | 生产无 Node 门禁未关闭 | Rust 构建/测试/发布/CI/Zed 在无 Node 环境通过 F3-01/02/12 |
 | B3 | **BLOCKED**（2026-11-20：Linux x86_64 ABI 已测） | 平台矩阵未测试；F3-13 已记录 Linux x86_64 的 `readelf`/`ldd`/GLIBC_2.39，其他平台仍无证据 | 只能宣称 Linux x86_64；aarch64/macOS/Windows/musl 无证据 | F3-13 记录 Rust glibc/ABI；其他平台保持“不支持” |
 | B4 | **PARTIAL**（2026-11-20：资产/ABI 证据已补） | 真实 tarball 的 SRI/SHA-256/size、122 文件、`lib/tsc` SHA/`--version` 已复核；F3-13 已记录 Rust glibc/ABI；F0 API/AST 握手、`tsc.sig` 用途仍未验证 | 资产身份与 ABI 可用，但安装器未消费真实 API/AST 探针 | F0/F3 安装器消费可重放 SRI/解包/探针/`readelf` 证据 |
 | B5 | **PARTIAL**（维护者条件性接受） | 7.1.0-beta 身份已条件性接受；F0 API/AST 合同仍是 draft，`apiSchemaVersion`/协议/探针期望值未正式冻结 | F0 合同未接受 | F0 记录冻结值并写入 lock/manifest，F3 评审接受 |

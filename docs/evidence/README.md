@@ -50,6 +50,7 @@
 | 2026-11-19 | [tsgo 测试台账回填与 native gate 复核](2026-11-19-tsgo-ledger-backfill.md) | `9a8b65c` / 7.1.0-beta | E0 | case 级 36 `green` / 267 `planned` / 36 retired（新增 `TS-COMPLETION-0175/0193`、`TS-PROBES-0169`）；`TS-META-0009`、`TS-SERVER-0237` 为 weaker；document symbols 真实引擎 7 passed；3 个既有 `gate_green` 复跑 3 passed / 36 filtered；20 gate 仍 required，无新增 gate；默认 Node/CI/mandatory 未变 |
 | 2026-11-19 | [F3 真实 release 验收](2026-11-19-tsgo-f3-real-release.md) | `561b00a` / 7.1.0-beta / 真实 Rust + Zed 产物 | E1 | 真实 lock/tarball 的两次打包逐字节一致（157 文件）、真实包空安装/verify/current/env、N1→N2→N1、离线回滚、recover、archive 篡改拒绝、readelf/ldd/GLIBC_2.39、平台拒绝和进程级 Zed 启动；F3-02/14 blocked；F3-12 只覆盖缓存 install |
 | 2026-11-19 | [F3 剩余验收矩阵](2026-11-19-tsgo-f3-acceptance.md) | `0b3b3da` / 真实包 + 受控变异 | E1 | 6 个 opt-in 测试：F3-05 缺资产/探针、F3-10 六类篡改、F3-11 五种恶意归档经真实 `--from-dir`、F3-08/09/15 legacy、F3-06 四窗口 seam、F3-16 journal 注入/并发；F3-06/09 进程级 kill 仍 blocked |
+| 2026-11-20 | [F3-02 ptrace exec 审计](2026-11-20-tsgo-f3-exec-audit.md) | `f2952c2` / 7.1.0-beta | E1 | test-only ptrace 记录真实 installer 10 exec、native LSP 3 exec；无 Node 家族/server.js/legacy 变量，全绝对路径；F3-02 closed（Linux x86_64），非 Linux/无 ptrace 权限显式 BLOCKED |
 
 ## 3. 当前门禁基线（2026-11-17，W4 最终）
 
@@ -121,7 +122,7 @@ G1 尚未关闭；7.1.0-beta 的接受与 integrity 固定、可执行安装器�
 
 | 项 | 状态 |
 | --- | --- |
-| F3-01～F3-16 | 12 closed / 2 partial / 2 blocked（2026-11-20 §3.3）；F3-02/14 BLOCKED，F3-06/09 partial；root lock/package cache 已落（`assets.lock.json`）；F3 整体验收仍未全部关闭 |
+| F3-01～F3-16 | 13 closed / 2 partial / 1 blocked（2026-11-20 §3.3）；F3-14 BLOCKED，F3-06/09 partial；root lock/package cache 已落（`assets.lock.json`）；F3 整体验收仍未全部关闭 |
 | P6-3 | 部分：backend 数据层与 adapter trusted type-assets handoff 已接线（`caf045d`）；P6-3 整体未关闭 |
 | P6-4 | P6-4a opt-in 切片已落；P6-4b/c BLOCKED |
 | G5 / G6 | 均未关闭；G7 不在当前范围 |
@@ -134,29 +135,30 @@ G1 尚未关闭；7.1.0-beta 的接受与 integrity 固定、可执行安装器�
 证据层级说明：
 
 - **库/单元**：`type_assets`、`f1_hover` 纯测试、document-symbol DTO/decoder 测试只证明 Rust 数据层与映射，不证明 LSP adapter、CLI 或编辑器行为。
-- **真实资产/CLI**：F3-02 的安装/干净 PATH/网络隔离是真实资产级证据，但 `execve` 审计与原生 stdio 会话仍缺；交付测试多为入库 fixture。
+- **真实资产/CLI**：F3-01/02 的安装/干净 PATH/网络隔离与 ptrace exec 审计是真实资产级证据（`f2952c2`，Linux x86_64）；其他交付测试多为入库 fixture。
 - **Zed/UI**：原生后端没有 Zed UI/查询冒烟证据；不得引用历史 Node/W4 的 Zed 结果代替。
 
-## 3.3 F3 逐项验收状态（2026-11-20 审计，HEAD `50e4a21`）
+## 3.3 F3 逐项验收状态（2026-11-20 审计 + ptrace 更新，HEAD `f2952c2`）
 
 本节只记录 2026-11-20 对 F3 证据的审计结论，权威表和关闭条件在
 ` docs/reference/tsgo-delivery-contract.md` §9.5。证据运行锚点为 `561b00a`（real release）、
-`0b3b3da`（acceptance）和 `50e4a21`（partial gaps）；`crates/wxml-delivery/src` 在
-`561b00a..50e4a21` 无变化。包内 `bin/wxml-lsp` 是 2026-11-19 23:21 从含并发未提交改动的
-工作树构建，不是任一 HEAD 的逐字节重建；F3-03/04 只声明包/安装事实，不声明该二进制可从
-HEAD 复现。
+`0b3b3da`（acceptance）、`50e4a21`（partial gaps）和 `f2952c2`（ptrace exec audit）；
+`crates/wxml-delivery/src` 在 `561b00a..f2952c2` 无变化。包内 `bin/wxml-lsp` 是 2026-11-19
+23:21 从含并发未提交改动的工作树构建，不是任一 HEAD 的逐字节重建；F3-03/04 只声明包/安装
+事实，不声明该二进制可从 HEAD 复现。
 
 | 结果 | ID |
 | --- | --- |
-| **closed（12）** | F3-01、F3-03、F3-04、F3-05、F3-07、F3-08、F3-10、F3-11、F3-12、F3-13、F3-15、F3-16 |
+| **closed（13）** | F3-01、F3-02、F3-03、F3-04、F3-05、F3-07、F3-08、F3-10、F3-11、F3-12、F3-13、F3-15、F3-16 |
 | **partial（2）** | F3-06（N2 版本重标；进程级 kill 无生产 seam）、F3-09（精确 SIGKILL 无 seam；真实 legacy 包缺） |
-| **blocked（2）** | F3-02（主机无 `strace`/等价 `execve` 追踪）、F3-14（默认 `--stdio` 仍 Node；无 Zed UI/查询证据） |
+| **blocked（1）** | F3-14（默认 `--stdio` 仍 Node；无 Zed UI/查询证据） |
 
 F3-05/10 是“真实包 + 单点受控变异”，F3-08/09/15 的 legacy 包是生产 v1 packager 生成的
 fixture，F3-06/09 的中断窗口是库级 `InstallHooks` seam，F3-16 的 journal 由测试注入；这些
 性质已在合同 §9.5 逐项标注，不作为真实发布缺陷或进程级中断证据。F3-11/12/15/16 的关闭依据
 是 `50e4a21` 的真实 installer 归档形态、缓存 upgrade/rollback、Zed 变量移除与 activated
-幂等测试；F3-02/14 不因这些测试关闭。
+幂等测试；F3-02 的关闭依据是 `f2952c2` 的真实 installer/native LSP ptrace exec 审计，
+Linux x86_64 以外平台仍不声明。F3-14 不因这些测试关闭。
 
 ## 4. 维护规则
 
