@@ -42,7 +42,8 @@
 #![allow(clippy::redundant_pub_crate)]
 
 pub mod backend_node;
-// Wired for P3-I but deliberately inert: no server or config path selects it.
+// Opt-in P6-4a native backend: only `--backend native` selects it; the default
+// `--stdio` path still constructs `backend_node::NodeBackend`.
 pub(crate) mod backend_tsgo;
 pub(crate) mod completion;
 pub mod configuration;
@@ -61,6 +62,11 @@ pub(crate) mod styles;
 pub(crate) mod workspace;
 
 pub use server::{ServerError, ServerOutcome, run_stdio, run_stdio_with_host, run_with_host};
+
+// Opt-in native startup. The default `--stdio` path remains Node; these
+// exports exist so the binary can select native explicitly and report a typed,
+// path-free failure when discovery, sandbox creation or the transport fails.
+pub use backend_tsgo::{EngineDiscoveryError, NativeStartupError, SandboxError, run_stdio_native};
 
 /// Returns the version reported by `wxml-lsp --version`.
 #[must_use]

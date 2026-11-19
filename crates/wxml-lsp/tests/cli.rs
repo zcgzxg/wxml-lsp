@@ -59,3 +59,52 @@ fn rejects_extra_arguments() {
     let stderr = String::from_utf8(output.stderr).expect("utf-8 output");
     assert!(stderr.contains("unexpected argument"), "{stderr}");
 }
+
+#[test]
+fn native_without_install_fails_closed() {
+    let output = Command::new(BIN)
+        .args(["--stdio", "--backend", "native"])
+        .output()
+        .expect("spawn wxml-lsp");
+    assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "native startup must not write to the LSP stream: {:?}",
+        output.stdout
+    );
+    let stderr = String::from_utf8(output.stderr).expect("utf-8 output");
+    assert!(
+        stderr.contains("native engine discovery failed"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.to_ascii_lowercase().contains("server.js"),
+        "native startup must not probe the Node backend: {stderr}"
+    );
+    assert!(
+        !stderr.to_ascii_lowercase().contains("wxml_node"),
+        "native startup must not read Node configuration: {stderr}"
+    );
+}
+
+#[test]
+fn rejects_unknown_backend_value() {
+    let output = Command::new(BIN)
+        .args(["--stdio", "--backend", "tsgo"])
+        .output()
+        .expect("spawn wxml-lsp");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("utf-8 output");
+    assert!(stderr.contains("unsupported backend `tsgo`"), "{stderr}");
+}
+
+#[test]
+fn backend_requires_a_value() {
+    let output = Command::new(BIN)
+        .args(["--stdio", "--backend"])
+        .output()
+        .expect("spawn wxml-lsp");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).expect("utf-8 output");
+    assert!(stderr.contains("--backend` requires a value"), "{stderr}");
+}

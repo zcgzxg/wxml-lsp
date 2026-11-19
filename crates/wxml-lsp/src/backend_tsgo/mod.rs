@@ -2,10 +2,11 @@
 //!
 //! # Scope and safety
 //!
-//! This module is deliberately not constructed by `server.rs`,
-//! `project_host.rs` or the configuration defaults. It exists so a later P6
-//! switch can select a real backend without changing the C0 boundary. The
-//! existing Node backend stays untouched and remains the default.
+//! This module is not constructed by `server.rs`, `project_host.rs` or the
+//! configuration defaults. The only native entry point is the explicit
+//! [`run_stdio_native`] selector used by `wxml-lsp --stdio --backend native`;
+//! `--stdio` without that flag still constructs the Node backend. The existing
+//! Node backend stays untouched and remains the default.
 //!
 //! The adapter owns a [`NativeSession`](wxml_backend_tsgo::native::session::NativeSession)
 //! lazily. Every request converts the host's effective template snapshot into
@@ -58,16 +59,22 @@
 
 #![allow(
     dead_code,
-    reason = "P4-C implements the opt-in adapter; no server or config path selects it"
+    reason = "P6-4a implements opt-in discovery/startup; the default path still selects Node, \
+              and type-asset roots stay unused until the P6-3 handoff"
 )]
 
 pub(crate) mod completion;
 pub(crate) mod definition;
 pub(crate) mod diagnostics;
+pub(crate) mod engine;
 pub(crate) mod hover;
 pub(crate) mod input;
 pub(crate) mod mapping;
+pub(crate) mod sandbox;
 pub(crate) mod session;
+
+pub use self::engine::EngineDiscoveryError;
+pub use self::sandbox::SandboxError;
 
 #[cfg(test)]
 mod tests;
@@ -76,6 +83,7 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
+use thiserror::Error;
 use wxml_backend_tsgo::config::PinnedEngine;
 use wxml_backend_tsgo::input::{AnalysisInput, ProjectKey, SnapshotRevision};
 use wxml_backend_tsgo::native::NativeError;
@@ -86,11 +94,48 @@ use wxml_types::{
     DiagnosticsRequest, DiagnosticsResult, HoverRequest, HoverResult, SymbolRequest, SymbolResult,
 };
 
+use self::engine::DiscoveredInstall;
 use self::input::{RequestIdentity, RequestPlan, ViewProvider, build_request_plan};
+use self::sandbox::SandboxSessionFactory;
 use self::session::{NativeSessionFactory, QuerySession, SessionFactory};
 
 /// Stable backend identity used in [`BackendEpoch`].
 pub(crate) const BACKEND_ID: &str = "tsgo-native";
+
+/// Why the opt-in native startup path could not begin serving.
+///
+/// Messages are path-free and stable enough for stderr. A failure never
+/// constructs the Node backend or probes a JavaScript backend; the selector
+/// fails closed.
+#[derive(Debug, Error)]
+pub enum NativeStartupError {
+    /// The running executable is not installed with a verified pinned engine.
+    #[error("native engine discovery failed: {0}")]
+    Discovery(#[from] EngineDiscoveryError),
+    /// A private per-session sandbox could not be validated or created.
+    #[error("native sandbox is unavailable: {0}")]
+    Sandbox(#[from] SandboxError),
+    /// The LSP transport itself failed.
+    #[error("native server failed: {0}")]
+    Server(#[from] crate::ServerError),
+}
+
+/// Serves the LSP over stdio with the opt-in native backend.
+///
+/// Discovery starts at the running executable and requires
+/// `<package>/bin/wxml-lsp` with a verified manifest and `engine/lib/tsc`.
+/// Missing, corrupt or unsafe installations return [`NativeStartupError`]
+/// before the LSP `initialize` exchange; there is no Node fallback.
+///
+/// This is the P6-4a scaffold: sessions still use the legacy no-asset
+/// `AnalysisInput`, so the result is not production-ready and P6-3 type assets
+/// are not wired.
+pub fn run_stdio_native() -> Result<crate::ServerOutcome, NativeStartupError> {
+    let install = engine::discover_from_current_exe()?;
+    let host = Arc::new(crate::project_host::ProjectState::new());
+    let adapter = TsgoBackendAdapter::with_install(host.clone(), &install)?;
+    crate::server::run_stdio_with_host(Arc::new(adapter), host).map_err(NativeStartupError::Server)
+}
 
 /// Reason returned for symbols until script symbol facts are wired.
 ///
@@ -122,9 +167,10 @@ impl std::fmt::Debug for TsgoBackendAdapter {
 }
 
 impl TsgoBackendAdapter {
-    /// Creates an adapter around a project host and verified session options.
+    /// Creates an adapter around explicit session options.
     ///
-    /// This is the production constructor for the later P6 selection point.
+    /// The caller owns executable and sandbox verification; this constructor
+    /// performs none. The opt-in startup path uses [`Self::with_install`].
     #[must_use]
     pub(crate) fn with_host(
         host: Arc<dyn crate::project_host::ProjectHost>,
@@ -135,6 +181,40 @@ impl TsgoBackendAdapter {
             Arc::new(input::HostViewProvider::new(host)),
             Arc::new(NativeSessionFactory::new(options)),
         )
+    }
+
+    /// Creates the opt-in adapter from a discovered install.
+    ///
+    /// Every native session gets a fresh private sandbox below the OS
+    /// temporary directory. The package root is rejected as a sandbox base so
+    /// runtime files never land in the immutable version tree.
+    ///
+    /// Discovery is engine-only: type assets, binaries and `typings_root` are
+    /// not re-verified here. P6-3/P6-4b own that verification before a
+    /// production native session may claim asset coverage.
+    pub(crate) fn with_install(
+        host: Arc<dyn crate::project_host::ProjectHost>,
+        install: &DiscoveredInstall,
+    ) -> Result<Self, SandboxError> {
+        let sessions = SandboxSessionFactory::new(install.engine.clone(), &install.package_root)?;
+        Ok(Self::new(
+            PinnedEngine::pinned(),
+            Arc::new(input::HostViewProvider::new(host)),
+            Arc::new(sessions),
+        ))
+    }
+
+    /// Starts and immediately stops one native session without entering the
+    /// LSP transport.
+    ///
+    /// Test-only success-path seam for P6-4a. It exercises discovery output,
+    /// per-session sandbox creation, engine verification, handshake, schema
+    /// probe and sandbox cleanup. No production caller uses it.
+    #[cfg(test)]
+    pub(crate) fn start_and_stop_session_for_test(&self) -> Result<(), BackendError> {
+        let session = self.sessions.start().map_err(map_native_error)?;
+        session.shutdown();
+        Ok(())
     }
 
     /// Creates an adapter with explicit view/session seams.
