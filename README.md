@@ -208,12 +208,12 @@ export WXML_LSP_BIN="$HOME/.local/share/wxml-lsp/current/bin/wxml-lsp"
 "$installer" env     --root "$HOME/.local/share/wxml-lsp"
 ```
 
-- `install`/`upgrade`/`rollback` 先在 `tmp/` 解包并完成归档、manifest、逐文件哈希、权限和 Node 依赖校验，再原子替换 `current` symlink；失败保留原活动版本。`upgrade` 默认拒绝降级，降级必须显式 `rollback --to`。
+- `install`/`upgrade`/`rollback` 先在 `tmp/` 解包并完成归档、manifest、逐文件哈希和权限校验，再原子替换 `current` symlink；失败保留原活动版本。schema v2 另做引擎/typeAssets 探针；schema v1 只做只读后端文件存在性校验，不执行 `node` 或 `node --version`。`upgrade` 默认拒绝降级，降级必须显式 `rollback --to`。
 - 下载默认关闭；远端源必须同时给出 `--enable-download`。仅接受 HTTPS；只有测试 fixture 允许 `localhost`/`127.0.0.1`/`[::1]` 的 HTTP。拒绝凭据、query、fragment、`..`、跨源 redirect 和路径/链接逃逸。项目文件、`.zed/settings.json` 不能指定下载源。
 - `WXML_LSP_BIN` 已设置且有效时，安装/升级/回退跳过，不下载、不覆盖；已设置但无效（空、相对、含 `..`、不存在、非普通文件、不可执行）立即报错，绝不回退到已安装版本或网络。
-- `list`、`current`、`verify`、`env` 是只读命令，不创建安装根或锁文件。缓存只保存完整验证通过的归档；离线安装/回退只使用已验证缓存或显式 `--from-dir`。
+- `list`、`current`、`verify`、`env` 是只读命令，不创建安装根或锁文件。`env` 只输出 `WXML_LSP_BIN`；schema v1 的 `current`/`verify`/`env` 不执行旧二进制、不探测 Node。缓存只保存完整验证通过的归档；离线安装/回退只使用已验证缓存或显式 `--from-dir`。
 - 当前信任链是 **TLS + index/归档 SHA-256 + manifest 文件哈希**，没有发布者签名、公钥 pin 或透明日志。它能证明内容与同一份元数据一致，不能证明发布者身份；被攻破的 HTTPS 源、误签 CA 或恶意本地 bundle 仍可自洽。该残留风险已明确接受，正式发布前应增加 detached 签名或 minisign，详见 [ADR-0007](docs/adr/0007-local-delivery-trust-model.md)。
-- 安装器目前只在 Linux 验证，依赖 Unix 原子 symlink 与系统 Node.js；Windows/macOS 未验证。S 语义工具已在 W3 合入，Q2 调度/恢复已在 W4 通过；完整多 workspace、标准 UI 最终重跑和跨平台验收仍不在本记录范围。
+- 安装器目前只在 Linux 验证，依赖 Unix 原子 symlink；安装器本身不执行 Node，schema v1 只读命令也不执行或探测 Node。Windows/macOS 未验证。S 语义工具已在 W3 合入，Q2 调度/恢复已在 W4 通过；完整多 workspace、标准 UI 最终重跑和跨平台验收仍不在本记录范围。
 
 #### 最终 release 与 Linux Zed 运行时冒烟（W4）
 

@@ -733,46 +733,114 @@ fn native_offline_without_from_dir_fails_closed() {
 }
 
 #[test]
-fn legacy_v1_root_migrates_to_native_and_stays_read_only() {
+fn legacy_v1_is_read_only_and_migrates_without_node() {
     let base = TempDir::new("native-cli-legacy");
     let v1_release = base.path().join("v1-release");
     support::pack(&v1_release, V1);
     let v2_release = pack_native_release(base.path(), &[(V2, Scripts::default())]);
     let root = base.path().join("root");
+    let shims = no_node_path(base.path());
+    let poison = base.path().join("poison");
+    fs::create_dir_all(&poison).unwrap();
 
+    // Installing a legacy package must not execute Node either, even with the
+    // legacy variables poisoned and PATH containing only tripwire shims.
     let mut legacy_install = installer();
-    legacy_install.args([
-        "install",
-        "--root",
-        root.to_str().unwrap(),
-        "--from-dir",
-        v1_release.to_str().unwrap(),
-        "--version",
-        V1,
-        "--offline",
-    ]);
-    assert_success(&run(&mut legacy_install));
+    legacy_install
+        .env("PATH", &shims)
+        .env("WXML_NODE", poison.join("node"))
+        .env("WXML_TYPE_BACKEND", poison.join("server.js"))
+        .env("WXML_BACKEND_DIR", &poison)
+        .args([
+            "install",
+            "--root",
+            root.to_str().unwrap(),
+            "--from-dir",
+            v1_release.to_str().unwrap(),
+            "--version",
+            V1,
+            "--offline",
+        ]);
+    let result = run(&mut legacy_install);
+    assert_success(&result);
+    assert!(stdout(&result).contains(&format!("installed {V1}")));
+    assert!(!stdout(&result).contains("node:"), "{}", stdout(&result));
+    assert_no_node(base.path());
     assert_eq!(active_version(&root), V1);
     let legacy_dir = root.join("versions").join(V1);
     let legacy_fingerprint = tree_fingerprint(&legacy_dir).unwrap();
 
-    // Schema v1 env output stays readable for existing Node installations.
+    // `current`, `verify` and `env` inspect a schema v1 package read-only:
+    // no legacy binary, no Node runtime, and only WXML_LSP_BIN is exported.
+    let mut legacy_current = command_for(&root, "current");
+    legacy_current.env("PATH", &shims);
+    let result = run(&mut legacy_current);
+    assert_success(&result);
+    assert!(stdout(&result).contains(&format!("version: {V1}")));
+    assert!(stdout(&result).contains("schema: 1 (legacy, read-only"));
+
+    let mut legacy_verify = command_for(&root, "verify");
+    legacy_verify.env("PATH", &shims);
+    let result = run(&mut legacy_verify);
+    assert_success(&result);
+    assert!(
+        stdout(&result).contains(&format!("verified {V1} (legacy, read-only)")),
+        "{}",
+        stdout(&result)
+    );
+
     let mut legacy_env = command_for(&root, "env");
+    legacy_env.env("PATH", &shims);
     let result = run(&mut legacy_env);
     assert_success(&result);
     assert!(stdout(&result).contains("WXML_LSP_BIN="));
-    assert!(stdout(&result).contains("WXML_TYPE_BACKEND="));
+    for variable in ["WXML_TYPE_BACKEND", "WXML_NODE", "WXML_BACKEND_DIR"] {
+        assert!(
+            !stdout(&result).contains(variable),
+            "legacy env must not export {variable}: {}",
+            stdout(&result)
+        );
+    }
+    assert_no_node(base.path());
+    assert_eq!(tree_fingerprint(&legacy_dir).unwrap(), legacy_fingerprint);
 
-    let result = native_install(&root, &v2_release, V2);
+    let mut migrate = installer();
+    migrate.env("PATH", &shims).args([
+        "install",
+        "--root",
+        root.to_str().unwrap(),
+        "--from-dir",
+        v2_release.to_str().unwrap(),
+        "--version",
+        V2,
+        "--offline",
+    ]);
+    let result = run(&mut migrate);
     assert_success(&result);
     assert!(stdout(&result).contains("migrated to 0.2.0 (native)"));
     assert_eq!(active_version(&root), V2);
+    assert_no_node(base.path());
     assert_eq!(tree_fingerprint(&legacy_dir).unwrap(), legacy_fingerprint);
     let state = InstallState::read(&wxml_delivery::install::InstallRoot::create(&root).unwrap())
         .unwrap()
         .unwrap();
     assert_eq!(state.active, V2);
     assert_eq!(state.previous, None, "legacy must never become previous");
+
+    // After migration the read-only commands report the native installation
+    // and never fall back to the legacy package or Node.
+    let mut native_env = command_for(&root, "env");
+    native_env.env("PATH", &shims);
+    let result = run(&mut native_env);
+    assert_success(&result);
+    assert!(stdout(&result).contains("export WXML_LSP_BIN="));
+    assert!(!stdout(&result).contains("WXML_TYPE_BACKEND"));
+    let mut native_current = command_for(&root, "current");
+    native_current.env("PATH", &shims);
+    let result = run(&mut native_current);
+    assert_success(&result);
+    assert!(stdout(&result).contains(&format!("version: {V2}")));
+    assert_no_node(base.path());
 
     let mut list = command_for(&root, "list");
     let result = run(&mut list);

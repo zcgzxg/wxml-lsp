@@ -43,7 +43,7 @@ WXML_BUILD_CACHE="$HOME/.cache/wxml-targets/full-local-delivery/build-cache" \
 <output>/SHA256SUMS
 ```
 
-`manifest.json` 记录包版本、平台、协议版本、Node 最低版本、后端版本、构建时间、Rust/Node/Zed 产物路径及每个文件的 SHA-256、大小和显式权限（`0644`/`0755`）。`index.json` 记录归档名、归档 SHA-256、大小、协议和 Node 最低版本。
+`manifest.json` 的 v1（legacy）记录包版本、平台、协议版本、Node 最低版本、后端版本、构建时间、Rust/Node/Zed 产物路径及每个文件的 SHA-256、大小和显式权限（`0644`/`0755`）；v2（native）改为记录 `engine`/`typeAssets`/原生二进制，不要求 Node。`index.json` 同样按 schema v1/v2 分派。
 
 ## 安装
 
@@ -62,7 +62,7 @@ wxml-lsp-install="$release/wxml-lsp-0.1.0-linux-x86_64/bin/wxml-lsp-install"
 export WXML_LSP_BIN="$HOME/.local/share/wxml-lsp/current/bin/wxml-lsp"
 ```
 
-`current` 是原子替换的 symlink，指向 `versions/<version>`；升级/回退后 `WXML_LSP_BIN` 路径不变。安装器在切换 `current` **之前**校验 staged 树哈希、执行 `bin/wxml-lsp --version` 并检查 Node 后端依赖；失败不会激活新版本。
+`current` 是原子替换的 symlink，指向 `versions/<version>`；升级/回退后 `WXML_LSP_BIN` 路径不变。安装器在切换 `current` **之前**校验 staged 树哈希并执行包内 `--version` 探针；schema v2 还要求 manifest/engine/typeAssets 全部匹配。schema v1（legacy）包的 `Node` 后端只做只读文件存在性检查，**不会执行 `node`/`npm`，也不会探测 `node --version`**。
 
 ### `WXML_LSP_BIN` 优先
 
@@ -84,9 +84,10 @@ wxml-lsp-install verify-package --from-dir /path/to/release --version 0.1.0 --of
 ```
 
 - `upgrade` 默认拒绝降级；降级必须显式 `rollback --to`。同版本但内容不同不会静默保留旧字节，会报 “already installed with different contents”。
-- `rollback` 优先验证已安装版本；未安装时可从显式本地源或已验证缓存安装指定版本。
-- `list/current/verify/env` 是只读命令：不会创建 root，不会 chmod 已有目录；不存在时返回“未安装”类错误。
-- `verify` 先完整校验 manifest、SHA-256 和文件集合，再执行包内 `--version`；**哈希不一致**的篡改会在执行前被拒绝。若攻击者能重写整棵 `versions/<v>`（二进制 + manifest + SHA256SUMS），哈希仍自洽，只有发布者签名才能识别；这是下文明确的残留风险。
+- schema v2 的 `rollback` 只接受已安装、完整校验/探针通过的原生版本；未安装时不会下载。schema v1 legacy 包永远不是原生回退目标（“legacy Node package is not a Node-free rollback target”）。
+- `list/current/verify/env` 是只读命令：不会创建 root，不会 chmod 已有目录；不存在时返回“未安装”类错误。schema v1 只读投影：`current`/`env` 只读 manifest 身份，`verify` 只做字节哈希，三者都不会执行旧二进制或 Node。
+- `verify` 先完整校验 manifest、SHA-256 和文件集合；schema v2 再执行包内 `--version`/引擎探针，schema v1 仅哈希、不执行任何二进制。**哈希不一致**的篡改会在执行前被拒绝。若攻击者能重写整棵 `versions/<v>`（二进制 + manifest + SHA256SUMS），哈希仍自洽，只有发布者签名才能识别；这是下文明确的残留风险。
+- `env` 只输出 `export WXML_LSP_BIN=...`；不再输出 `WXML_TYPE_BACKEND`、`WXML_NODE` 或 `WXML_BACKEND_DIR`。
 - 路径含空格无需额外转义；所有路径参数走 argv，不经过 shell。`env` 输出使用 shell quoting。
 
 ## 缓存与离线
@@ -100,7 +101,7 @@ wxml-lsp-install verify-package --from-dir /path/to/release --version 0.1.0 --of
 - 归档必须通过：归档 SHA-256、manifest 版本/平台/协议/Node 元数据、逐文件 SHA-256/大小/权限、`SHA256SUMS` 精确集合。
 - 解包拒绝绝对路径、`..`、反斜杠、空组件、控制字符、超长路径、符号/硬链接、FIFO、设备文件、setuid/setgid/sticky、组/其他可写；解压前先流式预扫描 tar 头，限制扩展头和总解压预算，恶意 PAX/GNU 扩展头不会导致无界 RSS 或先写盘。
 - 安装使用独占 OS 文件锁、`tmp/` 暂存、`rename` 进入 `versions/<version>`、最后原子替换 `current`；失败清理暂存，不留下半安装。只读命令不创建锁文件。
-- 运行时 `--version`/`node --version` 有 10 秒超时；FIFO/非普通文件不会被当成 manifest、index 或哈希输入。
+- 版本探针（`wxml-lsp --version`、`engine/lib/tsc --version`）使用 `env_clear` 与 10 秒超时；安装器不再运行 `node --version`，也不读取 `WXML_NODE`。
 
 ### 已知信任残留风险
 
@@ -109,7 +110,7 @@ wxml-lsp-install verify-package --from-dir /path/to/release --version 0.1.0 --of
 ## 排错
 
 - **`WXML_LSP_BIN is set but invalid`**：取消设置或指向绝对、存在、可执行的文件；安装器不会偷偷改用已安装版本。
-- **Node.js not found / older**：安装仍需 Node >= manifest 的 `node.minimumVersion` 才启用类型功能；设置 `WXML_NODE` 为绝对路径或安装新 Node。`install` 对 Node 缺失只告警，`verify`/`current` 会失败。
+- **legacy（schema v1）只读命令**：`current`/`verify`/`env` 不再需要 Node。设置 `WXML_NODE`/`WXML_TYPE_BACKEND`/`WXML_BACKEND_DIR` 不会触发 Node，也不会改变输出；`env` 只导出 `WXML_LSP_BIN`。旧包是否还能运行类型功能取决于它原本的 Node 环境，这不属于新安装器能力。
 - **checksum/hash mismatch**：产物被改动或缓存损坏；在线重装，或重新用 `scripts/build-release.sh` 生成 release 后 `verify-package`。
 - **path contains spaces**：直接传路径即可；不要手工拼 shell 字符串。
 - **`current` 不可用**：`wxml-lsp-install rollback --to <previous>`；`list` 查看已安装版本。
@@ -122,6 +123,6 @@ Zed 扩展仍按 `editors/zed` 的既有规则只读取 `WXML_LSP_BIN`。标准�
 1. 构建/安装本 crate 的 release。
 2. `export WXML_LSP_BIN="<root>/current/bin/wxml-lsp"`。
 3. 在 Zed 命令面板执行 `zed: install dev extension` 选择 `editors/zed`，或使用 release 里的 `zed-extension` 目录。
-4. 安装包自动探测同目录 `bin/wxml-type-backend/server.js`；也可显式设置 `WXML_TYPE_BACKEND`。
+4. Zed 只使用 `WXML_LSP_BIN`；新安装器不再输出 `WXML_TYPE_BACKEND`/`WXML_BACKEND_DIR`/`WXML_NODE`，这些变量也不参与原生激活。schema v1 包只作为只读历史材料保留，不是回退目标。
 
 最终 release 必须用合并后的代码重新运行 `scripts/build-release.sh`；`manifest.json`/`index.json`/`SHA256SUMS` 绑定具体字节，旧 release 不能用于新 HEAD 的验收。

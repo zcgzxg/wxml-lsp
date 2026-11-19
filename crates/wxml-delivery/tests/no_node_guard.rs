@@ -42,6 +42,7 @@
 #[path = "support/typings_payload.rs"]
 mod typings_payload;
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Read};
 use std::os::unix::fs::DirBuilderExt;
@@ -529,9 +530,9 @@ impl FileBuilder {
     }
 }
 
-/// Builds a schema v2 fixture tree. The engine is a shell script that prints the
-/// frozen version line; it never invokes Node.
-fn build_native_tree(root: &Path, version: &str) -> ManifestV2 {
+/// Builds the same fixture tree with an optional engine pause so a process-tree
+/// audit can observe the engine probe while it is running.
+fn build_native_tree(root: &Path, version: &str, paused: bool) -> ManifestV2 {
     let mut builder = FileBuilder::new(root);
     builder.file(
         "bin/wxml-lsp",
@@ -543,11 +544,12 @@ fn build_native_tree(root: &Path, version: &str) -> ManifestV2 {
         format!("#!/bin/sh\nprintf 'wxml-lsp-install {version}\\n'\n").as_bytes(),
         0o755,
     );
-    builder.file(
-        "engine/lib/tsc",
-        format!("#!/bin/sh\nprintf '{ENGINE_PROBE_PREFIX}{ENGINE_VERSION}\\n'\n").as_bytes(),
-        0o755,
-    );
+    let engine_script = if paused {
+        format!("#!/bin/sh\n/bin/sleep 0.2\nprintf '{ENGINE_PROBE_PREFIX}{ENGINE_VERSION}\\n'\n")
+    } else {
+        format!("#!/bin/sh\nprintf '{ENGINE_PROBE_PREFIX}{ENGINE_VERSION}\\n'\n")
+    };
+    builder.file("engine/lib/tsc", engine_script.as_bytes(), 0o755);
     builder.file("engine/lib/tsc.sig", b"signature-placeholder\n", 0o644);
     builder.file("engine/LICENSE", b"Apache License fixture\n", 0o644);
     builder.file("engine/NOTICE.txt", b"NOTICE fixture\n", 0o644);
@@ -698,10 +700,14 @@ fn build_native_tree(root: &Path, version: &str) -> ManifestV2 {
 }
 
 fn pack_native_release(base: &Path) -> PathBuf {
+    pack_native_release_with_engine(base, false)
+}
+
+fn pack_native_release_with_engine(base: &Path, paused: bool) -> PathBuf {
     let release = base.join("native-release");
     fs::create_dir_all(&release).expect("create release dir");
     let tree = base.join("tree");
-    let manifest = build_native_tree(&tree, FIXTURE_VERSION);
+    let manifest = build_native_tree(&tree, FIXTURE_VERSION, paused);
     let archive_name = format!("wxml-lsp-{FIXTURE_VERSION}-{NATIVE_PACKAGE_PLATFORM}.tar.gz");
     let archive = release.join(&archive_name);
     let mut entries = manifest.files;
@@ -742,6 +748,130 @@ fn pack_native_release(base: &Path) -> PathBuf {
     )
     .expect("write index");
     release
+}
+
+#[cfg(target_os = "linux")]
+const NODE_COMMANDS: &[&str] = &["node", "nodejs", "npm", "npx", "pnpm", "yarn", "bun"];
+
+/// Records every live descendant of `pid` by `/proc/<pid>/comm`.
+#[cfg(target_os = "linux")]
+fn collect_descendants(pid: u32, observed: &mut BTreeMap<u32, String>) {
+    let Ok(tasks) = fs::read_dir(format!("/proc/{pid}/task")) else {
+        return;
+    };
+    for task in tasks.flatten() {
+        let Ok(children) = fs::read_to_string(task.path().join("children")) else {
+            continue;
+        };
+        for child in children.split_whitespace() {
+            let Ok(child) = child.parse::<u32>() else {
+                continue;
+            };
+            if observed.contains_key(&child) {
+                continue;
+            }
+            let comm = fs::read_to_string(format!("/proc/{child}/comm")).unwrap_or_default();
+            observed.insert(child, comm.trim().to_owned());
+            collect_descendants(child, observed);
+        }
+    }
+}
+
+/// Process-tree audit: while a real native install runs, every descendant is
+/// sampled from `/proc`. An absolute-path `node` invocation would appear as a
+/// descendant with `comm == "node"` even though the PATH shims are bypassed.
+///
+/// A polling audit can miss a very short-lived process, so this complements and
+/// does not replace the `strace -f -e trace=execve,execveat` gate that is still
+/// BLOCKED in this environment.
+#[cfg(target_os = "linux")]
+#[test]
+fn installer_process_tree_has_no_node_descendants() {
+    let base = PrivateRoot::new("f3-proc-tree");
+    let shims = NodeShims::install(base.path());
+    assert_tripwire_positive_control(&shims);
+    fs::create_dir_all(base.path().join("home")).expect("create HOME");
+    fs::create_dir_all(base.path().join("tmp")).expect("create TMPDIR");
+
+    // The fixture engine pauses briefly so the probe process is observable.
+    let release = pack_native_release_with_engine(base.path(), true);
+    let root = base.path().join("root");
+    fs::create_dir(&root).expect("create install root");
+    set_mode(&root, 0o700).expect("make install root private");
+
+    let log_path = base.path().join("install.log");
+    let log = fs::File::create(&log_path).expect("create install log");
+    let mut install = installer_command(&shims, base.path());
+    install.args([
+        "install",
+        "--root",
+        root.to_str().expect("UTF-8 root"),
+        "--from-dir",
+        release.to_str().expect("UTF-8 release"),
+        "--version",
+        FIXTURE_VERSION,
+        "--offline",
+    ]);
+    install
+        .stdout(Stdio::from(log.try_clone().expect("clone install log")))
+        .stderr(Stdio::from(log))
+        .stdin(Stdio::null());
+    install.process_group(0);
+
+    let mut child = install.spawn().expect("spawn install");
+    let pid = child.id();
+    let mut observed = BTreeMap::new();
+    let deadline = Instant::now() + OPERATION_TIMEOUT;
+    let status = loop {
+        collect_descendants(pid, &mut observed);
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {}
+            Err(error) => {
+                let _ = kill_group(pid);
+                panic!("wait for install: {error}");
+            }
+        }
+        if Instant::now() >= deadline {
+            let _ = kill_group(pid);
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("process-tree audit exceeded {OPERATION_TIMEOUT:?}");
+        }
+        thread::sleep(Duration::from_millis(2));
+    };
+    let log = fs::read_to_string(&log_path).unwrap_or_default();
+    assert!(
+        status.success(),
+        "install failed: status={status:?}\nlog={log}"
+    );
+    assert!(
+        !observed.is_empty(),
+        "process-tree audit observed no descendants; it would be vacuous\nlog={log}"
+    );
+    for (pid, comm) in &observed {
+        assert!(
+            !NODE_COMMANDS.contains(&comm.as_str()),
+            "installer spawned Node command `{comm}` (pid {pid})\nlog={log}"
+        );
+    }
+    shims.assert_absent();
+    println!(
+        "PROC_TREE: PASS ({} descendant processes observed, none Node)",
+        observed.len()
+    );
+    let strace = Command::new("strace").arg("-V").output().is_ok();
+    if strace {
+        println!(
+            "EXEC_AUDIT: BLOCKED (strace is installed but the absolute-path execve trace \
+             is not wired in this slice)"
+        );
+    } else {
+        println!(
+            "EXEC_AUDIT: BLOCKED (strace not installed; PATH shims and polling cannot exclude \
+             an absolute-path Node invocation)"
+        );
+    }
 }
 
 #[test]

@@ -1,7 +1,11 @@
 //! Tree verification and post-install runtime checks.
+//!
+//! Schema v1 (legacy Node) trees are hashed read-only: this module never runs
+//! `node --version`, never resolves `WXML_NODE`, and never starts a Node
+//! runtime. Native schema v2 activation lives in [`crate::native_install`].
 
 use std::collections::BTreeSet;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Output};
 use std::time::Duration;
 
@@ -10,16 +14,6 @@ use crate::manifest::{
     ExpectedManifest, MAX_MANIFEST_BYTES, Manifest, format_sha256sums, parse_sha256sums,
     read_limited, read_manifest, sha256_file,
 };
-use crate::semver::Semver;
-
-/// Verified runtime versions.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RuntimeReport {
-    /// Version printed by the installed `wxml-lsp` binary.
-    pub binary_version: String,
-    /// Version printed by the Node.js executable.
-    pub node_version: String,
-}
 
 /// Verifies a complete package tree against its own manifest and checksums.
 ///
@@ -239,7 +233,10 @@ pub fn binary_version(binary: &Path) -> Result<String> {
     Ok(reported.to_owned())
 }
 
-/// Checks that the installed Node backend and its runtime dependencies exist.
+/// Checks that the legacy Node backend payload files exist.
+///
+/// This is a metadata check on the package tree. Nothing is executed and no
+/// Node runtime is started.
 ///
 /// # Errors
 ///
@@ -277,75 +274,6 @@ pub fn check_backend(root: &Path, manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
-/// Resolves the Node executable from `WXML_NODE` or `node`.
-///
-/// # Errors
-///
-/// Returns an error when `WXML_NODE` is neither a command name nor an absolute
-/// path.
-pub fn resolve_node() -> Result<PathBuf> {
-    let Some(value) = std::env::var_os("WXML_NODE") else {
-        return Ok(PathBuf::from("node"));
-    };
-    let path = PathBuf::from(value);
-    let mut components = path.components();
-    let single_normal =
-        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
-    if !path.is_absolute() && !single_normal {
-        return Err(DeliveryError::Runtime(
-            "WXML_NODE must be a command name or an absolute path".to_owned(),
-        ));
-    }
-    Ok(path)
-}
-
-/// Checks that Node.js exists and satisfies the package minimum.
-///
-/// # Errors
-///
-/// Returns an error when Node is missing, exits unsuccessfully or is older than
-/// `minimum`.
-pub fn check_node(minimum: &str) -> Result<String> {
-    let minimum_version = Semver::parse(minimum)?;
-    let node = resolve_node()?;
-    let mut command = Command::new(&node);
-    command.arg("--version");
-    let output = output_with_timeout(&mut command, Duration::from_secs(10)).map_err(|_| {
-        DeliveryError::Runtime(format!(
-            "Node.js was not found or did not respond; install Node.js >= {minimum} or set WXML_NODE to an absolute path"
-        ))
-    })?;
-    if !output.status.success() {
-        return Err(DeliveryError::Runtime(format!(
-            "Node.js `--version` failed; install Node.js >= {minimum} or set WXML_NODE"
-        )));
-    }
-    let stdout = String::from_utf8(output.stdout)
-        .map_err(|_| DeliveryError::Runtime("Node.js version output was not UTF-8".to_owned()))?;
-    let version = Semver::parse(&stdout)?;
-    if version < minimum_version {
-        return Err(DeliveryError::Runtime(format!(
-            "Node.js {version} is older than required {minimum}"
-        )));
-    }
-    Ok(stdout.trim().to_owned())
-}
-
-/// Runs all post-install checks.
-///
-/// # Errors
-///
-/// Returns an error when the binary, backend or Node.js check fails.
-pub fn verify_install(root: &Path, manifest: &Manifest) -> Result<RuntimeReport> {
-    let binary_version = check_binary(root, manifest)?;
-    check_backend(root, manifest)?;
-    let node_version = check_node(&manifest.node.minimum_version)?;
-    Ok(RuntimeReport {
-        binary_version,
-        node_version,
-    })
-}
-
 /// Verifies a package archive by extracting it below `scratch` and checking
 /// every file.
 ///
@@ -369,6 +297,8 @@ pub fn verify_archive(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
     use crate::manifest::{
         ArtifactKind, BinaryArtifact, FileEntry, Manifest, NodeInfo, PACKAGE_NAME, SCHEMA_VERSION,
         atomic_write, set_mode, sha256_file,
@@ -527,13 +457,11 @@ mod tests {
     }
 
     #[test]
-    fn checks_binary_backend_and_node() {
+    fn checks_binary_and_backend_payload() {
         let base = scratch("runtime");
         let manifest = valid_tree(&base);
         assert_eq!(check_binary(&base, &manifest).unwrap(), "0.1.0");
         check_backend(&base, &manifest).unwrap();
-        assert!(check_node("0.0.0").is_ok());
-        assert!(check_node("999.0.0").is_err());
 
         std::fs::remove_dir_all(base.join("bin/wxml-type-backend/node_modules/typescript"))
             .unwrap();

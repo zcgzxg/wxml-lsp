@@ -1266,6 +1266,18 @@ F3 整体仍未通过：真实 tarball/provisioning/lock、clean-env/ABI 和包�
   `install`/`verify`/`upgrade`/`rollback`/`recover`、`--from-dir` 获取、`WXML_LSP_BIN` 优先级和精确版本
   探针已有 fixture 级集成测试。该实现**不关闭任何 F3 ID**：真实 `7.1.0-beta` 资产、clean-env/`strace`、
   网络审计、包级/Zed 冒烟和 ABI 证据仍缺；v2 归档缓存尚未实现，v2 离线安装必须显式 `--from-dir`。
+- 2026-11-19：B4 legacy 只读命令去 Node。schema v1 current 的 `current`/`verify`/`env` 只读
+  manifest 身份投影或做字节哈希，不再读取 `WXML_NODE`、不解析 `server.js`、不执行
+  `node --version`、不执行包内旧二进制或 Node 后端；`env` 只输出 `WXML_LSP_BIN`。
+  `verify::check_node`/`resolve_node`/`verify_install` 已删除，v1 安装后的 Node 版本告警也移除。
+  证据：`crates/wxml-delivery/tests/native_cli.rs` 的 legacy install/current/verify/env/migrate
+  shim 流程、`installer_flow.rs` 的 legacy poison-env 用例，以及 `no_node_guard.rs` 的进程树
+  采样（`/proc/<pid>/task/*/children`，无 Node 子进程）。`scripts/verify-no-node.sh --legacy`
+  增加了 legacy 只读模式和 `WXML_NODE`/`WXML_TYPE_BACKEND`/`WXML_BACKEND_DIR` poison。
+  **这些证据不关闭 F3-01/F3-08/F3-09/F3-12/F3-15**：没有 `strace -f -e trace=execve,execveat`
+  的绝对路径审计、没有真实 legacy 发布包、clean-env/CI 与 Zed 冒烟；v2 无归档缓存，离线仍只接受
+  显式 `--from-dir`；schema v1 的 install/upgrade/rollback 仍保留为只读迁移前的历史路径，属于 P7
+  收窄范围。
 - 2026-11-19：新增根 `deny.toml`，`cargo deny --offline check` 的 advisories/bans/licenses/sources
   全部通过（P5-SEC-06 的 license 门禁条件）。Rust 依赖许可门禁关闭；B7 的发布包
   许可/provenance/SBOM 评审仍未关闭。

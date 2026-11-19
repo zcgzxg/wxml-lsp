@@ -354,11 +354,17 @@ where
     let _ = stream.write_all(&route.body);
 }
 
-/// Returns the installer command with a clean `WXML_LSP_BIN`.
+/// Returns the installer command with legacy/Node activation variables cleared.
 pub fn installer() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_wxml-lsp-install"));
-    command.env_remove("WXML_LSP_BIN");
-    command.env_remove("WXML_NODE");
+    for name in [
+        "WXML_LSP_BIN",
+        "WXML_NODE",
+        "WXML_TYPE_BACKEND",
+        "WXML_BACKEND_DIR",
+    ] {
+        command.env_remove(name);
+    }
     command
 }
 

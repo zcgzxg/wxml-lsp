@@ -132,6 +132,11 @@ fn installs_verifies_and_reports_a_path_with_spaces() {
     assert_success(&env_result);
     assert!(stdout(&env_result).contains("WXML_LSP_BIN="));
     assert!(stdout(&env_result).contains("install root with spaces"));
+    assert!(
+        !stdout(&env_result).contains("WXML_TYPE_BACKEND"),
+        "env must only export WXML_LSP_BIN: {}",
+        stdout(&env_result)
+    );
 }
 
 #[test]
@@ -590,45 +595,90 @@ fn upgrade_refuses_downgrades_and_same_version_rebuilds() {
 }
 
 #[test]
-fn reports_node_missing_old_and_broken_runtime() {
-    let base = TempDir::new("flow-node");
+fn legacy_read_only_commands_never_consult_node() {
+    let base = TempDir::new("flow-legacy-readonly");
     let output = base.path().join("release");
     pack(&output, "0.1.0");
     let server = FixtureServer::directory(&output);
     let root = base.path().join("root");
     assert_success(&install(&root, &server.url(), "0.1.0", &[]));
 
-    let missing = base.path().join("no-such-node");
+    // A Node tripwire on WXML_NODE and the legacy backend variables must never
+    // run while the legacy package is inspected, verified or exported.
+    let marker = base.path().join("NODE_WAS_EXECUTED");
+    let tripwire = base.path().join("node-tripwire");
+    fs::write(
+        &tripwire,
+        format!("#!/bin/sh\ntouch '{}'\nexit 99\n", marker.display()),
+    )
+    .unwrap();
+    wxml_delivery::manifest::set_mode(&tripwire, 0o755).unwrap();
+    let backend_dir = base.path().join("poison-backend");
+    fs::create_dir_all(&backend_dir).unwrap();
+    let server_js = backend_dir.join("server.js");
+    fs::write(&server_js, b"throw new Error('must not run');\n").unwrap();
+    let poison_env = [
+        ("WXML_NODE", tripwire),
+        ("WXML_TYPE_BACKEND", server_js),
+        ("WXML_BACKEND_DIR", backend_dir),
+    ];
+
     let mut verify = installer();
     verify
-        .env("WXML_NODE", &missing)
+        .envs(poison_env.clone())
         .args(["verify", "--root", root.to_str().expect("root")]);
     let result = run(&mut verify);
-    assert_failure(&result, "Node.js");
+    assert_success(&result);
+    assert!(
+        stdout(&result).contains("verified 0.1.0 (legacy, read-only)"),
+        "{}",
+        stdout(&result)
+    );
+    assert!(!stdout(&result).contains("node:"), "{}", stdout(&result));
 
-    let old = base.path().join("old-node");
-    fs::write(&old, b"#!/bin/sh\necho v20.0.0\n").unwrap();
-    wxml_delivery::manifest::set_mode(&old, 0o755).unwrap();
-    let mut verify = installer();
-    verify
-        .env("WXML_NODE", &old)
-        .args(["verify", "--root", root.to_str().expect("root")]);
-    let result = run(&mut verify);
-    assert_failure(&result, "older");
+    let mut current = installer();
+    current
+        .envs(poison_env.clone())
+        .args(["current", "--root", root.to_str().expect("root")]);
+    let result = run(&mut current);
+    assert_success(&result);
+    assert!(stdout(&result).contains("version: 0.1.0"));
+    assert!(stdout(&result).contains("schema: 1 (legacy, read-only"));
 
-    let typescript = root.join("current/bin/wxml-type-backend/node_modules/typescript");
-    fs::remove_dir_all(&typescript).unwrap();
-    let mut verify = installer();
-    verify.args(["verify", "--root", root.to_str().expect("root")]);
-    let result = run(&mut verify);
-    assert_failure(&result, "backend");
+    let mut env = installer();
+    env.envs(poison_env)
+        .args(["env", "--root", root.to_str().expect("root")]);
+    let result = run(&mut env);
+    assert_success(&result);
+    assert!(stdout(&result).contains("WXML_LSP_BIN="));
+    for variable in ["WXML_TYPE_BACKEND", "WXML_NODE", "WXML_BACKEND_DIR"] {
+        assert!(
+            !stdout(&result).contains(variable),
+            "legacy env must not export {variable}: {}",
+            stdout(&result)
+        );
+    }
+    assert!(
+        !marker.exists(),
+        "legacy read-only commands executed the Node tripwire"
+    );
 
+    // Verification is byte-level: a wrong mode or a missing manifest payload
+    // fails, but the Node backend is never required to be runnable.
     let binary = root.join("current/bin/wxml-lsp");
     wxml_delivery::manifest::set_mode(&binary, 0o644).unwrap();
     let mut verify = installer();
     verify.args(["verify", "--root", root.to_str().expect("root")]);
     let result = run(&mut verify);
     assert_failure(&result, "mode");
+    wxml_delivery::manifest::set_mode(&binary, 0o755).unwrap();
+
+    let typescript = root.join("current/bin/wxml-type-backend/node_modules/typescript");
+    fs::remove_dir_all(&typescript).unwrap();
+    let mut verify = installer();
+    verify.args(["verify", "--root", root.to_str().expect("root")]);
+    let result = run(&mut verify);
+    assert_failure(&result, "missing");
 }
 
 #[test]

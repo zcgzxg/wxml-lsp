@@ -1,15 +1,17 @@
 #!/usr/bin/env bash
 # F3-02 installer-scope no-Node guard.
 #
-# Verifies an existing native schema v2 installation with `PATH` containing only
-# Node tripwire shims. This is auxiliary evidence: a PATH shim cannot rule out an
+# Verifies an existing schema v2 native installation (or, with --legacy, a
+# schema v1 read-only installation) with `PATH` containing only Node tripwire
+# shims. This is auxiliary evidence: a PATH shim cannot rule out an
 # absolute-path Node invocation, so this script does NOT close F3-02.
 #
 # Required (environment or flags):
 #   WXML_LSP_INSTALL / --installer   absolute wxml-lsp-install binary
-#   WXML_INSTALL_ROOT / --root       absolute native install root (outside repo)
+#   WXML_INSTALL_ROOT / --root       absolute install root (outside repo)
 #
 # Optional:
+#   --legacy             expect a schema v1 root; check current/verify/env only
 #   TSGO_ASSET           pinned 7.1.0-beta tarball (SHA-256/size checked, then used;
 #                        TSGO_NATIVE_TARBALL is accepted as an alias)
 #   TSGO_BIN             extracted engine/lib/tsc (SHA-256/size checked)
@@ -32,6 +34,7 @@ REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 INSTALLER=${WXML_LSP_INSTALL:-}
 ROOT=${WXML_INSTALL_ROOT:-}
 TIMEOUT_SECS=${WXML_TIMEOUT_SECS:-60}
+LEGACY=0
 EXPECTED_ENGINE_SHA256=a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70
 EXPECTED_ENGINE_SIZE=24522912
 
@@ -39,15 +42,17 @@ usage() {
     cat <<'EOF'
 F3-02 installer-scope no-Node guard.
 
-Verifies an existing native schema v2 installation with PATH containing only
-Node tripwire shims. This is auxiliary evidence: a PATH shim cannot rule out an
-absolute-path Node invocation, so this script does NOT close F3-02.
+Verifies an existing schema v2 native installation (or, with --legacy, a
+schema v1 read-only installation) with PATH containing only Node tripwire
+shims. This is auxiliary evidence: a PATH shim cannot rule out an absolute-path
+Node invocation, so this script does NOT close F3-02.
 
 Required (environment or flags):
   WXML_LSP_INSTALL / --installer   absolute wxml-lsp-install binary
-  WXML_INSTALL_ROOT / --root       absolute native install root (outside repo)
+  WXML_INSTALL_ROOT / --root       absolute install root (outside repo)
 
 Optional:
+  --legacy             expect a schema v1 root; check current/verify/env only
   TSGO_ASSET           pinned 7.1.0-beta tarball (checked, then used;
                        TSGO_NATIVE_TARBALL is accepted as an alias)
   TSGO_BIN             extracted engine/lib/tsc (SHA-256/size checked)
@@ -108,6 +113,10 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -ge 2 ] || die_usage "--root requires a value"
             ROOT=$2
             shift 2
+            ;;
+        --legacy)
+            LEGACY=1
+            shift
             ;;
         -h|--help)
             usage
@@ -308,6 +317,9 @@ run_installer() {
         LANG=C \
         LC_ALL=C \
         NO_COLOR=1 \
+        WXML_NODE="$SHIMS/node" \
+        WXML_TYPE_BACKEND="$SHIMS/server.js" \
+        WXML_BACKEND_DIR="$SHIMS" \
         HTTP_PROXY=http://127.0.0.1:9 \
         HTTPS_PROXY=http://127.0.0.1:9 \
         ALL_PROXY=http://127.0.0.1:9 \
@@ -333,6 +345,34 @@ printf 'INSTALL_ROOT: %s\n' "$ROOT_REAL"
 printf 'PATH: %s\n' "$SHIMS"
 
 positive_control
+
+if [ "$LEGACY" = "1" ]; then
+    printf 'MODE: legacy (schema v1 read-only)\n'
+
+    run_installer verify verify --root "$ROOT"
+    assert_stdout_matches verify "$LAST_STDOUT" '^verified .+ \(legacy, read-only\)$'
+    assert_stdout_matches verify "$LAST_STDOUT" '^binary: /'
+    printf 'verify: %s\n' "$(head -n 1 "$LAST_STDOUT")"
+
+    run_installer current current --root "$ROOT"
+    assert_stdout_matches current "$LAST_STDOUT" '^version: [^ ]'
+    assert_stdout_matches current "$LAST_STDOUT" '^schema: 1 \(legacy, read-only'
+    assert_stdout_matches current "$LAST_STDOUT" '^binary: /'
+    printf 'current: %s\n' "$(head -n 1 "$LAST_STDOUT")"
+
+    run_installer env env --root "$ROOT"
+    assert_stdout_matches env "$LAST_STDOUT" '^export WXML_LSP_BIN='
+    assert_stdout_absent env "$LAST_STDOUT" 'WXML_TYPE_BACKEND'
+    assert_stdout_absent env "$LAST_STDOUT" 'WXML_NODE'
+    assert_stdout_absent env "$LAST_STDOUT" 'WXML_BACKEND_DIR'
+    printf 'env: %s\n' "$(head -n 1 "$LAST_STDOUT")"
+
+    printf 'NO_NODE: PASS (legacy read-only scope: verify/current/env)\n'
+    printf 'RESIDUAL: schema v1 install/upgrade/rollback were not exercised\n'
+    printf 'RESIDUAL: execve/strace process audit is not performed; PATH shims cannot exclude absolute paths\n'
+    printf 'F3-01/F3-15: PARTIAL (legacy read-only scope; no strace audit, no real legacy package)\n'
+    exit 0
+fi
 
 run_installer verify verify --root "$ROOT"
 assert_stdout_matches verify "$LAST_STDOUT" '^verified .+ \(native\)$'

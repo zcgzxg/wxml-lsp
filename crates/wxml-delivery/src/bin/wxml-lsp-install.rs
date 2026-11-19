@@ -13,8 +13,8 @@ use wxml_delivery::install::{
 };
 use wxml_delivery::manifest::ExpectedManifest;
 use wxml_delivery::manifest_v2::{
-    ExpectedManifestV2, ManifestSchema, NATIVE_PACKAGE_PLATFORM, read_manifest_schema,
-    read_manifest_v2,
+    ExpectedManifestV2, LegacyManifestProjection, ManifestSchema, NATIVE_PACKAGE_PLATFORM,
+    read_legacy_manifest, read_manifest_schema, read_manifest_v2,
 };
 use wxml_delivery::native_install::{
     CommandEngineProbe, CurrentInstall, NativeInstallOutcome, NoHooks, inspect_current,
@@ -24,9 +24,7 @@ use wxml_delivery::paths::{host_platform, shell_quote};
 use wxml_delivery::semver::compare_versions;
 use wxml_delivery::source::Source;
 use wxml_delivery::state::InstallState;
-use wxml_delivery::verify::{
-    binary_version, check_backend, check_binary, check_node, verify_install,
-};
+use wxml_delivery::verify::{binary_version, check_backend, check_binary};
 use wxml_delivery::verify_v2::verify_tree_v2;
 
 const USAGE: &str = "\
@@ -39,9 +37,9 @@ Commands:
   recover        Apply journal recovery rules without activating a new version
   versions       List versions available from a source
   list           List installed versions (legacy schema v1 is read-only)
-  current        Print the active binary path and reported version
+  current        Print the active binary path and package version
   verify         Fully verify the active installation and native engine
-  env            Print WXML_LSP_BIN exports
+  env            Print the WXML_LSP_BIN export only
   verify-package Verify a package archive without installing it
 
 Options:
@@ -56,8 +54,10 @@ Options:
   --help              Print this message
 
 Manifest schema 2 packages are native and never require Node. Schema 1
-packages remain readable for migration, but the installer never executes their
-Node backend and never reactivates one as a rollback target.
+packages remain readable for migration only: their manifest identity may be
+inspected and their tree may be hashed, but the installer never executes their
+binary or Node backend, never probes `node --version`, and never reactivates a
+legacy package as a rollback target. `env` prints only WXML_LSP_BIN.
 
 Download is disabled unless --enable-download is passed with a remote source.
 A local --from-dir is an explicit offline source. WXML_LSP_BIN always takes
@@ -571,6 +571,22 @@ fn ensure_download_enabled(source: &Source, options: &Options) -> Result<()> {
     Ok(())
 }
 
+/// Reads the legacy schema v1 identity projection for the active version.
+///
+/// The projection reader never parses the Node fields and never executes
+/// anything; a manifest version that disagrees with the `current` link is
+/// rejected rather than silently reporting the wrong package.
+fn legacy_projection(root: &InstallRoot, version: &str) -> Result<LegacyManifestProjection> {
+    let projection = read_legacy_manifest(&root.versions_dir().join(version))?;
+    if projection.package_version != version {
+        return Err(DeliveryError::InstallState(format!(
+            "legacy manifest version `{}` does not match current `{version}`",
+            projection.package_version
+        )));
+    }
+    Ok(projection)
+}
+
 fn reject_v1_over_native(root: &InstallRoot) -> Result<()> {
     if active_is_native(root)? {
         return Err(DeliveryError::InstallState(
@@ -700,15 +716,15 @@ fn current(options: &Options) -> Result<()> {
             println!("manifest protocol: {}", manifest.protocol_version);
         }
         CurrentInstall::Legacy { version } => {
-            // Legacy schema v1: read-only, same behavior as the old installer.
-            let directory = root.versions_dir().join(&version);
-            let manifest = root.verify_installed(&version)?;
-            let reported = check_binary(&directory, &manifest)?;
-            check_backend(&directory, &manifest)?;
-            check_node(&manifest.node.minimum_version)?;
+            // Legacy schema v1 is inspected read-only. Only the manifest
+            // identity projection is read: the packaged binary is not
+            // executed, no Node runtime is loaded and no `node --version`
+            // probe is run.
+            let projection = legacy_projection(&root, &version)?;
             println!("binary: {}", root.current_binary()?.display());
-            println!("version: {reported}");
-            println!("manifest protocol: {}", manifest.protocol_version);
+            println!("version: {}", projection.package_version);
+            println!("platform: {}", projection.platform);
+            println!("schema: 1 (legacy, read-only; nothing executed)");
         }
         CurrentInstall::None => {
             return Err(DeliveryError::InstallState(
@@ -755,19 +771,15 @@ fn verify(options: &Options) -> Result<()> {
                     )));
                 }
             }
-            let directory = root.versions_dir().join(&version);
-            // Hash-verify the whole tree before executing the packaged binary.
-            // A tampered `bin/wxml-lsp` must never run just because the user
-            // asked to verify it.
+            // Read-only byte verification only. The packaged binary and the
+            // Node backend are never executed or probed; a legacy tree does
+            // not require a Node runtime to be verified.
             let manifest = root.verify_installed(&version)?;
-            let report = verify_install(&directory, &manifest)?;
-            println!("verified {version}");
-            println!("binary version: {}", report.binary_version);
-            println!(
-                "node: {} (minimum {})",
-                report.node_version, manifest.node.minimum_version
-            );
-            println!("protocol: {}", manifest.protocol_version);
+            println!("verified {version} (legacy, read-only)");
+            println!("files: {}", manifest.files.len());
+            println!("manifest protocol: {}", manifest.protocol_version);
+            println!("binary: {}", root.current_binary()?.display());
+            println!("note: nothing was executed; no Node runtime is required");
         }
         CurrentInstall::None => {
             return Err(DeliveryError::InstallState(
@@ -800,21 +812,13 @@ fn env(options: &Options) -> Result<()> {
             );
         }
         CurrentInstall::Legacy { version } => {
-            // Legacy schema v1: keep the historical exports for read-only
-            // compatibility. No native command forwards them.
-            root.verify_installed(&version)?;
+            // Projection-only read: no legacy binary, no Node runtime and no
+            // backend variable is emitted. Only WXML_LSP_BIN is exported.
+            let _projection = legacy_projection(&root, &version)?;
             let binary = root.current_binary()?;
-            let backend = binary
-                .parent()
-                .ok_or_else(|| DeliveryError::InstallState("binary has no parent".to_owned()))?
-                .join("wxml-type-backend/server.js");
             println!(
                 "export {BINARY_ENV}={}",
                 shell_quote(binary.to_string_lossy().as_ref())
-            );
-            println!(
-                "export WXML_TYPE_BACKEND={}",
-                shell_quote(backend.to_string_lossy().as_ref())
             );
         }
         CurrentInstall::None => {
@@ -969,12 +973,6 @@ fn print_install_result(
     let manifest = root.verify_installed(version)?;
     check_binary(&directory, &manifest)?;
     check_backend(&directory, &manifest)?;
-    match check_node(&manifest.node.minimum_version) {
-        Ok(node) => println!("node: {node}"),
-        Err(error) => eprintln!(
-            "warning: {error}\nwarning: syntax-only features remain available; install a supported Node.js for type features"
-        ),
-    }
     let action = match outcome {
         InstallOutcome::Installed => "installed",
         InstallOutcome::AlreadyInstalled => "already installed",
