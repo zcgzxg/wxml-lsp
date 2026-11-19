@@ -306,6 +306,58 @@ pub fn checksums_for_tree_v2(root: &Path, manifest: &ManifestV2) -> Result<Vec<u
     Ok(format_sha256sums(&entries))
 }
 
+/// One directory row for the canonical tree fingerprint.
+pub(crate) struct TreeFingerprintDirectory<'a> {
+    /// Root-relative directory path using `/` separators.
+    pub path: &'a str,
+    /// POSIX mode without the file-type bits.
+    pub mode: u32,
+}
+
+/// One file row for the canonical tree fingerprint.
+pub(crate) struct TreeFingerprintFile<'a> {
+    /// Root-relative file path using `/` separators.
+    pub path: &'a str,
+    /// POSIX mode without the file-type bits.
+    pub mode: u32,
+    /// Lowercase SHA-256 of the file bytes.
+    pub sha256: &'a str,
+}
+
+/// Builds the canonical tree-fingerprint preimage shared by the installer and
+/// the asset lock.
+///
+/// Directories are sorted by the raw UTF-8 bytes of their path and serialized
+/// as `D <octal mode> <path>\n`; files follow, sorted the same way and
+/// serialized as `F <octal mode> <sha256> <path>\n`. Octal modes have no
+/// leading zero. The caller hashes the returned bytes with SHA-256.
+#[must_use]
+pub(crate) fn tree_fingerprint_preimage(
+    directories: &[TreeFingerprintDirectory<'_>],
+    files: &[TreeFingerprintFile<'_>],
+) -> Vec<u8> {
+    let mut directories: Vec<&TreeFingerprintDirectory<'_>> = directories.iter().collect();
+    directories.sort_by(|left, right| left.path.as_bytes().cmp(right.path.as_bytes()));
+    let mut lines = String::new();
+    for directory in directories {
+        lines.push_str("D ");
+        let _ = write!(lines, "{:o} ", directory.mode);
+        lines.push_str(directory.path);
+        lines.push('\n');
+    }
+    let mut files: Vec<&TreeFingerprintFile<'_>> = files.iter().collect();
+    files.sort_by(|left, right| left.path.as_bytes().cmp(right.path.as_bytes()));
+    for file in files {
+        lines.push_str("F ");
+        let _ = write!(lines, "{:o} ", file.mode);
+        lines.push_str(file.sha256);
+        lines.push(' ');
+        lines.push_str(file.path);
+        lines.push('\n');
+    }
+    lines.into_bytes()
+}
+
 /// Returns a stable fingerprint of a package tree's paths, modes and bytes.
 ///
 /// Used by tests to prove that a failed transaction left the previous tree
@@ -316,30 +368,38 @@ pub fn checksums_for_tree_v2(root: &Path, manifest: &ManifestV2) -> Result<Vec<u
 /// Returns an error when the tree contains unsafe entries or cannot be read.
 pub fn tree_fingerprint(root: &Path) -> Result<String> {
     let contents = collect_tree(root)?;
-    let mut lines = String::new();
+    let mut directories = Vec::with_capacity(contents.directories.len());
     for directory in &contents.directories {
         let path = root.join(directory);
         let metadata =
             std::fs::symlink_metadata(&path).map_err(|error| DeliveryError::io(&path, error))?;
-        let mode = mode_of(&metadata);
-        lines.push_str("D ");
-        let _ = write!(lines, "{mode:o} ");
-        lines.push_str(directory);
-        lines.push('\n');
+        directories.push(TreeFingerprintDirectory {
+            path: directory,
+            mode: mode_of(&metadata),
+        });
     }
+    let mut hashes = Vec::with_capacity(contents.files.len());
     for file in &contents.files {
-        let path = root.join(file);
-        let metadata =
-            std::fs::symlink_metadata(&path).map_err(|error| DeliveryError::io(&path, error))?;
-        let mode = mode_of(&metadata);
-        lines.push_str("F ");
-        let _ = write!(lines, "{mode:o} ");
-        lines.push_str(&sha256_file(&path)?);
-        lines.push(' ');
-        lines.push_str(file);
-        lines.push('\n');
+        hashes.push(sha256_file(&root.join(file))?);
     }
-    Ok(sha256_bytes(lines.as_bytes()))
+    let files: Vec<TreeFingerprintFile<'_>> = contents
+        .files
+        .iter()
+        .zip(&hashes)
+        .map(|(file, sha256)| {
+            let metadata = std::fs::symlink_metadata(root.join(file))
+                .map_err(|error| DeliveryError::io(&root.join(file), error))?;
+            Ok(TreeFingerprintFile {
+                path: file,
+                mode: mode_of(&metadata),
+                sha256,
+            })
+        })
+        .collect::<Result<_>>()?;
+    Ok(sha256_bytes(&tree_fingerprint_preimage(
+        &directories,
+        &files,
+    )))
 }
 
 fn mode_of(metadata: &std::fs::Metadata) -> u32 {
@@ -407,5 +467,36 @@ mod tests {
         let bytes = format_sha256sums(&entries);
         let parsed = parse_sha256sums(&bytes).unwrap();
         assert_eq!(bytes, format_sha256sums(&parsed));
+    }
+
+    #[test]
+    fn tree_fingerprint_preimage_sorts_directories_then_files() {
+        let directories = [
+            TreeFingerprintDirectory {
+                path: "z",
+                mode: 0o755,
+            },
+            TreeFingerprintDirectory {
+                path: "a",
+                mode: 0o755,
+            },
+        ];
+        let files = [
+            TreeFingerprintFile {
+                path: "b",
+                mode: 0o644,
+                sha256: "1",
+            },
+            TreeFingerprintFile {
+                path: "a",
+                mode: 0o755,
+                sha256: "0",
+            },
+        ];
+        let preimage = tree_fingerprint_preimage(&directories, &files);
+        assert_eq!(
+            String::from_utf8(preimage).unwrap(),
+            "D 755 a\nD 755 z\nF 755 0 a\nF 644 1 b\n"
+        );
     }
 }

@@ -20,6 +20,7 @@
 pub mod acquire;
 pub mod acquire_v2;
 pub mod archive;
+pub mod assets_lock;
 pub mod cache;
 pub mod error;
 pub mod index_v2;

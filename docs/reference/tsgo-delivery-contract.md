@@ -757,7 +757,7 @@ Index 最大 1 MiB，`deny_unknown_fields`。`archive` 只存**文件名**；rel
       "upstream": {
         "fileCount": 26,
         "unpackedSize": 2552052,
-        "treeDigest": "2141aac47206441f0434a7b519e49da1e8756d1bcdb6c17809a7f5e188a34c42"
+        "treeDigest": "<tree_fingerprint of upstream.files[]; not the 2141aac bundle digest>"
       },
       "extract": {
         "stripPrefix": "package/",

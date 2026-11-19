@@ -40,9 +40,14 @@
 
 | 摘要 | 值 | 语义/消费者 |
 | --- | --- | --- |
-| 26 文件上游包摘要 | `2141aac…` | 上游解包树身份；只应在 `assets.lock.json` 的 `upstream.treeDigest`/`upstream.files[]` 中出现 |
+| 26 文件上游 **bundle** 摘要 | `2141aac…` | 按 `sha256  path\n` 排序后 SHA-256 的 bundle 摘要；可用于 `assets.lock.json` 的 bundle 审计，**不是** `upstream.treeDigest` |
 | 23 文件 payload 摘要 | `ba3eb83…` | 交付 manifest `typeAssets[miniprogram].sha256` / lock `payload.bundles[].sha256` |
 | 20 文件运行时闭包摘要 | `821c93…` | 原生后端 `TypeAssetsPin`；只证明 VFS 挂载的 `.d.ts` 与本地 fixture 一致 |
+
+`2141aac…` 是 26 文件的 **bundle** 摘要（`sha256  path\n` 行），不是 `assets.lock.json` 的
+`upstream.treeDigest`。`upstream.treeDigest` 使用与 `verify_v2::tree_fingerprint` 相同的行格式：
+先所有 `D 755 <dir>\n`（文件路径祖先闭包，按 UTF-8 字节序），再所有
+`F <octal mode> <sha256> <path>\n`（按路径字节序），最后 SHA-256；两者不得互相替代。
 
 20 文件摘要在 ( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-backend-tsgo/src/input.rs:148 ) 固定，代码注释明确它不是交付 manifest 的 26/23 包摘要；`TypeAssets::package_digest()` 也再次声明“这是 20 文件运行时闭包，不是 26 文件包摘要”，见 ( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-backend-tsgo/src/input.rs:702 )。因此 **Option A 不改变任何运行时摘要常量**。
 

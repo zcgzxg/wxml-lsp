@@ -246,12 +246,12 @@
 | `tarball.sha256` | 是 | 64 位小写 hex；必须等于实测；禁止全 0 占位 |
 | `upstream.fileCount/unpackedSize` | 是 | 解包后的**上游全部文件**（引擎 122；typings 26）；必须等于 `upstream.files[]` 的数量/总和 |
 | `upstream.files[]` | 是 | stripPrefix 之后的**完整**上游列表（含被 payload 排除的文件；示例为节选）；`{path,sha256,size,mode}`；mode 为归一化后的模式；逐文件固定 |
-| `upstream.treeDigest` | 是 | 对 `upstream.files[]` 对应树按同一 fingerprint 算法重算 |
+| `upstream.treeDigest` | 是 | 对 `upstream.files[]` 按 `tree_fingerprint` 重算：根为 `""`；先所有 `D 755 <dir>\n`（目录=文件路径祖先闭包、不含根，按 UTF-8 字节序），再所有 `F <octal mode> <sha256> <path>\n`（按路径字节序），最后 SHA-256 |
 | `extract.include` | 是 | 相对 strip 后的 glob；`*` 不跨目录、`**` 递归；复用 `validate_glob_pattern` |
 | `extract.exclude[]` | 是 | 数组元素为 `{path, reason}`；显式列出被丢弃的上游文件及原因；`include` 与 `exclude` 必须覆盖上游全部条目，**不允许静默丢弃** |
 | `extract.executables` | 是 | 仅这些路径解包为 `0755`；其余一律 `0644` |
 | `payload.fileCount/totalBytes` | 是 | 必须等于 `files[]` 的长度/总和；必须等于 manifest `typeAssets[].fileCount` |
-| `payload.treeDigest` | 是 | 对 payload 树按 `tree_fingerprint` 同格式重算：`D <mode> <dir>`/`F <mode> <sha256> <path>` 排序后 SHA-256，见 ( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-delivery/src/verify_v2.rs:303 ) |
+| `payload.treeDigest` | 是 | 与 `upstream.treeDigest` 完全相同的 `tree_fingerprint` 算法，但根为 `packageRoot`（先 strip 精确前缀），目录同样取祖先闭包且固定 `0755`；行拼接 helper 与 `verify_v2::tree_fingerprint` 共用，见 ( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-delivery/src/verify_v2.rs:303 ) |
 | `payload.files[].path` | 是 | 包相对（= `packageRoot/` + 上游相对路径）、`/` 分隔、无 `..`/绝对/反斜杠/控制字符；唯一且大小写折叠唯一 |
 | `payload.files[].sha256/size/mode` | 是 | 逐文件固定；mode 仅 `0644/0755`；大小 >0 |
 | `payload.bundles[]` | 是 | 每个 manifest `typeAssets[]` 必须有同名 bundle；`fileCount/sha256` 必须与 `files[]` 重算一致（算法见 ( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-delivery/src/type_assets.rs:191 )） |
@@ -496,7 +496,8 @@ fixtures（全部在测试内构造，落盘到 `WXML_TEST_TMPDIR` 或 `/tmp/ope
 - `provisioning_never_executes_node_or_network`（`--offline` + tripwire PATH）
 
 配套断言：
-- `payload.treeDigest` 与 `verify_v2::tree_fingerprint` 的结果一致；
+- `upstream.treeDigest`/`payload.treeDigest` 与 `verify_v2::tree_fingerprint` 共用同一行拼接 helper；upstream 根为 `""`，payload 根为 `packageRoot`；
+- 固定 lock 的 golden `treeDigest`，并用临时目录物化文件后与 `verify_v2::tree_fingerprint` 逐字节比较；
 - 两次 provision 到不同 cache 得到相同 payload digest；
 - 缓存命中不写 lock、不写输出目录；
 - 所有错误在 `assets/` 下不留条目。
