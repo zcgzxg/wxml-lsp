@@ -11,7 +11,16 @@ use std::path::Path;
 
 use crate::fixture_hash::collect_tree_files;
 use crate::ledger;
+use crate::native_engine_real::{GATE_REPLACEMENTS, IGNORED_GATE_TESTS, NATIVE_GATE_FILE};
 use crate::source_scan;
+
+/// The exact first-wave ignored-native-gate set.
+fn declared_native_gate_tests() -> BTreeSet<(String, String)> {
+    IGNORED_GATE_TESTS
+        .iter()
+        .map(|(file, function)| ((*file).to_owned(), (*function).to_owned()))
+        .collect()
+}
 
 fn read_source(path: &Path) -> String {
     std::fs::read_to_string(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
@@ -175,19 +184,169 @@ fn all_ignored_rust_tests_are_mandatory_unmigrated_gates() {
         );
     }
 
-    let (count, actual) = ignored_functions();
+    let (count, mut actual) = ignored_functions();
+    let native = declared_native_gate_tests();
+    assert_eq!(
+        native.len(),
+        IGNORED_GATE_TESTS.len(),
+        "the declared native gate list has duplicates"
+    );
     assert_eq!(
         count,
+        gates.len() + native.len(),
+        "found {count} #[ignore] lines but the ledger records {} old gates plus {} native gate tests",
         gates.len(),
-        "found {count} #[ignore] lines but the ledger records {} gates",
-        gates.len()
+        native.len()
     );
+    for (file, function) in &native {
+        assert!(
+            actual.remove(&(file.clone(), function.clone())),
+            "declared native gate {file}::{function} must be an #[ignore] test"
+        );
+    }
     assert_eq!(
         actual, expected,
         "the #[ignore] test set drifted from the ledger; update the ledger \
          deliberately and never drop a gate silently"
     );
     assert_eq!(gate_ids.len(), 23);
+}
+
+#[test]
+fn first_wave_native_replacements_are_linked_without_promoting_the_ledger() {
+    let ledger_value = ledger::load_ledger();
+    let root = ledger::object(&ledger_value, "ledger root");
+    let gates = ledger::required_array(root, "ignored_rust_tests", "ledger root");
+    let mut by_id = std::collections::BTreeMap::new();
+    for gate in gates {
+        let gate = ledger::object(gate, "ledger.ignored_rust_tests[]");
+        let gate_id = ledger::required_str(gate, "gate_id", "ignored gate");
+        by_id.insert(gate_id.to_owned(), gate);
+    }
+
+    let replacements: BTreeSet<&str> = IGNORED_GATE_TESTS
+        .iter()
+        .map(|(_, function)| *function)
+        .collect();
+    let mut linked: BTreeSet<&str> = BTreeSet::new();
+    for (gate_id, replacement) in GATE_REPLACEMENTS {
+        let gate = by_id
+            .get(*gate_id)
+            .unwrap_or_else(|| panic!("ledger is missing the first-wave gate {gate_id}"));
+        assert_eq!(
+            ledger::required_str(gate, "status", gate_id),
+            "required_not_migrated",
+            "{gate_id} must stay required_not_migrated; a green replacement is not a ledger promotion"
+        );
+        assert!(
+            replacements.contains(*replacement),
+            "{gate_id} replacement {replacement} is not an ignored native gate"
+        );
+        assert!(
+            linked.insert(*replacement),
+            "{replacement} is linked to more than one ledger gate"
+        );
+    }
+    assert_eq!(
+        linked, replacements,
+        "every first-wave native replacement must link to exactly one ledger gate"
+    );
+}
+
+#[test]
+fn native_gate_tests_are_declared_ignored_and_fail_closed() {
+    let workspace = ledger::workspace_root();
+    let source = read_source(&workspace.join(NATIVE_GATE_FILE));
+    let lines: Vec<&str> = source.lines().collect();
+    let mut declared = BTreeSet::new();
+    let mut ignored = BTreeSet::new();
+
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("#[test]") {
+            let name = lines
+                .iter()
+                .skip(index + 1)
+                .take(16)
+                .find_map(|line| source_scan::parse_fn_name(line))
+                .unwrap_or_else(|| panic!("{NATIVE_GATE_FILE} has a #[test] without a fn"));
+            assert!(
+                declared.insert(name),
+                "{NATIVE_GATE_FILE} declares a duplicate #[test]"
+            );
+        }
+        if trimmed.starts_with("#[ignore") {
+            let (function_index, name) = lines
+                .iter()
+                .enumerate()
+                .skip(index + 1)
+                .take(16)
+                .find_map(|(function_index, line)| {
+                    source_scan::parse_fn_name(line).map(|name| (function_index, name))
+                })
+                .unwrap_or_else(|| panic!("{NATIVE_GATE_FILE} has an #[ignore] without a fn"));
+            assert!(
+                source_scan::attribute_block_contains(&lines, function_index, "#[ignore"),
+                "{NATIVE_GATE_FILE}::{name} must keep #[ignore] in its attribute block"
+            );
+            ignored.insert(name);
+        }
+    }
+
+    let expected: BTreeSet<String> = IGNORED_GATE_TESTS
+        .iter()
+        .map(|(_, function)| (*function).to_owned())
+        .collect();
+    assert_eq!(
+        declared, expected,
+        "the first-wave native gate test set is frozen"
+    );
+    assert_eq!(
+        ignored, expected,
+        "every first-wave native gate must stay #[ignore] until the native job is required"
+    );
+
+    for file in [
+        NATIVE_GATE_FILE,
+        "crates/wxml-lsp/tests/native_parity/native_gate_env.rs",
+        "crates/wxml-lsp/tests/native_parity/native_lsp.rs",
+        "crates/wxml-lsp/tests/native_parity/native_package.rs",
+    ] {
+        let source = read_source(&workspace.join(file));
+        for forbidden in [
+            "WXML_TEST_NODE",
+            "dist/server.js",
+            "Command::new(\"node\")",
+            "tsc.exists()",
+            "skipping real Node LSP test",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{file} must not contain the superseded Node path {forbidden:?}"
+            );
+        }
+    }
+
+    for name in &expected {
+        let line = lines
+            .iter()
+            .position(|line| line.contains(&format!("fn {name}(")))
+            .unwrap_or_else(|| panic!("{NATIVE_GATE_FILE} does not declare {name}"))
+            + 1;
+        let body = source_scan::function_body(&source, line)
+            .unwrap_or_else(|| panic!("{NATIVE_GATE_FILE}::{name} body is missing"));
+        let request = body.find("NativeGate::require(").unwrap_or_else(|| {
+            panic!("{NATIVE_GATE_FILE}::{name} must call NativeGate::require()")
+        });
+        for forbidden in ["write_page_fixture(", "gate.write(", "Session::start("] {
+            if let Some(index) = body.find(forbidden) {
+                assert!(
+                    request < index,
+                    "{NATIVE_GATE_FILE}::{name} must provision the native package before `{forbidden}`"
+                );
+            }
+        }
+    }
 }
 
 #[test]

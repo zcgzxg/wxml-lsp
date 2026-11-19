@@ -40,8 +40,16 @@ mod loops;
 mod mapping_utf16;
 #[path = "native_parity/messages_evidence.rs"]
 mod messages_evidence;
+#[path = "native_parity/native_engine_real.rs"]
+mod native_engine_real;
+#[path = "native_parity/native_gate_env.rs"]
+mod native_gate_env;
 #[path = "native_parity/native_gates.rs"]
 mod native_gates;
+#[path = "native_parity/native_lsp.rs"]
+mod native_lsp;
+#[path = "native_parity/native_package.rs"]
+mod native_package;
 #[path = "native_parity/perf_budget.rs"]
 mod perf_budget;
 #[path = "native_parity/project_overlay.rs"]
