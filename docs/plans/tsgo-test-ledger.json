@@ -164,18 +164,18 @@
     },
     "migration_evidence": {
       "assessed_at": "2026-11-19",
-      "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
-      "rust_test_command": "cargo test -p wxml-lsp --lib backend_tsgo::tests; cargo test -p wxml-backend-tsgo --lib query::definition::tests; cargo test -p wxml-lsp --test native_parity",
-      "rust_test_result": "targeted P4-C adapter and definition unit tests pass; real-engine definition and perf gates remain opt-in and skip without TSGO_BIN; native_parity ledger gate passes",
-      "assessed_cases": 114,
-      "exact": 33,
+      "implementation_head": "4371386753777596e351ab7016a57d20e0df1b67",
+      "rust_test_command": "cargo test -p wxml-lsp --lib; cargo test -p wxml-lsp --test native_parity; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored; cargo test -p wxml-delivery --test assets_lock_root",
+      "rust_test_result": "wxml-lsp lib 789 passed/0 failed; native_parity 36 passed/0 failed/3 ignored; required native gates 3 passed/0 failed/36 filtered; assets_lock_root 2 passed/0 failed",
+      "assessed_cases": 119,
+      "exact": 36,
       "near_exact": 3,
-      "weaker": 55,
+      "weaker": 57,
       "structural": 6,
       "blocked": 17,
-      "green_eligible": 33,
-      "promoted_to_green": 33,
-      "remaining_planned_without_evidence": 189,
+      "green_eligible": 36,
+      "promoted_to_green": 36,
+      "remaining_planned_without_evidence": 184,
       "by_partition": {
         "behaviors": {
           "routed_cases": 22,
@@ -191,11 +191,11 @@
         },
         "completion": {
           "routed_cases": 9,
-          "evidence_cases": 3,
-          "green_cases": 1,
+          "evidence_cases": 5,
+          "green_cases": 3,
           "planned_evidence_cases": 2,
-          "unassessed_cases": 6,
-          "exact": 1,
+          "unassessed_cases": 4,
+          "exact": 3,
           "near_exact": 0,
           "weaker": 2,
           "structural": 0,
@@ -239,11 +239,11 @@
         },
         "guards_js": {
           "routed_cases": 25,
-          "evidence_cases": 10,
-          "green_cases": 4,
+          "evidence_cases": 11,
+          "green_cases": 5,
           "planned_evidence_cases": 6,
-          "unassessed_cases": 15,
-          "exact": 4,
+          "unassessed_cases": 14,
+          "exact": 5,
           "near_exact": 0,
           "weaker": 1,
           "structural": 0,
@@ -323,13 +323,13 @@
         },
         "protocol_limits": {
           "routed_cases": 40,
-          "evidence_cases": 0,
+          "evidence_cases": 2,
           "green_cases": 0,
-          "planned_evidence_cases": 0,
-          "unassessed_cases": 40,
+          "planned_evidence_cases": 2,
+          "unassessed_cases": 38,
           "exact": 0,
           "near_exact": 0,
-          "weaker": 0,
+          "weaker": 2,
           "structural": 0,
           "blocked": 0
         },
@@ -371,18 +371,18 @@
         }
       },
       "rust_unit_test_command": "cargo test -p wxml-backend-tsgo --lib",
-      "rust_unit_test_result": "235 passed, 0 failed, 0 ignored",
+      "rust_unit_test_result": "wxml-lsp lib 789 passed, 0 failed, 0 ignored",
       "near_exact_recommendations": 3,
       "statuses": {
-        "planned": 270,
-        "green": 33,
+        "planned": 267,
+        "green": 36,
         "retired-with-decision": 36
       },
       "status_policy": "Only parity=exact cases are green. near_exact, weaker, structural and blocked cases stay planned with status_recommendation recorded; no empty evidence is accepted."
     },
     "statuses": {
-      "planned": 270,
-      "green": 33,
+      "planned": 267,
+      "green": 36,
       "retired-with-decision": 36
     }
   },
@@ -4125,13 +4125,39 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "completion"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPLETION-0175",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "4371386753777596e351ab7016a57d20e0df1b67",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The adapter-level EventHandler request asserts the same Supported status, onTap/onLoad method labels, Method kind and a two-byte replace range as the TS oracle; it additionally proves the answer is built from script facts without starting a native session. The unit test pins the same page-method table including the arrow form.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 4185,
+            "test": "event_completion_uses_script_methods_without_starting_a_native_session",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::event_completion_uses_script_methods_without_starting_a_native_session",
+            "note": "Adapter EventHandler completion for a Page literal asserts the exact onLoad/onTap labels, Supported status, Method kind, two-byte replace range and zero native session starts."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/event_completion/tests.rs",
+            "line": 166,
+            "test": "page_literal_methods_are_suggested_and_containers_are_not",
+            "fully_qualified": "wxml_lsp::backend_tsgo::event_completion::tests::page_literal_methods_are_suggested_and_containers_are_not",
+            "note": "Unit test asserts the same page method labels plus the arrow form and excludes data/methods container names."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPLETION-0193",
@@ -4183,13 +4209,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "completion"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPLETION-0193",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "4371386753777596e351ab7016a57d20e0df1b67",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The unit test asserts the same Supported component-methods table and the save label as the TS oracle; it additionally proves attached/lifetimes members are not published and that only methods members are candidates.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/event_completion/tests.rs",
+            "line": 188,
+            "test": "component_publishes_only_methods_members",
+            "fully_qualified": "wxml_lsp::backend_tsgo::event_completion::tests::component_publishes_only_methods_members",
+            "note": "Component EventHandler completion asserts Supported status, the save method label, and exclusion of attached/lifetimes members from the methods-only table."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPLETION-0207",
@@ -4249,19 +4294,33 @@
       "migration_evidence": {
         "case_id": "TS-COMPLETION-0207",
         "assessed_at": "2026-11-19",
-        "implementation_head": "6ba407b4cb8d3ea124276337e6da983a1e9f3a51",
+        "implementation_head": "4371386753777596e351ab7016a57d20e0df1b67",
         "parity": "weaker",
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Native Unsupported is mapped to an Unsupported empty completion list; the test does not assert truncated=false and covers a native failure rather than the TS unavailable-layout trigger.",
+        "note": "Still weaker: the TS oracle uses an unavailable layout trigger and asserts an Unsupported completion result with truncated=false. The new native event tests cover target=None as Unsupported and a missing owning script as an Unavailable error, but not the exact TS unavailable-layout result shape.",
         "rust_tests": [
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
-            "line": 970,
+            "line": 2172,
             "test": "an_unsupported_native_completion_is_explicitly_unsupported",
             "fully_qualified": "wxml_lsp::backend_tsgo::tests::an_unsupported_native_completion_is_explicitly_unsupported",
-            "note": "Asserts empty items and Unsupported status for a native Unsupported completion query."
+            "note": "Native Unsupported completion maps to an empty items list with Unsupported status, not the TS unavailable-layout trigger."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/event_completion/tests.rs",
+            "line": 539,
+            "test": "a_missing_owning_script_is_unavailable",
+            "fully_qualified": "wxml_lsp::backend_tsgo::event_completion::tests::a_missing_owning_script_is_unavailable",
+            "note": "A missing owning script returns BackendError::Unavailable instead of a completion result, so it is not the TS unsupported/truncated=false shape."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/event_completion/tests.rs",
+            "line": 524,
+            "test": "a_template_without_an_owning_script_is_unsupported",
+            "fully_qualified": "wxml_lsp::backend_tsgo::event_completion::tests::a_template_without_an_owning_script_is_unsupported",
+            "note": "A template without an owner yields an empty Unsupported event completion; the trigger differs from the TS unavailable layout fixture."
           }
         ]
       }
@@ -19352,7 +19411,33 @@
       "capabilities": [
         "definition",
         "version"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-META-0009",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "791bf33bec13a1a9fa485f56d4a261c7898c8d67",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The repository assets.lock.json is frozen and asserts the pinned native engine 7.1.0-beta (tarball/SRI/SHA-256/binary/stdlib digests) and miniprogram-api-typings 5.3.1 (payload/runtime digest). The TS oracle instead pins the old Node TypeScript 6.0.3, package.json dependency ranges and the @types/node dev-only entry, so the pinned intent is translated but the observable versions and fields are not identical.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-delivery/tests/assets_lock_root.rs",
+            "line": 130,
+            "test": "repository_root_lock_is_frozen_and_canonical",
+            "fully_qualified": "wxml_delivery::assets_lock_root::repository_root_lock_is_frozen_and_canonical",
+            "note": "Asserts the committed root lock is canonical and pins engine 7.1.0-beta plus typings 5.3.1 identities and payload digests."
+          },
+          {
+            "path": "crates/wxml-delivery/tests/native_delivery.rs",
+            "line": 650,
+            "test": "provenance_lock_identity_binds_installed_type_assets",
+            "fully_qualified": "wxml_delivery::native_delivery::provenance_lock_identity_binds_installed_type_assets",
+            "note": "Asserts an installed tree is bound to the lock payloadTreeDigest and that a mismatched identity is rejected."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-META-0027",
@@ -20319,13 +20404,53 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "compiler"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROBES-0169",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "caf045d0dd3b145c673f60472fcf7849668e53cc",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The trusted type-assets handoff fails before a session starts: a missing typings root maps to RootUnavailable, an incomplete lib/typings tree maps to MissingRequired, and the required gate panics for a missing lib.d.ts or TSGO_TYPINGS_ROOT. This is the same fail-fast EnvironmentError behavior as the TS assert.throws, with stronger typed error assertions.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/environment/tests.rs",
+            "line": 136,
+            "test": "with_install_reports_a_missing_typings_root",
+            "fully_qualified": "wxml_lsp::backend_tsgo::environment::tests::with_install_reports_a_missing_typings_root",
+            "note": "Production with_install returns EnvironmentLoadError::RootUnavailable for a missing typings root and keeps the message path-free."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/environment/tests.rs",
+            "line": 159,
+            "test": "load_environment_rejects_an_incomplete_tree_without_exposing_paths",
+            "fully_qualified": "wxml_lsp::backend_tsgo::environment::tests::load_environment_rejects_an_incomplete_tree_without_exposing_paths",
+            "note": "load_environment rejects an empty lib/typings tree with MissingRequired instead of starting a session."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/environment/gate.rs",
+            "line": 449,
+            "test": "required_gate_fails_without_the_standard_library",
+            "fully_qualified": "wxml_lsp::backend_tsgo::environment::gate::required_gate_fails_without_the_standard_library",
+            "note": "Required mode panics with the lib.d.ts remediation when TSGO_BIN sits outside a standard-library directory."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/environment/gate.rs",
+            "line": 458,
+            "test": "required_gate_fails_without_typings",
+            "fully_qualified": "wxml_lsp::backend_tsgo::environment::gate::required_gate_fails_without_typings",
+            "note": "Required mode panics with the TSGO_TYPINGS_ROOT remediation when the typings package is absent."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROBES-0176",
@@ -24531,7 +24656,33 @@
       "oracle_type": "assertion",
       "comparison_type": "mechanism_replaced",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SERVER-0237",
+        "assessed_at": "2026-11-19",
+        "implementation_head": "9a8b65caac38e2d04a08550e0506408f7af967f5",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The de-Node installer no longer resolves Node backend directories at all, so the TS source/dist/packaged resolveBackendDir assertions have no one-to-one native counterpart. The native installer tests prove the replacement mechanism: verified native install/upgrade/rollback under a PATH without node, and legacy read-only commands that never consult node or backend environment variables.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-delivery/tests/installer_flow.rs",
+            "line": 598,
+            "test": "legacy_read_only_commands_never_consult_node",
+            "fully_qualified": "wxml_delivery::installer_flow::legacy_read_only_commands_never_consult_node",
+            "note": "Legacy verify/current/env ignore WXML_NODE, WXML_TYPE_BACKEND and WXML_BACKEND_DIR and do not execute the poison Node tripwire."
+          },
+          {
+            "path": "crates/wxml-delivery/tests/native_cli.rs",
+            "line": 391,
+            "test": "installs_native_verify_upgrade_rollback_env_without_node",
+            "fully_qualified": "wxml_delivery::native_cli::installs_native_verify_upgrade_rollback_env_without_node",
+            "note": "Native install/verify/upgrade/rollback/env run under a PATH without node and assert the 7.1.0-beta engine identity."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SERVER-0267",

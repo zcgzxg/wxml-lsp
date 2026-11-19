@@ -519,6 +519,14 @@ G1 仍未关闭；7.1.0-beta 仅由维护者有条件接受并固定 integrity�
 
 当前门禁事实：
 
+> **2026-11-19 后续（P6 回填，HEAD `9a8b65c`）**：trusted type-assets handoff 已由
+> `caf045d` 接线，event completion 已由 `4371386` 落地，F3 root lock/package cache 已由
+> `791bf33`/`e442f5d` 落地。台账已更新为 36 `green` / 267 `planned` / 36 retired；
+> 3 个 `gate_green` 在带 `TSGO_TYPINGS_ROOT` 的 opt-in native job 复跑 3 passed，
+> 其余 20 个 gate 仍 required。下列 P6-3/F3/台账条目保留为 2026-11-19 早先快照；
+> 详情见 `docs/evidence/2026-11-19-tsgo-ledger-backfill.md`。默认 Node、默认 CI、
+> `mandatory_green`、P6/G5/G6/F3 均未因此改变。
+
 - **Gate 债**：23 个 `#[ignore]` 全部仍为 gate debt；`semantic_tools` 的 2 个静默 return 与可选 `tsc` 分支仍在。按 `0e7c672` 计划，它们只有在替代测试 `mandatory_green` 且 review 后才能删除/关闭。
 - **P6-3**：backend 数据层已落，但 adapter 尚未接线资产、compilerOptions 或 `js_check`。可信 pin loader 与 `assets.lock.json` 缺失；AC-004 未保存更新旧诊断、TS 版本偏差、adapter 降级均未关闭。
 - **P6-4**：仅 opt-in `--backend native` 与引擎发现/沙箱切片；P6-4b/c、真实包启动、无 Node 进程审计和默认切换均未完成。

@@ -6,6 +6,13 @@ Base HEAD: `60f4c6c` (ledger evidence head: `6ba407b`)
 Scope: docs-only backlog. No production, Cargo, delivery, ledger, ADR, or commit changes.
 No case is marked `green`, `reviewed`, or `closed` by this plan.
 
+> **2026-11-19 后续状态（P6 回填）**：3 个 exact 用例已提升为 `green`
+> （`TS-COMPLETION-0175`、`TS-COMPLETION-0193`、`TS-PROBES-0169`），另有
+> `TS-META-0009`、`TS-SERVER-0237` 登记 weaker 证据。当前台账为 36 `green` /
+> 267 `planned` / 36 retired，其中 184 个 planned 无证据。本文下面的 270/189
+> 表是计划制定时的基线快照，不随回填改写；见
+> `docs/evidence/2026-11-19-tsgo-ledger-backfill.md`。
+
 ## 0. Summary
 
 - 270 ledger cases remain `planned`: 189 with no Rust evidence, 55 weaker, 6 structural,

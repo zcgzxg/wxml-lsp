@@ -24,8 +24,8 @@ pub(crate) const NATIVE_GATE_FILE: &str =
 
 /// Ledger gate id -> first-wave native replacement test.
 ///
-/// The ledger statuses stay `required_not_migrated` in this conversion; this
-/// map only proves the replacement names are linked to the exact gate ids.
+/// All three are `gate_green` in the ledger with the frozen opt-in evidence;
+/// this map keeps the exact gate/replacement link checked by `native_gates.rs`.
 pub(crate) const GATE_REPLACEMENTS: &[(&str, &str)] = &[
     (
         "G-P5-E2E-09",
@@ -159,7 +159,7 @@ fn native_ac011_unknown_owner_degrades_honestly() {
 
 /// G-P5-E2E-12: static WXS/template hover, definition and completion.
 #[test]
-#[ignore = "native gate BLOCKED by P6-3 native capabilities: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package to reproduce the block"]
+#[ignore = "native gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
 fn native_static_wxs_and_template_semantics_work_over_stdio() {
     let Some(gate) = NativeGate::require("G-P5-E2E-12") else {
         return;
@@ -280,7 +280,7 @@ module.exports = { format };</wxs>
 
 /// G-P5-E2E-14: an unsaved WXS overlay replaces disk facts and restores on close.
 #[test]
-#[ignore = "native gate BLOCKED by P6-3 native capabilities: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package to reproduce the block"]
+#[ignore = "native gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
 fn native_unsaved_wxs_overlay_updates_static_hover_and_completion() {
     let Some(gate) = NativeGate::require("G-P5-E2E-14") else {
         return;

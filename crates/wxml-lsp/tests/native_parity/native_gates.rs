@@ -6,11 +6,12 @@
 //! 23 gates and the two silent returns must become real native commands before
 //! the old Node-backed tests may be deleted or treated as green.
 //!
-//! P6-2 records the first-wave opt-in native result: exactly three gates
-//! (`G-P5-E2E-09/12/14`) are `gate_green` with frozen evidence, while the
-//! other 20 stay `required_not_migrated`. `gate_green` is an opt-in
-//! required-native-job result (`--ignored`), not a default-CI pass and not
-//! `mandatory_green`.
+//! P6-2 recorded the first-wave opt-in native result: exactly three gates
+//! (`G-P5-E2E-09/12/14`) are `gate_green` with frozen evidence. The 2026-11-19
+//! recheck after the event-completion and trusted type-assets commits found no
+//! new native replacement for any of the other 20 gates, so they stay
+//! `required_not_migrated`. `gate_green` is an opt-in required-native-job
+//! result (`--ignored`), not a default-CI pass and not `mandatory_green`.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -24,6 +25,33 @@ use crate::source_scan;
 
 /// The only gates allowed to carry `gate_green` in P6-2.
 const GATE_GREEN_IDS: &[&str] = &["G-P5-E2E-09", "G-P5-E2E-12", "G-P5-E2E-14"];
+/// The 20 gates still waiting for a native replacement.
+///
+/// The 2026-11-19 recheck (event completion, trusted type-assets, document
+/// symbols, de-Node installer, asset lock) authored no replacement for any of
+/// these rows, so none may claim `gate_green` or a half-written replacement.
+const REQUIRED_NOT_MIGRATED_IDS: &[&str] = &[
+    "G-P5-PERF-01",
+    "G-P5-STABILITY-01",
+    "G-P5-E2E-01",
+    "G-P5-E2E-02",
+    "G-P5-E2E-03",
+    "G-P5-E2E-04",
+    "G-P5-E2E-05",
+    "G-P5-E2E-06",
+    "G-P5-E2E-07",
+    "G-P5-E2E-08",
+    "G-P5-E2E-10",
+    "G-P5-E2E-11",
+    "G-P5-E2E-13",
+    "G-P5-E2E-15",
+    "G-P5-E2E-16",
+    "G-P5-E2E-17",
+    "G-P5-E2E-18",
+    "G-P5-E2E-19",
+    "G-P5-E2E-20",
+    "G-P5-E2E-21",
+];
 /// Frozen `gate_green` count after the P6-2 promotion.
 const GATE_GREEN_COUNT: usize = 3;
 /// Frozen `required_not_migrated` count after the P6-2 promotion.
@@ -306,6 +334,12 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
         );
         match ledger::required_str(gate, "status", gate_id) {
             "required_not_migrated" => {
+                for key in ["replacement_test", "replacement_kind", "gate_evidence"] {
+                    assert!(
+                        gate.get(key).is_none(),
+                        "{gate_id} is required_not_migrated and must not carry {key}"
+                    );
+                }
                 assert!(
                     required.insert(gate_id.to_owned()),
                     "duplicate required gate {gate_id}"
@@ -360,6 +394,19 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
         required.len(),
         REQUIRED_NOT_MIGRATED_COUNT,
         "the remaining gates must stay required_not_migrated"
+    );
+    let frozen_required: BTreeSet<String> = REQUIRED_NOT_MIGRATED_IDS
+        .iter()
+        .map(|gate_id| (*gate_id).to_owned())
+        .collect();
+    assert_eq!(
+        frozen_required.len(),
+        REQUIRED_NOT_MIGRATED_COUNT,
+        "the frozen required gate list has duplicates"
+    );
+    assert_eq!(
+        required, frozen_required,
+        "only the frozen 20 gates may stay required_not_migrated"
     );
     assert_eq!(green.len() + required.len(), IGNORED_GATE_COUNT);
 

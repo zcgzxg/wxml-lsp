@@ -47,6 +47,7 @@
 | 2026-11-19 | [tsgo native hover 与首波 native gate 证据](2026-11-19-tsgo-hover-gates.md) | `953ee1e` / 7.1.0-beta | E0 | `wxml-lsp` lib 668 passed（执行会话记录，未重跑）；真实引擎 adapter hover 1 passed；首波 3 个 native gate 3 passed / 36 filtered（G-P5-E2E-09/12/14）；ledger 仍 `required_not_migrated`；默认仍 Node；记录时 workspace clippy 被并行 loader 的 `unreadable_literal` 阻塞（后续 `ca0b554` 未重跑，不声称已绿） |
 | 2026-11-19 | [tsgo native gate 台账提升](2026-11-19-tsgo-native-gate-status.md) | `7bdab96` / 证据 `953ee1e` / 7.1.0-beta | E0 | P6-2 台账 3 `gate_green`（`G-P5-E2E-09/12/14`）/ 20 `required_not_migrated` / 23 total；green 带命令、pinned 引擎/资产身份与 3 passed 证据；3 个仍 `#[ignore]`，默认 CI 不跑；本次复跑被并行 type-assets WIP 阻塞，green 仍锚定 `953ee1e`；P6/G5/G6/F3 未关闭 |
 | 2026-11-19 | [F1 event-handler completion 实施计划](2026-11-19-tsgo-event-handler-completion-plan.md) | `bff58d1` / S1 `939831b` | E0 | 设计 only：保留宽松直接事件形式，避免 `bindgetphonenumber` 等回归；缓存键排除 `view_id`；S1 顶层注册选择已提交，S2+ 尚未实现；无 native checker/auto-import/自定义事件；F1/P6/G5 未关闭 |
+| 2026-11-19 | [tsgo 测试台账回填与 native gate 复核](2026-11-19-tsgo-ledger-backfill.md) | `9a8b65c` / 7.1.0-beta | E0 | case 级 36 `green` / 267 `planned` / 36 retired（新增 `TS-COMPLETION-0175/0193`、`TS-PROBES-0169`）；`TS-META-0009`、`TS-SERVER-0237` 为 weaker；document symbols 真实引擎 7 passed；3 个既有 `gate_green` 复跑 3 passed / 36 filtered；20 gate 仍 required，无新增 gate；默认 Node/CI/mandatory 未变 |
 
 ## 3. 当前门禁基线（2026-11-17，W4 最终）
 
@@ -116,14 +117,14 @@ G1 尚未关闭；7.1.0-beta 的接受与 integrity 固定、可执行安装器�
 
 | 项 | 状态 |
 | --- | --- |
-| F3-01～F3-16 | 无一项关闭；F3-02、F3-03 明确 BLOCKED，F3-09 仅有 fixture 级证据 |
-| P6-3 | 未完成：backend 数据层已落，adapter 资产 handoff 未接线 |
+| F3-01～F3-16 | 无一项关闭；F3-02 仍 BLOCKED；F3-03 的 root lock 与 package cache 已落（`assets.lock.json`），F3-09 仅有 fixture 级证据；F3 整体验收未关闭 |
+| P6-3 | 部分：backend 数据层与 adapter trusted type-assets handoff 已接线（`caf045d`）；P6-3 整体未关闭 |
 | P6-4 | P6-4a opt-in 切片已落；P6-4b/c BLOCKED |
 | G5 / G6 | 均未关闭；G7 不在当前范围 |
 | 默认后端 | 仍为 Node；`--backend native` 只是 opt-in |
 | ignored / silent | 26 个 `#[ignore]`（23 个旧 gate + 3 个 native replacement）；`semantic_tools` 2 个静默 return；可选 `tsc` 分支仍在 |
 | native gate 台账 | 3 `gate_green`（`G-P5-E2E-09/12/14`）/ 20 `required_not_migrated` / 23 total；3 个仍 `#[ignore]`，只在 opt-in native job 绿，不是默认 CI 绿，也不是 `mandatory_green` |
-| 迁移台账 | 33 `green` / 270 `planned` / 36 `retired-with-decision`；本轮没有新增 case 级 `green`、`reviewed` 或 `closed` |
+| 迁移台账 | 36 `green` / 267 `planned` / 36 `retired-with-decision`；P6 回填新增 3 个 case 级 `green`（`TS-COMPLETION-0175/0193`、`TS-PROBES-0169`），仍无 `reviewed`/`closed` |
 | 平台 | 仅 Linux x86_64 有证据；aarch64/macOS/Windows/musl 未验证 |
 
 证据层级说明：
