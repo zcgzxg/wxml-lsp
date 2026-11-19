@@ -1,0 +1,2382 @@
+{
+  "schema": "wxml-tsgo-p7-freeze/1",
+  "generated_at": "2026-11-20T04:08:00+08:00",
+  "generated_by": "scripts/p7-freeze.sh",
+  "algorithm": {
+    "name": "p7-freeze-tree-v1",
+    "path_base": "tree root",
+    "path_format": "root-relative UTF-8 with / separators",
+    "order": "LC_ALL=C byte sort of the root-relative path",
+    "entry": "relative_path + NUL + raw_file_bytes + NUL",
+    "digest": "SHA-256, lowercase hex",
+    "files": "regular files only; symlinks and special files rejected",
+    "empty_directories": "not represented",
+    "locale": "LC_ALL=C",
+    "line_endings": "raw working-tree bytes; a CRLF checkout changes every hash"
+  },
+  "commit": {
+    "requested_head": "75040c2b7e8cf45b6cf7fdf7d5adbbf5afd54239",
+    "head": "75040c2b7e8cf45b6cf7fdf7d5adbbf5afd54239",
+    "head_subject": "test(tsgo): freeze legacy oracle and backfill parity ledger",
+    "branch": "tsgo/migration",
+    "frozen_paths_clean": true,
+    "frozen_path_diff_requested_to_head": "empty (verified with git diff --quiet)"
+  },
+  "trees": {
+    "backends/typescript": {
+      "path": "backends/typescript",
+      "kind": "tracked-repository-tree",
+      "file_count": 99,
+      "total_bytes": 746335,
+      "tree_sha256": "ef41f49c939cb881c2028c791b68731250184f38218c5aa71339f7702f02623f",
+      "files_listed": true,
+      "files": [
+        {
+          "path": ".gitignore",
+          "bytes": 34,
+          "sha256": "61022f949eb49fe0ee5b774835be844845b3d71d9001f676d9ac82bd433e49a7"
+        },
+        {
+          "path": "README.md",
+          "bytes": 9800,
+          "sha256": "aad1d9b86deb9b8386ea186d9b57a64c946bbd34cb45d3c817ece58a86ecf8d3"
+        },
+        {
+          "path": "package-lock.json",
+          "bytes": 1972,
+          "sha256": "a68abd2a2e931570c93bd0f402b6731c8ecefb302d583549f9c1ae66a1bd0c9c"
+        },
+        {
+          "path": "package.json",
+          "bytes": 909,
+          "sha256": "b1e9344e4689cec96600b21d379fac3ea479c03ec09aa4fbdd522cc68cfd1e44"
+        },
+        {
+          "path": "samples/alias-project/index.ts",
+          "bytes": 137,
+          "sha256": "adeee72d673d75753b49b2c1d98be7da48c9a93385b20ee2e979a74e762389f2"
+        },
+        {
+          "path": "samples/alias-project/models/user.ts",
+          "bytes": 107,
+          "sha256": "4db21176aa8e25f3f7e51825d3cf9935aa79283fc196dc32032d058af1870c5e"
+        },
+        {
+          "path": "samples/alias-project/tsconfig.base.json",
+          "bytes": 104,
+          "sha256": "2c61c9180600e90d424c3c980eb0bb7edbd1273ac146e067ea651c07f9a70a4d"
+        },
+        {
+          "path": "samples/alias-project/tsconfig.json",
+          "bytes": 254,
+          "sha256": "0ffb068942e54d4290d2075e0f908cec3d7adecb4d25169de3c608f6fe9d310f"
+        },
+        {
+          "path": "samples/component-data-cross-file/index.ts",
+          "bytes": 208,
+          "sha256": "f54043d5dc0cbd45ee615f2ac15ae0a96a5a4cbeac267835fdfd53abd94c083e"
+        },
+        {
+          "path": "samples/component-data-cross-file/models.ts",
+          "bytes": 70,
+          "sha256": "4fbe77e5a3b7ae07d9e5e81b0e6fdb64b2daa88982b7cab036688eac113c072c"
+        },
+        {
+          "path": "samples/component-js/index.js",
+          "bytes": 283,
+          "sha256": "cd28f1e891403678b038f4b3a13140b48f3ea48bd3c3f94e9433e7e0176be078"
+        },
+        {
+          "path": "samples/component-module/index.ts",
+          "bytes": 295,
+          "sha256": "69630f5b803ec400732937d03c734178eff4720f8184a5746dcf12b5fb8b99d6"
+        },
+        {
+          "path": "samples/component-properties/index.ts",
+          "bytes": 354,
+          "sha256": "32688d3be92e6b644aa56f924f5544454736f7822a6078fce106f7480d38c591"
+        },
+        {
+          "path": "samples/crlf-script/index.ts",
+          "bytes": 123,
+          "sha256": "e20db8a79d31066e0502aaaf16e5c36cb1cc71913f414a9a4023220bd32ef6a8"
+        },
+        {
+          "path": "samples/cross-file-overlay/index.ts",
+          "bytes": 133,
+          "sha256": "d04998c5c8979b3a6bc3dd7c2e2b7fd3fab402b8b538987e3fbd4ad23a75e976"
+        },
+        {
+          "path": "samples/cross-file-overlay/models.ts",
+          "bytes": 107,
+          "sha256": "4db21176aa8e25f3f7e51825d3cf9935aa79283fc196dc32032d058af1870c5e"
+        },
+        {
+          "path": "samples/data-shorthand/index.ts",
+          "bytes": 56,
+          "sha256": "6a0308d9e8d992d9fdac2d16d404477b888f2bc2fff195c7d232c235ef448e8c"
+        },
+        {
+          "path": "samples/interface-root-import/index.ts",
+          "bytes": 64,
+          "sha256": "c6a146f6724d8d314f916324e1c1cbf2b79ee5f3f3fdaa4c493adf0fd82c40ef"
+        },
+        {
+          "path": "samples/interface-root-import/models.ts",
+          "bytes": 70,
+          "sha256": "4fbe77e5a3b7ae07d9e5e81b0e6fdb64b2daa88982b7cab036688eac113c072c"
+        },
+        {
+          "path": "samples/interface-root/index.ts",
+          "bytes": 89,
+          "sha256": "0452da8c5adc21ee419a80d8996a315458f434b2d8672a5a2e0a41b0d5d30fc5"
+        },
+        {
+          "path": "samples/js-bom-shebang-check/index.js",
+          "bytes": 107,
+          "sha256": "e873b4a4a044bfe4933f8661b6e1532e31404ad89b5e8d3389ea8e84d5b22e0c"
+        },
+        {
+          "path": "samples/js-jsdoc/index.js",
+          "bytes": 304,
+          "sha256": "f6c691d5660f9abd431adb84e6512d1570de57cd97329bd6a841308f7f061cf1"
+        },
+        {
+          "path": "samples/js-nocheck/index.js",
+          "bytes": 113,
+          "sha256": "fdb55b73b5d261824a978ad1781195c36d0255eaea6e7d115ddf2eda2a3b474f"
+        },
+        {
+          "path": "samples/js-shebang-bom/index.js",
+          "bytes": 94,
+          "sha256": "7de2fb36a1354c6ced57e5570d2778cde6a04ea834aecaec8e138a21564ad6c2"
+        },
+        {
+          "path": "samples/js-source-check/index.js",
+          "bytes": 84,
+          "sha256": "22c0ca88ff15a74fa360557a511afcb724063d5c6cd9c76414e7f622df4a2756"
+        },
+        {
+          "path": "samples/methods-nonliteral/index.ts",
+          "bytes": 221,
+          "sha256": "136a1791dc589c92adb8da02beb3f472ac5a70e67d030d989804c2561f0078aa"
+        },
+        {
+          "path": "samples/multi-registration/index.ts",
+          "bytes": 113,
+          "sha256": "be4eec590afa6ad69d3e3dbf35d57845bb32d6fc404075fa65d652c60b7f0785"
+        },
+        {
+          "path": "samples/no-implicit-this/index.ts",
+          "bytes": 71,
+          "sha256": "9e5ad9bdaf87b8213fe02d303622b79102710ece3c78bebd84ab914d989dfd5a"
+        },
+        {
+          "path": "samples/nullable/index.ts",
+          "bytes": 206,
+          "sha256": "3343cb104356e431a4fd627705523b54c4bfb39508cae7285843e42e14999445"
+        },
+        {
+          "path": "samples/page-basic/index.ts",
+          "bytes": 269,
+          "sha256": "5b1d32ff81b384be936e46bc43169ddab11c4616bf786cf48cb60a4fdae1a279"
+        },
+        {
+          "path": "samples/page-cjs/index.ts",
+          "bytes": 353,
+          "sha256": "1d0d5c52618d87ad6f879065a7720f905dba414c69cb4549ef74c0a6acbcbcaa"
+        },
+        {
+          "path": "samples/page-closure/index.ts",
+          "bytes": 517,
+          "sha256": "f0b12d4b0045f0ba4f3ffcfec7e2ab340962adc45c84509d7de625503ef20fe3"
+        },
+        {
+          "path": "samples/page-esm/helper.ts",
+          "bytes": 106,
+          "sha256": "97c7a2076a394322ff220833a45610e0d656448ae2dacda86740b7a6a4389da2"
+        },
+        {
+          "path": "samples/page-esm/index.ts",
+          "bytes": 224,
+          "sha256": "471295d286e66491ee5488e516012c38eb4ed1cab9383520393bf31efe91c201"
+        },
+        {
+          "path": "samples/page-export-empty/index.ts",
+          "bytes": 177,
+          "sha256": "3263f2ecde653fbd028f2444eb7cdfbd1d8b83cf39f2880290e144752914f0d1"
+        },
+        {
+          "path": "samples/properties-spread/index.ts",
+          "bytes": 295,
+          "sha256": "58011ee3339042ed916aa37d6e3ed68a46a030eceb9fcb34a6acc1223353cea7"
+        },
+        {
+          "path": "samples/ts-nocheck/index.ts",
+          "bytes": 86,
+          "sha256": "a043b14d3f1faf6d443d8ec8602e6aab34bea1f15e5d06d14b07b2cf12886c4a"
+        },
+        {
+          "path": "samples/unchecked-index/index.ts",
+          "bytes": 115,
+          "sha256": "602bbbbc4b8e62f6f74502d8db312c9a1abc42b904659d17cb9221572391a7ce"
+        },
+        {
+          "path": "samples/unicode-crlf/index.ts",
+          "bytes": 160,
+          "sha256": "d6ebd30bf28e153e6f76608edb24fd456c3c5a92603b422c05f1b9606ddd554b"
+        },
+        {
+          "path": "scripts/emit-evidence.ts",
+          "bytes": 2262,
+          "sha256": "9208ac546ca177c71070c4acf0ebfdcbae9e6524421c292dd6af8cba482f6caa"
+        },
+        {
+          "path": "scripts/inspect.ts",
+          "bytes": 3897,
+          "sha256": "a7c04d69861117058b64ba2668f141711d9ecf9c3bdc498e947b131873a65d85"
+        },
+        {
+          "path": "src/analysis.ts",
+          "bytes": 49258,
+          "sha256": "ddbe7223dde391591ce503a739a1bb1735cd63043049f7af807df37dfd3eb19b"
+        },
+        {
+          "path": "src/ast.ts",
+          "bytes": 9877,
+          "sha256": "c8c870a472fbf6b628ff1a814cac73acb535a560a272ec9e6836712bb767f1d7"
+        },
+        {
+          "path": "src/behaviors.ts",
+          "bytes": 36884,
+          "sha256": "89b8b6eda65f4bb23816a6651d3e1d76ef62597d7cb9acfa56e28c675ad2a171"
+        },
+        {
+          "path": "src/cli.ts",
+          "bytes": 2427,
+          "sha256": "2b0d6111828191d9b218a72c232ef3c763eda489bc73e81b128e5f6126352da7"
+        },
+        {
+          "path": "src/compiler.ts",
+          "bytes": 15859,
+          "sha256": "63b10db783b73bea628edb0628279b44c7d4bd7f138fe28d1c668c988ae450e5"
+        },
+        {
+          "path": "src/completion.ts",
+          "bytes": 15206,
+          "sha256": "440859a42427d4171bb79f6969ba5edbcc1cec05fa98d9ea0fc91410e7e713db"
+        },
+        {
+          "path": "src/componentBindings.ts",
+          "bytes": 18254,
+          "sha256": "94ca126ecd4c157a606258ebd3768947842675a3590d757997a928d1568c380d"
+        },
+        {
+          "path": "src/dataroot.ts",
+          "bytes": 2107,
+          "sha256": "cfd6d6379383889103ad39e188a9bbc4c3c4851cd58b2efb5cd52abaa53276b7"
+        },
+        {
+          "path": "src/env.ts",
+          "bytes": 1534,
+          "sha256": "6cd5b23cf413b018729931563927e9835c6249f4dfcfccf04f6af19c91c47832"
+        },
+        {
+          "path": "src/events.ts",
+          "bytes": 20308,
+          "sha256": "74a8c5a4a077002260773e2c9c4bafb5df54b304229fb6775e952073ecfaf260"
+        },
+        {
+          "path": "src/evidence.ts",
+          "bytes": 3011,
+          "sha256": "1386f3b14e7b07c25296bbf1adcc12b2f52d7654ec1fffa4eb5185811a0bad63"
+        },
+        {
+          "path": "src/expression.ts",
+          "bytes": 10252,
+          "sha256": "1bbbdd07cbf6b284a133ff397ce2e38c7b756272d7da7ef074a160a83978de0e"
+        },
+        {
+          "path": "src/fragments.ts",
+          "bytes": 4378,
+          "sha256": "cf122b72b4fb8ca9c9e8ae7952b27c68d81eb919062639500f2e3845ae458d59"
+        },
+        {
+          "path": "src/layouts/context.ts",
+          "bytes": 1820,
+          "sha256": "682386d58bfbae6ba91e45f05b3ea56a980c21a89a6aec71032cf97c6c690645"
+        },
+        {
+          "path": "src/layouts/guards.ts",
+          "bytes": 5128,
+          "sha256": "dd2fd42117eefe157fbdde28e79f954750f0832e15712247d192757baf882390"
+        },
+        {
+          "path": "src/layouts/inPlaceShadow.ts",
+          "bytes": 18433,
+          "sha256": "4946059b6c6a6448b699c5e27f924b39d55497df8f892d145cffb315580d18aa"
+        },
+        {
+          "path": "src/layouts/locals.ts",
+          "bytes": 19929,
+          "sha256": "0eaada1a2706e24c731907a451c8fd06347f1da466f2863e2a27226ca43caecd"
+        },
+        {
+          "path": "src/layouts/segments.ts",
+          "bytes": 404,
+          "sha256": "27765f0f2acb3d2919d8c0a6af89ef2772052fced1eb1a844f1723e4a0cad349"
+        },
+        {
+          "path": "src/layouts/symbolBridge.ts",
+          "bytes": 14729,
+          "sha256": "6bdf42dca85d9113de86d907614252532dc8a308fd8571dcc77eb17833f9c195"
+        },
+        {
+          "path": "src/messages.ts",
+          "bytes": 3559,
+          "sha256": "4170202312952a219496753f97034cf557016ce9ceeac8e75585f359d1be4ff0"
+        },
+        {
+          "path": "src/perf.ts",
+          "bytes": 3206,
+          "sha256": "cca80f344bab5faf39f30fd68be1eb452969236fce807adf806116340b822c26"
+        },
+        {
+          "path": "src/probes.ts",
+          "bytes": 6251,
+          "sha256": "69a03f003ba411a9bf5b41ad0b97c44f0fc269b7c673338e8211b8a8749cd198"
+        },
+        {
+          "path": "src/propsOverlay.ts",
+          "bytes": 3603,
+          "sha256": "b7befab81bb342b42e2ac297becb17021d65b8496b1ead302c912f423c58a132"
+        },
+        {
+          "path": "src/protocol.ts",
+          "bytes": 55337,
+          "sha256": "1a61247f8793da4dc778c2ccdf2dbc8a5cae328d0b242571ef7c8c89fd168c0e"
+        },
+        {
+          "path": "src/queries.ts",
+          "bytes": 5110,
+          "sha256": "2047c1f7b380c134ebe91d160a64cd76523bdeb31a894263f3dff9ec7d9d705f"
+        },
+        {
+          "path": "src/report.ts",
+          "bytes": 3506,
+          "sha256": "519145c0657ebf16ee2edbad8fbb839c103a9094591aadb8d9c4d453e8239ccd"
+        },
+        {
+          "path": "src/rewrite.ts",
+          "bytes": 12940,
+          "sha256": "c8be2a7ef198bffa016a0de1df0667b0f1af572efa38060ce98bfee70ce8aa9b"
+        },
+        {
+          "path": "src/run.ts",
+          "bytes": 18445,
+          "sha256": "016a9cb721cfec38140c9b12d538a36a0702dabc2094a3536d7ddcbfd907137d"
+        },
+        {
+          "path": "src/scenarios.ts",
+          "bytes": 21463,
+          "sha256": "5f0c35f341c92e8b903c6b0e9ef5127598e76aa46bd51de942bbc2ca367f5bef"
+        },
+        {
+          "path": "src/server.ts",
+          "bytes": 11836,
+          "sha256": "75d53165c58f5e6d4664c089aae8f24cedab9c6dcaca378aaba2939bbf7b8607"
+        },
+        {
+          "path": "src/symbols.ts",
+          "bytes": 45013,
+          "sha256": "2928ba25caa9bf8acbffe209b4f53b850d90f5ab021629a928f8839b5123529d"
+        },
+        {
+          "path": "src/text.ts",
+          "bytes": 11694,
+          "sha256": "a2c6e5544332a3208ac236c4e16deea9701ead742446512a35815e436e6b2759"
+        },
+        {
+          "path": "src/types.ts",
+          "bytes": 14513,
+          "sha256": "35ecf17d6939db192d929b7b0e2899383767d3b4e2dbbea5eadfbf877623d401"
+        },
+        {
+          "path": "src/version.ts",
+          "bytes": 118,
+          "sha256": "384b4ab4a577836041cd69924348089a27554dac6cea230cd26407e68bda463b"
+        },
+        {
+          "path": "test/analysis.test.ts",
+          "bytes": 16872,
+          "sha256": "5a62a6f19e94bbafbec498206b91107c63acbf2443e1261a56e2e86ff3546531"
+        },
+        {
+          "path": "test/compiler.test.ts",
+          "bytes": 6640,
+          "sha256": "87cde2394a04a2d44cf7ca2bf8f3d9fd9869d157af0b72cd391f2bab6af18619"
+        },
+        {
+          "path": "test/completion.test.ts",
+          "bytes": 7554,
+          "sha256": "8c43d5ef2c88f9a1a6c77b6e7e5910f5becf1c0a30164f105d840dee72a51fd1"
+        },
+        {
+          "path": "test/componentBindings.test.ts",
+          "bytes": 32675,
+          "sha256": "27992ddb9ef29981f93b2bf941ea52a689c9adbf5993a568f4ccb0296a2b9b55"
+        },
+        {
+          "path": "test/definitions.test.ts",
+          "bytes": 5324,
+          "sha256": "4c25574637c6aaad6c2636e166395b1fc26805e6e905c69b3c6ad204e6096133"
+        },
+        {
+          "path": "test/events.test.ts",
+          "bytes": 20290,
+          "sha256": "3c81432ae8617fa417942dee15d4e23d93875e19b63fa0ca1902fb22ca211445"
+        },
+        {
+          "path": "test/evidence.test.ts",
+          "bytes": 2914,
+          "sha256": "48ccb3e7c860130c818f775f3713d071fe2a78a83ff9109f4fd13730f5710d6c"
+        },
+        {
+          "path": "test/guards.test.ts",
+          "bytes": 13506,
+          "sha256": "1cc1cb1f453aa74eba5ff5955f14a3cc7fd67ce2f2c0b0b28894617990a99b69"
+        },
+        {
+          "path": "test/layouts.test.ts",
+          "bytes": 8900,
+          "sha256": "7b6c36bf96ca21973cea5205617c43f8f172867b7187f34a15188d32bbba35b5"
+        },
+        {
+          "path": "test/locals.test.ts",
+          "bytes": 12201,
+          "sha256": "c8173640fe533a9d8c7ef914cf4a7021ca35ca171dcbac571fb9c100eeb41765"
+        },
+        {
+          "path": "test/mapping.test.ts",
+          "bytes": 14179,
+          "sha256": "6b1fbd9d512fbc3f4682036295f4a5df14bf0d7046daec5b533bb9ecb4c6bfb0"
+        },
+        {
+          "path": "test/matrix.test.ts",
+          "bytes": 16571,
+          "sha256": "26e1fa97d418510a11440c57d90f3a3e2f58ffd7feb90e16422c086a914471ee"
+        },
+        {
+          "path": "test/messages.test.ts",
+          "bytes": 1832,
+          "sha256": "ca4e05c6d4b13145a87a9ed1775a101444ca0fc0f4b7a5cd9582712ec7310564"
+        },
+        {
+          "path": "test/meta.test.ts",
+          "bytes": 1632,
+          "sha256": "43377fe8414853bee278db646964549de04cc77d669dd34980efaef19be7f257"
+        },
+        {
+          "path": "test/overlay.test.ts",
+          "bytes": 4450,
+          "sha256": "4cf50b6f4cc4d1dd65bfbfe94e107a1f088a00e828f58b140eee6ef520f1568f"
+        },
+        {
+          "path": "test/perf.test.ts",
+          "bytes": 1489,
+          "sha256": "228e5ad062230366d74e2d8a9c231d6c4db25f2846db62341048610f23089914"
+        },
+        {
+          "path": "test/probes.test.ts",
+          "bytes": 7906,
+          "sha256": "917578eaafb20b5e60b88784827a40eb87da4171e7ea88a8b8a928eea4dd4878"
+        },
+        {
+          "path": "test/protocol.test.ts",
+          "bytes": 30113,
+          "sha256": "ba37ce22db1f2e8b065e1c0d081415f567b29207e8ed35030acfafbd4478a0f4"
+        },
+        {
+          "path": "test/rewrite.test.ts",
+          "bytes": 18310,
+          "sha256": "2d9a4e4d3a51bc190eee21b26c63c616119eaaf702445a48f7bdc545a6d08b2c"
+        },
+        {
+          "path": "test/server.test.ts",
+          "bytes": 10858,
+          "sha256": "8f9ffd64d94f109f16d9e33e81c6bbadff87f1de36e9bd0516ba516a0589d8bf"
+        },
+        {
+          "path": "test/support.ts",
+          "bytes": 4645,
+          "sha256": "9b4fcb347885dbeff1d1711b5f606aa48586cdf86b291ee5f868b36fbc4cef36"
+        },
+        {
+          "path": "test/symbols.test.ts",
+          "bytes": 15104,
+          "sha256": "e302efa6568fb87824d6b0bc9bc5ab72006693c7d129d98860a11a3bf4ec87d5"
+        },
+        {
+          "path": "tsconfig.build.json",
+          "bytes": 397,
+          "sha256": "fa9d41ab15e7ec9c408f4f80b4342a31ad910c67400712ff6881aaf00b7718b1"
+        },
+        {
+          "path": "tsconfig.json",
+          "bytes": 638,
+          "sha256": "9fd5b16939b72c7ca300027482780d2dc2f800ea8aea4c981d17ee3bbe58d088"
+        }
+      ]
+    },
+    "backends/typescript/src": {
+      "path": "backends/typescript/src",
+      "kind": "tracked-subtree",
+      "file_count": 34,
+      "total_bytes": 466392,
+      "tree_sha256": "26e377e77040ac6adfe78a4730944cd08ce7e5d2345efa3c1b25726f87bb946b",
+      "files_listed": true,
+      "files": [
+        {
+          "path": "analysis.ts",
+          "bytes": 49258,
+          "sha256": "ddbe7223dde391591ce503a739a1bb1735cd63043049f7af807df37dfd3eb19b"
+        },
+        {
+          "path": "ast.ts",
+          "bytes": 9877,
+          "sha256": "c8c870a472fbf6b628ff1a814cac73acb535a560a272ec9e6836712bb767f1d7"
+        },
+        {
+          "path": "behaviors.ts",
+          "bytes": 36884,
+          "sha256": "89b8b6eda65f4bb23816a6651d3e1d76ef62597d7cb9acfa56e28c675ad2a171"
+        },
+        {
+          "path": "cli.ts",
+          "bytes": 2427,
+          "sha256": "2b0d6111828191d9b218a72c232ef3c763eda489bc73e81b128e5f6126352da7"
+        },
+        {
+          "path": "compiler.ts",
+          "bytes": 15859,
+          "sha256": "63b10db783b73bea628edb0628279b44c7d4bd7f138fe28d1c668c988ae450e5"
+        },
+        {
+          "path": "completion.ts",
+          "bytes": 15206,
+          "sha256": "440859a42427d4171bb79f6969ba5edbcc1cec05fa98d9ea0fc91410e7e713db"
+        },
+        {
+          "path": "componentBindings.ts",
+          "bytes": 18254,
+          "sha256": "94ca126ecd4c157a606258ebd3768947842675a3590d757997a928d1568c380d"
+        },
+        {
+          "path": "dataroot.ts",
+          "bytes": 2107,
+          "sha256": "cfd6d6379383889103ad39e188a9bbc4c3c4851cd58b2efb5cd52abaa53276b7"
+        },
+        {
+          "path": "env.ts",
+          "bytes": 1534,
+          "sha256": "6cd5b23cf413b018729931563927e9835c6249f4dfcfccf04f6af19c91c47832"
+        },
+        {
+          "path": "events.ts",
+          "bytes": 20308,
+          "sha256": "74a8c5a4a077002260773e2c9c4bafb5df54b304229fb6775e952073ecfaf260"
+        },
+        {
+          "path": "evidence.ts",
+          "bytes": 3011,
+          "sha256": "1386f3b14e7b07c25296bbf1adcc12b2f52d7654ec1fffa4eb5185811a0bad63"
+        },
+        {
+          "path": "expression.ts",
+          "bytes": 10252,
+          "sha256": "1bbbdd07cbf6b284a133ff397ce2e38c7b756272d7da7ef074a160a83978de0e"
+        },
+        {
+          "path": "fragments.ts",
+          "bytes": 4378,
+          "sha256": "cf122b72b4fb8ca9c9e8ae7952b27c68d81eb919062639500f2e3845ae458d59"
+        },
+        {
+          "path": "layouts/context.ts",
+          "bytes": 1820,
+          "sha256": "682386d58bfbae6ba91e45f05b3ea56a980c21a89a6aec71032cf97c6c690645"
+        },
+        {
+          "path": "layouts/guards.ts",
+          "bytes": 5128,
+          "sha256": "dd2fd42117eefe157fbdde28e79f954750f0832e15712247d192757baf882390"
+        },
+        {
+          "path": "layouts/inPlaceShadow.ts",
+          "bytes": 18433,
+          "sha256": "4946059b6c6a6448b699c5e27f924b39d55497df8f892d145cffb315580d18aa"
+        },
+        {
+          "path": "layouts/locals.ts",
+          "bytes": 19929,
+          "sha256": "0eaada1a2706e24c731907a451c8fd06347f1da466f2863e2a27226ca43caecd"
+        },
+        {
+          "path": "layouts/segments.ts",
+          "bytes": 404,
+          "sha256": "27765f0f2acb3d2919d8c0a6af89ef2772052fced1eb1a844f1723e4a0cad349"
+        },
+        {
+          "path": "layouts/symbolBridge.ts",
+          "bytes": 14729,
+          "sha256": "6bdf42dca85d9113de86d907614252532dc8a308fd8571dcc77eb17833f9c195"
+        },
+        {
+          "path": "messages.ts",
+          "bytes": 3559,
+          "sha256": "4170202312952a219496753f97034cf557016ce9ceeac8e75585f359d1be4ff0"
+        },
+        {
+          "path": "perf.ts",
+          "bytes": 3206,
+          "sha256": "cca80f344bab5faf39f30fd68be1eb452969236fce807adf806116340b822c26"
+        },
+        {
+          "path": "probes.ts",
+          "bytes": 6251,
+          "sha256": "69a03f003ba411a9bf5b41ad0b97c44f0fc269b7c673338e8211b8a8749cd198"
+        },
+        {
+          "path": "propsOverlay.ts",
+          "bytes": 3603,
+          "sha256": "b7befab81bb342b42e2ac297becb17021d65b8496b1ead302c912f423c58a132"
+        },
+        {
+          "path": "protocol.ts",
+          "bytes": 55337,
+          "sha256": "1a61247f8793da4dc778c2ccdf2dbc8a5cae328d0b242571ef7c8c89fd168c0e"
+        },
+        {
+          "path": "queries.ts",
+          "bytes": 5110,
+          "sha256": "2047c1f7b380c134ebe91d160a64cd76523bdeb31a894263f3dff9ec7d9d705f"
+        },
+        {
+          "path": "report.ts",
+          "bytes": 3506,
+          "sha256": "519145c0657ebf16ee2edbad8fbb839c103a9094591aadb8d9c4d453e8239ccd"
+        },
+        {
+          "path": "rewrite.ts",
+          "bytes": 12940,
+          "sha256": "c8be2a7ef198bffa016a0de1df0667b0f1af572efa38060ce98bfee70ce8aa9b"
+        },
+        {
+          "path": "run.ts",
+          "bytes": 18445,
+          "sha256": "016a9cb721cfec38140c9b12d538a36a0702dabc2094a3536d7ddcbfd907137d"
+        },
+        {
+          "path": "scenarios.ts",
+          "bytes": 21463,
+          "sha256": "5f0c35f341c92e8b903c6b0e9ef5127598e76aa46bd51de942bbc2ca367f5bef"
+        },
+        {
+          "path": "server.ts",
+          "bytes": 11836,
+          "sha256": "75d53165c58f5e6d4664c089aae8f24cedab9c6dcaca378aaba2939bbf7b8607"
+        },
+        {
+          "path": "symbols.ts",
+          "bytes": 45013,
+          "sha256": "2928ba25caa9bf8acbffe209b4f53b850d90f5ab021629a928f8839b5123529d"
+        },
+        {
+          "path": "text.ts",
+          "bytes": 11694,
+          "sha256": "a2c6e5544332a3208ac236c4e16deea9701ead742446512a35815e436e6b2759"
+        },
+        {
+          "path": "types.ts",
+          "bytes": 14513,
+          "sha256": "35ecf17d6939db192d929b7b0e2899383767d3b4e2dbbea5eadfbf877623d401"
+        },
+        {
+          "path": "version.ts",
+          "bytes": 118,
+          "sha256": "384b4ab4a577836041cd69924348089a27554dac6cea230cd26407e68bda463b"
+        }
+      ]
+    },
+    "backends/typescript/test": {
+      "path": "backends/typescript/test",
+      "kind": "tracked-subtree",
+      "file_count": 22,
+      "total_bytes": 253965,
+      "tree_sha256": "630a16af41623c78f19f47bcaba1a7f1282201ac27b4414115ac0b3764afc32e",
+      "files_listed": true,
+      "files": [
+        {
+          "path": "analysis.test.ts",
+          "bytes": 16872,
+          "sha256": "5a62a6f19e94bbafbec498206b91107c63acbf2443e1261a56e2e86ff3546531"
+        },
+        {
+          "path": "compiler.test.ts",
+          "bytes": 6640,
+          "sha256": "87cde2394a04a2d44cf7ca2bf8f3d9fd9869d157af0b72cd391f2bab6af18619"
+        },
+        {
+          "path": "completion.test.ts",
+          "bytes": 7554,
+          "sha256": "8c43d5ef2c88f9a1a6c77b6e7e5910f5becf1c0a30164f105d840dee72a51fd1"
+        },
+        {
+          "path": "componentBindings.test.ts",
+          "bytes": 32675,
+          "sha256": "27992ddb9ef29981f93b2bf941ea52a689c9adbf5993a568f4ccb0296a2b9b55"
+        },
+        {
+          "path": "definitions.test.ts",
+          "bytes": 5324,
+          "sha256": "4c25574637c6aaad6c2636e166395b1fc26805e6e905c69b3c6ad204e6096133"
+        },
+        {
+          "path": "events.test.ts",
+          "bytes": 20290,
+          "sha256": "3c81432ae8617fa417942dee15d4e23d93875e19b63fa0ca1902fb22ca211445"
+        },
+        {
+          "path": "evidence.test.ts",
+          "bytes": 2914,
+          "sha256": "48ccb3e7c860130c818f775f3713d071fe2a78a83ff9109f4fd13730f5710d6c"
+        },
+        {
+          "path": "guards.test.ts",
+          "bytes": 13506,
+          "sha256": "1cc1cb1f453aa74eba5ff5955f14a3cc7fd67ce2f2c0b0b28894617990a99b69"
+        },
+        {
+          "path": "layouts.test.ts",
+          "bytes": 8900,
+          "sha256": "7b6c36bf96ca21973cea5205617c43f8f172867b7187f34a15188d32bbba35b5"
+        },
+        {
+          "path": "locals.test.ts",
+          "bytes": 12201,
+          "sha256": "c8173640fe533a9d8c7ef914cf4a7021ca35ca171dcbac571fb9c100eeb41765"
+        },
+        {
+          "path": "mapping.test.ts",
+          "bytes": 14179,
+          "sha256": "6b1fbd9d512fbc3f4682036295f4a5df14bf0d7046daec5b533bb9ecb4c6bfb0"
+        },
+        {
+          "path": "matrix.test.ts",
+          "bytes": 16571,
+          "sha256": "26e1fa97d418510a11440c57d90f3a3e2f58ffd7feb90e16422c086a914471ee"
+        },
+        {
+          "path": "messages.test.ts",
+          "bytes": 1832,
+          "sha256": "ca4e05c6d4b13145a87a9ed1775a101444ca0fc0f4b7a5cd9582712ec7310564"
+        },
+        {
+          "path": "meta.test.ts",
+          "bytes": 1632,
+          "sha256": "43377fe8414853bee278db646964549de04cc77d669dd34980efaef19be7f257"
+        },
+        {
+          "path": "overlay.test.ts",
+          "bytes": 4450,
+          "sha256": "4cf50b6f4cc4d1dd65bfbfe94e107a1f088a00e828f58b140eee6ef520f1568f"
+        },
+        {
+          "path": "perf.test.ts",
+          "bytes": 1489,
+          "sha256": "228e5ad062230366d74e2d8a9c231d6c4db25f2846db62341048610f23089914"
+        },
+        {
+          "path": "probes.test.ts",
+          "bytes": 7906,
+          "sha256": "917578eaafb20b5e60b88784827a40eb87da4171e7ea88a8b8a928eea4dd4878"
+        },
+        {
+          "path": "protocol.test.ts",
+          "bytes": 30113,
+          "sha256": "ba37ce22db1f2e8b065e1c0d081415f567b29207e8ed35030acfafbd4478a0f4"
+        },
+        {
+          "path": "rewrite.test.ts",
+          "bytes": 18310,
+          "sha256": "2d9a4e4d3a51bc190eee21b26c63c616119eaaf702445a48f7bdc545a6d08b2c"
+        },
+        {
+          "path": "server.test.ts",
+          "bytes": 10858,
+          "sha256": "8f9ffd64d94f109f16d9e33e81c6bbadff87f1de36e9bd0516ba516a0589d8bf"
+        },
+        {
+          "path": "support.ts",
+          "bytes": 4645,
+          "sha256": "9b4fcb347885dbeff1d1711b5f606aa48586cdf86b291ee5f868b36fbc4cef36"
+        },
+        {
+          "path": "symbols.test.ts",
+          "bytes": 15104,
+          "sha256": "e302efa6568fb87824d6b0bc9bc5ab72006693c7d129d98860a11a3bf4ec87d5"
+        }
+      ]
+    },
+    "backends/typescript/dist": {
+      "path": "backends/typescript/dist",
+      "kind": "local-build-output",
+      "file_count": 34,
+      "total_bytes": 419511,
+      "tree_sha256": "37753181846b843f2ba9086bb98b2db8246bb74f820329b0b717b987bccb9898",
+      "files_listed": true,
+      "files": [
+        {
+          "path": "analysis.js",
+          "bytes": 45045,
+          "sha256": "3354fd1f64d3b60b3df98c27177e71378827bdb7408dd36b1bdacaa2b9e42015"
+        },
+        {
+          "path": "ast.js",
+          "bytes": 8781,
+          "sha256": "e78c2421455360d752cef4b60cf8073a36585a321feb200cf245ea7f04de8090"
+        },
+        {
+          "path": "behaviors.js",
+          "bytes": 35376,
+          "sha256": "26083f6660354aac7da4c1d7e0f8db0f10c18335f3b3c8ea7eb4948e37bd600d"
+        },
+        {
+          "path": "cli.js",
+          "bytes": 2413,
+          "sha256": "63c63fb35482fa420e5033bbdba6500a29dc2f9262ce478b752177acc58333db"
+        },
+        {
+          "path": "compiler.js",
+          "bytes": 15425,
+          "sha256": "2bd15751a201f0a78c3f1308186a10602cd74795926f9c082d321a106b3e328d"
+        },
+        {
+          "path": "completion.js",
+          "bytes": 14720,
+          "sha256": "88ae312857437174f6ccf9c718be196bf7dd27a9719f072ee90d237115f07ed2"
+        },
+        {
+          "path": "componentBindings.js",
+          "bytes": 16478,
+          "sha256": "c0c798c1120bd9ef9284258d508f4bb7c946f7894976505d391c391973730ca2"
+        },
+        {
+          "path": "dataroot.js",
+          "bytes": 1943,
+          "sha256": "696d1c31a3044ac5bc33fde852fa4e48af080a37dcb0901eb42dc3a2c5d56fb8"
+        },
+        {
+          "path": "env.js",
+          "bytes": 1329,
+          "sha256": "e333159480c84666044ab01a62fa2b127b89b45a9de69a8ba2675c82858c420e"
+        },
+        {
+          "path": "events.js",
+          "bytes": 17932,
+          "sha256": "bbc8f5411d13ff8c4d8f509b2be8f5e0e9519e6e56414c3564c4989211c5758b"
+        },
+        {
+          "path": "evidence.js",
+          "bytes": 2973,
+          "sha256": "1a268a27a73b1110ee19c620e79017328f9b7358f0853677af583c10ef1cb72f"
+        },
+        {
+          "path": "expression.js",
+          "bytes": 10427,
+          "sha256": "d6b0bb0c8286e814f96e2df1893d74a6ddd20fcca2d7f6b78d9132cd71f7f080"
+        },
+        {
+          "path": "fragments.js",
+          "bytes": 4009,
+          "sha256": "a2f2550e69cc1f810fd4fd40e7b8295620aa8378a7855736cb26cce080908a1c"
+        },
+        {
+          "path": "layouts/context.js",
+          "bytes": 59,
+          "sha256": "2fb9b5f4eb33cce00607914e7dbd29ac621a6785f34cc62660e34a2d374740ce"
+        },
+        {
+          "path": "layouts/guards.js",
+          "bytes": 4806,
+          "sha256": "596a95e1273dbd0bf0c654412610ddf08147aea2d9d13aaf96417cda221c1555"
+        },
+        {
+          "path": "layouts/inPlaceShadow.js",
+          "bytes": 18202,
+          "sha256": "ceab6b89fbc6a06b75cecdbe7319673dd3e7d510dc60b7bcf218c09c698e1339"
+        },
+        {
+          "path": "layouts/locals.js",
+          "bytes": 18141,
+          "sha256": "fbd3d0644bef2a475a377f8571bf8be28d40ef0abd834a772733b177fade3b88"
+        },
+        {
+          "path": "layouts/segments.js",
+          "bytes": 321,
+          "sha256": "ba204996c1b45fd1bb7dabcf1e05541a70c9a5315d9c5636e303d40de25abdb0"
+        },
+        {
+          "path": "layouts/symbolBridge.js",
+          "bytes": 15052,
+          "sha256": "bff2c97d43a35cb303b29ee4a1723e46bb7f0b2664cdbbecbeb47a18bccb6102"
+        },
+        {
+          "path": "messages.js",
+          "bytes": 3779,
+          "sha256": "19f93a3258d60f0865831f222a68def4dcfd6a72920ed1ec37c3d49743d41edf"
+        },
+        {
+          "path": "perf.js",
+          "bytes": 3011,
+          "sha256": "cbd82f2d141639e1b371ab6350d2e417546107f2a896f9d3c91e5a535e00184e"
+        },
+        {
+          "path": "probes.js",
+          "bytes": 4984,
+          "sha256": "004dd703efbb8448ab057abef0bd03a5b3769ba18f5fb555bcaeab728c705406"
+        },
+        {
+          "path": "propsOverlay.js",
+          "bytes": 3255,
+          "sha256": "16354013292b0f7ff0a2979826c5845e67254eada62ca62cb2c71605b3f3e92c"
+        },
+        {
+          "path": "protocol.js",
+          "bytes": 41845,
+          "sha256": "de348ace0f3cdf3d2b8a08cd66747586f3783b68eda1854c9cbc2373fb0d2139"
+        },
+        {
+          "path": "queries.js",
+          "bytes": 4769,
+          "sha256": "0c9345034d766cbf6119288b1f6df778bbdf37890d3dfb46ffd0e6bb9090ea34"
+        },
+        {
+          "path": "report.js",
+          "bytes": 3385,
+          "sha256": "e200da37f790b0aa82e0f91cd2e6783bb6fcaff57946038294b1758b87b1f87e"
+        },
+        {
+          "path": "rewrite.js",
+          "bytes": 11907,
+          "sha256": "417a7bd63c56a5ad7fdf9d98ccb4b5cdeb6a67ed7bac8490cdfe5df449cd9d6e"
+        },
+        {
+          "path": "run.js",
+          "bytes": 17553,
+          "sha256": "36919917d8fd9630eb63bcaab542580584a341100094f8f539eb85eaac286162"
+        },
+        {
+          "path": "scenarios.js",
+          "bytes": 23480,
+          "sha256": "f9e388fbec9fcdf962aab527507d96138a5d1dc147b7171196fffc076098ce46"
+        },
+        {
+          "path": "server.js",
+          "bytes": 13542,
+          "sha256": "7b1dfaafd94cc53d8cac805171ed0d1e4ba79b8215234da296b6ef54f56dd7da"
+        },
+        {
+          "path": "symbols.js",
+          "bytes": 44226,
+          "sha256": "2c2398e0597caa64cfa85abdfa638316d1e5cefb68914456d6a0f49c5b741357"
+        },
+        {
+          "path": "text.js",
+          "bytes": 10130,
+          "sha256": "5920d208e97f5865995b12ad36604173d0ed940dacc1b40d26d728030f8e707c"
+        },
+        {
+          "path": "types.js",
+          "bytes": 95,
+          "sha256": "d9eee677b188a751e42a0cb5e3b16563164252568442e4e5b2ace2b94f6b65c0"
+        },
+        {
+          "path": "version.js",
+          "bytes": 118,
+          "sha256": "384b4ab4a577836041cd69924348089a27554dac6cea230cd26407e68bda463b"
+        }
+      ]
+    },
+    "crates/wxml-lsp/src/backend_node": {
+      "path": "crates/wxml-lsp/src/backend_node",
+      "kind": "tracked-repository-tree",
+      "file_count": 8,
+      "total_bytes": 264166,
+      "tree_sha256": "2f131507696b7163ce776c290cd1420551aae0df40eac3015ac6fad78ee0c710",
+      "files_listed": true,
+      "files": [
+        {
+          "path": "completion.rs",
+          "bytes": 6974,
+          "sha256": "de1b5c3dc9babff090382a8f7ad686e0d3f1ca761a371cf351297d835b297117"
+        },
+        {
+          "path": "config.rs",
+          "bytes": 14267,
+          "sha256": "cdc40ec0a265f6cca172a76a2c9fd60ce8228d338a89ea209ed6184d3d81d642"
+        },
+        {
+          "path": "mod.rs",
+          "bytes": 29779,
+          "sha256": "2b45edd4ecd8100a24eb19d3501650fcae1e5f5074351bf680edce77bf6f1055"
+        },
+        {
+          "path": "process.rs",
+          "bytes": 20012,
+          "sha256": "1fd01cc4c4d423218d65bd78c9a463e0e8517c887fddec5af2e2cd374898d248"
+        },
+        {
+          "path": "protocol.rs",
+          "bytes": 6751,
+          "sha256": "3fbb5ae79cfac272404e404ff396fe21279ce50c4a08b1bf67367e584d568966"
+        },
+        {
+          "path": "request.rs",
+          "bytes": 47087,
+          "sha256": "18f278f250a2003ab9f025b44b23592557ef9f8b708cb7ca60182fb70aa6a6b7"
+        },
+        {
+          "path": "response.rs",
+          "bytes": 93411,
+          "sha256": "c38a196c9fd24f652a441dcee9e298338d684d9c581e32ff3fe7feece50c2bc0"
+        },
+        {
+          "path": "tests.rs",
+          "bytes": 45885,
+          "sha256": "1fe705ca9bfab61199d4f63fd9cc0cc76d51a17c96f6f929fed5811056598601"
+        }
+      ]
+    }
+  },
+  "excluded": [
+    {
+      "path": "backends/typescript/node_modules",
+      "reason": "gitignored npm install tree; contains symlinks in .bin; not repository identity and not part of --check"
+    }
+  ],
+  "old_ignored_gates": {
+    "source": "docs/plans/tsgo-test-ledger.json#ignored_rust_tests",
+    "count": 23,
+    "gates": [
+      {
+        "gate_id": "G-P5-E2E-01",
+        "file": "crates/wxml-lsp/tests/real_node.rs",
+        "test": "non_owner_script_overlay_propagates_and_survives_a_node_restart",
+        "fully_qualified": "real_node::non_owner_script_overlay_propagates_and_survives_a_node_restart",
+        "line_ignore": 494,
+        "line_fn": 496,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_non_owner_overlay_replay_survives_restart",
+        "replacement_kind": "native_engine_real_stdio_overlay_replay",
+        "old_reason": "requires Node 24 and a built P5 dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new in the test process",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": "fc948a4bf7838c93693fdbc1b104ee96119a959835ed640077221d47af9849c4"
+      },
+      {
+        "gate_id": "G-P5-E2E-02",
+        "file": "crates/wxml-lsp/tests/real_node.rs",
+        "test": "real_node_event_handler_diagnostics_definition_and_completion",
+        "fully_qualified": "real_node::real_node_event_handler_diagnostics_definition_and_completion",
+        "line_ignore": 219,
+        "line_fn": 221,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_event_handler_hover_diagnostics_definition_completion",
+        "replacement_kind": "native_engine_real_stdio_event",
+        "old_reason": "requires Node 24 and a built P5 dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new in the test process",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": "fc948a4bf7838c93693fdbc1b104ee96119a959835ed640077221d47af9849c4"
+      },
+      {
+        "gate_id": "G-P5-E2E-03",
+        "file": "crates/wxml-lsp/tests/real_node.rs",
+        "test": "real_node_expression_and_event_completion_smoke",
+        "fully_qualified": "real_node::real_node_expression_and_event_completion_smoke",
+        "line_ignore": 103,
+        "line_fn": 105,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_expression_and_event_completion_smoke",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires Node 24 and a built P5 dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new in the test process",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": "fc948a4bf7838c93693fdbc1b104ee96119a959835ed640077221d47af9849c4"
+      },
+      {
+        "gate_id": "G-P5-E2E-04",
+        "file": "crates/wxml-lsp/tests/real_node.rs",
+        "test": "real_node_hover_and_diagnostics_smoke",
+        "fully_qualified": "real_node::real_node_hover_and_diagnostics_smoke",
+        "line_ignore": 30,
+        "line_fn": 31,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_hover_and_diagnostics_smoke",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires Node 24 and a built P5 dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new in the test process",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": "fc948a4bf7838c93693fdbc1b104ee96119a959835ed640077221d47af9849c4"
+      },
+      {
+        "gate_id": "G-P5-E2E-05",
+        "file": "crates/wxml-lsp/tests/real_node.rs",
+        "test": "real_node_symbols_smoke",
+        "fully_qualified": "real_node::real_node_symbols_smoke",
+        "line_ignore": 626,
+        "line_fn": 627,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_symbols_smoke",
+        "replacement_kind": "native_engine_real_stdio_symbols",
+        "old_reason": "requires Node 24 and a built P5 dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new in the test process",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": "fc948a4bf7838c93693fdbc1b104ee96119a959835ed640077221d47af9849c4"
+      },
+      {
+        "gate_id": "G-P5-E2E-06",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "ac001_page_data_and_jsdoc_hover",
+        "fully_qualified": "stdio_type_loop::ac001_page_data_and_jsdoc_hover",
+        "line_ignore": 504,
+        "line_fn": 505,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac001_page_data_and_jsdoc_hover",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": null,
+          "source": "test helper"
+        },
+        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+      },
+      {
+        "gate_id": "G-P5-E2E-07",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "ac002_field_typo_diagnostic_and_fix_clear",
+        "fully_qualified": "stdio_type_loop::ac002_field_typo_diagnostic_and_fix_clear",
+        "line_ignore": 606,
+        "line_fn": 607,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac002_field_typo_diagnostic_and_fix_clear",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": null,
+          "source": "test helper"
+        },
+        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+      },
+      {
+        "gate_id": "G-P5-E2E-08",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "ac003_unicode_and_crlf_positions",
+        "fully_qualified": "stdio_type_loop::ac003_unicode_and_crlf_positions",
+        "line_ignore": 658,
+        "line_fn": 659,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac003_unicode_and_crlf_positions",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": null,
+          "source": "test helper"
+        },
+        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+      },
+      {
+        "gate_id": "G-P5-E2E-09",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "ac011_unknown_owner_degrades_honestly",
+        "fully_qualified": "stdio_type_loop::ac011_unknown_owner_degrades_honestly",
+        "line_ignore": 780,
+        "line_fn": 781,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac011_unknown_owner_degrades_honestly",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": null,
+          "source": "test helper"
+        },
+        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+      },
+      {
+        "gate_id": "G-P5-E2E-10",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "ac013_component_properties_hover",
+        "fully_qualified": "stdio_type_loop::ac013_component_properties_hover",
+        "line_ignore": 706,
+        "line_fn": 707,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac013_component_properties_hover",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": null,
+          "source": "test helper"
+        },
+        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+      },
+      {
+        "gate_id": "G-P5-E2E-11",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "component_behavior_data_and_properties_work_over_stdio",
+        "fully_qualified": "stdio_type_loop::component_behavior_data_and_properties_work_over_stdio",
+        "line_ignore": 947,
+        "line_fn": 948,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_component_behavior_data_and_properties",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires the real server binary and Node fixture; set WXML_TEST_NODE=1",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": null,
+          "source": "test helper"
+        },
+        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+      },
+      {
+        "gate_id": "G-P5-E2E-12",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "static_wxs_and_template_semantics_work_over_stdio",
+        "fully_qualified": "stdio_type_loop::static_wxs_and_template_semantics_work_over_stdio",
+        "line_ignore": 836,
+        "line_fn": 837,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_static_wxs_and_template_semantics_work_over_stdio",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires the real server binary and Node fixture; set WXML_TEST_NODE=1",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": null,
+          "source": "test helper"
+        },
+        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+      },
+      {
+        "gate_id": "G-P5-E2E-13",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "static_wxs_answers_survive_an_unavailable_type_backend",
+        "fully_qualified": "stdio_type_loop::static_wxs_answers_survive_an_unavailable_type_backend",
+        "line_ignore": 1083,
+        "line_fn": 1084,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_static_wxs_answers_survive_an_unavailable_type_backend",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires the real server binary; set WXML_TEST_NODE=1",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": null,
+          "source": "test helper"
+        },
+        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+      },
+      {
+        "gate_id": "G-P5-E2E-14",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "unsaved_wxs_overlay_updates_static_hover_and_completion",
+        "fully_qualified": "stdio_type_loop::unsaved_wxs_overlay_updates_static_hover_and_completion",
+        "line_ignore": 1013,
+        "line_fn": 1014,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_unsaved_wxs_overlay_updates_static_hover_and_completion",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires the real server binary and Node fixture; set WXML_TEST_NODE=1",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "boundary": "spawns target/debug/wxml-lsp --stdio with WXML_TYPE_BACKEND/WXML_BACKEND_DIR; the LSP process starts Node",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": null,
+          "source": "test helper"
+        },
+        "file_sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+      },
+      {
+        "gate_id": "G-P5-E2E-15",
+        "file": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "test": "ac005_loop_scope_typed_locals",
+        "fully_qualified": "wave5_acceptance::ac005_loop_scope_typed_locals",
+        "line_ignore": 670,
+        "line_fn": 671,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac005_loop_scope_typed_locals",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new through Runner::open",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+      },
+      {
+        "gate_id": "G-P5-E2E-16",
+        "file": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "test": "ac006_conditional_union_narrowing",
+        "fully_qualified": "wave5_acceptance::ac006_conditional_union_narrowing",
+        "line_ignore": 723,
+        "line_fn": 724,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac006_conditional_union_narrowing",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new through Runner::open",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+      },
+      {
+        "gate_id": "G-P5-E2E-17",
+        "file": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "test": "ac008_alias_project_hover_and_definition",
+        "fully_qualified": "wave5_acceptance::ac008_alias_project_hover_and_definition",
+        "line_ignore": 1112,
+        "line_fn": 1113,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac008_alias_project_hover_and_definition",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new through Runner::open",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+      },
+      {
+        "gate_id": "G-P5-E2E-18",
+        "file": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "test": "ac008_multi_view_fixture_isolation",
+        "fully_qualified": "wave5_acceptance::ac008_multi_view_fixture_isolation",
+        "line_ignore": 995,
+        "line_fn": 996,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac008_multi_view_fixture_isolation",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new through Runner::open",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+      },
+      {
+        "gate_id": "G-P5-E2E-19",
+        "file": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "test": "ac008_simultaneous_views_do_not_pollute_each_other",
+        "fully_qualified": "wave5_acceptance::ac008_simultaneous_views_do_not_pollute_each_other",
+        "line_ignore": 1029,
+        "line_fn": 1030,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac008_simultaneous_views_do_not_pollute_each_other",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new through Runner::open",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+      },
+      {
+        "gate_id": "G-P5-E2E-20",
+        "file": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "test": "ac012_component_property_bindings",
+        "fully_qualified": "wave5_acceptance::ac012_component_property_bindings",
+        "line_ignore": 771,
+        "line_fn": 772,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac012_component_property_bindings",
+        "replacement_kind": "native_engine_real_stdio_acceptance",
+        "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new through Runner::open",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+      },
+      {
+        "gate_id": "G-P5-E2E-21",
+        "file": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "test": "ac012_event_handlers_basic",
+        "fully_qualified": "wave5_acceptance::ac012_event_handlers_basic",
+        "line_ignore": 845,
+        "line_fn": 847,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac012_event_handlers_basic",
+        "replacement_kind": "native_engine_real_stdio_acceptance",
+        "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new through Runner::open",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+      },
+      {
+        "gate_id": "G-P5-PERF-01",
+        "file": "crates/wxml-lsp/tests/performance_bench.rs",
+        "test": "q2_performance_benchmark",
+        "fully_qualified": "performance_bench::q2_performance_benchmark",
+        "line_ignore": 781,
+        "line_fn": 782,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_q2_performance_benchmark",
+        "replacement_kind": "native_engine_real_stdio_perf",
+        "old_reason": "performance gate: set WXML_TEST_NODE=1 and run with --ignored",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "boundary": "NodeBackend plus a `node --version` probe and git metadata",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE"
+          ],
+          "node_minimum": null,
+          "source": "test helper"
+        },
+        "file_sha256": "c76943e24c28ab734f3d38cd5429ba2b955f69cdebd0ad07b5704239beb0828e"
+      },
+      {
+        "gate_id": "G-P5-STABILITY-01",
+        "file": "crates/wxml-lsp/tests/q2_stability.rs",
+        "test": "ten_round_lifecycle_stability",
+        "fully_qualified": "q2_stability::ten_round_lifecycle_stability",
+        "line_ignore": 202,
+        "line_fn": 203,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ten_round_lifecycle_stability",
+        "replacement_kind": "native_engine_real_stdio_stability",
+        "old_reason": "stability gate: set WXML_TEST_NODE=1 and run with --ignored",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "boundary": "NodeBackend plus a process-table scan for dist/server.js",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE"
+          ],
+          "node_minimum": null,
+          "source": "test helper"
+        },
+        "file_sha256": "c8b53b8ad1ba5211e904dc33e4f75900aec7a623be676e50dc6da09acc8b171c"
+      }
+    ],
+    "summary": {
+      "by_status": {
+        "gate_green": 23
+      },
+      "by_action": {
+        "delete": 12,
+        "retarget": 11
+      },
+      "by_file": {
+        "crates/wxml-lsp/tests/performance_bench.rs": 1,
+        "crates/wxml-lsp/tests/q2_stability.rs": 1,
+        "crates/wxml-lsp/tests/real_node.rs": 5,
+        "crates/wxml-lsp/tests/stdio_type_loop.rs": 9,
+        "crates/wxml-lsp/tests/wave5_acceptance.rs": 7
+      }
+    }
+  },
+  "semantic_tools": {
+    "silent_returns": [
+      {
+        "gate_id": "G-P5-E2E-22",
+        "file": "crates/wxml-lsp/tests/semantic_tools.rs",
+        "test": "real_node_lsp_component_property_edit_applies_and_parses",
+        "line_fn": 2086,
+        "line_asset_lookup": 2091,
+        "line_silent_return": 2099,
+        "line_tsc_branch": 2184,
+        "line_tsc_skip": 2215,
+        "file_sha256": "359e5d9a38d88d75617dc4effbad240782b1f356bbaa4a1e1c2f2d7a45572773"
+      },
+      {
+        "gate_id": "G-P5-E2E-23",
+        "file": "crates/wxml-lsp/tests/semantic_tools.rs",
+        "test": "real_node_lsp_rejects_cross_namespace_and_dynamic_edits",
+        "line_fn": 2589,
+        "line_asset_lookup": 2594,
+        "line_silent_return": 2602,
+        "line_tsc_branch": null,
+        "line_tsc_skip": null,
+        "file_sha256": "359e5d9a38d88d75617dc4effbad240782b1f356bbaa4a1e1c2f2d7a45572773"
+      }
+    ],
+    "note": "Two early returns on a missing dist/server.js plus one optional tsc branch; all still present at this commit."
+  },
+  "legacy_env": {
+    "runtime": [
+      {
+        "name": "WXML_ANALYZE_TIMEOUT_MS",
+        "file": "crates/wxml-lsp/src/backend_node/config.rs",
+        "line": 196,
+        "anchor": "if let Some(value) = lookup(\"WXML_ANALYZE_TIMEOUT_MS\") {",
+        "reader": "NodeBackendConfig::from_env",
+        "note": "Per-request Node timeout, default 15000",
+        "file_sha256": "cdc40ec0a265f6cca172a76a2c9fd60ce8228d338a89ea209ed6184d3d81d642"
+      },
+      {
+        "name": "WXML_BACKEND_DIR",
+        "file": "crates/wxml-lsp/src/backend_node/config.rs",
+        "line": 185,
+        "anchor": "if let Some(dir) = lookup(\"WXML_BACKEND_DIR\").map(PathBuf::from) {",
+        "reader": "NodeBackendConfig::from_env",
+        "note": "Absolute backend directory; relative values disable the backend",
+        "file_sha256": "cdc40ec0a265f6cca172a76a2c9fd60ce8228d338a89ea209ed6184d3d81d642"
+      },
+      {
+        "name": "WXML_NODE",
+        "file": "crates/wxml-lsp/src/backend_node/config.rs",
+        "line": 166,
+        "anchor": "if let Some(node) = lookup(\"WXML_NODE\") {",
+        "reader": "NodeBackendConfig::from_env",
+        "note": "Node executable name or absolute path; node backend only",
+        "file_sha256": "cdc40ec0a265f6cca172a76a2c9fd60ce8228d338a89ea209ed6184d3d81d642"
+      },
+      {
+        "name": "WXML_TEMPLATE_CHECK",
+        "file": "crates/wxml-lsp/src/backend_node/config.rs",
+        "line": 203,
+        "anchor": "if let Some(value) = lookup(\"WXML_TEMPLATE_CHECK\") {",
+        "reader": "NodeBackendConfig::from_env",
+        "note": "off, pragma or inherit; node backend only",
+        "file_sha256": "cdc40ec0a265f6cca172a76a2c9fd60ce8228d338a89ea209ed6184d3d81d642"
+      },
+      {
+        "name": "WXML_TYPE_BACKEND",
+        "file": "crates/wxml-lsp/src/backend_node/config.rs",
+        "line": 179,
+        "anchor": "if let Some(server) = lookup(\"WXML_TYPE_BACKEND\").map(PathBuf::from) {",
+        "reader": "NodeBackendConfig::from_env",
+        "note": "Absolute server.js path; relative values disable the backend",
+        "file_sha256": "cdc40ec0a265f6cca172a76a2c9fd60ce8228d338a89ea209ed6184d3d81d642"
+      }
+    ],
+    "gate_only": [
+      {
+        "name": "WXML_TEST_EXTERNAL_BACKEND",
+        "kind": "test-only opt-in; deleted with the old Node gates",
+        "files": [
+          "crates/wxml-lsp/tests/real_node.rs",
+          "crates/wxml-lsp/tests/stdio_type_loop.rs"
+        ]
+      },
+      {
+        "name": "WXML_TEST_NODE",
+        "kind": "test-only opt-in; deleted with the old Node gates",
+        "files": [
+          "crates/wxml-lsp/tests/real_node.rs",
+          "crates/wxml-lsp/tests/wave5_acceptance.rs",
+          "crates/wxml-lsp/tests/stdio_type_loop.rs",
+          "crates/wxml-lsp/tests/performance_bench.rs",
+          "crates/wxml-lsp/tests/q2_stability.rs"
+        ]
+      }
+    ]
+  },
+  "v1_delivery": {
+    "write_paths": [
+      {
+        "file": "crates/wxml-delivery/src/acquire.rs",
+        "symbol": "acquire",
+        "line": 60,
+        "anchor": "pub fn acquire(options: &AcquireOptions<'_>) -> Result<AcquiredPackage> {",
+        "action": "delete",
+        "role": "v1 acquire/cache path",
+        "file_sha256": "7c3ec564dc3812d002098918c249e0cc43d822b5a96773bfc807b1ec63b7bb94"
+      },
+      {
+        "file": "crates/wxml-delivery/src/bin/wxml-lsp-install.rs",
+        "symbol": "install",
+        "line": 270,
+        "anchor": "fn install(options: &Options) -> Result<()> {",
+        "action": "delete",
+        "role": "schema v1 install branch",
+        "file_sha256": "c43e105b7cf392cc6fb90221338f9ee4544a08dd79a7ac1504dc2900ec3748ab"
+      },
+      {
+        "file": "crates/wxml-delivery/src/bin/wxml-lsp-install.rs",
+        "symbol": "upgrade",
+        "line": 325,
+        "anchor": "fn upgrade(options: &Options) -> Result<()> {",
+        "action": "delete",
+        "role": "schema v1 upgrade branch",
+        "file_sha256": "c43e105b7cf392cc6fb90221338f9ee4544a08dd79a7ac1504dc2900ec3748ab"
+      },
+      {
+        "file": "crates/wxml-delivery/src/bin/wxml-lsp-install.rs",
+        "symbol": "verify_package",
+        "line": 854,
+        "anchor": "fn verify_package(options: &Options) -> Result<()> {",
+        "action": "delete",
+        "role": "contains the schema v1 verify-package branch",
+        "file_sha256": "c43e105b7cf392cc6fb90221338f9ee4544a08dd79a7ac1504dc2900ec3748ab"
+      },
+      {
+        "file": "crates/wxml-delivery/src/bin/wxml-lsp-install.rs",
+        "symbol": "install_and_report",
+        "line": 942,
+        "anchor": "fn install_and_report(",
+        "action": "delete",
+        "role": "v1 install/verify/switch reporting",
+        "file_sha256": "c43e105b7cf392cc6fb90221338f9ee4544a08dd79a7ac1504dc2900ec3748ab"
+      },
+      {
+        "file": "crates/wxml-delivery/src/bin/wxml-lsp-package.rs",
+        "symbol": "run",
+        "line": 125,
+        "anchor": "fn run() -> Result<(), String> {",
+        "action": "delete",
+        "role": "CLI dispatch; the no-subcommand/default path still builds schema v1",
+        "file_sha256": "8d44c72d31cff63d682ac3d20f390f70712c2f5cc77fbe50bf9211acc3176cd9"
+      },
+      {
+        "file": "crates/wxml-delivery/src/bin/wxml-lsp-package.rs",
+        "symbol": "build_package_call",
+        "line": 179,
+        "anchor": "build_package(&options).map_err(",
+        "action": "delete",
+        "role": "v1 packager call site",
+        "file_sha256": "8d44c72d31cff63d682ac3d20f390f70712c2f5cc77fbe50bf9211acc3176cd9"
+      },
+      {
+        "file": "crates/wxml-delivery/src/cache.rs",
+        "symbol": "store_verified",
+        "line": 176,
+        "anchor": "pub fn store_verified(",
+        "action": "delete",
+        "role": "v1 archive cache writer",
+        "file_sha256": "82fd1d7949cf49ca4acb09b65f4659a7f5056783811efdfb7ef35c4dcc80a325"
+      },
+      {
+        "file": "crates/wxml-delivery/src/install.rs",
+        "symbol": "install_tree",
+        "line": 286,
+        "anchor": "pub fn install_tree(&self, tree: &Path, version: &str) -> Result<InstallOutcome> {",
+        "action": "delete",
+        "role": "v1 install write path into versions/current",
+        "file_sha256": "b9759c58cf5bcd4261bf92d5e71b6b7582c089db3829bdc10271437ad6c99778"
+      },
+      {
+        "file": "crates/wxml-delivery/src/manifest.rs",
+        "symbol": "parse_index",
+        "line": 632,
+        "anchor": "pub fn parse_index(bytes: &[u8]) -> Result<Index> {",
+        "action": "delete",
+        "role": "v1 index parser",
+        "file_sha256": "4ca379e0b21fa5274db5586a652bb75a7d4236e445792737fd9479d39e2e42b9"
+      },
+      {
+        "file": "crates/wxml-delivery/src/package.rs",
+        "symbol": "build_package",
+        "line": 101,
+        "anchor": "pub fn build_package(options: &BuildOptions) -> Result<BuildReport> {",
+        "action": "delete",
+        "role": "v1 package entry point",
+        "file_sha256": "d09e1466d5e7d44fc3c4ae707ae3de29494c6033b5e873c108a0b740eed1b4df"
+      },
+      {
+        "file": "crates/wxml-delivery/src/package.rs",
+        "symbol": "build_manifest",
+        "line": 422,
+        "anchor": "fn build_manifest(options: &BuildOptions, files: &[SourceFile]) -> Result<Manifest> {",
+        "action": "delete",
+        "role": "v1 schema manifest constructor",
+        "file_sha256": "d09e1466d5e7d44fc3c4ae707ae3de29494c6033b5e873c108a0b740eed1b4df"
+      },
+      {
+        "file": "crates/wxml-delivery/src/package.rs",
+        "symbol": "update_index",
+        "line": 508,
+        "anchor": "fn update_index(",
+        "action": "delete",
+        "role": "v1 index.json writer",
+        "file_sha256": "d09e1466d5e7d44fc3c4ae707ae3de29494c6033b5e873c108a0b740eed1b4df"
+      },
+      {
+        "file": "crates/wxml-delivery/src/verify.rs",
+        "symbol": "check_backend",
+        "line": 244,
+        "anchor": "pub fn check_backend(root: &Path, manifest: &Manifest) -> Result<()> {",
+        "action": "delete",
+        "role": "requires bin/wxml-type-backend/server.js and node_modules",
+        "file_sha256": "51e1f747b9bb26782551c9d8f95b92770a962828794152cf3c4ca1c4757cd64a"
+      },
+      {
+        "file": "crates/wxml-delivery/src/verify.rs",
+        "symbol": "verify_archive",
+        "line": 283,
+        "anchor": "pub fn verify_archive(",
+        "action": "delete",
+        "role": "v1 archive verification entry point",
+        "file_sha256": "51e1f747b9bb26782551c9d8f95b92770a962828794152cf3c4ca1c4757cd64a"
+      }
+    ],
+    "keep_paths": [
+      {
+        "file": "crates/wxml-delivery/src/install.rs",
+        "symbol": "verify_installed",
+        "line": 257,
+        "anchor": "pub fn verify_installed(&self, version: &str) -> Result<Manifest> {",
+        "action": "keep",
+        "role": "read-only verification kept for legacy current",
+        "file_sha256": "b9759c58cf5bcd4261bf92d5e71b6b7582c089db3829bdc10271437ad6c99778"
+      },
+      {
+        "file": "crates/wxml-delivery/src/manifest_v2.rs",
+        "symbol": "read_legacy_manifest",
+        "line": 1438,
+        "anchor": "pub fn read_legacy_manifest(root: &Path) -> Result<LegacyManifestProjection> {",
+        "action": "keep",
+        "role": "legacy read-only projection",
+        "file_sha256": "2a0fb5725a334cb7f697735b9bd7e73927868f13d9f6e9800ea29559fc6443b8"
+      },
+      {
+        "file": "crates/wxml-delivery/src/package.rs",
+        "symbol": "build_native_package",
+        "line": 666,
+        "anchor": "pub fn build_native_package(options: &BuildOptionsV2) -> Result<BuildReportV2> {",
+        "action": "keep",
+        "role": "schema v2 native packager; not a deletion candidate",
+        "file_sha256": "d09e1466d5e7d44fc3c4ae707ae3de29494c6033b5e873c108a0b740eed1b4df"
+      }
+    ],
+    "note": "P7-5 deletes only the schema v1 write path; legacy current list/current/verify/env and the read-only projection must remain."
+  },
+  "legacy_ts_oracle": {
+    "manifest": {
+      "path": "docs/plans/tsgo-legacy-oracle-manifest.json",
+      "bytes": 83170,
+      "sha256": "ed820c1f39eafd4011ab139772f07bc2b3b5daaa9d1358583282d5fb65322278",
+      "schema": "wxml-tsgo-legacy-oracle-manifest/1",
+      "baseline": {
+        "head": "807a1578173992ad16f15e22b45f8dd62b024df3",
+        "branch": "tsgo/migration",
+        "source_root": "backends/typescript/test",
+        "ledger_schema": "wxml-tsgo-test-ledger/1"
+      },
+      "counts": {
+        "test_files": 21,
+        "support_files": 1,
+        "cases": 339,
+        "fixture_trees": 4
+      },
+      "projection_sha256": "14cd870e8ce7d15294285fe9205bb98bb121164e44f8c67ee3c433aa43508123",
+      "fixture_trees": [
+        {
+          "tree": "backends/typescript/samples",
+          "files": 35,
+          "bytes": 6069,
+          "sha256": "00a7fa3d6962da50581c396f73c13f7ffb043efae060a0801b373928726e5c1f",
+          "archived_ok": true
+        },
+        {
+          "tree": "backends/typescript/test",
+          "files": 22,
+          "bytes": 253965,
+          "sha256": "630a16af41623c78f19f47bcaba1a7f1282201ac27b4414115ac0b3764afc32e",
+          "archived_ok": true
+        },
+        {
+          "tree": "crates/wxml-lsp/tests/fixtures",
+          "files": 43,
+          "bytes": 6456,
+          "sha256": "834eea4defcb7565c4b84e91a173079cf3be85201d44fb4a7a6d0a32af3da073",
+          "archived_ok": false
+        },
+        {
+          "tree": "tests/fixtures",
+          "files": 136,
+          "bytes": 61928,
+          "sha256": "7c9ddedda18c70bc217af6b3bbd23dd22a33be9c885276cbd587adc0596f04a9",
+          "archived_ok": false
+        }
+      ],
+      "support_file": {
+        "path": "backends/typescript/test/support.ts",
+        "sha256": "9b4fcb347885dbeff1d1711b5f606aa48586cdf86b291ee5f868b36fbc4cef36",
+        "lines": 144
+      }
+    },
+    "bindings": [
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/fixture_hash.rs",
+        "symbol": "test_tree",
+        "line": 71,
+        "anchor": "path: \"backends/typescript/test\",",
+        "what": "legacy_archived=true; archive accepted when absent",
+        "kind": "archived-tree",
+        "file_sha256": "fd3fbfa9095738fdc04278d1b84ba9d8552b8a0e998c7cd8693a1bb09543fc23"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/fixture_hash.rs",
+        "symbol": "samples_tree",
+        "line": 78,
+        "anchor": "path: \"backends/typescript/samples\",",
+        "what": "legacy_archived=true; archive accepted when absent",
+        "kind": "archived-tree",
+        "file_sha256": "fd3fbfa9095738fdc04278d1b84ba9d8552b8a0e998c7cd8693a1bb09543fc23"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/fixture_hash.rs",
+        "symbol": "verify_fixture_trees",
+        "line": 415,
+        "anchor": "let statuses = verify_fixture_trees(&workspace, &ledger_value, &manifest, FROZEN_TREES)",
+        "what": "fixture gate takes the oracle manifest",
+        "kind": "archive-authority",
+        "file_sha256": "fd3fbfa9095738fdc04278d1b84ba9d8552b8a0e998c7cd8693a1bb09543fc23"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/ledger.rs",
+        "symbol": "verify_legacy_oracle",
+        "line": 1426,
+        "anchor": "&workspace.join(oracle_manifest::LEGACY_TEST_SOURCE_ROOT),",
+        "what": "ledger passes the legacy root to the oracle verifier",
+        "kind": "mode-selection",
+        "file_sha256": "1ea41dd7c21d46d36e9912c28079e544894ceba1c7eccb05a09876963f4b5985"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/ledger.rs",
+        "symbol": "live_root",
+        "line": 1438,
+        "anchor": "let live_root = workspace.join(oracle_manifest::LEGACY_TEST_SOURCE_ROOT);",
+        "what": "live root existence selects Live vs Frozen",
+        "kind": "mode-selection",
+        "file_sha256": "1ea41dd7c21d46d36e9912c28079e544894ceba1c7eccb05a09876963f4b5985"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/oracle_manifest.rs",
+        "symbol": "ORACLE_MANIFEST_RELATIVE_PATH",
+        "line": 34,
+        "anchor": "pub(crate) const ORACLE_MANIFEST_RELATIVE_PATH: &str =",
+        "what": "manifest path constant",
+        "kind": "archive-authority",
+        "file_sha256": "2d8bd4e8263cd75ed10dd08de3aecd82a7c163966c97e63b4ee03a25061ddf4f"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/oracle_manifest.rs",
+        "symbol": "LEGACY_TEST_SOURCE_ROOT",
+        "line": 37,
+        "anchor": "pub(crate) const LEGACY_TEST_SOURCE_ROOT: &str = \"backends/typescript/test\";",
+        "what": "legacy source root",
+        "kind": "archive-authority",
+        "file_sha256": "2d8bd4e8263cd75ed10dd08de3aecd82a7c163966c97e63b4ee03a25061ddf4f"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/oracle_manifest.rs",
+        "symbol": "ORACLE_BASELINE_HEAD",
+        "line": 42,
+        "anchor": "pub(crate) const ORACLE_BASELINE_HEAD: &str =",
+        "what": "frozen oracle baseline head",
+        "kind": "provenance",
+        "file_sha256": "2d8bd4e8263cd75ed10dd08de3aecd82a7c163966c97e63b4ee03a25061ddf4f"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/oracle_manifest.rs",
+        "symbol": "FROZEN_MANIFEST_SHA256",
+        "line": 45,
+        "anchor": "pub(crate) const FROZEN_MANIFEST_SHA256: &str =",
+        "what": "manifest integrity pin",
+        "kind": "integrity",
+        "file_sha256": "2d8bd4e8263cd75ed10dd08de3aecd82a7c163966c97e63b4ee03a25061ddf4f"
+      }
+    ],
+    "mode": "archive-authoritative; the live tree is re-hashed only while present",
+    "note": "P7-2 archive binding is committed at this head. The live backends/typescript tree still exists, but ledger.rs and fixture_hash.rs accept its absence through the frozen manifest."
+  },
+  "reference_files": [
+    {
+      "path": "crates/wxml-delivery/src/acquire.rs",
+      "bytes": 10024,
+      "sha256": "7c3ec564dc3812d002098918c249e0cc43d822b5a96773bfc807b1ec63b7bb94"
+    },
+    {
+      "path": "crates/wxml-delivery/src/bin/wxml-lsp-install.rs",
+      "bytes": 43126,
+      "sha256": "c43e105b7cf392cc6fb90221338f9ee4544a08dd79a7ac1504dc2900ec3748ab"
+    },
+    {
+      "path": "crates/wxml-delivery/src/bin/wxml-lsp-package.rs",
+      "bytes": 20687,
+      "sha256": "8d44c72d31cff63d682ac3d20f390f70712c2f5cc77fbe50bf9211acc3176cd9"
+    },
+    {
+      "path": "crates/wxml-delivery/src/cache.rs",
+      "bytes": 16498,
+      "sha256": "82fd1d7949cf49ca4acb09b65f4659a7f5056783811efdfb7ef35c4dcc80a325"
+    },
+    {
+      "path": "crates/wxml-delivery/src/install.rs",
+      "bytes": 27908,
+      "sha256": "b9759c58cf5bcd4261bf92d5e71b6b7582c089db3829bdc10271437ad6c99778"
+    },
+    {
+      "path": "crates/wxml-delivery/src/manifest.rs",
+      "bytes": 36431,
+      "sha256": "4ca379e0b21fa5274db5586a652bb75a7d4236e445792737fd9479d39e2e42b9"
+    },
+    {
+      "path": "crates/wxml-delivery/src/manifest_v2.rs",
+      "bytes": 63713,
+      "sha256": "2a0fb5725a334cb7f697735b9bd7e73927868f13d9f6e9800ea29559fc6443b8"
+    },
+    {
+      "path": "crates/wxml-delivery/src/package.rs",
+      "bytes": 102844,
+      "sha256": "d09e1466d5e7d44fc3c4ae707ae3de29494c6033b5e873c108a0b740eed1b4df"
+    },
+    {
+      "path": "crates/wxml-delivery/src/verify.rs",
+      "bytes": 17821,
+      "sha256": "51e1f747b9bb26782551c9d8f95b92770a962828794152cf3c4ca1c4757cd64a"
+    },
+    {
+      "path": "crates/wxml-lsp/src/backend_node/config.rs",
+      "bytes": 14267,
+      "sha256": "cdc40ec0a265f6cca172a76a2c9fd60ce8228d338a89ea209ed6184d3d81d642"
+    },
+    {
+      "path": "crates/wxml-lsp/src/lib.rs",
+      "bytes": 3860,
+      "sha256": "0325026476f1c439d84571f9a2dae2a688a0dff7d5bf3267d88937e7cbb24ea0"
+    },
+    {
+      "path": "crates/wxml-lsp/src/main.rs",
+      "bytes": 9994,
+      "sha256": "f1e7e8de2c4d74c442a66f327dae5758b3efb622c943a187d2ccf1cc79b85a51"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity.rs",
+      "bytes": 10984,
+      "sha256": "3b030bfb1ce74de3514c7b2fa8271e9fee3ea352aa3ae87202bf7b970f0115ce"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity/fixture_hash.rs",
+      "bytes": 25560,
+      "sha256": "fd3fbfa9095738fdc04278d1b84ba9d8552b8a0e998c7cd8693a1bb09543fc23"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity/ledger.rs",
+      "bytes": 63884,
+      "sha256": "1ea41dd7c21d46d36e9912c28079e544894ceba1c7eccb05a09876963f4b5985"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs",
+      "bytes": 136184,
+      "sha256": "62ab6ed6ffe6a124baa5e1c07f0b5729cf0a81a986c258976ebfa052a36e7e00"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity/native_gates.rs",
+      "bytes": 34586,
+      "sha256": "fc55a72ce21786cd75d0ff5758773d43a5443217d4f663b23706aed788631974"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity/oracle_manifest.rs",
+      "bytes": 42984,
+      "sha256": "2d8bd4e8263cd75ed10dd08de3aecd82a7c163966c97e63b4ee03a25061ddf4f"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity/oracle_manifest_tests.rs",
+      "bytes": 16648,
+      "sha256": "31119dee9c36cb0b741c74c9ab04f664bda831eb7e3776c343cd63c44abab89b"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity/symbols_edits.rs",
+      "bytes": 29747,
+      "sha256": "83a757622abb3f5365c46aa5af0393d84b9ac5aa2ccf7997a2758591c4ca2e70"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/performance_bench.rs",
+      "bytes": 35357,
+      "sha256": "c76943e24c28ab734f3d38cd5429ba2b955f69cdebd0ad07b5704239beb0828e"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/q2_stability.rs",
+      "bytes": 20848,
+      "sha256": "c8b53b8ad1ba5211e904dc33e4f75900aec7a623be676e50dc6da09acc8b171c"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/real_node.rs",
+      "bytes": 26150,
+      "sha256": "fc948a4bf7838c93693fdbc1b104ee96119a959835ed640077221d47af9849c4"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/semantic_tools.rs",
+      "bytes": 100857,
+      "sha256": "359e5d9a38d88d75617dc4effbad240782b1f356bbaa4a1e1c2f2d7a45572773"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+      "bytes": 39172,
+      "sha256": "b09e65ff75e376d27c97e5ead7b36792826280bb488e08e23517b25b20b70377"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+      "bytes": 41910,
+      "sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+    },
+    {
+      "path": "docs/plans/tsgo-legacy-oracle-manifest.json",
+      "bytes": 83170,
+      "sha256": "ed820c1f39eafd4011ab139772f07bc2b3b5daaa9d1358583282d5fb65322278"
+    }
+  ],
+  "blocking_state": {
+    "ledger": {
+      "green": 55,
+      "planned": 248,
+      "retired": 36,
+      "total": 339,
+      "ignored_gate_green": 23,
+      "ignored_gate_required": 0,
+      "ignored_gate_total": 23,
+      "silent_skip_gates": 2,
+      "rust_silent_skips": 3
+    },
+    "old_gates_still_ignored": true,
+    "mandatory_green": false,
+    "replacement_reviewed": false,
+    "old_ts_oracle_requires_live_tree": false,
+    "legacy_oracle_archive_bound": true,
+    "legacy_ts_tree_present": {
+      "test": true,
+      "samples": true
+    },
+    "v1_write_paths_present": true,
+    "p7_0": {
+      "freeze_inventory": true,
+      "tag_created": false,
+      "legacy_node_tests_manifest": false,
+      "ledger_reads_archive_manifest": true,
+      "fixture_hash_archive_binding": true,
+      "native_gates_old_test_removed": false,
+      "complete": false
+    },
+    "deletion_allowed": false,
+    "blocked_by": [
+      "ledger is 55 green / 248 planned / 36 retired, not 0 planned",
+      "all 23 old gates are still #[ignore]; gate_green is opt-in, not mandatory_green",
+      "no replacement_reviewed evidence exists for the 23 gates",
+      "native_gates.rs still requires the 23 old #[ignore] tests; old_test_removed is not implemented",
+      "the live backends/typescript test/samples trees are still present; P7-4 samples migration is not complete",
+      "v1 packager and install write paths are still reachable",
+      "the two semantic_tools early returns and the optional tsc branch are still present"
+    ]
+  },
+  "scope_notes": [
+    "This file freezes identity only; it does not authorize deletion.",
+    "backends/typescript is the tracked tree (99 files); dist is the untracked local build output (34 files).",
+    "node_modules is an ignored npm install tree and is deliberately outside --check.",
+    "Line numbers are worktree line numbers at the recorded head."
+  ]
+}
