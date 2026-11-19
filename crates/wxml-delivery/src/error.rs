@@ -48,6 +48,30 @@ pub enum DeliveryError {
     /// The on-disk installation state is inconsistent.
     #[error("invalid install state: {0}")]
     InstallState(String),
+    /// `current` was switched, but the transaction could not be completed or
+    /// rolled back to a verified native version.
+    ///
+    /// Callers must not treat this as "not activated" and must never fall back
+    /// to a legacy Node package. `stateReconciled` says whether `state.json`
+    /// names `version` when the error is returned; it does not claim that the
+    /// interrupted step succeeded. `recovery` names the next command.
+    #[error(
+        "current switched to `{version}` but activation is not durable: {reason}; recovery: {recovery}"
+    )]
+    SwitchedButNotDurable {
+        /// Version `current` points at when the error is returned.
+        version: String,
+        /// The other native version involved in the interrupted switch
+        /// (transaction previous or target). It may no longer verify when a
+        /// restore failed. Never a legacy Node package.
+        previous: Option<String>,
+        /// Whether `state.json` names `version`; not a success claim.
+        state_reconciled: bool,
+        /// Original failure that interrupted the post-switch steps.
+        reason: String,
+        /// Explicit next step; recovery is never a Node fallback.
+        recovery: String,
+    },
     /// A runtime (Node.js, the installed server or its dependencies) failed a
     /// post-install check.
     #[error("runtime check failed: {0}")]

@@ -2,9 +2,11 @@
 //!
 //! The core invariant is that `current` changes only after a staged tree has
 //! passed manifest validation, exact allowlist hashing and the engine version
-//! probe. Native `N1 -> N2` failures keep `N1`; a failed switch attempts to
-//! restore the previously verified native version; a legacy schema v1 package
-//! is never executed or reactivated.
+//! probe. Before the switch, every failure leaves `current` and both trees
+//! byte-identical. After the switch, a native `N1 -> N2` failure restores `N1`
+//! only while `state.json` still names it; once the new state is persisted the
+//! verified target is rolled forward. A legacy schema v1 package is never
+//! executed, restored or recorded as a native rollback target.
 //!
 //! The API/schema handshake (`engine/lib/tsc --api --async`) is deliberately
 //! not implemented here. [`crate::native_install::NativeEngineProbe`] is the
@@ -63,6 +65,9 @@ pub enum FailPoint {
     BeforeSwitch,
     /// Immediately after the `current` symlink switch.
     AfterSwitch,
+    /// Immediately before a post-switch failure switches `current` back to the
+    /// previous verified native version.
+    BeforeRestoreSwitch,
     /// Immediately before `state.json` is replaced.
     BeforeStateWrite,
     /// Immediately after `state.json` is replaced.
@@ -396,9 +401,11 @@ pub fn inspect_current(root: &InstallRoot) -> Result<CurrentInstall> {
 ///
 /// Returns an error for a non-native host, unsafe staging path, failed
 /// verification/probe, downgrade request, same-version content mismatch,
-/// invalid existing state or an I/O failure. On failure the previous `current`
-/// and tree remain byte-identical except for the documented committed-target
-/// window.
+/// invalid existing state or an I/O failure. Before the switch, the previous
+/// `current` and tree remain byte-identical. After the switch, the function
+/// either restores the previous verified native version (only while state
+/// still names it) or rolls the verified target forward; a legacy Node current
+/// is never restored.
 pub fn install_native(
     root: &InstallRoot,
     tree: &Path,
@@ -449,7 +456,6 @@ pub fn install_native_locked(
         op,
         previous,
         outcome,
-        state,
         fingerprint,
     }) = prepared
     else {
@@ -543,26 +549,52 @@ pub fn install_native_locked(
     hooks.checkpoint(FailPoint::AfterCommittedJournal)?;
     hooks.checkpoint(FailPoint::BeforeSwitch)?;
 
-    // The target tree is complete after this switch; on failure `current`
-    // remains unchanged and the committed journal is kept for an explicit
-    // retry, never auto-activation. A post-rename fsync failure is reported
-    // separately because `current` may already have moved.
+    // The target tree is complete after this switch; a pre-switch failure
+    // leaves `current` unchanged. Once the link moved, a failure must either
+    // restore the previous *verified native* version or reconcile the
+    // already-verified target. A legacy Node `current` is never restored.
     match root.switch(&target) {
         Ok(SwitchOutcome::Switched) => {}
         Ok(SwitchOutcome::SwitchedButNotDurable) => {
-            return Err(DeliveryError::InstallState(
-                "current was switched but the install root fsync failed; \
-                 committed journal retained for recovery"
-                    .to_owned(),
-            ));
+            let error = DeliveryError::InstallState(
+                "current was switched but the install root fsync failed".to_owned(),
+            );
+            return handle_post_switch_failure(
+                root,
+                &target,
+                previous.as_deref(),
+                probe,
+                hooks,
+                &journal,
+                outcome,
+                &error,
+            );
         }
         Err(error) => return Err(error),
     }
     if let Err(error) = hooks.checkpoint(FailPoint::AfterSwitch) {
-        return restore_previous(root, previous.as_deref(), None, &error);
+        return handle_post_switch_failure(
+            root,
+            &target,
+            previous.as_deref(),
+            probe,
+            hooks,
+            &journal,
+            outcome,
+            &error,
+        );
     }
     if let Err(error) = hooks.checkpoint(FailPoint::BeforeStateWrite) {
-        return restore_previous(root, previous.as_deref(), state.as_ref(), &error);
+        return handle_post_switch_failure(
+            root,
+            &target,
+            previous.as_deref(),
+            probe,
+            hooks,
+            &journal,
+            outcome,
+            &error,
+        );
     }
 
     let finished_at = now_rfc3339();
@@ -576,17 +608,53 @@ pub fn install_native_locked(
     ) {
         Ok(state) => state,
         Err(error) => {
-            return restore_previous(root, previous.as_deref(), state.as_ref(), &error);
+            return handle_post_switch_failure(
+                root,
+                &target,
+                previous.as_deref(),
+                probe,
+                hooks,
+                &journal,
+                outcome,
+                &error,
+            );
         }
     };
     if let Err(error) = new_state.write(root) {
-        return restore_previous(root, previous.as_deref(), state.as_ref(), &error);
+        return handle_post_switch_failure(
+            root,
+            &target,
+            previous.as_deref(),
+            probe,
+            hooks,
+            &journal,
+            outcome,
+            &error,
+        );
     }
     if let Err(error) = hooks.checkpoint(FailPoint::AfterStateWrite) {
-        return restore_previous(root, previous.as_deref(), state.as_ref(), &error);
+        return handle_post_switch_failure(
+            root,
+            &target,
+            previous.as_deref(),
+            probe,
+            hooks,
+            &journal,
+            outcome,
+            &error,
+        );
     }
     if let Err(error) = journal.write(root) {
-        return restore_previous(root, previous.as_deref(), state.as_ref(), &error);
+        return handle_post_switch_failure(
+            root,
+            &target,
+            previous.as_deref(),
+            probe,
+            hooks,
+            &journal,
+            outcome,
+            &error,
+        );
     }
     hooks.checkpoint(FailPoint::AfterActivatedJournal)?;
     Journal::remove(root, &journal.id)?;
@@ -601,7 +669,6 @@ struct PreparedInstall {
     op: TransactionOp,
     previous: Option<String>,
     outcome: NativeInstallOutcome,
-    state: Option<InstallState>,
     fingerprint: String,
 }
 
@@ -666,7 +733,6 @@ fn prepare_install(
         op,
         previous,
         outcome,
-        state,
         fingerprint,
     }))
 }
@@ -691,11 +757,24 @@ fn plan_operation(
             version: active,
             manifest: active_manifest,
         } => match compare_versions(target, active) {
-            Ordering::Greater => Ok((
-                TransactionOp::Upgrade,
-                Some(active.clone()),
-                NativeInstallOutcome::Upgraded,
-            )),
+            Ordering::Greater => {
+                // `previous` becomes the native rollback target, so it must
+                // still match its own manifest byte for byte. Legacy/Node
+                // packages never reach this branch.
+                verify_tree_v2(
+                    &versions.join(active),
+                    ExpectedManifestV2 {
+                        version: Some(active),
+                        platform: Some(NATIVE_PACKAGE_PLATFORM),
+                        ..ExpectedManifestV2::default()
+                    },
+                )?;
+                Ok((
+                    TransactionOp::Upgrade,
+                    Some(active.clone()),
+                    NativeInstallOutcome::Upgraded,
+                ))
+            }
             Ordering::Equal => {
                 if !same_native_payload(active_manifest, manifest) {
                     return Err(DeliveryError::InstallState(format!(
@@ -792,6 +871,7 @@ pub fn rollback_native(
 /// # Errors
 ///
 /// See [`rollback_native`].
+#[allow(clippy::too_many_lines)]
 pub fn rollback_native_locked(
     root: &InstallRoot,
     to: &str,
@@ -803,18 +883,23 @@ pub fn rollback_native_locked(
     ensure_safe_layout(root)?;
     cleanup_tmp(root, None)?;
     let current = inspect_current(root)?;
+    let active = match &current {
+        CurrentInstall::Native { version, .. } => version.clone(),
+        CurrentInstall::Legacy { .. } => {
+            return Err(DeliveryError::InstallState(
+                "legacy Node package is not a Node-free rollback target".to_owned(),
+            ));
+        }
+        CurrentInstall::None => {
+            return Err(DeliveryError::InstallState(
+                "rollback requires a native current".to_owned(),
+            ));
+        }
+    };
     let state = InstallState::read(root)?.ok_or_else(|| {
         DeliveryError::InstallState("rollback requires a native state.json".to_owned())
     })?;
     state.validate_against(root)?;
-    let CurrentInstall::Native {
-        version: active, ..
-    } = current
-    else {
-        return Err(DeliveryError::InstallState(
-            "legacy Node package is not a Node-free rollback target".to_owned(),
-        ));
-    };
     crate::paths::validate_version(to)?;
     let target_dir = root.versions_dir().join(to);
     if !target_dir.is_dir() {
@@ -859,19 +944,45 @@ pub fn rollback_native_locked(
     match root.switch(to) {
         Ok(SwitchOutcome::Switched) => {}
         Ok(SwitchOutcome::SwitchedButNotDurable) => {
-            return Err(DeliveryError::InstallState(
-                "current was switched but the install root fsync failed; \
-                 committed journal retained for recovery"
-                    .to_owned(),
-            ));
+            let error = DeliveryError::InstallState(
+                "current was switched but the install root fsync failed".to_owned(),
+            );
+            return handle_post_switch_failure(
+                root,
+                to,
+                Some(&active),
+                probe,
+                hooks,
+                &journal,
+                NativeInstallOutcome::RolledBack,
+                &error,
+            );
         }
         Err(error) => return Err(error),
     }
     if let Err(error) = hooks.checkpoint(FailPoint::AfterSwitch) {
-        return restore_previous(root, Some(&active), Some(&state), &error);
+        return handle_post_switch_failure(
+            root,
+            to,
+            Some(&active),
+            probe,
+            hooks,
+            &journal,
+            NativeInstallOutcome::RolledBack,
+            &error,
+        );
     }
     if let Err(error) = hooks.checkpoint(FailPoint::BeforeStateWrite) {
-        return restore_previous(root, Some(&active), Some(&state), &error);
+        return handle_post_switch_failure(
+            root,
+            to,
+            Some(&active),
+            probe,
+            hooks,
+            &journal,
+            NativeInstallOutcome::RolledBack,
+            &error,
+        );
     }
 
     let finished_at = now_rfc3339();
@@ -879,16 +990,54 @@ pub fn rollback_native_locked(
     let new_state =
         match InstallState::new(to, Some(&active), &report.manifest, &journal, &finished_at) {
             Ok(state) => state,
-            Err(error) => return restore_previous(root, Some(&active), Some(&state), &error),
+            Err(error) => {
+                return handle_post_switch_failure(
+                    root,
+                    to,
+                    Some(&active),
+                    probe,
+                    hooks,
+                    &journal,
+                    NativeInstallOutcome::RolledBack,
+                    &error,
+                );
+            }
         };
     if let Err(error) = new_state.write(root) {
-        return restore_previous(root, Some(&active), Some(&state), &error);
+        return handle_post_switch_failure(
+            root,
+            to,
+            Some(&active),
+            probe,
+            hooks,
+            &journal,
+            NativeInstallOutcome::RolledBack,
+            &error,
+        );
     }
     if let Err(error) = hooks.checkpoint(FailPoint::AfterStateWrite) {
-        return restore_previous(root, Some(&active), Some(&state), &error);
+        return handle_post_switch_failure(
+            root,
+            to,
+            Some(&active),
+            probe,
+            hooks,
+            &journal,
+            NativeInstallOutcome::RolledBack,
+            &error,
+        );
     }
     if let Err(error) = journal.write(root) {
-        return restore_previous(root, Some(&active), Some(&state), &error);
+        return handle_post_switch_failure(
+            root,
+            to,
+            Some(&active),
+            probe,
+            hooks,
+            &journal,
+            NativeInstallOutcome::RolledBack,
+            &error,
+        );
     }
     hooks.checkpoint(FailPoint::AfterActivatedJournal)?;
     Journal::remove(root, &journal.id)?;
@@ -1046,13 +1195,93 @@ fn recover_committed(
     let current = inspect_current(root)?;
     if current.version() == Some(journal.target.as_str()) {
         complete_current_target(root, journal, probe, actions)?;
-    } else {
-        cleanup_tmp(root, None)?;
+        return Ok(());
+    }
+    let state_targets_journal = InstallState::read(root)?
+        .as_ref()
+        .is_some_and(|state| state.active == journal.target);
+    if state_targets_journal && matches!(current, CurrentInstall::Native { .. }) {
+        // Repair the "current is a verified native version, state.json names
+        // the committed journal target" window. Re-verify both sides before
+        // moving `current`, then complete the journal idempotently.
+        verify_current_native(root, &current)?;
+        verify_journal_target(root, &journal)?;
+        let current_version = current.version().unwrap_or("<none>").to_owned();
+        match root.switch(&journal.target)? {
+            SwitchOutcome::Switched => {}
+            SwitchOutcome::SwitchedButNotDurable => {
+                return Err(DeliveryError::InstallState(format!(
+                    "recovery rolled current forward to {} but the install root fsync failed; \
+                     retry `wxml-lsp-install recover`",
+                    journal.target
+                )));
+            }
+        }
         actions.push(format!(
-            "committed {} -> kept target; not auto-activated",
+            "committed {} -> current {current_version} did not match state; \
+             re-verified and rolled forward",
             journal.target
         ));
+        write_state_for_current_target(root, journal, probe, actions)?;
+        return Ok(());
     }
+    cleanup_tmp(root, None)?;
+    actions.push(format!(
+        "committed {} -> kept target; not auto-activated",
+        journal.target
+    ));
+    Ok(())
+}
+
+fn verify_current_native(root: &InstallRoot, current: &CurrentInstall) -> Result<()> {
+    let CurrentInstall::Native { version, .. } = current else {
+        return Err(DeliveryError::InstallState(
+            "repair requires a native current".to_owned(),
+        ));
+    };
+    verify_tree_v2(
+        &root.versions_dir().join(version),
+        ExpectedManifestV2 {
+            version: Some(version),
+            platform: Some(NATIVE_PACKAGE_PLATFORM),
+            ..ExpectedManifestV2::default()
+        },
+    )?;
+    Ok(())
+}
+
+fn verify_journal_target(root: &InstallRoot, journal: &Journal) -> Result<()> {
+    verify_tree_v2(
+        &root.versions_dir().join(&journal.target),
+        ExpectedManifestV2 {
+            version: Some(&journal.target),
+            platform: Some(NATIVE_PACKAGE_PLATFORM),
+            ..ExpectedManifestV2::default()
+        },
+    )?;
+    verify_journal_previous(root, journal)
+}
+
+/// Rejects a journal that names a legacy Node package as `previous` and
+/// re-verifies any native previous tree before it can enter `state.json`.
+fn verify_journal_previous(root: &InstallRoot, journal: &Journal) -> Result<()> {
+    let Some(previous) = journal.previous.as_deref() else {
+        return Ok(());
+    };
+    let previous_dir = root.versions_dir().join(previous);
+    if read_manifest_schema(&previous_dir)? == ManifestSchema::V1 {
+        return Err(DeliveryError::InstallState(
+            "recovery journal records a legacy Node package as previous".to_owned(),
+        ));
+    }
+    verify_tree_v2(
+        &previous_dir,
+        ExpectedManifestV2 {
+            version: Some(previous),
+            platform: Some(NATIVE_PACKAGE_PLATFORM),
+            ..ExpectedManifestV2::default()
+        },
+    )?;
     Ok(())
 }
 
@@ -1131,6 +1360,7 @@ fn write_state_for_current_target(
             "recovery probe modified the target tree".to_owned(),
         ));
     }
+    verify_journal_previous(root, &journal)?;
     let finished_at = now_rfc3339();
     if journal.state != TransactionState::Activated {
         journal.transition(TransactionState::Activated, &finished_at)?;
@@ -1301,46 +1531,235 @@ fn same_native_payload(left: &ManifestV2, right: &ManifestV2) -> bool {
         && left.files == right.files
 }
 
-/// Restores the previous native version after a post-switch failure.
-fn restore_previous(
-    root: &InstallRoot,
+/// Returns whether `state.json` names the version `current` points at.
+fn state_names_current(root: &InstallRoot) -> Result<bool> {
+    let current = root.current_version()?;
+    Ok(match (InstallState::read(root)?, current) {
+        (None, None) => true,
+        (Some(state), Some(current)) => state.active == current,
+        _ => false,
+    })
+}
+
+fn switched_but_not_durable(
+    version: &str,
     previous: Option<&str>,
-    previous_state: Option<&InstallState>,
+    state_reconciled: bool,
+    error: &DeliveryError,
+    recovery: &str,
+) -> DeliveryError {
+    DeliveryError::SwitchedButNotDurable {
+        version: version.to_owned(),
+        previous: previous.map(str::to_owned),
+        state_reconciled,
+        reason: error.to_string(),
+        recovery: recovery.to_owned(),
+    }
+}
+
+/// Handles any failure that happens after `current` was atomically switched.
+///
+/// A previous native version is restored only while `state.json` still names
+/// it, so the restore does not need a state rewrite. If the new state was
+/// already persisted, the verified target is rolled forward instead. A legacy
+/// migration never restores the Node current; it rolls the verified target
+/// forward and reports the typed recovery state.
+#[allow(clippy::too_many_arguments)]
+fn handle_post_switch_failure(
+    root: &InstallRoot,
+    target: &str,
+    previous: Option<&str>,
+    probe: &dyn NativeEngineProbe,
+    hooks: &dyn InstallHooks,
+    journal: &Journal,
+    outcome: NativeInstallOutcome,
     error: &DeliveryError,
 ) -> Result<NativeInstallOutcome> {
-    let Some(previous) = previous else {
-        // A first install has no prior native version. The target was verified
-        // and probed, so leave it for explicit recovery rather than deleting a
-        // valid tree or falling back to Node.
+    let state = InstallState::read(root)?;
+    let current_is_target = root.current_version()?.as_deref() == Some(target);
+
+    if previous.is_none() && outcome != NativeInstallOutcome::Migrated {
+        if matches!(error, DeliveryError::Io { .. }) {
+            // A state/journal I/O failure is always typed, including a first
+            // install with no previous version.
+            return Err(switched_but_not_durable(
+                target,
+                None,
+                state_names_current(root).unwrap_or(false),
+                error,
+                "run `wxml-lsp-install recover` to complete the first install;                  never activate a legacy Node package",
+            ));
+        }
+        // Other first-install interruptions keep the committed journal for
+        // explicit recovery, matching the pre-existing first-install contract.
         return Err(DeliveryError::InstallState(format!(
             "activation failed after switch and no native previous version exists: {error}"
         )));
+    }
+
+    if outcome == NativeInstallOutcome::Migrated {
+        if !current_is_target {
+            return Err(switched_but_not_durable(
+                target,
+                None,
+                state_names_current(root).unwrap_or(false),
+                error,
+                "run `wxml-lsp-install recover`; `current` must be reconciled to a verified \
+                 native target, never a legacy Node package",
+            ));
+        }
+        return Err(roll_forward_after_switch(
+            root, target, probe, journal, error,
+        ));
+    }
+
+    let Some(previous) = previous else {
+        return Err(DeliveryError::InstallState(
+            "post-switch failure has no previous native version and is not a legacy migration"
+                .to_owned(),
+        ));
     };
+    if !current_is_target {
+        return Err(switched_but_not_durable(
+            target,
+            Some(previous),
+            state_names_current(root).unwrap_or(false),
+            error,
+            "run `wxml-lsp-install recover`; `current` must be reconciled to a verified \
+             native version, never a legacy Node package",
+        ));
+    }
+    if state.as_ref().is_some_and(|state| state.active == target) {
+        // The new state was already persisted. Switching back would create a
+        // current/state split if the old-state rewrite failed, so roll the
+        // verified target forward instead.
+        return Err(roll_forward_after_switch(
+            root, target, probe, journal, error,
+        ));
+    }
+    if state.as_ref().is_some_and(|state| state.active == previous) {
+        // `state.json` still names the previous native version. Switch back
+        // without rewriting state: there is no state-write crash window.
+        return restore_previous(root, target, previous, hooks, error);
+    }
+
+    Err(switched_but_not_durable(
+        target,
+        Some(previous),
+        state_names_current(root).unwrap_or(false),
+        error,
+        "state.json names neither the target nor the previous native version; \
+         run `wxml-lsp-install recover`; never restore a legacy Node package",
+    ))
+}
+
+/// Rolls the already-switched verified target forward and reconciles
+/// `state.json`/the journal. Legacy Node packages are never recorded as
+/// `previous`.
+fn roll_forward_after_switch(
+    root: &InstallRoot,
+    target: &str,
+    probe: &dyn NativeEngineProbe,
+    journal: &Journal,
+    error: &DeliveryError,
+) -> DeliveryError {
+    let mut actions = Vec::new();
+    let (state_reconciled, recovery) =
+        match write_state_for_current_target(root, journal.clone(), probe, &mut actions) {
+            Ok(()) => (
+                true,
+                format!(
+                    "state.json records `{target}`; run `wxml-lsp-install verify`; \
+                 the legacy Node current is never restored"
+                ),
+            ),
+            Err(reconcile_error) => (
+                state_names_current(root).unwrap_or(false),
+                format!(
+                    "run `wxml-lsp-install recover` to complete `{target}`; committed journal \
+                 retained; never restore the legacy Node package: {reconcile_error}"
+                ),
+            ),
+        };
+    DeliveryError::SwitchedButNotDurable {
+        version: target.to_owned(),
+        previous: journal.previous.clone(),
+        state_reconciled,
+        reason: error.to_string(),
+        recovery,
+    }
+}
+
+/// Restores the previous verified native version after a post-switch failure.
+///
+/// The caller only reaches this path while `state.json` still names
+/// `previous`; the state file is deliberately not rewritten. If the previous
+/// tree cannot be verified or the switch back fails, the error is
+/// [`DeliveryError::SwitchedButNotDurable`] with an explicit recovery action.
+/// A legacy Node package is never a candidate.
+fn restore_previous(
+    root: &InstallRoot,
+    target: &str,
+    previous: &str,
+    hooks: &dyn InstallHooks,
+    error: &DeliveryError,
+) -> Result<NativeInstallOutcome> {
     let directory = root.versions_dir().join(previous);
     let expected = ExpectedManifestV2 {
         version: Some(previous),
         platform: Some(NATIVE_PACKAGE_PLATFORM),
         ..ExpectedManifestV2::default()
     };
-    if verify_tree_v2(&directory, expected).is_err() {
-        return Err(DeliveryError::InstallState(format!(
-            "activation failed after switch and previous {previous} no longer verifies: {error}"
-        )));
+    if let Err(verify_error) = verify_tree_v2(&directory, expected) {
+        return Err(switched_but_not_durable(
+            target,
+            Some(previous),
+            state_names_current(root).unwrap_or(false),
+            error,
+            &format!(
+                "repair or reinstall native `{previous}`, then run `wxml-lsp-install recover`; \
+                 never activate a legacy Node package: {verify_error}"
+            ),
+        ));
     }
+    hooks.checkpoint(FailPoint::BeforeRestoreSwitch)?;
     match root.switch(previous) {
-        Ok(SwitchOutcome::Switched | SwitchOutcome::SwitchedButNotDurable) => {}
-        Err(restore) => {
-            return Err(DeliveryError::InstallState(format!(
-                "activation failed after switch and restoring {previous} failed: {restore}; original: {error}"
-            )));
+        Ok(SwitchOutcome::Switched) => {
+            if matches!(error, DeliveryError::Io { .. }) {
+                // A state-write failure must stay typed even though the
+                // previous native version was restored without a rewrite.
+                return Err(switched_but_not_durable(
+                    previous,
+                    Some(target),
+                    state_names_current(root).unwrap_or(false),
+                    error,
+                    "the previous native version was restored but the state write failed; \
+                     run `wxml-lsp-install verify`; never activate a legacy Node package",
+                ));
+            }
+            Err(DeliveryError::InstallState(format!(
+                "activation failed after switch; restored previous native {previous}: {error}"
+            )))
         }
+        Ok(SwitchOutcome::SwitchedButNotDurable) => Err(switched_but_not_durable(
+            previous,
+            Some(target),
+            state_names_current(root).unwrap_or(false),
+            error,
+            "the switch back completed but the install root fsync failed; \
+             run `wxml-lsp-install verify`",
+        )),
+        Err(restore) => Err(switched_but_not_durable(
+            target,
+            Some(previous),
+            state_names_current(root).unwrap_or(false),
+            error,
+            &format!(
+                "run `wxml-lsp-install recover`; if `current` is not a verified native tree, \
+                 reinstall a native package; never activate a legacy Node package: {restore}"
+            ),
+        )),
     }
-    if let Some(state) = previous_state {
-        state.write(root)?;
-    }
-    Err(DeliveryError::InstallState(format!(
-        "activation failed after switch; restored previous native {previous}: {error}"
-    )))
 }
 
 #[cfg(test)]
