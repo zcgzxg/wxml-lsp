@@ -1,6 +1,6 @@
 {
   "schema": "wxml-tsgo-p7-freeze/1",
-  "generated_at": "2026-11-20T05:38:29+08:00",
+  "generated_at": "2026-11-20T07:02:47+08:00",
   "generated_by": "scripts/p7-freeze.sh",
   "algorithm": {
     "name": "p7-freeze-tree-v1",
@@ -15,9 +15,9 @@
     "line_endings": "raw working-tree bytes; a CRLF checkout changes every hash"
   },
   "commit": {
-    "requested_head": "befba03e60f9c65e20e75b0c4c873d828fcb61b3",
-    "head": "befba03e60f9c65e20e75b0c4c873d828fcb61b3",
-    "head_subject": "fix(tsgo): accept behavior trailing commas and backfill parity",
+    "requested_head": "b65d76ce22e0e262a16c8134740acfb58ff93ab3",
+    "head": "b65d76ce22e0e262a16c8134740acfb58ff93ab3",
+    "head_subject": "docs: record P7 scope deletion and waiver plans",
     "branch": "tsgo/migration",
     "frozen_paths_clean": false,
     "frozen_path_diff_requested_to_head": "empty (verified with git diff --quiet)"
@@ -2155,20 +2155,20 @@
       {
         "file": "crates/wxml-lsp/tests/native_parity/ledger.rs",
         "symbol": "verify_legacy_oracle",
-        "line": 1667,
+        "line": 2464,
         "anchor": "&workspace.join(oracle_manifest::LEGACY_TEST_SOURCE_ROOT),",
         "what": "ledger passes the legacy root to the oracle verifier",
         "kind": "mode-selection",
-        "file_sha256": "f423cacb0527c2a2c137e2ddf711d0afc8352ecbf7ed247c18b9b363954f0c03"
+        "file_sha256": "492ecc260dbd4884af5b374f9fd5a93c4be7e2ea18304c1c75d5d336d4a750b3"
       },
       {
         "file": "crates/wxml-lsp/tests/native_parity/ledger.rs",
         "symbol": "live_root",
-        "line": 1679,
+        "line": 2476,
         "anchor": "let live_root = workspace.join(oracle_manifest::LEGACY_TEST_SOURCE_ROOT);",
         "what": "live root existence selects Live vs Frozen",
         "kind": "mode-selection",
-        "file_sha256": "f423cacb0527c2a2c137e2ddf711d0afc8352ecbf7ed247c18b9b363954f0c03"
+        "file_sha256": "492ecc260dbd4884af5b374f9fd5a93c4be7e2ea18304c1c75d5d336d4a750b3"
       },
       {
         "file": "crates/wxml-lsp/tests/native_parity/oracle_manifest.rs",
@@ -2283,8 +2283,8 @@
     },
     {
       "path": "crates/wxml-lsp/tests/native_parity/ledger.rs",
-      "bytes": 74430,
-      "sha256": "f423cacb0527c2a2c137e2ddf711d0afc8352ecbf7ed247c18b9b363954f0c03"
+      "bytes": 103957,
+      "sha256": "492ecc260dbd4884af5b374f9fd5a93c4be7e2ea18304c1c75d5d336d4a750b3"
     },
     {
       "path": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs",
@@ -2349,10 +2349,14 @@
   ],
   "blocking_state": {
     "ledger": {
-      "green": 83,
-      "planned": 218,
-      "retired": 38,
+      "green": 109,
+      "planned": 0,
+      "reviewed": 130,
+      "waived": 29,
+      "retired": 71,
       "total": 339,
+      "planned_target": 0,
+      "closeout_policy": "c-lite-owner-scope-waiver",
       "ignored_gate_green": 23,
       "ignored_gate_required": 0,
       "ignored_gate_total": 23,
@@ -2380,7 +2384,7 @@
     },
     "deletion_allowed": false,
     "blocked_by": [
-      "ledger is 83 green / 218 planned / 38 retired, not 0 planned",
+      "ledger closeout target reached: 109 green / 130 reviewed / 29 waived / 71 retired; reviewed/waived are not green",
       "all 23 old gates are still #[ignore]; gate_green is opt-in, not mandatory_green",
       "no replacement_reviewed evidence exists for the 23 gates",
       "native_gates.rs still requires the 23 old #[ignore] tests; old_test_removed is not implemented",

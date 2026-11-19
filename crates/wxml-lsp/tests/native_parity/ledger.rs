@@ -28,19 +28,26 @@ pub(crate) const TOTAL_CASES: usize = 339;
 /// matrix backfill promoted 22 in-place plus 4 top-level matrix cases after the
 /// `methods-nonliteral` semantic fix.
 pub(crate) const GREEN_CASES: usize = 109;
-/// Cases still `planned` after the 2026-11-20 wave-11 matrix backfill.
-pub(crate) const PLANNED_CASES: usize = 192;
+/// P7-1 closeout requires zero `planned` cases.
+pub(crate) const PLANNED_CASES: usize = 0;
+/// Evidence-bearing cases whose residual risk the owner accepted at P7.
+/// They keep their `near_exact`/`weaker`/`structural`/`blocked` parity and
+/// never count as exact or green.
+pub(crate) const REVIEWED_CASES: usize = 130;
+/// Owner-signed gaps: no Rust evidence, or a named known defect. They are
+/// not green and not reviewed.
+pub(crate) const WAIVED_CASES: usize = 29;
 /// Frozen retired-with-decision count: the 2026-11-17 Candidate-B decision
-/// (36 cases) plus the wave-11 `TS-COMPONENT-0774` and `TS-META-0027` cases.
-pub(crate) const RETIRED_CASES: usize = 38;
+/// (36 cases), the wave-11 `TS-COMPONENT-0774`/`TS-META-0027` cases, and the
+/// 2026-11-20 C-lite closeout (30 mechanism/contract + 3 internal evidence).
+pub(crate) const RETIRED_CASES: usize = 71;
 /// Retired cases that keep a non-obsolete disposition and therefore stay in
-/// the routed target set. Wave-11 retires `TS-META-0027` as a superseded
-/// contract without changing its `rewrite` disposition.
-const NON_OBSOLETE_RETIRED_CASES: usize = 1;
+/// the routed target set: `TS-META-0027` plus the 33 C-lite retirements.
+const NON_OBSOLETE_RETIRED_CASES: usize = 34;
 /// Retired cases with `disposition = obsolete`: the 36 historical Candidate-B
 /// cases plus the wave-11 `TS-COMPONENT-0774` Candidate-B-only case.
 const OBSOLETE_CASES: usize = RETIRED_CASES - NON_OBSOLETE_RETIRED_CASES;
-/// Near-exact cases intentionally left `planned` with a green recommendation
+/// Near-exact cases intentionally left non-green with a green recommendation
 /// after `TS-REWRITE-0207` was promoted to exact; the wave-11 blocked followup
 /// added `TS-EVENTS-0188`.
 pub(crate) const NEAR_EXACT_CASES: usize = 3;
@@ -54,11 +61,15 @@ pub(crate) const WEAKER_CASES: usize = 96;
 /// Structural evidence cases left `planned` after the wave-6 component-binding
 /// follow-up.
 pub(crate) const STRUCTURAL_CASES: usize = 7;
-/// Blocked evidence cases left `planned` after the wave-6 component-binding
-/// follow-up; the wave-11 blocked followup reclassified six of them, and the
-/// wave-11 matrix backfill registered 11 in-place plus 6 top-level matrix
-/// gaps as `blocked_by=checker`.
-pub(crate) const BLOCKED_CASES: usize = 33;
+/// Blocked evidence cases left after the wave-6 component-binding follow-up;
+/// the wave-11 blocked followup reclassified six of them, the wave-11 matrix
+/// backfill registered 11 in-place plus 6 top-level matrix gaps, and the
+/// C-lite closeout moved two dual-layout blocked cases to retired. The
+/// remaining 31 are 24 reviewed coverage gaps plus 7 known-defect waivers.
+pub(crate) const BLOCKED_CASES: usize = 31;
+/// Waived cases with no Rust evidence (the other 7 waivers are known defects
+/// that keep their blocked evidence).
+pub(crate) const WAIVED_WITHOUT_EVIDENCE: usize = 22;
 
 /// Partitions named by the test contract. P3-T creates all 16 skeletons.
 pub(crate) const PARTITION_NAMES: &[&str] = &[
@@ -99,10 +110,17 @@ const REQUIRED_TOP_LEVEL_KEYS: &[&str] = &[
     "discrepancies",
     "cases",
     "integrator_decision",
+    "closeout",
 ];
 
 const ALLOWED_DISPOSITIONS: &[&str] = &["direct", "rewrite", "split", "obsolete"];
-const ALLOWED_STATUSES: &[&str] = &["planned", "green", "retired-with-decision"];
+const ALLOWED_STATUSES: &[&str] = &[
+    "planned",
+    "green",
+    "reviewed",
+    "waived",
+    "retired-with-decision",
+];
 const ALLOWED_ORACLE_TYPES: &[&str] = &["assertion", "unit", "parity"];
 const ALLOWED_PARITIES: &[&str] = &["exact", "near_exact", "weaker", "structural", "blocked"];
 const ALLOWED_RECOMMENDATIONS: &[&str] = &["green", "planned"];
@@ -113,10 +131,16 @@ pub(crate) const MATRIX_PROJECTION_SHA256: &str =
 const ALLOWED_MATRIX_LAYOUTS: &[&str] = &["in-place-shadow", "in-place-half"];
 /// Product/checker groups behind a `blocked_by=checker` matrix case.
 const ALLOWED_MATRIX_BLOCKED_GROUPS: &[&str] = &["docs", "state", "probe", "root", "checker"];
-/// Retirement scopes accepted by the wave-11 `retirement_decision` extension.
+/// Retirement scopes accepted by the wave-11 and C-lite closeout extensions.
 /// Adding a scope requires extending this list, the test contract and the
 /// affected case together; an unknown scope must never slip through.
-const ALLOWED_RETIREMENT_SCOPES: &[&str] = &["candidate_b_layout", "superseded_contract"];
+const ALLOWED_RETIREMENT_SCOPES: &[&str] = &[
+    "candidate_b_layout",
+    "superseded_contract",
+    "mechanism_replaced",
+    "internal_evidence",
+    "owner_scope_waiver",
+];
 /// Every wave-11 retirement is decided on this date.
 const RETIREMENT_DECISION_DATE: &str = "2026-11-20";
 /// Legacy Candidate-B decision date. Only the frozen 2026-11-17 cases may
@@ -136,11 +160,178 @@ const ALLOWED_REPLACEMENT_STRENGTHS: &[&str] = &[
 /// This is the retired-decision sentinel: a new retirement must add its stable
 /// id here and in the test contract instead of only editing a count.
 const RETIREMENT_DECISIONS: &[(&str, &str, &str)] = &[
+    (
+        "TS-ANALYSIS-0226",
+        "wave12-e-ts-analysis-0226",
+        "superseded_contract",
+    ),
+    (
+        "TS-ANALYSIS-0272",
+        "wave12-e-ts-analysis-0272",
+        "superseded_contract",
+    ),
+    (
+        "TS-ANALYSIS-0371",
+        "wave12-e-ts-analysis-0371",
+        "superseded_contract",
+    ),
+    (
+        "TS-COMPILER-0050",
+        "wave12-e-ts-compiler-0050",
+        "mechanism_replaced",
+    ),
+    (
+        "TS-COMPILER-0086",
+        "wave12-e-ts-compiler-0086",
+        "mechanism_replaced",
+    ),
+    (
+        "TS-COMPONENT-0279",
+        "wave12-e-ts-component-0279",
+        "mechanism_replaced",
+    ),
     ("TS-COMPONENT-0774", "wave11-e-0774", "candidate_b_layout"),
+    (
+        "TS-EVENTS-0375",
+        "wave12-e-ts-events-0375",
+        "superseded_contract",
+    ),
+    (
+        "TS-EVENTS-0387",
+        "wave12-e-ts-events-0387",
+        "superseded_contract",
+    ),
+    (
+        "TS-EVENTS-0399",
+        "wave12-e-ts-events-0399",
+        "superseded_contract",
+    ),
+    (
+        "TS-EVIDENCE-0011",
+        "wave12-e-ts-evidence-0011",
+        "internal_evidence",
+    ),
+    (
+        "TS-EVIDENCE-0025",
+        "wave12-e-ts-evidence-0025",
+        "internal_evidence",
+    ),
+    (
+        "TS-EVIDENCE-0050",
+        "wave12-e-ts-evidence-0050",
+        "internal_evidence",
+    ),
+    (
+        "TS-LAYOUTS-0062",
+        "wave12-e-ts-layouts-0062",
+        "mechanism_replaced",
+    ),
+    (
+        "TS-LAYOUTS-0084",
+        "wave12-e-ts-layouts-0084",
+        "superseded_contract",
+    ),
+    (
+        "TS-LAYOUTS-0101",
+        "wave12-e-ts-layouts-0101",
+        "superseded_contract",
+    ),
     ("TS-META-0027", "wave11-e-meta-0027", "superseded_contract"),
+    (
+        "TS-PROTOCOL-0021",
+        "wave12-e-ts-protocol-0021",
+        "mechanism_replaced",
+    ),
+    (
+        "TS-PROTOCOL-0141",
+        "wave12-e-ts-protocol-0141",
+        "superseded_contract",
+    ),
+    (
+        "TS-PROTOCOL-0154",
+        "wave12-e-ts-protocol-0154",
+        "superseded_contract",
+    ),
+    (
+        "TS-PROTOCOL-0178",
+        "wave12-e-ts-protocol-0178",
+        "superseded_contract",
+    ),
+    (
+        "TS-PROTOCOL-0250",
+        "wave12-e-ts-protocol-0250",
+        "superseded_contract",
+    ),
+    (
+        "TS-PROTOCOL-0329",
+        "wave12-e-ts-protocol-0329",
+        "superseded_contract",
+    ),
+    (
+        "TS-PROTOCOL-0348",
+        "wave12-e-ts-protocol-0348",
+        "superseded_contract",
+    ),
+    (
+        "TS-PROTOCOL-0368",
+        "wave12-e-ts-protocol-0368",
+        "superseded_contract",
+    ),
+    (
+        "TS-PROTOCOL-0395",
+        "wave12-e-ts-protocol-0395",
+        "mechanism_replaced",
+    ),
+    (
+        "TS-PROTOCOL-0421",
+        "wave12-e-ts-protocol-0421",
+        "superseded_contract",
+    ),
+    (
+        "TS-PROTOCOL-0450",
+        "wave12-e-ts-protocol-0450",
+        "superseded_contract",
+    ),
+    (
+        "TS-PROTOCOL-0561",
+        "wave12-e-ts-protocol-0561",
+        "superseded_contract",
+    ),
+    (
+        "TS-PROTOCOL-0606",
+        "wave12-e-ts-protocol-0606",
+        "superseded_contract",
+    ),
+    (
+        "TS-PROTOCOL-0644",
+        "wave12-e-ts-protocol-0644",
+        "superseded_contract",
+    ),
+    (
+        "TS-PROTOCOL-0653",
+        "wave12-e-ts-protocol-0653",
+        "superseded_contract",
+    ),
+    (
+        "TS-SERVER-0094",
+        "wave12-e-ts-server-0094",
+        "mechanism_replaced",
+    ),
+    (
+        "TS-SERVER-0109",
+        "wave12-e-ts-server-0109",
+        "mechanism_replaced",
+    ),
+    (
+        "TS-SERVER-0203",
+        "wave12-e-ts-server-0203",
+        "superseded_contract",
+    ),
 ];
 const GREEN_TARGET_STATUS: &str = "migrated_green";
 const PLANNED_TARGET_STATUS: &str = "proposed";
+const REVIEWED_TARGET_STATUS: &str = "reviewed_residual_risk";
+const WAIVED_TARGET_STATUS: &str = "waived_owner_accepted";
 const RETIRED_TARGET_STATUS: &str = "not_migrated_internal_evidence";
 const ALLOWED_COMPARISON_TYPES: &[&str] = &[
     "semantic_exact",
@@ -154,6 +345,11 @@ const COVER_KEYS: &[&str] = &[
     "protocol", "recovery", "security",
 ];
 const DIRTY_INCREMENT_IDS: &[&str] = &["D1", "D2", "D3", "D4", "D5", "D6", "D7"];
+const DIRTY_INCREMENT_STATUSES: &[&str] = &["reviewed", "waived", "no-ledger-cases"];
+const CLOSEOUT_POLICY: &str = "c-lite-owner-scope-waiver";
+const CLOSEOUT_DATE: &str = "2026-11-20";
+const CLOSEOUT_SCOPE: &str = "owner-scope-waiver";
+const ALLOWED_WAIVER_GAP_KINDS: &[&str] = &["no-rust-evidence", "known-defect"];
 
 /// Corrected contract vocabulary from `docs/reference/tsgo-test-contract.md`
 /// and the integrator decision. Asserting the exact arrays prevents a stale
@@ -163,6 +359,7 @@ const CONTRACT_STATUS_VALUES: &[&str] = &[
     "red",
     "green",
     "reviewed",
+    "waived",
     "closed",
     "retired-with-decision",
 ];
@@ -539,6 +736,292 @@ fn validate_retirement_decision<'a>(
     (id, scope)
 }
 
+fn is_stable_slug(value: &str) -> bool {
+    !value.is_empty()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
+        })
+}
+
+/// Validates a `reviewed` case and returns its review-group id.
+fn validate_review_decision<'a>(case: &'a Map<String, Value>, case_id: &str) -> &'a str {
+    let review = required_object(case, "review", case_id);
+    let group = required_str(review, "group_id", case_id);
+    assert!(
+        is_stable_slug(group),
+        "{case_id} review group id is not a stable slug: {group}"
+    );
+    let note = required_str(review, "note", case_id);
+    assert!(
+        note.len() > 20,
+        "{case_id} reviewed case needs a substantive review note"
+    );
+    let evidence = required_object(case, "migration_evidence", case_id);
+    let parity = required_str(evidence, "parity", case_id);
+    assert!(
+        parity != "exact",
+        "{case_id} reviewed case must not carry exact parity"
+    );
+    assert!(
+        !required_bool(evidence, "green_eligible", case_id),
+        "{case_id} reviewed case must not be green eligible"
+    );
+    group
+}
+
+/// Validates a `waived` case and returns `(group_id, gap_kind)`.
+fn validate_waiver<'a>(case: &'a Map<String, Value>, case_id: &str) -> (&'a str, &'a str) {
+    let waiver = required_object(case, "waiver", case_id);
+    let group = required_str(waiver, "group_id", case_id);
+    assert!(
+        is_stable_slug(group),
+        "{case_id} waiver group id is not a stable slug: {group}"
+    );
+    let gap_kind = required_str(waiver, "gap_kind", case_id);
+    assert!(
+        ALLOWED_WAIVER_GAP_KINDS.contains(&gap_kind),
+        "{case_id} has unexpected waiver gap_kind {gap_kind:?}"
+    );
+    let note = required_str(waiver, "note", case_id);
+    assert!(
+        note.len() > 20,
+        "{case_id} waived case needs a substantive note"
+    );
+    assert!(
+        !required_str(waiver, "follow_up", case_id).is_empty(),
+        "{case_id} waived case needs a follow_up"
+    );
+    match gap_kind {
+        "no-rust-evidence" => {
+            assert!(
+                case.get("migration_evidence").is_none(),
+                "{case_id} no-rust-evidence waiver must not carry migration_evidence"
+            );
+        }
+        "known-defect" => {
+            assert!(
+                !required_str(waiver, "product_impact", case_id).is_empty(),
+                "{case_id} known-defect waiver needs a product_impact"
+            );
+            let evidence = required_object(case, "migration_evidence", case_id);
+            assert_eq!(
+                required_str(evidence, "parity", case_id),
+                "blocked",
+                "{case_id} known-defect waiver must keep blocked parity"
+            );
+            assert!(
+                !required_bool(evidence, "green_eligible", case_id),
+                "{case_id} known-defect waiver must not be green eligible"
+            );
+        }
+        other => panic!("{case_id} has unexpected waiver gap_kind {other:?}"),
+    }
+    (group, gap_kind)
+}
+
+/// Validates the C-lite closeout policy and its group counts against the cases.
+fn validate_closeout(root: &Map<String, Value>, cases: &[Value]) {
+    let closeout = required_object(root, "closeout", "ledger root");
+    assert_eq!(
+        required_str(closeout, "policy", "ledger.closeout"),
+        CLOSEOUT_POLICY
+    );
+    assert_eq!(
+        required_str(closeout, "date", "ledger.closeout"),
+        CLOSEOUT_DATE
+    );
+    assert_eq!(
+        required_str(closeout, "scope", "ledger.closeout"),
+        CLOSEOUT_SCOPE
+    );
+    assert!(
+        !required_str(closeout, "owner", "ledger.closeout").is_empty(),
+        "ledger.closeout needs an owner"
+    );
+    assert!(
+        !required_str(closeout, "decision", "ledger.closeout").is_empty(),
+        "ledger.closeout needs a decision"
+    );
+    assert_eq!(
+        required_u64(closeout, "planned_target", "ledger.closeout"),
+        0,
+        "P7-1 closeout target must be zero planned"
+    );
+
+    let mut review_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut waiver_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut status_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut known_defects = 0_usize;
+    let mut no_evidence = 0_usize;
+    let mut never_green = 0_usize;
+
+    for case in cases {
+        let case = object(case, "case");
+        let case_id = required_str(case, "case_id", "case");
+        *status_counts
+            .entry(required_str(case, "status", case_id).to_owned())
+            .or_default() += 1;
+        if let Some(review) = case.get("review") {
+            let review = object(review, &format!("{case_id}.review"));
+            *review_counts
+                .entry(required_str(review, "group_id", case_id).to_owned())
+                .or_default() += 1;
+        }
+        if let Some(waiver) = case.get("waiver") {
+            let waiver = object(waiver, &format!("{case_id}.waiver"));
+            *waiver_counts
+                .entry(required_str(waiver, "group_id", case_id).to_owned())
+                .or_default() += 1;
+            match required_str(waiver, "gap_kind", case_id) {
+                "known-defect" => {
+                    known_defects += 1;
+                    never_green += 1;
+                }
+                "no-rust-evidence" => no_evidence += 1,
+                other => panic!("{case_id} has unexpected waiver gap_kind {other:?}"),
+            }
+        }
+        if let Some(decision) = case.get("retirement_decision") {
+            let decision = object(decision, &format!("{case_id}.retirement_decision"));
+            let id = required_str(decision, "id", case_id);
+            let scope = required_str(decision, "scope", case_id);
+            if id.starts_with("wave12-e-") && scope != "internal_evidence" {
+                never_green += 1;
+            }
+        }
+        if case_id == "TS-COMPILER-0095" {
+            never_green += 1;
+        }
+    }
+
+    assert_eq!(review_counts.values().sum::<usize>(), REVIEWED_CASES);
+    assert_eq!(waiver_counts.values().sum::<usize>(), WAIVED_CASES);
+    assert_eq!(
+        status_counts.get("planned").copied().unwrap_or_default(),
+        PLANNED_CASES
+    );
+    assert_eq!(
+        status_counts.get("green").copied().unwrap_or_default(),
+        GREEN_CASES
+    );
+    assert_eq!(
+        status_counts.get("reviewed").copied().unwrap_or_default(),
+        REVIEWED_CASES
+    );
+    assert_eq!(
+        status_counts.get("waived").copied().unwrap_or_default(),
+        WAIVED_CASES
+    );
+    assert_eq!(
+        status_counts
+            .get("retired-with-decision")
+            .copied()
+            .unwrap_or_default(),
+        RETIRED_CASES
+    );
+
+    let counts = required_object(closeout, "counts", "ledger.closeout");
+    for (key, expected) in [
+        ("green", GREEN_CASES),
+        ("reviewed", REVIEWED_CASES),
+        ("waived", WAIVED_CASES),
+        ("retired", RETIRED_CASES),
+        ("planned", PLANNED_CASES),
+        ("never_green", 38),
+        ("known_defects", 7),
+        ("no_evidence", 22),
+    ] {
+        assert_eq!(
+            required_u64(counts, key, "ledger.closeout.counts"),
+            u64::try_from(expected).expect("closeout count fits u64"),
+            "ledger.closeout.counts.{key} drifted"
+        );
+    }
+    assert_eq!(known_defects, 7, "known-defect count drifted");
+    assert_eq!(
+        no_evidence, WAIVED_WITHOUT_EVIDENCE,
+        "no-evidence count drifted"
+    );
+    assert_eq!(never_green, 38, "never-green count drifted");
+
+    let review_groups = required_array(closeout, "review_groups", "ledger.closeout");
+    assert_eq!(review_groups.len(), review_counts.len());
+    let mut review_ids = BTreeSet::new();
+    for group in review_groups {
+        let group = object(group, "ledger.closeout.review_groups[]");
+        let id = required_str(group, "id", "ledger.closeout.review_groups[]");
+        assert!(
+            review_ids.insert(id.to_owned()),
+            "duplicate review group {id}"
+        );
+        assert_eq!(
+            required_u64(group, "count", id),
+            u64::try_from(review_counts.get(id).copied().unwrap_or_default())
+                .expect("review count fits u64"),
+            "review group {id} count drifted"
+        );
+        assert!(
+            required_str(group, "accepted_risk", id).len() > 40,
+            "review group {id} needs a substantive accepted_risk"
+        );
+        assert!(
+            !required_str(group, "product_impact", id).is_empty(),
+            "review group {id} needs a product_impact"
+        );
+        assert!(
+            !required_str(group, "follow_up", id).is_empty(),
+            "review group {id} needs a follow_up"
+        );
+    }
+    assert_eq!(
+        review_ids,
+        review_counts.keys().cloned().collect::<BTreeSet<_>>()
+    );
+
+    let waiver_groups = required_array(closeout, "waiver_groups", "ledger.closeout");
+    assert_eq!(waiver_groups.len(), waiver_counts.len());
+    let mut waiver_ids = BTreeSet::new();
+    for group in waiver_groups {
+        let group = object(group, "ledger.closeout.waiver_groups[]");
+        let id = required_str(group, "id", "ledger.closeout.waiver_groups[]");
+        assert!(
+            waiver_ids.insert(id.to_owned()),
+            "duplicate waiver group {id}"
+        );
+        assert_eq!(
+            required_u64(group, "count", id),
+            u64::try_from(waiver_counts.get(id).copied().unwrap_or_default())
+                .expect("waiver count fits u64"),
+            "waiver group {id} count drifted"
+        );
+        let gap_kind = required_str(group, "gap_kind", id);
+        assert!(
+            ALLOWED_WAIVER_GAP_KINDS.contains(&gap_kind),
+            "waiver group {id} has unexpected gap_kind {gap_kind:?}"
+        );
+        assert!(
+            required_str(group, "reason", id).len() > 40,
+            "waiver group {id} needs a substantive reason"
+        );
+        assert!(
+            !required_str(group, "product_impact", id).is_empty(),
+            "waiver group {id} needs a product_impact"
+        );
+        assert!(
+            !required_str(group, "follow_up", id).is_empty(),
+            "waiver group {id} needs a follow_up"
+        );
+    }
+    assert_eq!(
+        waiver_ids,
+        waiver_counts.keys().cloned().collect::<BTreeSet<_>>()
+    );
+
+    let non_claims = required_string_array(closeout, "non_claims", "ledger.closeout");
+    assert!(!non_claims.is_empty());
+    assert!(non_claims.iter().all(|claim| !claim.is_empty()));
+}
+
 /// Returns the native-parity module named by a ledger target path.
 pub(crate) fn target_partition(target: &str) -> &str {
     let (file, _) = target
@@ -906,16 +1389,20 @@ fn ledger_counts_and_dispositions_are_frozen() {
     let statuses = tally(cases, "status", ALLOWED_STATUSES);
     let green = statuses.get("green").copied().unwrap_or_default();
     let planned = statuses.get("planned").copied().unwrap_or_default();
+    let reviewed = statuses.get("reviewed").copied().unwrap_or_default();
+    let waived = statuses.get("waived").copied().unwrap_or_default();
     let retired = statuses
         .get("retired-with-decision")
         .copied()
         .unwrap_or_default();
     assert_eq!(green, GREEN_CASES, "green case count drifted");
     assert_eq!(planned, PLANNED_CASES, "planned case count drifted");
+    assert_eq!(reviewed, REVIEWED_CASES, "reviewed case count drifted");
+    assert_eq!(waived, WAIVED_CASES, "waived case count drifted");
     assert_eq!(retired, RETIRED_CASES, "retired case count drifted");
-    assert_eq!(statuses.len(), 3, "unexpected status bucket");
+    assert_eq!(statuses.len(), 4, "unexpected non-zero status bucket");
     assert_eq!(
-        green + planned + retired,
+        green + planned + reviewed + waived + retired,
         TOTAL_CASES,
         "status counts must sum to the total case count"
     );
@@ -923,12 +1410,14 @@ fn ledger_counts_and_dispositions_are_frozen() {
     let declared_statuses = required_object(counts, "statuses", "ledger.counts");
     assert_eq!(
         declared_statuses.len(),
-        3,
+        5,
         "counts.statuses must contain each status bucket"
     );
     for (status, expected) in [
         ("planned", planned),
         ("green", green),
+        ("reviewed", reviewed),
+        ("waived", waived),
         ("retired-with-decision", retired),
     ] {
         assert_eq!(
@@ -1017,41 +1506,25 @@ fn ledger_counts_and_dispositions_are_frozen() {
     let integrator = required_object(counts, "integrator_decisions", "ledger.counts");
     assert_eq!(
         integrator.len(),
-        4,
+        8,
         "the integrator decision buckets drifted"
     );
-    assert_eq!(
-        required_u64(
-            integrator,
-            "accepted_obsolete",
-            "ledger.counts.integrator_decisions"
-        ),
-        u64::try_from(OBSOLETE_CASES).expect("obsolete count fits u64")
-    );
-    assert_eq!(
-        required_u64(
-            integrator,
-            "accepted_rewrite",
-            "ledger.counts.integrator_decisions"
-        ),
-        0
-    );
-    assert_eq!(
-        required_u64(
-            integrator,
-            "accepted_superseded_contract",
-            "ledger.counts.integrator_decisions"
-        ),
-        1
-    );
-    assert_eq!(
-        required_u64(
-            integrator,
-            "remaining_blocked",
-            "ledger.counts.integrator_decisions"
-        ),
-        0
-    );
+    for (key, expected) in [
+        ("accepted_obsolete", OBSOLETE_CASES),
+        ("accepted_rewrite", 0),
+        ("accepted_superseded_contract", 23),
+        ("accepted_mechanism_replaced", 8),
+        ("accepted_internal_evidence", 3),
+        ("accepted_reviewed", REVIEWED_CASES),
+        ("accepted_waived", WAIVED_CASES),
+        ("remaining_blocked", 0),
+    ] {
+        assert_eq!(
+            required_u64(integrator, key, "ledger.counts.integrator_decisions"),
+            u64::try_from(expected).expect("integrator count fits u64"),
+            "integrator decision {key} drifted"
+        );
+    }
 }
 
 #[test]
@@ -1174,6 +1647,32 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
         } else {
             None
         };
+        let review_group = if case.get("review").is_some() {
+            assert_eq!(
+                status, "reviewed",
+                "{case_id} carries a review without reviewed status"
+            );
+            assert!(
+                case.get("retirement_decision").is_none(),
+                "{case_id} reviewed case must not carry a retirement_decision"
+            );
+            Some(validate_review_decision(case, case_id))
+        } else {
+            None
+        };
+        let waiver = if case.get("waiver").is_some() {
+            assert_eq!(
+                status, "waived",
+                "{case_id} carries a waiver without waived status"
+            );
+            assert!(
+                case.get("retirement_decision").is_none(),
+                "{case_id} waived case must not carry a retirement_decision"
+            );
+            Some(validate_waiver(case, case_id))
+        } else {
+            None
+        };
 
         let target = required_str(case, "target_rust_test", case_id);
         match disposition {
@@ -1182,6 +1681,8 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
                 assert_eq!(status, "retired-with-decision", "{case_id}");
                 assert_eq!(target_status, RETIRED_TARGET_STATUS, "{case_id}");
                 assert!(requires_decision, "{case_id} needs an integrator decision");
+                assert!(review_group.is_none(), "{case_id}");
+                assert!(waiver.is_none(), "{case_id}");
                 match retirement_scope {
                     Some(scope) => assert_eq!(
                         scope, "candidate_b_layout",
@@ -1215,6 +1716,9 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
                 match status {
                     "green" => {
                         assert_eq!(target_status, GREEN_TARGET_STATUS, "{case_id}");
+                        assert!(review_group.is_none(), "{case_id}");
+                        assert!(waiver.is_none(), "{case_id}");
+                        assert!(retirement_scope.is_none(), "{case_id}");
                         let evidence = required_object(case, "migration_evidence", case_id);
                         assert_eq!(
                             required_str(evidence, "parity", case_id),
@@ -1230,13 +1734,57 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
                             "{case_id} green requires at least one Rust test"
                         );
                     }
-                    "planned" => assert_eq!(target_status, PLANNED_TARGET_STATUS, "{case_id}"),
+                    "planned" => {
+                        assert_eq!(target_status, PLANNED_TARGET_STATUS, "{case_id}");
+                        assert!(review_group.is_none(), "{case_id}");
+                        assert!(waiver.is_none(), "{case_id}");
+                        assert!(retirement_scope.is_none(), "{case_id}");
+                    }
+                    "reviewed" => {
+                        assert_eq!(target_status, REVIEWED_TARGET_STATUS, "{case_id}");
+                        assert!(review_group.is_some(), "{case_id}");
+                        assert!(waiver.is_none(), "{case_id}");
+                        assert!(retirement_scope.is_none(), "{case_id}");
+                        let evidence = required_object(case, "migration_evidence", case_id);
+                        assert_ne!(
+                            required_str(evidence, "parity", case_id),
+                            "exact",
+                            "{case_id} reviewed case must not carry exact parity"
+                        );
+                        assert!(
+                            !required_bool(evidence, "green_eligible", case_id),
+                            "{case_id} reviewed case must not be green eligible"
+                        );
+                        assert!(
+                            !required_array(evidence, "rust_tests", case_id).is_empty(),
+                            "{case_id} reviewed case needs real Rust evidence"
+                        );
+                    }
+                    "waived" => {
+                        assert_eq!(target_status, WAIVED_TARGET_STATUS, "{case_id}");
+                        let (_, gap_kind) = waiver.expect("waived case needs a waiver");
+                        assert!(review_group.is_none(), "{case_id}");
+                        assert!(retirement_scope.is_none(), "{case_id}");
+                        match gap_kind {
+                            "no-rust-evidence" => assert!(
+                                case.get("migration_evidence").is_none(),
+                                "{case_id} no-evidence waiver must not carry migration_evidence"
+                            ),
+                            "known-defect" => assert!(
+                                case.get("migration_evidence").is_some(),
+                                "{case_id} known-defect waiver must keep blocked evidence"
+                            ),
+                            other => panic!("{case_id} has unexpected waiver gap_kind {other:?}"),
+                        }
+                    }
                     "retired-with-decision" => {
                         assert_eq!(target_status, RETIRED_TARGET_STATUS, "{case_id}");
                         assert!(
                             case.get("migration_evidence").is_none(),
                             "{case_id} retired evidence must stay outside the migration ledger"
                         );
+                        assert!(review_group.is_none(), "{case_id}");
+                        assert!(waiver.is_none(), "{case_id}");
                         assert!(
                             retirement_scope.is_some(),
                             "{case_id} non-obsolete retirement needs a retirement_decision"
@@ -1251,12 +1799,12 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
 
     assert_eq!(
         non_obsolete,
-        PLANNED_CASES + GREEN_CASES + NON_OBSOLETE_RETIRED_CASES
+        PLANNED_CASES + GREEN_CASES + REVIEWED_CASES + WAIVED_CASES + NON_OBSOLETE_RETIRED_CASES
     );
     assert_eq!(obsolete, OBSOLETE_CASES);
     assert_eq!(
         targets.len(),
-        PLANNED_CASES + GREEN_CASES + NON_OBSOLETE_RETIRED_CASES
+        PLANNED_CASES + GREEN_CASES + REVIEWED_CASES + WAIVED_CASES + NON_OBSOLETE_RETIRED_CASES
     );
     assert_eq!(decision_ids.len(), OBSOLETE_CASES);
     assert!(
@@ -1266,8 +1814,9 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
     retirement_decisions.sort_unstable();
     assert_eq!(
         retirement_decisions, RETIREMENT_DECISIONS,
-        "the wave-11 retirement decision ids/scopes drifted"
+        "the wave-11/C-lite retirement decision ids/scopes drifted"
     );
+    validate_closeout(root, cases);
 
     let dirty_increments = required_array(root, "dirty_increments", "ledger root");
     assert_eq!(dirty_increments.len(), DIRTY_INCREMENT_IDS.len());
@@ -1284,9 +1833,13 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
             declared_dirty.insert(id.to_owned()),
             "duplicate dirty increment {id}"
         );
-        assert_eq!(
-            required_str(increment, "status", id),
-            "planned",
+        let increment_status = required_str(increment, "status", id);
+        assert!(
+            DIRTY_INCREMENT_STATUSES.contains(&increment_status),
+            "dirty increment {id} has unexpected terminal status {increment_status:?}"
+        );
+        assert_ne!(
+            increment_status, "green",
             "dirty increment {id} must not claim completion"
         );
         for ledger_case in required_array(increment, "ledger_cases", id) {
@@ -1332,6 +1885,8 @@ fn ledger_migration_evidence_is_complete_and_consistent() {
 
     let mut green = 0_usize;
     let mut planned = 0_usize;
+    let mut reviewed = 0_usize;
+    let mut waived_cases = 0_usize;
     let mut evidence_cases = 0_usize;
     let mut without_evidence = 0_usize;
     let mut parity_counts: BTreeMap<&str, usize> =
@@ -1366,13 +1921,27 @@ fn ledger_migration_evidence_is_complete_and_consistent() {
         if status == "planned" {
             planned += 1;
         }
+        if status == "reviewed" {
+            reviewed += 1;
+            *partition.entry("reviewed_cases".to_owned()).or_default() += 1;
+        }
+        if status == "waived" {
+            waived_cases += 1;
+            *partition.entry("waived_cases".to_owned()).or_default() += 1;
+        }
 
         let Some(evidence) = case.get("migration_evidence") else {
             assert_eq!(
-                status, "planned",
-                "{case_id} must stay planned without evidence"
+                status, "waived",
+                "{case_id} must be a no-evidence waiver without migration_evidence"
             );
-            assert_eq!(target_status, PLANNED_TARGET_STATUS, "{case_id}");
+            assert_eq!(target_status, WAIVED_TARGET_STATUS, "{case_id}");
+            let waiver = required_object(case, "waiver", case_id);
+            assert_eq!(
+                required_str(waiver, "gap_kind", case_id),
+                "no-rust-evidence",
+                "{case_id} has no evidence but is not a no-rust-evidence waiver"
+            );
             without_evidence += 1;
             continue;
         };
@@ -1508,21 +2077,34 @@ fn ledger_migration_evidence_is_complete_and_consistent() {
             }
             "near_exact" => {
                 assert!(!eligible, "{case_id} near-exact must not be green eligible");
-                assert_eq!(status, "planned", "{case_id} near-exact must stay planned");
-                assert_eq!(target_status, PLANNED_TARGET_STATUS, "{case_id}");
+                assert_eq!(status, "reviewed", "{case_id} near-exact must be reviewed");
+                assert_eq!(target_status, REVIEWED_TARGET_STATUS, "{case_id}");
                 assert_eq!(recommendation, "green", "{case_id}");
             }
-            "weaker" | "structural" | "blocked" => {
+            "weaker" | "structural" => {
                 assert!(
                     !eligible,
                     "{case_id} non-exact evidence must not be eligible"
                 );
-                assert_eq!(
-                    status, "planned",
-                    "{case_id} non-exact evidence must stay planned"
-                );
-                assert_eq!(target_status, PLANNED_TARGET_STATUS, "{case_id}");
+                assert_eq!(status, "reviewed", "{case_id}");
+                assert_eq!(target_status, REVIEWED_TARGET_STATUS, "{case_id}");
                 assert_eq!(recommendation, "planned", "{case_id}");
+            }
+            "blocked" => {
+                assert!(!eligible, "{case_id} blocked evidence must not be eligible");
+                assert_eq!(recommendation, "planned", "{case_id}");
+                if status == "waived" {
+                    assert_eq!(target_status, WAIVED_TARGET_STATUS, "{case_id}");
+                    let waiver = required_object(case, "waiver", case_id);
+                    assert_eq!(
+                        required_str(waiver, "gap_kind", case_id),
+                        "known-defect",
+                        "{case_id} blocked waiver must be a known-defect waiver"
+                    );
+                } else {
+                    assert_eq!(status, "reviewed", "{case_id}");
+                    assert_eq!(target_status, REVIEWED_TARGET_STATUS, "{case_id}");
+                }
             }
             other => panic!("{case_id} has unexpected parity {other:?}"),
         }
@@ -1530,6 +2112,8 @@ fn ledger_migration_evidence_is_complete_and_consistent() {
 
     assert_eq!(green, GREEN_CASES, "green count drifted");
     assert_eq!(planned, PLANNED_CASES, "planned count drifted");
+    assert_eq!(reviewed, REVIEWED_CASES, "reviewed count drifted");
+    assert_eq!(waived_cases, WAIVED_CASES, "waived count drifted");
     assert_eq!(parity_counts["exact"], GREEN_CASES);
     assert_eq!(parity_counts["near_exact"], NEAR_EXACT_CASES);
     assert_eq!(parity_counts["weaker"], WEAKER_CASES);
@@ -1541,13 +2125,8 @@ fn ledger_migration_evidence_is_complete_and_consistent() {
         "parity buckets must cover every evidence case"
     );
     assert_eq!(
-        without_evidence,
-        PLANNED_CASES
-            - parity_counts["near_exact"]
-            - parity_counts["weaker"]
-            - parity_counts["structural"]
-            - parity_counts["blocked"],
-        "planned cases without evidence drifted"
+        without_evidence, WAIVED_WITHOUT_EVIDENCE,
+        "waived cases without evidence drifted"
     );
 
     for partition in partition_counts.values_mut() {
@@ -1604,7 +2183,15 @@ fn ledger_migration_evidence_is_complete_and_consistent() {
             "remaining_planned_without_evidence",
             "ledger.counts.migration_evidence"
         ),
-        u64::try_from(without_evidence).expect("planned count fits u64")
+        u64::try_from(PLANNED_CASES).expect("planned count fits u64")
+    );
+    assert_eq!(
+        required_u64(
+            declared,
+            "waived_without_evidence",
+            "ledger.counts.migration_evidence"
+        ),
+        u64::try_from(without_evidence).expect("waived count fits u64")
     );
 
     let declared_statuses =
@@ -1612,6 +2199,8 @@ fn ledger_migration_evidence_is_complete_and_consistent() {
     for (status, expected) in [
         ("planned", planned),
         ("green", green),
+        ("reviewed", reviewed),
+        ("waived", waived_cases),
         ("retired-with-decision", RETIRED_CASES),
     ] {
         assert_eq!(
@@ -1642,6 +2231,8 @@ fn ledger_migration_evidence_is_complete_and_consistent() {
             "routed_cases",
             "evidence_cases",
             "green_cases",
+            "reviewed_cases",
+            "waived_cases",
             "planned_evidence_cases",
             "unassessed_cases",
             "exact",
@@ -1662,6 +2253,72 @@ fn ledger_migration_evidence_is_complete_and_consistent() {
             );
         }
     }
+}
+
+#[test]
+fn ledger_closeout_policy_is_frozen() {
+    let ledger = load_ledger();
+    let root = object(&ledger, "ledger root");
+    let cases = required_array(root, "cases", "ledger root");
+    validate_closeout(root, cases);
+
+    let mut exact_non_green = 0_usize;
+    let mut green_non_exact = 0_usize;
+    let mut reviewed_or_waived_eligible = 0_usize;
+    let mut retired_with_evidence = 0_usize;
+    let mut no_evidence_waiver_with_evidence = 0_usize;
+
+    for case in cases {
+        let case = object(case, "case");
+        let case_id = required_str(case, "case_id", "case");
+        let status = required_str(case, "status", case_id);
+        let evidence = case.get("migration_evidence");
+        let parity = evidence.and_then(|value| {
+            value
+                .as_object()
+                .and_then(|value| value.get("parity"))
+                .and_then(Value::as_str)
+        });
+        if parity == Some("exact") && status != "green" {
+            exact_non_green += 1;
+        }
+        if status == "green" && parity != Some("exact") {
+            green_non_exact += 1;
+        }
+        if matches!(status, "reviewed" | "waived") {
+            if let Some(evidence) = evidence {
+                let evidence = object(evidence, case_id);
+                if required_bool(evidence, "green_eligible", case_id) {
+                    reviewed_or_waived_eligible += 1;
+                }
+            }
+        }
+        if status == "retired-with-decision" && evidence.is_some() {
+            retired_with_evidence += 1;
+        }
+        if status == "waived" {
+            let waiver = required_object(case, "waiver", case_id);
+            if required_str(waiver, "gap_kind", case_id) == "no-rust-evidence" && evidence.is_some()
+            {
+                no_evidence_waiver_with_evidence += 1;
+            }
+        }
+    }
+
+    assert_eq!(exact_non_green, 0, "exact parity must always be green");
+    assert_eq!(green_non_exact, 0, "green must always be exact");
+    assert_eq!(
+        reviewed_or_waived_eligible, 0,
+        "reviewed/waived cases must never be green eligible"
+    );
+    assert_eq!(
+        retired_with_evidence, 0,
+        "retired cases must not carry migration evidence"
+    );
+    assert_eq!(
+        no_evidence_waiver_with_evidence, 0,
+        "no-evidence waivers must not carry migration evidence"
+    );
 }
 
 /// Validates the frozen matrix projection and the shared required-native

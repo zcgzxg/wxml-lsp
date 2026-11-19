@@ -1,5 +1,10 @@
 # tsgo P7 台账收口策略：C-lite functional waiver（2026-11-20）
 
+> 实施记录：本策略已于 2026-11-20 落地到 ledger/validator/contract/
+> `p7-freeze`；最终分类与计数见
+> ` docs/evidence/2026-11-20-tsgo-p7-closeout-ledger.md`。下文 §0 的
+> “未改代码/未运行测试”只描述本文件最初的设计轮，不代表实施轮。
+
 ## 0. 结论摘要
 
 - **推荐 B+：单账本、四终态**：`green` / `reviewed` / `waived` /

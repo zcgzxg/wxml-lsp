@@ -19,17 +19,33 @@
 | `split` | 11 |
 | `obsolete` | 37（36 个历史 Candidate B + wave-11 `TS-COMPONENT-0774`） |
 | `blocked-decision` | 0 |
-| `green` | 109（真实 Rust 测试证据，未独立 review） |
-| `planned` | 192 |
-| `retired-with-decision` | 38 |
-| `assessed_cases` | 248 |
+| `green` | 109（真实 Rust 测试证据，exact-only） |
+| `planned` | **0**（P7-1 closeout） |
+| `reviewed` | 130（非 exact 证据 + owner 接受残余风险） |
+| `waived` | 29（22 无证据 + 7 named known defect） |
+| `retired-with-decision` | 71（37 obsolete + 34 非 obsolete） |
+| `assessed_cases` | 246 |
 | `exact` | 109 |
 | `near_exact` | 3 |
 | `weaker` | 96 |
 | `structural` | 7 |
-| `blocked` | 33 |
+| `blocked` | 31（24 reviewed + 7 known-defect waiver） |
+| `waived_without_evidence` | 22 |
+| `known_defects` | 7 |
 
-计数在 wave-11 matrix backfill（2026-11-20，验证 HEAD `1c89338` + 未提交
+**2026-11-20 C-lite closeout**：owner 明确“不需要严格按照原来的功能写测试，
+功能合理即可”，据此把剩余 192 个 `planned` 收口为 33
+`retired-with-decision` + 130 `reviewed` + 29 `waived`，`planned=0`。
+`reviewed` 保留 `near_exact`/`weaker`/`structural`/`blocked` 原值，不写成
+`exact`；`waived` 是没有 Rust 证据或 named known defect 的 owner-signed
+gap；`retired-with-decision` 不携带 `migration_evidence`。四者都不计入
+`exact`/`green`。逐条分类见
+[`docs/evidence/2026-11-20-tsgo-p7-closeout-ledger.md`](../evidence/2026-11-20-tsgo-p7-closeout-ledger.md)，
+策略见
+[`docs/evidence/2026-11-20-tsgo-p7-ledger-waiver-policy.md`](../evidence/2026-11-20-tsgo-p7-ledger-waiver-policy.md)。
+这不是 parity 完成声明，也不是 Node/旧 TS 删除授权。
+
+此前 wave-11 matrix backfill（2026-11-20，验证 HEAD `1c89338` + 未提交
 `real_matrix.rs`）后为 `green` 109 / `planned` 192 / `retired-with-decision` 38，
 `assessed_cases` 248（`exact` 109、`near_exact` 3、`weaker` 96、`structural` 7、
 `blocked` 33），无证据 planned 53。该步把 22 个 in-place + 4 个顶层 in-place
@@ -109,22 +125,37 @@ wave-11 `TS-COMPONENT-0774`）只作为历史 A/B 证据保留；生产 LSP 不�
 
 每个 case 至少保留：`case_id`、旧文件/标题/行、`body_sha256`、完整展开标题、参数子 ID、断言摘要、
 覆盖维度、fixture、目标 Rust 全限定测试 ID、比较类型、RED/GREEN 原始证据、reviewer、原生身份
-（engine version/gitHead/AST version/artifact hash）。`status` 只允许：
+（engine version/gitHead/AST version/artifact hash）。P7 closeout 后 `status` 是以下终态之一：
 
-`planned` → `red` → `green` → `reviewed` → `closed`；或 `planned` → `retired-with-decision`。
+```text
+planned → green                    (仅 parity=exact；green 之后可 closed)
+planned → reviewed                 (有真实证据；owner 接受非 exact 残余风险；非 green)
+planned → waived                   (无 Rust 证据，或 named known defect；owner 签字；非 green)
+planned → retired-with-decision    (机制/契约/内部证据被替换；无 migration_evidence)
+green   → closed                   (post-green 评审收口)
+```
 
-`retired-with-decision` 有两种合法来源：
+`planned=0` 是 P7-1 的收口条件；`planned` 只用于迁移过程。
+
+`retired-with-decision` 的合法来源：
 
 - `disposition=obsolete`：沿用 2026-11-17 Candidate-B 裁决（36 个历史 case），或带
   `retirement_decision.scope=candidate_b_layout`（wave-11 `TS-COMPONENT-0774`）；
 - `direct/rewrite/split`：必须带 `retirement_decision` 对象，包含稳定 `id`、`date`、`owner`、
-  `required_by`、`scope`、非空 `evidence` 与 `replacement`；`scope` 当前只允许
-  `candidate_b_layout` 和 `superseded_contract`（wave-11 `TS-META-0027`）。新增 scope 必须同时
-  扩展 validator、本契约与 case 证据。
+  `required_by`、`scope`、非空 `evidence` 与 `replacement`；`scope` 允许
+  `candidate_b_layout`、`superseded_contract`、`mechanism_replaced`、`internal_evidence`、
+  `owner_scope_waiver`。新增 scope 必须同时扩展 validator、本契约与 case 证据。
+
+`reviewed` 必须带 `migration_evidence` 和 `review`（`group_id` + 非空 note），
+parity 只能是 `near_exact`/`weaker`/`structural`/`blocked`；`green_eligible` 必须为
+false。`waived` 必须带 `waiver`（`group_id`、`gap_kind`、非空 note/follow_up）：
+`gap_kind=no-rust-evidence` 时不得有 `migration_evidence`；`gap_kind=known-defect`
+时必须保留 `parity=blocked` 证据并写 `product_impact`。`waived` 不是 `reviewed`。
 
 不得把 `planned` 批量改成 `green`；不得用“旧测试已删除”代替新测试通过。任何 `obsolete` 必须有
-集成负责人裁决与代码证据。`retired-with-decision` 是终态非 green 桶，不是迁移证据，不得计入
-`exact` 或 `green`。
+集成负责人裁决与代码证据。`reviewed`/`waived`/`retired-with-decision` 都是终态非 green 桶，
+不是迁移证据，不得计入 `exact` 或 `green`。`green` 必须 `parity=exact`；`parity=exact`
+必须 `green`。
 
 ## 4. 差分比较规则
 
@@ -179,6 +210,46 @@ wave-11 `TS-COMPONENT-0774`）只作为历史 A/B 证据保留；生产 LSP 不�
 ## 8. 退出条件
 
 F2 冻结需要：原生契约 F0/F1 已评审；测试分区 owner 已指定；比较器反向自测通过；fixture v1 hash
-可复现；37 个 `obsolete` 与 1 个 `superseded_contract` 有裁决记录。G5 通过需要全部
-`direct/rewrite/split` 用例为 `green/reviewed`，或为 `retired-with-decision` 且有
-`retirement_decision`；没有真实引擎缺失导致的 skip，且 23 个 ignored 与 2 个静默 return 已转为强制门禁。
+可复现；37 个 `obsolete` 与 1 个 `superseded_contract` 有裁决记录。
+
+G5 / P7-1 closeout 需要：
+
+- 全部 `direct/rewrite/split` 用例为 `green` / `reviewed` / `waived` /
+  `retired-with-decision`，且有对应证据或记录；`planned=0`；
+- `green` 只允许 `parity=exact`，并且 `parity=exact` 只能是 `green`；
+- `reviewed`/`waived`/`retired-with-decision` 不计入 `exact`，不得描述为
+  “已迁移/已等价”；
+- 7 个 named known defect 必须在 `waived` 中逐条列出，带 `product_impact`
+  和非空 `follow_up`；
+- 22 个无证据 waiver 必须按 `gap_kind` 分组并带 follow-up；
+- `closeout` 记录 owner/date/scope/planned_target 和 group 计数；
+- 没有真实引擎缺失导致的 skip，且 23 个 ignored 与 2 个静默 return 已转为
+  强制门禁。
+
+**G5 明确接受 `reviewed`/`waived` 作为 C-lite closeout**，但这不是 parity
+完成：`reviewed` 只管“有证据、owner 接受残余风险”，`waived` 只管“无证据或
+known defect、owner 签字”。两者都不能被任何脚本、报告或 README 写成
+`green`/`exact`。
+
+## 9. C-lite owner-scope waiver（2026-11-20）
+
+Owner 决策：不需要严格按照原来的 TypeScript/Node 功能写测试，功能合理即可。
+因此 P7-1 的收口状态是：
+
+| 桶 | 数量 | 含义 | 是否 green/exact |
+| --- | ---: | --- | --- |
+| `green` | 109 | exact parity + 真实 Rust 测试 | 是 |
+| `reviewed` | 130 | 96 weaker + 3 near_exact + 7 structural + 24 blocked 覆盖缺口 | **否** |
+| `waived` | 29 | 22 无 Rust 证据 + 7 named known defect | **否** |
+| `retired-with-decision` | 71 | 37 obsolete + 34 非 obsolete（30 机制/契约 + 3 internal evidence + 1 历史） | **否** |
+| `planned` | 0 | P7-1 目标 | 否 |
+
+逐条分类、group 和残余风险见
+[`docs/evidence/2026-11-20-tsgo-p7-closeout-ledger.md`](../evidence/2026-11-20-tsgo-p7-closeout-ledger.md)；
+策略与回滚见
+[`docs/evidence/2026-11-20-tsgo-p7-ledger-waiver-policy.md`](../evidence/2026-11-20-tsgo-p7-ledger-waiver-policy.md)。
+
+**不可用替代**：不能用“旧测试已删除”代替 waiver；不能把 `reviewed` 批量改成
+`green`；不能把 known defect 改成 `reviewed`；不能因为 `planned=0` 就删除
+Node/旧 TS。P7 删除仍需 23 个 gate 的 `mandatory_green`/`replacement_reviewed`、
+Frozen oracle、no-Node guard、G6/G7 和真实安装/升级/回滚验收。

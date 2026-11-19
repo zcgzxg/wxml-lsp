@@ -37,7 +37,7 @@ export LC_ALL=C
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 FROZEN_JSON="$REPO_ROOT/docs/evidence/data/legacy-p7-freeze.json"
-DEFAULT_REQUESTED_HEAD='befba03e60f9c65e20e75b0c4c873d828fcb61b3'
+DEFAULT_REQUESTED_HEAD='b65d76ce22e0e262a16c8134740acfb58ff93ab3'
 
 CHECK=0
 ALLOW_DIRTY=0
@@ -650,8 +650,12 @@ LEDGER_STATE_JSON=$(
   jq -c '{
     green:(.cases | map(select(.status == "green")) | length),
     planned:(.cases | map(select(.status == "planned")) | length),
+    reviewed:(.cases | map(select(.status == "reviewed")) | length),
+    waived:(.cases | map(select(.status == "waived")) | length),
     retired:(.cases | map(select(.status == "retired-with-decision")) | length),
     total:(.cases | length),
+    planned_target:(.closeout.planned_target // 0),
+    closeout_policy:(.closeout.policy // "none"),
     ignored_gate_green:(.ignored_rust_tests | map(select(.status == "gate_green")) | length),
     ignored_gate_required:(.ignored_rust_tests | map(select(.status == "required_not_migrated")) | length),
     ignored_gate_total:(.ignored_rust_tests | length),
@@ -766,7 +770,10 @@ JSON=$(
         },
         deletion_allowed:false,
         blocked_by:[
-          "ledger is \($ledger_state.green) green / \($ledger_state.planned) planned / \($ledger_state.retired) retired, not 0 planned",
+          (if ($ledger_state.planned == 0 and $ledger_state.planned_target == 0)
+           then "ledger closeout target reached: \($ledger_state.green) green / \($ledger_state.reviewed) reviewed / \($ledger_state.waived) waived / \($ledger_state.retired) retired; reviewed/waived are not green"
+           else "ledger is \($ledger_state.green) green / \($ledger_state.planned) planned / \($ledger_state.reviewed) reviewed / \($ledger_state.waived) waived / \($ledger_state.retired) retired; planned target \($ledger_state.planned_target)"
+           end),
           "all 23 old gates are still #[ignore]; gate_green is opt-in, not mandatory_green",
           "no replacement_reviewed evidence exists for the 23 gates",
           "native_gates.rs still requires the 23 old #[ignore] tests; old_test_removed is not implemented",
