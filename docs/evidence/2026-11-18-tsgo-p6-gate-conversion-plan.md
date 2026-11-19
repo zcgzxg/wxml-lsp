@@ -8,6 +8,12 @@ is anchored to `f6f175f` and does not treat those commits as evidence.
 Plan nature: **read-only**. This document is the only file written. No test,
 Cargo, contract, delivery, backend or Node file is changed by this plan; nothing
 is committed.  
+**2026-11-19 status update (append-only):** the trusted type-assets handoff made
+ten more gates writable. The current gate ledger is **13 `gate_green` / 10
+`required_not_migrated` / 23 total**; §2.1/§2.2 remain the original 2026-11-18
+dispositions and are not rewritten. Current evidence and per-gate blockers are in
+`docs/evidence/2026-11-19-tsgo-p6-native-gates-typed.md`.
+
 Worktree concurrency: during this read-only inspection another session modified
 `crates/wxml-backend-tsgo/**`, `crates/wxml-delivery/**`, `crates/wxml-lsp/**`
 and added new tests. Those changes are not authored by this plan and are not

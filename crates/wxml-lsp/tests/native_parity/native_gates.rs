@@ -6,12 +6,16 @@
 //! 23 gates and the two silent returns must become real native commands before
 //! the old Node-backed tests may be deleted or treated as green.
 //!
-//! P6-2 recorded the first-wave opt-in native result: exactly three gates
-//! (`G-P5-E2E-09/12/14`) are `gate_green` with frozen evidence. The 2026-11-19
-//! recheck after the event-completion and trusted type-assets commits found no
-//! new native replacement for any of the other 20 gates, so they stay
-//! `required_not_migrated`. `gate_green` is an opt-in required-native-job
-//! result (`--ignored`), not a default-CI pass and not `mandatory_green`.
+//! P6-2 now records thirteen opt-in native gates as `gate_green`. The first
+//! wave (`G-P5-E2E-09/12/14`) needed only the selector and static semantics.
+//! The 2026-11-19 trusted type-assets slice added real typed hover and
+//! diagnostics through `--backend native`, so ten more gates have exact native
+//! replacements: `G-P5-E2E-04/06/07/08/10/13/15/17/18/19`. The remaining ten
+//! gates have no native behavior that satisfies their frozen assertions and
+//! stay `required_not_migrated`.
+//!
+//! `gate_green` is an opt-in required-native-job result (`--ignored`), not a
+//! default-CI pass and not `mandatory_green`.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -24,44 +28,49 @@ use crate::native_engine_real::{GATE_REPLACEMENTS, IGNORED_GATE_TESTS, NATIVE_GA
 use crate::source_scan;
 
 /// The only gates allowed to carry `gate_green` in P6-2.
-const GATE_GREEN_IDS: &[&str] = &["G-P5-E2E-09", "G-P5-E2E-12", "G-P5-E2E-14"];
-/// The 20 gates still waiting for a native replacement.
+const GATE_GREEN_IDS: &[&str] = &[
+    "G-P5-E2E-04",
+    "G-P5-E2E-06",
+    "G-P5-E2E-07",
+    "G-P5-E2E-08",
+    "G-P5-E2E-09",
+    "G-P5-E2E-10",
+    "G-P5-E2E-12",
+    "G-P5-E2E-13",
+    "G-P5-E2E-14",
+    "G-P5-E2E-15",
+    "G-P5-E2E-17",
+    "G-P5-E2E-18",
+    "G-P5-E2E-19",
+];
+/// The 10 gates still waiting for a native replacement.
 ///
-/// The 2026-11-19 recheck (event completion, trusted type-assets, document
-/// symbols, de-Node installer, asset lock) authored no replacement for any of
-/// these rows, so none may claim `gate_green` or a half-written replacement.
+/// Each row names a precise blocker in
+/// `docs/evidence/2026-11-19-tsgo-p6-native-gates-typed.md`: native perf and
+/// stability baselines, event-handler definition, native symbols, loop/guard
+/// status parity, `optionalTypes`, and the component-binding E2E scenarios.
 const REQUIRED_NOT_MIGRATED_IDS: &[&str] = &[
     "G-P5-PERF-01",
     "G-P5-STABILITY-01",
     "G-P5-E2E-01",
     "G-P5-E2E-02",
     "G-P5-E2E-03",
-    "G-P5-E2E-04",
     "G-P5-E2E-05",
-    "G-P5-E2E-06",
-    "G-P5-E2E-07",
-    "G-P5-E2E-08",
-    "G-P5-E2E-10",
     "G-P5-E2E-11",
-    "G-P5-E2E-13",
-    "G-P5-E2E-15",
     "G-P5-E2E-16",
-    "G-P5-E2E-17",
-    "G-P5-E2E-18",
-    "G-P5-E2E-19",
     "G-P5-E2E-20",
     "G-P5-E2E-21",
 ];
-/// Frozen `gate_green` count after the P6-2 promotion.
-const GATE_GREEN_COUNT: usize = 3;
-/// Frozen `required_not_migrated` count after the P6-2 promotion.
-const REQUIRED_NOT_MIGRATED_COUNT: usize = 20;
+/// Frozen `gate_green` count after the 2026-11-19 typed-asset promotion.
+const GATE_GREEN_COUNT: usize = 13;
+/// Frozen `required_not_migrated` count after the typed-asset promotion.
+const REQUIRED_NOT_MIGRATED_COUNT: usize = 10;
 /// Frozen ignored-gate inventory size; P6-2 never deletes a gate.
 const IGNORED_GATE_COUNT: usize = 23;
 /// Pinned size of the `7.1.0-beta` `lib/tsc` artifact.
 const PINNED_ENGINE_SIZE: u64 = 24_522_912;
 
-/// The exact first-wave ignored-native-gate set.
+/// The exact ignored-native-gate set declared by `native_engine_real`.
 fn declared_native_gate_tests() -> BTreeSet<(String, String)> {
     IGNORED_GATE_TESTS
         .iter()
@@ -201,9 +210,13 @@ fn assert_gate_green_evidence(gate: &serde_json::Map<String, serde_json::Value>,
     }
 
     let result = ledger::required_str(evidence, "result", gate_id);
+    let passed = ledger::required_u64(evidence, "passed", gate_id);
+    let filtered = ledger::required_u64(evidence, "filtered", gate_id);
     assert!(
-        result.contains("3 passed") && result.contains("36 filtered"),
-        "{gate_id} evidence must record the first-wave 3 passed / 36 filtered run: {result}"
+        result.contains(&format!("{passed} passed"))
+            && result.contains("0 failed")
+            && result.contains(&format!("{filtered} filtered")),
+        "{gate_id} evidence must record {passed} passed / 0 failed / {filtered} filtered: {result}"
     );
     assert_eq!(
         ledger::required_u64(evidence, "exit", gate_id),
@@ -266,9 +279,10 @@ fn assert_gate_green_evidence(gate: &serde_json::Map<String, serde_json::Value>,
          flag: {red_command}"
     );
     let red_result = ledger::required_str(red, "result", gate_id);
+    let red_failed = ledger::required_u64(red, "failed", gate_id);
     assert!(
-        red_result.contains("0 passed") && red_result.contains("3 failed"),
-        "{gate_id} fail-closed evidence must record the 0 passed / 3 failed run: \
+        red_result.contains("0 passed") && red_result.contains(&format!("{red_failed} failed")),
+        "{gate_id} fail-closed evidence must record the 0 passed / {red_failed} failed run: \
          {red_result}"
     );
 }
@@ -354,7 +368,7 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
             }
             other => panic!(
                 "{gate_id} has unexpected status {other:?}; P6-2 only promotes the \
-                 three evidence-backed first-wave gates"
+                 thirteen evidence-backed native gates"
             ),
         }
         assert_required_text(
@@ -388,7 +402,7 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
     assert_eq!(
         green.len(),
         GATE_GREEN_COUNT,
-        "the gate_green count drifted from the P6-2 promotion"
+        "the gate_green count drifted from the typed-asset promotion"
     );
     assert_eq!(
         required.len(),
@@ -406,7 +420,7 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
     );
     assert_eq!(
         required, frozen_required,
-        "only the frozen 20 gates may stay required_not_migrated"
+        "only the frozen 10 gates may stay required_not_migrated"
     );
     assert_eq!(green.len() + required.len(), IGNORED_GATE_COUNT);
 
@@ -439,7 +453,7 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
 }
 
 #[test]
-fn first_wave_native_replacements_are_linked_with_gate_green_evidence() {
+fn native_replacements_are_linked_with_gate_green_evidence() {
     let ledger_value = ledger::load_ledger();
     let root = ledger::object(&ledger_value, "ledger root");
     let gates = ledger::required_array(root, "ignored_rust_tests", "ledger root");
@@ -458,7 +472,7 @@ fn first_wave_native_replacements_are_linked_with_gate_green_evidence() {
     for (gate_id, replacement) in GATE_REPLACEMENTS {
         let gate = by_id
             .get(*gate_id)
-            .unwrap_or_else(|| panic!("ledger is missing the first-wave gate {gate_id}"));
+            .unwrap_or_else(|| panic!("ledger is missing the promoted gate {gate_id}"));
         assert_eq!(
             ledger::required_str(gate, "status", gate_id),
             "gate_green",
@@ -481,7 +495,7 @@ fn first_wave_native_replacements_are_linked_with_gate_green_evidence() {
     assert_eq!(GATE_REPLACEMENTS.len(), GATE_GREEN_COUNT);
     assert_eq!(
         linked, replacements,
-        "every first-wave native replacement must link to exactly one ledger gate"
+        "every promoted native replacement must link to exactly one ledger gate"
     );
 }
 

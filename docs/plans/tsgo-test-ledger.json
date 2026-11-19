@@ -1248,13 +1248,48 @@
       "old_reason": "requires Node 24 and a built P5 dist/server.js; set WXML_TEST_NODE=1",
       "must_migrate": true,
       "target_gate": "P5 real-native E2E: hover type/docs and diagnostics on a real project.",
-      "proposed_command": "cargo test -p wxml-lsp --test native_engine_real -- --ignored",
+      "proposed_command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored",
       "fail_closed": "No engine = fail; diagnostic code/range asserted.",
       "related_ledger_cases": [
         "TS-ANALYSIS-0033",
         "TS-MATRIX-0102-PAGE_BASIC-IN_PLACE_SHADOW"
       ],
-      "status": "required_not_migrated"
+      "status": "gate_green",
+      "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_hover_and_diagnostics_smoke",
+      "replacement_kind": "native_engine_real_stdio",
+      "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
+      "removal_condition": "Remove the old #[ignore] test only in P7 after this gate is mandatory_green (no --ignored) in the required native job; P6-2 does not delete any gate.",
+      "gate_evidence": {
+        "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+        "run_date": "2026-11-19",
+        "run_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "recorded_at_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "result": "13 passed / 0 failed / 36 filtered",
+        "passed": 13,
+        "filtered": 36,
+        "exit": 0,
+        "scope": "opt-in required native job (--ignored); the default cargo test does not run this gate; not mandatory_green and not a default-CI pass",
+        "engine_identity": {
+          "version": "7.1.0-beta",
+          "package": "@typescript/typescript-linux-x64",
+          "git_head": "3e9236361fa97a9e6c685f4833ac457ae2d8c50a",
+          "ast_protocol": 9,
+          "executable_sha256": "a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70",
+          "executable_size_bytes": 24522912
+        },
+        "asset_identity": {
+          "tsgo_asset_root": "/tmp/opencode/tsgo-native-pkg/engine",
+          "standard_library": "engine/lib (116 lib*.d.ts files copied into the disposable package)",
+          "typings_payload": "miniprogram-api-typings 5.3.1 from /tmp/opencode/assets-lock-root/typings (26 files, 20 .d.ts declarations mounted by the asset loader)"
+        },
+        "fail_closed_evidence": {
+          "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE -u WXML_TEST_NATIVE WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+          "result": "0 passed / 13 failed / 36 filtered",
+          "failed": 13,
+          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'"
+        },
+        "run_context": "clean detached worktree /tmp/opencode/p6-clean-561b00a at 561b00a with only the changed native_parity test files and this ledger copied in; separate CARGO_TARGET_DIR; same pinned engine/assets"
+      }
     },
     {
       "gate_id": "G-P5-E2E-05",
@@ -1278,13 +1313,48 @@
       "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
       "must_migrate": true,
       "target_gate": "P5 real-native E2E: Page data + JSDoc hover through the public LSP entry point.",
-      "proposed_command": "cargo test -p wxml-lsp --test native_engine_real -- --ignored",
+      "proposed_command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored",
       "fail_closed": "Missing engine fails; type/documentation asserted exactly.",
       "related_ledger_cases": [
         "TS-ANALYSIS-0033",
         "TS-ANALYSIS-0054"
       ],
-      "status": "required_not_migrated"
+      "status": "gate_green",
+      "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac001_page_data_and_jsdoc_hover",
+      "replacement_kind": "native_engine_real_stdio",
+      "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
+      "removal_condition": "Remove the old #[ignore] test only in P7 after this gate is mandatory_green (no --ignored) in the required native job; P6-2 does not delete any gate.",
+      "gate_evidence": {
+        "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+        "run_date": "2026-11-19",
+        "run_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "recorded_at_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "result": "13 passed / 0 failed / 36 filtered",
+        "passed": 13,
+        "filtered": 36,
+        "exit": 0,
+        "scope": "opt-in required native job (--ignored); the default cargo test does not run this gate; not mandatory_green and not a default-CI pass",
+        "engine_identity": {
+          "version": "7.1.0-beta",
+          "package": "@typescript/typescript-linux-x64",
+          "git_head": "3e9236361fa97a9e6c685f4833ac457ae2d8c50a",
+          "ast_protocol": 9,
+          "executable_sha256": "a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70",
+          "executable_size_bytes": 24522912
+        },
+        "asset_identity": {
+          "tsgo_asset_root": "/tmp/opencode/tsgo-native-pkg/engine",
+          "standard_library": "engine/lib (116 lib*.d.ts files copied into the disposable package)",
+          "typings_payload": "miniprogram-api-typings 5.3.1 from /tmp/opencode/assets-lock-root/typings (26 files, 20 .d.ts declarations mounted by the asset loader)"
+        },
+        "fail_closed_evidence": {
+          "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE -u WXML_TEST_NATIVE WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+          "result": "0 passed / 13 failed / 36 filtered",
+          "failed": 13,
+          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'"
+        },
+        "run_context": "clean detached worktree /tmp/opencode/p6-clean-561b00a at 561b00a with only the changed native_parity test files and this ledger copied in; separate CARGO_TARGET_DIR; same pinned engine/assets"
+      }
     },
     {
       "gate_id": "G-P5-E2E-07",
@@ -1293,13 +1363,48 @@
       "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
       "must_migrate": true,
       "target_gate": "P5 real-native E2E: field typo diagnostic appears and clears after fix (versioned publication).",
-      "proposed_command": "cargo test -p wxml-lsp --test native_engine_real -- --ignored",
+      "proposed_command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored",
       "fail_closed": "Stale diagnostics after fix fail; missing engine fails.",
       "related_ledger_cases": [
         "TS-ANALYSIS-0033",
         "TS-MATRIX-0102-PAGE_BASIC-IN_PLACE_SHADOW"
       ],
-      "status": "required_not_migrated"
+      "status": "gate_green",
+      "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac002_field_typo_diagnostic_and_fix_clear",
+      "replacement_kind": "native_engine_real_stdio",
+      "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
+      "removal_condition": "Remove the old #[ignore] test only in P7 after this gate is mandatory_green (no --ignored) in the required native job; P6-2 does not delete any gate.",
+      "gate_evidence": {
+        "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+        "run_date": "2026-11-19",
+        "run_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "recorded_at_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "result": "13 passed / 0 failed / 36 filtered",
+        "passed": 13,
+        "filtered": 36,
+        "exit": 0,
+        "scope": "opt-in required native job (--ignored); the default cargo test does not run this gate; not mandatory_green and not a default-CI pass",
+        "engine_identity": {
+          "version": "7.1.0-beta",
+          "package": "@typescript/typescript-linux-x64",
+          "git_head": "3e9236361fa97a9e6c685f4833ac457ae2d8c50a",
+          "ast_protocol": 9,
+          "executable_sha256": "a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70",
+          "executable_size_bytes": 24522912
+        },
+        "asset_identity": {
+          "tsgo_asset_root": "/tmp/opencode/tsgo-native-pkg/engine",
+          "standard_library": "engine/lib (116 lib*.d.ts files copied into the disposable package)",
+          "typings_payload": "miniprogram-api-typings 5.3.1 from /tmp/opencode/assets-lock-root/typings (26 files, 20 .d.ts declarations mounted by the asset loader)"
+        },
+        "fail_closed_evidence": {
+          "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE -u WXML_TEST_NATIVE WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+          "result": "0 passed / 13 failed / 36 filtered",
+          "failed": 13,
+          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'"
+        },
+        "run_context": "clean detached worktree /tmp/opencode/p6-clean-561b00a at 561b00a with only the changed native_parity test files and this ledger copied in; separate CARGO_TARGET_DIR; same pinned engine/assets"
+      }
     },
     {
       "gate_id": "G-P5-E2E-08",
@@ -1308,14 +1413,49 @@
       "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
       "must_migrate": true,
       "target_gate": "P5 real-native E2E: Unicode + CRLF position mapping through LSP UTF-16 to source bytes.",
-      "proposed_command": "cargo test -p wxml-lsp --test native_engine_real -- --ignored",
+      "proposed_command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored",
       "fail_closed": "Off-by-one or UTF-16/UTF-8 confusion fails; missing engine fails.",
       "related_ledger_cases": [
         "TS-MAPPING-0010",
         "TS-MAPPING-0145",
         "TS-EVENTS-0130"
       ],
-      "status": "required_not_migrated"
+      "status": "gate_green",
+      "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac003_unicode_and_crlf_positions",
+      "replacement_kind": "native_engine_real_stdio",
+      "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
+      "removal_condition": "Remove the old #[ignore] test only in P7 after this gate is mandatory_green (no --ignored) in the required native job; P6-2 does not delete any gate.",
+      "gate_evidence": {
+        "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+        "run_date": "2026-11-19",
+        "run_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "recorded_at_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "result": "13 passed / 0 failed / 36 filtered",
+        "passed": 13,
+        "filtered": 36,
+        "exit": 0,
+        "scope": "opt-in required native job (--ignored); the default cargo test does not run this gate; not mandatory_green and not a default-CI pass",
+        "engine_identity": {
+          "version": "7.1.0-beta",
+          "package": "@typescript/typescript-linux-x64",
+          "git_head": "3e9236361fa97a9e6c685f4833ac457ae2d8c50a",
+          "ast_protocol": 9,
+          "executable_sha256": "a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70",
+          "executable_size_bytes": 24522912
+        },
+        "asset_identity": {
+          "tsgo_asset_root": "/tmp/opencode/tsgo-native-pkg/engine",
+          "standard_library": "engine/lib (116 lib*.d.ts files copied into the disposable package)",
+          "typings_payload": "miniprogram-api-typings 5.3.1 from /tmp/opencode/assets-lock-root/typings (26 files, 20 .d.ts declarations mounted by the asset loader)"
+        },
+        "fail_closed_evidence": {
+          "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE -u WXML_TEST_NATIVE WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+          "result": "0 passed / 13 failed / 36 filtered",
+          "failed": 13,
+          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'"
+        },
+        "run_context": "clean detached worktree /tmp/opencode/p6-clean-561b00a at 561b00a with only the changed native_parity test files and this ledger copied in; separate CARGO_TARGET_DIR; same pinned engine/assets"
+      }
     },
     {
       "gate_id": "G-P5-E2E-09",
@@ -1324,7 +1464,7 @@
       "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
       "must_migrate": true,
       "target_gate": "P5 real-native E2E: unknown owner degrades with a reason, no fabricated result.",
-      "proposed_command": "cargo test -p wxml-lsp --test native_engine_real -- --ignored",
+      "proposed_command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored",
       "fail_closed": "Empty success or fabricated type fails; missing engine fails.",
       "related_ledger_cases": [
         "TS-COMPLETION-0207",
@@ -1359,8 +1499,11 @@
         "fail_closed_evidence": {
           "command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
           "result": "0 passed / 3 failed / 36 filtered",
-          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'"
-        }
+          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'",
+          "failed": 3
+        },
+        "passed": 3,
+        "filtered": 36
       }
     },
     {
@@ -1370,13 +1513,48 @@
       "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
       "must_migrate": true,
       "target_gate": "P5 real-native E2E: component property hover type/docs over the public LSP entry point.",
-      "proposed_command": "cargo test -p wxml-lsp --test native_engine_real -- --ignored",
+      "proposed_command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored",
       "fail_closed": "Missing engine fails; declared union/docs asserted.",
       "related_ledger_cases": [
         "TS-COMPONENT-0147",
         "TS-MATRIX-0102-COMPONENT_PROPERTIES-IN_PLACE_SHADOW"
       ],
-      "status": "required_not_migrated"
+      "status": "gate_green",
+      "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac013_component_properties_hover",
+      "replacement_kind": "native_engine_real_stdio",
+      "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
+      "removal_condition": "Remove the old #[ignore] test only in P7 after this gate is mandatory_green (no --ignored) in the required native job; P6-2 does not delete any gate.",
+      "gate_evidence": {
+        "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+        "run_date": "2026-11-19",
+        "run_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "recorded_at_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "result": "13 passed / 0 failed / 36 filtered",
+        "passed": 13,
+        "filtered": 36,
+        "exit": 0,
+        "scope": "opt-in required native job (--ignored); the default cargo test does not run this gate; not mandatory_green and not a default-CI pass",
+        "engine_identity": {
+          "version": "7.1.0-beta",
+          "package": "@typescript/typescript-linux-x64",
+          "git_head": "3e9236361fa97a9e6c685f4833ac457ae2d8c50a",
+          "ast_protocol": 9,
+          "executable_sha256": "a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70",
+          "executable_size_bytes": 24522912
+        },
+        "asset_identity": {
+          "tsgo_asset_root": "/tmp/opencode/tsgo-native-pkg/engine",
+          "standard_library": "engine/lib (116 lib*.d.ts files copied into the disposable package)",
+          "typings_payload": "miniprogram-api-typings 5.3.1 from /tmp/opencode/assets-lock-root/typings (26 files, 20 .d.ts declarations mounted by the asset loader)"
+        },
+        "fail_closed_evidence": {
+          "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE -u WXML_TEST_NATIVE WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+          "result": "0 passed / 13 failed / 36 filtered",
+          "failed": 13,
+          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'"
+        },
+        "run_context": "clean detached worktree /tmp/opencode/p6-clean-561b00a at 561b00a with only the changed native_parity test files and this ledger copied in; separate CARGO_TARGET_DIR; same pinned engine/assets"
+      }
     },
     {
       "gate_id": "G-P5-E2E-11",
@@ -1401,7 +1579,7 @@
       "old_reason": "requires the real server binary and Node fixture; set WXML_TEST_NODE=1",
       "must_migrate": true,
       "target_gate": "P5 real-native E2E: WXS static semantics and template semantics through the public LSP entry point.",
-      "proposed_command": "cargo test -p wxml-lsp --test native_engine_real -- --ignored",
+      "proposed_command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored",
       "fail_closed": "Missing engine fails; static hover/completion asserted.",
       "related_ledger_cases": [],
       "status": "gate_green",
@@ -1433,8 +1611,11 @@
         "fail_closed_evidence": {
           "command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
           "result": "0 passed / 3 failed / 36 filtered",
-          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'"
-        }
+          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'",
+          "failed": 3
+        },
+        "passed": 3,
+        "filtered": 36
       }
     },
     {
@@ -1444,13 +1625,48 @@
       "old_reason": "requires the real server binary; set WXML_TEST_NODE=1",
       "must_migrate": true,
       "target_gate": "P5 recovery: static WXS answers survive an unavailable type backend (honest degradation, no empty success).",
-      "proposed_command": "cargo test -p wxml-lsp --test native_engine_real -- --ignored",
+      "proposed_command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored",
       "fail_closed": "This gate intentionally removes the engine; static answers must remain, type answers must be explicitly degraded.",
       "related_ledger_cases": [
         "TS-COMPLETION-0207",
         "TS-ANALYSIS-0358"
       ],
-      "status": "required_not_migrated"
+      "status": "gate_green",
+      "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_static_wxs_answers_survive_an_unavailable_type_backend",
+      "replacement_kind": "native_engine_real_stdio",
+      "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
+      "removal_condition": "Remove the old #[ignore] test only in P7 after this gate is mandatory_green (no --ignored) in the required native job; P6-2 does not delete any gate.",
+      "gate_evidence": {
+        "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+        "run_date": "2026-11-19",
+        "run_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "recorded_at_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "result": "13 passed / 0 failed / 36 filtered",
+        "passed": 13,
+        "filtered": 36,
+        "exit": 0,
+        "scope": "opt-in required native job (--ignored); the default cargo test does not run this gate; not mandatory_green and not a default-CI pass",
+        "engine_identity": {
+          "version": "7.1.0-beta",
+          "package": "@typescript/typescript-linux-x64",
+          "git_head": "3e9236361fa97a9e6c685f4833ac457ae2d8c50a",
+          "ast_protocol": 9,
+          "executable_sha256": "a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70",
+          "executable_size_bytes": 24522912
+        },
+        "asset_identity": {
+          "tsgo_asset_root": "/tmp/opencode/tsgo-native-pkg/engine",
+          "standard_library": "engine/lib (116 lib*.d.ts files copied into the disposable package)",
+          "typings_payload": "miniprogram-api-typings 5.3.1 from /tmp/opencode/assets-lock-root/typings (26 files, 20 .d.ts declarations mounted by the asset loader)"
+        },
+        "fail_closed_evidence": {
+          "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE -u WXML_TEST_NATIVE WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+          "result": "0 passed / 13 failed / 36 filtered",
+          "failed": 13,
+          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'"
+        },
+        "run_context": "clean detached worktree /tmp/opencode/p6-clean-561b00a at 561b00a with only the changed native_parity test files and this ledger copied in; separate CARGO_TARGET_DIR; same pinned engine/assets"
+      }
     },
     {
       "gate_id": "G-P5-E2E-14",
@@ -1459,7 +1675,7 @@
       "old_reason": "requires the real server binary and Node fixture; set WXML_TEST_NODE=1",
       "must_migrate": true,
       "target_gate": "P5 real-native E2E: unsaved WXS overlay updates static hover/completion without disk writes.",
-      "proposed_command": "cargo test -p wxml-lsp --test native_engine_real -- --ignored",
+      "proposed_command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored",
       "fail_closed": "Disk state must remain unchanged; missing engine fails.",
       "related_ledger_cases": [
         "TS-OVERLAY-0023",
@@ -1494,8 +1710,11 @@
         "fail_closed_evidence": {
           "command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
           "result": "0 passed / 3 failed / 36 filtered",
-          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'"
-        }
+          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'",
+          "failed": 3
+        },
+        "passed": 3,
+        "filtered": 36
       }
     },
     {
@@ -1505,13 +1724,48 @@
       "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
       "must_migrate": true,
       "target_gate": "P5 real-native E2E: wx:for locals typed in loop scope.",
-      "proposed_command": "cargo test -p wxml-lsp --test native_engine_real -- --ignored",
+      "proposed_command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored",
       "fail_closed": "Missing engine fails; local item/index types asserted.",
       "related_ledger_cases": [
         "TS-LOCALS-0261",
         "TS-GUARDS-0174"
       ],
-      "status": "required_not_migrated"
+      "status": "gate_green",
+      "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac005_loop_scope_typed_locals",
+      "replacement_kind": "native_engine_real_stdio",
+      "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
+      "removal_condition": "Remove the old #[ignore] test only in P7 after this gate is mandatory_green (no --ignored) in the required native job; P6-2 does not delete any gate.",
+      "gate_evidence": {
+        "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+        "run_date": "2026-11-19",
+        "run_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "recorded_at_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "result": "13 passed / 0 failed / 36 filtered",
+        "passed": 13,
+        "filtered": 36,
+        "exit": 0,
+        "scope": "opt-in required native job (--ignored); the default cargo test does not run this gate; not mandatory_green and not a default-CI pass",
+        "engine_identity": {
+          "version": "7.1.0-beta",
+          "package": "@typescript/typescript-linux-x64",
+          "git_head": "3e9236361fa97a9e6c685f4833ac457ae2d8c50a",
+          "ast_protocol": 9,
+          "executable_sha256": "a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70",
+          "executable_size_bytes": 24522912
+        },
+        "asset_identity": {
+          "tsgo_asset_root": "/tmp/opencode/tsgo-native-pkg/engine",
+          "standard_library": "engine/lib (116 lib*.d.ts files copied into the disposable package)",
+          "typings_payload": "miniprogram-api-typings 5.3.1 from /tmp/opencode/assets-lock-root/typings (26 files, 20 .d.ts declarations mounted by the asset loader)"
+        },
+        "fail_closed_evidence": {
+          "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE -u WXML_TEST_NATIVE WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+          "result": "0 passed / 13 failed / 36 filtered",
+          "failed": 13,
+          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'"
+        },
+        "run_context": "clean detached worktree /tmp/opencode/p6-clean-561b00a at 561b00a with only the changed native_parity test files and this ledger copied in; separate CARGO_TARGET_DIR; same pinned engine/assets"
+      }
     },
     {
       "gate_id": "G-P5-E2E-16",
@@ -1535,13 +1789,48 @@
       "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
       "must_migrate": true,
       "target_gate": "P5 real-native E2E: alias project hover/definition with project-relative ids.",
-      "proposed_command": "cargo test -p wxml-lsp --test native_engine_real -- --ignored",
+      "proposed_command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored",
       "fail_closed": "Missing engine fails; definition fileId/range asserted.",
       "related_ledger_cases": [
         "TS-PROTOCOL-0450",
         "TS-MATRIX-0102-ALIAS_PROJECT-IN_PLACE_SHADOW"
       ],
-      "status": "required_not_migrated"
+      "status": "gate_green",
+      "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac008_alias_project_hover_and_definition",
+      "replacement_kind": "native_engine_real_stdio",
+      "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
+      "removal_condition": "Remove the old #[ignore] test only in P7 after this gate is mandatory_green (no --ignored) in the required native job; P6-2 does not delete any gate.",
+      "gate_evidence": {
+        "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+        "run_date": "2026-11-19",
+        "run_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "recorded_at_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "result": "13 passed / 0 failed / 36 filtered",
+        "passed": 13,
+        "filtered": 36,
+        "exit": 0,
+        "scope": "opt-in required native job (--ignored); the default cargo test does not run this gate; not mandatory_green and not a default-CI pass",
+        "engine_identity": {
+          "version": "7.1.0-beta",
+          "package": "@typescript/typescript-linux-x64",
+          "git_head": "3e9236361fa97a9e6c685f4833ac457ae2d8c50a",
+          "ast_protocol": 9,
+          "executable_sha256": "a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70",
+          "executable_size_bytes": 24522912
+        },
+        "asset_identity": {
+          "tsgo_asset_root": "/tmp/opencode/tsgo-native-pkg/engine",
+          "standard_library": "engine/lib (116 lib*.d.ts files copied into the disposable package)",
+          "typings_payload": "miniprogram-api-typings 5.3.1 from /tmp/opencode/assets-lock-root/typings (26 files, 20 .d.ts declarations mounted by the asset loader)"
+        },
+        "fail_closed_evidence": {
+          "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE -u WXML_TEST_NATIVE WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+          "result": "0 passed / 13 failed / 36 filtered",
+          "failed": 13,
+          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'"
+        },
+        "run_context": "clean detached worktree /tmp/opencode/p6-clean-561b00a at 561b00a with only the changed native_parity test files and this ledger copied in; separate CARGO_TARGET_DIR; same pinned engine/assets"
+      }
     },
     {
       "gate_id": "G-P5-E2E-18",
@@ -1550,13 +1839,48 @@
       "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
       "must_migrate": true,
       "target_gate": "P5 project isolation: two views/fixtures do not share types or diagnostics.",
-      "proposed_command": "cargo test -p wxml-lsp --test native_engine_real -- --ignored",
+      "proposed_command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored",
       "fail_closed": "Cross-view leakage fails; missing engine fails.",
       "related_ledger_cases": [
         "TS-ANALYSIS-0161",
         "TS-PROTOCOL-0450"
       ],
-      "status": "required_not_migrated"
+      "status": "gate_green",
+      "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac008_multi_view_fixture_isolation",
+      "replacement_kind": "native_engine_real_stdio",
+      "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
+      "removal_condition": "Remove the old #[ignore] test only in P7 after this gate is mandatory_green (no --ignored) in the required native job; P6-2 does not delete any gate.",
+      "gate_evidence": {
+        "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+        "run_date": "2026-11-19",
+        "run_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "recorded_at_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "result": "13 passed / 0 failed / 36 filtered",
+        "passed": 13,
+        "filtered": 36,
+        "exit": 0,
+        "scope": "opt-in required native job (--ignored); the default cargo test does not run this gate; not mandatory_green and not a default-CI pass",
+        "engine_identity": {
+          "version": "7.1.0-beta",
+          "package": "@typescript/typescript-linux-x64",
+          "git_head": "3e9236361fa97a9e6c685f4833ac457ae2d8c50a",
+          "ast_protocol": 9,
+          "executable_sha256": "a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70",
+          "executable_size_bytes": 24522912
+        },
+        "asset_identity": {
+          "tsgo_asset_root": "/tmp/opencode/tsgo-native-pkg/engine",
+          "standard_library": "engine/lib (116 lib*.d.ts files copied into the disposable package)",
+          "typings_payload": "miniprogram-api-typings 5.3.1 from /tmp/opencode/assets-lock-root/typings (26 files, 20 .d.ts declarations mounted by the asset loader)"
+        },
+        "fail_closed_evidence": {
+          "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE -u WXML_TEST_NATIVE WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+          "result": "0 passed / 13 failed / 36 filtered",
+          "failed": 13,
+          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'"
+        },
+        "run_context": "clean detached worktree /tmp/opencode/p6-clean-561b00a at 561b00a with only the changed native_parity test files and this ledger copied in; separate CARGO_TARGET_DIR; same pinned engine/assets"
+      }
     },
     {
       "gate_id": "G-P5-E2E-19",
@@ -1565,12 +1889,47 @@
       "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
       "must_migrate": true,
       "target_gate": "P5 project isolation: simultaneous views do not pollute each other's results.",
-      "proposed_command": "cargo test -p wxml-lsp --test native_engine_real -- --ignored",
+      "proposed_command": "cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored",
       "fail_closed": "Cross-view leakage fails; missing engine fails.",
       "related_ledger_cases": [
         "TS-ANALYSIS-0161"
       ],
-      "status": "required_not_migrated"
+      "status": "gate_green",
+      "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac008_simultaneous_views_do_not_pollute_each_other",
+      "replacement_kind": "native_engine_real_stdio",
+      "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
+      "removal_condition": "Remove the old #[ignore] test only in P7 after this gate is mandatory_green (no --ignored) in the required native job; P6-2 does not delete any gate.",
+      "gate_evidence": {
+        "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+        "run_date": "2026-11-19",
+        "run_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "recorded_at_head": "561b00ab1aaa74447ff9fc1feb3f6f3e912cf954",
+        "result": "13 passed / 0 failed / 36 filtered",
+        "passed": 13,
+        "filtered": 36,
+        "exit": 0,
+        "scope": "opt-in required native job (--ignored); the default cargo test does not run this gate; not mandatory_green and not a default-CI pass",
+        "engine_identity": {
+          "version": "7.1.0-beta",
+          "package": "@typescript/typescript-linux-x64",
+          "git_head": "3e9236361fa97a9e6c685f4833ac457ae2d8c50a",
+          "ast_protocol": 9,
+          "executable_sha256": "a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70",
+          "executable_size_bytes": 24522912
+        },
+        "asset_identity": {
+          "tsgo_asset_root": "/tmp/opencode/tsgo-native-pkg/engine",
+          "standard_library": "engine/lib (116 lib*.d.ts files copied into the disposable package)",
+          "typings_payload": "miniprogram-api-typings 5.3.1 from /tmp/opencode/assets-lock-root/typings (26 files, 20 .d.ts declarations mounted by the asset loader)"
+        },
+        "fail_closed_evidence": {
+          "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE -u WXML_TEST_NATIVE WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/tmp/opencode/assets-lock-root/typings cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1",
+          "result": "0 passed / 13 failed / 36 filtered",
+          "failed": 13,
+          "reason": "each gate panicked with 'WXML_TEST_NATIVE=1 is not set; the native gate job must request it explicitly'"
+        },
+        "run_context": "clean detached worktree /tmp/opencode/p6-clean-561b00a at 561b00a with only the changed native_parity test files and this ledger copied in; separate CARGO_TARGET_DIR; same pinned engine/assets"
+      }
     },
     {
       "gate_id": "G-P5-E2E-20",

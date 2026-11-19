@@ -1,5 +1,11 @@
 # tsgo native gate 台账提升（2026-11-19）
 
+> **后续状态（append-only）**：本文是 `953ee1e` 的 3-green 快照，不是当前台账。
+> 2026-11-19 trusted type-assets 之后的当前状态是 **13 `gate_green` / 10
+> `required_not_migrated` / 23 total**，见
+> `docs/evidence/2026-11-19-tsgo-p6-native-gates-typed.md`。本文的历史运行和
+> 限制保持不变。
+
 ## 0. 记录身份与边界
 
 - Worktree：`/home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration`

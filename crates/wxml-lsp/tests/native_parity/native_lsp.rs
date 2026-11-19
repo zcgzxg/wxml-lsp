@@ -452,15 +452,13 @@ pub(crate) fn lsp_position(text: &str, needle: &str) -> (u32, u32) {
 }
 
 /// Returns hover markdown or panics with the exact response and stderr.
+///
+/// A missing `contents.value` is a real gate failure, not a skip: the caller
+/// must see the full response and decide whether the native evidence is
+/// absent, degraded or wrong.
 pub(crate) fn hover_markdown(gate_id: &str, feature: &str, response: &Value) -> String {
     let Some(text) = response["result"]["contents"]["value"].as_str() else {
-        panic!(
-            "BLOCKED({gate_id}): {feature} returned no hover. The opt-in native adapter \
-             advertises CapabilityStatus::Partial, and the server only dispatches a point \
-             query when CapabilityStatus::is_supported() is true, so static WXS/template \
-             hover never reaches schedule_point. This gate stays BLOCKED until P6-3 makes \
-             the native capabilities Supported. Response: {response}"
-        );
+        panic!("FAILED({gate_id}): {feature} returned no hover. Response: {response}");
     };
     text.to_owned()
 }
@@ -468,12 +466,7 @@ pub(crate) fn hover_markdown(gate_id: &str, feature: &str, response: &Value) -> 
 /// Returns definition locations or panics with the exact response.
 pub(crate) fn definition_locations(gate_id: &str, feature: &str, response: &Value) -> Vec<Value> {
     let Some(locations) = response["result"].as_array() else {
-        panic!(
-            "BLOCKED({gate_id}): {feature} returned no definition. The opt-in native \
-             adapter advertises CapabilityStatus::Partial, so the server never dispatches \
-             the static WXS/template definition path. This gate stays BLOCKED until P6-3. \
-             Response: {response}"
-        );
+        panic!("FAILED({gate_id}): {feature} returned no definition. Response: {response}");
     };
     locations.clone()
 }
