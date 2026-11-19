@@ -35,6 +35,7 @@ use crate::fixture_hash::collect_tree_files;
 use crate::ledger;
 use crate::native_engine_real::{GATE_REPLACEMENTS, IGNORED_GATE_TESTS, NATIVE_GATE_FILE};
 use crate::source_scan;
+use crate::symbols_edits::{IGNORED_GATE_TESTS as NATIVE_EDIT_GATE_TESTS, NATIVE_EDIT_GATE_FILE};
 
 /// The only gates allowed to carry `gate_green` in P6-2.
 const GATE_GREEN_IDS: &[&str] = &[
@@ -80,6 +81,14 @@ const PINNED_ENGINE_SIZE: u64 = 24_522_912;
 /// The exact ignored-native-gate set declared by `native_engine_real`.
 fn declared_native_gate_tests() -> BTreeSet<(String, String)> {
     IGNORED_GATE_TESTS
+        .iter()
+        .map(|(file, function)| ((*file).to_owned(), (*function).to_owned()))
+        .collect()
+}
+
+/// The exact ignored native edit gates declared by `symbols_edits`.
+fn declared_native_edit_gate_tests() -> BTreeSet<(String, String)> {
+    NATIVE_EDIT_GATE_TESTS
         .iter()
         .map(|(file, function)| ((*file).to_owned(), (*function).to_owned()))
         .collect()
@@ -310,13 +319,15 @@ fn native_parity_function(target: &str, gate_id: &str) -> String {
     function.to_owned()
 }
 
-fn assert_blocked_native_gate(function: &str, gate_id: &str) {
+fn assert_native_edit_gate(function: &str, gate_id: &str) {
+    let migrated = crate::symbols_edits::MIGRATED_CASES.contains(&function);
+    let blocked = crate::symbols_edits::BLOCKED_NATIVE_GATES
+        .iter()
+        .any(|gate| gate.test_id == function);
     assert!(
-        crate::symbols_edits::BLOCKED_NATIVE_GATES
-            .iter()
-            .any(|gate| gate.test_id == function),
-        "{gate_id} replacement {function} is not registered in \
-         symbols_edits::BLOCKED_NATIVE_GATES"
+        migrated || blocked,
+        "{gate_id} replacement {function} is neither an authored \
+         symbols_edits::MIGRATED_CASES entry nor a registered BLOCKED_NATIVE_GATES entry"
     );
 }
 
@@ -433,19 +444,26 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
 
     let (count, mut actual) = ignored_functions();
     let native = declared_native_gate_tests();
+    let edit = declared_native_edit_gate_tests();
     assert_eq!(
         native.len(),
         IGNORED_GATE_TESTS.len(),
         "the declared native gate list has duplicates"
     );
     assert_eq!(
-        count,
-        gates.len() + native.len(),
-        "found {count} #[ignore] lines but the ledger records {} old gates plus {} native gate tests",
-        gates.len(),
-        native.len()
+        edit.len(),
+        NATIVE_EDIT_GATE_TESTS.len(),
+        "the declared native edit gate list has duplicates"
     );
-    for (file, function) in &native {
+    assert_eq!(
+        count,
+        gates.len() + native.len() + edit.len(),
+        "found {count} #[ignore] lines but the ledger records {} old gates plus {} native gate tests and {} native edit gates",
+        gates.len(),
+        native.len(),
+        edit.len()
+    );
+    for (file, function) in native.iter().chain(edit.iter()) {
         assert!(
             actual.remove(&(file.clone(), function.clone())),
             "declared native gate {file}::{function} must be an #[ignore] test"
@@ -600,6 +618,94 @@ fn native_gate_tests_are_declared_ignored_and_fail_closed() {
 }
 
 #[test]
+fn native_edit_gates_are_declared_ignored_and_fail_closed() {
+    let workspace = ledger::workspace_root();
+    let source = read_source(&workspace.join(NATIVE_EDIT_GATE_FILE));
+    let lines: Vec<&str> = source.lines().collect();
+    let mut declared = BTreeSet::new();
+    let mut ignored = BTreeSet::new();
+
+    for (index, line) in lines.iter().enumerate() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("#[test]") {
+            let name = lines
+                .iter()
+                .skip(index + 1)
+                .take(16)
+                .find_map(|line| source_scan::parse_fn_name(line))
+                .unwrap_or_else(|| panic!("{NATIVE_EDIT_GATE_FILE} has a #[test] without a fn"));
+            assert!(
+                declared.insert(name),
+                "{NATIVE_EDIT_GATE_FILE} declares a duplicate #[test]"
+            );
+        }
+        if trimmed.starts_with("#[ignore") {
+            let (function_index, name) = lines
+                .iter()
+                .enumerate()
+                .skip(index + 1)
+                .take(16)
+                .find_map(|(function_index, line)| {
+                    source_scan::parse_fn_name(line).map(|name| (function_index, name))
+                })
+                .unwrap_or_else(|| panic!("{NATIVE_EDIT_GATE_FILE} has an #[ignore] without a fn"));
+            assert!(
+                source_scan::attribute_block_contains(&lines, function_index, "#[ignore"),
+                "{NATIVE_EDIT_GATE_FILE}::{name} must keep #[ignore] in its attribute block"
+            );
+            ignored.insert(name);
+        }
+    }
+
+    let expected: BTreeSet<String> = crate::symbols_edits::MIGRATED_CASES
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    assert_eq!(
+        declared, expected,
+        "the native edit gate test set must equal MIGRATED_CASES"
+    );
+    assert_eq!(
+        ignored, expected,
+        "every authored edit gate must stay #[ignore] until the native job is required"
+    );
+
+    for forbidden in [
+        "WXML_TEST_NODE",
+        "dist/server.js",
+        "Command::new(\"node\")",
+        "tsc.exists()",
+        "skipping real Node LSP test",
+    ] {
+        assert!(
+            !source.contains(forbidden),
+            "{NATIVE_EDIT_GATE_FILE} must not contain the superseded Node path {forbidden:?}"
+        );
+    }
+
+    for name in &expected {
+        let line = lines
+            .iter()
+            .position(|line| line.contains(&format!("fn {name}(")))
+            .unwrap_or_else(|| panic!("{NATIVE_EDIT_GATE_FILE} does not declare {name}"))
+            + 1;
+        let body = source_scan::function_body(&source, line)
+            .unwrap_or_else(|| panic!("{NATIVE_EDIT_GATE_FILE}::{name} body is missing"));
+        let request = body.find("NativeGate::require(").unwrap_or_else(|| {
+            panic!("{NATIVE_EDIT_GATE_FILE}::{name} must call NativeGate::require()")
+        });
+        for forbidden in ["copy_fixture(", "gate.write(", "Session::start("] {
+            if let Some(index) = body.find(forbidden) {
+                assert!(
+                    request < index,
+                    "{NATIVE_EDIT_GATE_FILE}::{name} must provision the native package before `{forbidden}`"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn semantic_tools_silent_returns_are_mandatory_unmigrated_gates() {
     let ledger_value = ledger::load_ledger();
     let root = ledger::object(&ledger_value, "ledger root");
@@ -681,10 +787,14 @@ fn semantic_tools_silent_returns_are_mandatory_unmigrated_gates() {
             normalized.contains("skipping real Node LSP test"),
             "{file}::{test} no longer records the silent-return message"
         );
+        assert!(
+            normalized.contains("panic!"),
+            "{file}::{test} must fail closed when the native edit gate is requested"
+        );
 
         let replacement = ledger::required_str(gate, "replacement_test", gate_id);
         let replacement = native_parity_function(replacement, gate_id);
-        assert_blocked_native_gate(&replacement, gate_id);
+        assert_native_edit_gate(&replacement, gate_id);
         assert!(
             replacements.insert(replacement),
             "{gate_id} reuses a replacement test"
@@ -692,7 +802,7 @@ fn semantic_tools_silent_returns_are_mandatory_unmigrated_gates() {
 
         if let Some(tsc) = gate.get("tsc_replacement").and_then(|value| value.as_str()) {
             let tsc = native_parity_function(tsc, gate_id);
-            assert_blocked_native_gate(&tsc, gate_id);
+            assert_native_edit_gate(&tsc, gate_id);
             assert!(
                 replacements.insert(tsc),
                 "{gate_id} reuses the tsc replacement test"
@@ -707,10 +817,21 @@ fn semantic_tools_silent_returns_are_mandatory_unmigrated_gates() {
             gate.test_id
         );
     }
-    assert!(
-        crate::symbols_edits::MIGRATED_CASES.is_empty(),
-        "symbols_edits must not claim a migrated case in P3-T"
+    let migrated: BTreeSet<String> = crate::symbols_edits::MIGRATED_CASES
+        .iter()
+        .map(|name| (*name).to_owned())
+        .collect();
+    assert_eq!(
+        migrated, replacements,
+        "the authored native edit gates must exactly cover the three silent surfaces"
     );
+    for gate in crate::symbols_edits::BLOCKED_NATIVE_GATES {
+        assert!(
+            !migrated.contains(gate.test_id),
+            "{} is both migrated and blocked",
+            gate.test_id
+        );
+    }
 
     let silent = ledger::required_object(root, "silent_skips", "ledger root");
     let rust_entries = ledger::required_array(silent, "rust_silent_skips", "ledger.silent_skips");
@@ -767,18 +888,22 @@ fn semantic_tools_silent_returns_are_mandatory_unmigrated_gates() {
     let normalized_tsc = normalize_whitespace(tsc_else);
     assert!(
         normalized_tsc.contains("eprintln!"),
-        "the tsc branch must still report the optional skip"
+        "the tsc branch must still report the optional skip in the default Node mode"
     );
     assert!(
         normalized_tsc.contains("tsc not installed; skipped post-edit type check"),
-        "the optional tsc skip branch must stay visible until the native helper replaces it"
+        "the default Node skip branch must stay visible until the native helper replaces it"
     );
     assert!(
-        !normalized_tsc.contains("panic!"),
-        "the optional tsc branch must not become a hidden pass"
+        normalized_tsc.contains("if native_edit_gate"),
+        "the tsc branch must fail closed only when the native edit gate is requested"
+    );
+    assert!(
+        normalized_tsc.contains("panic!"),
+        "the tsc branch must not silently skip when the native edit gate is requested"
     );
 
     let tsc_replacement = ledger::required_str(tsc_entry, "replacement_test", "tsc silent skip");
     let tsc_replacement = native_parity_function(tsc_replacement, "tsc silent skip");
-    assert_blocked_native_gate(&tsc_replacement, "tsc silent skip");
+    assert_native_edit_gate(&tsc_replacement, "tsc silent skip");
 }

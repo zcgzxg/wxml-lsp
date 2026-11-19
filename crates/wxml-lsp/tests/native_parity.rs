@@ -2,9 +2,10 @@
 //!
 //! P3-T freezes the oracle contract: the ledger inventory, fixture v1 hashes,
 //! ignored/silent-skip gates, and the 16 partition skeletons. No native engine,
-//! server, Node process, or network request is started here. Every partition is
-//! an empty blocked skeleton; `ParityRunner::without_backend` reports
-//! `Unavailable`, never a pass.
+//! server, Node process, or network request is started here. The `symbols_edits`
+//! partition declares the three authored native edit gates; every other
+//! partition remains an empty blocked skeleton. `ParityRunner::without_backend`
+//! reports `Unavailable`, never a pass.
 
 #![allow(
     clippy::assert_is_empty,
@@ -161,8 +162,14 @@ const PARTITIONS: &[PartitionSkeleton] = &[
     },
 ];
 
+const SYMBOLS_EDITS_MIGRATED_CASES: &[&str] = &[
+    "native_component_property_edit_applies_and_reparses",
+    "assert_native_edit_reparses_and_typechecks",
+    "native_rejects_cross_namespace_and_dynamic_edits",
+];
+
 #[test]
-fn partition_skeleton_is_empty_and_fails_closed() {
+fn partition_skeletons_match_manifest_and_fail_closed() {
     let ledger_value = ledger::load_ledger();
     let root = ledger::object(&ledger_value, "ledger root");
     let cases = ledger::required_array(root, "cases", "ledger root");
@@ -172,16 +179,21 @@ fn partition_skeleton_is_empty_and_fails_closed() {
     let mut total = 0_usize;
 
     for skeleton in PARTITIONS {
-        assert!(
-            skeleton.migrated_cases.is_empty(),
-            "{} must not claim a native parity case yet",
+        let expected = if skeleton.module == "symbols_edits" {
+            SYMBOLS_EDITS_MIGRATED_CASES
+        } else {
+            &[]
+        };
+        assert_eq!(
+            skeleton.migrated_cases, expected,
+            "{} migrated cases drifted from the partition manifest",
             skeleton.module
         );
         assert_eq!(skeleton.partition.name, skeleton.module);
 
         let case = NativeParityCase::new(
             "P3-T-SKELETON",
-            "crates/wxml-lsp/tests/native_parity.rs::partition_skeleton_is_empty_and_fails_closed",
+            "crates/wxml-lsp/tests/native_parity.rs::partition_skeletons_match_manifest_and_fail_closed",
             skeleton.partition.name,
         );
         let outcome = runner.run(&case);

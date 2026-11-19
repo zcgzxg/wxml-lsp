@@ -12,6 +12,11 @@
 //! transport. The fake is intentionally dumb (test-script markers), while the
 //! Rust side exercises target resolution, multi-app isolation, `EditPlan`
 //! validation, UTF-16 mapping and zero-write behavior.
+//!
+//! The two real Node edit tests keep that default behavior. When
+//! `WXML_TEST_NATIVE`/`WXML_REQUIRE_REAL_ENGINE` requests a native edit gate,
+//! they validate the pinned test-only package and panic instead of returning
+//! green without the native package/engine or post-edit typecheck.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::Shutdown;
@@ -2077,9 +2082,19 @@ fn real_node_paths() -> Option<(std::path::PathBuf, std::path::PathBuf)> {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // one end-to-end LSP session
+#[allow(clippy::too_many_lines, clippy::manual_assert)] // one end-to-end LSP session
 fn real_node_lsp_component_property_edit_applies_and_parses() {
+    let native_edit_gate = common::native_edit::requested();
+    if native_edit_gate {
+        common::native_edit::require("G-P5-E2E-22");
+    }
     let Some((server, backend_dir)) = real_node_paths() else {
+        if native_edit_gate {
+            panic!(
+                "native edit gate G-P5-E2E-22 is required but backends/typescript/dist/server.js \
+                 is missing; the old Node test must not return green without the native gate"
+            );
+        }
         eprintln!("skipping real Node LSP test: build backends/typescript first");
         return;
     };
@@ -2191,6 +2206,12 @@ fn real_node_lsp_component_property_edit_applies_and_parses() {
             String::from_utf8_lossy(&output.stderr)
         );
     } else {
+        if native_edit_gate {
+            panic!(
+                "native edit gate G-P5-E2E-22 requires a mandatory post-edit typecheck; \
+                 node_modules/typescript/bin/tsc is missing and the old test must not skip"
+            );
+        }
         eprintln!("tsc not installed; skipped post-edit type check");
     }
 
@@ -2564,9 +2585,19 @@ fn loop_rename_stays_bounded_after_the_fragment_budget() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // one end-to-end LSP session covers four rejections
+#[allow(clippy::too_many_lines, clippy::manual_assert)] // one end-to-end LSP session
 fn real_node_lsp_rejects_cross_namespace_and_dynamic_edits() {
+    let native_edit_gate = common::native_edit::requested();
+    if native_edit_gate {
+        common::native_edit::require("G-P5-E2E-23");
+    }
     let Some((server, backend_dir)) = real_node_paths() else {
+        if native_edit_gate {
+            panic!(
+                "native edit gate G-P5-E2E-23 is required but backends/typescript/dist/server.js \
+                 is missing; the old Node test must not return green without the native gate"
+            );
+        }
         eprintln!("skipping real Node LSP test: build backends/typescript first");
         return;
     };

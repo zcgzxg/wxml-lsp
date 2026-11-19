@@ -79,6 +79,9 @@ impl Session {
             .env("WXML_BACKEND_DIR", "/nonexistent")
             .env("WXML_NODE", "wxml-poison-node")
             .env("WXML_ANALYZE_TIMEOUT_MS", "30000")
+            // Script and template diagnostics are awaited explicitly; a
+            // debounce would only add wall time to the gate.
+            .env("WXML_DIAGNOSTICS_DEBOUNCE_MS", "0")
             .env("TMPDIR", gate.private_tmp())
             .env("PATH", gate.tripwire().dir())
             .env("WXML_TRIPWIRE_MARKER", gate.tripwire().marker())
@@ -297,6 +300,37 @@ impl Session {
 
     /// Applies one full-text WXML change and waits for diagnostics.
     pub(crate) fn change_wxml(&mut self, uri: &str, text: &str, version: u64) -> Value {
+        self.notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {"uri": uri, "version": version},
+                "contentChanges": [{"text": text}],
+            }),
+        );
+        self.wait_diagnostics(uri, Some(version))
+    }
+
+    /// Opens a project script and waits for its current diagnostics.
+    ///
+    /// Script diagnostics are a separate native seam; a missing engine must be
+    /// visible here rather than silently returning an empty list.
+    pub(crate) fn open_script(&mut self, uri: &str, text: &str, version: u64) -> Value {
+        self.notify(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "typescript",
+                    "version": version,
+                    "text": text,
+                }
+            }),
+        );
+        self.wait_diagnostics(uri, Some(version))
+    }
+
+    /// Applies one full-text script change and waits for diagnostics.
+    pub(crate) fn change_script(&mut self, uri: &str, text: &str, version: u64) -> Value {
         self.notify(
             "textDocument/didChange",
             json!({

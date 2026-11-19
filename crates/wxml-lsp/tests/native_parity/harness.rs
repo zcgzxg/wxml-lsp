@@ -49,6 +49,10 @@ pub(crate) struct BlockedGate {
 
 impl BlockedGate {
     /// Creates a blocked-gate registration.
+    #[allow(
+        dead_code,
+        reason = "symbols_edits authored every registered native edit gate; the type stays for future partitions"
+    )]
     pub(crate) const fn new(test_id: &'static str, reason: &'static str) -> Self {
         Self { test_id, reason }
     }

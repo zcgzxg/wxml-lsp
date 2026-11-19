@@ -14,6 +14,16 @@ ten more gates writable. The current gate ledger is **13 `gate_green` / 10
 dispositions and are not rewritten. Current evidence and per-gate blockers are in
 `docs/evidence/2026-11-19-tsgo-p6-native-gates-typed.md`.
 
+**2026-11-20 edit-gate status update (append-only):** the three mandatory native
+edit gates are now authored in
+`crates/wxml-lsp/tests/native_parity/symbols_edits.rs`;
+`MIGRATED_CASES` is exactly those three and `BLOCKED_NATIVE_GATES` is empty. The
+old `semantic_tools` tests keep the default Node behavior and panic when a native
+edit gate is requested without the package/engine or the post-edit typecheck. The
+ledger `silent_skip_gates` remain `required_not_migrated`; 23/23 ignored gates are
+unchanged. Evidence:
+`docs/evidence/2026-11-20-tsgo-p6-edit-gates.md`.
+
 Worktree concurrency: during this read-only inspection another session modified
 `crates/wxml-backend-tsgo/**`, `crates/wxml-delivery/**`, `crates/wxml-lsp/**`
 and added new tests. Those changes are not authored by this plan and are not
