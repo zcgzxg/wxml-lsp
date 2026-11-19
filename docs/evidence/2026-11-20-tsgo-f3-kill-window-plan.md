@@ -544,6 +544,11 @@ N2 provenance 与 §6.3 语义仍是独立缺口，F3-06 只能 **partial**。�
 
 ### 10.1 合同 §6.3：切回 vs 前滚（必须先裁决）
 
+> 2026-11-20 后续裁决：已按“进程崩溃/`recover` 只前滚；切回仅限进程存活且 `state` 仍指已验证
+> native v2 previous”落为合同与证据，见
+> [`2026-11-20-tsgo-f3-crash-semantics.md`](2026-11-20-tsgo-f3-crash-semantics.md)。本节保留为
+> 设计时的冲突记录。
+
 - §6.3 第 975 行：“switch 后、state 写入前：若 state 仍指 previous 且 previous 已验证：切回且不重写 state；
   若 state 已指 target：不切回，重新校验后前滚。”
 - §6.3 第 976 行：“current 为已验证 native，state 指向另一版本：有 committed/activated journal

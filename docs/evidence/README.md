@@ -49,6 +49,8 @@
 | 2026-11-19 | [F1 event-handler completion 实施计划](2026-11-19-tsgo-event-handler-completion-plan.md) | `bff58d1` / S1 `939831b` | E0 | 设计 only：保留宽松直接事件形式，避免 `bindgetphonenumber` 等回归；缓存键排除 `view_id`；S1 顶层注册选择已提交，S2+ 尚未实现；无 native checker/auto-import/自定义事件；F1/P6/G5 未关闭 |
 | 2026-11-19 | [tsgo 测试台账回填与 native gate 复核](2026-11-19-tsgo-ledger-backfill.md) | `9a8b65c` / 7.1.0-beta | E0 | case 级 36 `green` / 267 `planned` / 36 retired（新增 `TS-COMPLETION-0175/0193`、`TS-PROBES-0169`）；`TS-META-0009`、`TS-SERVER-0237` 为 weaker；document symbols 真实引擎 7 passed；3 个既有 `gate_green` 复跑 3 passed / 36 filtered；20 gate 仍 required，无新增 gate；默认 Node/CI/mandatory 未变 |
 | 2026-11-20 | [tsgo 测试台账 wave-5 回填](2026-11-20-tsgo-ledger-backfill-wave5.md) | 边界 `375cde2` / 记录 `28c5e18` | E0 | case 级 44 `green` / 259 `planned` / 36 retired（新增 `TS-COMPLETION-0127/0153`、`TS-EVENTS-0108`、`TS-SYMBOLS-0061/0150/0215/0226/0312`）；17 weaker、1 blocked、1 structural 新证据 + 14 个既有用例追加；无证据 184→158；未映射 E2E-20/f3/zed，未改 gate 状态 |
+| 2026-11-20 | [tsgo 测试台账 wave-6 回填](2026-11-20-tsgo-ledger-backfill-wave6.md) | `1d5222e` / 7.1.0-beta | E0 | 无新增 exact `green`，仍 44 `green` / 259 `planned` / 36 retired；新增 6 weaker（`TS-COMPONENT-0147/0193/0206/0229/0251/0268`）+ 3 blocked（`TS-COMPONENT-0279`、`TS-SYMBOLS-0299/0425`），4 个既有用例追加；`assessed` 145→154、无证据 158→149；E2E-20 不升级 exact，gate_green 与 case green 分离 |
+| 2026-11-20 | [P7 native 编辑门禁](2026-11-20-tsgo-p6-edit-gates.md) | `899a89a` / 7.1.0-beta | E1 | 3 个 native edit gate 真实实现（组件属性 rename 后重解析/类型检查、独立 reparse+typecheck、跨 namespace/动态编辑拒绝）；旧 semantic_tools 在 native 请求模式下 fail-closed；required native 3 passed/12.83s；ledger silent gates 仍 required，旧 23 gate 仍 `#[ignore]` |
 | 2026-11-19 | [F3 真实 release 验收](2026-11-19-tsgo-f3-real-release.md) | `561b00a` / 7.1.0-beta / 真实 Rust + Zed 产物 | E1 | 真实 lock/tarball 的两次打包逐字节一致（157 文件）、真实包空安装/verify/current/env、N1→N2→N1、离线回滚、recover、archive 篡改拒绝、readelf/ldd/GLIBC_2.39、平台拒绝和进程级 Zed 启动；F3-02/14 blocked；F3-12 只覆盖缓存 install |
 | 2026-11-19 | [F3 剩余验收矩阵](2026-11-19-tsgo-f3-acceptance.md) | `0b3b3da` / 真实包 + 受控变异 | E1 | 6 个 opt-in 测试：F3-05 缺资产/探针、F3-10 六类篡改、F3-11 五种恶意归档经真实 `--from-dir`、F3-08/09/15 legacy、F3-06 四窗口 seam、F3-16 journal 注入/并发；F3-06/09 进程级 kill 仍 blocked |
 | 2026-11-20 | [F3-02 ptrace exec 审计](2026-11-20-tsgo-f3-exec-audit.md) | `f2952c2` / 7.1.0-beta | E1 | test-only ptrace 记录真实 installer 10 exec、native LSP 3 exec；无 Node 家族/server.js/legacy 变量，全绝对路径；F3-02 closed（Linux x86_64），非 Linux/无 ptrace 权限显式 BLOCKED |
@@ -57,6 +59,8 @@
 | 2026-11-20 | [E2E-20 组件属性绑定诊断设计](2026-11-20-tsgo-e2e20-component-binding-plan.md) | `4140e9b` / 7.1.0-beta | E0 | `PreparedView`/`ScriptAnalysis` 已有子组件属性类型；需新增 `ShadowLayout` 表达式范围 + `type_query` 的绑定检查，复杂类型 Partial，事件属性排除；尚未实现 |
 | 2026-11-20 | [P6 默认切换与 P7 删除设计](2026-11-20-tsgo-p6-default-switch-plan.md) | `4140e9b` / 7.1.0-beta | E0 | 默认 native + HostOnly + 显式 `--backend node`；P7 仍被 5 个 required gate、2 个 silent return、267 planned、旧 TS fixture 与 v1 build 阻塞 |
 | 2026-11-20 | [F3-06/09 进程级 kill 窗口设计](2026-11-20-tsgo-f3-kill-window-plan.md) | `4140e9b` / 7.1.0-beta | E0 | 建议 test-only ptrace 在 rename/symlink/fsync 暂停后 SIGKILL；仍需真实 N2、真实 legacy release，contract §6.3 崩溃语义需裁决 |
+| 2026-11-20 | [F3-06/09 进程级 kill 窗口证据](2026-11-20-tsgo-f3-kill-window.md) | `28c5e18` / 7.1.0-beta | E1 | 真实 `wxml-lsp-install` 外部 SIGKILL：F3-06 U1/U3/U5/U5-durable/U6 + never-match 控制项，F3-09 L3/L4；U5 实测 `recover` 前滚到 N2；F3-06/09 仍 partial（N2 版本重标 / legacy fixture） |
+| 2026-11-20 | [F3-06/09 切换后崩溃语义裁决](2026-11-20-tsgo-f3-crash-semantics.md) | `28c5e18` / 文档 `b095258` | E0 | pre-switch 旧 current/旧树字节不变；post-switch 崩溃前滚已验证 native target，legacy/Node 永不恢复；合同 §6.3 第 975 行拆为“进程存活/崩溃”两行；F3-06/09 仍 partial，剩余缺口为 N2 provenance 与真实 legacy 发布包 |
 
 ## 3. 当前门禁基线（2026-11-17，W4 最终）
 
@@ -144,24 +148,28 @@ G1 尚未关闭；7.1.0-beta 的接受与 integrity 固定、可执行安装器�
 - **真实资产/CLI**：F3-01/02 的安装/干净 PATH/网络隔离与 ptrace exec 审计是真实资产级证据（`f2952c2`，Linux x86_64）；其他交付测试多为入库 fixture。
 - **Zed/UI**：原生后端没有 Zed UI/查询冒烟证据；不得引用历史 Node/W4 的 Zed 结果代替。
 
-## 3.3 F3 逐项验收状态（2026-11-20 审计 + ptrace 更新，HEAD `f2952c2`）
+## 3.3 F3 逐项验收状态（2026-11-20 审计 + ptrace/kill-window 更新，证据锚点 `28c5e18`）
 
 本节只记录 2026-11-20 对 F3 证据的审计结论，权威表和关闭条件在
 ` docs/reference/tsgo-delivery-contract.md` §9.5。证据运行锚点为 `561b00a`（real release）、
-`0b3b3da`（acceptance）、`50e4a21`（partial gaps）和 `f2952c2`（ptrace exec audit）；
-`crates/wxml-delivery/src` 在 `561b00a..f2952c2` 无变化。包内 `bin/wxml-lsp` 是 2026-11-19
+`0b3b3da`（acceptance）、`50e4a21`（partial gaps）、`f2952c2`（ptrace exec audit）和
+`28c5e18`（kill-window）；`crates/wxml-delivery/src` 在 `561b00a..28c5e18` 无变化
+（`28c5e18` 只新增 test/script/doc）。包内 `bin/wxml-lsp` 是 2026-11-19
 23:21 从含并发未提交改动的工作树构建，不是任一 HEAD 的逐字节重建；F3-03/04 只声明包/安装
 事实，不声明该二进制可从 HEAD 复现。
 
 | 结果 | ID |
 | --- | --- |
 | **closed（13）** | F3-01、F3-02、F3-03、F3-04、F3-05、F3-07、F3-08、F3-10、F3-11、F3-12、F3-13、F3-15、F3-16 |
-| **partial（2）** | F3-06（N2 版本重标；进程级 kill 无生产 seam）、F3-09（精确 SIGKILL 无 seam；真实 legacy 包缺） |
+| **partial（2）** | F3-06（N2 版本重标；进程级 kill 已由 `28c5e18` 覆盖 U1/U3/U5/U5-durable/U6）、F3-09（真实 legacy 包缺；SIGKILL 已由 `28c5e18` 覆盖 L3/L4） |
 | **blocked（1）** | F3-14（默认 `--stdio` 仍 Node；无 Zed UI/查询证据） |
 
 F3-05/10 是“真实包 + 单点受控变异”，F3-08/09/15 的 legacy 包是生产 v1 packager 生成的
-fixture，F3-06/09 的中断窗口是库级 `InstallHooks` seam，F3-16 的 journal 由测试注入；这些
-性质已在合同 §9.5 逐项标注，不作为真实发布缺陷或进程级中断证据。F3-11/12/15/16 的关闭依据
+fixture；F3-16 的 journal 由测试注入。F3-06/09 的进程级 switch 前/后中断已由 `28c5e18` 的
+`f3_kill_window` 覆盖（Linux x86_64、opt-in；U3/U5/U5-durable/U6 与 L3/L4），库级
+`InstallHooks` seam 仍用于进程存活分支和 fixture 细节。崩溃后的前滚/切回裁决见
+[F3-06/09 切换后崩溃语义](2026-11-20-tsgo-f3-crash-semantics.md)；F3-06/09 仍 partial 的
+原因只剩 N2 provenance 与真实 legacy 发布包。F3-11/12/15/16 的关闭依据
 是 `50e4a21` 的真实 installer 归档形态、缓存 upgrade/rollback、Zed 变量移除与 activated
 幂等测试；F3-02 的关闭依据是 `f2952c2` 的真实 installer/native LSP ptrace exec 审计，
 Linux x86_64 以外平台仍不声明。F3-14 不因这些测试关闭。

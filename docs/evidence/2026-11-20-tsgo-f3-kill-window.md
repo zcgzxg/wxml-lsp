@@ -10,9 +10,11 @@
 | F3-06 整体 | **PARTIAL** | “第二个真实 release”仍缺：N2 是 N1 生产二进制同长度版本常量重标，不是独立发布产物 |
 | F3-09 进程级 SIGKILL（L3/L4） | **PASS（Linux x86_64）** | legacy 迁移切换前/后；旧树字节不变、legacy marker 未执行、`previous=null` |
 | F3-09 整体 | **PARTIAL** | “真实 legacy 发布包”仍缺：legacy current 是生产 v1 packager 生成的 fixture |
-| 合同 §6.3 第 975 行“切回”语义 | **未裁决，记录实测** | U5（`current=N2`、`state=N1`）被 SIGKILL 后 `recover` **前滚**到 N2，符合第 976 行；进程已死，无法执行切回 |
+| 合同 §6.3 第 975 行“切回”语义 | **已裁决**（见 [`2026-11-20-tsgo-f3-crash-semantics.md`](2026-11-20-tsgo-f3-crash-semantics.md)） | U5（`current=N2`、`state=N1`）被 SIGKILL 后 `recover` 前滚到 N2；合同已把“切回”限定为进程存活且 previous 为已验证 native v2 的分支，崩溃恢复只前滚，legacy/Node 永不恢复 |
 
-本切片不替评审做 provenance/语义裁决，也不把 `BLOCKED`/`SKIP` 写成 `PASS`。
+本切片不替评审做 provenance 裁决；语义冲突已按
+[`2026-11-20-tsgo-f3-crash-semantics.md`](2026-11-20-tsgo-f3-crash-semantics.md) 裁决，
+也不把 `BLOCKED`/`SKIP` 写成 `PASS`。
 
 ## 1. 改动边界
 
@@ -173,11 +175,12 @@ U5-durable 的 gate 在 switch 之外还会看到一次 `fsync(root)`（staged j
    （`0.0.9`，带 Node entry tripwire），不是历史发布包。L3/L4 证明迁移状态机与
    “永不执行/恢复 Node”，不证明 legacy 包身份；除非评审接受或产出真实 legacy 包，
    F3-09 仍 **PARTIAL**。
-3. **合同 §6.3 第 975/976 行语义**：U5 的实测是 `current=N2`、`state=N1` 被 SIGKILL 后
-   `recover` 前滚到 N2（第 976 行），不是“state 仍指 previous 则切回”（第 975 行）。
-   进程已死，无法执行 `handle_post_switch_failure`/`restore_previous`。若评审要求
-   §6.3 第 975 行也覆盖进程崩溃，则必须修改 `recover` 或承认该子条件在 SIGKILL 场景
-   不可满足；本切片不替评审裁决。
+3. **合同 §6.3 第 975/976 行语义**：**已裁决**，见
+   [`2026-11-20-tsgo-f3-crash-semantics.md`](2026-11-20-tsgo-f3-crash-semantics.md)。U5 的
+   `current=N2`、`state=N1` 被 SIGKILL 后由 `recover` 前滚到 N2；合同已把“切回”限定为
+   **进程存活且 `state` 仍指已验证 native v2 previous** 的事务内分支。进程崩溃后无法执行
+   `restore_previous`，恢复只前滚；legacy/Node 永不恢复。该裁决不改变 F3-06/09 的 partial
+   状态：剩余缺口仍是 N2 provenance 与真实 legacy 发布包。
 4. **断电/目录 fsync**：exit-stop 可能在目录 `fsync` 之前；本证据只证明进程崩溃，
    不证明掉电持久性（与合同 §10 一致）。
 5. **孤儿 temp 卫生**：本次 7 个杀点杀前 `root-temp=[]`，杀后也未依赖清理
@@ -220,5 +223,10 @@ WXML_KILL_WINDOW_TRACE=1 \
   ` crates/wxml-delivery/tests/f3_acceptance/legacy.rs:28-437`。
 - F3-02 ptrace 模式：` crates/wxml-delivery/tests/f3_exec_audit/tracer.rs:33-87`；
   ` docs/evidence/2026-11-20-tsgo-f3-exec-audit.md`。
-- 合同：` docs/reference/tsgo-delivery-contract.md:967-988`（§6.3）、`:1229`（F3-06）、
-  `:1232`（F3-09）、`:1334`/`:1337`（仍缺）、`:1350`（13 closed / 2 partial / 1 blocked）。
+- 合同：` docs/reference/tsgo-delivery-contract.md:969`（§6.3）、
+  ` docs/reference/tsgo-delivery-contract.md:1240`（F3-06）、
+  ` docs/reference/tsgo-delivery-contract.md:1243`（F3-09）、
+  ` docs/reference/tsgo-delivery-contract.md:1346`/`docs/reference/tsgo-delivery-contract.md:1349`
+  （仍缺）、` docs/reference/tsgo-delivery-contract.md:1362`
+  （13 closed / 2 partial / 1 blocked）。
+- 崩溃语义裁决：` docs/evidence/2026-11-20-tsgo-f3-crash-semantics.md`。

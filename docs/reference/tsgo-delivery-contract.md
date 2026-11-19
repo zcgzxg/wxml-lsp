@@ -908,8 +908,9 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 10. `unlock`。
 
 任何一步失败：按 §5.9/§6.3 清理；`current` 不变，除非第 7 步已经原子完成。第 7 步后的
-失败必须显式报告：仅当 `state.json` 仍指向已验证的 native `previous` 时切回（不重写 state）；
-若新 state 已写入，则对已验证 target 前滚补 state/journal；legacy/Node current 永不恢复。
+失败必须显式报告：进程存活且 `state.json` 仍指向已验证的 native `previous` 时，可切回该
+previous（不重写 state）；`state.json` 已指向 target，或进程已崩溃而 `current` 已指向 target
+时，对已验证 target 前滚补 state/journal；legacy/Node current 永不恢复。
 
 ### 5.9 失败清理
 
@@ -918,10 +919,11 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 - `rename` 前失败：journal 若已写 `staged`，下次 mutating 命令删除 tmp；只读命令不清理。
 - `rename` 后、switch 前失败：保留 `versions/<target>` 与 journal `committed`；**不自动激活**；
   由显式 install/upgrade/rollback 重新校验后再 switch。
-- switch 后失败：若 `state.json` 仍指向已验证 native `previous`，切回且不重写 state；若 state
-  已指向 target，不切回，重新校验 target 后前滚补 state/journal；legacy 迁移只前滚，永不恢复
-  Node。无法协调时返回 typed `SwitchedButNotDurable`（含 recovery）或 `InstallState` 诊断，
-  不启动 Node、不删除版本目录。
+- switch 后失败：进程崩溃/`recover` 且 `current` 已指向 target 时，重新校验 target 后前滚补
+  state/journal，不切回；进程存活且 `state.json` 仍指向已验证 native `previous` 时，切回该
+  previous 且不重写 state；`state` 已指向 target 时前滚；legacy 迁移只前滚，永不恢复 Node。
+  无法协调时返回 typed `SwitchedButNotDurable`（含 recovery）或 `InstallState` 诊断，不启动
+  Node、不删除版本目录。
 - 失败事务不得留下 `state.json` 指向未验证版本；若 `state.json` 原本不存在，失败后也不得创建
   指向未验证版本的 state。
 
@@ -952,7 +954,7 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 | `S1` | activate/rollback legacy | **明确拒绝** | `current` 不变；不执行旧二进制 |
 | `S2` | upgrade `N1→N2` 成功 | staged 校验/探针 → switch | `state.previous=N1`；资产同属一个 manifest |
 | `S2` | upgrade `N1→N2` 失败/中断（switch 前） | 保留 `N1` | `current=N1`；N2 不得成为 current；无混合资产 |
-| `S2` | upgrade `N1→N2` 失败/中断（switch 后） | state 仍指 `N1` 则切回；state 已指 `N2` 则前滚补 state | `current` 为已验证 `N1` 或 `N2`；不得出现 current/state 分裂；无混合资产 |
+| `S2` | upgrade `N1→N2` 失败/中断（switch 后） | 进程崩溃/`recover`：`current` 已指 `N2` 则前滚补 state，不切回；进程存活且 `state` 仍指 `N1`：可切回已验证 `N1`；`state` 已指 `N2`：前滚 | `current` 为已验证 `N1` 或 `N2`；不得出现 current/state 分裂；无混合资产 |
 | `S3` | 恢复 | 删除 tmp，或重新校验后继续 | `current` 不变；不自动激活 |
 | `S4` | 恢复/继续 | 重新校验 N2；通过才显式 switch；不通过保持 N1 | 不出现半安装 current |
 | `S5` | rollback `N2→N1` 成功 | 重新完整校验/探针后 switch | 离线也满足完整性；`state.previous=N2` |
@@ -972,31 +974,39 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 | journal `staged` 后、rename 前 | 删除 tmp；current 不动；不自动激活 |
 | rename 后、switch 前（`committed`） | 目标目录保留；current 仍 previous；**不自动激活**；显式命令重新校验后再切换 |
 | switch 中 | symlink 临时名 + `rename` 原子；要么 previous 要么 target；按 journal/current 协调 |
-| switch 后、state 写入前 | 若 state 仍指 previous 且 previous 已验证：切回且不重写 state；若 state 已指 target：不切回，重新校验后前滚；其余报 `InstallState`/`SwitchedButNotDurable` |
+| switch 后、state 写入前（进程存活，事务内失败） | `state` 已指 target：前滚补 state；`state` 仍指已验证 native v2 previous：可切回该 previous 且不重写 state；legacy/Node previous 永不切回，legacy 迁移一律前滚；其余报 `InstallState`/`SwitchedButNotDurable` |
+| switch 后、state 写入前（进程被杀/崩溃，`recover`） | `current` 已指已验证 target：重新校验 target 后**前滚**补 state/journal，不切回；legacy/Node current 永不恢复；target 校验失败则报错并保留 journal，不静默切换 |
 | current 为已验证 native，state 指向另一版本 | 有 committed/activated journal 且 target 可验证时，重新校验 current/target 后前滚到 target；否则报错；恢复幂等 |
 | switch 后 state 写入失败 | 返回 typed `SwitchedButNotDurable`，不泄漏裸 I/O；按 state/journal 协调 |
 | state 写入后、cleanup 前 | 幂等清理；重复命令不改变 active |
 | journal `activated` 但 current != target | `InstallState` 错误；要求显式 rollback/install，不静默修正 |
 | 断电/fsync 失败 | 按 I/O 错误报告；断电持久性未证明（见 §10） |
 
+进程崩溃后无法执行 `restore_previous`；`recover` 以 `current` 为准：`current` 已指向的已验证
+target 优先前滚，而不是再写一次 `current` 切回。这样避免第二个切换窗口与二次崩溃，且 legacy
+迁移不存在可切回的原生 `previous`；把 legacy/Node 当 `previous` 会违反 I4/I5/I8。进程存活时
+的切回分支只适用于已验证 native v2 previous，且不重写 state。
+
 恢复规则固定：
 
 - `staged` → 删除 `tmp/<txn>`，`current` 不动；
 - `committed` → 保留 `versions/<target>`，**不自动激活**；下次显式 mutating 命令重新校验。
-  例外：若 `state.json` 已指向 target 且 current 是另一个已验证 native，recovery 重新校验
-  current/target 后前滚到 target，修复 current/state 分裂；
+  例外一：若 `current` 已指向 target（switch 已原子完成），recovery 重新校验 target 后补
+  state/journal，不切换、不切回；例外二：若 `state.json` 已指向 target 且 current 是另一个
+  已验证 native，recovery 重新校验 current/target 后前滚到 target，修复 current/state 分裂；
 - `activated` → 若 current 指向 target，幂等确认并补 state；否则报 `InstallState`。
 
 ### 6.4 不变量
 
 - **I1**：`current` 只在 staged 树完成 manifest/SHA-256/资产/原生探针之后改变。
 - **I2**：switch 前任一步失败或中断，旧 `versions/<old>` 与 `current` **字节不变**（文件集合、
-  每文件 SHA-256、模式、current 目标均不变）。switch 后失败只允许：state 仍指 previous 时切回
-  已验证 native previous（不重写 state），或对已验证 native target 前滚补 state；legacy 树字节
-  不变且永不恢复/执行。
-- **I3**：`N1→N2` 在 switch 前失败保持 `N1`，N2 不得成为 current；switch 后失败只能在 state
-  仍指 `N1` 时切回 `N1`，或 state 已指 `N2` 时前滚 `N2`；不得出现引擎/typings/二进制来自不同
-  manifest 的混合资产。
+  每文件 SHA-256、模式、current 目标均不变）。switch 后失败只允许：进程崩溃/`recover` 且
+  `current` 已指 target 时，对已验证 native target 前滚补 state（不切回）；进程存活且 `state`
+  仍指 previous 时，切回已验证 native v2 previous（不重写 state）；`state` 已指 target 时前滚
+  target；legacy 树字节不变且永不恢复/执行。
+- **I3**：`N1→N2` 在 switch 前失败保持 `N1`，N2 不得成为 current；switch 后失败：`current`
+  已指 `N2`（含进程崩溃）时前滚 `N2`；进程存活且 state 仍指 `N1` 时可切回已验证 `N1`；state
+  已指 `N2` 时前滚 `N2`；不得出现引擎/typings/二进制来自不同 manifest 的混合资产。
 - **I4**：rollback 只接受 schema v2 且完整校验/探针通过的目标；**永不**重新激活 schema v1/Node 包。
 - **I5**：任何路径都不执行 `node`/`npm`/`npx`/`pnpm`/`yarn`；不查 PATH 找引擎；
   `WXML_NODE`/`WXML_TYPE_BACKEND`/`WXML_BACKEND_DIR` 不参与激活。
@@ -1031,7 +1041,8 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 
 - 读取 legacy 不要求 Node；不得执行旧 `bin/wxml-lsp` 或旧 `server.js`。
 - 旧 current 在 switch 前保持不变；switch 前失败报“尚未迁移”，旧树字节不变。
-- switch 后失败：对已验证 native target 前滚补 state；永不恢复/执行旧 Node；旧树字节不变。
+- switch 后失败（含进程崩溃）：对已验证 native target 前滚补 state；永不恢复/执行旧 Node；
+  旧树字节不变。
 - 迁移成功只切换一次 current；旧目录保留为非活动历史材料，`state.previous=null`。
 - 迁移不修改 Zed 用户配置或 `.zed/settings.json`；安装器只打印稳定路径，由用户显式设置
   `WXML_LSP_BIN`。
@@ -1213,9 +1224,9 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 
 ### 9.2 测试矩阵
 
-2026-11-20 逐项审计后，F3 整体仍未通过：16 项中 **8 closed / 6 partial / 2 blocked**（见 §9.5）。
-真实资产、包级安装/回滚、ABI 与部分篡改/恶意归档已有实测；`strace` 进程审计、Zed UI、
-进程级 kill、缓存升级/回滚、Zed legacy 变量转发和若干边界用例仍缺。下表中的测试文件多数已存在
+2026-11-20 逐项审计后，F3 整体仍未通过：16 项中 **13 closed / 2 partial / 1 blocked**（见 §9.5）。
+真实资产、包级安装/回滚、ABI、ptrace exec 审计、缓存升级/回滚与部分篡改/恶意归档已有实测；
+Zed UI、第二个真实 release、真实 legacy 发布包与若干边界用例仍缺。下表中的测试文件多数已存在
 （早期 `new` 标注是历史计划），但存在不等于通过；`extend` 的文件仍需新增/保留 schema v2 断言。
 状态以 §9.5 和证据为准，不能把“文件存在”或“默认测试绿”当作 F3 关闭。
 
@@ -1226,10 +1237,10 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 | F3-03 | 包内容/布局/许可/负向扫描：无 `node_modules`/JS/`wxml-type-backend`；`SHA256SUMS` 通过；两次构建归档 SHA-256 一致 | `crates/wxml-delivery/tests/native_package.rs`（new） | NF-05/09/11 | `packager_cli.rs` 仅 v1 |
 | F3-04 | 空安装成功：精确树、原子 current、state.json、tmp 为空、verify 通过 | `crates/wxml-delivery/tests/native_delivery.rs`（new）`installs_native_package_atomically` | NF-06/10 | `installer_flow.rs` 为 v1/Node |
 | F3-05 | 安装失败：归档哈希/SRI 不符、缺标准库/typings、引擎探针失败；不产生 current/versions，tmp 清理 | `crates/wxml-delivery/tests/native_delivery.rs`（new）`failed_install_leaves_no_current` | NF-06/10 | `failed_runtime_check...` 仅 v1 |
-| F3-06 | `N1→N2` 升级失败/中断：switch 前 N1 digest/current 不变、N2 不激活；switch 后 state 已写则 N2 前滚，state 仍指 N1 则切回 N1；无混合资产 | `crates/wxml-delivery/tests/native_delivery.rs`（new）`upgrade_failure_keeps_n1` + `crates/wxml-delivery/tests/native_rollback.rs`（new）`native_after_state_write_rolls_forward_without_switching_back` | NF-10 | `installer_flow.rs` 部分 v1 |
+| F3-06 | `N1→N2` 升级失败/中断：switch 前 N1 digest/current 不变、N2 不激活；switch 后进程崩溃时对已验证 N2 前滚补 state；进程存活且 state 仍指 N1 时才允许切回已验证 N1（非崩溃语义）；无混合资产 | `crates/wxml-delivery/tests/f3_kill_window.rs`（new，真实 CLI SIGKILL）+ `crates/wxml-delivery/tests/native_delivery.rs`（new）`upgrade_failure_keeps_n1` + `crates/wxml-delivery/tests/native_rollback.rs`（new）`native_after_state_write_rolls_forward_without_switching_back` | NF-10 | `crates/wxml-delivery/tests/f3_acceptance/transactions.rs` 的 `InstallHooks` 四窗口（fixture/seam）；`installer_flow.rs` 部分 v1 |
 | F3-07 | 离线回滚到 N1：重新完整校验/探针后切换；current=N1；state.previous=N2；不联网 | `crates/wxml-delivery/tests/native_delivery.rs`（new）`offline_rollback_reverifies_n1` | NF-06/10 | `offline_rollback...` 仅 v1 |
 | F3-08 | schema v1 回滚目标明确拒绝；v1 目录字节不变；原生 current 不变；不执行 Node | `crates/wxml-delivery/tests/native_delivery.rs`（new）`rollback_rejects_schema_v1` | NF-07/10 | 无 |
-| F3-09 | legacy current → 原生：成功一次切换、旧树字节不变、legacy 标记；switch 前失败/中断旧 current 与旧树不变且无 native state；switch 后失败对已验证 target 前滚补 state，永不恢复/执行 Node | `crates/wxml-delivery/tests/native_rollback.rs`（new）+ `crates/wxml-delivery/tests/native_delivery.rs`（new）`legacy_migration_succeeds_once_and_keeps_legacy_read_only` | NF-10 | 无 |
+| F3-09 | legacy current → 原生：成功一次切换、旧树字节不变、legacy 标记；switch 前失败/中断旧 current 与旧树不变且无 native state；switch 后失败（含进程崩溃）对已验证 target 前滚补 state，永不恢复/执行 Node | `crates/wxml-delivery/tests/f3_kill_window.rs`（new，真实 CLI SIGKILL）+ `crates/wxml-delivery/tests/native_rollback.rs`（new）+ `crates/wxml-delivery/tests/native_delivery.rs`（new）`legacy_migration_succeeds_once_and_keeps_legacy_read_only` | NF-10 | `crates/wxml-delivery/tests/f3_acceptance/legacy.rs` 的 `InstallHooks` seam（v1 fixture） |
 | F3-10 | 篡改检测：archive SRI/SHA-256、manifest、逐文件哈希、额外/缺失文件、许可文件；全部在激活前拒绝，current 不变 | `crates/wxml-delivery/tests/installer_security.rs`（extend）+ `crates/wxml-delivery/tests/provisioning.rs`（new） | NF-09/10 | `rejects_a_bad_archive_hash` 等仅 v1 |
 | F3-11 | 恶意归档：绝对路径、`..`、symlink、hardlink、FIFO/设备、重复、超长/超大；拒绝且不越界解包 | `crates/wxml-delivery/tests/installer_security.rs`（extend）`archive_rejects_traversal_links_and_budget` | NF-09/10 | 仅部分 PAX/redirect 用例 |
 | F3-12 | 离线 fail-closed：无缓存安装失败且无网络；有效缓存可安装/升级/回滚；损坏缓存失败；代理 sink 无连接 | `crates/wxml-delivery/tests/native_delivery.rs`（new）+ `scripts/verify-no-node.sh`（new） | NF-04/08 | `offline_install...` 仅 v1 |
@@ -1316,13 +1327,14 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 - `closed`：§9.2 的全部子条件都有可复查证据，且证据来自真实包/真实 CLI，或该条件本身就是
   对 legacy/fixture/journal 状态的处理；fixture/seam/单点变异在“关键证据”列标注。
 - `partial`：已有 PASS 证据，但至少一个子条件只有 fixture/seam/单点变异，或尚未执行。
-- `blocked`：缺少合同要求的机制/环境（`strace`、Zed UI、生产 failpoint），不能用辅助证据替代。
+- `blocked`：缺少合同要求的机制/环境（`strace`/ptrace、Zed UI 等），不能用辅助证据替代。
 
 `partial` 行不是“没有证据”；它们已有下表所列 PASS 证据，但仍有合同子条件未满足，不能按
-`PASS` 字样关闭。审计基线：证据运行 HEAD 为 `561b00a`（real release）和 `0b3b3da`
-（acceptance）；本表在 `0ca4375` 工作树复核。`crates/wxml-delivery/src` 在
-`561b00a..0ca4375` 无变化；包内 `bin/wxml-lsp` 是 2026-11-19 23:21 从含并发未提交改动的
-工作树构建，不是任一 HEAD 的逐字节重建，F3-03/04 的包/安装结论不声明该二进制的来源可复现。
+`PASS` 字样关闭。审计基线：逐项审计证据运行 HEAD 为 `561b00a`（real release）和 `0b3b3da`
+（acceptance），在 `0ca4375` 工作树复核；F3-06/F3-09 的进程级 kill-window 证据运行于
+`28c5e18`。`crates/wxml-delivery/src` 在 `561b00a..28c5e18` 无变化；包内 `bin/wxml-lsp`
+是 2026-11-19 23:21 从含并发未提交改动的工作树构建，不是任一 HEAD 的逐字节重建，F3-03/04
+的包/安装结论不声明该二进制的来源可复现。
 
 | ID | 结果 | 关键证据（文件 + 测试/命令） | 仍缺 |
 | --- | --- | --- | --- |
@@ -1331,10 +1343,10 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 | F3-03 | **closed** | ` crates/wxml-delivery/tests/f3_real_release/package.rs` 的 `two_real_release_builds_are_byte_identical` 与 `pinned_real_assets_provision_from_the_frozen_lock`；两次构建 archive/manifest/index/SHA256SUMS 逐字节一致；157 文件、无 `node_modules`/JS/`wxml-type-backend`、`SHA256SUMS` 与许可文件齐全 | 无合同项。包内 `bin/wxml-lsp` 非 HEAD 可复现构建（见审计基线）；无签名/发布通道（非 F3-03 条件）。 |
 | F3-04 | **closed** | ` crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `real_release_install_verify_current_env_without_node`：空根安装、`verify_tree_v2`、原子 `current`、`state.json`、空 `tmp/`、`verify` 通过 | 无合同项；同样受 dirty-tree `bin/wxml-lsp` 说明限制。 |
 | F3-05 | **closed** | ` crates/wxml-delivery/tests/f3_acceptance/package_guards.rs` 的 `f3_05_missing_assets_and_probe_failure_fail_before_activation`（缺 stdlib、缺 typings、探针输出错误三例）；archive SRI 由 ` crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `tampered_real_release_archive_fails_before_activation` 覆盖 | 无合同项。三例是真实包 + 单点受控变异，不是已发布缺陷包；archive SRI 只在空根验证。 |
-| F3-06 | **partial** | ` crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `real_release_upgrade_rollback_and_recover_without_node`（真实 N1→N2→N1、N1 树不变）；` crates/wxml-delivery/tests/f3_acceptance/transactions.rs` 的 `f3_06_real_upgrade_and_rollback_failpoint_windows`（`InstallHooks` 四窗口）；` crates/wxml-delivery/tests/native_rollback.rs` 的 `native_after_state_write_rolls_forward_without_switching_back`（fixture） | 第二个真实 release（N2 是 N1 生产二进制同长度版本常量重标）；生产 failpoint seam 下的精确进程级 `SIGKILL`（switch 前/后），当前 `wxml-lsp-install` 只暴露 `NoHooks`。 |
+| F3-06 | **partial** | ` crates/wxml-delivery/tests/f3_kill_window.rs` + `tests/f3_kill_window/**` + `scripts/f3-kill-window.sh`：真实 `wxml-lsp-install` 在 U1/U3/U5/U5-durable/U6 被外部 SIGKILL（Linux x86_64、opt-in），杀后由真实 `recover`/`verify` 证明 U5/U5-durable 前滚、U6 幂等确认、U1/U3 不自动激活；` crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `real_release_upgrade_rollback_and_recover_without_node`（真实 N1→N2→N1、N1 树不变）；` crates/wxml-delivery/tests/f3_acceptance/transactions.rs` 的 `f3_06_real_upgrade_and_rollback_failpoint_windows`（`InstallHooks` 四窗口，覆盖进程存活的 AfterSwitch 切回分支）；` crates/wxml-delivery/tests/native_rollback.rs` 的 `native_after_state_write_rolls_forward_without_switching_back`（fixture） | 第二个真实 release（N2 是 N1 生产二进制同长度版本常量重标，不是独立发布产物）；这是 provenance 子条件，`SIGKILL` 窗口不能替代。进程级附加窗口 U0/U2/U4/U7/U8 未覆盖（plan 的 P1/P2，不在本行合同子条件内）。 |
 | F3-07 | **closed** | ` crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `real_release_upgrade_rollback_and_recover_without_node`：`rollback --to 0.1.0 --offline`，`current=0.1.0`、`state.previous=0.2.0`，N1/N2 指纹不变；` crates/wxml-delivery/tests/native_delivery.rs` 的 `rollback_refuses_legacy_and_tampered_native_targets`（fixture 负例） | 无合同项。真实包只跑正向 rollback；“拒绝篡改目标”的完整校验负例是 fixture。 |
 | F3-08 | **closed** | ` crates/wxml-delivery/tests/f3_acceptance/legacy.rs` 的 `f3_08_09_15_legacy_migration_inert_env_and_v1_rollback`：`rollback --to 0.0.9` 拒绝，v1 树/current/state 不变，tripwire 未触发 | 无合同项。v1 包是生产 v1 packager 生成的 fixture，不是历史发布包（已标注）。 |
-| F3-09 | **partial** | ` crates/wxml-delivery/tests/f3_acceptance/legacy.rs` 的 `f3_08_09_15_legacy_migration_inert_env_and_v1_rollback`：真实 N1 + v1 fixture 的成功迁移、缺 typings 失败、`AfterRename`/`AfterSwitch` seam | 精确 pre/post-switch 进程 `SIGKILL`（无生产 seam）；真实 legacy 发布包；seam 是库级 `InstallHooks`，不是 CLI 进程中断。 |
+| F3-09 | **partial** | ` crates/wxml-delivery/tests/f3_kill_window.rs` + `tests/f3_kill_window/**`：真实 `wxml-lsp-install` 在 L3（switch 前）/L4（switch 后）被外部 SIGKILL；L3 后 `current`/旧树不变且无 state，L4 后 `recover` 前滚并写 `state=active:0.1.0/previous:null`，legacy marker 未执行；` crates/wxml-delivery/tests/f3_acceptance/legacy.rs` 的 `f3_08_09_15_legacy_migration_inert_env_and_v1_rollback`：真实 N1 + v1 fixture 的成功迁移、缺 typings 失败、`AfterRename`/`AfterSwitch` seam；` crates/wxml-delivery/tests/native_rollback.rs` 的 `post_switch_failures_roll_forward_legacy_migration`（fixture） | 真实 legacy 发布包（legacy current 是生产 v1 packager 生成的 fixture，不是历史发布包）；这是包身份子条件，`SIGKILL` 状态机证据不能替代。进程级附加窗口 L0/L1/L2/L5/L6 未覆盖（plan 的 P1，不在本行合同子条件内）。 |
 | F3-10 | **closed** | ` crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `tampered_real_release_archive_fails_before_activation`；` crates/wxml-delivery/tests/f3_acceptance/package_guards.rs` 的 `f3_10_manifest_file_license_extra_missing_tamper_fails_before_activation`（manifest/逐文件/许可/额外/缺失/缺失许可六类） | 无合同项。六类是真实包 + 单点受控变异；各变体重算 index SRI，失败发生在树校验。 |
 | F3-11 | **closed** | ` crates/wxml-delivery/tests/f3_acceptance/package_guards.rs:267` 的 `f3_11_malicious_real_archive_shapes_fail_before_activation`：15 类真实 `install --from-dir` 恶意归档（绝对路径、FIFO/字符/块设备、重复项、GNU long-name >4096 B、PAX 扩展预算 128 KiB > 64 KiB、PAX size 覆盖、PAX 绝对路径、PAX 超长路径、traversal/symlink/hardlink/malformed PAX/per-entry budget）全部在激活前拒绝，无 current/versions/state。 | 无合同项。归档构造是测试侧受控输入，不是已发布恶意包。 |
 | F3-12 | **closed** | ` crates/wxml-delivery/tests/f3_acceptance/cache.rs:34` 的 `f3_12_real_cache_driven_upgrade_rollback_and_corrupt_fail_closed`：真实 N1 安装 + 缓存、N2 缓存预热、离线缓存驱动升级/回滚、损坏 archive/index/缺 index fail closed、proxy sink 0 连接；` crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `real_release_offline_cache_reinstall_and_fail_closed` 覆盖重装/空缓存。 | 无合同项。内核 `connect` 级审计属于 F3-02；本项只要求网络命名空间/代理 sink。 |
@@ -1347,8 +1359,12 @@ npm tarball 的 provisioning 解包器可以使用更宽松的 `package/` 前缀
 `closed`。后续 `50e4a21`/`040898c` 补上了缓存驱动 upgrade/rollback、恶意归档完整形态、Zed
 legacy 变量移除、activated 幂等与 `WXML_LSP_BIN` 升级/回滚优先级，因此 F3-11/12/15/16
 升为 `closed`。`f2952c2` 的 ptrace exec audit 补齐 F3-02 的 execve 证据，因此升为
-**13 closed / 2 partial / 1 blocked**：F3-06/09 仍缺真实第二版本与进程级 SIGKILL，F3-14
-缺 Zed UI。F3-05/10 的单点变异性质保留并已标注，不作为“真实发布缺陷”证据。
+**13 closed / 2 partial / 1 blocked**：`28c5e18` 的 `f3_kill_window` 已把 F3-06/F3-09 的
+switch 前/后进程级 SIGKILL 子条件补齐（Linux x86_64、opt-in；U1/U3/U5/U5-durable/U6 与
+L3/L4）；F3-06 仍缺真实第二版本（N2 provenance），F3-09 仍缺真实 legacy 发布包，F3-14
+缺 Zed UI。崩溃后的前滚/切回语义裁决见
+[`2026-11-20-tsgo-f3-crash-semantics.md`](../evidence/2026-11-20-tsgo-f3-crash-semantics.md)。
+F3-05/10 的单点变异性质保留并已标注，不作为“真实发布缺陷”证据。
 
 ## 10. 未决阻塞与不承诺事项
 
@@ -1356,7 +1372,7 @@ legacy 变量移除、activated 幂等与 `WXML_LSP_BIN` 升级/回滚优先级�
 
 | ID | 2026-11-17 状态 | 阻塞 | 影响 | 退出条件 |
 | --- | --- | --- | --- | --- |
-| B1 | **PARTIAL**（2026-11-20：F3 13 closed / 2 partial / 1 blocked） | v2 库与 `wxml-lsp-install` 的 install/verify/upgrade/rollback/recover、本地 `--from-dir` 获取、state/journal、legacy 读取器已实现；F3-01/02/03/04/05/07/08/10/11/12/13/15/16 已按证据关闭；F3-14 blocked，F3-06/09 partial；Zed UI、生产 failpoint 与真实第二版本仍缺 | 生产 native 安装/升级/回滚仍未全部验收 | D 包 Rust 实现并关闭 F3-01～F3-12；fixture 不能替代真实资产 |
+| B1 | **PARTIAL**（2026-11-20：F3 13 closed / 2 partial / 1 blocked） | v2 库与 `wxml-lsp-install` 的 install/verify/upgrade/rollback/recover、本地 `--from-dir` 获取、state/journal、legacy 读取器已实现；F3-01/02/03/04/05/07/08/10/11/12/13/15/16 已按证据关闭；F3-14 blocked，F3-06/09 partial；Zed UI、真实第二版本与真实 legacy 发布包仍缺（进程级 SIGKILL 已由 `28c5e18` 覆盖） | 生产 native 安装/升级/回滚仍未全部验收 | D 包 Rust 实现并关闭 F3-01～F3-12；fixture 不能替代真实资产 |
 | B2 | **PARTIAL**（spike clean-env） | 无 Node PATH、offline、ptrace exec 审计已在 spike 上执行；Rust build/test/CI/Zed 未在 clean-env 运行；F3-01/02 已关闭 | 生产无 Node 门禁未关闭 | Rust 构建/测试/发布/CI/Zed 在无 Node 环境通过 F3-01/02/12 |
 | B3 | **BLOCKED**（2026-11-20：Linux x86_64 ABI 已测） | 平台矩阵未测试；F3-13 已记录 Linux x86_64 的 `readelf`/`ldd`/GLIBC_2.39，其他平台仍无证据 | 只能宣称 Linux x86_64；aarch64/macOS/Windows/musl 无证据 | F3-13 记录 Rust glibc/ABI；其他平台保持“不支持” |
 | B4 | **PARTIAL**（2026-11-20：资产/ABI 证据已补） | 真实 tarball 的 SRI/SHA-256/size、122 文件、`lib/tsc` SHA/`--version` 已复核；F3-13 已记录 Rust glibc/ABI；F0 API/AST 握手、`tsc.sig` 用途仍未验证 | 资产身份与 ABI 可用，但安装器未消费真实 API/AST 探针 | F0/F3 安装器消费可重放 SRI/解包/探针/`readelf` 证据 |
