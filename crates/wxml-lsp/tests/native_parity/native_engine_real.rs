@@ -3,16 +3,19 @@
 //! The 2026-11-19 typed-asset slice made real hover and diagnostics available
 //! through `--backend native`. These tests are the native replacements for:
 //!
+//! - `G-P5-E2E-03` / `real_node_expression_and_event_completion_smoke`
 //! - `G-P5-E2E-04` / `real_node_hover_and_diagnostics_smoke`
 //! - `G-P5-E2E-06` / `ac001_page_data_and_jsdoc_hover`
 //! - `G-P5-E2E-07` / `ac002_field_typo_diagnostic_and_fix_clear`
 //! - `G-P5-E2E-08` / `ac003_unicode_and_crlf_positions`
 //! - `G-P5-E2E-09` / `ac011_unknown_owner_degrades_honestly`
 //! - `G-P5-E2E-10` / `ac013_component_properties_hover`
+//! - `G-P5-E2E-11` / `component_behavior_data_and_properties_work_over_stdio`
 //! - `G-P5-E2E-12` / `static_wxs_and_template_semantics_work_over_stdio`
 //! - `G-P5-E2E-13` / `static_wxs_answers_survive_an_unavailable_type_backend`
 //! - `G-P5-E2E-14` / `unsaved_wxs_overlay_updates_static_hover_and_completion`
 //! - `G-P5-E2E-15` / `ac005_loop_scope_typed_locals`
+//! - `G-P5-E2E-16` / `ac006_conditional_union_narrowing`
 //! - `G-P5-E2E-17` / `ac008_alias_project_hover_and_definition`
 //! - `G-P5-E2E-18` / `ac008_multi_view_fixture_isolation`
 //! - `G-P5-E2E-19` / `ac008_simultaneous_views_do_not_pollute_each_other`
@@ -36,9 +39,13 @@ pub(crate) const NATIVE_GATE_FILE: &str =
 
 /// Ledger gate id -> native replacement test.
 ///
-/// All thirteen are `gate_green` in the ledger with recorded opt-in evidence;
+/// All sixteen are `gate_green` in the ledger with recorded opt-in evidence;
 /// this map keeps the exact gate/replacement link checked by `native_gates.rs`.
 pub(crate) const GATE_REPLACEMENTS: &[(&str, &str)] = &[
+    (
+        "G-P5-E2E-03",
+        "native_expression_and_event_completion_smoke",
+    ),
     ("G-P5-E2E-04", "native_hover_and_diagnostics_smoke"),
     ("G-P5-E2E-06", "native_ac001_page_data_and_jsdoc_hover"),
     (
@@ -52,6 +59,10 @@ pub(crate) const GATE_REPLACEMENTS: &[(&str, &str)] = &[
     ),
     ("G-P5-E2E-10", "native_ac013_component_properties_hover"),
     (
+        "G-P5-E2E-11",
+        "native_component_behavior_data_and_properties",
+    ),
+    (
         "G-P5-E2E-12",
         "native_static_wxs_and_template_semantics_work_over_stdio",
     ),
@@ -64,6 +75,7 @@ pub(crate) const GATE_REPLACEMENTS: &[(&str, &str)] = &[
         "native_unsaved_wxs_overlay_updates_static_hover_and_completion",
     ),
     ("G-P5-E2E-15", "native_ac005_loop_scope_typed_locals"),
+    ("G-P5-E2E-16", "native_ac006_conditional_union_narrowing"),
     (
         "G-P5-E2E-17",
         "native_ac008_alias_project_hover_and_definition",
@@ -81,6 +93,10 @@ pub(crate) const GATE_REPLACEMENTS: &[(&str, &str)] = &[
 /// scanned `#[ignore]` set and still requires the remainder to equal the
 /// ledger's 23 old gates exactly.
 pub(crate) const IGNORED_GATE_TESTS: &[(&str, &str)] = &[
+    (
+        NATIVE_GATE_FILE,
+        "native_expression_and_event_completion_smoke",
+    ),
     (NATIVE_GATE_FILE, "native_hover_and_diagnostics_smoke"),
     (NATIVE_GATE_FILE, "native_ac001_page_data_and_jsdoc_hover"),
     (
@@ -95,6 +111,10 @@ pub(crate) const IGNORED_GATE_TESTS: &[(&str, &str)] = &[
     (NATIVE_GATE_FILE, "native_ac013_component_properties_hover"),
     (
         NATIVE_GATE_FILE,
+        "native_component_behavior_data_and_properties",
+    ),
+    (
+        NATIVE_GATE_FILE,
         "native_static_wxs_and_template_semantics_work_over_stdio",
     ),
     (
@@ -106,6 +126,7 @@ pub(crate) const IGNORED_GATE_TESTS: &[(&str, &str)] = &[
         "native_unsaved_wxs_overlay_updates_static_hover_and_completion",
     ),
     (NATIVE_GATE_FILE, "native_ac005_loop_scope_typed_locals"),
+    (NATIVE_GATE_FILE, "native_ac006_conditional_union_narrowing"),
     (
         NATIVE_GATE_FILE,
         "native_ac008_alias_project_hover_and_definition",
@@ -845,6 +866,57 @@ Component({
     gate.tripwire().assert_absent();
 }
 
+/// Returns the error diagnostics in source order.
+fn error_diagnostics(diagnostics: &Value) -> Vec<&Value> {
+    diagnostics
+        .as_array()
+        .unwrap_or_else(|| panic!("diagnostics are not an array: {diagnostics}"))
+        .iter()
+        .filter(|diagnostic| diagnostic["severity"] == json!(1))
+        .collect()
+}
+
+/// Asserts one definition location covers exactly `token` in `script`.
+fn assert_definition_covers(
+    gate_id: &str,
+    gate: &NativeGate,
+    response: &Value,
+    script: &str,
+    token: &str,
+) {
+    let locations = native_lsp::definition_locations(gate_id, token, response);
+    let program = native_lsp::read_project_file(gate, script);
+    let expected_uri = gate.uri(script);
+    let covered = locations
+        .iter()
+        .find_map(|location| {
+            if location["uri"] != json!(expected_uri) {
+                return None;
+            }
+            let line = usize::try_from(location["range"]["start"]["line"].as_u64()?).ok()?;
+            let start = usize::try_from(location["range"]["start"]["character"].as_u64()?).ok()?;
+            let end = usize::try_from(location["range"]["end"]["character"].as_u64()?).ok()?;
+            program.lines().nth(line)?.get(start..end)
+        })
+        .unwrap_or_else(|| {
+            panic!("{gate_id}: no definition in {script} covering {token:?}: {response}")
+        });
+    assert_eq!(
+        covered, token,
+        "{gate_id}: definition range must cover exactly {token:?} in {script}: {response}"
+    );
+}
+
+/// Returns one completion item by exact label.
+fn completion_item<'a>(response: &'a Value, label: &str) -> &'a Value {
+    response["result"]["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("completion without items: {response}"))
+        .iter()
+        .find(|item| item["label"] == json!(label))
+        .unwrap_or_else(|| panic!("no {label:?} completion item: {response}"))
+}
+
 /// G-P5-E2E-13: static WXS answers survive an unavailable type backend.
 #[test]
 #[ignore = "native gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
@@ -1459,6 +1531,238 @@ fn native_ac008_simultaneous_views_do_not_pollute_each_other() {
             "{file}: a clean page produced an error: {diagnostics}"
         );
     }
+
+    session.assert_no_node_exec();
+    session.shutdown();
+    gate.tripwire().assert_absent();
+}
+
+/// G-P5-E2E-03: expression, root, trailing-dot and event completion over stdio.
+#[test]
+#[ignore = "native gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
+fn native_expression_and_event_completion_smoke() {
+    let Some(gate) = NativeGate::require("G-P5-E2E-03") else {
+        return;
+    };
+    gate.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    let text = r#"<view>{{ user.na }}</view><view bindtap="onT" /><view>{{  }}</view><view>{{ user. }}</view>"#;
+    gate.write("pages/index/index.wxml", text);
+    gate.write(
+        "pages/index/index.ts",
+        "Page({ data: { user: { name: 'Ada', age: 36 } }, onTap() {}, onLoad() {} });",
+    );
+    gate.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+
+    let mut session = Session::start(&gate);
+    let uri = gate.uri("pages/index/index.wxml");
+    session.open_wxml(&uri, text, 1);
+
+    let member_position = native_lsp::lsp_position(text, "user.na");
+    let members = session.completion(&uri, (member_position.0, member_position.1 + 7));
+    assert!(
+        completion_labels(&members).contains(&"name"),
+        "{}",
+        session.describe(&members)
+    );
+
+    let handler_position = native_lsp::lsp_position(text, "onT");
+    let handlers = session.completion(&uri, (handler_position.0, handler_position.1 + 3));
+    let handler_labels = completion_labels(&handlers);
+    assert!(
+        handler_labels.contains(&"onTap"),
+        "{}",
+        session.describe(&handlers)
+    );
+    let item = completion_item(&handlers, "onTap");
+    assert_eq!(
+        item["textEdit"]["range"]["start"],
+        json!({"line": handler_position.0, "character": handler_position.1}),
+        "event completion must replace the whole handler token: {}",
+        session.describe(&handlers)
+    );
+
+    let root_position = native_lsp::lsp_position(text, "{{  }}");
+    let roots = session.completion(&uri, (root_position.0, root_position.1 + 3));
+    assert!(
+        completion_labels(&roots).contains(&"user"),
+        "{}",
+        session.describe(&roots)
+    );
+
+    let dot_position = native_lsp::lsp_position(text, "{{ user. }}");
+    let trailing = session.completion(&uri, (dot_position.0, dot_position.1 + 8));
+    assert!(
+        completion_labels(&trailing).contains(&"name"),
+        "{}",
+        session.describe(&trailing)
+    );
+
+    session.assert_no_node_exec();
+    session.shutdown();
+    gate.tripwire().assert_absent();
+}
+
+/// G-P5-E2E-11: Behavior data and properties join the component instance type.
+#[test]
+#[ignore = "native gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
+fn native_component_behavior_data_and_properties() {
+    let Some(gate) = NativeGate::require("G-P5-E2E-11") else {
+        return;
+    };
+    gate.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    gate.write("pages/index/index.wxml", "<card />");
+    gate.write(
+        "pages/index/index.json",
+        r#"{"usingComponents":{"card":"/components/card/card"}}"#,
+    );
+    gate.write("pages/index/index.ts", "Page({ data: {} });");
+    gate.write("components/card/card.json", r#"{"component":true}"#);
+    gate.write(
+        "components/card/card.ts",
+        "Component({
+  behaviors: [Behavior({
+    data: {
+      /** 共享计数 */
+      sharedCount: 3,
+    },
+    properties: {
+      cardTitle: { type: String, optionalTypes: [Number] },
+    },
+  })],
+  data: {},
+});",
+    );
+    let wxml_text = "{{ sharedCount }}{{ cardTitle }}";
+    gate.write("components/card/card.wxml", wxml_text);
+    gate.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+
+    let mut session = Session::start(&gate);
+    let uri = gate.uri("components/card/card.wxml");
+    let diagnostics = session.open_wxml(&uri, wxml_text, 1);
+    assert_eq!(
+        diagnostics,
+        json!([]),
+        "a valid behavior-backed component must publish no diagnostics: {diagnostics}"
+    );
+
+    let shared = native_lsp::lsp_position(wxml_text, "sharedCount");
+    let hover = session.hover(&uri, shared);
+    let hover_text = native_lsp::hover_markdown("G-P5-E2E-11", "behavior data hover", &hover);
+    assert!(
+        hover_text.contains("number"),
+        "sharedCount must be number: {}",
+        session.describe(&hover)
+    );
+    assert!(
+        hover_text.contains("共享计数"),
+        "sharedCount hover must include its JSDoc: {}",
+        session.describe(&hover)
+    );
+
+    let definition = session.definition(&uri, shared);
+    assert_definition_covers(
+        "G-P5-E2E-11",
+        &gate,
+        &definition,
+        "components/card/card.ts",
+        "sharedCount",
+    );
+
+    let title = native_lsp::lsp_position(wxml_text, "cardTitle");
+    let title_hover = session.hover(&uri, title);
+    let title_text =
+        native_lsp::hover_markdown("G-P5-E2E-11", "optionalTypes property hover", &title_hover);
+    assert!(
+        title_text.contains("string | number"),
+        "optionalTypes must compose string | number: {}",
+        session.describe(&title_hover)
+    );
+
+    session.assert_no_node_exec();
+    session.shutdown();
+    gate.tripwire().assert_absent();
+}
+
+/// G-P5-E2E-16: discriminator unions, guards and exact null ranges.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "keeps the frozen AC-006 hover and diagnostic assertions together"
+)]
+#[ignore = "native gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
+fn native_ac006_conditional_union_narrowing() {
+    let Some(gate) = NativeGate::require("G-P5-E2E-16") else {
+        return;
+    };
+    copy_fixture(&gate, "conditional-union");
+    let text = native_lsp::read_project_file(&gate, "pages/index/index.wxml");
+
+    let mut session = Session::start(&gate);
+    let uri = gate.uri("pages/index/index.wxml");
+    let diagnostics = session.open_wxml(&uri, &text, 1);
+    assert_no_status_diagnostic(&diagnostics, "AC-006 conditional union");
+
+    for (marker, target, type_text, documentation) in [
+        (
+            "就绪用户：{{ state.user.name }}",
+            "state.user.name",
+            "string",
+            "用户显示名称",
+        ),
+        ("错误码：{{ state.code }}", "state.code", "number", "错误码"),
+        (
+            "守卫内：{{ maybeUser.name }}",
+            "maybeUser.name",
+            "string",
+            "用户显示名称",
+        ),
+    ] {
+        let hover = hover_target_end(&mut session, &uri, &text, marker, target);
+        let contents = native_lsp::hover_markdown("G-P5-E2E-16", target, &hover);
+        assert!(
+            contents.contains(type_text),
+            "{target} must be {type_text}: {}",
+            session.describe(&hover)
+        );
+        assert!(
+            contents.contains(documentation),
+            "{target} must include {documentation:?}: {}",
+            session.describe(&hover)
+        );
+    }
+
+    let errors = error_diagnostics(&diagnostics);
+    assert_eq!(
+        errors.len(),
+        2,
+        "the fixture has exactly two negatives: {diagnostics}"
+    );
+    assert_error_at(
+        &diagnostics,
+        &text,
+        "非法年龄：{{ state.user.age }}",
+        "age",
+        "AC-006 discriminator miss",
+    );
+    assert_error_at(
+        &diagnostics,
+        &text,
+        "守卫外：{{ maybeUser.name }}",
+        "maybeUser",
+        "AC-006 outside-guard null",
+    );
+    assert!(
+        errors.iter().any(|error| error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("null"))),
+        "the outside-guard error must name null: {diagnostics}"
+    );
 
     session.assert_no_node_exec();
     session.shutdown();
