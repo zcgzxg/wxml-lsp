@@ -31,12 +31,18 @@ use wxml_delivery::verify_v2::{collect_tree, verify_tree_v2};
 
 pub use crate::real_asset_support::{TestDir, Tripwires, mode_of};
 pub use crate::release::{
-    BUILT_AT, BuiltRelease, PROTOCOL, Provisioned, VERSION_N1, VERSION_N2, build_release,
-    clean_command, expected, installed_fingerprint, provision_real_assets, retarget_binary_version,
+    BUILT_AT, BuiltRelease, PROTOCOL, VERSION_N1, VERSION_N2, build_release, clean_command,
+    expected, installed_fingerprint, provision_real_assets, retarget_binary_version,
     write_input_tree,
 };
 
 const INSTALL_BIN_ENV: &str = "WXML_F3_INSTALL_BIN";
+/// Opt-in path to a channel produced by two real `scripts/build-release.sh`
+/// builds (0.1.0 and 0.2.0). When set, the suite uses those packages verbatim
+/// instead of retargeting the N1 binary to N2.
+pub const REAL_CHANNEL_ENV: &str = "WXML_F3_REAL_CHANNEL";
+/// Hard gate: refuse the retargeted-N2 fallback.
+pub const REQUIRE_REAL_N2_ENV: &str = "WXML_REQUIRE_REAL_N2";
 
 /// Legacy package version used by the v1 migration fixtures.
 pub const LEGACY_VERSION: &str = "0.0.9";
@@ -58,30 +64,83 @@ pub fn fixture(id: &str, detail: impl std::fmt::Display) {
     println!("F3-EVIDENCE: {id} FIXTURE :: {detail}");
 }
 
+/// Returns true only for `1`/`true`; other values fail closed.
+fn strict_flag(name: &str) -> bool {
+    match std::env::var(name) {
+        Err(std::env::VarError::NotPresent) => false,
+        Ok(value) if value.is_empty() => false,
+        Ok(value) if value == "1" || value.eq_ignore_ascii_case("true") => true,
+        Ok(value) => panic!("{name} must be unset, empty, `1` or `true`; got `{value}`"),
+        Err(std::env::VarError::NotUnicode(_)) => panic!("{name} must be valid UTF-8"),
+    }
+}
+
 /// Shared, process-wide real package channel.
 ///
-/// Building the 42 MB real package twice is the expensive part of this suite.
 /// All real tests read the same immutable channel; every install uses a
-/// separate private root. The directory intentionally outlives `TestDir` so a
-/// test cannot pull the channel out from under another test.
+/// separate private root. A channel built inside the suite intentionally
+/// outlives its `TestDir`; an imported real channel needs no such anchor.
 pub struct SharedChannel {
-    /// Read-only workspace holding the provisioned cache and release channel.
-    pub base: &'static TestDir,
-    /// Provisioned pinned asset cache.
-    pub provisioned: Provisioned,
-    /// Input tree consumed by the production packager.
-    pub input_tree: PathBuf,
+    /// Keeps an internally built channel alive for the process lifetime.
+    _base: Option<&'static TestDir>,
     /// Release channel containing both N1 and N2.
     pub channel: PathBuf,
     /// Real N1 release.
     pub n1: BuiltRelease,
-    /// N1 payload with only the two Rust version constants retargeted to N2.
+    /// Real N2 release when [`REAL_CHANNEL_ENV`] is set; otherwise the N1
+    /// payload with only the two Rust version constants retargeted.
     pub n2: BuiltRelease,
+    /// True only when N1 and N2 came from independent real builds.
+    pub n2_is_real: bool,
 }
 
 static CHANNEL: OnceLock<Option<SharedChannel>> = OnceLock::new();
 
+/// Imports one release from a channel produced by `scripts/build-release.sh`.
+fn import_real_release(channel: &Path, version: &str) -> BuiltRelease {
+    let release_name = format!("wxml-lsp-{version}-{NATIVE_PACKAGE_PLATFORM}");
+    let release_dir = channel.join(&release_name);
+    let archive = channel.join(format!("{release_name}.tar.gz"));
+    let sidecar = channel.join(format!("{release_name}.tar.gz.sha256"));
+    let index = channel.join("index.json");
+    let sums = channel.join("SHA256SUMS");
+    let manifest = read_manifest_v2(&release_dir, expected(version))
+        .unwrap_or_else(|error| panic!("import {version} manifest: {error}"));
+    assert_eq!(manifest.package_version, version);
+    let parsed = read_index_v2(&index).unwrap_or_else(|error| panic!("import index: {error}"));
+    let record = parsed
+        .find(version, NATIVE_PACKAGE_PLATFORM)
+        .unwrap_or_else(|error| panic!("import index has no {version} release: {error}"));
+    record
+        .verify_archive(&archive)
+        .unwrap_or_else(|error| panic!("import {version} archive: {error}"));
+    let archive_sha256 = sha256_file(&archive).expect("imported archive sha256");
+    assert_eq!(record.sha256, archive_sha256);
+    assert_eq!(
+        record.size,
+        fs::metadata(&archive).expect("imported archive size").len()
+    );
+    BuiltRelease {
+        output: channel.to_path_buf(),
+        release_dir: release_dir.clone(),
+        archive,
+        sidecar,
+        index,
+        sums,
+        archive_sha256,
+        archive_integrity: record.archive_integrity.clone(),
+        archive_size: record.size,
+        manifest_sha256: sha256_file(&release_dir.join("manifest.json"))
+            .expect("imported manifest sha256"),
+    }
+}
+
 /// Resolves the opt-in real inputs and builds one shared N1/N2 channel.
+///
+/// With [`REAL_CHANNEL_ENV`] set, the channel is imported verbatim and both
+/// releases must be independently built (different archive and `bin/wxml-lsp`
+/// SHA-256). Otherwise a channel is built in-process and N2 is the retargeted
+/// N1 binary; [`REQUIRE_REAL_N2_ENV`] fails closed instead of using it.
 ///
 /// Returns `None` when the pinned inputs are absent and the hard gate is off.
 /// With `WXML_REQUIRE_REAL_ENGINE=1` a missing input panics inside
@@ -89,6 +148,68 @@ static CHANNEL: OnceLock<Option<SharedChannel>> = OnceLock::new();
 pub fn shared_channel(test: &str) -> Option<&'static SharedChannel> {
     CHANNEL
         .get_or_init(|| {
+            if let Some(value) = std::env::var_os(REAL_CHANNEL_ENV) {
+                assert!(
+                    !value.is_empty(),
+                    "{REAL_CHANNEL_ENV} must not be empty when set"
+                );
+                let channel = fs::canonicalize(Path::new(&value)).unwrap_or_else(|error| {
+                    panic!(
+                        "{REAL_CHANNEL_ENV}={} is invalid: {error}",
+                        Path::new(&value).display()
+                    )
+                });
+                assert!(channel.is_dir(), "{} is not a directory", channel.display());
+                let n1 = import_real_release(&channel, VERSION_N1);
+                let n2 = import_real_release(&channel, VERSION_N2);
+                let n1_lsp =
+                    sha256_file(&n1.release_dir.join("bin/wxml-lsp")).expect("N1 lsp sha256");
+                let n2_lsp =
+                    sha256_file(&n2.release_dir.join("bin/wxml-lsp")).expect("N2 lsp sha256");
+                let n1_install = sha256_file(&n1.release_dir.join("bin/wxml-lsp-install"))
+                    .expect("N1 installer sha256");
+                let n2_install = sha256_file(&n2.release_dir.join("bin/wxml-lsp-install"))
+                    .expect("N2 installer sha256");
+                assert_ne!(
+                    n1.archive_sha256, n2.archive_sha256,
+                    "real N1/N2 archives must differ"
+                );
+                assert_ne!(
+                    n1_lsp, n2_lsp,
+                    "real N1/N2 bin/wxml-lsp must differ; N2 must not be a patched N1"
+                );
+                assert_ne!(
+                    n1_install, n2_install,
+                    "real N1/N2 bin/wxml-lsp-install must differ"
+                );
+                assert_ne!(
+                    n1.manifest_sha256, n2.manifest_sha256,
+                    "real N1/N2 manifests must differ"
+                );
+                println!(
+                    "REAL-CHANNEL: channel={} n1_archive={} n2_archive={} n1_lsp={} n2_lsp={} \
+                     n1_install={} n2_install={}",
+                    channel.display(),
+                    n1.archive_sha256,
+                    n2.archive_sha256,
+                    n1_lsp,
+                    n2_lsp,
+                    n1_install,
+                    n2_install
+                );
+                return Some(SharedChannel {
+                    _base: None,
+                    channel,
+                    n1,
+                    n2,
+                    n2_is_real: true,
+                });
+            }
+            assert!(
+                !strict_flag(REQUIRE_REAL_N2_ENV),
+                "{REQUIRE_REAL_N2_ENV}=1 requires {REAL_CHANNEL_ENV} to point at two real \
+                 release builds; the in-process N2 is a retargeted N1 binary"
+            );
             let inputs = crate::release::resolve_real_inputs(test)?;
             let base: &'static TestDir = Box::leak(Box::new(TestDir::new("f3-acceptance-shared")));
             let provisioned = provision_real_assets(base, &inputs);
@@ -107,19 +228,18 @@ pub fn shared_channel(test: &str) -> Option<&'static SharedChannel> {
             }
             let n2 = build_release(&channel, &n2_tree, &provisioned, VERSION_N2, true);
             println!(
-                "SHARED-CHANNEL: root={} n1={} n2={} install={}",
+                "SHARED-CHANNEL: root={} n1={} n2={} install={} (N2 retargeted fixture)",
                 base.path().display(),
                 n1.archive_sha256,
                 n2.archive_sha256,
                 inputs.install_bin.display()
             );
             Some(SharedChannel {
-                base,
-                provisioned,
-                input_tree,
+                _base: Some(base),
                 channel,
                 n1,
                 n2,
+                n2_is_real: false,
             })
         })
         .as_ref()

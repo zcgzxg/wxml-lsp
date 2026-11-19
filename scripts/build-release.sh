@@ -35,6 +35,11 @@ Artifacts:
 
 Options:
   --output DIR       artifact directory outside the repository (required)
+  --version V        strict semver release version (default: the workspace
+                     Cargo.toml version). When set, the build uses a clean
+                     `git archive HEAD` source tree with Cargo.toml and
+                     Cargo.lock retargeted to V before compiling; the
+                     repository files are never modified.
   --cache DIR        content-addressed asset cache (default:
                      $WXML_BUILD_CACHE/assets-cache)
   --from-dir DIR     directory holding the exact locked tarball names; used
@@ -71,6 +76,14 @@ note() {
     printf '%s\n' "$*"
 }
 
+require_tool() {
+    command -v "$1" >/dev/null 2>&1 || die "required tool \`$1\` was not found"
+}
+
+is_strict_semver() {
+    [[ "$1" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]
+}
+
 shell_quote() {
     printf '%q' "$1"
 }
@@ -84,6 +97,7 @@ skip_zed=0
 dry_run=0
 online=0
 protocol_version=""
+requested_version=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --output)
@@ -93,6 +107,15 @@ while [ "$#" -gt 0 ]; do
             ;;
         --output=*)
             output="${1#*=}"
+            shift
+            ;;
+        --version)
+            [ "$#" -ge 2 ] || die "--version requires a value"
+            requested_version="$2"
+            shift 2
+            ;;
+        --version=*)
+            requested_version="${1#*=}"
             shift
             ;;
         --cache|--assets-cache)
@@ -165,13 +188,61 @@ case "$output_abs/" in
     "$repo_real/"*) die "--output must be outside the repository" ;;
 esac
 
-version="$(awk -F'"' '/^version = "/{print $2; exit}' "$repo_root/Cargo.toml")"
-[ -n "$version" ] || die "could not read the workspace version"
-[[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]*$ ]] || die "unsafe workspace version"
+workspace_version="$(awk -F'"' '/^version = "/{print $2; exit}' "$repo_root/Cargo.toml")"
+[ -n "$workspace_version" ] || die "could not read the workspace version"
+[[ "$workspace_version" =~ ^[0-9A-Za-z][0-9A-Za-z.+_-]*$ ]] || die "unsafe workspace version"
+version="$workspace_version"
+if [ -n "$requested_version" ]; then
+    is_strict_semver "$requested_version" \
+        || die "--version must be a strict semantic version, got \`$requested_version\`"
+    version="$requested_version"
+fi
 
-manifest_v2="$repo_root/crates/wxml-delivery/src/manifest_v2.rs"
-engine_rs="$repo_root/crates/wxml-lsp/src/backend_tsgo/engine.rs"
-assets_lock="$repo_root/assets.lock.json"
+cache_root="${WXML_BUILD_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/wxml-lsp-release}"
+case "$(realpath -m -- "$cache_root")/" in
+    "$repo_real/"*) die "build and cache directories must be outside the repository: $cache_root" ;;
+esac
+
+# A version override is a real rebuild from a clean committed tree: never a
+# binary patch and never an edit of the repository's Cargo files. The staged
+# tree rewrites only the workspace package version, which Cargo compiles into
+# `wxml-lsp --version` and the v2 manifest/index.
+source_root="$repo_root"
+source_stage=""
+if [ -n "$requested_version" ] && [ "$dry_run" -eq 0 ]; then
+    require_tool git
+    require_tool tar
+    mkdir -p "$cache_root"
+    source_stage="$(mktemp -d "$cache_root/source-$version-XXXXXXXX")"
+    trap 'rm -rf -- "${source_stage:-}"' EXIT
+    git -C "$repo_root" archive --format=tar HEAD | tar -x -C "$source_stage"
+    if [ "$version" != "$workspace_version" ]; then
+        sed -i "0,/^version = \"$workspace_version\"\$/s//version = \"$version\"/" \
+            "$source_stage/Cargo.toml"
+        grep -qx "version = \"$version\"" "$source_stage/Cargo.toml" \
+            || die "could not retarget the staged workspace version"
+        workspace_members="$(grep -c '^name = "wxml-' "$source_stage/Cargo.lock")"
+        awk -v old="$workspace_version" -v new="$version" -v expected="$workspace_members" '
+            /^\[\[package\]\]$/ { in_workspace = 0 }
+            /^name = "wxml-/ { in_workspace = 1 }
+            in_workspace && $0 == "version = \"" old "\"" {
+                print "version = \"" new "\""
+                in_workspace = 0
+                replaced++
+                next
+            }
+            { print }
+            END { if (replaced != expected) exit 1 }
+        ' "$source_stage/Cargo.lock" > "$source_stage/Cargo.lock.release"
+        mv "$source_stage/Cargo.lock.release" "$source_stage/Cargo.lock"
+    fi
+    source_root="$source_stage"
+    note "source: clean git archive HEAD at $source_root (release version $version)"
+fi
+
+manifest_v2="$source_root/crates/wxml-delivery/src/manifest_v2.rs"
+engine_rs="$source_root/crates/wxml-lsp/src/backend_tsgo/engine.rs"
+assets_lock="$source_root/assets.lock.json"
 manifest_protocol="$(sed -n 's/^pub const SUPPORTED_NATIVE_PROTOCOL_VERSIONS: &\[u64\] = &\[\([0-9][0-9]*\)\];$/\1/p' \
     "$manifest_v2" | head -n1)"
 engine_protocol="$(sed -n 's/^const NATIVE_PROTOCOL_VERSION: u64 = \([0-9][0-9]*\);$/\1/p' \
@@ -197,7 +268,6 @@ case "$(uname -m)" in
 esac
 platform="linux-x86_64"
 
-cache_root="${WXML_BUILD_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/wxml-lsp-release}"
 rust_target="${CARGO_TARGET_DIR:-$cache_root/cargo-target}"
 zed_target="${ZED_CARGO_TARGET_DIR:-$cache_root/zed-target}"
 if [ -z "$assets_cache" ]; then
@@ -226,10 +296,6 @@ else
     built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 fi
 
-require_tool() {
-    command -v "$1" >/dev/null 2>&1 || die "required tool \`$1\` was not found"
-}
-
 check_prerequisites() {
     require_tool cargo
     require_tool realpath
@@ -242,7 +308,7 @@ check_prerequisites() {
     [ -f "$assets_lock" ] || die "missing assets.lock.json"
     [ -f "$manifest_v2" ] || die "missing native manifest source"
     [ -f "$engine_rs" ] || die "missing native engine source"
-    [ -f "$repo_root/editors/zed/extension.toml" ] || die "missing Zed manifest"
+    [ -f "$source_root/editors/zed/extension.toml" ] || die "missing Zed manifest"
     if [ -z "$zed_wasm" ] && [ "$skip_zed" -eq 0 ] && command -v rustup >/dev/null 2>&1; then
         rustup target list --installed | grep -qx 'wasm32-wasip2' \
             || die "rustup target wasm32-wasip2 is not installed (or pass --zed-wasm)"
@@ -298,6 +364,7 @@ cleanup() {
         [ "$status" -eq 0 ] && status=1
     fi
     rm -rf "$stage_root"
+    [ -z "$source_stage" ] || rm -rf "$source_stage"
     exit "$status"
 }
 trap cleanup EXIT
@@ -332,6 +399,7 @@ fi
 
 note "building Rust release binaries (version $version, $platform)"
 CARGO_TARGET_DIR="$rust_target" cargo build --release --locked "${offline_flag[@]}" \
+    --manifest-path "$source_root/Cargo.toml" \
     -p wxml-lsp -p wxml-delivery
 install -m 0755 "$rust_target/release/wxml-lsp" "$stage/bin/wxml-lsp"
 install -m 0755 "$rust_target/release/wxml-lsp-install" "$stage/bin/wxml-lsp-install"
@@ -341,19 +409,19 @@ note "building Zed extension (wasm32-wasip2)"
 if [ -n "$zed_wasm" ]; then
     install -m 0644 "$zed_wasm" "$stage/zed-extension/extension.wasm"
 else
-    CARGO_TARGET_DIR="$zed_target" cargo build --manifest-path "$repo_root/editors/zed/Cargo.toml" \
+    CARGO_TARGET_DIR="$zed_target" cargo build --manifest-path "$source_root/editors/zed/Cargo.toml" \
         --release --target wasm32-wasip2 --locked "${offline_flag[@]}"
     wasm="$zed_target/wasm32-wasip2/release/zed_wxml.wasm"
     [ -f "$wasm" ] || die "Zed extension build produced no zed_wxml.wasm"
     install -m 0644 "$wasm" "$stage/zed-extension/extension.wasm"
 fi
-install -m 0644 "$repo_root/editors/zed/extension.toml" "$stage/zed-extension/extension.toml"
-cp -a "$repo_root/editors/zed/languages" "$stage/zed-extension/languages"
+install -m 0644 "$source_root/editors/zed/extension.toml" "$stage/zed-extension/extension.toml"
+cp -a "$source_root/editors/zed/languages" "$stage/zed-extension/languages"
 find "$stage/zed-extension/languages" -type f -exec chmod 0644 {} +
 find "$stage/zed-extension/languages" -type d -exec chmod 0755 {} +
-if [ -f "$repo_root/editors/zed/grammars/wxml.wasm" ]; then
+if [ -f "$source_root/editors/zed/grammars/wxml.wasm" ]; then
     mkdir -p "$stage/zed-extension/grammars"
-    install -m 0644 "$repo_root/editors/zed/grammars/wxml.wasm" \
+    install -m 0644 "$source_root/editors/zed/grammars/wxml.wasm" \
         "$stage/zed-extension/grammars/wxml.wasm"
 else
     note "warning: editors/zed/grammars/wxml.wasm is absent; the package omits the grammar"

@@ -171,6 +171,27 @@ fn commit_evidence(f3: &str, gate: &KillGate, detail: impl std::fmt::Display) {
     );
 }
 
+fn sha256_for_log(path: &Path) -> String {
+    wxml_delivery::manifest::sha256_file(path).expect("binary sha256")
+}
+
+/// F3-06's provenance condition: N2 must be an independently built release,
+/// not the N1 binary with a retargeted version constant.
+fn require_real_n2(channel: &crate::shared::SharedChannel, id: &str) -> bool {
+    if channel.n2_is_real {
+        return true;
+    }
+    support::skip(
+        "F3-06",
+        format!(
+            "{id}: N2 is the retargeted N1 fixture; set {} to a channel built by two real \
+             scripts/build-release.sh runs",
+            crate::shared::REAL_CHANNEL_ENV
+        ),
+    );
+    false
+}
+
 // ---------------------------------------------------------------------------
 // Capability and fixture-only control
 // ---------------------------------------------------------------------------
@@ -323,6 +344,20 @@ fn f3_06_real_cli_sigkill_upgrade_before_switch() {
         support::skip("F3-06", format!("U3: {REAL_SKIP}"));
         return;
     };
+    if !require_real_n2(channel, "U3") {
+        return;
+    }
+    support::evidence(
+        "F3-06",
+        "PROVENANCE",
+        format!(
+            "independent real builds: N1 archive={} lsp={}; N2 archive={} lsp={}",
+            channel.n1.archive_sha256,
+            sha256_for_log(&channel.n1.release_dir.join("bin/wxml-lsp")),
+            channel.n2.archive_sha256,
+            sha256_for_log(&channel.n2.release_dir.join("bin/wxml-lsp")),
+        ),
+    );
     let fixture = Fixture::new("f3-kill-u3");
     let root = fixture.root("root");
     assert_success(
@@ -432,6 +467,9 @@ fn f3_06_real_cli_sigkill_upgrade_after_tree_rename() {
         support::skip("F3-06", format!("U1: {REAL_SKIP}"));
         return;
     };
+    if !require_real_n2(channel, "U1") {
+        return;
+    }
     let fixture = Fixture::new("f3-kill-u1");
     let root = fixture.root("root");
     assert_success(
@@ -524,6 +562,9 @@ fn f3_06_real_cli_sigkill_upgrade_after_switch() {
         support::skip("F3-06", format!("U5: {REAL_SKIP}"));
         return;
     };
+    if !require_real_n2(channel, "U5") {
+        return;
+    }
     let fixture = Fixture::new("f3-kill-u5");
     let root = fixture.root("root");
     assert_success(
@@ -614,6 +655,9 @@ fn f3_06_real_cli_sigkill_upgrade_after_durable_switch() {
         support::skip("F3-06", format!("U5-durable: {REAL_SKIP}"));
         return;
     };
+    if !require_real_n2(channel, "U5-durable") {
+        return;
+    }
     let fixture = Fixture::new("f3-kill-u5d");
     let root = fixture.root("root");
     assert_success(
@@ -702,6 +746,9 @@ fn f3_06_real_cli_sigkill_upgrade_after_state_write() {
         support::skip("F3-06", format!("U6: {REAL_SKIP}"));
         return;
     };
+    if !require_real_n2(channel, "U6") {
+        return;
+    }
     let fixture = Fixture::new("f3-kill-u6");
     let root = fixture.root("root");
     assert_success(
@@ -1033,6 +1080,9 @@ fn f3_06_real_cli_kill_control_never_matches() {
         support::skip("F3-06/CONTROL", REAL_SKIP);
         return;
     };
+    if !require_real_n2(channel, "CONTROL") {
+        return;
+    }
     let fixture = Fixture::new("f3-kill-control");
     let root = fixture.root("root");
     assert_success(

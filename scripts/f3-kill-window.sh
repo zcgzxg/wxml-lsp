@@ -6,7 +6,8 @@
 #
 #   1. non-real: ptrace syscall-stop preflight plus a synthetic `mv`
 #      rename kill/control (`FIXTURE`); no pinned assets needed;
-#   2. real: the production packager builds the pinned real N1/N2 channel, the
+#   2. real: the production packager builds two independent real releases
+#      (0.1.0 and 0.2.0) with `scripts/build-release.sh --version`, the
 #      production installer is traced with PTRACE_SYSCALL and killed with an
 #      external SIGKILL at the upgrade U1/U3/U5/U6 and legacy L3/L4 windows,
 #      followed by the real `recover`/`verify`/retry commands.
@@ -15,7 +16,8 @@
 # WXML_REQUIRE_REAL_ENGINE=1) makes a blocked host or a missing asset fail.
 #
 # Usage:
-#   scripts/f3-kill-window.sh [--output DIR] [--non-real-only] [--skip-build]
+#   scripts/f3-kill-window.sh [--output DIR] [--real-channel DIR]
+#                             [--non-real-only] [--skip-build]
 #                             [--network-isolate] [--keep-tmp] [--help]
 #
 # Environment:
@@ -25,6 +27,8 @@
 #                         package at /tmp/opencode/tsgo-native-pkg, else the
 #                         release build under <output>/target)
 #   WXML_F3_ZED_WASM      prebuilt zed wasm32-wasip2 component (built if absent)
+#   WXML_F3_REAL_CHANNEL  channel with independently built 0.1.0 and 0.2.0
+#                         packages (default: <output>/channel, built here)
 #   WXML_KILL_WINDOW_OUTPUT  output root (default /tmp/opencode/f3-kill-window)
 #
 # Nothing is written inside the repository and nothing is committed. Logs stay
@@ -35,13 +39,14 @@ set -euo pipefail
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 OUTPUT=${WXML_KILL_WINDOW_OUTPUT:-/tmp/opencode/f3-kill-window}
+REAL_CHANNEL=${WXML_F3_REAL_CHANNEL:-}
 NON_REAL_ONLY=0
 SKIP_BUILD=0
 NETWORK_ISOLATE=0
 KEEP_TMP=0
 
 usage() {
-    sed -n '2,42p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,35p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -54,6 +59,11 @@ while [ "$#" -gt 0 ]; do
         --output)
             [ "$#" -ge 2 ] || die "--output requires a directory"
             OUTPUT=$2
+            shift 2
+            ;;
+        --real-channel)
+            [ "$#" -ge 2 ] || die "--real-channel requires a directory"
+            REAL_CHANNEL=$2
             shift 2
             ;;
         --non-real-only)
@@ -91,6 +101,11 @@ esac
 case "$OUTPUT" in
     /tmp/*|/var/tmp/*) ;;
     *) die "--output must live under /tmp or /var/tmp (got $OUTPUT)" ;;
+esac
+[ -n "$REAL_CHANNEL" ] || REAL_CHANNEL="$OUTPUT/channel"
+REAL_CHANNEL=$(realpath -m -- "$REAL_CHANNEL")
+case "$REAL_CHANNEL/" in
+    "$REPO_REAL/"*) die "--real-channel must be outside the repository: $REAL_CHANNEL" ;;
 esac
 
 ENGINE_TARBALL=${TSGO_NATIVE_TARBALL:-/tmp/opencode/tsgo-spike/download/typescript-linux-x64-7.1.0-beta.tgz}
@@ -136,6 +151,42 @@ fi
 [ -x "$LSP_BIN" ] || die "missing production wxml-lsp: $LSP_BIN"
 [ -x "$INSTALL_BIN" ] || die "missing release wxml-lsp-install: $INSTALL_BIN (or pass --skip-build)"
 [ -f "$ZED_WASM" ] || die "missing Zed wasm: $ZED_WASM"
+
+if [ "$NON_REAL_ONLY" -eq 0 ]; then
+    if [ ! -f "$REAL_CHANNEL/wxml-lsp-0.1.0-linux-x86_64/manifest.json" ] \
+        || [ ! -f "$REAL_CHANNEL/wxml-lsp-0.2.0-linux-x86_64/manifest.json" ]; then
+        [ "$SKIP_BUILD" -eq 0 ] \
+            || die "real channel is incomplete and --skip-build was given: $REAL_CHANNEL"
+        FROM_DIR="$OUTPUT/release-from-dir"
+        mkdir -p -- "$FROM_DIR" "$REAL_CHANNEL"
+        cp -f -- "$ENGINE_TARBALL" "$FROM_DIR/typescript-linux-x64-7.1.0-beta.tgz"
+        cp -f -- "$TYPINGS_TARBALL" "$FROM_DIR/miniprogram-api-typings-5.3.1.tgz"
+        for REAL_VERSION in 0.1.0 0.2.0; do
+            printf 'F3-KILL: building independent real %s release\n' "$REAL_VERSION"
+            SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1795046400} \
+            WXML_BUILD_CACHE="$OUTPUT/release-cache" \
+            WXML_ASSET_CACHE="${WXML_ASSET_CACHE:-$OUTPUT/release-cache/assets-cache}" \
+            CARGO_TARGET_DIR="$OUTPUT/release-target" \
+            ZED_CARGO_TARGET_DIR="$OUTPUT/zed-target" \
+            "$REPO_ROOT/scripts/build-release.sh" \
+                --output "$REAL_CHANNEL" \
+                --version "$REAL_VERSION" \
+                --zed-wasm "$ZED_WASM" \
+                --from-dir "$FROM_DIR" \
+                2>&1 | tee "$OUTPUT/logs/build-release-$REAL_VERSION.log"
+        done
+    else
+        printf 'F3-KILL: reusing independent real channel %s\n' "$REAL_CHANNEL"
+    fi
+    REAL_INSTALL_BIN="$REAL_CHANNEL/wxml-lsp-0.2.0-linux-x86_64/bin/wxml-lsp-install"
+    REAL_LSP_BIN="$REAL_CHANNEL/wxml-lsp-0.2.0-linux-x86_64/bin/wxml-lsp"
+    [ -x "$REAL_INSTALL_BIN" ] || die "real channel has no installer: $REAL_INSTALL_BIN"
+    [ -x "$REAL_LSP_BIN" ] || die "real channel has no wxml-lsp: $REAL_LSP_BIN"
+    INSTALL_BIN="$REAL_INSTALL_BIN"
+    LSP_BIN="$REAL_LSP_BIN"
+    export WXML_F3_REAL_CHANNEL="$REAL_CHANNEL"
+    export WXML_REQUIRE_REAL_N2=1
+fi
 
 export CARGO_NET_OFFLINE=true
 export CARGO_TARGET_DIR=$OUTPUT/target
