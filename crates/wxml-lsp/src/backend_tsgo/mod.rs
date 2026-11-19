@@ -446,7 +446,7 @@ impl Backend for TsgoBackendAdapter {
             },
             completion: CapabilityStatus::Partial {
                 reason:
-                    "expression-member completion is native; entry details, event-handler completion and incomplete/unclosed expressions are not implemented"
+                    "expression-member completion is native; the pinned API has no per-entry documentation and auto-imports need prepareAutoImports at snapshot creation, so non-empty results stay Partial; event-handler completion and unclosed expressions are not implemented"
                         .to_owned(),
             },
         }

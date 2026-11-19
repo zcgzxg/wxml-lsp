@@ -22,7 +22,8 @@ use wxml_backend_tsgo::native::strings::{
     Utf16Offset, Utf16Position, offset_to_position, utf16_len,
 };
 use wxml_backend_tsgo::native::wire::{
-    RawCompletionEntry, RawCompletionList, RawDiagnostic, RawJsDocTag, RawPosition, RawType,
+    RawCompletionEntry, RawCompletionLabelDetails, RawCompletionList, RawDiagnostic, RawJsDocTag,
+    RawPosition, RawType,
 };
 use wxml_backend_tsgo::query::definition::{
     DefinitionResult as NativeDefinitionResult, DefinitionTarget as NativeDefinitionTarget,
@@ -34,9 +35,10 @@ use wxml_project::ProjectPath;
 use wxml_text::SourceRange;
 use wxml_types::{
     Backend, BackendEpoch, BackendError, BackendId, CapabilityStatus, CheckFragment,
-    CompletionKind, CompletionRequest, DefinitionRequest, Diagnostic, DiagnosticSeverity,
-    DiagnosticsRequest, FileId, HoverRequest, ProjectId, ProjectRevision, RequestContext, RootKind,
-    SnapshotId, SourceRevision, SourceSnapshot, SymbolQuery, SymbolRequest, ViewRevision,
+    CompletionItemKind, CompletionKind, CompletionRequest, CompletionResult, DefinitionRequest,
+    Diagnostic, DiagnosticSeverity, DiagnosticsRequest, FileId, HoverRequest, ProjectId,
+    ProjectRevision, RequestContext, RootKind, SnapshotId, SourceRevision, SourceSnapshot,
+    SymbolQuery, SymbolRequest, ViewRevision,
 };
 
 use super::input::ViewProvider;
@@ -234,7 +236,8 @@ struct FakeDiagnostic {
 
 #[derive(Clone, Debug)]
 enum FakeCompletionOutcome {
-    Null,
+    NoResponse,
+    EmptyList,
     List {
         entries: Vec<RawCompletionEntry>,
         incomplete: bool,
@@ -309,7 +312,7 @@ impl Default for FakeBehavior {
             docs_outcome: FakeDocsOutcome::NoSymbol,
             semantic: FakeDiagnosticOutcome::Empty,
             syntactic: FakeDiagnosticOutcome::Empty,
-            completions: FakeCompletionOutcome::Null,
+            completions: FakeCompletionOutcome::EmptyList,
             definition: FakeDefinitionOutcome::CheckedEmpty,
             update_failure: None,
             type_gate: None,
@@ -522,7 +525,11 @@ impl QuerySession for FakeSession {
             .completion_calls
             .push((path.to_owned(), position));
         match &self.behavior.completions {
-            FakeCompletionOutcome::Null => Ok(None),
+            FakeCompletionOutcome::NoResponse => Ok(None),
+            FakeCompletionOutcome::EmptyList => Ok(Some(RawCompletionList {
+                is_incomplete: false,
+                entries: Vec::new(),
+            })),
             FakeCompletionOutcome::List {
                 entries,
                 incomplete,
@@ -960,11 +967,15 @@ fn completion_maps_entries_and_replaces_only_the_typed_prefix() {
                     name: "name".to_owned(),
                     kind: 5,
                     sort_text: "11".to_owned(),
+                    detail: Some("name: string".to_owned()),
+                    label_details: None,
                 },
                 RawCompletionEntry {
                     name: "age".to_owned(),
                     kind: 5,
                     sort_text: "12".to_owned(),
+                    detail: None,
+                    label_details: None,
                 },
             ],
             incomplete: false,
@@ -985,7 +996,25 @@ fn completion_maps_entries_and_replaces_only_the_typed_prefix() {
         .expect("completion");
     assert_eq!(result.items.len(), 2);
     assert!(!result.truncated);
-    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    assert_eq!(
+        result
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["name", "age"],
+        "native order must be preserved"
+    );
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Partial {
+            reason: concat!(
+                "the pinned completion API exposes no per-entry documentation; ",
+                "auto-import completion entries require a snapshot created with prepareAutoImports",
+            )
+            .to_owned(),
+        }
+    );
     for item in &result.items {
         assert_eq!(item.replace.start(), offset_of(wxml, "na"));
         assert_eq!(item.replace.end(), cursor);
@@ -994,7 +1023,240 @@ fn completion_maps_entries_and_replaces_only_the_typed_prefix() {
             item.insert_text_format,
             wxml_types::InsertTextFormat::PlainText
         );
+        assert_eq!(item.kind, CompletionItemKind::Property);
+        assert_eq!(item.documentation, None);
+        assert_eq!(item.filter_text.as_deref(), Some(item.label.as_str()));
     }
+    assert_eq!(result.items[0].detail.as_deref(), Some("name: string"));
+    assert_eq!(result.items[0].sort_text.as_deref(), Some("11"));
+    assert_eq!(result.items[1].detail, None);
+    assert_eq!(result.items[1].sort_text.as_deref(), Some("12"));
+}
+
+#[test]
+fn completion_does_not_publish_an_empty_sort_text() {
+    let wxml = "<view>{{ user.na }}</view>";
+    let behavior = FakeBehavior {
+        completions: FakeCompletionOutcome::List {
+            entries: vec![RawCompletionEntry {
+                name: "name".to_owned(),
+                kind: 5,
+                sort_text: String::new(),
+                detail: None,
+                label_details: None,
+            }],
+            incomplete: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(wxml, SCRIPT, "user.na"))),
+        behavior,
+    );
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "na") + 2,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("completion");
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(result.items[0].label, "name");
+    assert_eq!(
+        result.items[0].sort_text, None,
+        "an absent native sortText must not become an empty sort key"
+    );
+}
+
+#[test]
+fn completion_tolerates_label_details_if_present() {
+    let wxml = "<view>{{ user.na }}</view>";
+    let behavior = FakeBehavior {
+        completions: FakeCompletionOutcome::List {
+            entries: vec![RawCompletionEntry {
+                name: "setName".to_owned(),
+                kind: 2,
+                sort_text: "13".to_owned(),
+                detail: None,
+                label_details: Some(RawCompletionLabelDetails {
+                    detail: Some("(value: string): void".to_owned()),
+                    description: None,
+                }),
+            }],
+            incomplete: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(wxml, SCRIPT, "user.na"))),
+        behavior,
+    );
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "na") + 2,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("completion");
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(result.items[0].label, "setName");
+    assert_eq!(result.items[0].kind, CompletionItemKind::Method);
+    assert_eq!(
+        result.items[0].detail.as_deref(),
+        Some("(value: string): void")
+    );
+    assert_eq!(result.items[0].documentation, None);
+}
+
+#[test]
+fn completion_unknown_kind_is_plain_value_and_partial() {
+    let wxml = "<view>{{ user.na }}</view>";
+    let behavior = FakeBehavior {
+        completions: FakeCompletionOutcome::List {
+            entries: vec![RawCompletionEntry {
+                name: "mystery".to_owned(),
+                kind: 99,
+                sort_text: "14".to_owned(),
+                detail: None,
+                label_details: None,
+            }],
+            incomplete: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(wxml, SCRIPT, "user.na"))),
+        behavior,
+    );
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "na") + 2,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("completion");
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(result.items[0].label, "mystery");
+    assert_eq!(result.items[0].kind, CompletionItemKind::Value);
+    let reason = result.status.reason().expect("partial reason");
+    assert!(reason.contains("CompletionItemKind"), "{reason}");
+}
+
+#[test]
+fn completion_keeps_host_degradation_alongside_native_gaps() {
+    let wxml = "<view>{{ user.na }}</view>";
+    let mut view = prepared_view(wxml, SCRIPT, "user.na");
+    view.source_complete = false;
+    let behavior = FakeBehavior {
+        completions: FakeCompletionOutcome::List {
+            entries: vec![RawCompletionEntry {
+                name: "name".to_owned(),
+                kind: 5,
+                sort_text: "11".to_owned(),
+                detail: None,
+                label_details: None,
+            }],
+            incomplete: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "na") + 2,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("completion");
+    assert_eq!(result.items.len(), 1);
+    assert_eq!(result.items[0].label, "name");
+    let reason = result.status.reason().expect("partial reason");
+    assert!(reason.contains("documentation"), "{reason}");
+    assert!(reason.contains("auto-import"), "{reason}");
+    assert!(
+        reason.contains("source file list is incomplete"),
+        "the host degradation must survive a native Partial: {reason}"
+    );
+}
+
+#[test]
+fn a_checked_empty_completion_keeps_host_degradation() {
+    let wxml = "<view>{{ user.na }}</view>";
+    let mut view = prepared_view(wxml, SCRIPT, "user.na");
+    view.source_complete = false;
+    let behavior = FakeBehavior {
+        completions: FakeCompletionOutcome::EmptyList,
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "na") + 2,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("completion");
+    assert_eq!(result.items, Vec::new());
+    assert!(!result.truncated);
+    let reason = result.status.reason().expect("degradation reason");
+    assert!(
+        reason.contains("source file list is incomplete"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn a_checked_empty_completion_is_supported() {
+    let wxml = "<view>{{ user.na }}</view>";
+    let behavior = FakeBehavior {
+        completions: FakeCompletionOutcome::EmptyList,
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(wxml, SCRIPT, "user.na"))),
+        behavior,
+    );
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "na") + 2,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("completion");
+    assert_eq!(result.items, Vec::new());
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert!(!result.truncated);
+    assert_eq!(log.lock().expect("log").completion_calls.len(), 1);
+}
+
+#[test]
+fn a_null_completion_is_partial_not_a_checked_empty_answer() {
+    let wxml = "<view>{{ user.na }}</view>";
+    let mut view = prepared_view(wxml, SCRIPT, "user.na");
+    view.source_complete = false;
+    let behavior = FakeBehavior {
+        completions: FakeCompletionOutcome::NoResponse,
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "na") + 2,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("completion");
+    assert_eq!(result.items, Vec::new());
+    assert!(!result.truncated);
+    let reason = result.status.reason().expect("partial reason");
+    assert!(
+        reason.contains("null"),
+        "a null response must be a typed partial gap: {reason}"
+    );
+    assert!(
+        reason.contains("source file list is incomplete"),
+        "host degradation must survive a null response: {reason}"
+    );
 }
 
 #[test]
@@ -1004,6 +1266,8 @@ fn completion_truncation_is_reported() {
             name: format!("item{index}"),
             kind: 5,
             sort_text: "1".to_owned(),
+            detail: None,
+            label_details: None,
         })
         .collect();
     let behavior = FakeBehavior {
@@ -1027,7 +1291,26 @@ fn completion_truncation_is_reported() {
         .expect("completion");
     assert!(result.truncated);
     assert_eq!(result.items.len(), wxml_types::MAX_COMPLETION_ITEMS);
-    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    assert_eq!(
+        result.items.first().map(|item| item.label.as_str()),
+        Some("item0"),
+        "truncation must keep the native prefix order"
+    );
+    assert_eq!(
+        result.items.last().map(|item| item.label.as_str()),
+        Some("item255")
+    );
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Partial {
+            reason: concat!(
+                "the shared completion item cap truncated the list; ",
+                "the pinned completion API exposes no per-entry documentation; ",
+                "auto-import completion entries require a snapshot created with prepareAutoImports",
+            )
+            .to_owned(),
+        }
+    );
 }
 
 #[test]
@@ -1979,6 +2262,8 @@ fn completion_survives_literal_fragments() {
                 name: "name".to_owned(),
                 kind: 5,
                 sort_text: "11".to_owned(),
+                detail: None,
+                label_details: None,
             }],
             incomplete: false,
         },
@@ -2001,6 +2286,7 @@ fn completion_survives_literal_fragments() {
         })
         .expect("completion");
     assert_eq!(result.items.len(), 1);
+    assert_eq!(result.items[0].label, "name");
     assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
 }
 
@@ -2361,6 +2647,130 @@ export {};
         location.range.end(),
         expected_start + u32::try_from("name".len()).expect("length")
     );
+}
+
+#[test]
+fn optional_real_engine_completion_smoke() {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let Ok(bin) = std::env::var("TSGO_BIN") else {
+        let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
+        assert!(
+            !required,
+            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
+        );
+        eprintln!(
+            "optional real-engine adapter completion test skipped: set TSGO_BIN to the pinned \
+             7.1.0-beta lib/tsc"
+        );
+        return;
+    };
+    let executable = PathBuf::from(&bin);
+    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let sandbox = std::env::temp_dir().join(format!(
+        "wxml-tsgo-adapter-completion-{}-{count}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&sandbox).expect("sandbox");
+    let _cleanup = Cleanup(sandbox.clone());
+
+    // `u.name` is a valid fragment, so both cursors are real member-completion
+    // positions: after `u.` (empty prefix) and after `u.na` (partial prefix).
+    // No unclosed-expression synthesis is involved.
+    let wxml = "<view>{{ u.name }}</view>";
+    let script = r#"import type { User } from "./model";
+const u: User = { name: "Ada", age: 42 };
+Page({
+  data: { u },
+});
+"#;
+    let model = r"export interface User {
+    /** Display name. */
+    name: string;
+    age: number;
+}
+";
+    let globals = r#"import type { User } from "./model";
+declare global {
+  function Page(options: {
+    data: { u: User };
+    __wxml_check_0(this: { data: { u: User } }): void;
+  }): void;
+}
+export {};
+"#;
+    let files = vec![
+        prepared_file(SCRIPT_PATH, script),
+        prepared_file("model.ts", model),
+        prepared_file("globals.d.ts", globals),
+    ];
+    let views = Arc::new(FakeViews::new(prepared_view_with_files(
+        wxml, "u.name", files,
+    )));
+    let adapter = TsgoBackendAdapter::new(
+        PinnedEngine::pinned(),
+        views,
+        Arc::new(super::session::NativeSessionFactory::new(
+            SessionOptions::new(executable, sandbox),
+        )),
+    );
+
+    let cursors = [
+        (offset_of(wxml, ".") + 1, 0_u32),
+        (offset_of(wxml, "na") + 2, 2_u32),
+    ];
+    for (cursor, prefix_len) in cursors {
+        let result = adapter
+            .completion(CompletionRequest {
+                context: context(&adapter, wxml),
+                offset: cursor,
+                kind: CompletionKind::ExpressionMember,
+            })
+            .expect("real engine completion");
+        assert_real_engine_completion(&result, cursor, prefix_len);
+    }
+}
+
+fn assert_real_engine_completion(result: &CompletionResult, cursor: u32, prefix_len: u32) {
+    let labels: Vec<&str> = result
+        .items
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect();
+    let sort_texts: Vec<Option<&str>> = result
+        .items
+        .iter()
+        .map(|item| item.sort_text.as_deref())
+        .collect();
+    eprintln!(
+        "real engine adapter completion at {cursor}: status={:?} labels={labels:?} \
+         sortTexts={sort_texts:?}",
+        result.status
+    );
+    assert_eq!(
+        labels,
+        vec!["name", "age"],
+        "the real engine must return exactly the User member labels in native order at cursor \
+         {cursor}"
+    );
+    assert!(!result.truncated);
+    let reason = result.status.reason().expect("real completion is partial");
+    assert!(reason.contains("documentation"), "{reason}");
+    assert!(reason.contains("auto-import"), "{reason}");
+    for item in &result.items {
+        assert_eq!(item.replace.start(), cursor - prefix_len);
+        assert_eq!(item.replace.end(), cursor);
+        assert_eq!(item.insert_text, item.label);
+        assert_eq!(item.kind, CompletionItemKind::Property);
+        assert_eq!(item.documentation, None);
+        assert!(
+            item.sort_text
+                .as_deref()
+                .is_some_and(|sort| !sort.is_empty()),
+            "the real engine must expose a non-empty native sortText: {item:?}"
+        );
+        assert_eq!(item.filter_text.as_deref(), Some(item.label.as_str()));
+    }
 }
 
 struct Cleanup(PathBuf);

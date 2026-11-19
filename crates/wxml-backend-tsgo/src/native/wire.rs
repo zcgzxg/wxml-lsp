@@ -426,29 +426,64 @@ pub struct RawReferencedSymbol {
     pub symbol: Option<RawSymbol>,
 }
 
-/// One completion entry with only the v1-reviewed fields.
+/// Optional label details carried by one completion entry.
+///
+/// The pinned 7.1.0-beta artifact emits only `name`, `kind` and `sortText`
+/// for completion entries. These fields are tolerated if a future pinned
+/// artifact adds them: `detail` is mapped as signature text and `description`
+/// is never treated as documentation.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawCompletionLabelDetails {
+    /// Short label detail such as a signature.
+    #[serde(default)]
+    pub detail: Option<String>,
+    /// Additional description (auto-import source metadata in the LSP path).
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+/// One completion entry with the fields the pinned v1 response exposes.
+///
+/// The 7.1.0-beta artifact emits `name`, `kind` and `sortText`; the optional
+/// `detail` / `labelDetails` fields are tolerated if present but are not
+/// expected.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawCompletionEntry {
     /// Display name.
     pub name: String,
-    /// Native kind number.
+    /// Native LSP `CompletionItemKind` number; `0` means the field was absent.
     #[serde(default)]
     pub kind: i64,
     /// Native sort text.
     #[serde(default)]
     pub sort_text: String,
+    /// Native short detail (type/signature text) when a future artifact
+    /// supplies it; 7.1.0-beta emits none.
+    #[serde(default)]
+    pub detail: Option<String>,
+    /// Optional label details tolerated from a future artifact.
+    #[serde(default)]
+    pub label_details: Option<RawCompletionLabelDetails>,
 }
 
 /// One completion list.
+///
+/// The `entries` array is required: a response that omits it is shape drift
+/// and must surface as a typed shape error instead of failing open as an empty
+/// completion list.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RawCompletionList {
     /// Whether the engine considers the list incomplete.
+    ///
+    /// Absent follows the LSP default (`false`). Non-empty results still stay
+    /// `Partial` for the stable documentation/auto-import gaps, so an absent
+    /// flag cannot publish a complete member list.
     #[serde(default)]
     pub is_incomplete: bool,
     /// Entries in native order.
-    #[serde(default)]
     pub entries: Vec<RawCompletionEntry>,
 }
 
@@ -590,5 +625,43 @@ mod tests {
         .expect("completions");
         assert_eq!(completions.entries.len(), 2);
         assert_eq!(completions.entries[0].sort_text, "11");
+    }
+
+    #[test]
+    fn parses_optional_completion_detail_fields() {
+        let completions: RawCompletionList = parse_response(json!({
+            "isIncomplete": false,
+            "entries": [
+                {
+                    "name": "name",
+                    "kind": 5,
+                    "sortText": "11",
+                    "detail": "name: string",
+                    "labelDetails": {"detail": "(value: string): void"},
+                },
+                {"name": "age", "kind": 10, "sortText": "12"},
+            ],
+        }))
+        .expect("completions");
+        assert_eq!(
+            completions.entries[0].detail.as_deref(),
+            Some("name: string")
+        );
+        assert_eq!(
+            completions.entries[0]
+                .label_details
+                .as_ref()
+                .and_then(|details| details.detail.as_deref()),
+            Some("(value: string): void")
+        );
+        assert!(completions.entries[1].detail.is_none());
+        assert!(completions.entries[1].label_details.is_none());
+    }
+
+    #[test]
+    fn a_completion_response_without_entries_is_a_shape_error() {
+        let error = parse_response::<RawCompletionList>(json!({"isIncomplete": false}))
+            .expect_err("absent entries must not fail open as an empty list");
+        assert!(matches!(error, NativeError::Protocol(_)), "{error:?}");
     }
 }

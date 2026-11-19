@@ -1,17 +1,24 @@
 //! Native completion mapping with explicit details/truncation degradation.
 //!
-//! Native entries carry no replacement edit and no completion-entry details.
-//! The adapter computes the replacement range from the current WXML token and
-//! marks non-empty results `Partial` until details are contracted. A failed
-//! query is an error or an explicit `Unsupported` result, never a supported
-//! empty list.
+//! The pinned 7.1.0-beta `getCompletionsAtPosition` response emits only
+//! `name`, `kind` (an LSP `CompletionItemKind` number) and `sortText`; optional
+//! `detail` / `labelDetails` fields are tolerated if a future pinned artifact
+//! adds them but are not expected today. The adapter maps those real fields
+//! and computes the replacement range from the current WXML token. The pinned
+//! API has no `getCompletionEntryDetails`, no per-entry documentation and no
+//! display parts; auto-imports need `includeSymbol:true` plus a snapshot
+//! created with `prepareAutoImports`, which this adapter does not send.
+//! Non-empty results remain `Partial` with the typed native gaps, as does a
+//! `null` response (a response gap, never a checked empty answer); details are
+//! never synthesized from type/documentation queries. A failed query is an
+//! error or an explicit `Unsupported` result, never a supported empty list.
 
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::strings::{Utf16Offset, offset_to_position};
 use wxml_backend_tsgo::query::completion::map_completions;
 use wxml_types::{
-    BackendError, CapabilityStatus, CompletionItem, CompletionItemKind, CompletionKind,
-    CompletionRequest, CompletionResult, InsertTextFormat,
+    BackendError, CapabilityStatus, CompletionItem, CompletionKind, CompletionRequest,
+    CompletionResult, InsertTextFormat,
 };
 
 use crate::backend_tsgo::map_native_error;
@@ -78,11 +85,12 @@ pub(crate) fn completion(
         }
     };
     if !mapped.entries.is_empty() && replace.is_none() {
+        let missing_replace = CapabilityStatus::Partial {
+            reason: "the completion replacement range cannot be determined".to_owned(),
+        };
         return Ok(CompletionResult {
             items: Vec::new(),
-            status: CapabilityStatus::Partial {
-                reason: "the completion replacement range cannot be determined".to_owned(),
-            },
+            status: merge_status(missing_replace, degradation),
             truncated: mapped.truncated,
         });
     }
@@ -96,16 +104,19 @@ pub(crate) fn completion(
     let items = mapped
         .entries
         .into_iter()
-        .map(|entry| CompletionItem {
-            label: entry.label.clone(),
-            kind: map_kind(entry.native_kind),
-            detail: None,
-            documentation: None,
-            insert_text: entry.label.clone(),
-            insert_text_format: InsertTextFormat::PlainText,
-            replace,
-            sort_text: Some(entry.sort_text),
-            filter_text: Some(entry.label),
+        .map(|entry| {
+            let sort_text = (!entry.sort_text.is_empty()).then_some(entry.sort_text);
+            CompletionItem {
+                label: entry.label.clone(),
+                kind: entry.kind,
+                detail: entry.detail,
+                documentation: None,
+                insert_text: entry.label.clone(),
+                insert_text_format: InsertTextFormat::PlainText,
+                replace,
+                sort_text,
+                filter_text: Some(entry.label),
+            }
         })
         .collect();
     Ok(CompletionResult {
@@ -115,19 +126,13 @@ pub(crate) fn completion(
     })
 }
 
-const fn map_kind(native_kind: i64) -> CompletionItemKind {
-    match native_kind {
-        5 => CompletionItemKind::Property,
-        2 => CompletionItemKind::Keyword,
-        8 => CompletionItemKind::Method,
-        _ => CompletionItemKind::Value,
-    }
-}
-
 fn merge_status(status: CapabilityStatus, degradation: Option<&str>) -> CapabilityStatus {
     match (status, degradation) {
         (CapabilityStatus::Supported, Some(reason)) => CapabilityStatus::Partial {
             reason: reason.to_owned(),
+        },
+        (CapabilityStatus::Partial { reason }, Some(degradation)) => CapabilityStatus::Partial {
+            reason: format!("{reason}; {degradation}"),
         },
         (status, _) => status,
     }
