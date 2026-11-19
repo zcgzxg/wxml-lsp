@@ -22,6 +22,7 @@
 //! - `G-P5-E2E-17` / `ac008_alias_project_hover_and_definition`
 //! - `G-P5-E2E-18` / `ac008_multi_view_fixture_isolation`
 //! - `G-P5-E2E-19` / `ac008_simultaneous_views_do_not_pollute_each_other`
+//! - `G-P5-E2E-20` / `ac012_component_property_bindings`
 //! - `G-P5-E2E-21` / `ac012_event_handlers_basic`
 //! - `G-P5-PERF-01` / `q2_performance_benchmark`
 //! - `G-P5-STABILITY-01` / `ten_round_lifecycle_stability`
@@ -57,7 +58,7 @@ pub(crate) const NATIVE_GATE_FILE: &str =
 
 /// Ledger gate id -> native replacement test.
 ///
-/// All twenty-two are `gate_green` in the ledger with recorded opt-in evidence;
+/// All twenty-three are `gate_green` in the ledger with recorded opt-in evidence;
 /// this map keeps the exact gate/replacement link checked by `native_gates.rs`.
 pub(crate) const GATE_REPLACEMENTS: &[(&str, &str)] = &[
     (
@@ -112,6 +113,7 @@ pub(crate) const GATE_REPLACEMENTS: &[(&str, &str)] = &[
         "G-P5-E2E-19",
         "native_ac008_simultaneous_views_do_not_pollute_each_other",
     ),
+    ("G-P5-E2E-20", "native_ac012_component_property_bindings"),
     ("G-P5-E2E-21", "native_ac012_event_handlers_basic"),
     ("G-P5-PERF-01", "native_q2_performance_benchmark"),
     ("G-P5-STABILITY-01", "native_ten_round_lifecycle_stability"),
@@ -169,6 +171,7 @@ pub(crate) const IGNORED_GATE_TESTS: &[(&str, &str)] = &[
         NATIVE_GATE_FILE,
         "native_ac008_simultaneous_views_do_not_pollute_each_other",
     ),
+    (NATIVE_GATE_FILE, "native_ac012_component_property_bindings"),
     (NATIVE_GATE_FILE, "native_ac012_event_handlers_basic"),
     (
         NATIVE_GATE_FILE,
@@ -2289,6 +2292,118 @@ fn native_event_handler_hover_diagnostics_definition_completion() {
         &widget_definition,
         "components/widget/widget.ts",
         "onWidgetTap",
+    );
+
+    session.assert_no_node_exec();
+    session.shutdown();
+    gate.tripwire().assert_absent();
+}
+
+/// G-P5-E2E-20: the frozen `component-bindings` acceptance fixture.
+///
+/// Covers all four surfaces of the old gate: the two typed hovers with
+/// `JSDoc`, the single property mismatch (`title="{{ total }}"`), the single
+/// missing-handler error, and the two event definitions (an exact declaration
+/// token and a checked `null`). Property bindings add no definition
+/// expectation, and event attributes are excluded from the property pass, so
+/// the published counts are exact.
+#[test]
+#[ignore = "native gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
+fn native_ac012_component_property_bindings() {
+    let Some(gate) = NativeGate::require("G-P5-E2E-20") else {
+        return;
+    };
+    copy_fixture(&gate, "component-bindings");
+    let text = native_lsp::read_project_file(&gate, "pages/index/index.wxml");
+
+    let mut session = Session::start(&gate);
+    let uri = gate.uri("pages/index/index.wxml");
+    let diagnostics = session.open_wxml(&uri, &text, 1);
+
+    // The two typed hovers: page data with its `JSDoc`, exact token ranges.
+    for (marker, target, type_text, documentation) in [
+        (
+            "title=\"{{ pageTitle }}\"",
+            "pageTitle",
+            "string",
+            "页面标题",
+        ),
+        ("count=\"{{ total }}\"", "total", "number", "卡片总数"),
+    ] {
+        let hover = hover_target_end(&mut session, &uri, &text, marker, target);
+        let contents = native_lsp::hover_markdown("G-P5-E2E-20", target, &hover);
+        assert!(
+            contents.contains(type_text),
+            "{target} must be {type_text}: {}",
+            session.describe(&hover)
+        );
+        assert!(
+            contents.contains(documentation),
+            "{target} must include {documentation:?}: {}",
+            session.describe(&hover)
+        );
+        assert_hover_token(&hover, &text, marker, target, "E2E-20 hover");
+    }
+
+    // Exactly one property error at the bound expression, one missing-handler
+    // error, and nothing else. The fixture resolves every binding, so the
+    // status stays Supported and no degradation warning is published.
+    assert_no_status_diagnostic(&diagnostics, "AC-012 component bindings");
+    let errors = error_diagnostics(&diagnostics);
+    assert_eq!(
+        errors.len(),
+        2,
+        "the page must report exactly the property mismatch and the missing handler: {diagnostics}"
+    );
+    assert_error_at(
+        &diagnostics,
+        &text,
+        "title=\"{{ total }}\"",
+        "total",
+        "AC-012 property mismatch",
+    );
+    let property_error = errors
+        .iter()
+        .find(|diagnostic| {
+            diagnostic["message"]
+                .as_str()
+                .is_some_and(|message| message.contains("component property \"title\""))
+        })
+        .unwrap_or_else(|| panic!("no component property diagnostic for `title`: {diagnostics}"));
+    assert!(
+        property_error["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("number")),
+        "the property mismatch must name the `number` source: {property_error}"
+    );
+    assert_error_at(
+        &diagnostics,
+        &text,
+        "bindtap=\"missingHandler\"",
+        "missingHandler",
+        "AC-012 missing handler",
+    );
+
+    // The two event definitions: `onCardTap` covers the exact declaration
+    // token; `missingHandler` is a checked `null`, never a fabricated target.
+    let definition = session.definition(
+        &uri,
+        token_position(&text, "bind:tap=\"onCardTap\"", "onCardTap"),
+    );
+    assert_definition_covers(
+        "G-P5-E2E-20",
+        &gate,
+        &definition,
+        "pages/index/index.ts",
+        "onCardTap",
+    );
+    let missing_definition = session.definition(
+        &uri,
+        token_position(&text, "bindtap=\"missingHandler\"", "missingHandler"),
+    );
+    assert!(
+        missing_definition["result"].is_null(),
+        "a missing handler is a supported check with no definition: {missing_definition}"
     );
 
     session.assert_no_node_exec();

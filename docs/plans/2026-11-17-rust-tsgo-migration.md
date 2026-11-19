@@ -688,3 +688,33 @@ warning 出现；gate 断言零 error + 对应 warning，不把两者混同。
 
 边界：22 个 replacement 仍 `#[ignore]`；默认 `cargo test` 不运行它们，`gate_green`
 不是默认 CI 绿，也不是 `mandatory_green`；P6/P7、G5/G6/F3 未关闭，默认后端仍是 Node。
+
+### 12.10 2026-11-20 native gate 台账提升（P6-2 第五波，gate 全部关闭）
+
+本节记录 `04fa0fe` 之后、尚未提交的 gate 台账切片；§12.6–§12.9 的历史快照不变。
+本次未改生产代码、Node、默认后端、`Cargo.toml` 或任何 `#[ignore]` 属性，也未删除 gate。
+
+| 项 | 状态 |
+| --- | --- |
+| `gate_green` | 23：原 22 个 + `G-P5-E2E-20` |
+| `required_not_migrated` | 0 |
+| 合计 | 23（不增不减） |
+| 运行证据 | `23 passed / 0 failed / 36 filtered`（`--release`，含 PERF）；运行锚点 `04fa0fe`；65.84 s |
+| fail-closed RED | `0 passed / 23 failed / 36 filtered`（不带 `WXML_TEST_NATIVE=1`，23 个 gate 全部 panic，不是 skip） |
+| 触发命令 | `WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/home/zxg/code/rust/wxml-lsp/backends/typescript/node_modules/miniprogram-api-typings cargo test -p wxml-lsp --test native_parity --release native_engine_real -- --ignored --test-threads=1` |
+| 引擎身份 | TypeScript `7.1.0-beta`，AST v9，`lib/tsc` SHA-256 `a183b195…`，size 24,522,912 B |
+| 资产身份 | `engine/lib` 116 个 `lib*.d.ts`；`miniprogram-api-typings` 5.3.1（26 文件 / 20 个 `.d.ts`） |
+| 默认校验 | `cargo test -p wxml-lsp --test native_parity`：36 passed / 0 failed / 23 ignored |
+| case 计数 | 仍为 339 total / 36 `green` / 267 `planned` / 36 `retired-with-decision`；未新增 case 级 `green` |
+
+新增绿色 gate 的依据：`04fa0fe` 的组件属性绑定诊断（shadow 表达式范围 + `type_query`，
+复杂类型保持 `Partial`，事件属性排除）。`G-P5-E2E-20` 的 native 测试
+`native_ac012_component_property_bindings` 复用 `component-bindings` fixture，严格断言
+2 个 hover（`pageTitle` `string` + `页面标题`、`total` `number` + `卡片总数`）、1 个属性
+error（`title="{{ total }}"` 的 `total` 范围，message 含 `number`）、1 个事件 error
+（`missingHandler`）、2 个事件 definition（`onCardTap` 精确声明 token、缺失 handler 为
+checked `null`）；该 fixture 完全可解析，页面不得出现状态 warning。
+
+边界：23 个 replacement 仍 `#[ignore]`；默认 `cargo test` 不运行它们，`gate_green`
+不是默认 CI 绿，也不是 `mandatory_green`；两个 `semantic_tools` 静默 return、267 个
+planned case、P6/P7、G5/G6/F3 均未关闭，默认后端仍是 Node。
