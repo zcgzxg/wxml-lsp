@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use serde_json::{Value, json};
 use support::TempDir;
 use wxml_delivery::archive::{create_tar_gz, extract_tar_gz_allowlisted};
+use wxml_delivery::assets_lock::canonical_tree_digest;
 use wxml_delivery::error::DeliveryError;
 use wxml_delivery::install::{InstallRoot, check_explicit_binary_precedence};
 use wxml_delivery::manifest::{FileEntry, atomic_write, set_mode, sha256_bytes, sha256_file};
@@ -325,6 +326,91 @@ fn build_fixture_with_scripts(
     manifest
 }
 
+/// Rewrites `provenance.json` with lock-derived identity fields, updates the
+/// manifest entry and checksums, and returns the parsed manifest.
+fn write_lock_provenance(root: &Path, version: &str, corrupt_digest: Option<&str>) {
+    let manifest_path = root.join("manifest.json");
+    let mut manifest = read_manifest_v2(root, expected(version)).unwrap();
+    let under = |root_path: &str| -> Vec<FileEntry> {
+        manifest
+            .files
+            .iter()
+            .filter(|file| file.path.starts_with(&format!("{root_path}/")))
+            .cloned()
+            .collect()
+    };
+    let engine_files = under("engine");
+    let typings_files = under(MINIPROGRAM_TYPINGS_ROOT);
+    let engine_digest = canonical_tree_digest(&engine_files, "engine").unwrap();
+    let typings_digest = canonical_tree_digest(&typings_files, MINIPROGRAM_TYPINGS_ROOT).unwrap();
+    let engine_count = u64::try_from(engine_files.len()).unwrap();
+    let typings_count = u64::try_from(typings_files.len()).unwrap();
+    let engine_bytes: u64 = engine_files.iter().map(|file| file.size).sum();
+    let typings_bytes: u64 = typings_files.iter().map(|file| file.size).sum();
+    let value = json!({
+        "schemaVersion": 1,
+        "package": "wxml-lsp",
+        "packageVersion": version,
+        "assetsLockSha256": "a".repeat(64),
+        "assets": [
+            {
+                "name": "typescript-native-engine",
+                "version": ENGINE_VERSION,
+                "license": ENGINE_LICENSE,
+                "packageRoot": "engine",
+                "payloadTreeDigest": corrupt_digest.unwrap_or(engine_digest.as_str()),
+                "fileCount": engine_count,
+                "totalBytes": engine_bytes,
+                "tarball": {
+                    "integrity": ENGINE_DISTRIBUTION_INTEGRITY,
+                    "sha256": ENGINE_DISTRIBUTION_SHA256,
+                    "size": ENGINE_DISTRIBUTION_SIZE,
+                },
+            },
+            {
+                "name": MINIPROGRAM_TYPINGS_ASSET,
+                "version": MINIPROGRAM_TYPINGS_VERSION,
+                "license": MINIPROGRAM_TYPINGS_LICENSE,
+                "packageRoot": MINIPROGRAM_TYPINGS_ROOT,
+                "payloadTreeDigest": corrupt_digest.unwrap_or(typings_digest.as_str()),
+                "fileCount": typings_count,
+                "totalBytes": typings_bytes,
+                "tarball": {
+                    "integrity": "sha512-2CirO+C1z5RmKXDqTUSNbuyouHf5d0/KJTt+Qqi1EsiQYs8jlYhq7yWjp6EdTcJpvZzjuefZQCcDixYbrgIqow==",
+                    "sha256": "c".repeat(64),
+                    "size": 449_429,
+                },
+            },
+        ],
+        "engine": {
+            "name": "typescript",
+            "version": ENGINE_VERSION,
+            "sourceCommit": ENGINE_SOURCE_COMMIT,
+            "binary": {
+                "path": "engine/lib/tsc",
+                "sha256": manifest.file("engine/lib/tsc").unwrap().sha256.clone(),
+                "size": manifest.file("engine/lib/tsc").unwrap().size,
+                "mode": "0755",
+                "measurement": "measured"
+            }
+        }
+    });
+    let mut bytes = serde_json::to_vec_pretty(&value).unwrap();
+    bytes.push(b'\n');
+    fs::write(root.join("provenance.json"), &bytes).unwrap();
+    set_mode(&root.join("provenance.json"), 0o644).unwrap();
+    let entry = manifest
+        .files
+        .iter_mut()
+        .find(|file| file.path == "provenance.json")
+        .unwrap();
+    entry.sha256 = sha256_bytes(&bytes);
+    entry.size = u64::try_from(bytes.len()).unwrap();
+    atomic_write(&manifest_path, &manifest.to_json().unwrap(), 0o644).unwrap();
+    let checksums = checksums_for_tree_v2(root, &manifest).unwrap();
+    atomic_write(&root.join("SHA256SUMS"), &checksums, 0o644).unwrap();
+}
+
 fn write_legacy_version(root: &InstallRoot, version: &str) -> String {
     let directory = root.versions_dir().join(version);
     fs::create_dir_all(&directory).unwrap();
@@ -556,6 +642,40 @@ fn tree_verification_rejects_extra_missing_tampered_and_mode_changes() {
     fs::write(&license, original).unwrap();
     set_mode(&license, 0o644).unwrap();
     verify_tree_v2(base.path(), expected(VERSION_1)).unwrap();
+}
+
+#[test]
+fn provenance_lock_identity_binds_installed_type_assets() {
+    let base = TempDir::new("native-provenance-lock");
+    build_fixture(base.path(), VERSION_1);
+    write_lock_provenance(base.path(), VERSION_1, None);
+    verify_tree_v2(base.path(), expected(VERSION_1)).unwrap();
+
+    let bad = "0".repeat(64);
+    write_lock_provenance(base.path(), VERSION_1, Some(&bad));
+    let error = verify_tree_v2(base.path(), expected(VERSION_1)).unwrap_err();
+    assert!(error.to_string().contains("payloadTreeDigest"), "{error}");
+}
+
+#[test]
+fn upgrade_rejects_wrong_provenance_before_activation() {
+    let base = TempDir::new("native-provenance-upgrade");
+    let root = InstallRoot::create(&base.path().join("root")).unwrap();
+    let probe = FakeProbe::default();
+    let (staged, _) = stage_fixture(&root, VERSION_1);
+    install(&root, &staged, VERSION_1, &probe, &NoHooks).unwrap();
+    let n1 = root.versions_dir().join(VERSION_1);
+    let n1_fingerprint = tree_fingerprint(&n1).unwrap();
+
+    let (staged, _) = stage_fixture(&root, VERSION_2);
+    let bad = "0".repeat(64);
+    write_lock_provenance(&staged, VERSION_2, Some(&bad));
+    let error = install(&root, &staged, VERSION_2, &probe, &NoHooks).unwrap_err();
+    assert!(matches!(error, DeliveryError::Integrity(_)), "{error:?}");
+    assert_eq!(active_version(&root), VERSION_1);
+    assert_eq!(tree_fingerprint(&n1).unwrap(), n1_fingerprint);
+    assert!(!root.versions_dir().join(VERSION_2).exists());
+    assert_tmp_empty(&root);
 }
 
 #[test]

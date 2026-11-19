@@ -68,35 +68,34 @@ bundles); corrupt or foreign entries fail closed and are never repaired in
 place. This command never executes node/npm/npx/pnpm/yarn.";
 
 const NATIVE_USAGE: &str = "\
-Usage: wxml-lsp-package native --input DIR --output DIR [OPTIONS]
+Usage: wxml-lsp-package native --input DIR --output DIR --assets-lock FILE --cache DIR [OPTIONS]
 
 Builds a deterministic schema v2 package for linux-x86_64 from a prepared,
-Node-free tree. Accepted payload (required unless marked optional):
+Node-free input tree plus a provisioned asset cache. `engine/` and `typings/`
+must come from the cache and must match the submitted lock byte for byte; the
+input tree must not contain either root. Accepted input payload:
 
   bin/wxml-lsp                        0755
   bin/wxml-lsp-install                0755
-  engine/lib/tsc                      0755
-  engine/lib/tsc.sig                  0644
-  engine/lib/lib*.d.ts                0644 (116 files, including lib.d.ts)
-  engine/LICENSE                      0644
-  engine/NOTICE.txt                   0644
-  engine/package.json                 0644 (pinned engine name/version)
-  typings/miniprogram-api-typings/**  0644 (23 files, including LICENSE)
   zed-extension/extension.wasm        0644
   zed-extension/extension.toml        0644 (top-level version required)
   zed-extension/languages/**          0644 (optional)
   THIRD_PARTY_LICENSES.md             0644
 
-Optional: engine/README.md, zed-extension/grammars/wxml.wasm,
-zed-extension/languages/**.
+Engine and typings files are taken from the cache entry for
+`<payload.treeDigest>.<lockSha256[..16]>`. `engine/lib/tsc` must match the
+pinned upstream SHA-256 and size. The packager never downloads: a missing or
+stale cache fails closed.
 
-`engine/lib/tsc` must match the pinned upstream SHA-256 and size. The packager
-generates `provenance.json` (measured per-file facts plus explicitly labeled
-pinned upstream expectations); the prepared tree must not supply it.
+The packager generates `provenance.json` (measured per-file facts, the lock
+identity and per-asset payload tree digests); the prepared tree must not supply
+it.
 
 Options:
-  --input DIR               prepared package root (required)
+  --input DIR               prepared input root (required)
   --output DIR              artifact directory (required; keep it outside the repository)
+  --assets-lock FILE        repository assets.lock.json (required)
+  --cache DIR               provisioned, content-addressed asset cache (required)
   --release-version V       strict semantic version (default: this build's version)
   --platform P              fixed target platform (default and only value: linux-x86_64)
   --protocol-version N      Rust/engine protocol version (default: 2)
@@ -363,6 +362,8 @@ fn parse_native_options(
 ) -> Result<Option<BuildOptionsV2>, String> {
     let mut input: Option<PathBuf> = None;
     let mut output: Option<PathBuf> = None;
+    let mut assets_lock: Option<PathBuf> = None;
+    let mut assets_cache: Option<PathBuf> = None;
     let mut release_version = env!("CARGO_PKG_VERSION").to_owned();
     let mut platform = NATIVE_PACKAGE_PLATFORM.to_owned();
     let mut protocol_version = *SUPPORTED_NATIVE_PROTOCOL_VERSIONS
@@ -376,6 +377,12 @@ fn parse_native_options(
         match argument.as_str() {
             "--input" => input = Some(PathBuf::from(take_next(&mut args, "--input")?)),
             "--output" => output = Some(PathBuf::from(take_next(&mut args, "--output")?)),
+            "--assets-lock" => {
+                assets_lock = Some(PathBuf::from(take_next(&mut args, "--assets-lock")?));
+            }
+            "--cache" => {
+                assets_cache = Some(PathBuf::from(take_next(&mut args, "--cache")?));
+            }
             "--release-version" => {
                 release_version = take_next(&mut args, "--release-version")?;
             }
@@ -405,9 +412,15 @@ fn parse_native_options(
     }
     validate_strict(&release_version).map_err(|error| error.to_string())?;
     let built_at = native_built_at(built_at)?;
+    let assets_lock = assets_lock
+        .ok_or_else(|| "native builds require --assets-lock <repo>/assets.lock.json".to_owned())?;
+    let assets_cache = assets_cache
+        .ok_or_else(|| "native builds require --cache <provisioned-asset-cache>".to_owned())?;
     Ok(Some(BuildOptionsV2 {
         input,
         output,
+        assets_lock: Some(assets_lock),
+        assets_cache: Some(assets_cache),
         release_version,
         protocol_version,
         built_at,

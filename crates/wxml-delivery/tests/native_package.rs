@@ -17,9 +17,6 @@
 
 mod support;
 
-#[path = "support/typings_payload.rs"]
-mod typings_payload;
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write as _;
@@ -38,7 +35,6 @@ use wxml_delivery::package::{BuildOptionsV2, build_native_package};
 use wxml_delivery::sri::sha512_sri_file;
 use wxml_delivery::verify_v2::{tree_fingerprint, verify_tree_v2};
 
-const ENGINE_DIR_ENV: &str = "TSGO_NATIVE_ENGINE_DIR";
 const REQUIRE_ENGINE_ENV: &str = "WXML_REQUIRE_REAL_ENGINE";
 const PINNED_ENGINE_SHA256: &str =
     "a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70";
@@ -49,105 +45,24 @@ fn require_real_engine() -> bool {
         .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
-fn pinned_engine_dir(test: &str) -> Option<PathBuf> {
-    let Some(value) = std::env::var_os(ENGINE_DIR_ENV) else {
-        assert!(
-            !require_real_engine(),
-            "{ENGINE_DIR_ENV} is required when {REQUIRE_ENGINE_ENV}=1; point it at an extracted \
-             @typescript/typescript-linux-x64 7.1.0-beta package directory"
-        );
-        eprintln!(
-            "{test} skipped: set {ENGINE_DIR_ENV} to an extracted \
-             @typescript/typescript-linux-x64 7.1.0-beta package directory"
-        );
-        return None;
-    };
-    let path = PathBuf::from(value);
-    let path = fs::canonicalize(&path).unwrap();
-    let engine = path.join("lib/tsc");
-    let metadata = fs::metadata(&engine).unwrap();
-    assert_eq!(metadata.len(), PINNED_ENGINE_SIZE, "pinned engine size");
-    assert_eq!(
-        sha256_file(&engine).unwrap(),
-        PINNED_ENGINE_SHA256,
-        "pinned engine SHA-256"
-    );
-    Some(path)
-}
-
-/// A prepared package tree with the exact schema v2 shape.
+/// A prepared package input tree with the exact schema v2 input shape.
+///
+/// Engine and typings bytes are intentionally absent: the packager consumes
+/// them only from the provisioned asset cache.
 struct NativeTree {
     root: PathBuf,
 }
 
 impl NativeTree {
-    /// Synthetic tree whose engine bytes are intentionally not pinned.
     fn synthetic(base: &Path, version: &str) -> Self {
         let root = base.join(format!("native-tree-{version}"));
         fs::create_dir_all(&root).unwrap();
         let tree = Self { root };
-        tree.write_common(version);
-        tree.write("engine/lib/tsc", b"\x7fELF-fixture-native-engine\n", 0o755);
-        tree.write("engine/lib/tsc.sig", b"signature-placeholder\n", 0o644);
-        tree.write("engine/LICENSE", b"Apache License fixture\n", 0o644);
-        tree.write("engine/NOTICE.txt", b"NOTICE fixture\n", 0o644);
-        tree.write(
-            "engine/package.json",
-            format!(
-                "{{\"name\":\"{ENGINE_DISTRIBUTION}\",\"version\":\"{ENGINE_VERSION}\",\
-                 \"gitHead\":\"{ENGINE_SOURCE_COMMIT}\"}}\n"
-            )
-            .as_bytes(),
-            0o644,
-        );
-        tree.write("engine/lib/lib.d.ts", b"// lib.d.ts\n", 0o644);
-        tree.write("engine/lib/lib.es5.d.ts", b"// lib.es5.d.ts\n", 0o644);
-        tree.write("engine/lib/lib.es2020.d.ts", b"// lib.es2020.d.ts\n", 0o644);
-        for index in 0..113 {
-            tree.write(
-                &format!("engine/lib/lib.f{index:03}.d.ts"),
-                format!("// filler {index}\n").as_bytes(),
-                0o644,
-            );
-        }
+        tree.write_input(version);
         tree
     }
 
-    /// Tree carrying the exact pinned engine bytes from `TSGO_NATIVE_ENGINE_DIR`.
-    fn pinned(base: &Path, version: &str, test: &str) -> Option<Self> {
-        let engine_dir = pinned_engine_dir(test)?;
-        let root = base.join(format!("native-tree-{version}"));
-        fs::create_dir_all(&root).unwrap();
-        let tree = Self { root };
-        tree.write_common(version);
-        tree.copy_from(&engine_dir.join("lib/tsc"), "engine/lib/tsc", 0o755);
-        tree.copy_from(&engine_dir.join("lib/tsc.sig"), "engine/lib/tsc.sig", 0o644);
-        tree.copy_from(&engine_dir.join("LICENSE"), "engine/LICENSE", 0o644);
-        tree.copy_from(&engine_dir.join("NOTICE.txt"), "engine/NOTICE.txt", 0o644);
-        let mut dts_count = 0;
-        for entry in fs::read_dir(engine_dir.join("lib")).unwrap() {
-            let entry = entry.unwrap();
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            if name.starts_with("lib") && name.ends_with(".d.ts") {
-                tree.copy_from(&entry.path(), &format!("engine/lib/{name}"), 0o644);
-                dts_count += 1;
-            }
-        }
-        assert_eq!(dts_count, STANDARD_LIB_FILE_COUNT, "pinned lib*.d.ts count");
-        tree.write(
-            "engine/package.json",
-            format!(
-                "{{\"name\":\"{ENGINE_DISTRIBUTION}\",\"version\":\"{ENGINE_VERSION}\",\
-                 \"gitHead\":\"{ENGINE_SOURCE_COMMIT}\"}}\n"
-            )
-            .as_bytes(),
-            0o644,
-        );
-        Some(tree)
-    }
-
-    fn write_common(&self, version: &str) {
+    fn write_input(&self, version: &str) {
         self.write(
             "bin/wxml-lsp",
             format!("#!/bin/sh\nprintf 'wxml-lsp {version}\\n'\n").as_bytes(),
@@ -158,7 +73,6 @@ impl NativeTree {
             format!("#!/bin/sh\nprintf 'wxml-lsp-install {version}\\n'\n").as_bytes(),
             0o755,
         );
-        typings_payload::write_payload(|path, bytes| self.write(path, bytes, 0o644));
         self.write("zed-extension/extension.wasm", b"\0asm-fixture", 0o644);
         self.write(
             "zed-extension/extension.toml",
@@ -173,13 +87,6 @@ impl NativeTree {
         self.write("THIRD_PARTY_LICENSES.md", b"# licenses\n", 0o644);
     }
 
-    fn copy_from(&self, source: &Path, path: &str, mode: u32) {
-        let destination = self.root.join(path);
-        fs::create_dir_all(destination.parent().unwrap()).unwrap();
-        fs::copy(source, &destination).unwrap();
-        set_mode(&destination, mode).unwrap();
-    }
-
     fn write(&self, path: &str, bytes: &[u8], mode: u32) {
         let destination = self.root.join(path);
         fs::create_dir_all(destination.parent().unwrap()).unwrap();
@@ -192,15 +99,90 @@ impl NativeTree {
     }
 }
 
-struct PinnedFixture {
-    base: TempDir,
-    tree: NativeTree,
+/// Repository lock plus a provisioned cache for the real pinned assets.
+struct RealAssets {
+    lock: PathBuf,
+    cache: PathBuf,
 }
 
-fn pinned_fixture(name: &str) -> Option<PinnedFixture> {
+struct RealFixture {
+    base: TempDir,
+    tree: NativeTree,
+    assets: RealAssets,
+}
+
+impl RealFixture {
+    fn build(&self, output: &Path, version: &str) -> BuildOptionsV2 {
+        self.build_input(self.tree.path(), output, version)
+    }
+
+    fn build_input(&self, input: &Path, output: &Path, version: &str) -> BuildOptionsV2 {
+        let mut options = options(input, output, version);
+        options.assets_lock = Some(self.assets.lock.clone());
+        options.assets_cache = Some(self.assets.cache.clone());
+        options
+    }
+}
+
+fn repo_lock() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("assets.lock.json")
+}
+
+fn real_assets(base: &Path, test: &str) -> Option<RealAssets> {
+    let lock = repo_lock();
+    if !lock.is_file() {
+        assert!(
+            !require_real_engine(),
+            "repository {} is required for {test}",
+            lock.display()
+        );
+        eprintln!("{test} skipped: {} is missing", lock.display());
+        return None;
+    }
+    if let Some(cache) = std::env::var_os("TSGO_NATIVE_CACHE") {
+        let cache = fs::canonicalize(PathBuf::from(cache)).unwrap();
+        return Some(RealAssets { lock, cache });
+    }
+    let (Some(engine), Some(typings)) = (
+        std::env::var_os("TSGO_NATIVE_TARBALL"),
+        std::env::var_os("TSGO_TYPINGS_TARBALL"),
+    ) else {
+        assert!(
+            !require_real_engine(),
+            "{test} requires TSGO_NATIVE_CACHE or TSGO_NATIVE_TARBALL + TSGO_TYPINGS_TARBALL \
+             when {REQUIRE_ENGINE_ENV}=1"
+        );
+        eprintln!(
+            "{test} skipped: set TSGO_NATIVE_CACHE to a provisioned cache, or set \
+             TSGO_NATIVE_TARBALL and TSGO_TYPINGS_TARBALL"
+        );
+        return None;
+    };
+    let from_dir = base.join("from-dir");
+    fs::create_dir_all(&from_dir).unwrap();
+    fs::copy(engine, from_dir.join("typescript-linux-x64-7.1.0-beta.tgz")).unwrap();
+    fs::copy(typings, from_dir.join("miniprogram-api-typings-5.3.1.tgz")).unwrap();
+    let cache = base.join("cache");
+    let report = wxml_delivery::provision::provision(&wxml_delivery::provision::ProvisionOptions {
+        lock: lock.clone(),
+        cache: cache.clone(),
+        from_dir: Some(from_dir),
+        offline: true,
+        print_plan: false,
+        allow_download: false,
+    })
+    .unwrap();
+    assert_eq!(report.entries.len(), 2);
+    Some(RealAssets { lock, cache })
+}
+
+fn real_fixture(name: &str) -> Option<RealFixture> {
     let base = TempDir::new(name);
-    let tree = NativeTree::pinned(base.path(), "0.1.0", name)?;
-    Some(PinnedFixture { base, tree })
+    let assets = real_assets(base.path(), name)?;
+    let tree = NativeTree::synthetic(base.path(), "0.1.0");
+    Some(RealFixture { base, tree, assets })
 }
 
 fn copy_tree(source: &Path, destination: &Path) {
@@ -281,6 +263,8 @@ fn options(input: &Path, output: &Path, version: &str) -> BuildOptionsV2 {
     BuildOptionsV2 {
         input: input.to_path_buf(),
         output: output.to_path_buf(),
+        assets_lock: None,
+        assets_cache: None,
         release_version: version.to_owned(),
         protocol_version: 2,
         built_at: "2026-01-01T00:00:00Z".to_owned(),
@@ -330,15 +314,14 @@ fn archive_headers(path: &Path) -> Vec<ArchiveHeader> {
 
 #[test]
 fn two_builds_are_byte_identical_and_manifest_index_match_archive() {
-    let Some(fixture) = pinned_fixture("native-package-deterministic") else {
+    let Some(fixture) = real_fixture("native-package-deterministic") else {
         return;
     };
     let base = &fixture.base;
-    let tree = &fixture.tree;
     let first =
-        build_native_package(&options(tree.path(), &base.path().join("out-one"), "0.1.0")).unwrap();
+        build_native_package(&fixture.build(&base.path().join("out-one"), "0.1.0")).unwrap();
     let second =
-        build_native_package(&options(tree.path(), &base.path().join("out-two"), "0.1.0")).unwrap();
+        build_native_package(&fixture.build(&base.path().join("out-two"), "0.1.0")).unwrap();
 
     assert_eq!(first.sha256, second.sha256);
     assert_eq!(first.size, second.size);
@@ -489,6 +472,33 @@ fn two_builds_are_byte_identical_and_manifest_index_match_archive() {
         .find(|asset| asset.name == "miniprogram-api-typings")
         .unwrap();
     assert_eq!(typings.file_count, MINIPROGRAM_TYPINGS_FILE_COUNT);
+
+    // Engine/typings manifest entries come from the lock payload table, not
+    // from any input path.
+    let lock: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fixture.assets.lock).unwrap()).unwrap();
+    for asset in lock["assets"].as_array().unwrap() {
+        for locked in asset["payload"]["files"].as_array().unwrap() {
+            let path = locked["path"].as_str().unwrap();
+            let entry = manifest.file(path).unwrap_or_else(|| {
+                panic!("manifest is missing lock payload `{path}`");
+            });
+            assert_eq!(entry.sha256, locked["sha256"].as_str().unwrap());
+            assert_eq!(entry.size, locked["size"].as_u64().unwrap());
+            assert_eq!(entry.mode, locked["mode"].as_str().unwrap());
+        }
+    }
+    let provenance: serde_json::Value =
+        serde_json::from_slice(&fs::read(release.join("provenance.json")).unwrap()).unwrap();
+    let parsed_lock =
+        wxml_delivery::assets_lock::AssetsLock::parse(&fs::read(&fixture.assets.lock).unwrap())
+            .unwrap();
+    let lock_sha256 = parsed_lock.lock_sha256().unwrap();
+    assert_eq!(
+        provenance["assetsLockSha256"].as_str(),
+        Some(lock_sha256.as_str())
+    );
+    assert_eq!(provenance["assets"].as_array().unwrap().len(), 2);
 }
 
 fn build_error(tree: &NativeTree, base: &Path, needle: &str) {
@@ -526,42 +536,42 @@ fn rejects_node_runtime_and_unexpected_payloads() {
         (
             "typings/miniprogram-api-typings/package.json",
             b"{}\n",
-            "only `engine/package.json` metadata is allowed",
+            "must come from the verified asset cache",
         ),
         (
             "typings/miniprogram-api-typings/PACKAGE.JSON",
             b"{}\n",
-            "only `engine/package.json` metadata is allowed",
+            "must come from the verified asset cache",
         ),
         (
             "typings/miniprogram-api-typings/README-en.md",
             b"English readme\n",
-            "not part of the schema v2 package layout",
+            "must come from the verified asset cache",
         ),
         (
             "typings/miniprogram-api-typings/README-EN.MD",
             b"English readme\n",
-            "not part of the schema v2 package layout",
+            "must come from the verified asset cache",
         ),
         (
             "typings/miniprogram-api-typings/typings.json",
             b"{\"main\":\"index.d.ts\"}\n",
-            "not part of the schema v2 package layout",
+            "must come from the verified asset cache",
         ),
         (
             "typings/miniprogram-api-typings/Typings.JSON",
             b"{\"main\":\"index.d.ts\"}\n",
-            "not part of the schema v2 package layout",
+            "must come from the verified asset cache",
         ),
         (
             "typings/README-en.md",
             b"English readme\n",
-            "not part of the schema v2 package layout",
+            "must come from the verified asset cache",
         ),
         (
             "typings/typings.json",
             b"{\"main\":\"index.d.ts\"}\n",
-            "not part of the schema v2 package layout",
+            "must come from the verified asset cache",
         ),
         (
             "extra.txt",
@@ -571,12 +581,12 @@ fn rejects_node_runtime_and_unexpected_payloads() {
         (
             "engine/lib/lib.d.ts.map",
             b"{}\n",
-            "not part of the schema v2 package layout",
+            "must come from the verified asset cache",
         ),
         (
             "engine/package.json.bak",
             b"{}\n",
-            "not part of the schema v2 package layout",
+            "must come from the verified asset cache",
         ),
     ];
     for (index, (path, bytes, needle)) in cases.iter().enumerate() {
@@ -592,7 +602,7 @@ fn rejects_node_runtime_and_unexpected_payloads() {
 fn rejects_symlinks_and_unsafe_modes() {
     let base = TempDir::new("native-package-symlink");
     let tree = NativeTree::synthetic(base.path(), "0.1.0");
-    std::os::unix::fs::symlink("/etc/passwd", tree.path().join("engine/README.md")).unwrap();
+    std::os::unix::fs::symlink("/etc/passwd", tree.path().join("zed-extension/README.md")).unwrap();
     let error = build_native_package(&options(tree.path(), &base.path().join("out-a"), "0.1.0"))
         .unwrap_err();
     assert!(
@@ -602,110 +612,73 @@ fn rejects_symlinks_and_unsafe_modes() {
 
     let base = TempDir::new("native-package-writable");
     let tree = NativeTree::synthetic(base.path(), "0.1.0");
-    tree.write("engine/LICENSE", b"world-writable\n", 0o666);
+    tree.write("zed-extension/extension.wasm", b"world-writable\n", 0o666);
     build_error(&tree, base.path(), "group/other-write");
 }
 
 #[cfg(unix)]
 #[test]
-fn rejects_non_allowlisted_executable_in_a_pinned_tree() {
-    let Some(fixture) = pinned_fixture("native-package-exec-allowlist") else {
-        return;
-    };
-    fixture.tree.write("engine/README.md", b"readme\n", 0o755);
-    build_error(
-        &fixture.tree,
-        fixture.base.path(),
-        "executable but not in the allowlist",
-    );
-}
+fn rejects_non_allowlisted_executable_and_non_executable_binaries() {
+    let base = TempDir::new("native-package-exec-allowlist");
+    let tree = NativeTree::synthetic(base.path(), "0.1.0");
+    tree.write("zed-extension/extension.wasm", b"readme\n", 0o755);
+    build_error(&tree, base.path(), "executable but not in the allowlist");
 
-#[cfg(unix)]
-#[test]
-fn rejects_non_executable_binary_in_a_pinned_tree() {
-    let Some(fixture) = pinned_fixture("native-package-bin-mode") else {
-        return;
-    };
-    fixture
-        .tree
-        .write("bin/wxml-lsp", b"#!/bin/sh\nexit 0\n", 0o644);
-    build_error(&fixture.tree, fixture.base.path(), "must have mode 0755");
+    let base = TempDir::new("native-package-bin-mode");
+    let tree = NativeTree::synthetic(base.path(), "0.1.0");
+    tree.write("bin/wxml-lsp", b"#!/bin/sh\nexit 0\n", 0o644);
+    build_error(&tree, base.path(), "must have mode 0755");
 }
 
 #[test]
-fn rejects_missing_or_mismatched_engine_identity() {
-    let cases: &[(&[u8], &str)] = &[
-        (
-            b"{\"name\":\"@typescript/typescript-linux-x64\"}\n",
-            "missing `version`",
-        ),
-        (
-            b"{\"name\":\"typescript\",\"version\":\"7.1.0-beta\"}\n",
-            "does not match",
-        ),
-        (
-            b"{\"name\":\"@typescript/typescript-linux-x64\",\"version\":\"7.0.2\"}\n",
-            "does not match",
-        ),
-        (
-            b"{\"name\":\"@typescript/typescript-linux-x64\",\"version\":\"7.1.0-beta\",\"gitHead\":\"deadbeef\"}\n",
-            "githead",
-        ),
-        (b"not-json\n", "malformed"),
-    ];
-    for (index, (bytes, needle)) in cases.iter().enumerate() {
-        let base = TempDir::new(&format!("native-package-engine-{index}"));
+fn rejects_input_supplied_engine_or_typings() {
+    for path in [
+        "engine/lib/lib.es2020.d.ts",
+        "engine/package.json",
+        "typings/miniprogram-api-typings/index.d.ts",
+    ] {
+        let base = TempDir::new("native-package-input-assets");
         let tree = NativeTree::synthetic(base.path(), "0.1.0");
-        tree.write("engine/package.json", bytes, 0o644);
-        build_error(&tree, base.path(), needle);
+        tree.write(path, b"// supplied by the input tree\n", 0o644);
+        build_error(
+            &tree,
+            base.path(),
+            "must come from the verified asset cache",
+        );
     }
 }
 
 #[test]
-fn rejects_missing_required_payload() {
-    let Some(fixture) = pinned_fixture("native-package-missing") else {
-        return;
-    };
-    fs::remove_file(fixture.tree.path().join("engine/lib/lib.es2020.d.ts")).unwrap();
-    build_error(&fixture.tree, fixture.base.path(), "exactly 116");
+fn rejects_missing_required_input_payload() {
+    let base = TempDir::new("native-package-missing");
+    let tree = NativeTree::synthetic(base.path(), "0.1.0");
+    fs::remove_file(tree.path().join("bin/wxml-lsp-install")).unwrap();
+    build_error(&tree, base.path(), "missing `bin/wxml-lsp-install`");
 }
 
 #[test]
-fn rejects_typings_count_and_layout_drift_in_a_pinned_tree() {
-    let Some(short) = pinned_fixture("native-package-typings-short") else {
-        return;
-    };
-    fs::remove_file(
-        short
-            .tree
-            .path()
-            .join("typings/miniprogram-api-typings/types/wx/lib.wx.page.d.ts"),
-    )
-    .unwrap();
-    build_error(&short.tree, short.base.path(), "exactly 23 files");
+fn requires_assets_lock_and_cache_before_creating_output() {
+    let base = TempDir::new("native-package-no-assets");
+    let tree = NativeTree::synthetic(base.path(), "0.1.0");
+    let output = base.path().join("release");
+    let error = build_native_package(&options(tree.path(), &output, "0.1.0")).unwrap_err();
+    assert!(error.to_string().contains("--assets-lock"), "{error}");
+    assert!(!output.exists());
 
-    let Some(long) = pinned_fixture("native-package-typings-long") else {
-        return;
-    };
-    long.tree.write(
-        "typings/miniprogram-api-typings/types/wx/extra.d.ts",
-        b"// typings 21\n",
-        0o644,
-    );
-    build_error(
-        &long.tree,
-        long.base.path(),
-        "not part of the schema v2 package layout",
-    );
+    let mut with_lock = options(tree.path(), &output, "0.1.0");
+    with_lock.assets_lock = Some(repo_lock());
+    let error = build_native_package(&with_lock).unwrap_err();
+    assert!(error.to_string().contains("--cache"), "{error}");
+    assert!(!output.exists());
 }
 
 #[test]
 fn dry_run_writes_nothing() {
-    let Some(fixture) = pinned_fixture("native-package-dry") else {
+    let Some(fixture) = real_fixture("native-package-dry") else {
         return;
     };
     let output = fixture.base.path().join("release");
-    let mut options = options(fixture.tree.path(), &output, "0.1.0");
+    let mut options = fixture.build(&output, "0.1.0");
     options.dry_run = true;
     let report = build_native_package(&options).unwrap();
     assert!(report.index.is_none());
@@ -728,7 +701,7 @@ fn native_cli_prints_usage() {
 
 #[test]
 fn native_cli_builds_without_node_or_network() {
-    let Some(fixture) = pinned_fixture("native-package-cli") else {
+    let Some(fixture) = real_fixture("native-package-cli") else {
         return;
     };
     let base = &fixture.base;
@@ -764,6 +737,10 @@ fn native_cli_builds_without_node_or_network() {
         tree.path().to_str().unwrap(),
         "--output",
         output.to_str().unwrap(),
+        "--assets-lock",
+        fixture.assets.lock.to_str().unwrap(),
+        "--cache",
+        fixture.assets.cache.to_str().unwrap(),
         "--release-version",
         "0.1.0",
         "--built-at",
@@ -825,15 +802,14 @@ fn native_cli_builds_without_node_or_network() {
 
 #[test]
 fn packages_optional_engine_readme_and_wxml_grammar() {
-    let Some(fixture) = pinned_fixture("native-package-optional") else {
+    let Some(fixture) = real_fixture("native-package-optional") else {
         return;
     };
     let base = &fixture.base;
     let tree = &fixture.tree;
-    tree.write("engine/README.md", b"# engine\n", 0o644);
     tree.write("zed-extension/grammars/wxml.wasm", b"\0asm-grammar", 0o644);
     let report =
-        build_native_package(&options(tree.path(), &base.path().join("release"), "0.1.0")).unwrap();
+        build_native_package(&fixture.build(&base.path().join("release"), "0.1.0")).unwrap();
     let manifest =
         read_manifest_v2(report.release_dir.as_ref().unwrap(), expected("0.1.0")).unwrap();
     assert!(manifest.file("engine/README.md").is_some());
@@ -842,21 +818,20 @@ fn packages_optional_engine_readme_and_wxml_grammar() {
 
 #[test]
 fn refuses_overwrite_without_force_and_replaces_an_invalid_index_with_force() {
-    let Some(fixture) = pinned_fixture("native-package-force") else {
+    let Some(fixture) = real_fixture("native-package-force") else {
         return;
     };
     let base = &fixture.base;
-    let tree = &fixture.tree;
     let output = base.path().join("release");
     fs::create_dir_all(&output).unwrap();
     fs::write(output.join("index.json"), b"{}\n").unwrap();
 
-    let report = build_native_package(&options(tree.path(), &output, "0.1.0")).unwrap();
+    let report = build_native_package(&fixture.build(&output, "0.1.0")).unwrap();
     assert!(report.index.is_some());
     let index = read_index_v2(&output.join("index.json")).unwrap();
     index.find("0.1.0", NATIVE_PACKAGE_PLATFORM).unwrap();
 
-    let mut second = options(tree.path(), &output, "0.1.0");
+    let mut second = fixture.build(&output, "0.1.0");
     second.force = false;
     let error = build_native_package(&second).unwrap_err();
     assert!(error.to_string().contains("--force"), "{error}");
@@ -874,19 +849,14 @@ fn rejects_unsupported_native_protocol() {
 
 #[test]
 fn rejects_missing_top_level_zed_extension_version() {
-    let Some(fixture) = pinned_fixture("native-package-zed-version") else {
-        return;
-    };
-    fixture.tree.write(
+    let base = TempDir::new("native-package-zed-version");
+    let tree = NativeTree::synthetic(base.path(), "0.1.0");
+    tree.write(
         "zed-extension/extension.toml",
         b"id = \"wxml-lsp\"\n[grammars.wxml]\nversion = \"9.9.9\"\n",
         0o644,
     );
-    build_error(
-        &fixture.tree,
-        fixture.base.path(),
-        "missing top-level `version`",
-    );
+    build_error(&tree, base.path(), "missing top-level `version`");
 }
 
 #[test]
@@ -903,25 +873,6 @@ fn native_cli_rejects_a_non_pinned_platform() {
     ]);
     let result = support::run(&mut command);
     support::assert_failure(&result, "linux-x86_64");
-}
-
-#[test]
-fn rejects_unpinned_engine_binary_bytes() {
-    let base = TempDir::new("native-package-engine-bytes");
-    let tree = NativeTree::synthetic(base.path(), "0.1.0");
-    build_error(&tree, base.path(), "pinned expected");
-}
-
-#[test]
-fn rejects_missing_engine_git_head() {
-    let base = TempDir::new("native-package-engine-git-head");
-    let tree = NativeTree::synthetic(base.path(), "0.1.0");
-    tree.write(
-        "engine/package.json",
-        b"{\"name\":\"@typescript/typescript-linux-x64\",\"version\":\"7.1.0-beta\"}\n",
-        0o644,
-    );
-    build_error(&tree, base.path(), "githead");
 }
 
 #[test]
@@ -951,12 +902,12 @@ fn rejects_hardlinks_non_utf8_backslash_empty_and_oversized_inputs() {
 
     let base = TempDir::new("native-package-empty");
     let tree = NativeTree::synthetic(base.path(), "0.1.0");
-    tree.write("engine/README.md", b"", 0o644);
+    tree.write("THIRD_PARTY_LICENSES.md", b"", 0o644);
     build_error(&tree, base.path(), "is empty");
 
     let base = TempDir::new("native-package-oversized");
     let tree = NativeTree::synthetic(base.path(), "0.1.0");
-    let oversized = tree.path().join("engine/README.md");
+    let oversized = tree.path().join("THIRD_PARTY_LICENSES.md");
     let file = fs::File::create(&oversized).unwrap();
     file.set_len(MAX_FILE_BYTES + 1).unwrap();
     drop(file);
@@ -965,8 +916,8 @@ fn rejects_hardlinks_non_utf8_backslash_empty_and_oversized_inputs() {
     let base = TempDir::new("native-package-hardlink");
     let tree = NativeTree::synthetic(base.path(), "0.1.0");
     fs::hard_link(
-        tree.path().join("engine/lib/lib.d.ts"),
-        tree.path().join("engine/lib/lib.hard.d.ts"),
+        tree.path().join("THIRD_PARTY_LICENSES.md"),
+        tree.path().join("zed-extension/languages/wxml/hard.wasm"),
     )
     .unwrap();
     build_error(&tree, base.path(), "hard link");
@@ -974,7 +925,7 @@ fn rejects_hardlinks_non_utf8_backslash_empty_and_oversized_inputs() {
 
 #[test]
 fn archives_ignore_input_mtimes_and_mode_metadata() {
-    let Some(fixture) = pinned_fixture("native-package-metadata") else {
+    let Some(fixture) = real_fixture("native-package-metadata") else {
         return;
     };
     let tree_a = fixture.tree.path();
@@ -982,15 +933,15 @@ fn archives_ignore_input_mtimes_and_mode_metadata() {
     copy_tree(tree_a, &tree_b);
     touch_tree(tree_a, 1_000_000);
     touch_tree(&tree_b, 2_000_000);
-    set_mode(&tree_b.join("engine/LICENSE"), 0o600).unwrap();
+    set_mode(&tree_b.join("zed-extension/extension.wasm"), 0o600).unwrap();
 
-    let first = build_native_package(&options(
+    let first = build_native_package(&fixture.build_input(
         tree_a,
         &fixture.base.path().join("out-a"),
         "0.1.0",
     ))
     .unwrap();
-    let second = build_native_package(&options(
+    let second = build_native_package(&fixture.build_input(
         &tree_b,
         &fixture.base.path().join("out-b"),
         "0.1.0",
@@ -1025,15 +976,12 @@ fn archives_ignore_input_mtimes_and_mode_metadata() {
 
 #[test]
 fn generated_provenance_binds_measured_and_pinned_facts() {
-    let Some(fixture) = pinned_fixture("native-package-provenance") else {
+    let Some(fixture) = real_fixture("native-package-provenance") else {
         return;
     };
-    let report = build_native_package(&options(
-        fixture.tree.path(),
-        &fixture.base.path().join("release"),
-        "0.1.0",
-    ))
-    .unwrap();
+    let report =
+        build_native_package(&fixture.build(&fixture.base.path().join("release"), "0.1.0"))
+            .unwrap();
     let release = report.release_dir.as_ref().unwrap();
     let manifest = read_manifest_v2(release, expected("0.1.0")).unwrap();
     let provenance_file = manifest.file("provenance.json").unwrap();
@@ -1055,6 +1003,31 @@ fn generated_provenance_binds_measured_and_pinned_facts() {
         value["engine"]["distribution"]["sha256"],
         wxml_delivery::manifest_v2::ENGINE_DISTRIBUTION_SHA256
     );
+    let parsed_lock =
+        wxml_delivery::assets_lock::AssetsLock::parse(&fs::read(&fixture.assets.lock).unwrap())
+            .unwrap();
+    assert_eq!(
+        value["assetsLockSha256"].as_str(),
+        Some(parsed_lock.lock_sha256().unwrap().as_str())
+    );
+    let assets = value["assets"].as_array().unwrap();
+    assert_eq!(assets.len(), 2);
+    for entry in assets {
+        let name = entry["name"].as_str().unwrap();
+        let root = entry["packageRoot"].as_str().unwrap();
+        let digest = entry["payloadTreeDigest"].as_str().unwrap();
+        let files: Vec<wxml_delivery::manifest::FileEntry> = manifest
+            .files
+            .iter()
+            .filter(|file| file.path.starts_with(&format!("{root}/")))
+            .cloned()
+            .collect();
+        assert_eq!(
+            digest,
+            wxml_delivery::assets_lock::canonical_tree_digest(&files, root).unwrap(),
+            "provenance tree digest for `{name}`"
+        );
+    }
 }
 
 fn assert_no_stage_dirs(output: &Path) {
@@ -1071,11 +1044,11 @@ fn assert_no_stage_dirs(output: &Path) {
 
 #[test]
 fn failed_forced_rebuild_keeps_previous_output_byte_identical() {
-    let Some(fixture) = pinned_fixture("native-package-force-failure") else {
+    let Some(fixture) = real_fixture("native-package-force-failure") else {
         return;
     };
     let output = fixture.base.path().join("release");
-    let first = build_native_package(&options(fixture.tree.path(), &output, "0.1.0")).unwrap();
+    let first = build_native_package(&fixture.build(&output, "0.1.0")).unwrap();
     let release = first.release_dir.as_ref().unwrap();
     let fingerprint = tree_fingerprint(release).unwrap();
     let archive = first.archive.as_ref().unwrap();
@@ -1084,11 +1057,12 @@ fn failed_forced_rebuild_keeps_previous_output_byte_identical() {
     let sums_bytes = fs::read(output.join("SHA256SUMS")).unwrap();
     let provenance_bytes = fs::read(release.join("provenance.json")).unwrap();
 
-    fixture
-        .tree
-        .write("engine/lib/tsc", b"tampered engine", 0o755);
-    let error = build_native_package(&options(fixture.tree.path(), &output, "0.1.0")).unwrap_err();
-    assert!(error.to_string().contains("pinned expected"), "{error}");
+    fs::remove_file(fixture.tree.path().join("THIRD_PARTY_LICENSES.md")).unwrap();
+    let error = build_native_package(&fixture.build(&output, "0.1.0")).unwrap_err();
+    assert!(
+        error.to_string().contains("THIRD_PARTY_LICENSES.md"),
+        "{error}"
+    );
     assert_eq!(tree_fingerprint(release).unwrap(), fingerprint);
     assert_eq!(fs::read(archive).unwrap(), archive_bytes);
     assert_eq!(fs::read(output.join("index.json")).unwrap(), index_bytes);
@@ -1142,15 +1116,12 @@ fn archive_reader_rejects_duplicate_and_case_folded_entries() {
 
 #[test]
 fn corrupted_archive_is_rejected_on_reextract() {
-    let Some(fixture) = pinned_fixture("native-package-tamper") else {
+    let Some(fixture) = real_fixture("native-package-tamper") else {
         return;
     };
-    let report = build_native_package(&options(
-        fixture.tree.path(),
-        &fixture.base.path().join("release"),
-        "0.1.0",
-    ))
-    .unwrap();
+    let report =
+        build_native_package(&fixture.build(&fixture.base.path().join("release"), "0.1.0"))
+            .unwrap();
     let release = report.release_dir.as_ref().unwrap();
     let manifest = read_manifest_v2(release, expected("0.1.0")).unwrap();
     let mut allowed: BTreeSet<String> = manifest
@@ -1189,7 +1160,7 @@ fn native_cli_requires_built_at_or_source_date_epoch() {
 
 #[test]
 fn native_cli_accepts_source_date_epoch() {
-    let Some(fixture) = pinned_fixture("native-package-source-date-epoch") else {
+    let Some(fixture) = real_fixture("native-package-source-date-epoch") else {
         return;
     };
     let output = fixture.base.path().join("release");
@@ -1200,6 +1171,10 @@ fn native_cli_accepts_source_date_epoch() {
         fixture.tree.path().to_str().unwrap(),
         "--output",
         output.to_str().unwrap(),
+        "--assets-lock",
+        fixture.assets.lock.to_str().unwrap(),
+        "--cache",
+        fixture.assets.cache.to_str().unwrap(),
         "--release-version",
         "0.1.0",
     ]);

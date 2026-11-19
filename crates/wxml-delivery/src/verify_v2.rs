@@ -9,6 +9,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
+use crate::assets_lock::{
+    ENGINE_ASSET_NAME, ENGINE_ASSET_ROOT, TYPINGS_ASSET_NAME, canonical_tree_digest,
+};
 use crate::error::{DeliveryError, Result};
 use crate::manifest::{
     FileEntry, MAX_MANIFEST_BYTES, format_sha256sums, parse_sha256sums, read_limited, sha256_bytes,
@@ -16,11 +19,18 @@ use crate::manifest::{
 };
 use crate::manifest_v2::{
     ExpectedManifestV2, MINIPROGRAM_TYPINGS_ASSET, MINIPROGRAM_TYPINGS_BUNDLE_DIGEST,
-    MINIPROGRAM_TYPINGS_TOTAL_BYTES, ManifestV2, compute_type_asset_bundle, forbidden_runtime_path,
-    is_allowed_miniprogram_typings_path, read_manifest_v2,
+    MINIPROGRAM_TYPINGS_ROOT, MINIPROGRAM_TYPINGS_TOTAL_BYTES, ManifestV2,
+    compute_type_asset_bundle, forbidden_runtime_path, is_allowed_miniprogram_typings_path,
+    read_manifest_v2,
 };
-use crate::paths::validate_relative_path;
+use crate::paths::{validate_relative_path, validate_sha256};
+use crate::sri::Sha512Integrity;
 use crate::state::expected_directories;
+
+/// Package-relative generated provenance file.
+const PROVENANCE_PATH: &str = "provenance.json";
+/// Maximum accepted `provenance.json` size.
+const MAX_PROVENANCE_BYTES: u64 = 64 * 1024;
 
 /// Summary of a verified native package tree.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -141,11 +151,218 @@ pub fn verify_tree_v2(root: &Path, expected: ExpectedManifestV2<'_>) -> Result<N
         }
     }
 
+    // A `provenance.json` generated from `assets.lock.json` binds the installed
+    // payload to the lock payload tree digests. Older v2 packages have no lock
+    // fields and remain installable; a present lock identity is verified before
+    // activation and never treated as a warning.
+    verify_provenance_lock_identity(root, &manifest)?;
+
     Ok(NativeTreeReport {
         file_count: manifest.files.len(),
         total_bytes,
         manifest,
     })
+}
+
+fn verify_provenance_lock_identity(root: &Path, manifest: &ManifestV2) -> Result<()> {
+    if !manifest
+        .files
+        .iter()
+        .any(|file| file.path == PROVENANCE_PATH)
+    {
+        // Backward-compatible v2 packages: no provenance file means no lock
+        // identity to bind. New packager output always includes it.
+        return Ok(());
+    }
+    let bytes = read_limited(&root.join(PROVENANCE_PATH), MAX_PROVENANCE_BYTES)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
+        DeliveryError::Integrity(format!("provenance.json is malformed: {error}"))
+    })?;
+    let object = value.as_object().ok_or_else(|| {
+        DeliveryError::Integrity("provenance.json must be a JSON object".to_owned())
+    })?;
+    let Some(lock_sha256) = object.get("assetsLockSha256") else {
+        // Pre-lock v2 package: the field is optional and there is nothing to
+        // compare against. The tree was still fully verified above.
+        return Ok(());
+    };
+    let lock_sha256 = lock_sha256.as_str().ok_or_else(|| {
+        DeliveryError::Integrity("provenance assetsLockSha256 must be a string".to_owned())
+    })?;
+    validate_sha256(lock_sha256).map_err(|_| {
+        DeliveryError::Integrity(
+            "provenance assetsLockSha256 is not a 64-character lowercase SHA-256".to_owned(),
+        )
+    })?;
+    let assets = object
+        .get("assets")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| {
+            DeliveryError::Integrity(
+                "provenance assets must be an array when assetsLockSha256 is present".to_owned(),
+            )
+        })?;
+    let expected = [
+        (ENGINE_ASSET_NAME, ENGINE_ASSET_ROOT),
+        (TYPINGS_ASSET_NAME, MINIPROGRAM_TYPINGS_ROOT),
+    ];
+    if assets.len() != expected.len() {
+        return Err(DeliveryError::Integrity(
+            "provenance assets must list exactly the frozen engine and typings assets".to_owned(),
+        ));
+    }
+    for (name, root_path) in expected {
+        let entry = assets
+            .iter()
+            .filter(|asset| asset.get("name").and_then(serde_json::Value::as_str) == Some(name))
+            .collect::<Vec<_>>();
+        if entry.len() != 1 {
+            return Err(DeliveryError::Integrity(format!(
+                "provenance must list exactly one `{name}` asset"
+            )));
+        }
+        verify_provenance_asset(entry[0], name, root_path, manifest)?;
+    }
+    Ok(())
+}
+
+fn verify_provenance_asset(
+    asset: &serde_json::Value,
+    name: &str,
+    package_root: &str,
+    manifest: &ManifestV2,
+) -> Result<()> {
+    let object = asset.as_object().ok_or_else(|| {
+        DeliveryError::Integrity(format!("provenance asset `{name}` must be an object"))
+    })?;
+    let declared_root = provenance_str(object, "packageRoot", name)?;
+    if declared_root != package_root {
+        return Err(DeliveryError::Integrity(format!(
+            "provenance asset `{name}` packageRoot does not match `{package_root}`"
+        )));
+    }
+    let digest = provenance_sha256(object, "payloadTreeDigest", name)?;
+    let file_count = provenance_u64(object, "fileCount", name)?;
+    let total_bytes = provenance_u64(object, "totalBytes", name)?;
+    let tarball = object
+        .get("tarball")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            DeliveryError::Integrity(format!("provenance asset `{name}` is missing tarball"))
+        })?;
+    let integrity = provenance_str(tarball, "integrity", name)?;
+    Sha512Integrity::parse(integrity).map_err(|_| {
+        DeliveryError::Integrity(format!(
+            "provenance asset `{name}` tarball integrity is not a sha512 SRI"
+        ))
+    })?;
+    let tarball_sha256 = provenance_sha256(tarball, "sha256", name)?;
+    let tarball_size = provenance_u64(tarball, "size", name)?;
+    if tarball_size == 0 {
+        return Err(DeliveryError::Integrity(format!(
+            "provenance asset `{name}` tarball size is a zero placeholder"
+        )));
+    }
+
+    verify_provenance_tree(
+        name,
+        package_root,
+        digest,
+        file_count,
+        total_bytes,
+        manifest,
+    )?;
+    if name == ENGINE_ASSET_NAME
+        && (integrity != manifest.engine.distribution_integrity
+            || tarball_sha256 != manifest.engine.distribution_sha256
+            || tarball_size != manifest.engine.distribution_size)
+    {
+        return Err(DeliveryError::Integrity(
+            "provenance engine tarball identity does not match the manifest".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn provenance_str<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    name: &str,
+) -> Result<&'a str> {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            DeliveryError::Integrity(format!("provenance asset `{name}` is missing string {key}"))
+        })
+}
+
+fn provenance_sha256<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    name: &str,
+) -> Result<&'a str> {
+    let value = provenance_str(object, key, name)?;
+    validate_sha256(value).map_err(|_| {
+        DeliveryError::Integrity(format!(
+            "provenance asset `{name}` {key} is not a 64-character lowercase SHA-256"
+        ))
+    })?;
+    Ok(value)
+}
+
+fn provenance_u64(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    name: &str,
+) -> Result<u64> {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| {
+            DeliveryError::Integrity(format!(
+                "provenance asset `{name}` is missing integer {key}"
+            ))
+        })
+}
+
+fn verify_provenance_tree(
+    name: &str,
+    package_root: &str,
+    digest: &str,
+    file_count: u64,
+    total_bytes: u64,
+    manifest: &ManifestV2,
+) -> Result<()> {
+    let prefix = format!("{package_root}/");
+    let under_root: Vec<FileEntry> = manifest
+        .files
+        .iter()
+        .filter(|file| file.path.starts_with(&prefix))
+        .cloned()
+        .collect();
+    if under_root.is_empty() {
+        return Err(DeliveryError::Integrity(format!(
+            "installed tree has no files below `{package_root}` for provenance asset `{name}`"
+        )));
+    }
+    let actual_count = u64::try_from(under_root.len())
+        .map_err(|_| DeliveryError::SizeLimit("provenance file count overflows".to_owned()))?;
+    let actual_bytes = under_root.iter().try_fold(0_u64, |sum, file| {
+        sum.checked_add(file.size)
+            .ok_or_else(|| DeliveryError::SizeLimit("provenance bytes overflow".to_owned()))
+    })?;
+    if actual_count != file_count || actual_bytes != total_bytes {
+        return Err(DeliveryError::Integrity(format!(
+            "provenance asset `{name}` fileCount/totalBytes do not match the installed tree"
+        )));
+    }
+    if canonical_tree_digest(&under_root, package_root)? != digest {
+        return Err(DeliveryError::Integrity(format!(
+            "provenance asset `{name}` payloadTreeDigest does not match the installed tree"
+        )));
+    }
+    Ok(())
 }
 
 fn verify_payload_file(root: &Path, file: &FileEntry, checksum: Option<&String>) -> Result<()> {

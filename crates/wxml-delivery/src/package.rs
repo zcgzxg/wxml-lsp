@@ -6,6 +6,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::archive::{create_tar_gz, extract_tar_gz_allowlisted};
+use crate::assets_lock::{Asset, ENGINE_ASSET_NAME, ENGINE_ASSET_ROOT, TYPINGS_ASSET_NAME};
 use crate::error::{DeliveryError, Result};
 use crate::index_v2::{IndexV2, ReleaseV2, read_index_v2};
 use crate::manifest::{
@@ -29,6 +30,7 @@ use crate::manifest_v2::{
     is_allowed_miniprogram_typings_path, is_miniprogram_typings_path,
 };
 use crate::paths::{validate_platform, validate_relative_path, validate_version};
+use crate::provision::{CacheEntry, read_assets_lock, verify_cached_asset};
 use crate::semver::validate_strict;
 use crate::sri::sha512_sri_file;
 use crate::verify::{checksums_for_tree, verify_archive, verify_tree};
@@ -586,10 +588,15 @@ const GENERATED_PROVENANCE_PATH: &str = "provenance.json";
 /// Settings for one deterministic schema v2 native package build.
 #[derive(Clone, Debug)]
 pub struct BuildOptionsV2 {
-    /// Prepared package root containing the exact schema v2 tree.
+    /// Prepared package root containing the exact schema v2 tree, except for
+    /// `engine/` and `typings/`, which must come from the verified asset cache.
     pub input: PathBuf,
     /// Directory that receives the versioned directory, archive and index.
     pub output: PathBuf,
+    /// Repository `assets.lock.json`.
+    pub assets_lock: Option<PathBuf>,
+    /// Provisioned, content-addressed asset cache.
+    pub assets_cache: Option<PathBuf>,
     /// Release version (strict semantic version).
     pub release_version: String,
     /// Rust-to-engine RPC/frame protocol version.
@@ -634,23 +641,28 @@ impl BuildReportV2 {
     }
 }
 
-/// Builds a deterministic, Node-free schema v2 package from a prepared tree.
+/// Builds a deterministic, Node-free schema v2 package from a prepared tree
+/// plus a provisioned asset cache.
 ///
-/// The input tree is validated in place, hashed, copied into a versioned
-/// directory, written as `manifest.json`/`SHA256SUMS`, archived with fixed
-/// ownership and timestamps, re-extracted for a self-check, and recorded in a
-/// schema v2 `index.json`. `engine/lib/tsc` must match the pinned upstream
-/// SHA-256 and size. Manifest `engine.distribution*` fields are the frozen
-/// upstream contract ("pinned expected"), not a measurement of a local tarball;
-/// per-file hashes and the generated `provenance.json` record the measured
-/// local bytes.
+/// The input tree carries `bin/`, `zed-extension/` and the license documents;
+/// `engine/` and `typings/` are accepted only from an already provisioned
+/// cache that matches the submitted `assets.lock.json`. Every cache payload is
+/// re-verified (file set, SHA-256, size, mode, tree digest and bundles) before
+/// the manifest is built, and the manifest's `files[]`/`typeAssets[]` entries
+/// are taken from the lock's verified payload table rather than the input tree.
+/// `engine/lib/tsc` must additionally match the pinned upstream SHA-256/size.
+///
+/// The validated tree is hashed, copied into a versioned directory, written as
+/// `manifest.json`/`SHA256SUMS`, archived with fixed ownership and timestamps,
+/// re-extracted for a self-check, and recorded in a schema v2 `index.json`.
 ///
 /// # Errors
 ///
-/// Returns an error for a missing or unexpected payload file, a symbolic link,
-/// a wrong mode, a Node runtime file, a mismatched engine identity/version, an
-/// unsupported platform/protocol, oversized input, an existing output without
-/// `force`, or a post-build verification failure.
+/// Returns an error for a missing lock/cache, an unsafe input tree, an input
+/// file below `engine/` or `typings/`, a missing/corrupt/foreign cache entry,
+/// lock/cache drift, a wrong mode or digest, a Node runtime file, a mismatched
+/// engine identity, an unsupported platform/protocol, an existing output
+/// without `force`, or a post-build verification failure.
 pub fn build_native_package(options: &BuildOptionsV2) -> Result<BuildReportV2> {
     validate_native_options(options)?;
     let input = std::fs::canonicalize(&options.input)
@@ -660,14 +672,27 @@ pub fn build_native_package(options: &BuildOptionsV2) -> Result<BuildReportV2> {
             "input is not a directory".to_owned(),
         ));
     }
-    let files = collect_native_files(&input)?;
-    validate_engine_identity(&input)?;
+    let input_files = collect_native_files(&input)?;
+    validate_native_input_files(&input, &input_files)?;
+    let lock_path = options.assets_lock.as_deref().ok_or_else(|| {
+        DeliveryError::InvalidArgument(
+            "native package builds require --assets-lock <repo>/assets.lock.json".to_owned(),
+        )
+    })?;
+    let cache = options.assets_cache.as_deref().ok_or_else(|| {
+        DeliveryError::InvalidArgument(
+            "native package builds require --cache <provisioned-asset-cache>".to_owned(),
+        )
+    })?;
+    let assets = load_verified_assets(lock_path, cache)?;
+    let files = assemble_native_files(input_files, &assets)?;
+    validate_engine_identity(&files)?;
     validate_pinned_engine_binary(&files)?;
-    let (provenance, provenance_entry) = native_provenance_bytes(options, &files)?;
+    let (provenance, provenance_entry) = native_provenance_bytes(options, &files, &assets)?;
     let mut entries: Vec<FileEntry> = files.iter().map(|file| file.entry.clone()).collect();
     entries.push(provenance_entry);
     entries.sort_by(|left, right| left.path.cmp(&right.path));
-    let manifest = build_native_manifest(options, &input, entries)?;
+    let manifest = build_native_manifest(options, &input, entries, &assets)?;
 
     if options.dry_run {
         return Ok(BuildReportV2 {
@@ -731,6 +756,178 @@ fn validate_native_options(options: &BuildOptionsV2) -> Result<()> {
         )));
     }
     crate::state::validate_rfc3339_utc(&options.built_at)?;
+    Ok(())
+}
+
+/// One lock asset with its fully re-verified cache payload.
+struct VerifiedAsset {
+    asset: Asset,
+    entry: CacheEntry,
+}
+
+/// The two (or more) locked assets consumed by one native build.
+struct VerifiedAssets {
+    lock_sha256: String,
+    assets: Vec<VerifiedAsset>,
+}
+
+impl VerifiedAssets {
+    fn get(&self, name: &str) -> Result<&VerifiedAsset> {
+        self.assets
+            .iter()
+            .find(|verified| verified.asset.name == name)
+            .ok_or_else(|| {
+                DeliveryError::InvalidPackage(format!("assets lock is missing the `{name}` asset"))
+            })
+    }
+}
+
+fn load_verified_assets(lock_path: &Path, cache: &Path) -> Result<VerifiedAssets> {
+    let document = read_assets_lock(lock_path)?;
+    let mut assets = Vec::with_capacity(document.lock.assets.len());
+    for asset in &document.lock.assets {
+        let entry = verify_cached_asset(asset, cache, &document.lock_sha256, &document.lock_bytes)?;
+        assets.push(VerifiedAsset {
+            asset: asset.clone(),
+            entry,
+        });
+    }
+    if assets.is_empty() {
+        return Err(DeliveryError::InvalidPackage(
+            "assets lock declares no assets".to_owned(),
+        ));
+    }
+    Ok(VerifiedAssets {
+        lock_sha256: document.lock_sha256,
+        assets,
+    })
+}
+
+/// Required non-engine input files, executable allowlist and Zed version.
+fn validate_native_input_files(input: &Path, files: &[SourceFile]) -> Result<()> {
+    for required in [
+        "bin/wxml-lsp",
+        "bin/wxml-lsp-install",
+        "zed-extension/extension.wasm",
+        "zed-extension/extension.toml",
+        "THIRD_PARTY_LICENSES.md",
+    ] {
+        if !files.iter().any(|file| file.entry.path == required) {
+            return Err(DeliveryError::InvalidPackage(format!(
+                "staged package is missing `{required}`"
+            )));
+        }
+    }
+    for file in files {
+        if file.entry.mode == "0755"
+            && !crate::manifest_v2::ALLOWED_EXECUTABLES.contains(&file.entry.path.as_str())
+        {
+            return Err(DeliveryError::InvalidPackage(format!(
+                "payload `{}` is executable but not in the allowlist",
+                file.entry.path
+            )));
+        }
+    }
+    for path in ["bin/wxml-lsp", "bin/wxml-lsp-install"] {
+        let file = files
+            .iter()
+            .find(|file| file.entry.path == path)
+            .ok_or_else(|| {
+                DeliveryError::InvalidPackage(format!("staged package is missing `{path}`"))
+            })?;
+        if file.entry.mode != "0755" {
+            return Err(DeliveryError::InvalidPackage(format!(
+                "`{path}` must have mode 0755"
+            )));
+        }
+    }
+    zed_extension_version(&input.join("zed-extension/extension.toml"))?;
+    Ok(())
+}
+
+/// Merges the input files with the lock's verified cache payloads.
+///
+/// The final `engine/` and `typings/` file sets must equal the lock payload
+/// tables exactly; unmatched or extra cache bytes never reach the manifest.
+fn assemble_native_files(
+    input_files: Vec<SourceFile>,
+    assets: &VerifiedAssets,
+) -> Result<Vec<SourceFile>> {
+    let mut files = input_files;
+    let mut seen: BTreeSet<String> = files.iter().map(|file| file.entry.path.clone()).collect();
+    let mut cache_files = Vec::new();
+    for verified in &assets.assets {
+        let payload_root = verified.entry.directory.join("payload");
+        for locked in &verified.asset.payload.files {
+            let source = payload_root.join(&locked.path);
+            if !seen.insert(locked.path.clone()) {
+                return Err(DeliveryError::Integrity(format!(
+                    "packaged bytes repeat `{}` across the input and assets.lock.json",
+                    locked.path
+                )));
+            }
+            let metadata = std::fs::symlink_metadata(&source)
+                .map_err(|error| DeliveryError::io(&source, error))?;
+            if !metadata.file_type().is_file() {
+                return Err(DeliveryError::Integrity(format!(
+                    "cached payload `{}` is not a regular file",
+                    locked.path
+                )));
+            }
+            if metadata.len() != locked.size {
+                return Err(DeliveryError::Integrity(format!(
+                    "cached payload `{}` size does not match assets.lock.json",
+                    locked.path
+                )));
+            }
+            cache_files.push(SourceFile {
+                entry: locked.clone(),
+                absolute: source,
+            });
+        }
+    }
+    verify_lock_asset_roots(&files, &cache_files, assets)?;
+    files.extend(cache_files);
+    files.sort_by(|left, right| left.entry.path.cmp(&right.entry.path));
+    Ok(files)
+}
+
+fn verify_lock_asset_roots(
+    input_files: &[SourceFile],
+    cache_files: &[SourceFile],
+    assets: &VerifiedAssets,
+) -> Result<()> {
+    for verified in &assets.assets {
+        let prefix = format!("{}/", verified.asset.package_root);
+        let expected: BTreeMap<&str, &FileEntry> = verified
+            .asset
+            .payload
+            .files
+            .iter()
+            .map(|file| (file.path.as_str(), file))
+            .collect();
+        let mut actual = BTreeMap::new();
+        for file in cache_files {
+            if file.entry.path.starts_with(&prefix) {
+                actual.insert(file.entry.path.as_str(), &file.entry);
+            }
+        }
+        if actual != expected {
+            return Err(DeliveryError::Integrity(format!(
+                "packaged bytes do not match assets.lock.json for `{}`",
+                verified.asset.name
+            )));
+        }
+        if input_files
+            .iter()
+            .any(|file| file.entry.path.starts_with(&prefix))
+        {
+            return Err(DeliveryError::Integrity(format!(
+                "input files must not supply `{}` bytes; they come from the asset cache",
+                prefix.trim_end_matches('/')
+            )));
+        }
+    }
     Ok(())
 }
 
@@ -992,17 +1189,22 @@ fn collect_native_inner(
                 native_relative(root, &path)?
             )));
         }
+        let relative = native_relative(root, &path)?;
+        if is_locked_asset_root(&relative) {
+            return Err(DeliveryError::InvalidArgument(format!(
+                "input `{relative}`: engine/typings must come from the verified asset cache \
+                 (pass --assets-lock and --cache); the input tree must not supply them"
+            )));
+        }
         if metadata.file_type().is_dir() {
             collect_native_inner(root, &path, files, directories)?;
             continue;
         }
         if !metadata.file_type().is_file() {
             return Err(DeliveryError::UnsafeArchive(format!(
-                "input `{}` is not a regular file or directory",
-                native_relative(root, &path)?
+                "input `{relative}` is not a regular file or directory"
             )));
         }
-        let relative = native_relative(root, &path)?;
         validate_relative_path(&relative, false)?;
         #[cfg(unix)]
         {
@@ -1073,6 +1275,17 @@ fn native_relative(root: &Path, path: &Path) -> Result<String> {
     Ok(text.to_owned())
 }
 
+fn is_locked_asset_root(path: &str) -> bool {
+    path == ENGINE_ASSET_ROOT
+        || path
+            .strip_prefix(ENGINE_ASSET_ROOT)
+            .is_some_and(|rest| rest.starts_with('/'))
+        || path == "typings"
+        || path
+            .strip_prefix("typings")
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
 fn is_allowed_native_path(path: &str) -> bool {
     if matches!(
         path,
@@ -1101,9 +1314,16 @@ fn is_allowed_native_path(path: &str) -> bool {
         .is_some_and(|relative| !relative.is_empty())
 }
 
-fn validate_engine_identity(input: &Path) -> Result<()> {
-    let path = input.join("engine/package.json");
-    let bytes = read_limited(&path, MAX_MANIFEST_BYTES)?;
+fn validate_engine_identity(files: &[SourceFile]) -> Result<()> {
+    let engine = files
+        .iter()
+        .find(|file| file.entry.path == "engine/package.json")
+        .ok_or_else(|| {
+            DeliveryError::InvalidPackage(
+                "verified asset payload is missing `engine/package.json`".to_owned(),
+            )
+        })?;
+    let bytes = read_limited(&engine.absolute, MAX_MANIFEST_BYTES)?;
     let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(|error| {
         DeliveryError::InvalidPackage(format!("engine/package.json is malformed: {error}"))
     })?;
@@ -1231,6 +1451,7 @@ fn zed_extension_version(path: &Path) -> Result<String> {
 fn native_provenance_bytes(
     options: &BuildOptionsV2,
     files: &[SourceFile],
+    assets: &VerifiedAssets,
 ) -> Result<(Vec<u8>, FileEntry)> {
     let engine = files
         .iter()
@@ -1240,10 +1461,34 @@ fn native_provenance_bytes(
                 "staged package is missing `{ENGINE_BINARY_PATH}`"
             ))
         })?;
+    let mut asset_values = Vec::with_capacity(assets.assets.len());
+    for verified in &assets.assets {
+        asset_values.push(serde_json::json!({
+            "name": verified.asset.name.as_str(),
+            "version": verified.asset.version.as_str(),
+            "license": verified.asset.license.as_str(),
+            "packageRoot": verified.asset.package_root.as_str(),
+            "payloadTreeDigest": verified.asset.payload.tree_digest.as_str(),
+            "fileCount": verified.asset.payload.file_count,
+            "totalBytes": verified.asset.payload.total_bytes,
+            "tarball": {
+                "integrity": verified.asset.tarball.integrity.as_str(),
+                "sha256": verified.asset.tarball.sha256.as_str(),
+                "size": verified.asset.tarball.size,
+            },
+        }));
+    }
+    asset_values.sort_by(|left, right| {
+        left.get("name")
+            .and_then(serde_json::Value::as_str)
+            .cmp(&right.get("name").and_then(serde_json::Value::as_str))
+    });
     let value = serde_json::json!({
         "schemaVersion": 1,
         "package": PACKAGE_NAME,
         "packageVersion": options.release_version.as_str(),
+        "assetsLockSha256": assets.lock_sha256.as_str(),
+        "assets": asset_values,
         "engine": {
             "name": ENGINE_NAME,
             "version": ENGINE_VERSION,
@@ -1288,9 +1533,11 @@ fn build_native_manifest(
     options: &BuildOptionsV2,
     input: &Path,
     entries: Vec<FileEntry>,
+    assets: &VerifiedAssets,
 ) -> Result<ManifestV2> {
     let standard = native_standard_lib(&entries)?;
     let typings = native_typings(&entries)?;
+    verify_lock_bundles(assets, &standard, &typings)?;
     let zed_version = zed_extension_version(&input.join("zed-extension/extension.toml"))?;
     let shas = native_artifact_shas(&entries)?;
     let manifest = ManifestV2 {
@@ -1307,6 +1554,49 @@ fn build_native_manifest(
     };
     manifest.validate(native_expected(&manifest))?;
     Ok(manifest)
+}
+
+fn verify_lock_bundles(
+    assets: &VerifiedAssets,
+    standard: &TypeAssetBundle,
+    typings: &TypeAssetBundle,
+) -> Result<()> {
+    let engine = assets.get(ENGINE_ASSET_NAME)?;
+    if engine.asset.package_root != ENGINE_ASSET_ROOT {
+        return Err(DeliveryError::Integrity(
+            "engine asset packageRoot does not match the frozen `engine` root".to_owned(),
+        ));
+    }
+    verify_lock_bundle(&engine.asset, STANDARD_LIB_ASSET, standard)?;
+    let typings_asset = assets.get(TYPINGS_ASSET_NAME)?;
+    if typings_asset.asset.package_root != MINIPROGRAM_TYPINGS_ROOT {
+        return Err(DeliveryError::Integrity(
+            "typings asset packageRoot does not match the frozen typings root".to_owned(),
+        ));
+    }
+    verify_lock_bundle(&typings_asset.asset, MINIPROGRAM_TYPINGS_ASSET, typings)
+}
+
+fn verify_lock_bundle(asset: &Asset, name: &str, computed: &TypeAssetBundle) -> Result<()> {
+    let locked = asset
+        .payload
+        .bundles
+        .iter()
+        .find(|bundle| bundle.name == name)
+        .ok_or_else(|| {
+            DeliveryError::InvalidPackage(format!(
+                "assets lock is missing the `{name}` payload bundle"
+            ))
+        })?;
+    if locked.file_count != computed.file_count
+        || locked.total_bytes != computed.total_bytes
+        || locked.sha256 != computed.sha256
+    {
+        return Err(DeliveryError::Integrity(format!(
+            "type asset bundle `{name}` does not match assets.lock.json"
+        )));
+    }
+    Ok(())
 }
 
 fn native_standard_lib(entries: &[FileEntry]) -> Result<TypeAssetBundle> {
@@ -1738,6 +2028,7 @@ fn rollback_native_commit(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::assets_lock::canonical_tree_digest;
     use crate::manifest::PACKAGE_NAME;
 
     fn scratch(name: &str) -> PathBuf {
@@ -2067,6 +2358,403 @@ mod tests {
             error
                 .to_string()
                 .contains("payload does not match the frozen contract"),
+            "{error}"
+        );
+    }
+
+    fn npm_tarball(files: &[(&str, &[u8], u32)]) -> Vec<u8> {
+        let encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let mut builder = tar::Builder::new(encoder);
+        for (path, bytes, mode) in files {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(u64::try_from(bytes.len()).unwrap());
+            header.set_mode(*mode);
+            header.set_mtime(0);
+            header.set_uid(0);
+            header.set_gid(0);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, format!("package/{path}"), *bytes)
+                .unwrap();
+        }
+        builder.finish().unwrap();
+        let encoder = builder.into_inner().unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn synthetic_asset_value(
+        name: &str,
+        package_root: &str,
+        files: &[(&str, &[u8], u32)],
+    ) -> (serde_json::Value, Vec<u8>) {
+        let tarball = npm_tarball(files);
+        let upstream: Vec<FileEntry> = files
+            .iter()
+            .map(|(path, bytes, mode)| FileEntry {
+                path: (*path).to_owned(),
+                sha256: sha256_bytes(bytes),
+                size: u64::try_from(bytes.len()).unwrap(),
+                mode: format!("{mode:04o}"),
+            })
+            .collect();
+        let payload: Vec<FileEntry> = upstream
+            .iter()
+            .map(|file| FileEntry {
+                path: format!("{package_root}/{}", file.path),
+                ..file.clone()
+            })
+            .collect();
+        let upstream_digest = canonical_tree_digest(&upstream, "").unwrap();
+        let payload_digest = canonical_tree_digest(&payload, package_root).unwrap();
+        let bundle_include = if name == ENGINE_ASSET_NAME {
+            vec![STANDARD_LIB_INCLUDE.to_owned()]
+        } else {
+            vec!["**".to_owned()]
+        };
+        let bundle_root = if name == ENGINE_ASSET_NAME {
+            "engine/lib".to_owned()
+        } else {
+            package_root.to_owned()
+        };
+        let bundle = compute_type_asset_bundle(&payload, &bundle_root, &bundle_include).unwrap();
+        let tarball_name = format!("{name}-1.0.0.tgz");
+        let total_bytes: u64 = payload.iter().map(|file| file.size).sum();
+        let unpacked_size: u64 = upstream.iter().map(|file| file.size).sum();
+        (
+            serde_json::json!({
+                "name": name,
+                "kind": "npm-tarball",
+                "npmPackage": name,
+                "version": "1.0.0",
+                "os": ["any"],
+                "cpu": ["any"],
+                "provenance": {
+                    "registry": "https://registry.npmjs.org",
+                    "distSha1": "0123456789abcdef0123456789abcdef01234567",
+                    "publishedAt": "2025-01-01T00:00:00Z",
+                },
+                "license": "MIT",
+                "licenseFiles": [format!("{package_root}/LICENSE")],
+                "packageRoot": package_root,
+                "tarball": {
+                    "url": format!("https://registry.npmjs.org/{name}/-/{tarball_name}"),
+                    "size": tarball.len(),
+                    "integrity": crate::sri::sha512_sri_bytes(&tarball).to_sri(),
+                    "sha256": sha256_bytes(&tarball),
+                },
+                "upstream": {
+                    "fileCount": upstream.len(),
+                    "unpackedSize": unpacked_size,
+                    "stripPrefix": "package/",
+                    "treeDigest": upstream_digest,
+                    "files": upstream,
+                },
+                "extract": {
+                    "include": ["**"],
+                    "exclude": [],
+                    "executables": files.iter()
+                        .filter(|(_, _, mode)| *mode == 0o755)
+                        .map(|(path, _, _)| (*path).to_owned())
+                        .collect::<Vec<_>>(),
+                },
+                "payload": {
+                    "fileCount": payload.len(),
+                    "totalBytes": total_bytes,
+                    "treeDigest": payload_digest,
+                    "files": payload,
+                    "bundles": [{
+                        "name": if name == ENGINE_ASSET_NAME {
+                            STANDARD_LIB_ASSET.to_owned()
+                        } else {
+                            name.to_owned()
+                        },
+                        "root": bundle_root,
+                        "include": bundle_include,
+                        "fileCount": bundle.file_count,
+                        "totalBytes": bundle.total_bytes,
+                        "sha256": bundle.sha256,
+                    }],
+                },
+            }),
+            tarball,
+        )
+    }
+
+    struct SyntheticCache {
+        cache: PathBuf,
+        lock_bytes: Vec<u8>,
+        lock_sha256: String,
+        assets: VerifiedAssets,
+    }
+
+    fn synthetic_cache(base: &Path, label: &str, name: &str, package_root: &str) -> SyntheticCache {
+        let (value, tarball) = if name == ENGINE_ASSET_NAME {
+            let mut files: Vec<(String, Vec<u8>, u32)> = (0..113)
+                .map(|index| {
+                    (
+                        format!("lib/lib.f{index:03}.d.ts"),
+                        format!("// {index}\n").into_bytes(),
+                        0o644,
+                    )
+                })
+                .collect();
+            files.push(("lib/lib.d.ts".to_owned(), b"// base\n".to_vec(), 0o644));
+            files.push(("lib/lib.es5.d.ts".to_owned(), b"// es5\n".to_vec(), 0o644));
+            files.push((
+                "lib/lib.es2020.d.ts".to_owned(),
+                b"// es2020\n".to_vec(),
+                0o644,
+            ));
+            files.push((
+                "lib/tsc".to_owned(),
+                b"not-the-pinned-engine\n".to_vec(),
+                0o755,
+            ));
+            files.push(("LICENSE".to_owned(), b"license\n".to_vec(), 0o644));
+            files.push((
+                "package.json".to_owned(),
+                b"{\"name\":\"@typescript/typescript-linux-x64\",\"version\":\"7.1.0-beta\",\"gitHead\":\"3e9236361fa97a9e6c685f4833ac457ae2d8c50a\"}\n".to_vec(),
+                0o644,
+            ));
+            let borrowed: Vec<(&str, &[u8], u32)> = files
+                .iter()
+                .map(|(path, bytes, mode)| (path.as_str(), bytes.as_slice(), *mode))
+                .collect();
+            synthetic_asset_value(name, package_root, &borrowed)
+        } else {
+            let files = [
+                ("index.d.ts", b"export {};\n".as_slice(), 0o644),
+                ("LICENSE", b"license\n".as_slice(), 0o644),
+            ];
+            synthetic_asset_value(name, package_root, &files)
+        };
+        let bytes = serde_json::to_vec_pretty(&serde_json::json!({
+            "schemaVersion": 1,
+            "assets": [value],
+        }))
+        .unwrap();
+        let lock = crate::assets_lock::AssetsLock::parse(&bytes).unwrap();
+        let lock_sha256 = lock.lock_sha256().unwrap();
+        let from_dir = base.join(format!("{label}-from-dir"));
+        std::fs::create_dir_all(&from_dir).unwrap();
+        std::fs::write(from_dir.join(format!("{name}-1.0.0.tgz")), &tarball).unwrap();
+        let cache = base.join(format!("{label}-cache"));
+        std::fs::create_dir_all(&cache).unwrap();
+        set_mode(&cache, 0o700).unwrap();
+        let asset = &lock.assets[0];
+        let entry =
+            crate::provision::provision_asset(asset, &cache, Some(&from_dir), &lock_sha256, &bytes)
+                .unwrap();
+        SyntheticCache {
+            cache,
+            lock_bytes: bytes,
+            lock_sha256,
+            assets: VerifiedAssets {
+                lock_sha256: lock.lock_sha256().unwrap(),
+                assets: vec![VerifiedAsset {
+                    asset: asset.clone(),
+                    entry,
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn packager_cache_verification_accepts_exact_payload_and_rejects_tampering() {
+        let base = scratch("packager-cache-tamper");
+        let fixture = synthetic_cache(&base, "exact", TYPINGS_ASSET_NAME, MINIPROGRAM_TYPINGS_ROOT);
+        let asset = &fixture.assets.assets[0].asset;
+        verify_cached_asset(
+            asset,
+            &fixture.cache,
+            &fixture.lock_sha256,
+            &fixture.lock_bytes,
+        )
+        .unwrap();
+        let assembled = assemble_native_files(Vec::new(), &fixture.assets).unwrap();
+        assert_eq!(assembled.len(), 2);
+
+        let payload = fixture.assets.assets[0].entry.directory.join("payload");
+        let file = payload.join("typings/miniprogram-api-typings/index.d.ts");
+        std::fs::write(&file, b"tampered\n").unwrap();
+        let error = verify_cached_asset(
+            asset,
+            &fixture.cache,
+            &fixture.lock_sha256,
+            &fixture.lock_bytes,
+        )
+        .unwrap_err();
+        assert!(matches!(error, DeliveryError::Integrity(_)), "{error:?}");
+
+        let base = scratch("packager-cache-extra");
+        let fixture = synthetic_cache(&base, "extra", TYPINGS_ASSET_NAME, MINIPROGRAM_TYPINGS_ROOT);
+        let payload = fixture.assets.assets[0].entry.directory.join("payload");
+        std::fs::write(
+            payload.join("typings/miniprogram-api-typings/extra.d.ts"),
+            b"extra\n",
+        )
+        .unwrap();
+        let error = verify_cached_asset(
+            &fixture.assets.assets[0].asset,
+            &fixture.cache,
+            &fixture.lock_sha256,
+            &fixture.lock_bytes,
+        )
+        .unwrap_err();
+        assert!(matches!(error, DeliveryError::Integrity(_)), "{error:?}");
+
+        let base = scratch("packager-cache-missing");
+        let fixture = synthetic_cache(
+            &base,
+            "missing",
+            TYPINGS_ASSET_NAME,
+            MINIPROGRAM_TYPINGS_ROOT,
+        );
+        let payload = fixture.assets.assets[0].entry.directory.join("payload");
+        std::fs::remove_file(payload.join("typings/miniprogram-api-typings/LICENSE")).unwrap();
+        let error = verify_cached_asset(
+            &fixture.assets.assets[0].asset,
+            &fixture.cache,
+            &fixture.lock_sha256,
+            &fixture.lock_bytes,
+        )
+        .unwrap_err();
+        assert!(matches!(error, DeliveryError::Integrity(_)), "{error:?}");
+
+        let base = scratch("packager-cache-mode");
+        let fixture = synthetic_cache(&base, "mode", TYPINGS_ASSET_NAME, MINIPROGRAM_TYPINGS_ROOT);
+        let payload = fixture.assets.assets[0].entry.directory.join("payload");
+        set_mode(
+            &payload.join("typings/miniprogram-api-typings/index.d.ts"),
+            0o755,
+        )
+        .unwrap();
+        let error = verify_cached_asset(
+            &fixture.assets.assets[0].asset,
+            &fixture.cache,
+            &fixture.lock_sha256,
+            &fixture.lock_bytes,
+        )
+        .unwrap_err();
+        assert!(matches!(error, DeliveryError::Integrity(_)), "{error:?}");
+    }
+
+    #[test]
+    fn packager_rejects_engine_cache_tampering() {
+        type CacheMutation = fn(&Path);
+        let cases: &[(&str, CacheMutation)] = &[
+            ("engine-single", |payload| {
+                std::fs::write(payload.join("engine/lib/lib.es5.d.ts"), b"tampered\n").unwrap();
+            }),
+            ("engine-extra", |payload| {
+                std::fs::write(payload.join("engine/lib/extra.d.ts"), b"extra\n").unwrap();
+            }),
+            ("engine-missing", |payload| {
+                std::fs::remove_file(payload.join("engine/LICENSE")).unwrap();
+            }),
+        ];
+        for (label, mutate) in cases {
+            let base = scratch(label);
+            let fixture = synthetic_cache(&base, label, ENGINE_ASSET_NAME, ENGINE_ASSET_ROOT);
+            let payload = fixture.assets.assets[0].entry.directory.join("payload");
+            mutate(&payload);
+            let error = verify_cached_asset(
+                &fixture.assets.assets[0].asset,
+                &fixture.cache,
+                &fixture.lock_sha256,
+                &fixture.lock_bytes,
+            )
+            .unwrap_err();
+            assert!(matches!(error, DeliveryError::Integrity(_)), "{error:?}");
+        }
+    }
+
+    #[test]
+    fn packager_rejects_wrong_lock_bundle_and_stale_cache() {
+        let base = scratch("packager-cache-lock");
+        let fixture = synthetic_cache(&base, "lock", TYPINGS_ASSET_NAME, MINIPROGRAM_TYPINGS_ROOT);
+        let asset = &fixture.assets.assets[0].asset;
+
+        let mut value: serde_json::Value = serde_json::from_slice(&fixture.lock_bytes).unwrap();
+        value["assets"][0]["payload"]["bundles"][0]["sha256"] = serde_json::json!("0".repeat(64));
+        let wrong_bytes = serde_json::to_vec_pretty(&value).unwrap();
+        let wrong_lock = crate::assets_lock::AssetsLock::parse(&wrong_bytes).unwrap();
+        let error = verify_cached_asset(
+            &wrong_lock.assets[0],
+            &fixture.cache,
+            &wrong_lock.lock_sha256().unwrap(),
+            &wrong_bytes,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, DeliveryError::InstallState(_)),
+            "a lock change must invalidate the cache key: {error:?}"
+        );
+
+        let error =
+            verify_cached_asset(asset, &fixture.cache, &fixture.lock_sha256, b"{}\n").unwrap_err();
+        assert!(matches!(error, DeliveryError::Integrity(_)), "{error:?}");
+
+        let mut value: serde_json::Value = serde_json::from_slice(&fixture.lock_bytes).unwrap();
+        value["assets"][0]["tarball"]["sha256"] = serde_json::json!("1".repeat(64));
+        let stale_bytes = serde_json::to_vec_pretty(&value).unwrap();
+        let stale_lock = crate::assets_lock::AssetsLock::parse(&stale_bytes).unwrap();
+        let error = verify_cached_asset(
+            &stale_lock.assets[0],
+            &fixture.cache,
+            &stale_lock.lock_sha256().unwrap(),
+            &stale_bytes,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, DeliveryError::InstallState(_)),
+            "a changed lock must not reuse a stale cache entry: {error:?}"
+        );
+    }
+
+    #[test]
+    fn packager_rejects_unpinned_engine_and_missing_git_head() {
+        let base = scratch("packager-engine-pin");
+        let fixture = synthetic_cache(&base, "engine", ENGINE_ASSET_NAME, ENGINE_ASSET_ROOT);
+        let assembled = assemble_native_files(Vec::new(), &fixture.assets).unwrap();
+        validate_engine_identity(&assembled).unwrap();
+        let error = validate_pinned_engine_binary(&assembled).unwrap_err();
+        assert!(error.to_string().contains("pinned expected"), "{error}");
+
+        let package_json = base.join("missing-git-head.json");
+        let bytes = b"{\"name\":\"@typescript/typescript-linux-x64\",\"version\":\"7.1.0-beta\"}\n";
+        std::fs::write(&package_json, bytes).unwrap();
+        let source = SourceFile {
+            entry: FileEntry {
+                path: "engine/package.json".to_owned(),
+                sha256: sha256_bytes(bytes),
+                size: u64::try_from(bytes.len()).unwrap(),
+                mode: "0644".to_owned(),
+            },
+            absolute: package_json,
+        };
+        let error = validate_engine_identity(&[source]).unwrap_err();
+        assert!(
+            error.to_string().to_lowercase().contains("githead"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn packager_bundles_must_match_the_lock() {
+        let base = scratch("packager-bundle");
+        let fixture = synthetic_cache(&base, "bundle", ENGINE_ASSET_NAME, ENGINE_ASSET_ROOT);
+        let files = assemble_native_files(Vec::new(), &fixture.assets).unwrap();
+        let entries: Vec<FileEntry> = files.iter().map(|file| file.entry.clone()).collect();
+        let standard = native_standard_lib(&entries).unwrap();
+        let typings = native_typings(&fixture_typings_entries()).unwrap();
+        let mut broken = fixture.assets;
+        broken.assets[0].asset.payload.bundles[0].sha256 = "0".repeat(64);
+        let error = verify_lock_bundles(&broken, &standard, &typings).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("does not match assets.lock.json"),
             "{error}"
         );
     }

@@ -1254,6 +1254,14 @@ F3 整体仍未通过：真实 tarball/provisioning/lock、clean-env/ABI 和包�
 - 2026-11-19：F3-09 的 fixture 级迁移/回滚/前滚/恢复窗口测试位于
   `crates/wxml-delivery/tests/native_rollback.rs`；F3-09 仍为 **planned**，真实资产、CLI/clean-env
   进程审计和包级验收未完成。
+- 2026-11-19：F3-03 的 L5/L6 已接线：`wxml-lsp-package native` 现在要求
+  `--assets-lock <repo>/assets.lock.json` 与 `--cache <provisioned-cache>`，拒绝输入树提供
+  `engine/`/`typings/`，只消费 cache 中已逐文件复核（sha256/size/mode/treeDigest/bundle）的
+  payload；manifest `files[]`/`typeAssets[]` 来自 lock 的同一事实源，`engine/lib/tsc` 仍核对固定
+  SHA-256/size。生成的 `provenance.json` 记录 `assetsLockSha256` 与逐 asset
+  `payloadTreeDigest`，安装器的 `verify_tree_v2`（install/verify/upgrade/rollback/recover 共用）
+  在激活前对已安装树重算并比较。**F3-03 仍为 BLOCKED**：真实发布包、clean-env/B6 和包级验收
+  未完成；F3-04/05/06/07 获得新的 fixture/opt-in 证据，但仍未真实资产验收，保持 planned。
 - 2026-11-19：`wxml-lsp-install` 已按 index `schemaVersion` 分派 schema v1/v2，并新增 `recover`；v2 的
   `install`/`verify`/`upgrade`/`rollback`/`recover`、`--from-dir` 获取、`WXML_LSP_BIN` 优先级和精确版本
   探针已有 fixture 级集成测试。该实现**不关闭任何 F3 ID**：真实 `7.1.0-beta` 资产、clean-env/`strace`、

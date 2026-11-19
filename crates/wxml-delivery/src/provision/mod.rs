@@ -145,6 +145,111 @@ pub struct ProvisionReport {
     pub entries: Vec<CacheEntry>,
 }
 
+/// A submitted `assets.lock.json` that passed parsing and frozen validation.
+#[derive(Clone, Debug)]
+pub struct AssetsLockDocument {
+    /// Validated lock model.
+    pub lock: AssetsLock,
+    /// Exact submitted bytes (the cache lock-copy identity).
+    pub lock_bytes: Vec<u8>,
+    /// SHA-256 of the canonical lock form.
+    pub lock_sha256: String,
+}
+
+/// Reads, parses and fully validates a repository `assets.lock.json`.
+///
+/// This is the read-only entry used by the packager. It performs the same
+/// path/name/repository-root checks as `provision` and the frozen-constant
+/// reconciliation in [`AssetsLock::validate`], but it never creates a cache and
+/// never contacts the network.
+///
+/// # Errors
+///
+/// Returns a typed error for a missing/misnamed lock, a non-repository parent,
+/// an oversized file, malformed JSON or frozen-constant drift.
+pub fn read_assets_lock(lock: &Path) -> Result<AssetsLockDocument> {
+    let lock_path = canonical_lock_path(lock)?;
+    let lock_bytes = read_lock_bytes(&lock_path)?;
+    let lock = AssetsLock::parse(&lock_bytes)?;
+    lock.validate()?;
+    let lock_sha256 = lock.lock_sha256()?;
+    Ok(AssetsLockDocument {
+        lock,
+        lock_bytes,
+        lock_sha256,
+    })
+}
+
+/// Re-verifies one cache entry without creating or repairing anything.
+///
+/// The packager uses this to consume a provisioned cache: the entry must
+/// already exist for the exact submitted lock, and every payload file, mode,
+/// size, tree digest and bundle is re-checked by P9. A missing cache or entry
+/// fails closed instead of triggering a download or an implicit re-provision.
+///
+/// # Errors
+///
+/// Returns [`DeliveryError::InstallState`] when the cache or entry is missing,
+/// [`DeliveryError::Integrity`] when the entry belongs to another lock or has
+/// drifted, and [`DeliveryError::InvalidArgument`] for an unsafe cache path.
+pub fn verify_cached_asset(
+    asset: &Asset,
+    cache_root: &Path,
+    lock_sha256: &str,
+    lock_bytes: &[u8],
+) -> Result<CacheEntry> {
+    validate_sha256(lock_sha256)?;
+    if lock_bytes.is_empty()
+        || u64::try_from(lock_bytes.len()).unwrap_or(u64::MAX) > MAX_ASSETS_LOCK_BYTES
+    {
+        return Err(DeliveryError::SizeLimit(
+            "submitted assets lock bytes are empty or exceed the accepted size".to_owned(),
+        ));
+    }
+    if !cache_root.is_absolute() {
+        return Err(DeliveryError::InvalidArgument(
+            "--cache must be an absolute path".to_owned(),
+        ));
+    }
+    reject_cache_components(cache_root)?;
+    let cache = match std::fs::symlink_metadata(cache_root) {
+        Ok(_) => resolve_existing_cache(cache_root)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(DeliveryError::InstallState(
+                "assets cache is missing; run `wxml-lsp-package provision` first".to_owned(),
+            ));
+        }
+        Err(error) => return Err(DeliveryError::io(cache_root, error)),
+    };
+    let assets_dir = cache.join(CACHE_ASSETS_DIR);
+    match std::fs::symlink_metadata(&assets_dir) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.file_type().is_dir() {
+                return Err(DeliveryError::InvalidArgument(
+                    "cache `assets` must be a directory (not a symlink or file)".to_owned(),
+                ));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(DeliveryError::InstallState(
+                "assets cache is missing; run `wxml-lsp-package provision` first".to_owned(),
+            ));
+        }
+        Err(error) => return Err(DeliveryError::io(&assets_dir, error)),
+    }
+    let entry_dir = cache_entry_dir(&cache, asset, lock_sha256)?;
+    match cache_entry_state(&entry_dir)? {
+        CacheState::Present => {
+            assemble::verify_cache_entry(asset, &entry_dir, lock_sha256, lock_bytes)
+        }
+        CacheState::Invalid => Err(invalid_cache_entry()),
+        CacheState::Missing => Err(DeliveryError::InstallState(format!(
+            "assets cache entry for `{}` is missing; run `wxml-lsp-package provision` first",
+            asset.name
+        ))),
+    }
+}
+
 /// Returns whether this build can provision on the given host.
 ///
 /// # Errors
