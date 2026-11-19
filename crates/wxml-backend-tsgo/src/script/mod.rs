@@ -52,7 +52,9 @@ pub mod registration;
 pub mod scanner;
 pub mod snapshot;
 pub mod symbol_facts;
+mod symbol_query;
 pub mod symbols;
+mod this_scope;
 pub mod values;
 
 use thiserror::Error;
