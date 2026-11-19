@@ -1,6 +1,6 @@
 # 项目文档索引
 
-更新日期：2026-11-17。
+更新日期：2026-11-20。
 
 本文件说明各类文档的职责、权威来源和阅读顺序。每个事实只保留一个主要归属，其他文档通过链接引用，不重复维护。
 
@@ -28,7 +28,7 @@
 
 1. 阅读[项目 README](../README.md)，确认目标、范围和当前状态。
 2. 阅读本索引，了解文档归属。
-3. 需要理解架构时，按 0001 → 0008 阅读 [ADR](adr/README.md)；0008 仍为 proposed。
+3. 需要理解架构时，按 0001 → 0008 阅读 [ADR](adr/README.md)；0008 仍为 proposed。默认 `--stdio` 已在 `5020ae7` 切到 native（`NotInstalled` 时 HostOnly，损坏安装 fail closed），但 Node 仍保留为显式 `--backend node`，P7 删除未完成。
 4. 实现或评审跨模块接口时，阅读 [C0 基础契约](reference/contracts.md)、[C1 类型桥契约](reference/type-bridge-c1.md) 与[模板类型诊断策略](reference/type-diagnostics.md)。
 5. 实施 Rust + tsgo 迁移时，阅读 F0/F1 原生合同、F2 测试契约与 F3 交付合同；四者当前均为 draft，未实现项以其中 BLOCKED/planned 状态为准。
 6. 需要实现通用 WXML 功能时，阅读[功能基线](reference/wxml-language-feature-baseline.md)。

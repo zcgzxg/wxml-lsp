@@ -1,6 +1,6 @@
 # 架构决策记录
 
-更新日期：2026-11-17。
+更新日期：2026-11-20。
 
 本目录记录 WXML LSP 的架构选择、替代方案、边界和后果。需求与实际实施进度见[项目 README](../../README.md)。
 
@@ -16,6 +16,8 @@
 | [0006](0006-explicit-mini-program-roots.md) | 显式小程序根与类型项目根 | accepted | 2026-11-16 |
 | [0007](0007-local-delivery-trust-model.md) | 本地交付与安装信任模型 | accepted | 2026-11-17 |
 | [0008](0008-rust-tsgo-no-node-backend.md) | Rust + tsgo 类型后端与移除 Node 依赖 | proposed | 2026-11-17 |
+
+ADR-0008 保持 `proposed`：默认 `--stdio` 已在 `5020ae7` 实现为 native（`NotInstalled` 时 HostOnly，损坏安装 fail closed），但 Node 仍保留为显式 `--backend node`，P7 删除、G5/G6/G7 与 F3 全绿均未完成；不得写成 `accepted` 或声称 Node 已移除。
 
 ## 阅读与维护约定
 

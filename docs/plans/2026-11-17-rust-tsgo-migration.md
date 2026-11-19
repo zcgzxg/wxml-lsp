@@ -1,7 +1,7 @@
 # WXML LSP：Rust + tsgo 去 Node 迁移执行计划
 
-日期：2026-11-17（执行状态更新 2026-11-20）。状态：执行中；P0/P1 已执行，P2 契约已落地，P3–P6 仅完成部分切片；不是迁移完成报告。
-仓库：`/home/zxg/code/rust/wxml-lsp`。执行工作目录：`/home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration`（分支 `tsgo/migration`）。当前记录基线：HEAD `0ca4375`（F3 审计，见 §12.7）；§12.1–§12.6 保留各自历史快照。
+日期：2026-11-17（执行状态更新 2026-11-20）。状态：执行中；P0/P1 已执行，P2 契约已落地，P3–P6 完成部分切片；P6-8a 默认 `--stdio` 已切到 native，但 Node 实现未删除、P7 未开始；不是迁移完成报告。
+仓库：`/home/zxg/code/rust/wxml-lsp`。执行工作目录：`/home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration`（分支 `tsgo/migration`）。当前记录基线：HEAD `899a89a`（native edit gates，见 §12.12）；§12.1–§12.10 保留各自历史快照。
 
 配套决策草案：`wxml-lsp-adr-0008-rust-tsgo-no-node-draft-2026-11-17.md`。正式计划为本文件，ADR 为 `docs/adr/0008-rust-tsgo-no-node-backend.md`。
 
@@ -484,11 +484,11 @@ P1-C 证明旧→新的可行路径；P6/P7 用真实本地包重跑全部转换
 | 并行冲突/资源争用 | 单文件 owner、合同基线、独立 target、受限 worker/编译并发 |
 | 发布 ABI/离线/旧 schema 回归 | P1-C/P6/P7 真实包验证；不扩大未经验证的平台宣称 |
 
-当前下一步：完成 P6-3 的 adapter 资产 handoff（`VerifiedInstall` → `TypeAssets` → `AnalysisInput::with_environment`、compilerOptions、`js_check`、diagnostics/hover），并关闭 F3-03 的可信 pin loader/`assets.lock.json`；随后处理 P6-4 残余（fd/`openat` TOCTOU、真实包/无 Node 进程审计）、document-symbol adapter/LSP 接线和 QuickInfo/overload 文档缺口。P6-2 的 gate 转换仍须按 S0–S8 逐项完成；23 个 `#[ignore]` 与 2 个静默 return 在替代测试 `mandatory_green` 前不得删除或计入通过。P6/P7 的默认切换与 Node 删除不在下一步范围内。详见 §12.3。
+当前状态（HEAD `899a89a`）：P6-8a 的默认 `--stdio` native、`NotInstalled` → HostOnly、损坏安装 fail-closed 和显式 `--backend node` 已由 `5020ae7` 提交，no-Node guard 的默认分支静态检查由 `7f9116a` 更新；全 workspace `cargo test` 在 `7f9116a` 的执行会话记录为 `CARGO_EXIT=0`。23 个旧 Node gate 的 native replacement 已全部 `gate_green`（0 required），但 replacement 仍 `#[ignore]`，不等于 `mandatory_green`；`899a89a` 的 3 个 native edit gate 尚未提升 ledger。下一步：P7-0 预删除冻结、P7-1 将 259 planned 归零并完成 gate review、F3-06/09/14 收口、用默认 `--stdio` 重新构建 v2 包并录制默认路径 Zed 冒烟；P7 删除（`backend_node`、旧 TS 树、v1 写路径）仍未开始，不得先删后补。详见 §12.11–§12.12。
 
 ## 12. 执行状态、证据与边界
 
-正式计划与 ADR-0008 已提交到迁移 worktree 的 `b9616c5`。P0/P1 已执行；P2 契约已落盘；P3–P6 只完成下列切片。§12.1–§12.3 记录 `6358925` 快照；§12.5 追加 2026-11-19 `0a245b9` 增量。迁移未完成，默认后端仍是 Node。
+正式计划与 ADR-0008 已提交到迁移 worktree 的 `b9616c5`。P0/P1 已执行；P2 契约已落盘；P3–P6 只完成下列切片。§12.1–§12.10 记录各自历史快照（§12.1–§12.3 为 `6358925`，§12.5 为 `0a245b9`，§12.6–§12.10 为 2026-11-20 gate 波次）。迁移未完成：默认 `--stdio` 已于 `5020ae7` 切到 native（`NotInstalled` 时 HostOnly），但 Node 实现保留为显式 `--backend node`，P7 删除未开始。
 
 ### 12.1 P0/P1 证据（历史）
 
@@ -515,7 +515,7 @@ G1 仍未关闭；7.1.0-beta 仅由维护者有条件接受并固定 integrity�
 | `6eb6f26` | Native document symbols DTO | `wxml-types` 新增 `DocumentSymbol*` DTO 与默认 `Backend::document_symbols`；`wxml-backend-tsgo` 解码 v9 document symbols，保留 UTF-16/UTF-8 范围与 gap/truncation | 库/单元 | adapter/LSP 路由未接线；脚本文档的 view/reverse lookup、snapshot 身份与 `DocumentRoute::Script` 仍是前置；WXML `structure.rs` outline 不变 |
 | `6358925` | typings payload 身份强制 | 23 文件 allowlist、`2,548,075 B`、bundle 摘要 `ba3eb83410db79bd80727e9f38eef7cf0f0a3a3c7fde02f8d14467cf95bab46b`、精确 payload 路径、入库的 5.3.1 fixture；manifest/verify/打包器重算并比较 | 交付库/单元（入库 fixture）；`typings_payload.rs` 为 opt-in 真实树检查 | 真实上游 tarball 的 SRI/SHA-256/size、provisioning、`assets.lock.json`、clean-env/ABI、包级验收未完成；F3-03/B6 仍 BLOCKED，不关闭任何 F3 ID |
 
-### 12.3 当前门禁与下一步
+### 12.3 当前门禁与下一步（2026-11-19 快照；默认切换后的状态见 §12.11）
 
 当前门禁事实：
 
@@ -545,7 +545,7 @@ G1 仍未关闭；7.1.0-beta 仅由维护者有条件接受并固定 integrity�
 6. **P6-2 gate 转换**：按 S0–S8 逐项落地；23 个 `#[ignore]` 在替代测试 `mandatory_green` 前不得移除；2 个静默 return + 可选 `tsc` 必须变成 3 个强制原生 gate，并加负向 fail-closed 测试。
 7. **P6-8/P7**：只有在 G5/G6 关闭、真实包/安装/回滚/Zed 验收完成后，才切换默认后端和删除 Node；本轮不执行。
 
-### 12.4 明确不声称
+### 12.4 明确不声称（§12.1–§12.3 快照；默认切换后的边界见 §12.11）
 
 - 不声称任何 F3 验收 ID 已关闭（2026-11-19 快照；2026-11-20 的 8 closed / 6 partial / 2 blocked 见 §12.7）；`6358925` 只固定 typings payload 身份，F3-03/B6 当时仍 BLOCKED。
 - 不声称 P6-3、P6-4、G5 或 G6 已关闭；不声称 23 个 ignored gate 或 2 个静默 return 已迁移。
@@ -718,3 +718,83 @@ checked `null`）；该 fixture 完全可解析，页面不得出现状态 warni
 边界：23 个 replacement 仍 `#[ignore]`；默认 `cargo test` 不运行它们，`gate_green`
 不是默认 CI 绿，也不是 `mandatory_green`；两个 `semantic_tools` 静默 return、267 个
 planned case、P6/P7、G5/G6/F3 均未关闭，默认后端仍是 Node。
+
+### 12.11 2026-11-20 P6-8a 默认 native 与 HostOnly（`5020ae7`、`7f9116a`）
+
+本节记录 `04fa0fe`/`2f072a6` gate 波次之后的默认入口切换；§12.6–§12.10 的历史快照不变。
+本次提交没有删除 Node、没有修改 Cargo、没有重建 release 包，也没有把任何 gate 提升为
+`mandatory_green`。
+
+| 项 | 已提交事实 | 证据/边界 |
+| --- | --- | --- |
+| 默认选择器 | `--stdio` 无 `--backend` 映射到 `Action::Default` → `serve_default()` → `run_stdio_native_default()`；`--backend native` 仍是严格 `serve_native()`；`--backend node` 映射到 `serve_node()` | ` crates/wxml-lsp/src/main.rs:100`、`:176`、`:200`、`:206`、`:220` |
+| `NotInstalled` | 只有 `EngineDiscoveryError::NotInstalled` 降级到 `run_stdio_host_only()`；HostOnly 不发现引擎、不加载类型资产、不创建 sandbox、不读 `WXML_NODE`/`WXML_TYPE_BACKEND`/`WXML_BACKEND_DIR` | ` crates/wxml-lsp/src/backend_tsgo/mod.rs:208`、`:235`、`:342`；` crates/wxml-lsp/tests/cli.rs:109` |
+| 损坏安装 | manifest 缺失/非法 JSON、引擎缺失、引擎摘要不匹配和资产错误均在 LSP handshake 前 fail closed，不降级 HostOnly 或 Node | ` crates/wxml-lsp/tests/cli.rs:259`、`:294`、`:311`、`:319`；严格 native 的回退拒绝见 `:77` |
+| Node 过渡 | `--backend node` 保留并标记 deprecated；`serve_node()` 仍是唯一构造 `NodeBackend` 的生产路径 | ` crates/wxml-lsp/src/main.rs:206`；` crates/wxml-delivery/tests/no_node_guard.rs:477` |
+| HostOnly 能力 | 模板语法/格式化/结构/事件 facts/script symbol facts 可用；类型查询 `Unavailable`（reason `native engine is not installed`），capabilities 为 `Partial`，不伪造空成功 | ` crates/wxml-lsp/src/backend_tsgo/mod.rs:151`、`:1084`；` crates/wxml-lsp/tests/cli.rs:109` 的 hover/status 断言 |
+| no-Node guard | `7f9116a` 将 `lsp_native_status()` 改为检查 `serve_default()` 不含 `NodeBackend::new`，且 `serve_node()` 仍保留；`WXML_REQUIRE_LSP_NATIVE=1` 可得到静态 PASS | ` crates/wxml-delivery/tests/no_node_guard.rs:477`、`:524`、`:1003`；只是源码检查，不运行 live LSP，不关闭 F3-02 的 `execve` 审计 |
+
+`--help` 同步改为 `native (default)`，Node 环境变量说明只保留在 `--backend node` 段
+（` crates/wxml-lsp/src/main.rs:25`、`:36`）。
+
+运行事实：
+
+| 验证 | 结果 | 范围与边界 |
+| --- | --- | --- |
+| 全 workspace `cargo test` @ `7f9116a` | `CARGO_EXIT=0` | 执行会话记录；本轮未重跑，stdout 未入库；该运行早于 `899a89a` 的 edit gates，不等于默认 CI 或 G6 |
+| `cargo test -p wxml-lsp --test native_parity` @ `899a89a` | 37 passed / 0 failed / 26 ignored | 默认套件；26 ignored = 23 个旧 gate replacement + 3 个 native edit gate |
+| required native job（23 gate，`--release`） | 23 passed / 0 failed / 36 filtered，65.84 s；fail-closed RED 0 passed / 23 failed | 运行锚点 `04fa0fe`，台账提交 `2f072a6`；`--ignored` opt-in，不是默认 CI |
+| required native edit job | 3 passed / 0 failed / 60 filtered | 提交 `899a89a`（运行记录 validation HEAD `7f9116a`）；见 §12.12 |
+| ledger @ `0bf666b` | 44 `green` / 259 `planned` / 36 `retired-with-decision`，339 总数 | case 轴；gate 变绿不自动提升 case，`gate_green` 也不是 `mandatory_green` |
+
+边界：
+
+- 23 个旧 Node gate 的 native replacement 已全部 `gate_green`、`required_not_migrated` 为 0；
+  它们仍全部带 `#[ignore]`，只有 opt-in required native job 证据，不能当作默认 CI 绿。
+- 默认切换只在源码层提交；F3-14 使用的 P6-7 包构建于 `8ccebbf`，其 `--help` 仍写
+  `node (default)`；`b095258` 的已提交证据没有用 P6-8a 重新构建包或录制默认
+  `--stdio` 的 Zed UI 证据。
+- F3 的已提交证据仍为 13 closed / 2 partial / 1 blocked（F3-06/09 partial，F3-14 blocked；
+  §12.7 的 8/6/2 是 2026-11-20 早先审计快照，后续验收以 F3 合同 §9.5 为准）；
+  G5/G6/G7 未关闭；Node 实现、旧 TS 测试和 `semantic_tools` 默认 Node 路径均未删除。
+- HostOnly 不是“原生引擎验证通过”；平台证据仍只有 Linux x86_64。
+
+F3 相邻提交（不改变 13/2/1）：`28c5e18` 已提交 F3-06/09 的 test-only ptrace +
+外部 `SIGKILL` 精确窗口，F3-06 的 U1/U3/U5/U6 与 F3-09 的 L3/L4 均 PASS，但
+F3-06 仍缺真实第二版本、F3-09 仍缺真实 legacy 发布包，故保持 partial；
+`b095258` 的 F3-14 opt-in wrapper Zed UI 冒烟 16/16 PASS，但包构建于 `8ccebbf`
+且显式追加 `--backend native`，默认路径包冒烟未录制，F3-14 仍 blocked。
+
+### 12.12 2026-11-20 P7 native edit gates 与删除状态（`899a89a`）
+
+本节记录 P7 相关 surface 的 native replacement；§12.6–§12.11 的 gate/默认切换快照不变。
+本次没有删除旧测试、没有提升 ledger gate、没有开始 P7-0..P7-7 的任何删除。
+
+| 项 | 状态 |
+| --- | --- |
+| `G-P5-E2E-22` | `native_component_property_edit_applies_and_reparses` 在 `component-bindings` fixture 上重命名组件属性 `title`：三个 `documentChanges`（`card.ts` 声明、`card.wxml` 的 `{{ title }}`、页面两个 `title=`），断言精确范围/`newText`、应用后模板 reparse、页面仍发布冻结的两个 error 且属性错误改指 `heading`，证明 native 检查使用应用后的 overlay；磁盘文件不变 |
+| `G-P5-E2E-22`（post-edit） | `assert_native_edit_reparses_and_typechecks` 是独立 gate：构造精确 `count -> total` 编辑并应用后要求 native script check 清洁，再用真实 `string`/`number` mismatch 正控制产生真实错误；无 `tsc` 分支、无 Node 子进程 |
+| `G-P5-E2E-23` | `native_rejects_cross_namespace_and_dynamic_edits` 覆盖 6 个拒绝场景（组件 property↔data、跨 script `setData`、解构 shorthand、动态 `bindtap`、非字面量 `Page(options)` 等），每个必须 `-32803` 拒绝或 `Partial` 且零编辑，源文件逐字节不变；正控制先做真实 `alpha -> beta` 重命名 |
+| 冻结清单 | `MIGRATED_CASES` 为上述 3 个测试，`BLOCKED_NATIVE_GATES` 为空；`native_gates` 分类为 23 个旧 gate + 23 个 native engine gate + 3 个 native edit gate = 49 个 `#[ignore]` |
+| 运行 | required edit job 3 passed / 0 failed / 60 filtered，12.83 s；缺失 package 时每个 gate 单独 0 passed / 1 failed / exit 101；`semantic_tools real_node_lsp_` 在 native required 模式下 2 passed / 0 failed / 39 filtered |
+| 旧路径 | `semantic_tools` 的默认行为未变：无 native flag 时仍打印 skip 并 `return`，可选 `tsc` 分支仍打印 skip；设置 `WXML_TEST_NATIVE=1`/`WXML_REQUIRE_REAL_ENGINE=1` 后缺 package、缺 `server.js` 或缺 `tsc` 改为 panic |
+
+证据锚点：` crates/wxml-lsp/tests/native_parity/symbols_edits.rs:33`、`:44`、`:51`；
+` crates/wxml-lsp/tests/semantic_tools.rs:2086`、`:2215`、`:2589`；
+` crates/wxml-lsp/tests/common/native_edit.rs`；运行记录见
+[2026-11-20 P6-2 native edit gates](../evidence/2026-11-20-tsgo-p6-edit-gates.md)。
+
+仍未完成（BLOCKED）：
+
+- ledger 的 `silent_skip_gates` `G-P5-E2E-22`/`G-P5-E2E-23` 仍是
+  `required_not_migrated`；3 个 edit gate 没有 promotion/review，不是
+  `mandatory_green`。
+- 23 个旧 gate 仍全部 `#[ignore]`，`semantic_tools` 的两个默认 Node 路径和可选
+  `tsc` 分支仍在，旧 `real_node`/`wave5`/`stdio_type_loop` 测试未 retarget 或删除。
+- ledger 仍为 44 `green` / 259 `planned` / 36 `retired-with-decision`；P7-1 归零未开始。
+- P7-0 预删除冻结未开始：没有 `p7-pre-delete` tag，没有
+  `docs/evidence/data/legacy-{node,ts}-tests.json`；`ledger.rs` 和
+  `fixture_hash.rs` 仍读取 live `backends/typescript/test` 树
+  （` crates/wxml-lsp/tests/native_parity/ledger.rs:1435`、
+  ` crates/wxml-lsp/tests/native_parity/fixture_hash.rs:50`）。
+- P7-3..P7-7 没有任何删除提交；`backend_node`、旧 TS 源码/测试、v1 packager 写路径都还在。

@@ -1,7 +1,7 @@
 # ADR-0008: Rust + tsgo 类型后端，移除 Node 依赖
 
 **Date**: 2026-11-17
-**Status**: proposed（用户已选择迁移方向，并已于 2026-11-17 有条件接受 7.1.0-beta 作为唯一候选基线；2026-11-18 接受 B-02 补偿控制；P2 合同冻结、P1-C 生产实现与 G1 完成前不升级为 accepted）
+**Status**: proposed（用户已选择迁移方向，并已于 2026-11-17 有条件接受 7.1.0-beta 作为唯一候选基线；2026-11-18 接受 B-02 补偿控制；2026-11-20 默认 `--stdio` 已实现 native/HostOnly，但 Node 保留显式 `--backend node`，P7 删除与 G5/G6/G7 未完成，仍不升级为 accepted）
 **Deciders**: 项目维护者；planner、architect、Rust 测试及交付盘点参与设计
 
 本文记录已采用的迁移方向；接口与能力验证完成前保持 proposed。实施计划见 `docs/plans/2026-11-17-rust-tsgo-migration.md`。本文件不表示迁移、测试或交付已经完成。
@@ -101,6 +101,16 @@ P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、Definit
 
 截至 2026-11-17，P1-A 已实测原生进程、虚拟快照、类型/符号/文档/补全/引用、AST 关键字段、UTF-16 坐标和进程控制；稳定版 7.0.2 已排除，7.1.0-beta 为唯一候选。完整 shadow、Behavior/props/loops/guards、保守 rename、完整 AST 解码、无 Node 安装器和 clean-env 验收仍**待执行**。现有原生实验和旧后端测试记录只能作为阶段性证据，不能据此声称本 ADR 已通过验证或迁移完成。
 
+截至 2026-11-20 的验证状态（仍为 proposed）：
+
+- **默认入口**：`5020ae7` 已把默认 `--stdio` 切到 native。验证安装存在时使用固定引擎；只有 `EngineDiscoveryError::NotInstalled` 降级 `HostOnly`，manifest/引擎/类型资产缺失、损坏或不匹配一律在 LSP handshake 前 fail closed。`--backend native` 仍是严格选择器，`--backend node` 保留为 deprecated 过渡路径。`7f9116a` 的 no-Node guard 只对默认分支做静态源码检查，不运行 live LSP，也不关闭 F3-02 的 `execve` 审计。
+- **门禁**：23 个旧 Node gate 的 native replacement 已全部 `gate_green`、`required_not_migrated` 为 0；但它们仍是 opt-in `--ignored` 结果，不是 `mandatory_green`，也不是默认 CI 通过。
+- **编辑安全与测试迁移**：`899a89a` 已实现 3 个 native edit gate（`G-P5-E2E-22/23`），但旧 23 个 gate、旧 `semantic_tools` 默认 Node 路径和可选 `tsc` 分支仍在；ledger 仍为 44 `green` / 259 `planned` / 36 `retired-with-decision`。
+- **交付**：已提交的 F3 状态为 13 closed / 2 partial / 1 blocked（F3-06/09 partial，F3-14 blocked）。F3-14 的 opt-in wrapper Zed UI 冒烟已通过，但已提交证据中默认 `--stdio` 的打包 Zed 冒烟尚未录制。
+- **删除**：P7-0 预删除冻结和 P7-3..P7-7 删除均未开始；`backend_node`、旧 TS 源码/测试和 v1 packager 写路径仍存在。
+
+因此 Validation 第 2、3、4、6 项仍未满足；本 ADR 保持 proposed。不得写成 accepted，不得声称 Node 已移除、P7 已完成或迁移完成。
+
 ## 与既有 ADR 的关系
 
 - ADR-0001：仅替代 Node 首选运行时/进程模型，保留 crate 分层和可替换后端。
@@ -117,4 +127,7 @@ P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、Definit
 - `docs/evidence/2026-11-15-native-typescript-service.md`：普通虚拟 TS 文件历史试验，不是完整小程序验收。
 - `docs/evidence/2026-11-17-tsgo-native-api-spike.md`：7.1.0-beta Linux x64 无 Node 实测，包含虚拟快照、查询、AST、UTF、handle、写路径与 7.0.2 不兼容证据。
 - `docs/evidence/2026-11-17-tsgo-migration-baseline.md`、`docs/evidence/2026-11-17-tsgo-delivery-spike.md`：P0 测试基线及 P1-C 交付盘点。
+- `docs/evidence/2026-11-20-tsgo-p6-default-switch-plan.md`：P6-8 默认选择器、HostOnly、P7 删除顺序与 blocker 设计（只读）。
+- `docs/evidence/2026-11-20-tsgo-p6-edit-gates.md`：3 个 native edit gate 与 required job 运行记录。
+- `docs/evidence/2026-11-20-tsgo-f3-14-zed-smoke.md`：opt-in wrapper 的 Zed UI 冒烟；F3-14 仍 blocked。
 - Microsoft TypeScript 官方源码，调研提交 `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`：`packages/typescript/src/api/async/client.ts`、`api/options.ts`、`api/proto.generated.ts`、`tsc/internal/ipc/protocol_jsonrpc.go`、`tsc/internal/api/encoder/encoder.go`、`tsc/internal/api/callbackfs.go`。源码调研与本次二进制实测相互独立；未实测的字段不得当成已验证。
