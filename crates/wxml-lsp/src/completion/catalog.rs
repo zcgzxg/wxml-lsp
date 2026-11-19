@@ -1317,6 +1317,90 @@ pub(crate) fn is_event_prefix(name: &str) -> bool {
     })
 }
 
+/// Completed event-binding attribute names for handler-value routing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EventAttributeClass {
+    /// A completed `bind`/`catch`/`capture-bind`/`capture-catch`/`mut-bind`
+    /// binding that owns an event handler value.
+    Handler,
+    /// A binding-shaped name that cannot own an event handler value.
+    Rejected(EventAttributeRejection),
+    /// An attribute unrelated to event bindings.
+    Other,
+}
+
+/// Why a binding-shaped attribute name is not an event-handler value.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum EventAttributeRejection {
+    /// Bare prefix such as `bind` or `catch`.
+    MissingEventName,
+    /// A colon form with no event name (`bind:`).
+    EmptyEventName,
+    /// A colon form with an illegal event segment (`bind::tap`).
+    InvalidEventName,
+    /// A direct form whose suffix is not all ASCII lowercase
+    /// (`bind-get-phonenumber`, `bindTap`).
+    InvalidDirectSuffix,
+    /// `bindex` is an ordinary attribute that collides with `bind` + `ex`.
+    ConflictingAttribute,
+}
+
+/// Returns whether a completed attribute name owns an event-handler value.
+///
+/// This is the value-routing classifier. [`is_event_prefix`] remains the
+/// attribute-name completion classifier and deliberately accepts incomplete
+/// suffixes such as `bind` or `bindt`; it must not decide value routing.
+pub(crate) fn is_event_value_attribute(name: &str) -> bool {
+    matches!(classify_event_attribute(name), EventAttributeClass::Handler)
+}
+
+/// Classifies one complete attribute name against the value-routing rules.
+///
+/// Colon forms accept any non-empty event name made of ASCII letters, digits,
+/// `_` and `-`. Direct forms keep the historical loose shape: only `bind` and
+/// `catch` take a non-empty all-ASCII-lowercase suffix. `EVENT_NAMES` is not
+/// consulted: custom events such as `bindgetphonenumber` stay handlers.
+pub(crate) fn classify_event_attribute(name: &str) -> EventAttributeClass {
+    const COLON_PREFIXES: [&str; 5] =
+        ["capture-bind", "capture-catch", "mut-bind", "bind", "catch"];
+    const DIRECT_PREFIXES: [&str; 2] = ["bind", "catch"];
+    if name == "bindex" {
+        return EventAttributeClass::Rejected(EventAttributeRejection::ConflictingAttribute);
+    }
+    for prefix in COLON_PREFIXES {
+        let Some(rest) = name.strip_prefix(prefix) else {
+            continue;
+        };
+        if rest.is_empty() {
+            return EventAttributeClass::Rejected(EventAttributeRejection::MissingEventName);
+        }
+        if let Some(event) = rest.strip_prefix(':') {
+            if event.is_empty() {
+                return EventAttributeClass::Rejected(EventAttributeRejection::EmptyEventName);
+            }
+            return if event.bytes().all(is_event_name_byte) {
+                EventAttributeClass::Handler
+            } else {
+                EventAttributeClass::Rejected(EventAttributeRejection::InvalidEventName)
+            };
+        }
+        // `capture-bind`/`capture-catch`/`mut-bind` only exist in colon form.
+        return if DIRECT_PREFIXES.contains(&prefix)
+            && rest.bytes().all(|byte| byte.is_ascii_lowercase())
+        {
+            EventAttributeClass::Handler
+        } else {
+            EventAttributeClass::Rejected(EventAttributeRejection::InvalidDirectSuffix)
+        };
+    }
+    EventAttributeClass::Other
+}
+
+/// Event-name bytes accepted after a colon-form prefix.
+const fn is_event_name_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+}
+
 #[cfg(test)]
 #[allow(clippy::expect_used)]
 mod tests {
@@ -1383,5 +1467,113 @@ mod tests {
                 .iter()
                 .any(|attribute| attribute.name == "wx:for")
         );
+    }
+
+    #[test]
+    fn value_routing_accepts_direct_and_colon_event_bindings() {
+        for attribute in [
+            "bindtap",
+            "catchtap",
+            "bindgetphonenumber",
+            "bindchooseavatar",
+            "bindplay",
+            "bindpause",
+            "bindended",
+            "bindwaiting",
+            "bindprogress",
+            "bindfullscreenchange",
+            "bindmarkertap",
+            "bindcallouttap",
+            "bindcontroltap",
+            "bindpoitap",
+            "bindanchorpointtap",
+            "binddragstart",
+            "binddragend",
+            "bind:tap",
+            "catch:tap",
+            "capture-bind:tap",
+            "capture-catch:tap",
+            "mut-bind:tap",
+            "bind:my-event",
+            "bind:my_event2",
+        ] {
+            assert!(is_event_value_attribute(attribute), "{attribute}");
+            assert_eq!(
+                classify_event_attribute(attribute),
+                EventAttributeClass::Handler,
+                "{attribute}"
+            );
+            // Value routing must stay a subset of the script parser's forms.
+            assert!(
+                wxml_backend_tsgo::script::events::parse_event_attribute(attribute).is_some(),
+                "{attribute}"
+            );
+        }
+    }
+
+    #[test]
+    fn value_routing_rejects_malformed_bindings_with_reasons() {
+        for (attribute, rejection) in [
+            ("bind", EventAttributeRejection::MissingEventName),
+            ("catch", EventAttributeRejection::MissingEventName),
+            ("capture-bind", EventAttributeRejection::MissingEventName),
+            ("capture-catch", EventAttributeRejection::MissingEventName),
+            ("mut-bind", EventAttributeRejection::MissingEventName),
+            ("bind:", EventAttributeRejection::EmptyEventName),
+            ("catch:", EventAttributeRejection::EmptyEventName),
+            ("bind::tap", EventAttributeRejection::InvalidEventName),
+            ("bind:foo:bar", EventAttributeRejection::InvalidEventName),
+            (
+                "bind-get-phonenumber",
+                EventAttributeRejection::InvalidDirectSuffix,
+            ),
+            ("binding-mode", EventAttributeRejection::InvalidDirectSuffix),
+            ("catch-up", EventAttributeRejection::InvalidDirectSuffix),
+            ("bindTap", EventAttributeRejection::InvalidDirectSuffix),
+            (
+                "capture-bindtap",
+                EventAttributeRejection::InvalidDirectSuffix,
+            ),
+            ("mut-bindtap", EventAttributeRejection::InvalidDirectSuffix),
+            ("bindex", EventAttributeRejection::ConflictingAttribute),
+        ] {
+            assert_eq!(
+                classify_event_attribute(attribute),
+                EventAttributeClass::Rejected(rejection),
+                "{attribute}"
+            );
+            assert!(!is_event_value_attribute(attribute), "{attribute}");
+        }
+        for ordinary in ["", "bi", "class", "wx:if", "data-onTap"] {
+            assert_eq!(
+                classify_event_attribute(ordinary),
+                EventAttributeClass::Other,
+                "{ordinary}"
+            );
+        }
+    }
+
+    #[test]
+    fn value_routing_does_not_narrow_to_the_event_name_catalog() {
+        for name in [
+            "getphonenumber",
+            "chooseavatar",
+            "play",
+            "pause",
+            "ended",
+            "waiting",
+            "progress",
+            "fullscreenchange",
+            "markertap",
+            "callouttap",
+            "controltap",
+            "poitap",
+            "anchorpointtap",
+            "dragstart",
+            "dragend",
+        ] {
+            assert!(!EVENT_NAMES.contains(&name), "{name}");
+            assert!(is_event_value_attribute(&format!("bind{name}")), "{name}");
+        }
     }
 }
