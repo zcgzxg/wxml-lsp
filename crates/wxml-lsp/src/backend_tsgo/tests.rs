@@ -2653,6 +2653,7 @@ fn document_symbols_in_a_template_fragment_are_dropped_and_partial() {
     assert_eq!(result.symbols.len(), 1);
     assert_eq!(result.symbols[0].name, "Shape");
     assert_eq!(result.symbols[0].kind, DocumentSymbolKind::TypeAlias);
+    assert_eq!(result.skipped, 1);
 }
 
 #[test]
@@ -2734,6 +2735,7 @@ fn document_symbols_with_an_outside_selection_are_dropped_not_clamped() {
     let reason = result.status.reason().expect("partial reason");
     assert!(reason.contains("outside the declaration range"), "{reason}");
     assert!(result.symbols.is_empty());
+    assert_eq!(result.skipped, 1);
 }
 
 #[test]
@@ -2764,6 +2766,7 @@ fn document_symbols_crossing_generated_text_are_dropped_and_partial() {
     let reason = result.status.reason().expect("partial reason");
     assert!(reason.contains("crossed generated shadow text"), "{reason}");
     assert!(result.symbols.is_empty());
+    assert_eq!(result.skipped, 1);
 }
 
 #[test]
@@ -3723,7 +3726,7 @@ export {};
 }
 
 #[test]
-fn optional_real_engine_document_symbols_smoke() {
+fn optional_real_engine_adapter_document_symbols_smoke() {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let Ok(bin) = std::env::var("TSGO_BIN") else {
         let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");

@@ -140,11 +140,13 @@ pub fn run_stdio_native() -> Result<crate::ServerOutcome, NativeStartupError> {
     crate::server::run_stdio_with_host(Arc::new(adapter), host).map_err(NativeStartupError::Server)
 }
 
-/// Reason returned for symbols until script symbol facts are wired.
+/// Reason returned for script symbol facts until they are wired.
 ///
-/// Document symbols have their own [`Backend::document_symbols`] method; this
-/// reason only covers the C0 data-root/event-handler script facts.
-pub(crate) const SYMBOLS_UNSUPPORTED: &str = "native script symbol facts are not wired; document symbols are not representable by the C0 SymbolRequest/SymbolResult DTOs";
+/// Document symbols have their own [`Backend::document_symbols`] method and
+/// are not expressed by the C0 [`SymbolRequest`]/[`SymbolResult`] DTOs; this
+/// reason only covers the data-root/handler/reference facts those requests
+/// need.
+pub(crate) const SYMBOLS_UNSUPPORTED: &str = "native data-root, handler and reference symbol facts are not wired to the C0 SymbolRequest/SymbolResult DTOs";
 
 /// Opt-in adapter between the LSP project host and the native session.
 ///

@@ -183,7 +183,10 @@ pub struct MountRecord {
 }
 
 impl MountRecord {
-    /// Returns the inclusive end of the mount in the derived script.
+    /// Returns the exclusive end of the mount in the derived script.
+    ///
+    /// The mount occupies `[start_utf16, end)`. A range that starts exactly at
+    /// this offset is outside the mount.
     ///
     /// Overflow is a typed error so a malformed mount can never wrap around and
     /// publish an in-range-looking mapping.

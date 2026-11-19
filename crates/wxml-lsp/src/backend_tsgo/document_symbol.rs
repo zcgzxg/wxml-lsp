@@ -90,7 +90,7 @@ fn map_shadow_ranges(
         symbols,
         status: backend.status,
         truncated: backend.truncated,
-        skipped: backend.skipped,
+        skipped: backend.skipped.saturating_add(drops.dropped_nodes),
         gaps,
     };
     if let Some(reason) = degradation {
@@ -106,15 +106,23 @@ fn map_symbol(
     parent: Option<SourceRange>,
     drops: &mut ShadowDrops,
 ) -> Option<DocumentSymbol> {
-    let range = map_range(layout, symbol.range, drops)?;
-    let selection_range = map_range(layout, symbol.selection_range, drops)?;
+    let Some(range) = map_range(layout, symbol.range, drops) else {
+        drops.drop_subtree(symbol);
+        return None;
+    };
+    let Some(selection_range) = map_range(layout, symbol.selection_range, drops) else {
+        drops.drop_subtree(symbol);
+        return None;
+    };
     if selection_range.start() < range.start() || selection_range.end() > range.end() {
         drops.selection_outside = drops.selection_outside.saturating_add(1);
+        drops.drop_subtree(symbol);
         return None;
     }
     if let Some(parent) = parent {
         if range.start() < parent.start() || range.end() > parent.end() {
             drops.child_outside = drops.child_outside.saturating_add(1);
+            drops.drop_subtree(symbol);
             return None;
         }
     }
@@ -199,9 +207,18 @@ fn valid_point(text: &str, offset: u32) -> bool {
         .is_ok_and(|offset| offset <= text.len() && text.is_char_boundary(offset))
 }
 
+/// Number of nodes in one symbol subtree, including the symbol itself.
+fn subtree_nodes(symbol: &DocumentSymbol) -> usize {
+    symbol.children.iter().fold(1usize, |total, child| {
+        total.saturating_add(subtree_nodes(child))
+    })
+}
+
 /// Symbols that could not be represented in original-script coordinates.
 #[derive(Debug, Default)]
 struct ShadowDrops {
+    /// Every symbol node dropped, including descendants of a dropped parent.
+    dropped_nodes: usize,
     template: usize,
     crossing: usize,
     unmappable: usize,
@@ -211,6 +228,11 @@ struct ShadowDrops {
 }
 
 impl ShadowDrops {
+    /// Counts one dropped symbol and its whole subtree.
+    fn drop_subtree(&mut self, symbol: &DocumentSymbol) {
+        self.dropped_nodes = self.dropped_nodes.saturating_add(subtree_nodes(symbol));
+    }
+
     fn record(&self, status: &mut CapabilityStatus) {
         if self.template > 0 {
             mark_partial(
@@ -374,6 +396,7 @@ mod tests {
         let outside_selection = symbol("a", DocumentSymbolKind::Class, (2, 4), (0, 1), Vec::new());
         assert!(map_symbol(&identity, &outside_selection, None, &mut drops).is_none());
         assert_eq!(drops.selection_outside, 1);
+        assert_eq!(drops.dropped_nodes, 1);
 
         let mut drops = ShadowDrops::default();
         let child = symbol(
@@ -387,6 +410,66 @@ mod tests {
         let mapped = map_symbol(&identity, &parent, None, &mut drops).expect("parent");
         assert!(mapped.children.is_empty());
         assert_eq!(drops.child_outside, 1);
+        assert_eq!(drops.dropped_nodes, 1);
+    }
+
+    #[test]
+    fn map_shadow_ranges_counts_whole_dropped_subtrees_in_skipped() {
+        let identity = layout("aurora", &[]);
+        let grandchild = symbol(
+            "c",
+            DocumentSymbolKind::Variable,
+            (4, 5),
+            (4, 5),
+            Vec::new(),
+        );
+        let doomed_child = symbol(
+            "b",
+            DocumentSymbolKind::Property,
+            (3, 5),
+            (3, 5),
+            vec![grandchild],
+        );
+        // The selection range is outside the declaration range, so the whole
+        // parent subtree is dropped and must be counted.
+        let doomed = symbol(
+            "a",
+            DocumentSymbolKind::Class,
+            (0, 5),
+            (0, 6),
+            vec![doomed_child],
+        );
+        // A valid root stays; only the invalid subtree is dropped.
+        let kept_child = symbol(
+            "d",
+            DocumentSymbolKind::Property,
+            (4, 6),
+            (4, 5),
+            Vec::new(),
+        );
+        let kept = symbol(
+            "e",
+            DocumentSymbolKind::Function,
+            (3, 6),
+            (3, 6),
+            vec![kept_child],
+        );
+        let result = DocumentSymbolsResult {
+            symbols: vec![doomed, kept],
+            status: CapabilityStatus::Supported,
+            truncated: false,
+            skipped: 2,
+            gaps: Vec::new(),
+        };
+        let mapped = map_shadow_ranges(&identity, result, None);
+        assert_eq!(mapped.symbols.len(), 1);
+        assert_eq!(mapped.symbols[0].name, "e");
+        assert_eq!(mapped.symbols[0].children.len(), 1);
+        assert_eq!(mapped.skipped, 2 + 3);
+        assert!(matches!(mapped.status, CapabilityStatus::Partial { .. }));
+        let reason = mapped.status.reason().expect("partial reason");
+        assert!(reason.contains("outside the declaration range"), "{reason}");
+        assert!(!reason.contains("template fragment"), "{reason}");
     }
 
     #[test]

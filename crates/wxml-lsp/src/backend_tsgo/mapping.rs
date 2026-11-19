@@ -196,20 +196,72 @@ impl ShadowLayout {
             };
         }
 
-        if self.mount_at(end).is_some() {
+        // A non-empty range ends inside a mount when its last unit is inside
+        // the half-open mount span. A range that merely ends at the mount start
+        // (`end == mount.start`) or starts at the mount end (`start ==
+        // mount.end`) stays in the script layer.
+        if start < end && self.mount_at(end.saturating_sub(1)).is_some() {
             return Err(MappingError::MappingGap);
         }
         let start_byte = utf16_to_byte(&self.derived, start).map_err(MappingError::from)?;
         let end_byte = utf16_to_byte(&self.derived, end).map_err(MappingError::from)?;
+        let range = self.script_range(start_byte, end_byte, end)?;
+        Ok(NativeRange::Script { range })
+    }
+
+    /// Maps one derived byte range that belongs to the original script.
+    ///
+    /// A range that ends exactly at a mount start ends at the insertion point
+    /// of the mounted text. The shadow map rejects a boundary at inserted text,
+    /// so map the preceding character and extend by its unchanged UTF-8 width.
+    fn script_range(
+        &self,
+        start_byte: usize,
+        end_byte: usize,
+        end_utf16: u32,
+    ) -> Result<TemplateRange, MappingError> {
         let start = u32::try_from(start_byte).map_err(|_| MappingError::InvalidRange)?;
         let end = u32::try_from(end_byte).map_err(|_| MappingError::InvalidRange)?;
-        let mapped = self
+        match self
             .script_map
             .to_original(MappingLayer::Shadow, ShadowSourceRange::new(start, end))
-            .map_err(|_| MappingError::MappingGap)?;
-        let range = TemplateRange::from_bounds(mapped.start.get(), mapped.end.get())
-            .map_err(|_| MappingError::InvalidRange)?;
-        Ok(NativeRange::Script { range })
+        {
+            Ok(mapped) => TemplateRange::from_bounds(mapped.start.get(), mapped.end.get())
+                .map_err(|_| MappingError::InvalidRange),
+            Err(_) if start_byte < end_byte && self.mount_starts_at(end_utf16) => {
+                let (previous_byte, last) = self
+                    .derived
+                    .get(..end_byte)
+                    .and_then(|text| text.char_indices().next_back())
+                    .ok_or(MappingError::MappingGap)?;
+                let previous =
+                    u32::try_from(previous_byte).map_err(|_| MappingError::InvalidRange)?;
+                let mapped = self
+                    .script_map
+                    .to_original(
+                        MappingLayer::Shadow,
+                        ShadowSourceRange::new(start, previous),
+                    )
+                    .map_err(|_| MappingError::MappingGap)?;
+                let width =
+                    u32::try_from(last.len_utf8()).map_err(|_| MappingError::InvalidRange)?;
+                let original_end = mapped
+                    .end
+                    .get()
+                    .checked_add(width)
+                    .ok_or(MappingError::InvalidRange)?;
+                TemplateRange::from_bounds(mapped.start.get(), original_end)
+                    .map_err(|_| MappingError::InvalidRange)
+            }
+            Err(_) => Err(MappingError::MappingGap),
+        }
+    }
+
+    /// Returns whether a mounted fragment starts at `offset`.
+    fn mount_starts_at(&self, offset: u32) -> bool {
+        self.fragments
+            .iter()
+            .any(|fragment| fragment.mount.start_utf16 == offset)
     }
 
     fn validate_source_offset(&self, offset: u32) -> Result<(), MappingError> {
@@ -305,6 +357,11 @@ impl ShadowLayout {
         }
     }
 
+    /// Returns the mount containing `offset` in `[start, end)`.
+    ///
+    /// The end is exclusive so a range that starts exactly at a mount end (or
+    /// ends exactly at a mount start) remains attributable to the script layer.
+    /// A zero-length mount therefore never contains an offset.
     fn mount_at(&self, offset: u32) -> Option<&MountRecord> {
         self.fragments
             .iter()
@@ -313,7 +370,7 @@ impl ShadowLayout {
                 mount
                     .start_utf16
                     .checked_add(utf16_len(&mount.text))
-                    .is_some_and(|end| mount.start_utf16 <= offset && offset <= end)
+                    .is_some_and(|end| mount.start_utf16 <= offset && offset < end)
             })
     }
 
@@ -461,4 +518,153 @@ pub(crate) enum MappingError {
     /// The native text conversion rejected a position.
     #[error(transparent)]
     Text(#[from] TextConversionError),
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use wxml_backend_tsgo::shadow::mapping::ShadowMap;
+    use wxml_backend_tsgo::shadow::rewrite::{
+        Assembled, EditKind, MountedSegment, ShadowEdit, apply_edits,
+    };
+
+    use super::*;
+
+    const WXML: &str = "<view>{{ x }}</view>";
+
+    fn mount(at: u32, text: &str) -> MountRecord {
+        let length = u32::try_from(text.encode_utf16().count()).expect("mount units");
+        MountRecord {
+            mount_id: "fragment#0".to_owned(),
+            fragment_id: "fragment".to_owned(),
+            insertion_id: "probe".to_owned(),
+            text: text.to_owned(),
+            start_utf16: at,
+            target_start_utf16: at,
+            target_length_utf16: 0,
+            segments: if length == 0 {
+                Vec::new()
+            } else {
+                vec![MountedSegment {
+                    start_utf16: at,
+                    length_utf16: length,
+                    source: Some(ShadowSourceRange::new(9, 10)),
+                }]
+            },
+        }
+    }
+
+    /// Builds a layout with an identity script map so the mount classifier is
+    /// tested independently from the shadow-map insertion ambiguity.
+    fn layout(script: &str, at: u32, text: &str) -> ShadowLayout {
+        let assembled = Assembled {
+            text: script.to_owned(),
+            edits: Vec::new(),
+        };
+        ShadowLayout::new(
+            WXML,
+            script.to_owned(),
+            ShadowMap::new(script, &assembled),
+            vec![FragmentMap {
+                wxml_range: TemplateRange::from_bounds(9, 10).expect("wxml range"),
+                mount: mount(at, text),
+            }],
+        )
+    }
+
+    #[test]
+    fn mount_boundaries_use_the_script_layer_not_crossing_gaps() {
+        let layout = layout("abcdefgh", 4, "x");
+
+        assert_eq!(
+            layout
+                .map_native_range(2, 4)
+                .expect("range ending at mount start"),
+            NativeRange::Script {
+                range: TemplateRange::from_bounds(2, 4).expect("range")
+            }
+        );
+        assert_eq!(
+            layout
+                .map_native_range(5, 7)
+                .expect("range starting at mount end"),
+            NativeRange::Script {
+                range: TemplateRange::from_bounds(5, 7).expect("range")
+            }
+        );
+        assert_eq!(
+            layout.map_native_range(5, 5).expect("point at mount end"),
+            NativeRange::Script {
+                range: TemplateRange::from_bounds(5, 5).expect("point")
+            }
+        );
+        assert_eq!(
+            layout
+                .map_native_range(4, 5)
+                .expect("range inside the mount"),
+            NativeRange::Template {
+                range: TemplateRange::from_bounds(9, 10).expect("template"),
+                approximate: false,
+            }
+        );
+        assert!(matches!(
+            layout.map_native_range(3, 5),
+            Err(MappingError::MappingGap)
+        ));
+    }
+
+    #[test]
+    fn a_real_inserted_mount_boundary_stays_in_the_script_layer() {
+        let script = "abcdefgh";
+        let edit = ShadowEdit::insert("probe", EditKind::Probe, 4, "x");
+        let assembled = apply_edits(script, &[edit]).expect("assembled shadow");
+        let layout = ShadowLayout::new(
+            WXML,
+            assembled.text.clone(),
+            ShadowMap::new(script, &assembled),
+            vec![FragmentMap {
+                wxml_range: TemplateRange::from_bounds(9, 10).expect("wxml range"),
+                mount: mount(4, "x"),
+            }],
+        );
+        assert_eq!(
+            layout
+                .map_native_range(2, 4)
+                .expect("range ending at an inserted mount"),
+            NativeRange::Script {
+                range: TemplateRange::from_bounds(2, 4).expect("range")
+            }
+        );
+        assert_eq!(
+            layout
+                .map_native_range(5, 7)
+                .expect("range after an inserted mount"),
+            NativeRange::Script {
+                range: TemplateRange::from_bounds(4, 6).expect("range")
+            }
+        );
+        assert!(matches!(
+            layout.map_native_range(3, 5),
+            Err(MappingError::MappingGap)
+        ));
+    }
+
+    #[test]
+    fn a_zero_length_mount_never_claims_a_script_range() {
+        let layout = layout("abcdefgh", 4, "");
+        assert_eq!(
+            layout
+                .map_native_range(4, 6)
+                .expect("range across an empty mount"),
+            NativeRange::Script {
+                range: TemplateRange::from_bounds(4, 6).expect("range")
+            }
+        );
+        assert_eq!(
+            layout.map_native_range(4, 4).expect("point at empty mount"),
+            NativeRange::Script {
+                range: TemplateRange::from_bounds(4, 4).expect("point")
+            }
+        );
+    }
 }

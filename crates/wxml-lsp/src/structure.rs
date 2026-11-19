@@ -44,10 +44,15 @@ fn parse_count() -> usize {
 use serde_json::{Value, json};
 use wxml_syntax::parser::{NodeId, NodeKind, SyntaxTree};
 use wxml_text::{LineIndex, SourceRange, TextRange};
-use wxml_types::{DocumentSymbolKind, DocumentSymbolsResult};
+use wxml_types::{
+    BackendEpoch, BackendError, CapabilityStatus, DocumentSymbolKind, DocumentSymbolsResult,
+    RequestContext,
+};
 
 use crate::handlers::line_index_range_value;
-use crate::jsonrpc::{self, Outgoing};
+use crate::jsonrpc::{self, Outgoing, RequestKey};
+use crate::project_host::DocumentRoute;
+use crate::scheduler::{DocumentSymbolsScope, Job, JobKind, Outcome, SubmitError, WorkDone};
 use crate::server::{Server, log};
 
 /// Largest number of folding ranges returned for one document.
@@ -921,14 +926,14 @@ impl Server {
 
     /// Handles `textDocument/documentSymbol`.
     ///
-    /// E is the single owner of this outline implementation. S must reuse
+    /// E is the single owner of the static WXML outline. S must reuse
     /// [`StructureFacts::document_symbols`] and must not parse the document a
     /// second time for its symbol queries.
     ///
-    /// A script document is answered by [`Backend::document_symbols`] and is
-    /// never merged with the static WXML outline: script ranges belong to the
-    /// requested script, not to a template. Every other document keeps the
-    /// existing static or empty behavior.
+    /// A script document is answered by [`wxml_types::Backend::document_symbols`]
+    /// on the background worker and is never merged with the static WXML
+    /// outline: script ranges belong to the requested script, not to a
+    /// template. The WXML outline stays synchronous and never calls a backend.
     pub(crate) fn document_symbol(&mut self, id: Value, params: Option<Value>) -> Vec<Outgoing> {
         let Some(params) = params else {
             return vec![Outgoing::failure(
@@ -944,20 +949,42 @@ impl Server {
                 "invalid textDocument URI",
             )];
         };
-        if matches!(
-            self.host.route(uri),
-            crate::project_host::DocumentRoute::Script(_)
-        ) {
-            return self.script_document_symbol(id, uri);
+        match self.host.route(uri) {
+            DocumentRoute::Script(_) => self.schedule_script_document_symbol(id, uri),
+            DocumentRoute::Wxml(_) => self.static_document_symbol(id, uri),
+            DocumentRoute::Json(_) | DocumentRoute::Style(_) => {
+                vec![Outgoing::success(id, json!([]))]
+            }
+            DocumentRoute::Unknown => {
+                // Synthetic templates have no project route; the URI is the
+                // only signal that they are WXML.
+                if crate::handlers::template_document(self, uri) {
+                    self.static_document_symbol(id, uri)
+                } else {
+                    vec![Outgoing::success(id, json!([]))]
+                }
+            }
         }
-        if !crate::handlers::template_document(self, uri) {
-            return vec![Outgoing::success(id, json!([]))];
-        }
+    }
+
+    /// Answers the static WXML outline for one open template.
+    fn static_document_symbol(&self, id: Value, uri: &str) -> Vec<Outgoing> {
         let Some(document) = self.workspace.get(uri) else {
-            return vec![Outgoing::success(id, json!([]))];
+            log(format_args!(
+                "WXML document symbols failed: the template is not open"
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the template is not open",
+            )];
         };
         let Some(facts) = StructureFacts::parse(document.text()) else {
-            return vec![Outgoing::success(id, json!([]))];
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the template outline is unavailable",
+            )];
         };
         let symbols = facts.document_symbols();
         let values: Option<Vec<Value>> = if self.client.hierarchical_symbols {
@@ -985,47 +1012,107 @@ impl Server {
         };
         let Some(values) = values else {
             log(format_args!(
-                "document symbols skipped: a range could not be serialized"
+                "WXML document symbols failed: a range could not be serialized"
             ));
-            return vec![Outgoing::success(id, json!([]))];
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the template outline could not be serialized",
+            )];
         };
         vec![Outgoing::success(id, json!(values))]
     }
 
-    /// Answers `textDocument/documentSymbol` for one open script document.
+    /// Validates one script outline request and queues its backend job.
     ///
-    /// The backend query is scoped by the owning template snapshot; a script
-    /// shared by several views, an unopened owning template or a backend that
-    /// does not implement document symbols produces `[]`. A template fragment
-    /// and generated shadow text can never appear in this outline.
-    fn script_document_symbol(&mut self, id: Value, uri: &str) -> Vec<Outgoing> {
+    /// The scheduling check is fail-closed: a missing owning template, missing
+    /// script text, or a script/overlay mismatch rejects the request instead of
+    /// returning an empty outline. The backend query itself runs on the
+    /// scheduler worker; `document_symbols_done` publishes the result only if
+    /// the captured script/view/template identity is still current.
+    #[allow(clippy::too_many_lines)] // one linear request validation and schedule
+    fn schedule_script_document_symbol(&mut self, id: Value, uri: &str) -> Vec<Outgoing> {
         let Some(document) = self.workspace.get(uri) else {
-            return vec![Outgoing::success(id, json!([]))];
+            log(format_args!(
+                "script document symbols failed: the script is not open"
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the script is not open",
+            )];
         };
-        let line_index = document.snapshot().line_index().clone();
         let subject = document.file().clone();
         let view = match self.host.view_for_script(&subject) {
             Ok(view) => view,
             Err(error) => {
-                log(format_args!("script document symbols skipped: {error}"));
-                return vec![Outgoing::success(id, json!([]))];
+                log(format_args!(
+                    "script document symbols failed: {}",
+                    crate::handlers::log_safe_text(&error.to_string(), 200)
+                ));
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::REQUEST_FAILED,
+                    "the script is not an owning page or component script",
+                )];
             }
         };
-        let wxml_file = match self.host.file_id_in(subject.project(), &view.wxml) {
+        let template = match self.host.file_id_in(subject.project(), &view.wxml) {
             Ok(file) => file,
             Err(error) => {
-                log(format_args!("script document symbols skipped: {error}"));
-                return vec![Outgoing::success(id, json!([]))];
+                log(format_args!(
+                    "script document symbols failed: {}",
+                    crate::handlers::log_safe_text(&error.to_string(), 200)
+                ));
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::REQUEST_FAILED,
+                    "the owning template path is invalid",
+                )];
             }
         };
-        let Some(snapshot) = self.host.source(&wxml_file) else {
+        let Some(snapshot) = self.host.source(&template) else {
             log(format_args!(
-                "script document symbols skipped: the owning template is not open"
+                "script document symbols failed: the owning template is not open"
             ));
-            return vec![Outgoing::success(id, json!([]))];
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the owning template is not open",
+            )];
         };
+        let Some(host_text) = self.host.file_text(&subject) else {
+            log(format_args!(
+                "script document symbols failed: the script text is unavailable"
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the script text is unavailable",
+            )];
+        };
+        if host_text.as_ref() != document.text() {
+            log(format_args!(
+                "script document symbols failed: the workspace and host script text disagree"
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the script text changed before the outline was requested",
+            )];
+        }
+        let script_hash = script_text_hash(document.text());
+        let template_snapshot = snapshot.snapshot();
         let epoch = self.refresh_epoch();
-        let context = match wxml_types::RequestContext::new(
+        let Some(document) = self.workspace.get(uri) else {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the script was closed before the outline was scheduled",
+            )];
+        };
+        let stamp = document.stamp(&epoch);
+        let context = match RequestContext::new(
             self.host.project_revision(),
             view.view_revision,
             epoch,
@@ -1033,23 +1120,223 @@ impl Server {
         ) {
             Ok(context) => context,
             Err(error) => {
-                log(format_args!("script document symbols skipped: {error}"));
-                return vec![Outgoing::success(id, json!([]))];
+                log(format_args!(
+                    "script document symbols failed: {}",
+                    crate::handlers::log_safe_text(&error.to_string(), 200)
+                ));
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::CONTENT_MODIFIED,
+                    "the owning template snapshot does not match the request",
+                )];
             }
         };
-        let result = match self
-            .backend
-            .document_symbols(wxml_types::DocumentSymbolsRequest { context, subject })
-        {
-            Ok(result) => result,
+        let Some(key) = RequestKey::from_id(&id) else {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::INVALID_PARAMS,
+                "request id must be a string or a number",
+            )];
+        };
+        if self.inflight.contains_key(&key) {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::INVALID_REQUEST,
+                "request id is already in flight",
+            )];
+        }
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let attempt = self.next_attempt();
+        self.inflight.insert(
+            key.clone(),
+            crate::server::Inflight {
+                id: id.clone(),
+                attempt,
+                cancel: std::sync::Arc::clone(&cancel),
+                uri: uri.to_owned(),
+            },
+        );
+        let job = Job {
+            key: Some(key.clone()),
+            kind: JobKind::DocumentSymbols {
+                subject,
+                scope: DocumentSymbolsScope {
+                    template,
+                    template_snapshot,
+                    view_revision: view.view_revision,
+                    script_hash,
+                },
+            },
+            context,
+            offset: 0,
+            stamp,
+            attempt,
+            cancel,
+        };
+        match self.dispatch.submit(job) {
+            Ok(()) => Vec::new(),
+            Err(error) => {
+                self.inflight.remove(&key);
+                log(format_args!(
+                    "dispatch rejected a document symbols job: {error:?}"
+                ));
+                vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::INTERNAL_ERROR,
+                    submit_message(error),
+                )]
+            }
+        }
+    }
+
+    /// Answers one finished script outline query.
+    ///
+    /// Every stale, cancelled or unsupported outcome is an explicit protocol
+    /// error. Only a `Supported` empty outline and a non-empty `Partial`
+    /// outline are published; a backend status that does not prove an outline
+    /// never becomes `[]`.
+    #[allow(clippy::too_many_lines)] // one ordered publication-barrier matrix
+    pub(crate) fn document_symbols_done(
+        &self,
+        id: Value,
+        uri: &str,
+        done: WorkDone,
+        epoch: &BackendEpoch,
+    ) -> Vec<Outgoing> {
+        if done.cancelled {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_CANCELLED,
+                "request cancelled",
+            )];
+        }
+        let JobKind::DocumentSymbols { subject, scope } = &done.kind else {
+            log(format_args!(
+                "a document symbol result carried the wrong job kind"
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::INTERNAL_ERROR,
+                "the script outline query returned an unexpected result",
+            )];
+        };
+        if done.stamp.epoch != *epoch || !self.workspace.is_current(&done.stamp) {
+            log(format_args!(
+                "dropping a script outline result for an old revision"
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the document changed before the outline was published",
+            )];
+        }
+        let Some(document) = self.workspace.get(uri) else {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the script was closed before the outline was published",
+            )];
+        };
+        if document.file() != subject || script_text_hash(document.text()) != scope.script_hash {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the script text changed before the outline was published",
+            )];
+        }
+        match self.host.file_text(subject) {
+            Some(text) if script_text_hash(&text) == scope.script_hash => {}
+            _ => {
+                log(format_args!(
+                    "dropping a script outline result: the host script text changed"
+                ));
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::CONTENT_MODIFIED,
+                    "the script text changed before the outline was published",
+                )];
+            }
+        }
+        let view = match self.host.view_for_script(subject) {
+            Ok(view) => view,
             Err(error) => {
                 log(format_args!(
-                    "script document symbols request failed: {error}"
+                    "dropping a script outline result: {}",
+                    crate::handlers::log_safe_text(&error.to_string(), 200)
                 ));
-                return vec![Outgoing::success(id, json!([]))];
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::CONTENT_MODIFIED,
+                    "the owning view changed before the outline was published",
+                )];
             }
         };
-        if !result.status.is_supported() {
+        if view.view_revision != scope.view_revision || view.script_file != *subject {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the owning view changed before the outline was published",
+            )];
+        }
+        let Ok(template) = self.host.file_id_in(subject.project(), &view.wxml) else {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the owning view changed before the outline was published",
+            )];
+        };
+        if template != scope.template {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the owning view changed before the outline was published",
+            )];
+        }
+        match self.host.source(&scope.template) {
+            Some(snapshot) if snapshot.snapshot() == scope.template_snapshot => {}
+            _ => {
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::CONTENT_MODIFIED,
+                    "the owning template changed before the outline was published",
+                )];
+            }
+        }
+
+        let result = match done.outcome {
+            Ok(Outcome::DocumentSymbols(result)) => *result,
+            Ok(_) => {
+                log(format_args!(
+                    "document symbol job returned the wrong result kind"
+                ));
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::INTERNAL_ERROR,
+                    "the script outline query returned an unexpected result",
+                )];
+            }
+            Err(BackendError::Cancelled) => {
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::CONTENT_MODIFIED,
+                    "the script outline request was cancelled",
+                )];
+            }
+            Err(error) => {
+                log(format_args!(
+                    "script document symbols failed: {}",
+                    crate::handlers::log_safe_text(&error.to_string(), 200)
+                ));
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::REQUEST_FAILED,
+                    backend_failure_message(&error),
+                )];
+            }
+        };
+        if !result.status.is_supported()
+            && !matches!(result.status, CapabilityStatus::Partial { .. })
+        {
             log(format_args!(
                 "script document symbols are {}: {} symbol(s), {} skipped, truncated={}",
                 crate::handlers::status_label(&result.status),
@@ -1057,16 +1344,83 @@ impl Server {
                 result.skipped,
                 result.truncated
             ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the script outline is unavailable",
+            )];
         }
-        let Some(values) =
-            script_symbol_values(&result, &line_index, uri, self.client.hierarchical_symbols)
-        else {
+        if result.symbols.is_empty() && !result.status.is_supported() {
             log(format_args!(
-                "script document symbols skipped: a range or kind could not be serialized"
+                "script document symbols are {} with no symbols: {} skipped, truncated={}",
+                crate::handlers::status_label(&result.status),
+                result.skipped,
+                result.truncated
             ));
-            return vec![Outgoing::success(id, json!([]))];
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the script outline is incomplete",
+            )];
+        }
+        if let Some(reason) = result.status.reason() {
+            log(format_args!(
+                "script document symbols are {}: {}",
+                crate::handlers::status_label(&result.status),
+                crate::handlers::log_safe_text(reason, 200)
+            ));
+        }
+        let Some(values) = script_symbol_values(
+            &result,
+            document.snapshot().line_index(),
+            uri,
+            self.client.hierarchical_symbols,
+        ) else {
+            log(format_args!(
+                "script document symbols failed: a range or kind could not be serialized"
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the script outline could not be serialized",
+            )];
         };
         vec![Outgoing::success(id, json!(values))]
+    }
+}
+
+/// FNV-1a over the complete script text.
+///
+/// The scheduler compares this hash with both the workspace document and the
+/// host's effective script text before publishing ranges produced for the
+/// prepared view. A mismatch means the outline ranges no longer describe the
+/// text the LSP layer would convert them against.
+fn script_text_hash(text: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Client-safe message for one failed backend outline query.
+const fn backend_failure_message(error: &BackendError) -> &'static str {
+    match error {
+        BackendError::Timeout => "the type backend timed out",
+        BackendError::Unavailable(_) => "the type backend is unavailable",
+        BackendError::Protocol(_) => "the type backend violated its protocol",
+        BackendError::Internal(_) => "the type backend failed internally",
+        BackendError::Cancelled => "the script outline request was cancelled",
+        _ => "the type backend failed",
+    }
+}
+
+/// Message for a rejected scheduler submission.
+const fn submit_message(error: SubmitError) -> &'static str {
+    match error {
+        SubmitError::Busy => "server is busy",
+        SubmitError::Stopped => "server is not running",
     }
 }
 

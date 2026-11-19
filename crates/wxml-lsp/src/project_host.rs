@@ -3889,6 +3889,46 @@ mod tests {
     }
 
     #[test]
+    fn view_for_script_rejects_a_script_shared_by_two_views() {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/component-basic");
+        let root = std::fs::canonicalize(root).expect("fixture root");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open project");
+        let script = ProjectPath::new("pages/index/index.ts").expect("script");
+        let file = host.file_id(&script).expect("script file");
+
+        // Discovery never maps two views to one script today, so construct the
+        // ambiguous view table directly. The host must reject it instead of
+        // picking one outline context arbitrarily.
+        {
+            let mut state = host.write();
+            let slot = state
+                .projects
+                .get_mut(file.project())
+                .expect("project slot");
+            let extra = ProjectPath::new("pages/index/index-copy.wxml").expect("extra wxml");
+            slot.views.insert(
+                extra,
+                ViewState {
+                    owner: RootKind::Page,
+                    script: Some(script),
+                    script_file: Some(file.clone()),
+                    view_revision: ViewRevision::new(99),
+                    components: BTreeMap::new(),
+                },
+            );
+        }
+
+        let error = host.view_for_script(&file).expect_err("shared owner");
+        assert!(
+            matches!(error, HostError::Unsupported { reason } if reason.contains("shared")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn analysis_exposes_static_events_and_filters_dynamic_handlers() {
         let root =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/component-basic");
