@@ -488,7 +488,7 @@ P1-C 证明旧→新的可行路径；P6/P7 用真实本地包重跑全部转换
 
 ## 12. 执行状态、证据与边界
 
-正式计划与 ADR-0008 已提交到迁移 worktree 的 `b9616c5`。P0/P1 已执行；P2 契约已落盘；P3–P6 只完成下列切片。截至 2026-11-19（HEAD `6358925`），迁移未完成，默认后端仍是 Node。
+正式计划与 ADR-0008 已提交到迁移 worktree 的 `b9616c5`。P0/P1 已执行；P2 契约已落盘；P3–P6 只完成下列切片。§12.1–§12.3 记录 `6358925` 快照；§12.5 追加 2026-11-19 `0a245b9` 增量。迁移未完成，默认后端仍是 Node。
 
 ### 12.1 P0/P1 证据（历史）
 
@@ -545,3 +545,46 @@ G1 仍未关闭；7.1.0-beta 仅由维护者有条件接受并固定 integrity�
 - 不把库/单元测试、入库 fixture 或 opt-in 真实引擎测试当作真实包、CLI 或 Zed 验收。
 - 不把 `planned` ledger case 标记为 `green`、`reviewed` 或 `closed`。
 - 不声称 Linux x86_64 之外的平台支持，也不声称原生 Zed 冒烟已完成。
+
+### 12.5 2026-11-19 增量（HEAD `0a245b9`）
+
+本节只追加 `6358925` 之后的六个提交和对应运行事实；§12.1–§12.3 保留原快照，§12.4 的不声称边界继续适用。迁移未完成，默认后端仍是 Node。
+
+#### 12.5.1 新增已提交切片
+
+| 提交 | 切片 | 已提交内容 | 证据层级 | 不能证明 |
+| --- | --- | --- | --- | --- |
+| `e303e1d` | native hover evidence 加固 | `native/session.rs`、`query/hover.rs`、`query/type_info.rs`、`query/symbol.rs`、`native/handles.rs`；`f1_hover.rs` 断言加强 | 代码切片；未单独运行 | 单独不证明真实引擎 hover；QuickInfo/overload 文档仍缺 |
+| `1e35fe8` | `Partial` capability 分发 | `handlers/mod.rs` 新增 `backend_available`，hover/definition 不再把 `Partial` 当 unavailable；新增 574 行 capability gate 测试 | lib 单元（计入 668） | 只证明 handler 分发；不证明真实引擎、stdio 或能力合同变化 |
+| `a032a1f` | trusted type-asset loader | 新增 `asset_loader.rs`；`input.rs` 增加 `TypeAssets`/`TypeAssetsPin`/`with_environment`；新增 loader 测试 | 库/单元 | adapter 生产请求未接线；无真实 tarball/`assets.lock.json`；Windows/UNC 未验证 |
+| `953ee1e` | adapter 消费 native hover evidence | `backend_tsgo/hover.rs` 改为消费单个 `HoverEvidence` 并发布后端组合 Markdown；sandbox/session 配套；`tsgo-native-contract.md` 补状态合成规则 | lib + opt-in 真实引擎 smoke | 不是 LSP stdio/CLI/Zed；未加载 miniprogram typings；completion/definition 未覆盖 |
+| `ca0b554` | loader 收敛 | `asset_loader.rs` 重构与加固；`input.rs` 调整；loader 测试补充 | 库/单元 + loader 运行（见 §12.5.2） | 未完成生产 handoff；不关闭 F3-03/B6 |
+| `0a245b9` | hover/gate evidence 文档 | 新增 `docs/evidence/2026-11-19-tsgo-hover-gates.md` 并在 evidence README 建索引 | 文档（E0） | 只记录既有运行，不新增运行事实 |
+
+#### 12.5.2 运行事实
+
+| 范围 | 结果 | 边界 |
+| --- | --- | --- |
+| `cargo test -p wxml-lsp --lib` | 668 passed / 0 failed（在 `953ee1e` 工作树记录） | 仅 lib 单元；包含无 `TSGO_BIN` 时直接返回的 opt-in smoke，不能证明真实引擎 |
+| 真实引擎 adapter hover smoke | 1 passed / 0 failed | pinned 7.1.0-beta、`WXML_REQUIRE_REAL_ENGINE=1`；lib 级 adapter，不是 stdio/CLI |
+| 首波 native gate `G-P5-E2E-09/12/14` | 3 passed / 0 failed / 36 filtered | 仍 `#[ignore]`；ledger 仍 `required_not_migrated`；`36 filtered` 未运行 |
+| loader 验证 | `asset_loader` 19 passed / 4 ignored；显式 fixture gate 4 passed；`wxml-backend-tsgo` 542 passed / 4 ignored；clippy 无问题 | 执行会话记录，本次未重跑，stdout 未入库；clippy 范围不外推为 workspace 全绿 |
+
+上述结果只在各自范围内成立，均为执行会话记录；本次状态更新未重跑 `cargo`，原始 stdout 未入库，不合并为 workspace、CLI、真实包或 Zed 全绿。
+
+#### 12.5.3 当前边界与下一步
+
+- **默认后端**：默认 `--stdio` 仍构造 `NodeBackend`（ /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/src/main.rs:184 ），Node 未删除；`--backend native` 仍是 opt-in。F3、P6、G5、G6 均未关闭。
+- **P6-3-4 trusted pin**：生产接线仍 BLOCKED；adapter 的 `RequestPlan::input` 仍调用 `AnalysisInput::new`（ /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/src/backend_tsgo/input.rs:121 ），未消费 trusted loader。`assets.lock.json`、真实 tarball 身份与 F3-03/B6 仍未闭环。
+- **台账**：本轮 gate 运行未自动晋级 ledger；`G-P5-E2E-09/12/14` 仍为 `required_not_migrated`，关联 case 仍为 `planned`，没有新增 case 级 `green`。
+- **document symbols**：`27bec99`（`e303e1d` 的父提交）已把脚本 document symbols 接入 LSP；§12.3 的“adapter 与 LSP 路由未接线”是 `6358925` 快照。当前仍有未提交的 scheduler/HIGH 修复，未完成、未提交。
+- **未提交 WIP**：记录时工作树包含 document-symbol scheduler/HIGH 修复（`scheduler.rs`、`server.rs`、`structure.rs`、`backend_tsgo/document_symbol.rs` 等）和 F3 asset-lock L1 review-fix（`crates/wxml-delivery/src/assets_lock*`、`verify_v2.rs` 等）。两者都不在 HEAD `0a245b9`，不得写成已完成或已提交。
+
+下一步按依赖顺序：
+
+1. **P6-3 production asset handoff**：完成设计/实现，`VerifiedInstall` → trusted `TypeAssets` → `AnalysisInput::with_environment`，透传 compilerOptions、修正 `js_check`，再接入 adapter diagnostics/hover。
+2. **document-symbol fix review**：审查未提交的 scheduler/HIGH 修复，必要时补测试后再提交。
+3. **asset-lock L1 fix review/commit**：审查并提交 F3 asset-lock L1 修复。
+4. **F3-03 L2**：在 L1 提交后继续真实 tarball 的 SRI/SHA-256/size、provisioning、`assets.lock.json` 与打包器/安装器交叉校验；不据此关闭 F3-03。
+5. **P6-4b/4c**：真实资产启动；真实包 + `strace`/PATH tripwire 的无 Node 进程审计。
+6. **P6/P7 默认切换与 Node 删除**：最后执行；前置是 G5/G6 与真实包/安装/回滚/Zed 验收完成。
