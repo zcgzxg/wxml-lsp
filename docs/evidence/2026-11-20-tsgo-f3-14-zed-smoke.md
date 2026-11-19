@@ -1,157 +1,159 @@
-# F3-14 真实打包 Zed native 冒烟（opt-in，2026-11-20）
+# F3-14 默认路径打包 Zed native 冒烟（2026-11-20）
 
 ## 0. 结论先行
 
-本次新增 `scripts/f3-zed-smoke.sh`，用**已构建的 v2 native 安装包** + 测试专用
-`WXML_LSP_BIN` wrapper（只追加 `--backend native`）启动真实 Zed 1.29.2，在隔离
-Xvfb 显示上完成：
+使用 HEAD `5020ae7` 的生产源码重新执行无 Node 的 `scripts/build-release.sh`，
+得到真实 schema v2 native 包，并按 **默认路径** 在隔离 Xvfb + 真实 Zed 1.29.2
+上执行 16 项检查：**16/16 PASS，exit 0**。
 
-- `ps` 显示包内 `wxml-lsp --stdio --backend native`，Zed 进程树内无 Node；
-- WXML hover 显示 `string`；
+- Zed 直接启动包内 `bin/wxml-lsp --stdio`，**没有 wrapper，没有 `--backend`**；
+- `ps` 精确显示 `.../bin/wxml-lsp --stdio`，进程树无 Node / `server.js` / `--backend node`；
+- WXML hover 为 `string`，带脚本注释 `用户显示名`；
 - WXML 语法诊断显示 `element is not closed before its parent closes (wxml-lsp)`；
-- 未保存脚本修改后，WXML hover 从 `string` 变为 `number`，而磁盘文件哈希不变；
-- WXML / JavaScript / TypeScript / TSX / JSON 五语言状态栏均可见，且五语言阶段
-  始终只有同一个 `wxml-lsp` 进程。
+- 未保存 `index.ts` 中 `name: 'Ada'` → `42` 后，WXML hover 变为 `number`，磁盘哈希不变；
+- WXML / JavaScript / TypeScript / TSX / JSON 五语言状态栏均可见；
+- 五语言阶段结束后恰好只有 **1 个** `wxml-lsp` 进程。
 
-脚本结果：**16 项检查全部 PASS，exit 0**。
+**F3-14 从 BLOCKED 提升为 closed。** 关闭依据是默认无 wrapper 的真实包路径，
+不是之前的 `--backend native` bridge。剩余限制见 §6；Xvfb/TSX partial/definition/
+completion/exec/网络审计不被当作 F3-14 的关闭条件，但明确记录。
 
-但 **F3-14 仍是 BLOCKED**：本次是 opt-in wrapper 冒烟，不是默认路径冒烟。
-本次使用的 P6-7 已构建包（`wxml-lsp 0.1.0`，SHA-256 `847f...`）的 `--help`
-仍写 `node (default)`；它没有包含之后工作树上并行会话的 P6-8 改动。
-不能用本证据把 F3-14 标为 closed。
+## 1. 身份、边界与构建
 
-## 1. 身份与边界
+- Worktree：`/home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration`。
+- 构建目标源码：`5020ae7939f1a87212372fa8901349477d799dda`（P6-8 默认切换）。
+- 为消除构建期间 HEAD 漂移，使用 `git archive 5020ae7 | tar -x -C
+  /tmp/opencode/f3-14-exact/src` 从纯净源码树构建，而不是依赖当时工作树 HEAD。
+- 另一次从工作树（HEAD 已推进到 `0bf666b`，仅测试/台账/证据提交）构建得到
+  **相同** archive SHA-256 `4bb9a1e...`；`git diff 5020ae7..0bf666b -- crates/wxml-lsp/src
+  crates/wxml-delivery/src Cargo.toml Cargo.lock editors/zed/src editors/zed/Cargo.toml
+  assets.lock.json` 为空。构建后并行会话只在
+  `crates/wxml-lsp/src/backend_tsgo/component_bindings.rs` 的 `#[cfg(test)]` 模块追加
+  测试，不改变生产代码。
+- 本切片只更新 `scripts/f3-zed-smoke.sh`、本文件、F3-14 合同状态与证据索引；
+  未修改生产代码、默认 backend、Node 删除、`wxml-delivery`、Cargo 或 Zed 扩展。
+- 未 commit，未启动 review；所有运行产物在 `/tmp/opencode/f3-14-exact`。
 
-- Worktree：`/home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration`，HEAD `1102da7`。
-- 本次唯一新增：` scripts/f3-zed-smoke.sh` 与本文件。未修改生产代码、默认 backend、
-  Node 删除、`wxml-delivery`、Cargo、现有测试或 Zed 扩展。
-- 读取/运行期间，并行会话在工作树加入了未提交的 P6-8 默认选择器改动
-  （`crates/wxml-lsp/src/main.rs`、`lib.rs`、`backend_tsgo/**`）；这些改动不是本切片
-  产生的，也没有被构建或纳入本次包冒烟。本切片的结论只对应 P6-7 已构建包。
-- 未 commit，未启动 review。
-- 所有运行产物在 `/tmp/opencode/f3-zed-smoke`，仓库内没有临时文件。
+构建命令（`cd` 到解包后的 `5020ae7` 源码树；clean PATH 没有
+node/npm/npx/pnpm/yarn/bun）：
 
-## 2. 输入包与测试 wrapper
+```bash
+cd /tmp/opencode/f3-14-exact/src
+env PATH="/tmp/opencode/p6-7-release/clean-bin:$HOME/.cargo/bin" \
+  SOURCE_DATE_EPOCH=1763683200 \
+  WXML_BUILD_CACHE=/tmp/opencode/f3-14-exact/cache \
+  WXML_ASSET_CACHE=/tmp/opencode/p6-7-release/cache/assets-cache \
+  CARGO_TARGET_DIR=/tmp/opencode/f3-14-exact/target \
+  ZED_CARGO_TARGET_DIR=/tmp/opencode/f3-14-exact/zed-target \
+  ./scripts/build-release.sh \
+    --output /tmp/opencode/f3-14-exact/release \
+    --from-dir /tmp/opencode/p6-7-release/from-dir
+```
 
-### 2.1 包身份
-
-使用 P6-7 真实发布链构建并由 `wxml-lsp-install` 安装的 root：
+构建结果：`BUILD_EXIT=0`；日志首行 `node: absent`，末行
+`node: not executed (PATH tripwire clean)`。包由 `wxml-lsp-install verify-package`
+验证，再安装到隔离 root：
 
 ```text
-root=/tmp/opencode/p6-7-release/install-root
-current -> versions/0.1.0
+installed 0.1.0 (native)
+verified 0.1.0 (native)
+files: 157  bytes: 42532286
 ```
+
+安装时必须清除宿主已有的 `WXML_LSP_BIN`，否则安装器按设计优先使用外部二进制；
+本次使用 `env -u WXML_LSP_BIN -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE`
+后安装。
+
+## 2. 包身份
 
 | 项 | 值 |
 | --- | --- |
-| 安装版本 | `0.1.0`，schema v2 |
-| manifest SHA-256 | `f1f50e3629a8b354993275088a18d46768c8de8adbba4f81bb9fca98afb15939` |
-| `bin/wxml-lsp` SHA-256 | `847f770a1c640a109d050c7aca244e903dec863a8b06c8def107861bca3adbc3` |
+| release 目录 | `/tmp/opencode/f3-14-exact/release/wxml-lsp-0.1.0-linux-x86_64` |
+| 安装 root | `/tmp/opencode/f3-14-exact/install-root`，`current -> versions/0.1.0` |
+| archive SHA-256 | `4bb9a1e2678348e3328dbfd394065f746c8e133e3a5a762e4223632bcf8532a5` |
+| manifest SHA-256 | `22f846f0ba23c0ad0f1a1858e83da0e16b64d919b024f2be978feea78f1610ac` |
+| `bin/wxml-lsp` SHA-256 | `70a02f22eb92fc6b94c7cf67b85af79a19fded9b43b659d782fc5fd81354e1ba` |
 | `engine/lib/tsc` SHA-256 | `a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70` |
-| 包内 `zed-extension/extension.wasm` SHA-256 | `488531eaec969281fa295803e2d3cd857493bd9e26f56adc1c21a71bad0aeb1f` |
-| 引擎 | TypeScript `7.1.0-beta`，gitHead `3e92363...` |
-| 原始 archive SHA-256 | `35a356589fb5aac4dad9de8d9edf6fb7ad82e9e0a82b1fb9f8c958a4bd42b488`（P6-7 out-a，四次一致） |
+| `zed-extension/extension.wasm` SHA-256 | `488531eaec969281fa295803e2d3cd857493bd9e26f56adc1c21a71bad0aeb1f` |
 | grammar wasm SHA-256 | `05bd00d173f465dc7597e961c0f480ae3b743a3a11cdf4b838a1d88906aab9ad` |
+| 引擎 | TypeScript `7.1.0-beta`，gitHead `3e9236361fa97a9e6c685f4833ac457ae2d8c50a` |
+| `--help` 默认后端 | `--backend <backend> type backend for --stdio: native (default) or node` |
+| 文件数 | 157 |
 
-包内 `--help` 的默认后端行（`logs/package-identity.txt`）：
+`--help` 已不再写 `node (default)`，不存在文档漂移。包内不携带 tree-sitter
+grammar；本次继续使用 pinned revision `1cc1761c8c11cacab5516dbe64e20ee689aa4428`
+的预构建 wasm，不伪造引擎/类型资产。
 
-```text
-default_backend_help=  --backend <backend>  type backend for --stdio: node (default) or native
-```
+## 3. 默认路径运行
 
-包来自 [2026-11-20-tsgo-p6-7-native-release-build.md](2026-11-20-tsgo-p6-7-native-release-build.md)
-（HEAD `8ccebbf`），**不是**在 `1102da7` 上重新构建。本切片验证的是“已构建真实包”，
-不声明二进制对应 `1102da7`。包内不包含 tree-sitter grammar 产物；脚本显式接收
-pinned revision `1cc1761c8c11cacab5516dbe64e20ee689aa4428` 的预构建
-`wxml.wasm`，不伪造引擎或类型资产。
-
-### 2.2 wrapper
-
-`/tmp/opencode/f3-zed-smoke/bin/wxml-lsp` 全文只有：
-
-```sh
-#!/bin/sh
-# Test-only wrapper: the packaged binary plus the explicit opt-in backend.
-exec /tmp/opencode/p6-7-release/install-root/versions/0.1.0/bin/wxml-lsp "$@" --backend native
-```
-
-wrapper 不创建、不替换 engine/typings/manifest，不设置 legacy Node 变量；只追加
-`--backend native`。Zed 日志记录它实际传给 server 的参数仍是 `["--stdio"]`。
-
-### 2.3 隔离配置
-
-- `--user-data-dir`、隔离 `HOME`、`trust_all_worktrees=true`；
-- 包内 `zed-extension` 作为 **installed** 扩展加载，五语言 manifest 原样保留；
-- 为隔离 WXML server，`languages` 中 JavaScript/TypeScript/TSX/JSON 的
-  `language_servers` 仅保留 `wxml-lsp`，并关闭 vtsls/eslint 自动安装；否则 Zed
-  会为 TS 启动 `/usr/bin/node ... vtsls.js`，污染“无 Node”结论；
-- `ZED_ALLOW_EMULATED_GPU=1`，Xvfb `1600x1000x24`，软件渲染；不触碰用户当前
-  Wayland/KDE 桌面。
-
-## 3. 运行命令与结果
+`scripts/f3-zed-smoke.sh` 默认使用 `--direct`：
 
 ```bash
-scripts/f3-zed-smoke.sh \
-  --package /tmp/opencode/p6-7-release/install-root/current \
+./scripts/f3-zed-smoke.sh \
+  --package /tmp/opencode/f3-14-exact/install-root/current \
   --grammar /home/zxg/code/rust/wxml-lsp/editors/zed/grammars/wxml.wasm \
-  --output /tmp/opencode/f3-zed-smoke
+  --output /tmp/opencode/f3-14-exact/smoke
 ```
 
-逐项结果：
+`WXML_LSP_BIN` 直接指向包内 `bin/wxml-lsp`；没有测试 wrapper。`--bridge` 仍保留，
+用于复现旧的追加 `--backend native` 路径；本次也以该模式复跑 16/16，但 bridge 结果
+不作为 F3-14 关闭依据。
+
+Zed 日志：
 
 ```text
-F3-14-ZED-CHECK: PASS - Zed started the packaged native server
-F3-14-ZED-CHECK: PASS - ps shows the wrapper-resolved wxml-lsp --stdio --backend native
-F3-14-ZED-CHECK: PASS - no Node process or server.js in Zed's process tree
-F3-14-ZED-CHECK: PASS - WXML hover shows the inferred string type
-F3-14-ZED-CHECK: PASS - WXML diagnostics show the parser error
-F3-14-ZED-CHECK: PASS - Zed shows WXML for index.wxml
-F3-14-ZED-CHECK: PASS - Zed shows JavaScript for util.js
-F3-14-ZED-CHECK: PASS - Zed shows TypeScript for index.ts
-F3-14-ZED-CHECK: PASS - Zed shows TSX for component.tsx
-F3-14-ZED-CHECK: PASS - Zed shows JSON for config.json
-F3-14-ZED-CHECK: PASS - WXML hover reflects the unsaved script edit (number)
-F3-14-ZED-CHECK: PASS - unsaved buffer stayed in memory; index.ts hash is unchanged
-F3-14-ZED-CHECK: PASS - native server still running after all five languages (1 process(es))
-F3-14-ZED-CHECK: PASS - Zed log records the language server start
-F3-14-ZED-CHECK: PASS - Zed passed only --stdio; the wrapper appended --backend native
-F3-14-ZED-CHECK: PASS - no vtsls/eslint/Node language server in the Zed log
-
-F3-14-ZED-SMOKE: PASS (opt-in wrapper; real Zed UI on Xvfb)
-F3-14: BLOCKED (opt-in only; default-path packaged Zed smoke is not recorded)
+INFO [lsp] starting language server process. binary path:
+  "/tmp/opencode/f3-14-exact/install-root/versions/0.1.0/bin/wxml-lsp",
+  working directory: "/tmp/opencode/f3-14-exact/smoke/project",
+  args: ["--stdio"]
 ```
 
-`bash -n scripts/f3-zed-smoke.sh` 通过；本切片没有新增 Rust 测试，未运行
-`cargo fmt/clippy`（工作树另有并行未提交 Rust 改动，不构成本切片的检查快照）。
+即 Zed 只传 `--stdio`，包内二进制自行选择 native。
+
+### 16/16 检查
+
+```text
+F3-14-ZED-NOTE: package --help documents native as default
+PASS - Zed started the packaged default server (--stdio, no --backend)
+PASS - ps shows wxml-lsp --stdio exactly (no --backend argument)
+PASS - no Node process or server.js in Zed's process tree
+PASS - WXML hover shows the inferred string type
+PASS - WXML diagnostics show the parser error
+PASS - Zed shows WXML for index.wxml
+PASS - Zed shows JavaScript for util.js
+PASS - Zed shows TypeScript for index.ts
+PASS - Zed shows TSX for component.tsx
+PASS - Zed shows JSON for config.json
+PASS - WXML hover reflects the unsaved script edit (number)
+PASS - unsaved buffer stayed in memory; index.ts hash is unchanged
+PASS - exactly one wxml-lsp process remains after all five languages
+PASS - Zed log records the language server start
+PASS - Zed passed only --stdio; the package selected native
+PASS - no vtsls/eslint/Node language server in the Zed log
+
+F3-14-ZED-SMOKE: PASS (direct default path; real Zed UI on Xvfb)
+F3-14: PASS (default packaged --stdio; evidence complete)
+```
 
 ## 4. 证据
 
 ### 4.1 进程
 
-`/tmp/opencode/f3-zed-smoke/logs/zed-tree-final.txt`：
+`/tmp/opencode/f3-14-exact/smoke/logs/zed-tree-final.txt`：
 
 ```text
-1446919 1446849 zed             zed --foreground --user-data-dir /tmp/opencode/f3-zed-smoke/data -n /tmp/opencode/f3-zed-smoke/project
-1446930 1446919 zed-editor      /home/zxg/.local/zed.app/libexec/zed-editor zed-cli:///tmp/.tmpP4npkj/socket --user-data-dir /tmp/opencode/f3-zed-smoke/data
-1446996 1446930 zed-editor      /home/zxg/.local/zed.app/libexec/zed-editor --crash-handler ...
-1447249 1446930 wxml-lsp        /tmp/opencode/p6-7-release/install-root/versions/0.1.0/bin/wxml-lsp --stdio --backend native
-1448076 1447249 tsc             /tmp/opencode/p6-7-release/install-root/versions/0.1.0/engine/lib/tsc --api --async ...
+1519526 1519457 zed             zed --foreground --user-data-dir /tmp/opencode/f3-14-exact/smoke/data -n /tmp/opencode/f3-14-exact/smoke/project
+1519537 1519526 zed-editor      /home/zxg/.local/zed.app/libexec/zed-editor zed-cli:///tmp/.tmpqnVm5Z/socket --user-data-dir /tmp/opencode/f3-14-exact/smoke/data
+1519603 1519537 zed-editor      /home/zxg/.local/zed.app/libexec/zed-editor --crash-handler ...
+1519866 1519537 wxml-lsp        /tmp/opencode/f3-14-exact/install-root/versions/0.1.0/bin/wxml-lsp --stdio
+1520711 1519866 tsc             /tmp/opencode/f3-14-exact/install-root/versions/0.1.0/engine/lib/tsc --api --async ...
 ```
 
-没有 `node`、`server.js` 或 `--backend node`。`tsc` 是 native 引擎进程，不是 Node。
-Zed 日志另有一行 `node_runtime ... using Node.js found on PATH`，但本次没有 spawn
-Node 进程；判断以进程树为准。
-
-Zed 日志 `/tmp/opencode/f3-zed-smoke/data/logs/Zed.log`：
-
-```text
-INFO [lsp] starting language server process. binary path:
-  "/tmp/opencode/f3-zed-smoke/bin/wxml-lsp",
-  working directory: "/tmp/opencode/f3-zed-smoke/project",
-  args: ["--stdio"]
-```
-
-即 Zed 只传 `--stdio`；wrapper 追加 `--backend native`。
+没有 `--backend`、`--backend node`、`node` 或 `server.js`。`tsc` 是 native 引擎。
+Zed 日志另有 `node_runtime ... using Node.js found on PATH`；本次没有 spawn Node
+进程，判断以进程树为准。隔离配置把 JS/TS/TSX/JSON 的 `language_servers` 限制为
+`wxml-lsp`，并禁用 vtsls/eslint 自动安装，否则 Zed 会为 TS 启动
+`/usr/bin/node ... vtsls.js`，污染“无 Node”结论。
 
 ### 4.2 WXML hover 与诊断
 
@@ -159,19 +161,18 @@ INFO [lsp] starting language server process. binary path:
 
 | 截图 | SHA-256 | OCR 关键文本 |
 | --- | --- | --- |
-| ` /tmp/opencode/f3-zed-smoke/shots/20-wxml-hover.png` | `97b67710...0c8d3f` | `string`、`用户显示名` |
-| ` /tmp/opencode/f3-zed-smoke/shots/21-wxml-diagnostics.png` | `b2c56aea...ea545c47` | `element is not closed before its parent closes (wxml-lsp)`、`type checking is partial ... component.tsx` |
-| ` /tmp/opencode/f3-zed-smoke/shots/41-unsaved-hover.png` | `4d3d51e7...a08a1623d` | `number`、`用户显示名` |
-| ` /tmp/opencode/f3-zed-smoke/shots/40-unsaved-edit.png` | `5508feb7...bdfa2d24` | `name: 42`、`index.ts` 标签有未保存点 |
+| ` /tmp/opencode/f3-14-exact/smoke/shots/20-wxml-hover.png` | `97b677108c5248dbdd4790fbbf9e046d04d3054c8c27505ec188cd1bbb0c8d3f` | `string`、`用户显示名` |
+| ` /tmp/opencode/f3-14-exact/smoke/shots/21-wxml-diagnostics.png` | `b2c56aea282d13bee051043a578f36de6fe6b22b97348f2a0d4351f6ea545c47` | `element is not closed before its parent closes (wxml-lsp)` |
+| ` /tmp/opencode/f3-14-exact/smoke/shots/41-unsaved-hover.png` | `4d3d51e7ff09ed6cc5f5c2bf3e8a83a014f05c49ef53f936c04f730a08a1623d` | `number`、`用户显示名` |
+| ` /tmp/opencode/f3-14-exact/smoke/shots/40-unsaved-edit.png` | `5508feb79e6cd199c6a5a74dadd30bf76170e69b79291fff5beec9ffbdfa2d24` | `name: 42`、`index.ts` 未保存点 |
 
-WXML hover 来自 `{{user.name}}`：native 表达式成员 hover 返回 `string`，
-并带脚本注释 `用户显示名`。诊断来自未闭合的 `<text>`，由 WXML 解析器发布。
-同一诊断面板还显示 `component.tsx` 被类型分析省略的 partial 状态；这是现有
-native 能力边界，不是本次新增失败。
+WXML hover 来自 `{{user.name}}`；诊断来自未闭合的 `<text>`。诊断面板同时显示
+`component.tsx` 被类型分析省略的 partial 状态，这是现有 native 能力边界，不是
+本次默认路径失败。
 
 ### 4.3 未保存脚本
 
-1. 打开 `pages/index/index.ts`，把 `name: 'Ada'` 改成 `name: 42`，**不保存**；
+1. 打开 `pages/index/index.ts`，把 `name: 'Ada'` 改为 `name: 42`，不保存；
 2. 切回 `pages/index/index.wxml`，hover `{{user.name}}`；
 3. hover 从 `string` 变为 `number`；
 4. `index.ts` 的 SHA-256 前后一致：
@@ -182,8 +183,6 @@ after =bb0f4353021f182ccdb54291dd1c1df078c1d28decfa361f00932965b6fd5cfe
 disk_line=5:      name: 'Ada'
 ```
 
-证明：未保存 buffer 参与了 WXML 类型查询，但没有落盘。
-
 ### 4.4 五语言
 
 包内 `zed-extension/extension.toml`：
@@ -192,53 +191,65 @@ disk_line=5:      name: 'Ada'
 languages = ["WXML", "JavaScript", "TypeScript", "TSX", "JSON"]
 ```
 
-Zed 状态栏截图与 OCR：
-
 | 文件 | 截图 | 状态栏 OCR |
 | --- | --- | --- |
-| `index.wxml` | ` /tmp/opencode/f3-zed-smoke/shots/30-language-WXML.png` | `WXML` |
-| `util.js` | ` /tmp/opencode/f3-zed-smoke/shots/30-language-JavaScript.png` | `JavaScript` |
-| `index.ts` | ` /tmp/opencode/f3-zed-smoke/shots/30-language-TypeScript.png` | `TypeScript` |
-| `component.tsx` | ` /tmp/opencode/f3-zed-smoke/shots/30-language-TSX.png` | `TSX` |
-| `config.json` | ` /tmp/opencode/f3-zed-smoke/shots/30-language-JSON.png` | `JSON` |
+| `index.wxml` | ` /tmp/opencode/f3-14-exact/smoke/shots/30-language-WXML.png` | `WXML` |
+| `util.js` | ` /tmp/opencode/f3-14-exact/smoke/shots/30-language-JavaScript.png` | `JavaScript` |
+| `index.ts` | ` /tmp/opencode/f3-14-exact/smoke/shots/30-language-TypeScript.png` | `TypeScript` |
+| `component.tsx` | ` /tmp/opencode/f3-14-exact/smoke/shots/30-language-TSX.png` | `TSX` |
+| `config.json` | ` /tmp/opencode/f3-14-exact/smoke/shots/30-language-JSON.png` | `JSON` |
 
-五语言阶段结束后，进程树中仍只有 **1 个** `wxml-lsp --stdio --backend native`；
-没有为 TS/TSX/JSON 启动 vtsls、eslint 或 Node。
+五语言阶段结束后恰好 1 个 `wxml-lsp --stdio`，没有为 TS/TSX/JSON 启动 vtsls、
+eslint 或 Node。
 
-## 5. 未覆盖与 BLOCKED 原因
+## 5. 关闭判断
 
-1. **默认路径未用本包验证**：P6-7 包内 `wxml-lsp --help` 仍写
-   `--backend <backend> ... node (default) or native`，即该二进制默认仍是 Node。
-   读取期间并行会话已在工作树加入未提交的 P6-8 选择器
-   （` /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/src/main.rs:200`
-   `serve_default()` → `run_stdio_native_default()`），但本切片没有构建它，也没有
-   用它录制默认 `--stdio` 的 Zed UI 证据；本次只是 wrapper opt-in，不是 F3-14 的
-   最终形态。
-2. **显示是 Xvfb 虚拟显示**：真实 Zed 进程、真实 UI 查询和截图，但不是物理显示器；
-   使用软件渲染。自动化依赖 `xdotool` + ImageMagick + tesseract。
-3. **未重新构建包**：使用 P6-7 在 HEAD `8ccebbf` 构建的包，不是 `1102da7` 的逐字节重建。
-4. **五语言覆盖范围**：验证了语言注册/状态栏和 WXML 查询；没有对 JS/TS/TSX/JSON
-   做各自语义查询，也没有验证 definition/completion。`component.tsx` 被 native
-   project host 标为 partial（其脚本未进入 WXML 类型分析）。
-5. **无 exec/网络审计**：本次只有 `ps`/`pstree` 进程树，不是 `execve` 追踪；不关闭
-   F3-02，也不证明网络隔离。
-6. **grammar 不在包内**：使用 pinned revision 的预构建 wasm；Zed 标准安装流程通常
-   自行构建 grammar。
-7. **测试配置关闭了无关 Node server**：vtsls/eslint 被显式禁用，以确保“无 Node”只
-   反映 `wxml-lsp` 路径；这不等同于生产配置。
+F3-14 的关闭条件已满足：
 
-因此：**opt-in native Zed UI 冒烟 PASS；F3-14 仍 BLOCKED，直到 P6-8 后的包被重新
-构建，并以默认 `--stdio`（无 wrapper）重新录制同样的 UI 证据。**
+- 默认路径：Zed 直接启动包内 `bin/wxml-lsp --stdio`，无 wrapper、无 `--backend`；
+- 真实包：HEAD `5020ae7` 生产源码构建，157 文件，安装/verify 通过；
+- 无 Node：进程树无 Node/server.js；构建在无 Node PATH 下完成；
+- UI：WXML hover/诊断、五语言注册、未保存脚本 hover 均有截图/OCR/日志；
+- 进程：结束时恰好 1 个 `wxml-lsp`。
 
-## 6. 产物索引
+因此合同 §9.5 的 F3-14 从 **blocked** 改为 **closed**，头部计数从
+13 closed / 2 partial / 1 blocked 改为 **14 closed / 2 partial / 0 blocked**。
+`docs/evidence/README.md` 的 F3-14 行与 §3.3 同步更新。
+
+## 6. 剩余限制（不阻塞 F3-14）
+
+1. **Xvfb**：真实 Zed 进程/UI/截图，但显示是 Xvfb + 软件渲染，不是物理显示器；
+   自动化依赖 xdotool/ImageMagick/tesseract。
+2. **TSX partial**：`component.tsx` 注册为 TSX，但 native project host 把它从
+   WXML 类型分析中省略（诊断面板显示 partial）；不是注册失败。
+3. **definition/completion**：本次未单独验证；F3-14 的“查询/未保存脚本”由
+   hover、诊断和未保存脚本 hover 覆盖。
+4. **exec/网络审计**：只有进程树，没有 execve 追踪或网络审计；属于 F3-02/其他项，
+   不归 F3-14。
+5. **grammar**：包不携带 tree-sitter artifact，本次用 pinned revision 的预构建
+   wasm；Zed 标准安装流程通常自行构建。
+6. **Node runtime 探测**：Zed 日志有 Node PATH 探测行，但没有 Node 子进程；
+   vtsls/eslint 在测试配置中显式禁用。
+
+## 7. 批量检查与产物
 
 ```text
-/tmp/opencode/f3-zed-smoke/logs/package-identity.txt
-/tmp/opencode/f3-zed-smoke/logs/zed.log
-/tmp/opencode/f3-zed-smoke/logs/zed-tree-final.txt
-/tmp/opencode/f3-zed-smoke/logs/zed-pstree-final.txt
-/tmp/opencode/f3-zed-smoke/logs/unsaved-disk.txt
-/tmp/opencode/f3-zed-smoke/logs/ocr-evidence.txt  # 本次运行的 OCR 摘录
-/tmp/opencode/f3-zed-smoke/shots/*.png
-/tmp/opencode/f3-zed-smoke-run.log
+bash -n scripts/f3-zed-smoke.sh                          PASS
+scripts/f3-zed-smoke.sh（直接默认路径）                  16/16 PASS，exit 0
+git diff --check                                         PASS
+```
+
+产物：
+
+```text
+/tmp/opencode/f3-14-exact/build.log
+/tmp/opencode/f3-14-exact/install.log
+/tmp/opencode/f3-14-exact/release/
+/tmp/opencode/f3-14-exact/install-root/
+/tmp/opencode/f3-14-exact/smoke/logs/package-identity.txt
+/tmp/opencode/f3-14-exact/smoke/logs/zed.log
+/tmp/opencode/f3-14-exact/smoke/logs/zed-tree-final.txt
+/tmp/opencode/f3-14-exact/smoke/logs/unsaved-disk.txt
+/tmp/opencode/f3-14-exact/smoke/shots/*.png
+/tmp/opencode/f3-14-exact/smoke-run.log
 ```

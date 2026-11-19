@@ -105,8 +105,8 @@ P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、Definit
 
 - **默认入口**：`5020ae7` 已把默认 `--stdio` 切到 native。验证安装存在时使用固定引擎；只有 `EngineDiscoveryError::NotInstalled` 降级 `HostOnly`，manifest/引擎/类型资产缺失、损坏或不匹配一律在 LSP handshake 前 fail closed。`--backend native` 仍是严格选择器，`--backend node` 保留为 deprecated 过渡路径。`7f9116a` 的 no-Node guard 只对默认分支做静态源码检查，不运行 live LSP，也不关闭 F3-02 的 `execve` 审计。
 - **门禁**：23 个旧 Node gate 的 native replacement 已全部 `gate_green`、`required_not_migrated` 为 0；但它们仍是 opt-in `--ignored` 结果，不是 `mandatory_green`，也不是默认 CI 通过。
-- **编辑安全与测试迁移**：`899a89a` 已实现 3 个 native edit gate（`G-P5-E2E-22/23`），但旧 23 个 gate、旧 `semantic_tools` 默认 Node 路径和可选 `tsc` 分支仍在；ledger 仍为 44 `green` / 259 `planned` / 36 `retired-with-decision`。
-- **交付**：已提交的 F3 状态为 13 closed / 2 partial / 1 blocked（F3-06/09 partial，F3-14 blocked）。F3-14 的 opt-in wrapper Zed UI 冒烟已通过，但已提交证据中默认 `--stdio` 的打包 Zed 冒烟尚未录制。
+- **编辑安全与测试迁移**：`899a89a` 已实现 3 个 native edit gate（`G-P5-E2E-22/23`），但旧 23 个 gate、旧 `semantic_tools` 默认 Node 路径和可选 `tsc` 分支仍在；ledger 为 48 `green` / 255 `planned` / 36 `retired-with-decision`（wave-6 组件绑定跟进后）。
+- **交付**：F3 状态为 14 closed / 2 partial / 0 blocked（F3-06/09 partial）。F3-14 已由 `5020ae7` 默认 `--stdio` 重新构建的真实 v2 包 + 真实 Zed 默认路径冒烟关闭（Xvfb，16/16；无 wrapper、无 Node）。
 - **删除**：P7-0 预删除冻结和 P7-3..P7-7 删除均未开始；`backend_node`、旧 TS 源码/测试和 v1 packager 写路径仍存在。
 
 因此 Validation 第 2、3、4、6 项仍未满足；本 ADR 保持 proposed。不得写成 accepted，不得声称 Node 已移除、P7 已完成或迁移完成。

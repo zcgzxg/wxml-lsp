@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# F3-14 opt-in Zed native smoke.
+# F3-14 Zed native smoke (default path or opt-in bridge).
 #
-# This runner does NOT change the default backend. It starts the packaged
-# `wxml-lsp` through a test-only wrapper that appends `--backend native`, then
-# drives a real Zed process on an isolated Xvfb display and records:
+# Default `--direct` mode starts the packaged `wxml-lsp` exactly as Zed ships
+# it: `bin/wxml-lsp --stdio`, with no `--backend` argument. `--bridge` keeps
+# the old test-only wrapper that appends `--backend native` for comparison.
+# Both modes drive a real Zed process on an isolated Xvfb display and record:
 #
-#   - the server command line (`--stdio --backend native`) and the absence of
-#     Node descendants in Zed's process tree;
+#   - the server command line (direct: `--stdio`; bridge: `--stdio --backend
+#     native`) and the absence of Node descendants in Zed's process tree;
 #   - WXML hover and WXML syntax diagnostics, with screenshots and OCR;
 #   - a hover that reflects an unsaved script edit, while the file on disk is
 #     byte-for-byte unchanged;
@@ -16,7 +17,8 @@
 # touches the user's desktop: all state lives below /tmp.
 #
 # Usage:
-#   scripts/f3-zed-smoke.sh --package DIR --grammar FILE [--output DIR]
+#   scripts/f3-zed-smoke.sh --package DIR --grammar FILE [--direct|--bridge]
+#                           [--output DIR]
 #
 #   --package DIR  Installed or unpacked native package root containing
 #                  bin/wxml-lsp, manifest.json, engine/, typings/ and
@@ -24,13 +26,16 @@
 #   --grammar FILE Prebuilt tree-sitter-wxml wasm for the pinned revision. The
 #                  release package carries the extension but not the grammar
 #                  artifact; Zed normally builds it during install.
+#   --direct       Default. Point WXML_LSP_BIN at the packaged binary; Zed
+#                  passes only `--stdio` and the package selects native.
+#   --bridge       Opt-in compatibility mode: wrapper appends `--backend native`.
 #   --output DIR   Output directory under /tmp (default: /tmp/opencode/f3-zed-smoke).
 #
-# Exit status: 0 when the opt-in smoke passes or the environment is BLOCKED;
+# Exit status: 0 when the smoke passes or the environment is BLOCKED;
 # 1 when the environment is present but a UI/process assertion fails.
 #
-# F3-14 is still BLOCKED after a PASS: the default-path packaged Zed smoke has
-# not been recorded. This runner records the opt-in bridge only.
+# A direct-mode PASS is the evidence needed to close F3-14; a bridge-mode PASS
+# is only a compatibility check and leaves F3-14 BLOCKED.
 
 set -euo pipefail
 
@@ -40,9 +45,10 @@ REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 PACKAGE=""
 GRAMMAR=""
 OUTPUT=${WXML_F3_ZED_OUTPUT:-/tmp/opencode/f3-zed-smoke}
+MODE=direct
 
 usage() {
-    sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -72,6 +78,19 @@ while [ "$#" -gt 0 ]; do
             OUTPUT=$2
             shift 2
             ;;
+        --direct)
+            MODE=direct
+            shift
+            ;;
+        --bridge)
+            MODE=bridge
+            shift
+            ;;
+        --mode)
+            [ "$#" -ge 2 ] || die "--mode requires direct or bridge"
+            MODE=$2
+            shift 2
+            ;;
         --help|-h)
             usage
             exit 0
@@ -84,6 +103,10 @@ done
 
 [ -n "$PACKAGE" ] || die "--package is required"
 [ -n "$GRAMMAR" ] || die "--grammar is required (pinned tree-sitter-wxml wasm)"
+case "$MODE" in
+    direct|bridge) ;;
+    *) die "--mode must be direct or bridge (got $MODE)" ;;
+esac
 OUTPUT=$(realpath -m -- "$OUTPUT")
 case "$OUTPUT/" in
     "$(realpath -m -- "$REPO_ROOT")/"*) die "--output must be outside the repository" ;;
@@ -133,6 +156,7 @@ trap cleanup EXIT
 
 {
     printf 'package=%s\n' "$PACKAGE"
+    printf 'mode=%s\n' "$MODE"
     printf 'manifest_sha256='; sha256sum "$PACKAGE/manifest.json" | cut -d' ' -f1
     printf 'wxml_lsp_sha256='; sha256sum "$PACKAGE/bin/wxml-lsp" | cut -d' ' -f1
     printf 'engine_sha256='; sha256sum "$PACKAGE/engine/lib/tsc" | cut -d' ' -f1
@@ -144,19 +168,28 @@ trap cleanup EXIT
     printf 'zed_version='; zed --version 2>&1 | head -1
 } >"$OUTPUT/logs/package-identity.txt"
 
-# --- test-only wrapper ------------------------------------------------------
-
-WRAPPER="$OUTPUT/bin/wxml-lsp"
-mkdir -p -- "$OUTPUT/bin"
-{
-    printf '#!/bin/sh\n'
-    printf '# Test-only wrapper: the packaged binary plus the explicit opt-in backend.\n'
-    printf 'exec %q "$@" --backend native\n' "$PACKAGE/bin/wxml-lsp"
-} >"$WRAPPER"
-chmod 755 "$WRAPPER"
-grep -q -- '--backend native' "$WRAPPER" || die "wrapper does not select native"
-if grep -Eqi 'node|server\.js|WXML_TYPE_BACKEND|WXML_BACKEND_DIR|WXML_NODE' "$WRAPPER"; then
-    die "wrapper must not reference Node or legacy environment variables"
+if [ "$MODE" = "direct" ]; then
+    LSP_BIN="$PACKAGE/bin/wxml-lsp"
+    if grep -q 'node (default)' "$OUTPUT/logs/package-identity.txt"; then
+        printf 'F3-14-ZED-NOTE: package --help still documents node as default (documentation drift; process evidence decides)\n'
+    else
+        printf 'F3-14-ZED-NOTE: package --help documents native as default\n'
+    fi
+else
+    # --- test-only bridge wrapper ------------------------------------------
+    WRAPPER="$OUTPUT/bin/wxml-lsp"
+    mkdir -p -- "$OUTPUT/bin"
+    {
+        printf '#!/bin/sh\n'
+        printf '# Test-only bridge: the packaged binary plus the explicit opt-in backend.\n'
+        printf 'exec %q "$@" --backend native\n' "$PACKAGE/bin/wxml-lsp"
+    } >"$WRAPPER"
+    chmod 755 "$WRAPPER"
+    grep -q -- '--backend native' "$WRAPPER" || die "bridge wrapper does not select native"
+    if grep -Eqi 'node|server\.js|WXML_TYPE_BACKEND|WXML_BACKEND_DIR|WXML_NODE' "$WRAPPER"; then
+        die "bridge wrapper must not reference Node or legacy environment variables"
+    fi
+    LSP_BIN="$WRAPPER"
 fi
 
 # --- isolated extension and settings ---------------------------------------
@@ -242,7 +275,7 @@ cat >"$OUTPUT/data/config/keymap.json" <<'JSON'
 ]
 JSON
 
-printf 'export WXML_LSP_BIN=%s\n' "$WRAPPER" >"$OUTPUT/data/home/.bashrc"
+printf 'export WXML_LSP_BIN=%s\n' "$LSP_BIN" >"$OUTPUT/data/home/.bashrc"
 
 # --- fixture project --------------------------------------------------------
 
@@ -304,7 +337,7 @@ for _ in $(seq 1 40); do
 done
 xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 || blocked "Xvfb did not start"
 
-HOME="$OUTPUT/data/home" WXML_LSP_BIN="$WRAPPER" DISPLAY="$DISPLAY" WAYLAND_DISPLAY= \
+HOME="$OUTPUT/data/home" WXML_LSP_BIN="$LSP_BIN" DISPLAY="$DISPLAY" WAYLAND_DISPLAY= \
     ZED_ALLOW_EMULATED_GPU=1 setsid zed --foreground --user-data-dir "$OUTPUT/data" \
     -n "$PROJECT" >"$OUTPUT/logs/zed.log" 2>&1 &
 ZPID=$!
@@ -340,10 +373,18 @@ tree_ps() {
     done
 }
 
+lsp_started() {
+    if [ "$MODE" = "direct" ]; then
+        tree_ps "$ZPID" | grep -Eq -- '/bin/wxml-lsp --stdio[[:space:]]*$'
+    else
+        tree_ps "$ZPID" | grep -Eq -- '/bin/wxml-lsp --stdio --backend native[[:space:]]*$'
+    fi
+}
+
 wait_for_lsp() {
     local _ pid
     for _ in $(seq 1 80); do
-        if tree_ps "$ZPID" | grep -q -- '--backend native'; then
+        if lsp_started; then
             return 0
         fi
         sleep 0.5
@@ -430,18 +471,29 @@ pass() {
 
 open_file index.wxml
 if wait_for_lsp; then
-    pass "Zed started the packaged native server"
+    if [ "$MODE" = "direct" ]; then
+        pass "Zed started the packaged default server (--stdio, no --backend)"
+    else
+        pass "Zed started the packaged bridge server (--stdio --backend native)"
+    fi
 else
-    fail "no --backend native process appeared below Zed"
+    fail "expected wxml-lsp process did not appear below Zed"
 fi
 
 tree_ps "$ZPID" >"$OUTPUT/logs/zed-tree.txt"
 pstree -ap "$ZPID" >"$OUTPUT/logs/zed-pstree.txt" 2>/dev/null || true
 
-if grep -q -- "/bin/wxml-lsp --stdio --backend native" "$OUTPUT/logs/zed-tree.txt"; then
-    pass "ps shows the wrapper-resolved wxml-lsp --stdio --backend native"
+if lsp_started; then
+    if [ "$MODE" = "direct" ]; then
+        pass "ps shows wxml-lsp --stdio exactly (no --backend argument)"
+    else
+        pass "ps shows wxml-lsp --stdio --backend native"
+    fi
 else
-    fail "ps does not show wxml-lsp --stdio --backend native"
+    fail "ps does not show the expected wxml-lsp command line"
+fi
+if [ "$MODE" = "direct" ] && grep -Eq -- '/bin/wxml-lsp .*--backend' "$OUTPUT/logs/zed-tree.txt"; then
+    fail "direct mode passed a --backend argument"
 fi
 if grep -Eq -- '--backend node|server\.js|(^|[ /])node( |$)' "$OUTPUT/logs/zed-tree.txt"; then
     fail "Node or the legacy Node backend appears in Zed's process tree"
@@ -525,11 +577,15 @@ fi
 
 tree_ps "$ZPID" >"$OUTPUT/logs/zed-tree-final.txt"
 pstree -ap "$ZPID" >"$OUTPUT/logs/zed-pstree-final.txt" 2>/dev/null || true
-NATIVE_COUNT=$(grep -c -- '--stdio --backend native' "$OUTPUT/logs/zed-tree-final.txt" || true)
-if [ "${NATIVE_COUNT:-0}" -ge 1 ]; then
-    pass "native server still running after all five languages (${NATIVE_COUNT} process(es))"
+if [ "$MODE" = "direct" ]; then
+    LSP_COUNT=$(grep -Ec -- '/bin/wxml-lsp --stdio[[:space:]]*$' "$OUTPUT/logs/zed-tree-final.txt" || true)
 else
-    fail "native server disappeared before the end of the smoke"
+    LSP_COUNT=$(grep -Ec -- '/bin/wxml-lsp --stdio --backend native[[:space:]]*$' "$OUTPUT/logs/zed-tree-final.txt" || true)
+fi
+if [ "${LSP_COUNT:-0}" -eq 1 ]; then
+    pass "exactly one wxml-lsp process remains after all five languages"
+else
+    fail "expected exactly one wxml-lsp process, found ${LSP_COUNT:-0}"
 fi
 
 if grep -Eqi 'starting language server process.*--stdio' "$OUTPUT/data/logs/Zed.log"; then
@@ -538,7 +594,11 @@ else
     fail "Zed log has no language server start line"
 fi
 if grep -q 'args: \["--stdio"\]' "$OUTPUT/data/logs/Zed.log"; then
-    pass "Zed passed only --stdio; the wrapper appended --backend native"
+    if [ "$MODE" = "direct" ]; then
+        pass "Zed passed only --stdio; the package selected native"
+    else
+        pass "Zed passed only --stdio; the bridge appended --backend native"
+    fi
 else
     fail "Zed log does not show the --stdio launch"
 fi
@@ -558,5 +618,10 @@ if [ "$FAILURES" -ne 0 ]; then
     exit 1
 fi
 
-printf 'F3-14-ZED-SMOKE: PASS (opt-in wrapper; real Zed UI on Xvfb)\n'
-printf 'F3-14: BLOCKED (opt-in only; default-path packaged Zed smoke is not recorded)\n'
+if [ "$MODE" = "direct" ]; then
+    printf 'F3-14-ZED-SMOKE: PASS (direct default path; real Zed UI on Xvfb)\n'
+    printf 'F3-14: PASS (default packaged --stdio; evidence complete)\n'
+else
+    printf 'F3-14-ZED-SMOKE: PASS (bridge wrapper; real Zed UI on Xvfb)\n'
+    printf 'F3-14: BLOCKED (bridge only; default-path packaged Zed smoke is not recorded)\n'
+fi

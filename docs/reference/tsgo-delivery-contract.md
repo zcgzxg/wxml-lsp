@@ -8,8 +8,8 @@
 > `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`、linux-x64 SRI/`lib/tsc` SHA-256 见 §2）作为唯一
 > 候选基线。临时 Python spike 已执行一次可执行安装器证明，见
 > [P1-C 证据 §11](../evidence/2026-11-17-tsgo-delivery-spike.md)；该证明**不是**生产安装器，
-> 不改变本文 draft/未接受状态。当前 F3 进度为 **13 closed / 2 partial / 1 blocked**（F3-14
-> blocked，F3-06/09 partial），见 §9.5。
+> 不改变本文 draft/未接受状态。当前 F3 进度为 **14 closed / 2 partial / 0 blocked**
+> （F3-06/09 partial），见 §9.5。
 
 **关系**：[ADR-0007](../adr/0007-local-delivery-trust-model.md)（accepted，信任/离线/原子安装/回滚规则继续有效）；
 [ADR-0008](../adr/0008-rust-tsgo-no-node-backend.md)（proposed，迁移方向）；实施计划
@@ -1224,7 +1224,7 @@ target 优先前滚，而不是再写一次 `current` 切回。这样避免第�
 
 ### 9.2 测试矩阵
 
-2026-11-20 逐项审计后，F3 整体仍未通过：16 项中 **13 closed / 2 partial / 1 blocked**（见 §9.5）。
+2026-11-20 逐项审计后，F3 整体仍未全部通过：16 项中 **14 closed / 2 partial / 0 blocked**（见 §9.5）。
 真实资产、包级安装/回滚、ABI、ptrace exec 审计、缓存升级/回滚与部分篡改/恶意归档已有实测；
 Zed UI、第二个真实 release、真实 legacy 发布包与若干边界用例仍缺。下表中的测试文件多数已存在
 （早期 `new` 标注是历史计划），但存在不等于通过；`extend` 的文件仍需新增/保留 schema v2 断言。
@@ -1245,7 +1245,7 @@ Zed UI、第二个真实 release、真实 legacy 发布包与若干边界用例�
 | F3-11 | 恶意归档：绝对路径、`..`、symlink、hardlink、FIFO/设备、重复、超长/超大；拒绝且不越界解包 | `crates/wxml-delivery/tests/installer_security.rs`（extend）`archive_rejects_traversal_links_and_budget` | NF-09/10 | 仅部分 PAX/redirect 用例 |
 | F3-12 | 离线 fail-closed：无缓存安装失败且无网络；有效缓存可安装/升级/回滚；损坏缓存失败；代理 sink 无连接 | `crates/wxml-delivery/tests/native_delivery.rs`（new）+ `scripts/verify-no-node.sh`（new） | NF-04/08 | `offline_install...` 仅 v1 |
 | F3-13 | 平台/ABI：错误 platform/arch 在写入前拒绝；记录 `readelf`/`ldd`/`GLIBC_*`；musl 明确不支持；glibc 下限写入证据 | `crates/wxml-delivery/tests/native_delivery.rs`（new）`rejects_unsupported_platform` + `docs/evidence/<run>-tsgo-delivery-acceptance.md`（new） | NF-05/09 | 无 |
-| F3-14 | 打包 Zed 冒烟：真实安装包 + `WXML_LSP_BIN` 启动 Zed；`pgrep` 显示 `wxml-lsp --stdio`；无 node；五语言注册；查询/未保存脚本可用 | `scripts/zed-smoke.sh`（new）+ `docs/evidence/<run>-tsgo-packaged-zed-smoke.md`（new） | NF-01/07/12 | 无；现有 stdio 测试不是 UI smoke |
+| F3-14 | 打包 Zed 冒烟：真实安装包 + `WXML_LSP_BIN` 启动 Zed；`pgrep` 显示 `wxml-lsp --stdio`；无 node；五语言注册；查询/未保存脚本可用 | ` scripts/f3-zed-smoke.sh`（new）+ ` docs/evidence/2026-11-20-tsgo-f3-14-zed-smoke.md`（new） | NF-01/07/12 | 默认路径 16/16；旧 stdio 测试不是 UI smoke |
 | F3-15 | legacy 变量/入口：设置 `WXML_TYPE_BACKEND`/`WXML_NODE`/`WXML_BACKEND_DIR` 不激活 Node；Zed 不转发；有效 `WXML_LSP_BIN` 阻止 install/upgrade/rollback；无效值 hard error | `crates/wxml-delivery/tests/installer_flow.rs`（extend）+ `editors/zed/src/lib.rs` 测试（extend） | NF-07/12 | `explicit_binary_wins...` 仅部分 |
 | F3-16 | 崩溃/并发：各 journal 状态注入进程消失；`staged` 只清 tmp、`committed` 不自动激活、`activated` 幂等；并发 install 串行；current 始终有效 | `crates/wxml-delivery/tests/installer_flow.rs`（extend）+ `crates/wxml-delivery/tests/native_delivery.rs`（new）`crash_recovery_and_lock` | NF-10 | `concurrent_installs...` 仅 v1 |
 
@@ -1351,7 +1351,7 @@ Zed UI、第二个真实 release、真实 legacy 发布包与若干边界用例�
 | F3-11 | **closed** | ` crates/wxml-delivery/tests/f3_acceptance/package_guards.rs:267` 的 `f3_11_malicious_real_archive_shapes_fail_before_activation`：15 类真实 `install --from-dir` 恶意归档（绝对路径、FIFO/字符/块设备、重复项、GNU long-name >4096 B、PAX 扩展预算 128 KiB > 64 KiB、PAX size 覆盖、PAX 绝对路径、PAX 超长路径、traversal/symlink/hardlink/malformed PAX/per-entry budget）全部在激活前拒绝，无 current/versions/state。 | 无合同项。归档构造是测试侧受控输入，不是已发布恶意包。 |
 | F3-12 | **closed** | ` crates/wxml-delivery/tests/f3_acceptance/cache.rs:34` 的 `f3_12_real_cache_driven_upgrade_rollback_and_corrupt_fail_closed`：真实 N1 安装 + 缓存、N2 缓存预热、离线缓存驱动升级/回滚、损坏 archive/index/缺 index fail closed、proxy sink 0 连接；` crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `real_release_offline_cache_reinstall_and_fail_closed` 覆盖重装/空缓存。 | 无合同项。内核 `connect` 级审计属于 F3-02；本项只要求网络命名空间/代理 sink。 |
 | F3-13 | **closed** | ` crates/wxml-delivery/tests/f3_real_release/abi.rs` 的 `real_release_abi_and_platform_evidence`：`readelf`/`ldd`/`file`、GLIBC_2.39 vs 宿主 2.43、静态引擎、`linux-aarch64` 在输出写入前拒绝；证据 §7 | 无合同项。musl 明确不支持且未生成 artifact（合同不要求）；glibc 下限只在证据文档记录，未写入包 manifest。 |
-| F3-14 | **blocked** | ` scripts/f3-real-release.sh` 的 Zed smoke 段；` docs/evidence/2026-11-19-tsgo-f3-real-release.md` §8：Zed 启动打包的 `wxml-lsp --stdio`，`ps` 无 Node 子进程 | 默认 `--stdio` 仍是 Node（原生需 `--backend native`）；无 UI 查询/未保存脚本/五语言注册的截图或诊断；无真实打包 Zed UI 冒烟。 |
+| F3-14 | **closed** | ` scripts/f3-zed-smoke.sh --direct` + ` docs/evidence/2026-11-20-tsgo-f3-14-zed-smoke.md`：HEAD `5020ae7` 无 Node 构建真实 0.1.0 包；Zed 1.29.2 直接启动包内 `bin/wxml-lsp --stdio`（无 wrapper、无 `--backend`），`ps` 无 Node/server.js；WXML hover `string`/诊断、未保存脚本 `string`→`number` 且磁盘哈希不变、五语言状态栏、结束恰好 1 个 `wxml-lsp` 进程 | 无合同项。Xvfb/TSX partial/definition/completion/exec/网络审计未覆盖，均不归 F3-14；详见证据 §6。 |
 | F3-15 | **closed** | ` crates/wxml-delivery/tests/f3_acceptance/legacy.rs:441` 的 `f3_15_explicit_binary_precedence_for_install_upgrade_rollback`（真实 N1/N2 上 `WXML_LSP_BIN` 对 install/upgrade/rollback 的优先级，state/tree 不变；无效值 hard error 无 fallback）；` legacy.rs:28` 的 legacy 只读/`env` 仅一行/native 树无 JS/backend；` crates/wxml-delivery/tests/native_cli.rs` 的优先级/hard error 用例；` editors/zed/src/lib.rs:23` 已删除三个 legacy 转发变量，`:704` 有回归测试。 | 无合同项。`WXML_LSP_BIN` 是唯一保留入口；旧 Node 变量不再由 Zed 注入。 |
 | F3-16 | **closed** | ` crates/wxml-delivery/tests/f3_acceptance/transactions.rs:204` 的 `f3_16_journal_recovery_concurrent_install_and_corrupt_active_rollback`：staged/committed/activated journal 注入、两并发 install、损坏 active rollback；第二次 `recover` 幂等（state bytes/inode 不变、journal-only 删除不重写 state）；`support.rs:371` 的 `assert_current_verified` 在 11 个关键点检查相对 `versions/<v>`、containment 与整树校验。 | 无合同项。断电/持续监测仍不在 F3-16 承诺内，已明确标注。 |
 
@@ -1359,10 +1359,12 @@ Zed UI、第二个真实 release、真实 legacy 发布包与若干边界用例�
 `closed`。后续 `50e4a21`/`040898c` 补上了缓存驱动 upgrade/rollback、恶意归档完整形态、Zed
 legacy 变量移除、activated 幂等与 `WXML_LSP_BIN` 升级/回滚优先级，因此 F3-11/12/15/16
 升为 `closed`。`f2952c2` 的 ptrace exec audit 补齐 F3-02 的 execve 证据，因此升为
-**13 closed / 2 partial / 1 blocked**：`28c5e18` 的 `f3_kill_window` 已把 F3-06/F3-09 的
+**14 closed / 2 partial / 0 blocked**：`28c5e18` 的 `f3_kill_window` 已把 F3-06/F3-09 的
 switch 前/后进程级 SIGKILL 子条件补齐（Linux x86_64、opt-in；U1/U3/U5/U5-durable/U6 与
-L3/L4）；F3-06 仍缺真实第二版本（N2 provenance），F3-09 仍缺真实 legacy 发布包，F3-14
-缺 Zed UI。崩溃后的前滚/切回语义裁决见
+L3/L4）；F3-06 仍缺真实第二版本（N2 provenance），F3-09 仍缺真实 legacy 发布包。
+`5020ae7` 的默认 `--stdio` native 切换 + `b095258` 的 Zed 冒烟脚本经
+` scripts/f3-zed-smoke.sh --direct` 在 HEAD `5020ae7` 重新构建的真实包上验证，F3-14
+已由 blocked 升为 closed。崩溃后的前滚/切回语义裁决见
 [`2026-11-20-tsgo-f3-crash-semantics.md`](../evidence/2026-11-20-tsgo-f3-crash-semantics.md)。
 F3-05/10 的单点变异性质保留并已标注，不作为“真实发布缺陷”证据。
 
@@ -1372,12 +1374,12 @@ F3-05/10 的单点变异性质保留并已标注，不作为“真实发布缺�
 
 | ID | 2026-11-17 状态 | 阻塞 | 影响 | 退出条件 |
 | --- | --- | --- | --- | --- |
-| B1 | **PARTIAL**（2026-11-20：F3 13 closed / 2 partial / 1 blocked） | v2 库与 `wxml-lsp-install` 的 install/verify/upgrade/rollback/recover、本地 `--from-dir` 获取、state/journal、legacy 读取器已实现；F3-01/02/03/04/05/07/08/10/11/12/13/15/16 已按证据关闭；F3-14 blocked，F3-06/09 partial；Zed UI、真实第二版本与真实 legacy 发布包仍缺（进程级 SIGKILL 已由 `28c5e18` 覆盖） | 生产 native 安装/升级/回滚仍未全部验收 | D 包 Rust 实现并关闭 F3-01～F3-12；fixture 不能替代真实资产 |
+| B1 | **PARTIAL**（2026-11-20：F3 14 closed / 2 partial / 0 blocked） | v2 库与 `wxml-lsp-install` 的 install/verify/upgrade/rollback/recover、本地 `--from-dir` 获取、state/journal、legacy 读取器已实现；F3-01/02/03/04/05/07/08/10/11/12/13/14/15/16 已按证据关闭；F3-06/09 partial；真实第二版本与真实 legacy 发布包仍缺（进程级 SIGKILL 已由 `28c5e18` 覆盖） | 生产 native 安装/升级/回滚仍未全部验收 | D 包 Rust 实现并关闭 F3-01～F3-12；fixture 不能替代真实资产 |
 | B2 | **PARTIAL**（spike clean-env） | 无 Node PATH、offline、ptrace exec 审计已在 spike 上执行；Rust build/test/CI/Zed 未在 clean-env 运行；F3-01/02 已关闭 | 生产无 Node 门禁未关闭 | Rust 构建/测试/发布/CI/Zed 在无 Node 环境通过 F3-01/02/12 |
 | B3 | **BLOCKED**（2026-11-20：Linux x86_64 ABI 已测） | 平台矩阵未测试；F3-13 已记录 Linux x86_64 的 `readelf`/`ldd`/GLIBC_2.39，其他平台仍无证据 | 只能宣称 Linux x86_64；aarch64/macOS/Windows/musl 无证据 | F3-13 记录 Rust glibc/ABI；其他平台保持“不支持” |
 | B4 | **PARTIAL**（2026-11-20：资产/ABI 证据已补） | 真实 tarball 的 SRI/SHA-256/size、122 文件、`lib/tsc` SHA/`--version` 已复核；F3-13 已记录 Rust glibc/ABI；F0 API/AST 握手、`tsc.sig` 用途仍未验证 | 资产身份与 ABI 可用，但安装器未消费真实 API/AST 探针 | F0/F3 安装器消费可重放 SRI/解包/探针/`readelf` 证据 |
 | B5 | **PARTIAL**（维护者条件性接受） | 7.1.0-beta 身份已条件性接受；F0 API/AST 合同仍是 draft，`apiSchemaVersion`/协议/探针期望值未正式冻结 | F0 合同未接受 | F0 记录冻结值并写入 lock/manifest，F3 评审接受 |
-| B6 | **PARTIAL**（2026-11-20：F3-03 已关闭，F3-14 blocked） | 真实 Rust 包已构建并完成两次构建同哈希、安装、离线回滚、ABI 与 F3-03 负向扫描；Zed 只完成进程级启动，默认 `--stdio` 仍是 Node，无 UI/查询证据 | 包级验收已大部分完成，但无 UI/Zed 验收 | F3-03/14 在隔离 Linux 环境通过真实 Rust 包 |
+| B6 | **closed**（2026-11-20：F3-03/F3-14 已关闭） | 真实 Rust 包已构建并完成两次构建同哈希、安装、离线回滚、ABI 与 F3-03 负向扫描；Zed 默认路径已在 HEAD `5020ae7` 重新构建的真实包上完成 UI/查询证据（`scripts/f3-zed-smoke.sh --direct`） | 无（F3-03/14 的包级验收已完成） | F3-03/14 在隔离 Linux 环境通过真实 Rust 包 |
 | B7 | **PARTIAL**（Rust 依赖许可门禁已通过） | `deny.toml` 的许可 allowlist 与 `cargo deny --offline check` 已通过 advisories/bans/sources/licenses；spike 已把 LICENSE/NOTICE/MIT 许可、`provenance.json`、`THIRD_PARTY_LICENSES.md` 打入包并 hash；发布包许可/provenance/SBOM 评审未做 | NF-09 不可关闭 | 许可文件、provenance、SBOM 评审通过 |
 | B8 | **ACCEPTED RISK** | 无发布者签名 | 只能证明“内容与元数据一致”，不能证明来源身份 | 接受 ADR-0007 残留风险，或新增签名 ADR |
 | B9 | **PARTIAL**（进程中断；2026-11-20：F3-16 partial） | F3-16 的 staged/committed/activated journal 注入、并发 install、损坏 active rollback 已有真实包证据；`activated` 幂等未测，断电/目录 fsync 持久性未测 | 不能宣称断电或全部崩溃窗口安全 | F3-16 补 activated 幂等与断电测试；未通过前只宣称“journal 注入与 commit 后进程中断可恢复” |

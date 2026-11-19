@@ -484,7 +484,7 @@ P1-C 证明旧→新的可行路径；P6/P7 用真实本地包重跑全部转换
 | 并行冲突/资源争用 | 单文件 owner、合同基线、独立 target、受限 worker/编译并发 |
 | 发布 ABI/离线/旧 schema 回归 | P1-C/P6/P7 真实包验证；不扩大未经验证的平台宣称 |
 
-当前状态（HEAD `899a89a`）：P6-8a 的默认 `--stdio` native、`NotInstalled` → HostOnly、损坏安装 fail-closed 和显式 `--backend node` 已由 `5020ae7` 提交，no-Node guard 的默认分支静态检查由 `7f9116a` 更新；全 workspace `cargo test` 在 `7f9116a` 的执行会话记录为 `CARGO_EXIT=0`。23 个旧 Node gate 的 native replacement 已全部 `gate_green`（0 required），但 replacement 仍 `#[ignore]`，不等于 `mandatory_green`；`899a89a` 的 3 个 native edit gate 尚未提升 ledger。下一步：P7-0 预删除冻结、P7-1 将 259 planned 归零并完成 gate review、F3-06/09/14 收口、用默认 `--stdio` 重新构建 v2 包并录制默认路径 Zed 冒烟；P7 删除（`backend_node`、旧 TS 树、v1 写路径）仍未开始，不得先删后补。详见 §12.11–§12.12。
+当前状态（HEAD `899a89a`）：P6-8a 的默认 `--stdio` native、`NotInstalled` → HostOnly、损坏安装 fail-closed 和显式 `--backend node` 已由 `5020ae7` 提交，no-Node guard 的默认分支静态检查由 `7f9116a` 更新；全 workspace `cargo test` 在 `7f9116a` 的执行会话记录为 `CARGO_EXIT=0`。23 个旧 Node gate 的 native replacement 已全部 `gate_green`（0 required），但 replacement 仍 `#[ignore]`，不等于 `mandatory_green`；`899a89a` 的 3 个 native edit gate 尚未提升 ledger。下一步：P7-0 预删除冻结、P7-1 将 255 planned 归零并完成 gate review、F3-06/09 收口（F3-14 已由 `5020ae7` 默认路径关闭）；P7 删除（`backend_node`、旧 TS 树、v1 写路径）仍未开始，不得先删后补。详见 §12.11–§12.12。
 
 ## 12. 执行状态、证据与边界
 
@@ -791,7 +791,7 @@ F3-06 仍缺真实第二版本、F3-09 仍缺真实 legacy 发布包，故保持
   `mandatory_green`。
 - 23 个旧 gate 仍全部 `#[ignore]`，`semantic_tools` 的两个默认 Node 路径和可选
   `tsc` 分支仍在，旧 `real_node`/`wave5`/`stdio_type_loop` 测试未 retarget 或删除。
-- ledger 仍为 44 `green` / 259 `planned` / 36 `retired-with-decision`；P7-1 归零未开始。
+- ledger 为 48 `green` / 255 `planned` / 36 `retired-with-decision`（wave-6 组件绑定跟进后）；P7-1 归零未开始。
 - P7-0 预删除冻结未开始：没有 `p7-pre-delete` tag，没有
   `docs/evidence/data/legacy-{node,ts}-tests.json`；`ledger.rs` 和
   `fixture_hash.rs` 仍读取 live `backends/typescript/test` 树
