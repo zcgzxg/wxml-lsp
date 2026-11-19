@@ -44,6 +44,7 @@
 | 2026-11-18 | [Native document symbols DTO 计划](2026-11-18-tsgo-document-symbols-dto-plan.md) | `497380c` | E0 | 推荐独立 `Backend::document_symbols`（Option B）；DTO/decoder 未接 adapter/LSP，脚本路由与 reverse lookup 仍是前置；F1 未关闭 |
 | 2026-11-18 | [tsgo typings 26 vs 23 裁决](2026-11-18-tsgo-typings-26-23-decision.md) | `f6f175f` | E1 | 交付 payload 定为 23 文件 / 2,548,075 B / `ba3eb83…`，上游身份保留 26 文件；lock 与真实 tarball 未冻结，F3-03 仍 BLOCKED |
 | 2026-11-18/19 | [P6-2 mandatory-gate 转换计划](2026-11-18-tsgo-p6-gate-conversion-plan.md) | `f6f175f` | E0 | 0/23 gate 绿；3 enable-now / 8 keep-gated / 12 delete-at-P7；2 个静默 return + 可选 `tsc` 转为 3 个强制原生 gate；S0–S9 与 no-false-green 规则 |
+| 2026-11-19 | [tsgo native hover 与首波 native gate 证据](2026-11-19-tsgo-hover-gates.md) | `953ee1e` / 7.1.0-beta | E0 | `wxml-lsp` lib 668 passed（执行会话记录，未重跑）；真实引擎 adapter hover 1 passed；首波 3 个 native gate 3 passed / 36 filtered（G-P5-E2E-09/12/14）；ledger 仍 `required_not_migrated`；默认仍 Node；记录时 workspace clippy 被并行 loader 的 `unreadable_literal` 阻塞（后续 `ca0b554` 未重跑，不声称已绿） |
 
 ## 3. 当前门禁基线（2026-11-17，W4 最终）
 
