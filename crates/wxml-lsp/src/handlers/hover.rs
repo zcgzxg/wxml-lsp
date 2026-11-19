@@ -6,7 +6,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
 use wxml_text::SourceRange;
-use wxml_types::{BackendError, CapabilityStatus, HoverResult, MarkupKind, TypeQuality};
+use wxml_types::{
+    BackendError, CapabilityStatus, HoverResult, MarkupKind, SourceLocation, TypeQuality,
+};
 
 use super::{
     hover_target, line_index_range_value, markdown_escape, quality_label, sanitized_reason,
@@ -297,6 +299,19 @@ fn static_location_value(
     Some(json!({"uri": uri, "range": range}))
 }
 
+/// Maps one exact script declaration through the host line index.
+///
+/// Event-handler declarations are name tokens, not element starts, so this
+/// never widens an empty range. A missing URI, text or range stays `None` and
+/// the caller answers with a checked empty result.
+fn event_location_value(server: &Server, location: &SourceLocation) -> Option<Value> {
+    let uri = server.host.uri_for(&location.file)?;
+    let text = server.host.file_text(&location.file)?;
+    let line_index = wxml_text::LineIndex::new(&*text);
+    let range = line_index_range_value(&line_index, location.range)?;
+    Some(json!({"uri": uri, "range": range}))
+}
+
 /// Short message for a full or stopped dispatch queue.
 const fn submit_message(error: SubmitError) -> &'static str {
     match error {
@@ -402,8 +417,65 @@ impl Server {
         self.schedule_point(id, JobKind::Hover, params)
     }
 
+    /// Answers an event-handler definition from Rust script facts.
+    ///
+    /// This runs before the static component and backend definition paths and
+    /// never schedules a native session. `None` means the cursor is not inside
+    /// an event-binding value, so the caller keeps the existing routing; an
+    /// event value that cannot name a static handler returns `null` instead of
+    /// falling through to a backend that could fabricate a target.
+    fn local_event_definition(&self, id: &Value, params: Option<&Value>) -> Option<Vec<Outgoing>> {
+        // The Node backend already answers event definitions with its own
+        // oracle; only fill the gap for a degraded/unsupported definition
+        // capability so the default backend behavior stays unchanged.
+        if self.capabilities.definition.is_supported() {
+            return None;
+        }
+        let params = params?;
+        let (uri, position) = hover_target(params)?;
+        if !template_document(self, uri) {
+            return None;
+        }
+        let document = self.workspace.get(uri)?;
+        let offset = document.offset_at(position)?;
+        let site = crate::semantics::event_definition::event_site(document.text(), offset)?;
+        let handler = match site {
+            crate::semantics::event_definition::EventValueSite::Handler { handler, .. } => handler,
+            crate::semantics::event_definition::EventValueSite::NotStatic => {
+                return Some(vec![Outgoing::success(id.clone(), Value::Null)]);
+            }
+        };
+        // A synthetic or project-less document has no prepared script view;
+        // keep the backend fallback instead of claiming a checked empty.
+        let Ok(view) = self.host.analysis(document.snapshot()) else {
+            return None;
+        };
+        let answer = crate::semantics::event_definition::resolve(&view, &handler);
+        if let Some(location) = answer.location {
+            let value = event_location_value(self, &location).unwrap_or(Value::Null);
+            if value.is_null() {
+                log(format_args!(
+                    "event handler declaration could not be mapped to a client location"
+                ));
+                return Some(vec![Outgoing::success(id.clone(), Value::Null)]);
+            }
+            return Some(vec![Outgoing::success(
+                id.clone(),
+                Value::Array(vec![value]),
+            )]);
+        }
+        log(format_args!(
+            "event handler definition is {}: {handler}",
+            status_label(&answer.status)
+        ));
+        Some(vec![Outgoing::success(id.clone(), Value::Null)])
+    }
+
     /// Handles `textDocument/definition`.
     pub(crate) fn definition(&mut self, id: Value, params: Option<Value>) -> Vec<Outgoing> {
+        if let Some(outgoing) = self.local_event_definition(&id, params.as_ref()) {
+            return outgoing;
+        }
         if let Some(outgoing) = self.static_definition(&id, params.as_ref()) {
             return outgoing;
         }

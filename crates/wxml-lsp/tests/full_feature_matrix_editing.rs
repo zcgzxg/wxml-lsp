@@ -711,3 +711,54 @@ fn it_12_closing_tag_completion_linked_editing_and_rename_prep() {
 
     session.finish();
 }
+
+/// IT-13: event-handler definition is answered from Rust script facts.
+///
+/// The mock backend reports `definition` as unsupported; a location here proves
+/// the event path never depends on Node or the type backend. The declaration
+/// range is the exact method name token, including after CJK/emoji prefixes.
+#[test]
+fn it_13_event_handler_definition_uses_script_facts_without_a_type_backend() {
+    let project = TempProject::new("wxml-it13");
+    project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
+    let script = "Page({\n  onTap() {},\n  保存() {},\n});";
+    project.write("pages/index/index.ts", script);
+    project.write("pages/index/index.wxml", "<view />");
+    let mut session = Session::start(&project, json!({}));
+    let uri = project.uri("pages/index/index.wxml");
+    let template = "🙂<view bindtap=\"onTap\" />\n<view catch:tap=\"保存\" />\n<view bindtap=\"{{dynamic}}\" />\n<view bindtap=\"missing\" />";
+    session.open_wxml(&uri, template, 1);
+
+    for (needle, name) in [("onTap", "onTap"), ("保存", "保存")] {
+        let offset = template.find(needle).expect("handler token");
+        let id = session.request(
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": position_at(template, offset),
+            }),
+        );
+        let definition = session.result(id);
+        let locations = definition.as_array().expect("definition locations");
+        assert_eq!(locations.len(), 1, "{name}: {definition}");
+        let target = locations[0]["uri"].as_str().expect("target uri");
+        assert!(target.ends_with("pages/index/index.ts"), "{name}: {target}");
+        let (start, end) = byte_range(script, &locations[0]["range"]);
+        assert_eq!(&script[start..end], name, "{name}: {definition}");
+    }
+
+    for needle in ["dynamic", "missing"] {
+        let offset = template.find(needle).expect("value token");
+        let id = session.request(
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": position_at(template, offset),
+            }),
+        );
+        let definition = session.result(id);
+        assert!(definition.is_null(), "{needle}: {definition}");
+    }
+
+    session.finish();
+}
