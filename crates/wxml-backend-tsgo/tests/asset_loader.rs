@@ -3,9 +3,22 @@
 //! The synthetic trees are hermetic: each test writes a complete 116-file
 //! standard-library root plus a 20-file `miniprogram-api-typings` package into a
 //! scratch directory and computes the expected pin from the intended content.
-//! Real pinned roots are opt-in through `TSGO_ASSET_ROOT` / `TSGO_BIN` and
-//! `TSGO_TYPINGS_ROOT` (falling back to the repository typings fixture);
-//! `WXML_REQUIRE_REAL_ENGINE=1` turns a missing real root into a hard failure.
+//!
+//! The three real package tests are `#[ignore]`d and only run with
+//! `-- --ignored`. They read roots from `TSGO_ASSET_ROOT` (engine `lib` or
+//! `engine/lib` plus `typings/`) or `TSGO_BIN` plus `TSGO_TYPINGS_ROOT`, falling
+//! back to the repository typings fixture. `WXML_REQUIRE_REAL_ENGINE=1` or
+//! `WXML_REQUIRE_REAL_ENGINE=true` (case-insensitive) turns a missing real root
+//! into a hard failure instead of a skip.
+//!
+//! [`repository_typings_runtime_closure_matches_821c93_stdlib_is_real_gate_only`]
+//! is also `#[ignore]`d because it requires the untracked repository
+//! `backends/typescript/node_modules` fixture (run `npm ci` first). When run
+//! explicitly with `--ignored`, it verifies the 20-file/2,522,752 B/`821c93…`
+//! typings closure with an independent walk and digest implementation without
+//! calling the loader; a missing fixture is a hard failure there. The default
+//! suite verifies neither that fixture nor the standard-library digest
+//! `5e126e…`, which is checked only by the opt-in real gate.
 //!
 //! The loader is a disk-to-memory building block only. It does not verify an
 //! install or the delivery manifest; that remains BLOCKED under P6-3-4/F3-03.
@@ -18,6 +31,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use sha2::{Digest, Sha256};
+use wxml_backend_tsgo::asset_loader::MAX_ASSET_ENTRIES;
 use wxml_backend_tsgo::input::{
     MAX_ASSET_PATH_COMPONENTS, MAX_TYPE_ASSET_BYTES, MAX_TYPE_ASSET_FILES, MINIPROGRAM_TYPINGS,
     PINNED_STANDARD_LIB_BYTES, PINNED_STANDARD_LIB_FILE_COUNT, PINNED_TYPINGS_BYTES,
@@ -27,13 +41,17 @@ use wxml_backend_tsgo::input::{
 
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
-fn sha(text: &[u8]) -> String {
-    let mut encoded = String::with_capacity(64);
-    for byte in Sha256::digest(text) {
+fn hex(bytes: &[u8]) -> String {
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
         encoded.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
         encoded.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
     }
     encoded
+}
+
+fn sha(text: &[u8]) -> String {
+    hex(&Sha256::digest(text))
 }
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -244,6 +262,33 @@ fn loads_a_complete_synthetic_tree_and_matches_the_pin() {
             "path order must be unique"
         );
     }
+}
+
+#[test]
+fn load_pinned_uses_the_builtin_pin_not_caller_supplied_values() {
+    let base = scratch("load-pinned");
+    let _cleanup = Cleanup(base.clone());
+    let engine_root = base.join("engine/lib");
+    let typings_root = base.join("typings");
+    let pin = write_fixture(&engine_root, &typings_root);
+
+    let error = TypeAssets::load_pinned(&engine_root, &typings_root)
+        .expect_err("the synthetic tree must not match the built-in pinned bytes/digests");
+    assert!(
+        matches!(
+            error,
+            TypeAssetError::PinMismatch {
+                field: "standardLibBytes",
+                ..
+            }
+        ),
+        "expected a built-in-pin byte mismatch, got {error}"
+    );
+
+    // The same tree still verifies against its explicit test pin through the
+    // lower-level entry point; only `load_pinned` ignores caller values.
+    TypeAssets::load_trusted(&engine_root, &typings_root, &pin)
+        .expect("the explicit test pin still loads through load_trusted");
 }
 
 #[test]
@@ -707,9 +752,43 @@ fn rejects_excessive_typings_nesting() {
     fs::create_dir_all(&nested).expect("nested directories");
     let error = TypeAssets::load_trusted(&engine_root, &typings_root, &pin)
         .expect_err("excessive nesting must fail closed");
+    let path = match error {
+        TypeAssetError::NestingTooDeep { path } => path,
+        other => panic!("expected NestingTooDeep, got {other}"),
+    };
     assert!(
-        matches!(error, TypeAssetError::NestingTooDeep { .. }),
-        "expected NestingTooDeep, got {error}"
+        path.starts_with(package.to_str().unwrap()),
+        "nesting error must name the actual virtual directory: {path}"
+    );
+    assert!(
+        path.contains("/types/level"),
+        "nesting error must include the traversed subdirectories: {path}"
+    );
+}
+
+#[test]
+fn rejects_a_tree_with_too_many_directory_entries() {
+    let base = scratch("entries");
+    let _cleanup = Cleanup(base.clone());
+    let engine_root = base.join("engine/lib");
+    let typings_root = base.join("typings");
+    let pin = write_fixture(&engine_root, &typings_root);
+
+    // Hidden, non-declaration entries still count toward the walk budget.
+    for index in 0..MAX_ASSET_ENTRIES {
+        fs::write(engine_root.join(format!(".hidden{index}")), b"x").expect("hidden entry");
+    }
+    let error = TypeAssets::load_trusted(&engine_root, &typings_root, &pin)
+        .expect_err("an over-entry tree must fail closed");
+    assert!(
+        matches!(
+            error,
+            TypeAssetError::TooManyEntries {
+                count: 4097,
+                max: 4096
+            }
+        ),
+        "expected a typed entry limit, got {error}"
     );
 }
 
@@ -730,6 +809,91 @@ fn rejects_non_regular_files_in_the_typings_package() {
     assert!(
         matches!(error, TypeAssetError::NonRegularFile { .. }),
         "expected NonRegularFile, got {error}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Independent repository typings digest check (no loader call).
+// ---------------------------------------------------------------------------
+
+fn repository_typings_package() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../backends/typescript/node_modules/miniprogram-api-typings")
+}
+
+fn collect_runtime_declarations(
+    root: &Path,
+    directory: &Path,
+    files: &mut Vec<(String, String, u64)>,
+) {
+    let mut entries: Vec<PathBuf> = fs::read_dir(directory)
+        .expect("repository typings directory")
+        .map(|entry| entry.expect("repository typings entry").path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        let metadata = fs::symlink_metadata(&path).expect("repository typings metadata");
+        assert!(
+            !metadata.file_type().is_symlink(),
+            "repository typings fixture contains a symlink: {}",
+            path.display()
+        );
+        if metadata.is_dir() {
+            collect_runtime_declarations(root, &path, files);
+            continue;
+        }
+        assert!(
+            metadata.is_file(),
+            "repository typings fixture contains a non-regular file: {}",
+            path.display()
+        );
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("repository typings name");
+        if !name.ends_with(".d.ts") {
+            continue;
+        }
+        let relative = path
+            .strip_prefix(root)
+            .expect("repository typings path stays below its root")
+            .to_str()
+            .expect("repository typings path is UTF-8")
+            .to_owned();
+        let bytes = fs::read(&path).expect("repository typings bytes");
+        let size = u64::try_from(bytes.len()).expect("repository typings size");
+        files.push((relative, sha(&bytes), size));
+    }
+}
+
+#[ignore = "requires repository node_modules fixture; run with --ignored"]
+#[test]
+fn repository_typings_runtime_closure_matches_821c93_stdlib_is_real_gate_only() {
+    let package = repository_typings_package();
+    assert!(
+        package.is_dir(),
+        "repository typings fixture is missing at {}; run `npm ci --prefix backends/typescript` \
+         (the standard-library digest 5e126e… is verified only by the opt-in real gate)",
+        package.display()
+    );
+    let mut files = Vec::new();
+    collect_runtime_declarations(&package, &package, &mut files);
+    assert_eq!(files.len(), 20, "runtime typings closure file count");
+    let total: u64 = files.iter().map(|(_, _, size)| *size).sum();
+    assert_eq!(total, 2_522_752, "runtime typings closure bytes");
+
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    let mut hasher = Sha256::new();
+    for (relative, digest, _) in &files {
+        hasher.update(digest.as_bytes());
+        hasher.update(b"  ");
+        hasher.update(relative.as_bytes());
+        hasher.update(b"\n");
+    }
+    let digest = hex(&hasher.finalize());
+    assert_eq!(
+        digest, "821c93bfdf41324faa7ee44011a963993cfecc3b4ea9e41cd834e894755e9ba9",
+        "runtime typings bundle digest must match the pinned value"
     );
 }
 
@@ -792,19 +956,25 @@ fn resolve_real_roots() -> Option<RealRoots> {
     Some(RealRoots { engine, typings })
 }
 
+/// Returns whether the real gate must fail instead of skipping.
+fn require_real_gate() -> bool {
+    std::env::var("WXML_REQUIRE_REAL_ENGINE")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
 /// Returns the real pinned roots, or skips explicitly unless the gate is required.
 fn real_roots() -> Option<RealRoots> {
-    let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
+    let required = require_real_gate();
     let roots = resolve_real_roots();
     if roots.is_none() {
         assert!(
             !required,
-            "real type-asset roots are required when WXML_REQUIRE_REAL_ENGINE=1; \
+            "real type-asset roots are required when WXML_REQUIRE_REAL_ENGINE is 1 or true; \
              set TSGO_ASSET_ROOT or TSGO_BIN and TSGO_TYPINGS_ROOT"
         );
         eprintln!(
             "real type-asset loader gate skipped: set TSGO_ASSET_ROOT or TSGO_BIN \
-             plus TSGO_TYPINGS_ROOT (or WXML_REQUIRE_REAL_ENGINE=1 for a hard gate)"
+             plus TSGO_TYPINGS_ROOT (or WXML_REQUIRE_REAL_ENGINE=1/true for a hard gate)"
         );
     }
     roots
@@ -866,14 +1036,13 @@ fn declaration_paths(root: &Path, recursive: bool) -> Vec<PathBuf> {
     paths
 }
 
+#[ignore = "requires TSGO_BIN/TSGO_ASSET_ROOT"]
 #[test]
-fn real_pinned_roots_load_trusted_and_match_the_pin() {
+fn real_pinned_roots_load_pinned_and_match_stdlib_and_typings_digests() {
     let Some(roots) = real_roots() else {
         return;
     };
-    let pin = TypeAssetsPin::pinned_runtime();
-    let assets =
-        TypeAssets::load_trusted(&roots.engine, &roots.typings, &pin).expect("pinned tree");
+    let assets = TypeAssets::load_pinned(&roots.engine, &roots.typings).expect("pinned tree");
     println!(
         "real type assets: files={} bytes={} engine={} typings={}",
         assets.file_count(),
@@ -886,7 +1055,20 @@ fn real_pinned_roots_load_trusted_and_match_the_pin() {
         assets.total_bytes(),
         PINNED_STANDARD_LIB_BYTES + PINNED_TYPINGS_BYTES
     );
+    let pin = TypeAssetsPin::pinned_runtime();
     assert_eq!(assets.pin(), &pin);
+    assert_eq!(pin.standard_lib_file_count(), 116);
+    assert_eq!(pin.standard_lib_bytes(), PINNED_STANDARD_LIB_BYTES);
+    assert_eq!(
+        pin.standard_lib_bundle_digest(),
+        "5e126e7206065b6fff9d651eff3ad66b9413804d3e23d7ecfb4257299af3e85e"
+    );
+    assert_eq!(pin.typings_file_count(), 20);
+    assert_eq!(pin.typings_bytes(), PINNED_TYPINGS_BYTES);
+    assert_eq!(
+        pin.typings_bundle_digest(),
+        "821c93bfdf41324faa7ee44011a963993cfecc3b4ea9e41cd834e894755e9ba9"
+    );
     assert_eq!(
         assets.standard_lib_root().as_str(),
         roots.engine.to_str().unwrap()
@@ -902,12 +1084,12 @@ fn real_pinned_roots_load_trusted_and_match_the_pin() {
     );
 }
 
+#[ignore = "requires TSGO_BIN/TSGO_ASSET_ROOT"]
 #[test]
 fn real_pinned_roots_reject_same_size_substitutions() {
     let Some(roots) = real_roots() else {
         return;
     };
-    let pin = TypeAssetsPin::pinned_runtime();
     let base = scratch("real-substitution");
     let _cleanup = Cleanup(base.clone());
 
@@ -916,7 +1098,7 @@ fn real_pinned_roots_reject_same_size_substitutions() {
     for path in declaration_paths(&engine_copy, false) {
         tamper_same_size(&path);
     }
-    let error = TypeAssets::load_trusted(&engine_copy, &roots.typings, &pin)
+    let error = TypeAssets::load_pinned(&engine_copy, &roots.typings)
         .expect_err("a same-size standard-library substitution must fail closed");
     assert!(
         matches!(
@@ -940,7 +1122,7 @@ fn real_pinned_roots_reject_same_size_substitutions() {
     for path in &declarations {
         tamper_same_size(path);
     }
-    let error = TypeAssets::load_trusted(&roots.engine, &typings_copy, &pin)
+    let error = TypeAssets::load_pinned(&roots.engine, &typings_copy)
         .expect_err("a same-size typings substitution must fail closed");
     assert!(
         matches!(
@@ -954,12 +1136,12 @@ fn real_pinned_roots_reject_same_size_substitutions() {
     );
 }
 
+#[ignore = "requires TSGO_BIN/TSGO_ASSET_ROOT"]
 #[test]
 fn real_pinned_roots_reject_missing_extra_and_symlinked_typings() {
     let Some(roots) = real_roots() else {
         return;
     };
-    let pin = TypeAssetsPin::pinned_runtime();
     let base = scratch("real-set");
     let _cleanup = Cleanup(base.clone());
 
@@ -968,7 +1150,7 @@ fn real_pinned_roots_reject_missing_extra_and_symlinked_typings() {
     copy_declarations(&roots.typings.join(MINIPROGRAM_TYPINGS), &package, true);
 
     fs::remove_file(package.join("types/index.d.ts")).expect("remove declaration");
-    let error = TypeAssets::load_trusted(&roots.engine, &typings_copy, &pin)
+    let error = TypeAssets::load_pinned(&roots.engine, &typings_copy)
         .expect_err("a missing required declaration must fail closed");
     assert!(
         matches!(error, TypeAssetError::MissingRequired { .. }),
@@ -982,7 +1164,7 @@ fn real_pinned_roots_reject_missing_extra_and_symlinked_typings() {
     copy_declarations(&roots.typings.join(MINIPROGRAM_TYPINGS), &package, true);
     fs::write(package.join("types/extra-unlisted.d.ts"), "export {};\n")
         .expect("extra declaration");
-    let error = TypeAssets::load_trusted(&roots.engine, &typings_copy, &pin)
+    let error = TypeAssets::load_pinned(&roots.engine, &typings_copy)
         .expect_err("an extra declaration must fail closed");
     assert!(
         matches!(
@@ -1006,7 +1188,7 @@ fn real_pinned_roots_reject_missing_extra_and_symlinked_typings() {
     std::os::unix::fs::symlink(package.join("types/index.d.ts"), &index).expect("symlink");
     #[cfg(unix)]
     {
-        let error = TypeAssets::load_trusted(&roots.engine, &typings_copy, &pin)
+        let error = TypeAssets::load_pinned(&roots.engine, &typings_copy)
             .expect_err("a symlinked declaration must fail closed");
         assert!(
             matches!(error, TypeAssetError::Symlink { .. }),

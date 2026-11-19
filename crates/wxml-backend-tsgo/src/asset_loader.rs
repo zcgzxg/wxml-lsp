@@ -1,35 +1,71 @@
 //! Trusted on-disk loader for the pinned native type-asset set.
 //!
-//! [`TypeAssets::load_trusted`] walks two caller-supplied package roots, reads
-//! every TypeScript declaration once and returns a [`TypeAssets`] value that is
-//! validated against the mandatory [`TypeAssetsPin`]. The standard-library root
-//! is the engine's `lib` directory (flat); the typings root is the directory
-//! that contains the `miniprogram-api-typings` package. Only files below those
-//! roots are read.
+//! [`TypeAssets::load_pinned`] is the production entry point: it walks two
+//! caller-supplied package roots, reads every TypeScript declaration once and
+//! validates the result against the crate's built-in [`TypeAssetsPin::pinned_runtime`].
+//! [`TypeAssets::load_trusted`] is the same walk with a caller-supplied pin and
+//! exists for tests and for callers that already verified a manifest.
+//!
+//! The standard-library root is the engine's `lib` directory (flat); the
+//! typings root is the directory that contains the `miniprogram-api-typings`
+//! package. Only files below those roots are read.
+//!
+//! # Platform support
+//!
+//! This loader is POSIX-only:
+//!
+//! - roots are absolute, `/`-separated paths; Windows path semantics are not
+//!   supported;
+//! - on Unix, declarations are opened with `O_NOFOLLOW | O_NONBLOCK` and then
+//!   verified with `fstat` (`regular file`, length, `dev`, `ino`, `nlink`);
+//! - on non-Unix targets only the pre-open size, the read length and the
+//!   content digest are verified; liveness/containment hardening and FIFO
+//!   rejection are not available there.
 //!
 //! # Security model
 //!
-//! This loader never canonicalizes or resolves links and never trusts a name
-//! from disk:
+//! The loader never canonicalizes a root. On Unix, symbolic links are refused
+//! rather than resolved and declarations are opened with `O_NOFOLLOW`; on
+//! non-Unix targets symlink refusal is a pre-open check only. Every visited
+//! entry is inspected with `symlink_metadata`; symlinks, non-regular files,
+//! hard-linked files (`nlink != 1`) and names that are not valid UTF-8 or not
+//! portable path components are rejected. After opening, the file's identity
+//! (`dev`/`ino`), link count and length are compared with the pre-open
+//! metadata, reads are capped at the declared length and any change fails
+//! closed. On targets without the inlined flag constants only the pre/post
+//! identity check and digest verification are available.
 //!
-//! - both roots must be absolute, normalized paths and must exist as real
-//!   directories (a root that is a symlink is rejected);
-//! - every visited entry is inspected with `symlink_metadata`; symlinks,
-//!   non-regular files, hard-linked files and names that are not valid UTF-8 or
-//!   not portable path components are rejected;
-//! - after opening, the file's identity (`dev`/`ino`) and length are compared
-//!   with the pre-open metadata, reads are capped at the declared length and
-//!   any change fails closed;
-//! - names are compared case-insensitively so a case-insensitive file system
-//!   cannot merge two pinned declarations;
-//! - the file-count and text-byte budgets are enforced while walking, before
-//!   the whole tree is read.
+//! Names are compared case-insensitively so a case-insensitive file system
+//! cannot merge two pinned declarations. Every directory entry counts against
+//! [`MAX_ASSET_ENTRIES`], including hidden names, directories and
+//! non-declaration files. Path bytes and declaration text share the
+//! [`MAX_TYPE_ASSET_BYTES`] budget and are charged while walking, so the tree
+//! is never materialized as a whole.
 //!
-//! Non-declaration files that ship in the package (`tsc`, `package.json`,
-//! licenses, READMEs) are ignored: they are never mounted into the virtual
-//! filesystem, so they cannot influence the type environment. Every `.d.ts`
-//! file is part of the mounted set, so an extra declaration changes the count
-//! or bundle digest and is rejected by [`TypeAssets::new`].
+//! Only unpacked delivery trees are supported. Package-manager layouts that
+//! hard-link files (for example a pnpm store) are rejected by the `nlink`
+//! check; this loader does not extract archives or repair links.
+//!
+//! # Asset set
+//!
+//! Every `.d.ts` file below the roots is part of the mounted set, so an extra
+//! declaration changes the count or bundle digest and is rejected. Other
+//! regular files that ship in the package (`tsc`, `package.json`, licenses,
+//! READMEs) are scanned and counted, but not read, hashed or mounted, so they
+//! cannot influence the type environment.
+//!
+//! Virtual asset paths are validated with [`AssetPath`]. A path that exceeds
+//! the path/component limits maps to [`TypeAssetError::InvalidRoot`] (the
+//! existing variant used by [`AssetPath::new`]), even though the offending
+//! value is a file path rather than a root.
+//!
+//! # Pin provenance
+//!
+//! [`TypeAssetsPin::new`] only anchors the typings version and both file counts
+//! to crate constants. It accepts arbitrary byte totals and bundle digests, so
+//! a pin derived from the same tree that is about to be loaded proves nothing.
+//! Production wiring must use [`TypeAssets::load_pinned`] or pass a pin that
+//! was independently verified against the delivery manifest.
 //!
 //! # Boundary
 //!
@@ -40,7 +76,7 @@
 //! only proves that the files under the supplied roots match the supplied pin.
 
 use std::collections::BTreeMap;
-use std::fs::{self, File, Metadata};
+use std::fs::{self, File, Metadata, OpenOptions};
 use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
@@ -55,7 +91,93 @@ use crate::input::{
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
 
+/// Maximum number of directory entries visited in one load.
+///
+/// The counter is cumulative across both roots and includes hidden names,
+/// directories and non-declaration files. It bounds traversal work and index
+/// memory even when a package root contains far more entries than the pinned
+/// declaration set.
+pub const MAX_ASSET_ENTRIES: usize = 4096;
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const O_NOFOLLOW: i32 = 0o400_000;
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const O_NONBLOCK: i32 = 0o4000;
+
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+const O_NOFOLLOW: i32 = 0x0100;
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "netbsd",
+    target_os = "openbsd"
+))]
+const O_NONBLOCK: i32 = 0x0004;
+
+#[cfg(any(target_os = "solaris", target_os = "illumos"))]
+const O_NOFOLLOW: i32 = 0x20000;
+#[cfg(any(target_os = "solaris", target_os = "illumos"))]
+const O_NONBLOCK: i32 = 0x0080;
+
+// Constants are inlined because this crate has no direct `libc` dependency and
+// the dependency set is frozen. Other Unix targets fall back to the pre-open
+// `symlink_metadata` check plus the post-open identity check below.
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "solaris",
+    target_os = "illumos"
+)))]
+const O_NOFOLLOW: i32 = 0;
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "dragonfly",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "solaris",
+    target_os = "illumos"
+)))]
+const O_NONBLOCK: i32 = 0;
+
 impl TypeAssets {
+    /// Loads and verifies a type-asset set against the built-in production pin.
+    ///
+    /// This is the production entry point. It fixes the pin to
+    /// [`TypeAssetsPin::pinned_runtime`] and does not accept a caller-supplied
+    /// anchor, so a caller cannot accidentally derive the expected bytes or
+    /// digests from the tree being loaded.
+    ///
+    /// `engine_root` is the engine `lib` directory that contains the pinned
+    /// `lib*.d.ts` files. `typings_root` is the directory that contains the
+    /// `miniprogram-api-typings` package. Both roots must be absolute,
+    /// normalized paths.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::load_trusted`].
+    pub fn load_pinned(engine_root: &Path, typings_root: &Path) -> Result<Self, TypeAssetError> {
+        Self::load_trusted(engine_root, typings_root, &TypeAssetsPin::pinned_runtime())
+    }
+
     /// Loads and verifies a type-asset set from two trusted on-disk roots.
     ///
     /// `engine_root` is the engine `lib` directory that contains the pinned
@@ -65,21 +187,29 @@ impl TypeAssets {
     /// normalized paths. The pin is mandatory and every recomputed count, byte
     /// total and bundle digest must match it.
     ///
-    /// Limits: at most [`MAX_TYPE_ASSET_FILES`] declaration files and
-    /// [`MAX_TYPE_ASSET_BYTES`] declaration bytes, in addition to the exact
-    /// per-root file counts and byte totals in `pin`. With
+    /// `pin` must come from [`TypeAssetsPin::pinned_runtime`] or from a
+    /// manifest whose byte totals and bundle digests were verified
+    /// independently. [`TypeAssetsPin::new`] anchors only version and counts;
+    /// it does not establish provenance for bytes or digests. Production
+    /// callers should use [`Self::load_pinned`].
+    ///
+    /// Limits: at most [`MAX_ASSET_ENTRIES`] directory entries,
+    /// [`MAX_TYPE_ASSET_FILES`] declaration files and [`MAX_TYPE_ASSET_BYTES`]
+    /// combined declaration text plus virtual-path bytes, in addition to the
+    /// exact per-root counts, byte totals and bundle digests in `pin`. With
     /// [`TypeAssetsPin::pinned_runtime`] that means 116 standard-library files
-    /// (3,870,196 B) and 20 runtime typings files (2,522,752 B) plus their
-    /// bundle digests.
+    /// (3,870,196 B) and 20 runtime typings files (2,522,752 B).
     ///
     /// # Errors
     ///
     /// Fails closed with a [`TypeAssetError`] for a missing or unsafe root, a
     /// symlink, hard link, non-regular file, non-UTF-8 or non-portable name,
-    /// case collision, over-budget tree, non-UTF-8 declaration, a file that
-    /// changes while being read, a missing required declaration (`lib.d.ts`,
-    /// `index.d.ts`, `types/index.d.ts`) or any pin mismatch. Callers must not
-    /// start a native session after an error.
+    /// case collision, over-entry/over-budget tree, non-UTF-8 declaration, a
+    /// file that changes while being read, a missing required declaration
+    /// (`lib.d.ts`, `index.d.ts`, `types/index.d.ts`) or any pin mismatch.
+    /// Over-long or non-portable virtual asset paths are reported as
+    /// [`TypeAssetError::InvalidRoot`], inherited from [`AssetPath::new`].
+    /// Callers must not start a native session after an error.
     ///
     /// This function does not verify the install or the delivery manifest; see
     /// the module documentation.
@@ -109,16 +239,14 @@ pub fn load_trusted_type_assets(
     let typings = Root::open(typings_root)?;
     let package = Root::open_child(&typings, MINIPROGRAM_TYPINGS)?;
 
-    let mut files = Vec::new();
-    let mut budget = TextBudget::default();
-    let mut seen = SeenPaths::default();
-    engine.collect_flat(&mut files, &mut budget, &mut seen)?;
-    package.collect_tree("", 0, &mut files, &mut budget, &mut seen)?;
+    let mut walk = Walk::default();
+    engine.collect_flat(&mut walk)?;
+    package.collect_tree("", 0, &mut walk)?;
 
     TypeAssets::new(
         engine.virtual_root,
         typings.virtual_root,
-        files,
+        walk.files,
         pin.clone(),
     )
 }
@@ -174,16 +302,11 @@ impl Root {
     }
 
     /// Collects the flat engine `lib` directory.
-    fn collect_flat(
-        &self,
-        files: &mut Vec<TypeAssetFile>,
-        budget: &mut TextBudget,
-        seen: &mut SeenPaths,
-    ) -> Result<(), TypeAssetError> {
-        for entry in read_dir_sorted(&self.disk)? {
+    fn collect_flat(&self, walk: &mut Walk) -> Result<(), TypeAssetError> {
+        for entry in walk.read_dir(&self.disk)? {
             let name = entry_name(&self.disk, &entry)?;
             let virtual_path = self.virtual_path(&name);
-            seen.insert(&virtual_path)?;
+            walk.insert_path(&virtual_path)?;
             let path = entry.path();
             let metadata = symlink_metadata(&path, &virtual_path)?;
             let file_type = metadata.file_type();
@@ -202,8 +325,7 @@ impl Root {
             if !is_declaration(&name) {
                 continue;
             }
-            let file = read_asset(&path, &virtual_path, &metadata, files.len(), budget)?;
-            files.push(file);
+            walk.read_asset(&path, &virtual_path, &metadata)?;
         }
         Ok(())
     }
@@ -215,20 +337,18 @@ impl Root {
         &self,
         virtual_dir: &str,
         depth: usize,
-        files: &mut Vec<TypeAssetFile>,
-        budget: &mut TextBudget,
-        seen: &mut SeenPaths,
+        walk: &mut Walk,
     ) -> Result<(), TypeAssetError> {
         if depth > MAX_ASSET_PATH_COMPONENTS {
             return Err(TypeAssetError::NestingTooDeep {
-                path: self.virtual_root.as_str().to_owned(),
+                path: self.virtual_path(virtual_dir),
             });
         }
-        for entry in read_dir_sorted(&self.disk)? {
+        for entry in walk.read_dir(&self.disk)? {
             let name = entry_name(&self.disk, &entry)?;
             let relative = relative_path(virtual_dir, &name);
             let virtual_path = self.virtual_path(&relative);
-            seen.insert(&virtual_path)?;
+            walk.insert_path(&virtual_path)?;
             let path = entry.path();
             let metadata = symlink_metadata(&path, &virtual_path)?;
             let file_type = metadata.file_type();
@@ -240,12 +360,11 @@ impl Root {
                     disk: path,
                     virtual_root: self.virtual_root.clone(),
                 };
-                child.collect_tree(&relative, depth + 1, files, budget, seen)?;
+                child.collect_tree(&relative, depth + 1, walk)?;
             } else if !file_type.is_file() {
                 return Err(TypeAssetError::NonRegularFile { path: virtual_path });
             } else if is_declaration(&name) {
-                let file = read_asset(&path, &virtual_path, &metadata, files.len(), budget)?;
-                files.push(file);
+                walk.read_asset(&path, &virtual_path, &metadata)?;
             }
         }
         Ok(())
@@ -264,13 +383,155 @@ fn relative_path(directory: &str, name: &str) -> String {
     }
 }
 
-/// Remaining declaration-text budget.
+/// Walk state: collected declarations, budgets, entry count and seen paths.
 #[derive(Debug, Default)]
-struct TextBudget {
+struct Walk {
+    files: Vec<TypeAssetFile>,
+    budget: AssetBudget,
+    seen: SeenPaths,
+    entries: usize,
+}
+
+impl Walk {
+    /// Reads one directory with the entry limit enforced before sorting.
+    ///
+    /// Only the current directory is materialized; the limit stops runaway
+    /// directories before a large vector can be built.
+    fn read_dir(&mut self, dir: &Path) -> Result<Vec<fs::DirEntry>, TypeAssetError> {
+        let mut collected = Vec::new();
+        for entry in fs::read_dir(dir).map_err(|source| io_error(dir, source))? {
+            self.entries = self.entries.saturating_add(1);
+            if self.entries > MAX_ASSET_ENTRIES {
+                return Err(TypeAssetError::TooManyEntries {
+                    count: self.entries,
+                    max: MAX_ASSET_ENTRIES,
+                });
+            }
+            collected.push(entry.map_err(|source| io_error(dir, source))?);
+        }
+        collected.sort_by_key(fs::DirEntry::file_name);
+        Ok(collected)
+    }
+
+    /// Registers one visited path, charging its bytes and rejecting case
+    /// collisions.
+    fn insert_path(&mut self, path: &str) -> Result<(), TypeAssetError> {
+        self.budget
+            .reserve(u64::try_from(path.len()).unwrap_or(u64::MAX))?;
+        self.seen.insert(path)
+    }
+
+    /// Reads one declaration and adds it to the mounted set.
+    fn read_asset(
+        &mut self,
+        path: &Path,
+        virtual_path: &str,
+        metadata: &Metadata,
+    ) -> Result<(), TypeAssetError> {
+        if self.files.len() >= MAX_TYPE_ASSET_FILES {
+            return Err(TypeAssetError::TooManyFiles {
+                count: self.files.len().saturating_add(1),
+                max: MAX_TYPE_ASSET_FILES,
+            });
+        }
+        #[cfg(unix)]
+        if metadata.nlink() != 1 {
+            return Err(TypeAssetError::HardLink {
+                path: virtual_path.to_owned(),
+            });
+        }
+        let declared = metadata.len();
+        self.budget.reserve(declared)?;
+
+        let file = open_asset(path, virtual_path)?;
+        let opened = file.metadata().map_err(|source| io_error(path, source))?;
+        if !opened.is_file() {
+            return Err(TypeAssetError::NonRegularFile {
+                path: virtual_path.to_owned(),
+            });
+        }
+        if opened.len() != declared {
+            return Err(TypeAssetError::AssetChanged {
+                path: virtual_path.to_owned(),
+            });
+        }
+        #[cfg(unix)]
+        if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() || opened.nlink() != 1 {
+            return Err(TypeAssetError::AssetChanged {
+                path: virtual_path.to_owned(),
+            });
+        }
+
+        let mut bytes = Vec::with_capacity(usize::try_from(declared).unwrap_or(0));
+        file.take(declared.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|source| io_error(path, source))?;
+        if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != declared {
+            return Err(TypeAssetError::AssetChanged {
+                path: virtual_path.to_owned(),
+            });
+        }
+        let text = String::from_utf8(bytes).map_err(|_| TypeAssetError::NonUtf8Content {
+            path: virtual_path.to_owned(),
+        })?;
+        let digest = hex_lower(&Sha256::digest(text.as_bytes()));
+        self.files.push(TypeAssetFile::new(
+            AssetPath::new(virtual_path)?,
+            text,
+            digest,
+            declared,
+        )?);
+        Ok(())
+    }
+}
+
+/// Opens one declaration without following a symlink or blocking on a FIFO.
+///
+/// On Unix, `O_NOFOLLOW` rejects a link swapped in after the pre-open
+/// `symlink_metadata` check, and `O_NONBLOCK` makes a FIFO return immediately so
+/// the post-open `fstat` can reject it instead of hanging. Other Unix targets
+/// without inlined flag constants fall back to the pre/post identity checks.
+#[cfg(unix)]
+fn open_asset(path: &Path, virtual_path: &str) -> Result<File, TypeAssetError> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = OpenOptions::new();
+    options.read(true).custom_flags(O_NOFOLLOW | O_NONBLOCK);
+    match options.open(path) {
+        Ok(file) => Ok(file),
+        Err(source) => Err(classify_open_error(path, virtual_path, source)),
+    }
+}
+
+/// Non-Unix fallback: no `O_NOFOLLOW`/`O_NONBLOCK`, so only the size, read
+/// length and digest are verified. Liveness/containment hardening is not
+/// available on these targets.
+#[cfg(not(unix))]
+fn open_asset(path: &Path, virtual_path: &str) -> Result<File, TypeAssetError> {
+    File::open(path).map_err(|source| classify_open_error(path, virtual_path, source))
+}
+
+fn classify_open_error(path: &Path, virtual_path: &str, source: std::io::Error) -> TypeAssetError {
+    if source.kind() == ErrorKind::NotFound {
+        return TypeAssetError::AssetChanged {
+            path: virtual_path.to_owned(),
+        };
+    }
+    if fs::symlink_metadata(path).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return TypeAssetError::Symlink {
+            path: virtual_path.to_owned(),
+        };
+    }
+    io_error(path, source)
+}
+
+/// Combined declaration-text and virtual-path budget.
+#[derive(Debug, Default)]
+struct AssetBudget {
     used: u64,
 }
 
-impl TextBudget {
+impl AssetBudget {
     fn reserve(&mut self, bytes: u64) -> Result<(), TypeAssetError> {
         let next = self.used.saturating_add(bytes);
         if next > u64::try_from(MAX_TYPE_ASSET_BYTES).unwrap_or(u64::MAX) {
@@ -302,16 +563,6 @@ impl SeenPaths {
         self.paths.insert(key, path.to_owned());
         Ok(())
     }
-}
-
-fn read_dir_sorted(dir: &Path) -> Result<Vec<fs::DirEntry>, TypeAssetError> {
-    let entries = fs::read_dir(dir).map_err(|source| io_error(dir, source))?;
-    let mut collected = Vec::new();
-    for entry in entries {
-        collected.push(entry.map_err(|source| io_error(dir, source))?);
-    }
-    collected.sort_by_key(fs::DirEntry::file_name);
-    Ok(collected)
 }
 
 fn entry_name(dir: &Path, entry: &fs::DirEntry) -> Result<String, TypeAssetError> {
@@ -359,63 +610,6 @@ fn symlink_metadata(path: &Path, virtual_path: &str) -> Result<Metadata, TypeAss
     })
 }
 
-fn read_asset(
-    path: &Path,
-    virtual_path: &str,
-    metadata: &Metadata,
-    file_count: usize,
-    budget: &mut TextBudget,
-) -> Result<TypeAssetFile, TypeAssetError> {
-    if file_count >= MAX_TYPE_ASSET_FILES {
-        return Err(TypeAssetError::TooManyFiles {
-            count: file_count.saturating_add(1),
-            max: MAX_TYPE_ASSET_FILES,
-        });
-    }
-    #[cfg(unix)]
-    if metadata.nlink() != 1 {
-        return Err(TypeAssetError::HardLink {
-            path: virtual_path.to_owned(),
-        });
-    }
-    let declared = metadata.len();
-    budget.reserve(declared)?;
-
-    let file = File::open(path).map_err(|source| io_error(path, source))?;
-    let opened = file.metadata().map_err(|source| io_error(path, source))?;
-    if !opened.is_file() {
-        return Err(TypeAssetError::NonRegularFile {
-            path: virtual_path.to_owned(),
-        });
-    }
-    if opened.len() != declared {
-        return Err(TypeAssetError::AssetChanged {
-            path: virtual_path.to_owned(),
-        });
-    }
-    #[cfg(unix)]
-    if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() || opened.nlink() != 1 {
-        return Err(TypeAssetError::AssetChanged {
-            path: virtual_path.to_owned(),
-        });
-    }
-
-    let mut bytes = Vec::with_capacity(usize::try_from(declared).unwrap_or(0));
-    file.take(declared.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|source| io_error(path, source))?;
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) != declared {
-        return Err(TypeAssetError::AssetChanged {
-            path: virtual_path.to_owned(),
-        });
-    }
-    let text = String::from_utf8(bytes).map_err(|_| TypeAssetError::NonUtf8Content {
-        path: virtual_path.to_owned(),
-    })?;
-    let digest = hex_lower(&Sha256::digest(text.as_bytes()));
-    TypeAssetFile::new(AssetPath::new(virtual_path)?, text, digest, declared)
-}
-
 fn is_declaration(name: &str) -> bool {
     name.ends_with(".d.ts")
 }
@@ -430,6 +624,29 @@ fn io_error(path: &Path, source: std::io::Error) -> TypeAssetError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Cleanup(PathBuf);
+
+    impl Drop for Cleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch(tag: &str) -> (PathBuf, Cleanup) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let base = std::env::temp_dir().join("opencode/wxml-tsgo-asset-loader-unit");
+        fs::create_dir_all(&base).expect("unit scratch base");
+        let path = base.join(format!(
+            "{tag}-{}-{}",
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::create_dir_all(&path).expect("unit scratch");
+        (path.clone(), Cleanup(path))
+    }
 
     #[test]
     fn declaration_filter_is_case_sensitive() {
@@ -485,41 +702,46 @@ mod tests {
     }
 
     #[test]
-    fn text_budget_is_cumulative_and_bounded() {
-        let mut budget = TextBudget::default();
+    fn text_and_path_bytes_share_the_budget() {
+        let mut budget = AssetBudget::default();
         budget.reserve(1).expect("small");
         budget.reserve(2).expect("still small");
         assert_eq!(budget.used, 3);
+        budget
+            .reserve(u64::try_from(MAX_TYPE_ASSET_BYTES).unwrap() - 3)
+            .expect("exact budget");
         assert!(matches!(
-            budget.reserve(u64::try_from(MAX_TYPE_ASSET_BYTES).unwrap()),
+            budget.reserve(1),
+            Err(TypeAssetError::TooLarge { .. })
+        ));
+
+        let mut walk = Walk::default();
+        walk.budget
+            .reserve(u64::try_from(MAX_TYPE_ASSET_BYTES).unwrap() - 1)
+            .expect("almost full");
+        assert!(matches!(
+            walk.insert_path("/pkg/lib.d.ts"),
             Err(TypeAssetError::TooLarge { .. })
         ));
     }
 
-    struct Cleanup(PathBuf);
-
-    impl Drop for Cleanup {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
+    #[test]
+    fn entry_budget_is_checked_while_scanning() {
+        let (dir, _cleanup) = scratch("entries");
+        fs::write(dir.join(".hidden"), b"x").expect("hidden file");
+        let mut walk = Walk {
+            entries: MAX_ASSET_ENTRIES,
+            ..Walk::default()
+        };
+        let error = walk
+            .read_dir(&dir)
+            .expect_err("an entry beyond the limit must fail closed");
+        assert!(
+            matches!(error, TypeAssetError::TooManyEntries { .. }),
+            "expected TooManyEntries, got {error}"
+        );
     }
 
-    fn scratch(tag: &str) -> (PathBuf, Cleanup) {
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let base = std::env::temp_dir().join("opencode/wxml-tsgo-asset-loader-unit");
-        fs::create_dir_all(&base).expect("unit scratch base");
-        let path = base.join(format!(
-            "{tag}-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path).expect("unit scratch");
-        (path.clone(), Cleanup(path))
-    }
-
-    #[cfg(unix)]
     #[test]
     fn open_rejects_non_utf8_roots() {
         use std::os::unix::ffi::OsStringExt;
@@ -535,22 +757,17 @@ mod tests {
     }
 
     #[test]
-    fn read_asset_reports_a_missing_file_as_an_io_error() {
+    fn read_asset_reports_a_missing_file_as_a_change() {
         let (dir, _cleanup) = scratch("missing");
         let present = dir.join("present.d.ts");
         fs::write(&present, b"abc").expect("present file");
         let metadata = fs::symlink_metadata(&present).expect("metadata");
-        let error = read_asset(
-            &dir.join("absent.d.ts"),
-            "/pkg/absent.d.ts",
-            &metadata,
-            0,
-            &mut TextBudget::default(),
-        )
-        .expect_err("a missing file must fail closed");
+        let error = Walk::default()
+            .read_asset(&dir.join("absent.d.ts"), "/pkg/absent.d.ts", &metadata)
+            .expect_err("a missing file must fail closed");
         assert!(
-            matches!(error, TypeAssetError::AssetIo { .. }),
-            "expected AssetIo, got {error}"
+            matches!(error, TypeAssetError::AssetChanged { .. }),
+            "expected AssetChanged, got {error}"
         );
     }
 
@@ -561,14 +778,9 @@ mod tests {
         fs::write(&path, b"abc").expect("declaration");
         let metadata = fs::symlink_metadata(&path).expect("metadata");
         fs::write(&path, b"abcdef").expect("grown declaration");
-        let error = read_asset(
-            &path,
-            "/pkg/lib.d.ts",
-            &metadata,
-            0,
-            &mut TextBudget::default(),
-        )
-        .expect_err("a grown file must fail closed");
+        let error = Walk::default()
+            .read_asset(&path, "/pkg/lib.d.ts", &metadata)
+            .expect_err("a grown file must fail closed");
         assert!(
             matches!(error, TypeAssetError::AssetChanged { .. }),
             "expected AssetChanged, got {error}"
@@ -584,17 +796,59 @@ mod tests {
         fs::write(&first, b"abc").expect("first declaration");
         fs::write(&second, b"xyz").expect("second declaration");
         let metadata = fs::symlink_metadata(&first).expect("metadata");
-        let error = read_asset(
-            &second,
-            "/pkg/second.d.ts",
-            &metadata,
-            0,
-            &mut TextBudget::default(),
-        )
-        .expect_err("a replaced file must fail closed");
+        let error = Walk::default()
+            .read_asset(&second, "/pkg/second.d.ts", &metadata)
+            .expect_err("a replaced file must fail closed");
         assert!(
             matches!(error, TypeAssetError::AssetChanged { .. }),
             "expected AssetChanged, got {error}"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_rejects_a_symlink_swapped_after_lstat() {
+        let (dir, _cleanup) = scratch("symlink-race");
+        let target = dir.join("target.d.ts");
+        let link = dir.join("lib.d.ts");
+        fs::write(&target, b"abc").expect("target");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+        let error = open_asset(&link, "/pkg/lib.d.ts")
+            .expect_err("O_NOFOLLOW must reject a swapped-in symlink");
+        assert!(
+            matches!(error, TypeAssetError::Symlink { .. }),
+            "expected Symlink, got {error}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_asset_rejects_a_fifo_without_blocking() {
+        let (dir, _cleanup) = scratch("fifo");
+        let fifo = dir.join("lib.fifo.d.ts");
+        let status = std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .expect("run mkfifo");
+        assert!(status.success(), "mkfifo failed: {status}");
+        let metadata = fs::symlink_metadata(&fifo).expect("metadata");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = Walk::default().read_asset(&fifo, "/pkg/lib.fifo.d.ts", &metadata);
+            let _ = sender.send(result);
+        });
+        match receiver.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(())) => panic!("a FIFO must be rejected"),
+            Ok(Err(error)) => assert!(
+                matches!(error, TypeAssetError::NonRegularFile { .. }),
+                "expected NonRegularFile, got {error}"
+            ),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!("FIFO open blocked; O_NONBLOCK is missing");
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("FIFO reader thread exited without a result");
+            }
+        }
     }
 }

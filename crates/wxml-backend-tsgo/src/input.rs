@@ -29,10 +29,14 @@
 //! 256-file/8-MiB budget. The legacy [`AnalysisInput::new`] constructor is
 //! reserved for probes and old tests and carries no assets.
 //!
-//! [`TypeAssets::load_trusted`] is the only disk-reading entry point: it walks
-//! the caller-supplied engine and typings roots, rejects unsafe entries, hashes
-//! every declaration and then runs the same pin validation as
-//! [`TypeAssets::new`]. It does not verify an install or the delivery manifest.
+//! [`TypeAssets::load_pinned`] is
+//! the production disk entry point: it walks the caller-supplied engine and
+//! typings roots, rejects unsafe entries, hashes every declaration and runs the
+//! same pin validation as [`TypeAssets::new`] against the built-in
+//! [`TypeAssetsPin::pinned_runtime`]. The caller-pinned
+//! [`TypeAssets::load_trusted`]
+//! is for tests and independently verified manifests. Neither verifies the
+//! install or the delivery manifest.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -378,6 +382,14 @@ impl TypeAssetFile {
 /// recomputes every value and rejects a mismatch; there is no empty or default
 /// pin and no boolean bypass.
 ///
+/// Only [`Self::pinned_runtime`] is a built-in trusted anchor. [`Self::new`]
+/// anchors the version and both file counts to crate constants, but accepts
+/// caller-provided byte totals and bundle digests without establishing their
+/// provenance; a pin derived from the same tree that is about to be loaded
+/// proves nothing. Production wiring should use
+/// [`TypeAssets::load_pinned`]
+/// or pass a pin verified independently against the delivery manifest.
+///
 /// The trusted *source* of this pin (manifest/package-root discovery and the
 /// 26-vs-23 delivery reconciliation) remains **BLOCKED** under P6-3-4/F3-03.
 /// This type only proves that a caller-supplied pin matches the supplied
@@ -402,6 +414,13 @@ impl TypeAssetsPin {
     /// Version and both file counts must equal the pinned constants; digest
     /// values must be lowercase SHA-256. There is deliberately no constructor
     /// that skips these checks.
+    ///
+    /// This constructor does **not** verify that the byte totals or digests
+    /// correspond to a trusted package. Only version and counts are anchored to
+    /// crate constants; bytes and digests are caller-asserted. Production
+    /// callers should use [`Self::pinned_runtime`] through
+    /// [`TypeAssets::load_pinned`],
+    /// or verify the values against the delivery manifest first.
     ///
     /// # Errors
     ///
@@ -458,7 +477,12 @@ impl TypeAssetsPin {
         })
     }
 
-    /// Returns the pin for the local pinned fixture.
+    /// Returns the built-in production pin for the local pinned fixture.
+    ///
+    /// This is the only pin whose byte totals and bundle digests are fixed by
+    /// this crate. Use it through
+    /// [`TypeAssets::load_pinned`]
+    /// in production.
     ///
     /// `PINNED_TYPINGS_BUNDLE_DIGEST` is derived from the repository fixture;
     /// it does not claim a packaged-chain digest.
@@ -533,13 +557,14 @@ impl TypeAssetsPin {
 /// Verified TypeScript standard library and mini-program typings.
 ///
 /// [`Self::new`] is a pure in-memory value: it performs no disk I/O and only
-/// re-validates text that a caller already read. [`Self::load_trusted`] is the
-/// trusted disk loader: it reads the two pinned package roots, rejects unsafe
-/// entries, hashes every declaration and then runs the same validation as
-/// [`Self::new`]. A production host reads and hashes the pinned package once,
-/// then shares the value through an [`Arc`] for every snapshot. Construction
-/// requires a [`TypeAssetsPin`] and recomputes counts, byte totals and bundle
-/// digests.
+/// re-validates text that a caller already read. [`Self::load_pinned`] is the
+/// production disk loader: it reads the two pinned package roots, rejects unsafe
+/// entries, hashes every declaration and validates the built-in production pin.
+/// [`Self::load_trusted`] performs the same walk with a caller-supplied pin and
+/// is reserved for tests or independently verified manifests. A production host
+/// reads and hashes the pinned package once, then shares the value through an
+/// [`Arc`] for every snapshot. Construction requires a [`TypeAssetsPin`] and
+/// recomputes counts, byte totals and bundle digests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeAssets {
     standard_lib_root: AssetPath,
@@ -1045,6 +1070,14 @@ pub enum TypeAssetError {
     NestingTooDeep {
         /// Rejected directory.
         path: String,
+    },
+    /// A trusted asset tree has more directory entries than the walk budget.
+    #[error("type-asset tree has {count} directory entries, limit is {max}")]
+    TooManyEntries {
+        /// Observed entry count.
+        count: usize,
+        /// Configured limit.
+        max: usize,
     },
 }
 
