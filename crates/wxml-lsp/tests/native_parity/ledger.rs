@@ -19,10 +19,10 @@ pub(crate) const LEDGER_RELATIVE_PATH: &str = "docs/plans/tsgo-test-ledger.json"
 
 /// Frozen expanded registration count.
 pub(crate) const TOTAL_CASES: usize = 339;
-/// Exact-parity cases promoted to `green` in P5, P5.1 and the P6 backfill.
-pub(crate) const GREEN_CASES: usize = 36;
-/// Cases still `planned` after the P5/P5.1/P6 exact-parity promotion.
-pub(crate) const PLANNED_CASES: usize = 267;
+/// Exact-parity cases promoted to `green` through the 2026-11-20 wave-5 backfill.
+pub(crate) const GREEN_CASES: usize = 44;
+/// Cases still `planned` after the 2026-11-20 wave-5 exact-parity promotion.
+pub(crate) const PLANNED_CASES: usize = 259;
 /// Frozen retired-with-decision count.
 pub(crate) const RETIRED_CASES: usize = 36;
 /// Near-exact cases intentionally left `planned` with a green recommendation.
@@ -1265,8 +1265,8 @@ fn ledger_migration_evidence_is_complete_and_consistent() {
     assert_eq!(planned, PLANNED_CASES, "planned count drifted");
     assert_eq!(parity_counts["exact"], GREEN_CASES);
     assert_eq!(parity_counts["near_exact"], NEAR_EXACT_CASES);
-    assert_eq!(parity_counts["weaker"], 57);
-    assert_eq!(parity_counts["structural"], 6);
+    assert_eq!(parity_counts["weaker"], 74);
+    assert_eq!(parity_counts["structural"], 7);
     assert_eq!(parity_counts["blocked"], 17);
     assert_eq!(
         parity_counts.values().sum::<usize>(),

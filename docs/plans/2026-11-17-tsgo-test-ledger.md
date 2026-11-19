@@ -2,7 +2,7 @@
 
 生成时间：2026-11-17T23:08:57+08:00；P3-S/P4-B 证据与 P5 状态回填：2026-11-18；P5.1 适配器/定义/性能回填：2026-11-19
 
-状态：**green 36 / planned 267 / retired-with-decision 36**（P5 将 32 个 exact-parity 用例提升为 `green`；P5.1 将 1 个 adapter exact 用例提升为 `green`；P6 回填再提升 3 个 exact 用例并登记 2 个 weaker 证据；3 个 near-exact 保留 `planned` + green recommendation；36 个 Candidate B 不变；未删除任何旧测试）
+状态：**green 44 / planned 259 / retired-with-decision 36**（P5 将 32 个 exact-parity 用例提升为 `green`；P5.1 将 1 个 adapter exact 用例提升为 `green`；P6 回填再提升 3 个 exact 用例并登记 2 个 weaker 证据；wave-5 回填再提升 8 个 exact 用例并登记 26 个新证据；3 个 near-exact 保留 `planned` + green recommendation；36 个 Candidate B 不变；未删除任何旧测试）
 
 基线：`b9616c557e54a06b7d756e516e6dd7c4016664cf`（`tsgo/migration`，包含 `4d59ca7`）
 
@@ -23,6 +23,7 @@ P0 证据：`docs/evidence/2026-11-17-tsgo-migration-baseline.md`
 - P5 状态回填（2026-11-18）：100 个用例登记了现有 Rust 测试；32 个 exact-parity 用例提升为 `green`，3 个 near-exact 保留 `planned` + `status_recommendation=green`，44 个 weaker、5 个 structural、16 个 blocked 仍为 `planned`。最终 **32 green / 271 planned / 36 retired-with-decision**。逐条见 §14。
 - P5.1 回填（2026-11-19）：新增 14 个用例证据（114 assessed）；`TS-COMPLETION-0220` 由 P4-C adapter 测试提升为 `green`，其余 13 个保持 `planned`（7 个新增 weaker adapter、4 个 weaker definition、1 个 blocked definition、1 个 structural perf）。P5.1 后为 **33 green / 270 planned / 36 retired-with-decision**；当时仍有 189 个 planned 用例没有 Rust 证据。
 - P6 回填（2026-11-19，实现 HEAD `9a8b65caac38e2d04a08550e0506408f7af967f5`）：event completion 与 trusted type-assets 的 3 个 exact 用例提升为 `green`（`TS-COMPLETION-0175`、`TS-COMPLETION-0193`、`TS-PROBES-0169`）；`TS-META-0009` 与 `TS-SERVER-0237` 登记 weaker 证据，`TS-COMPLETION-0207` 追加新的 native event-completion 证据但仍为 weaker。最终 **36 green / 267 planned / 36 retired-with-decision**；仍有 184 个 planned 用例没有 Rust 证据。逐条见 §14 和 `docs/evidence/2026-11-19-tsgo-ledger-backfill.md`。
+- Wave-5 回填（2026-11-20，实现边界 HEAD `375cde24a61141f2b122bdf6ca9c23fbfc0fb1a6`）：root/trailing-dot completion、event-handler hover、native symbols 与 overlay replay 的 8 个 exact 用例提升为 `green`（`TS-COMPLETION-0127`、`TS-COMPLETION-0153`、`TS-EVENTS-0108`、`TS-SYMBOLS-0061/0150/0215/0226/0312`）；其中 7 个由无证据转为 exact，`TS-EVENTS-0108` 由 blocked 证据转为 exact。另新增 17 个 weaker、1 个 blocked、1 个 structural 证据用例，并对 14 个既有 weaker/structural/blocked 用例追加 wave-5 测试。最终 **44 green / 259 planned / 36 retired-with-decision**；仍有 158 个 planned 用例没有 Rust 证据。逐条见 §15 和 `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave5.md`。
 - 本轮 TS 套件实际执行：339 个，通过 338，失败 1，跳过 0。
 - 计划对账：计划 273 静态 / ~338 展开，实际 **274 / 339**（+1）；原因是 `events.test.ts` 实际 24 个声明而非计划表中的 23。
 - 23 个 Rust `#[ignore]` 测试全部映射到必跑原生命令；2 个 `semantic_tools` 静默 return 路径同样映射；均不计为已迁移。
@@ -148,7 +149,7 @@ P0 证据：`docs/evidence/2026-11-17-tsgo-migration-baseline.md`
 | unit | 114 | 纯函数/codec/验证：locals、guards、rewrite、mapping math、protocol validation。 |
 | parity | 100 | scenario matrix、overlay、mapping/run、性能采样。 |
 
-36 条 `status=green`、267 条 `status=planned`、36 条 `status=retired-with-decision`；`oracle_revision` 已冻结为 `F2 frozen 2026-11-17 (dcc1f15)`；独立 `reviewer` 尚未签署。P5/P5.1/P6 只提升 exact-parity 用例；near-exact/weaker/structural/blocked 的逐条证据和状态见 §14。
+44 条 `status=green`、259 条 `status=planned`、36 条 `status=retired-with-decision`；`oracle_revision` 已冻结为 `F2 frozen 2026-11-17 (dcc1f15)`；独立 `reviewer` 尚未签署。P5/P5.1/P6/wave-5 只提升 exact-parity 用例；near-exact/weaker/structural/blocked 的逐条证据和状态见 §14/§15。
 
 ## 8. Dirty 必保增量（D1–D7）
 
@@ -716,9 +717,9 @@ cd backends/typescript && npm test   # 需要 Node 24 与已存在的 node_modul
 - 依据：生产 LSP 不传 `layoutId`（`server.ts:152`）；`analysis.ts:59-60,416` 明确默认原位 shadow；Candidate B 只由 matrix/perf/evidence 脚本遍历。
 - 不降低要求：原位 shadow 的 39 个 matrix 用例、协议/映射/诊断/编辑安全/FS 用例继续强制迁移。
 
-## 14. P5/P5.1 Rust 证据与状态回填（2026-11-18，P5.1 更新 2026-11-19）
+## 14. P5/P5.1/P6 Rust 证据与状态回填（历史快照，2026-11-18/19；wave-5 见 §15）
 
-本回填登记 `wxml-backend-tsgo`、P4-C LSP adapter 与 delivery/native 测试中已经存在并通过的 Rust 测试。P5 将 **exact parity** 的 32 个用例提升为 `green`；P5.1 追加 P4-C adapter、native definition slice 与 perf budget gate 的逐条证据，只把 1 个 adapter exact 用例（`TS-COMPLETION-0220`）提升为 `green`。P6 回填（2026-11-19）再提升 event completion 与 trusted type-assets 的 3 个 exact 用例，并为 delivery lock/de-Node 登记 weaker 证据。3 个 near-exact 用例按裁决保留 `planned` 并记录 `status_recommendation=green`；其余 weaker/structural/blocked 全部保持 `planned`。未修改生产 Rust、ADR、交付、server/config 或 Cargo。
+本节保留 P5/P5.1/P6 的历史计数与证据表；当前计数以 §15 和 JSON `counts` 为准。P5 将 **exact parity** 的 32 个用例提升为 `green`；P5.1 追加 P4-C adapter、native definition slice 与 perf budget gate 的逐条证据，只把 1 个 adapter exact 用例（`TS-COMPLETION-0220`）提升为 `green`。P6 回填（2026-11-19）再提升 event completion 与 trusted type-assets 的 3 个 exact 用例，并为 delivery lock/de-Node 登记 weaker 证据。3 个 near-exact 用例按裁决保留 `planned` 并记录 `status_recommendation=green`；其余 weaker/structural/blocked 全部保持 `planned`。未修改生产 Rust、ADR、交付、server/config 或 Cargo。
 
 P5 已解冻 `crates/wxml-lsp/tests/native_parity/ledger.rs` 的旧 303 planned 常量：现在校验 total=339、retired=36、状态总和=339、green 必须有非空 Rust 证据、分区计数从实际 cases 派生。P6 后常量更新为 green=36、planned=267；`reviewed`/`closed` 仍未使用（无独立评审证据）。
 
@@ -916,3 +917,144 @@ git diff --check
 - near-exact 必须保持 planned + recommendation=green + green_eligible=false；weaker/structural/blocked 必须 planned + recommendation=planned；空证据直接失败。
 - 分区计数由 `cases[].target_rust_test` 和 `counts.migration_evidence.by_partition` 双向校验；`Partition.planned_cases` 改为 `Partition.routed_cases`，总数由 `ledger::non_obsolete_case_count` 派生，不再固定 303。
 - 保留原有 schema、top-level key、case ID、disposition、oracle/coverage、fixture hash、旧 TS source hash/line、ignored/silent-skip gate 检查。
+
+## 15. Wave-5 Rust 证据回填（2026-11-20）
+
+### 15.1 身份、边界与结果
+
+- Worktree：`/home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration`
+- 记录时 HEAD：`28c5e18eebfc1fe7c5df14e9a3655404185065a2`。任务指定的回填边界是
+  `375cde24a61141f2b122bdf6ca9c23fbfc0fb1a6`；之后并行会话又提交了
+  `04fa0fe`（E2E-20）、`2f072a6`（final gate）和 `28c5e18`（F3 kill window）。
+  本节**只映射到 `375cde2` 及之前**的 Rust 测试；E2E-20、`f3_kill_window` 和 Zed smoke
+  没有映射，也没有把 gate 状态当作 case 状态。
+- 范围：只改 `docs/plans/tsgo-test-ledger.json`、本 Markdown 台账、
+  `docs/reference/tsgo-test-contract.md`、`crates/wxml-lsp/tests/native_parity/ledger.rs`
+  和证据文档。未修改生产代码、测试源码、Cargo、delivery、Node 或默认后端；未提交。
+- 结果：**44 `green` / 259 `planned` / 36 `retired-with-decision`**，339 总数不变；
+  `assessed_cases` 119 → 145，无 Rust 证据的 planned 184 → 158。
+  `near_exact` 仍为 3；`weaker` 57 → 74；`structural` 6 → 7；`blocked` 17 → 17。
+
+### 15.2 新增 exact → `green`（8）
+
+判定标准与 §14.3 相同：Rust 断言覆盖 TS case 的同一可观察语义，且不把 gate_green
+自动等同为 case green。`status_applied=green`、`target_rust_test_status=migrated_green`。
+
+| Case | Rust test（path:line） | 证据摘要 |
+| --- | --- | --- |
+| `TS-COMPLETION-0127` |  crates/wxml-lsp/src/backend_tsgo/tests.rs:4356 | Typed-prefix root completion returns the exact data-overlay root and replaces only the prefix range; Supported and zero native session starts. |
+| `TS-COMPLETION-0153` |  crates/wxml-lsp/src/backend_tsgo/tests.rs:4315 | Empty-mustache root completion returns the exact data-overlay root with a zero-width replace; Supported and zero native session starts. |
+| `TS-EVENTS-0108` |  crates/wxml-lsp/src/semantics/event_definition.rs:857 | Seven binding forms plus `bind:my-event`; each is Supported and maps to the exact declaration token/file. |
+| `TS-SYMBOLS-0061` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:68<br> crates/wxml-lsp/tests/native_parity/native_engine_real.rs:2700 | Unit test covers Supported/complete, declaration/read starts, setData path/segment; required-native symbols smoke adds exact declaration/read/setData byte locations and rename edits. |
+| `TS-SYMBOLS-0150` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:127 | Complete=true, zero-width insertion on the options close, text contains `methods: {` and `onSave()`. |
+| `TS-SYMBOLS-0215` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:480 | Opaque and spread owner tables are complete=false with no declaration and no insertion. |
+| `TS-SYMBOLS-0226` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:161 | CJK declaration has exact UTF-8 start/end plus the UTF-16 start after emoji/CRLF text. |
+| `TS-SYMBOLS-0312` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:370 | `other.setData` is complete=false with zero occurrences; literal keys remain pinned next to a computed key. |
+
+`TS-SYMBOLS-0061` 的两个证据分开记录：非 ignored 单元测试负责 `Supported`/`complete`/
+path/segment，`#[ignore]` 的 required-native smoke 负责补齐 exact declaration/read/setData
+字节位置和 rename 编辑。默认 validator 不运行后者；这不是用 gate_green 代替 case green。
+
+### 15.3 新增非 exact 证据（19 个新 case）
+
+#### weaker（17）
+
+| Case | Rust test（path:line） | 为什么不是 exact |
+| --- | --- | --- |
+| `TS-COMPLETION-0078` |  crates/wxml-lsp/src/backend_tsgo/tests.rs:4452<br> crates/wxml-lsp/src/backend_tsgo/tests.rs:4276 | Member labels/range match, but native status is Partial while TS expects Supported. |
+| `TS-SYMBOLS-0098` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:209 | Root segment/text match; exact occurrence start/end and sibling fields are not asserted. |
+| `TS-SYMBOLS-0164` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:546 | Cross-file behavior declaration path exists; TS shared-data-object scenario is not covered. |
+| `TS-SYMBOLS-0204` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:318<br> crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:344<br> crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:370 | Dynamic data/setData shapes are Partial with reasons, but no single test covers the exact TS fixture. |
+| `TS-SYMBOLS-0242` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:614<br> crates/wxml-lsp/src/backend_tsgo/tests.rs:2424 | Malformed queries return Unsupported rather than the TS RequestError channel. |
+| `TS-SYMBOLS-0264` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:525 | Declaration/this-alias read exist, but computed access makes the result Partial and the exact read range is not asserted. |
+| `TS-SYMBOLS-0286` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:397 | Destructuring is Partial with a reason; the TS never-edited assertion is not exercised through the edit plan. |
+| `TS-SYMBOLS-0324` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:344<br> crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:318 | Dynamic this.data/spread are Partial, but the TS rest/Object.keys shapes are not all covered. |
+| `TS-SYMBOLS-0336` |  crates/wxml-lsp/src/backend_tsgo/tests.rs:2446 | Partial/reason/no session match; empty `fields` is not asserted. |
+| `TS-SYMBOLS-0346` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:108 | Insertion is exact; the applied-text parse (TS1005) is missing. |
+| `TS-SYMBOLS-0367` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:504<br> crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:242 | Reserved data/property/method names are asserted for DataRoots, not both TS dataPath queries. |
+| `TS-SYMBOLS-0391` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:438 | Another-script setData is incomplete with a reason; TS status/zero-occurrence assertions are missing. |
+| `TS-SYMBOLS-0406` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:397 | Alias/destructuring is Partial with a reason; dynamic access through the alias is not asserted. |
+| `TS-SYMBOLS-0439` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:209 | Nested segment/text match; exact nested occurrence start/end are missing. |
+| `TS-OVERLAY-0023` |  crates/wxml-lsp/tests/native_parity/native_engine_real.rs:511 | Unsaved model type reaches two templates; JSDoc replacement is not asserted and the fixture uses a literal type. |
+| `TS-OVERLAY-0047` |  crates/wxml-lsp/tests/native_parity/native_engine_real.rs:511 | Close restores the disk string, but only in the opt-in ignored job and with a different fixture. |
+| `TS-OVERLAY-0055` |  crates/wxml-lsp/tests/native_parity/native_engine_real.rs:511 | Imported model overlay crosses views/restart; the TS number/JSDoc overlay is not identical. |
+
+#### blocked（1）
+
+| Case | Rust test（path:line） | 缺口 |
+| --- | --- | --- |
+| `TS-SYMBOLS-0116` |  crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:108<br> crates/wxml-backend-tsgo/tests/script_symbol_facts.rs:573 | Missing-handler insertion is exact, but `observerPath` is not implemented and the component dataPath stays Partial; TS expects complete=true plus an observerPath occurrence. |
+
+#### structural（1）
+
+| Case | Rust test（path:line） | 缺口 |
+| --- | --- | --- |
+| `TS-REWRITE-0413` |  crates/wxml-backend-tsgo/tests/shadow_guard_ranges.rs:112<br> crates/wxml-backend-tsgo/tests/shadow_guard_ranges.rs:196<br> crates/wxml-backend-tsgo/tests/shadow_guard_ranges.rs:353 | Guard wrapper/value spans map to exact original bytes, but hover/diagnostics never run through the checker. |
+
+### 15.4 既有非 exact 用例追加 wave-5 证据（14）
+
+这些用例的状态/parity 不变，只在 `migration_evidence.rust_tests` 增加本轮测试：
+
+- `TS-COMPONENT-0357`（structural）：  `script_optional_types.rs:269`
+- `TS-COMPONENT-0403`（weaker）：  `script_optional_types.rs:176`
+- `TS-COMPONENT-0416`（weaker）：  `script_optional_types.rs:196`
+- `TS-COMPONENT-0607`（weaker）：  `script_optional_types.rs:221`
+- `TS-EVENTS-0093`（weaker）：  `event_definition.rs:894`
+- `TS-EVENTS-0162`（weaker）：  `event_diagnostics.rs:524`、  `event_definition.rs:712`
+- `TS-EVENTS-0176`（weaker）：  `event_diagnostics.rs:540`、  `backend_tsgo/tests.rs:3807`
+- `TS-EVENTS-0188`（blocked）：  `event_diagnostics.rs:383`、  `event_definition.rs:910`
+- `TS-EVENTS-0236`（weaker）：  `event_diagnostics.rs:466`
+- `TS-EVENTS-0268`（weaker）：  `event_diagnostics.rs:524`、  `event_diagnostics.rs:540`
+- `TS-EVENTS-0280`（weaker）：  `event_diagnostics.rs:479`、  `event_definition.rs:1011`
+- `TS-EVENTS-0301`（weaker）：  `event_diagnostics.rs:452`
+- `TS-EVENTS-0339`（weaker）：  `event_diagnostics.rs:512`、  `event_diagnostics.rs:554`
+- `TS-PERF-0012`（structural）：  `native_engine_real.rs:3131`
+
+完整全限定测试名、行号和逐条 note 以 JSON `cases[].migration_evidence` 为准。
+
+### 15.5 当前分区计数
+
+| 分区 | routed | 有证据 | green | planned 有证据 | exact | near-exact | weaker | structural | blocked | 无证据 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `behaviors` | 22 | 18 | 1 | 17 | 1 | 2 | 6 | 5 | 4 | 4 |
+| `completion` | 9 | 8 | 5 | 3 | 5 | 0 | 3 | 0 | 0 | 1 |
+| `components` | 19 | 9 | 4 | 5 | 4 | 0 | 1 | 0 | 4 | 10 |
+| `definitions` | 5 | 5 | 0 | 5 | 0 | 0 | 4 | 0 | 1 | 0 |
+| `events` | 24 | 21 | 10 | 11 | 10 | 0 | 10 | 0 | 1 | 3 |
+| `guards_js` | 25 | 11 | 5 | 6 | 5 | 0 | 1 | 0 | 5 | 14 |
+| `hover_docs` | 10 | 3 | 0 | 3 | 0 | 0 | 3 | 0 | 0 | 7 |
+| `loops` | 16 | 9 | 5 | 4 | 5 | 0 | 3 | 0 | 1 | 7 |
+| `mapping_utf16` | 21 | 15 | 6 | 9 | 6 | 0 | 8 | 1 | 0 | 6 |
+| `messages_evidence` | 8 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 8 |
+| `perf_budget` | 1 | 1 | 0 | 1 | 0 | 0 | 0 | 1 | 0 | 0 |
+| `project_overlay` | 20 | 6 | 0 | 6 | 0 | 0 | 6 | 0 | 0 | 14 |
+| `protocol_limits` | 40 | 2 | 0 | 2 | 0 | 0 | 2 | 0 | 0 | 38 |
+| `scenario_matrix` | 43 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 0 | 43 |
+| `shadow_rewrite` | 19 | 18 | 3 | 15 | 3 | 1 | 14 | 0 | 0 | 1 |
+| `symbols_edits` | 21 | 19 | 5 | 14 | 5 | 0 | 13 | 0 | 1 | 2 |
+| **合计** | **303** | **145** | **44** | **101** | **44** | **3** | **74** | **7** | **17** | **158** |
+
+### 15.6 未映射的本轮原生面
+
+- **standalone script diagnostics**（`8014739`）：旧 TS 套件没有独立的 `.ts/.js`
+  diagnostics case；`script_diagnostics_*` 测试属于 native-only 行为，不新增 case ID，
+  也不把 `TS-MATRIX-*` 或 `TS-ANALYSIS-*` 当作同义证据。
+- **perf/stability**（`8b6ca14`）：`native_q2_performance_benchmark` 已作为 structural
+  证据追加到 `TS-PERF-0012`；`native_ten_round_lifecycle_stability` 没有对应 TS case，
+  只记录在 gate 证据中。
+- **gate wave 3/4**（`c5ee251`、`375cde2`）：gate 状态已由对应提交和
+  `native_gates.rs` 维护；本节只使用 `native_symbols_smoke` 和
+  `native_non_owner_overlay_replay_survives_restart` 的断言作为 case 证据，不因为
+  `gate_green` 自动提升任何 case。
+- **E2E-20 / f3_kill_window / Zed smoke**：不在本次边界内，未映射。
+
+### 15.7 验证
+
+```sh
+jq empty docs/plans/tsgo-test-ledger.json
+cargo test -p wxml-lsp --test native_parity
+cargo fmt --all -- --check
+git diff --check
+```
+
+结果见 `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave5.md`。

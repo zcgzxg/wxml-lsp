@@ -163,19 +163,19 @@
       "remaining_blocked": 0
     },
     "migration_evidence": {
-      "assessed_at": "2026-11-19",
-      "implementation_head": "4371386753777596e351ab7016a57d20e0df1b67",
+      "assessed_at": "2026-11-20",
+      "implementation_head": "28c5e18eebfc1fe7c5df14e9a3655404185065a2",
       "rust_test_command": "cargo test -p wxml-lsp --lib; cargo test -p wxml-lsp --test native_parity; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored; cargo test -p wxml-delivery --test assets_lock_root",
       "rust_test_result": "wxml-lsp lib 789 passed/0 failed; native_parity 36 passed/0 failed/3 ignored; required native gates 3 passed/0 failed/36 filtered; assets_lock_root 2 passed/0 failed",
-      "assessed_cases": 119,
-      "exact": 36,
+      "assessed_cases": 145,
+      "exact": 44,
       "near_exact": 3,
-      "weaker": 57,
-      "structural": 6,
+      "weaker": 74,
+      "structural": 7,
       "blocked": 17,
-      "green_eligible": 36,
-      "promoted_to_green": 36,
-      "remaining_planned_without_evidence": 184,
+      "green_eligible": 44,
+      "promoted_to_green": 44,
+      "remaining_planned_without_evidence": 158,
       "by_partition": {
         "behaviors": {
           "routed_cases": 22,
@@ -191,13 +191,13 @@
         },
         "completion": {
           "routed_cases": 9,
-          "evidence_cases": 5,
-          "green_cases": 3,
-          "planned_evidence_cases": 2,
-          "unassessed_cases": 4,
-          "exact": 3,
+          "evidence_cases": 8,
+          "green_cases": 5,
+          "planned_evidence_cases": 3,
+          "unassessed_cases": 1,
+          "exact": 5,
           "near_exact": 0,
-          "weaker": 2,
+          "weaker": 3,
           "structural": 0,
           "blocked": 0
         },
@@ -228,14 +228,14 @@
         "events": {
           "routed_cases": 24,
           "evidence_cases": 21,
-          "green_cases": 9,
-          "planned_evidence_cases": 12,
+          "green_cases": 10,
+          "planned_evidence_cases": 11,
           "unassessed_cases": 3,
-          "exact": 9,
+          "exact": 10,
           "near_exact": 0,
           "weaker": 10,
           "structural": 0,
-          "blocked": 2
+          "blocked": 1
         },
         "guards_js": {
           "routed_cases": 25,
@@ -275,14 +275,14 @@
         },
         "mapping_utf16": {
           "routed_cases": 21,
-          "evidence_cases": 14,
+          "evidence_cases": 15,
           "green_cases": 6,
-          "planned_evidence_cases": 8,
-          "unassessed_cases": 7,
+          "planned_evidence_cases": 9,
+          "unassessed_cases": 6,
           "exact": 6,
           "near_exact": 0,
           "weaker": 8,
-          "structural": 0,
+          "structural": 1,
           "blocked": 0
         },
         "messages_evidence": {
@@ -311,13 +311,13 @@
         },
         "project_overlay": {
           "routed_cases": 20,
-          "evidence_cases": 3,
+          "evidence_cases": 6,
           "green_cases": 0,
-          "planned_evidence_cases": 3,
-          "unassessed_cases": 17,
+          "planned_evidence_cases": 6,
+          "unassessed_cases": 14,
           "exact": 0,
           "near_exact": 0,
-          "weaker": 3,
+          "weaker": 6,
           "structural": 0,
           "blocked": 0
         },
@@ -359,30 +359,30 @@
         },
         "symbols_edits": {
           "routed_cases": 21,
-          "evidence_cases": 0,
-          "green_cases": 0,
-          "planned_evidence_cases": 0,
-          "unassessed_cases": 21,
-          "exact": 0,
+          "evidence_cases": 19,
+          "green_cases": 5,
+          "planned_evidence_cases": 14,
+          "unassessed_cases": 2,
+          "exact": 5,
           "near_exact": 0,
-          "weaker": 0,
+          "weaker": 13,
           "structural": 0,
-          "blocked": 0
+          "blocked": 1
         }
       },
       "rust_unit_test_command": "cargo test -p wxml-backend-tsgo --lib",
       "rust_unit_test_result": "wxml-lsp lib 789 passed, 0 failed, 0 ignored",
       "near_exact_recommendations": 3,
       "statuses": {
-        "planned": 267,
-        "green": 36,
+        "planned": 259,
+        "green": 44,
         "retired-with-decision": 36
       },
       "status_policy": "Only parity=exact cases are green. near_exact, weaker, structural and blocked cases stay planned with status_recommendation recorded; no empty evidence is accepted."
     },
     "statuses": {
-      "planned": 267,
-      "green": 36,
+      "planned": 259,
+      "green": 44,
       "retired-with-decision": 36
     }
   },
@@ -4719,7 +4719,33 @@
       "status": "planned",
       "capabilities": [
         "completion"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPLETION-0078",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "814ca5e8de1a3845b5890235a6dd51b1709ae6de",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Trailing-dot and unclosed-member completion tests return name/age and exact replace ranges, but the native result is Partial while the TS case expects Supported; kept weaker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 4452,
+            "test": "trailing_dot_completion_mounts_a_synthetic_query_and_keeps_the_range",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::trailing_dot_completion_mounts_a_synthetic_query_and_keeps_the_range",
+            "note": "Asserts name/age member labels and exact prefix range, but returns Partial rather than TS Supported."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 4276,
+            "test": "completion_in_an_unclosed_expression_completes_the_typed_prefix",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::completion_in_an_unclosed_expression_completes_the_typed_prefix",
+            "note": "Asserts the typed member completion and empty prefix range, but returns Partial rather than TS Supported."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPLETION-0104",
@@ -4852,13 +4878,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "completion"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-COMPLETION-0127",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "814ca5e8de1a3845b5890235a6dd51b1709ae6de",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Root completion with a typed CJK prefix returns only data-overlay roots, marks Supported and replaces exactly the typed prefix; this matches the TS case root labels and prefix replacement, with no native session started.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 4356,
+            "test": "root_completion_with_a_cjk_prefix_replaces_only_the_prefix",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::root_completion_with_a_cjk_prefix_replaces_only_the_prefix",
+            "note": "Adapter root completion for a CJK prefix asserts the exact item list, the prefix replace range and zero native session starts."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPLETION-0153",
@@ -4909,11 +4954,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-COMPLETION-0153",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "814ca5e8de1a3845b5890235a6dd51b1709ae6de",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Empty mustache root completion returns the data-overlay root list, marks Supported and uses a zero-width replace at the cursor; this matches the TS empty-mustache root-key assertion.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 4315,
+            "test": "root_completion_uses_the_script_overlay_without_a_native_session",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::root_completion_uses_the_script_overlay_without_a_native_session",
+            "note": "Adapter empty-mustache completion asserts the exact root label, Supported status, zero-width replace and no native session."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPLETION-0175",
@@ -5848,7 +5912,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "TS asserts hover types, documentation, empty diagnostics and a generated definition range; Rust asserts overlay facts only.",
+        "note": "TS asserts hover types, documentation, empty diagnostics and a generated definition range; Rust asserts overlay facts only. Wave 5 also records shadow_behavior_properties_use_the_synthesized_union; the remaining gap above is unchanged.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
@@ -5856,6 +5920,13 @@
             "test": "case_component_0357_inline_behavior_data_and_properties_join_the_overlay",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0357_inline_behavior_data_and_properties_join_the_overlay",
             "note": "TS asserts hover types, documentation, empty diagnostics and a generated definition range; Rust asserts overlay facts only."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_optional_types.rs",
+            "line": 269,
+            "test": "shadow_behavior_properties_use_the_synthesized_union",
+            "fully_qualified": "script_optional_types::shadow_behavior_properties_use_the_synthesized_union",
+            "note": "Asserts the inline Behavior optional-type union is synthesized into the shadow type text."
           }
         ]
       }
@@ -5927,7 +5998,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Rust asserts the own-data type and override flag; TS also asserts empty diagnostics.",
+        "note": "Rust asserts the own-data type and override flag; TS also asserts empty diagnostics. Wave 5 also records own_property_overrides_a_behavior_property; the remaining gap above is unchanged.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
@@ -5935,6 +6006,13 @@
             "test": "case_component_0403_component_own_data_wins_over_a_behavior_field",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0403_component_own_data_wins_over_a_behavior_field",
             "note": "Rust asserts the own-data type and override flag; TS also asserts empty diagnostics."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_optional_types.rs",
+            "line": 176,
+            "test": "own_property_overrides_a_behavior_property",
+            "fully_qualified": "script_optional_types::own_property_overrides_a_behavior_property",
+            "note": "Asserts the component own property type wins and is flagged as an own override."
           }
         ]
       }
@@ -6013,7 +6091,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Rust asserts the types and source paths; TS also asserts empty diagnostics and generated definition kind/fileId.",
+        "note": "Rust asserts the types and source paths; TS also asserts empty diagnostics and generated definition kind/fileId. Wave 5 also records imported_behavior_property_optional_types_resolve_across_files; the remaining gap above is unchanged.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
@@ -6021,6 +6099,13 @@
             "test": "case_component_0416_imported_default_export_contributes_data_and_properties",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0416_imported_default_export_contributes_data_and_properties",
             "note": "Rust asserts the types and source paths; TS also asserts empty diagnostics and generated definition kind/fileId."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_optional_types.rs",
+            "line": 196,
+            "test": "imported_behavior_property_optional_types_resolve_across_files",
+            "fully_qualified": "script_optional_types::imported_behavior_property_optional_types_resolve_across_files",
+            "note": "Asserts an imported behavior property resolves its union type and declaring file path."
           }
         ]
       }
@@ -6793,7 +6878,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Rust asserts Partial, incomplete data/properties and the non-object-literal problem; TS also asserts buildStatus partial and no 2339.",
+        "note": "Rust asserts Partial, incomplete data/properties and the non-object-literal problem; TS also asserts buildStatus partial and no 2339. Wave 5 also records dynamic_behavior_spread_stays_partial_and_does_not_fabricate_fields; the remaining gap above is unchanged.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_properties.rs",
@@ -6801,6 +6886,13 @@
             "test": "case_component_0607_non_literal_behavior_members_mark_the_overlay_partial",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_properties.rs::case_component_0607_non_literal_behavior_members_mark_the_overlay_partial",
             "note": "Rust asserts Partial, incomplete data/properties and the non-object-literal problem; TS also asserts buildStatus partial and no 2339."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_optional_types.rs",
+            "line": 221,
+            "test": "dynamic_behavior_spread_stays_partial_and_does_not_fabricate_fields",
+            "fully_qualified": "script_optional_types::dynamic_behavior_spread_stays_partial_and_does_not_fabricate_fields",
+            "note": "Asserts a dynamic behavior spread stays Partial without inventing property fields."
           }
         ]
       }
@@ -7885,7 +7977,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Rust checks skipped=0, Supported and definition presence; TS also checks fileId, exact range and signature.",
+        "note": "Rust checks skipped=0, Supported and definition presence; TS also checks fileId, exact range and signature. Wave 5 also records shorthand_function_and_arrow_handlers_expose_hover_facts; the remaining gap above is unchanged.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
@@ -7893,6 +7985,13 @@
             "test": "case_events_0093_component_methods_shorthand_and_arrow_property_resolve",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0093_component_methods_shorthand_and_arrow_property_resolve",
             "note": "Rust checks skipped=0, Supported and definition presence; TS also checks fileId, exact range and signature."
+          },
+          {
+            "path": "crates/wxml-lsp/src/semantics/event_definition.rs",
+            "line": 894,
+            "test": "shorthand_function_and_arrow_handlers_expose_hover_facts",
+            "fully_qualified": "wxml_lsp::semantics::event_definition::tests::shorthand_function_and_arrow_handlers_expose_hover_facts",
+            "note": "Asserts Page shorthand, function, arrow and async handlers expose hover facts; component arrow coverage remains missing."
           }
         ]
       }
@@ -7950,29 +8049,29 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "definition"
       ],
       "migration_evidence": {
         "case_id": "TS-EVENTS-0108",
-        "assessed_at": "2026-11-18",
-        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
-        "parity": "blocked",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "TS asserts the full template event chain; Rust classifies the seven binding forms and rejects malformed attributes only.",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "322036205d3e4394fe5eaae851a4f76ff2c0335a",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The event-hover test walks the seven TS binding forms plus bind:my-event, asserts Supported for each, and maps the handler to the exact declaration token and file; the TS case asserts the same forms, status and exact definition range.",
         "rust_tests": [
           {
-            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
-            "line": 131,
-            "test": "case_events_0108_only_binding_forms_are_classified",
-            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0108_only_binding_forms_are_classified",
-            "note": "TS asserts the full template event chain; Rust classifies the seven binding forms and rejects malformed attributes only."
+            "path": "crates/wxml-lsp/src/semantics/event_definition.rs",
+            "line": 857,
+            "test": "every_event_binding_form_hovers_the_exact_handler_token",
+            "fully_qualified": "wxml_lsp::semantics::event_definition::tests::every_event_binding_form_hovers_the_exact_handler_token",
+            "note": "Covers seven binding forms plus bind:my-event and an unquoted value; each resolves Supported with an exact declaration token and file location."
           }
         ]
       }
@@ -8214,7 +8313,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Rust checks Partial on both handlers and no diagnostics; TS also asserts the multiple-Page reason and exact definition start.",
+        "note": "Rust checks Partial on both handlers and no diagnostics; TS also asserts the multiple-Page reason and exact definition start. Wave 5 also records ambiguous_or_nested_registrations_never_report_missing, multiple_top_level_registrations_stay_partial_and_empty; the remaining gap above is unchanged.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
@@ -8222,6 +8321,20 @@
             "test": "case_events_0162_multiple_page_registrations_are_partial_and_use_the_first",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0162_multiple_page_registrations_are_partial_and_use_the_first",
             "note": "Rust checks Partial on both handlers and no diagnostics; TS also asserts the multiple-Page reason and exact definition start."
+          },
+          {
+            "path": "crates/wxml-lsp/src/semantics/event_diagnostics.rs",
+            "line": 524,
+            "test": "ambiguous_or_nested_registrations_never_report_missing",
+            "fully_qualified": "wxml_lsp::semantics::event_diagnostics::tests::ambiguous_or_nested_registrations_never_report_missing",
+            "note": "Asserts multiple/nested registrations keep missing handlers unproven and report Partial."
+          },
+          {
+            "path": "crates/wxml-lsp/src/semantics/event_definition.rs",
+            "line": 712,
+            "test": "multiple_top_level_registrations_stay_partial_and_empty",
+            "fully_qualified": "wxml_lsp::semantics::event_definition::tests::multiple_top_level_registrations_stay_partial_and_empty",
+            "note": "Asserts multiple top-level registrations stay Partial with no definition."
           }
         ]
       }
@@ -8292,7 +8405,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Rust checks Partial and no diagnostic for two non-literal registrations; TS also asserts the registration reason text.",
+        "note": "Rust checks Partial and no diagnostic for two non-literal registrations; TS also asserts the registration reason text. Wave 5 also records a_non_literal_registration_never_reports_missing, a_non_literal_page_registration_is_unsupported_and_starts_no_session; the remaining gap above is unchanged.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
@@ -8300,6 +8413,20 @@
             "test": "case_events_0176_non_literal_registration_is_partial_without_a_diagnostic",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0176_non_literal_registration_is_partial_without_a_diagnostic",
             "note": "Rust checks Partial and no diagnostic for two non-literal registrations; TS also asserts the registration reason text."
+          },
+          {
+            "path": "crates/wxml-lsp/src/semantics/event_diagnostics.rs",
+            "line": 540,
+            "test": "a_non_literal_registration_never_reports_missing",
+            "fully_qualified": "wxml_lsp::semantics::event_diagnostics::tests::a_non_literal_registration_never_reports_missing",
+            "note": "Asserts a non-literal registration produces no missing-handler diagnostic and is not Supported."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 3807,
+            "test": "a_non_literal_page_registration_is_unsupported_and_starts_no_session",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::a_non_literal_page_registration_is_unsupported_and_starts_no_session",
+            "note": "Asserts the non-literal owner is Unsupported across diagnostics/hover/definition/completion/symbols and starts no session."
           }
         ]
       }
@@ -8374,7 +8501,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "TS asserts the behavior fileId/signature/docs from a stub view; Rust resolves inline behavior script facts only.",
+        "note": "Wave 5 now resolves inline and imported behavior handler locations, but TS also asserts the behavior signature and documentation from the stub view; those remain unasserted, so the case stays blocked.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
@@ -8382,6 +8509,20 @@
             "test": "case_events_0188_only_inline_behavior_methods_resolve",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0188_only_inline_behavior_methods_resolve",
             "note": "TS asserts the behavior fileId/signature/docs from a stub view; Rust resolves inline behavior script facts only."
+          },
+          {
+            "path": "crates/wxml-lsp/src/semantics/event_diagnostics.rs",
+            "line": 383,
+            "test": "component_behavior_and_alias_handlers_are_known",
+            "fully_qualified": "wxml_lsp::semantics::event_diagnostics::tests::component_behavior_and_alias_handlers_are_known",
+            "note": "Asserts inline Behavior and registrar-alias handlers are known and produce no missing diagnostic."
+          },
+          {
+            "path": "crates/wxml-lsp/src/semantics/event_definition.rs",
+            "line": 910,
+            "test": "component_behavior_alias_and_top_level_handlers_expose_hover_facts",
+            "fully_qualified": "wxml_lsp::semantics::event_definition::tests::component_behavior_alias_and_top_level_handlers_expose_hover_facts",
+            "note": "Asserts inline/imported Behavior handlers resolve to the exact declaring token and file."
           }
         ]
       }
@@ -8454,7 +8595,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Rust checks Partial/no diagnostic/no definition; TS also asserts the behavior-methods reason.",
+        "note": "Rust checks Partial/no diagnostic/no definition; TS also asserts the behavior-methods reason. Wave 5 also records an_unresolved_behavior_never_proves_a_handler_missing; the remaining gap above is unchanged.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
@@ -8462,6 +8603,13 @@
             "test": "case_events_0236_unresolved_behavior_graph_keeps_missing_handlers_unproven",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0236_unresolved_behavior_graph_keeps_missing_handlers_unproven",
             "note": "Rust checks Partial/no diagnostic/no definition; TS also asserts the behavior-methods reason."
+          },
+          {
+            "path": "crates/wxml-lsp/src/semantics/event_diagnostics.rs",
+            "line": 466,
+            "test": "an_unresolved_behavior_never_proves_a_handler_missing",
+            "fully_qualified": "wxml_lsp::semantics::event_diagnostics::tests::an_unresolved_behavior_never_proves_a_handler_missing",
+            "note": "Asserts an unresolved behavior graph keeps missing handlers unproven and reports Partial."
           }
         ]
       }
@@ -8611,7 +8759,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Rust checks the known definition and no diagnostics; TS also asserts Partial on both handlers.",
+        "note": "Rust checks the known definition and no diagnostics; TS also asserts Partial on both handlers. Wave 5 also records ambiguous_or_nested_registrations_never_report_missing, a_non_literal_registration_never_reports_missing; the remaining gap above is unchanged.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
@@ -8619,6 +8767,20 @@
             "test": "case_events_0268_literal_registration_is_partial_when_a_non_literal_one_exists",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0268_literal_registration_is_partial_when_a_non_literal_one_exists",
             "note": "Rust checks the known definition and no diagnostics; TS also asserts Partial on both handlers."
+          },
+          {
+            "path": "crates/wxml-lsp/src/semantics/event_diagnostics.rs",
+            "line": 524,
+            "test": "ambiguous_or_nested_registrations_never_report_missing",
+            "fully_qualified": "wxml_lsp::semantics::event_diagnostics::tests::ambiguous_or_nested_registrations_never_report_missing",
+            "note": "Asserts ambiguous registrations keep missing handlers unproven and report Partial."
+          },
+          {
+            "path": "crates/wxml-lsp/src/semantics/event_diagnostics.rs",
+            "line": 540,
+            "test": "a_non_literal_registration_never_reports_missing",
+            "fully_qualified": "wxml_lsp::semantics::event_diagnostics::tests::a_non_literal_registration_never_reports_missing",
+            "note": "Asserts a non-literal registration produces no missing-handler diagnostic."
           }
         ]
       }
@@ -8696,7 +8858,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Rust checks known definitions and no diagnostics for page/component spreads; TS also asserts spread reasons, Partial states and exact starts.",
+        "note": "Rust checks known definitions and no diagnostics for page/component spreads; TS also asserts spread reasons, Partial states and exact starts. Wave 5 also records spread_and_computed_members_keep_missing_handlers_unproven, a_literal_method_survives_an_incomplete_table; the remaining gap above is unchanged.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
@@ -8704,6 +8866,20 @@
             "test": "case_events_0280_spread_in_options_or_methods_is_partial_but_known_handlers_resolve",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0280_spread_in_options_or_methods_is_partial_but_known_handlers_resolve",
             "note": "Rust checks known definitions and no diagnostics for page/component spreads; TS also asserts spread reasons, Partial states and exact starts."
+          },
+          {
+            "path": "crates/wxml-lsp/src/semantics/event_diagnostics.rs",
+            "line": 479,
+            "test": "spread_and_computed_members_keep_missing_handlers_unproven",
+            "fully_qualified": "wxml_lsp::semantics::event_diagnostics::tests::spread_and_computed_members_keep_missing_handlers_unproven",
+            "note": "Asserts option/member spread keeps missing handlers unproven and reports Partial."
+          },
+          {
+            "path": "crates/wxml-lsp/src/semantics/event_definition.rs",
+            "line": 1011,
+            "test": "a_literal_method_survives_an_incomplete_table",
+            "fully_qualified": "wxml_lsp::semantics::event_definition::tests::a_literal_method_survives_an_incomplete_table",
+            "note": "Asserts a literal method still exposes hover facts when the table is Partial."
           }
         ]
       }
@@ -8777,7 +8953,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Rust checks Supported, error severity and the component message; TS also asserts an absent definition.",
+        "note": "Rust checks Supported, error severity and the component message; TS also asserts an absent definition. Wave 5 also records a_component_without_methods_reports_a_real_missing_handler; the remaining gap above is unchanged.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
@@ -8785,6 +8961,13 @@
             "test": "case_events_0301_component_without_methods_reports_a_real_missing_handler",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0301_component_without_methods_reports_a_real_missing_handler",
             "note": "Rust checks Supported, error severity and the component message; TS also asserts an absent definition."
+          },
+          {
+            "path": "crates/wxml-lsp/src/semantics/event_diagnostics.rs",
+            "line": 452,
+            "test": "a_component_without_methods_reports_a_real_missing_handler",
+            "fully_qualified": "wxml_lsp::semantics::event_diagnostics::tests::a_component_without_methods_reports_a_real_missing_handler",
+            "note": "Asserts a component without methods reports one exact missing-handler error at the handler token."
           }
         ]
       }
@@ -9019,7 +9202,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Rust checks the first handler Partial/no diagnostic and the second no diagnostic/no definition; TS also asserts the second Partial and 'not a literal function' reason.",
+        "note": "Rust checks the first handler Partial/no diagnostic and the second no diagnostic/no definition; TS also asserts the second Partial and 'not a literal function' reason. Wave 5 also records an_opaque_named_handler_is_not_reported, dynamic_empty_member_and_mustache_values_are_ignored; the remaining gap above is unchanged.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
@@ -9027,6 +9210,20 @@
             "test": "case_events_0339_non_identifier_and_non_literal_handlers_never_become_diagnostics",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0339_non_identifier_and_non_literal_handlers_never_become_diagnostics",
             "note": "Rust checks the first handler Partial/no diagnostic and the second no diagnostic/no definition; TS also asserts the second Partial and 'not a literal function' reason."
+          },
+          {
+            "path": "crates/wxml-lsp/src/semantics/event_diagnostics.rs",
+            "line": 512,
+            "test": "an_opaque_named_handler_is_not_reported",
+            "fully_qualified": "wxml_lsp::semantics::event_diagnostics::tests::an_opaque_named_handler_is_not_reported",
+            "note": "Asserts an opaque named handler produces no diagnostic and reports Partial."
+          },
+          {
+            "path": "crates/wxml-lsp/src/semantics/event_diagnostics.rs",
+            "line": 554,
+            "test": "dynamic_empty_member_and_mustache_values_are_ignored",
+            "fully_qualified": "wxml_lsp::semantics::event_diagnostics::tests::dynamic_empty_member_and_mustache_values_are_ignored",
+            "note": "Asserts dynamic/empty/member values are ignored without diagnostics."
           }
         ]
       }
@@ -20409,7 +20606,26 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-OVERLAY-0023",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "375cde24a61141f2b122bdf6ca9c23fbfc0fb1a6",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The native replay test proves an unsaved model type reaches two templates, but it does not assert the JSDoc replacement and uses a literal type; kept weaker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs",
+            "line": 511,
+            "test": "native_non_owner_overlay_replay_survives_restart",
+            "fully_qualified": "native_engine_real::native_non_owner_overlay_replay_survives_restart",
+            "note": "Required-native LSP test asserts an unsaved model type reaches two templates and is restored on close."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-OVERLAY-0036",
@@ -20525,7 +20741,26 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-OVERLAY-0047",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "375cde24a61141f2b122bdf6ca9c23fbfc0fb1a6",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Closing the unsaved overlay restores the disk string in the native replay test, but only in the opt-in ignored job and with a different fixture than the TS case; kept weaker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs",
+            "line": 511,
+            "test": "native_non_owner_overlay_replay_survives_restart",
+            "fully_qualified": "native_engine_real::native_non_owner_overlay_replay_survives_restart",
+            "note": "Required-native LSP test closes the model overlay and asserts the disk string declaration is restored."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-OVERLAY-0055",
@@ -20589,7 +20824,26 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-OVERLAY-0055",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "375cde24a61141f2b122bdf6ca9c23fbfc0fb1a6",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "An imported model overlay propagates across views and a restart, but the TS number/JSDoc overlay and status assertions are not identical; kept weaker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs",
+            "line": 511,
+            "test": "native_non_owner_overlay_replay_survives_restart",
+            "fully_qualified": "native_engine_real::native_non_owner_overlay_replay_survives_restart",
+            "note": "Required-native LSP test propagates a non-owner imported-model overlay across two views and a restart."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-OVERLAY-0076",
@@ -20721,7 +20975,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "The native gate measures 200-sample p95 type/diagnostics/completion/queued-cancel budgets and snapshot-cycle growth, but it does not assert the TS cold-start <8000 ms, hover p50 <500 ms or wide-40 workloads, and it is opt-in (returns without TSGO_BIN). The serial TS perf test remains the authoritative 8000 ms gate.",
+        "note": "The native gate measures 200-sample p95 type/diagnostics/completion/queued-cancel budgets and snapshot-cycle growth, but it does not assert the TS cold-start <8000 ms, hover p50 <500 ms or wide-40 workloads, and it is opt-in (returns without TSGO_BIN). The serial TS perf test remains the authoritative 8000 ms gate. Wave 5 also records native_q2_performance_benchmark; the remaining gap above is unchanged.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/perf_budget.rs",
@@ -20729,6 +20983,13 @@
             "test": "real_engine_meets_p5_performance_budgets",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/perf_budget.rs::real_engine_meets_p5_performance_budgets",
             "note": "Asserts p95 budgets, probe non-emptiness, 10 open/edit/release cycles and clean shutdown only when TSGO_BIN is set."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs",
+            "line": 3131,
+            "test": "native_q2_performance_benchmark",
+            "fully_qualified": "native_engine_real::native_q2_performance_benchmark",
+            "note": "Native release benchmark measures 200-sample p50/p95/p99 and RSS with different budgets than the TS 8000 ms cold-start test."
           }
         ]
       }
@@ -25012,7 +25273,40 @@
         "diagnostics",
         "hover",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0413",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "393ff0d16b93d900c7be665b44f543fab5419fd0",
+        "parity": "structural",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Guard-range layout tests map wrapper and value spans back to exact original bytes, but they never run hover or diagnostics through the checker; only the layout structure is asserted, so this stays structural.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_guard_ranges.rs",
+            "line": 112,
+            "test": "guard_wrapper_copy_maps_through_the_value_mount",
+            "fully_qualified": "shadow_guard_ranges::guard_wrapper_copy_maps_through_the_value_mount",
+            "note": "Asserts the wrapper copy and standalone condition map to the same original wx:if bytes."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_guard_ranges.rs",
+            "line": 196,
+            "test": "elif_and_else_chains_map_every_condition_copy",
+            "fully_qualified": "shadow_guard_ranges::elif_and_else_chains_map_every_condition_copy",
+            "note": "Asserts if/elif/else wrapper conditions each map to their original bytes."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_guard_ranges.rs",
+            "line": 353,
+            "test": "bom_crlf_cjk_and_emoji_origins_keep_condition_ranges_exact",
+            "fully_qualified": "shadow_guard_ranges::bom_crlf_cjk_and_emoji_origins_keep_condition_ranges_exact",
+            "note": "Asserts BOM/CRLF/CJK/emoji condition ranges remain exact in the layout mapping."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SERVER-0094",
@@ -25642,11 +25936,37 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0061",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "375cde24a61141f2b122bdf6ca9c23fbfc0fb1a6",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The script-fact test asserts Supported/complete, the exact declaration and read byte starts, and the setData path and segment; the required-native symbols smoke additionally proves the exact declaration/read/setData byte locations and rename edits. Together they cover every TS assertion.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 68,
+            "test": "page_data_path_reads_references_and_setdata_segments",
+            "fully_qualified": "script_symbol_facts::page_data_path_reads_references_and_setdata_segments",
+            "note": "Asserts Supported/complete, exact declaration and read starts, and setData path/segment for the same Page data-path shape."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs",
+            "line": 2700,
+            "test": "native_symbols_smoke",
+            "fully_qualified": "native_engine_real::native_symbols_smoke",
+            "note": "Required-native LSP smoke asserts exact declaration, this.data read and setData segment locations plus the three rename edits."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0098",
@@ -25707,7 +26027,26 @@
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0098",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Root setData segment and data fields are asserted, but the exact root occurrence start/end and sibling field list from the TS case are not asserted; kept weaker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 209,
+            "test": "setdata_nested_objects_have_segment_tokens",
+            "fully_qualified": "script_symbol_facts::setdata_nested_objects_have_segment_tokens",
+            "note": "Asserts the root segment index and expected text, but not the exact occurrence start/end or sibling fields."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0116",
@@ -25773,7 +26112,33 @@
       "status": "planned",
       "capabilities": [
         "transport"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0116",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "blocked",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The existing-methods insertion is exact, but observerPath is not implemented and the component dataPath is Partial; the TS case expects complete=true plus an observerPath occurrence, so this stays blocked.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 108,
+            "test": "component_missing_handler_uses_existing_methods_without_wrapping",
+            "fully_qualified": "script_symbol_facts::component_missing_handler_uses_existing_methods_without_wrapping",
+            "note": "Asserts complete=true, onSave text without a methods wrapper, and the exact closing-brace offset."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 573,
+            "test": "component_observers_make_data_paths_partial",
+            "fully_qualified": "script_symbol_facts::component_observers_make_data_paths_partial",
+            "note": "Shows component observers still force Partial and do not publish observerPath occurrences."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0150",
@@ -25829,11 +26194,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0150",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The unit test asserts complete=true and a zero-width insertion containing methods: { and onSave(), positioned on the options closing brace; the TS case asserts the same insertion text for a component without methods.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 127,
+            "test": "component_missing_handler_wraps_a_new_methods_object",
+            "fully_qualified": "script_symbol_facts::component_missing_handler_wraps_a_new_methods_object",
+            "note": "Asserts complete=true, methods-wrapper and onSave text, and the exact options closing-brace offset."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0164",
@@ -25895,7 +26279,26 @@
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0164",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "A cross-file behavior declaration resolves with its file path, but the TS shared-data-object scenario and its exact declaration are not covered; kept weaker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 546,
+            "test": "behavior_data_is_visible_but_cross_file_complete_is_denied",
+            "fully_qualified": "script_symbol_facts::behavior_data_is_visible_but_cross_file_complete_is_denied",
+            "note": "Asserts a cross-file behavior declaration path and text, but denies complete and does not model shared data objects."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0204",
@@ -25953,7 +26356,40 @@
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0204",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Dynamic data and setData shapes are Partial with a reason across three tests, but no single test covers the exact TS fixture or the dynamic setData key with the same assertions; kept weaker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 318,
+            "test": "static_spread_resolves_and_dynamic_spread_is_partial",
+            "fully_qualified": "script_symbol_facts::static_spread_resolves_and_dynamic_spread_is_partial",
+            "note": "Asserts dynamic data spread is incomplete and Partial with no declaration."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 344,
+            "test": "dynamic_data_members_and_escaped_this_data_are_partial",
+            "fully_qualified": "script_symbol_facts::dynamic_data_members_and_escaped_this_data_are_partial",
+            "note": "Asserts computed data members and dynamic this.data access are Partial with a reason."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 370,
+            "test": "setdata_computed_keys_are_partial_but_literal_keys_remain",
+            "fully_qualified": "script_symbol_facts::setdata_computed_keys_are_partial_but_literal_keys_remain",
+            "note": "Asserts a computed setData key is Partial while the literal occurrence remains."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0215",
@@ -26005,11 +26441,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0215",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The unit test asserts complete=false and no insertion for both an opaque handler owner and a spread owner, matching the TS ambiguous-owner case that must not offer a missing-handler edit.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 480,
+            "test": "opaque_or_dynamic_owner_tables_never_get_an_insertion",
+            "fully_qualified": "script_symbol_facts::opaque_or_dynamic_owner_tables_never_get_an_insertion",
+            "note": "Asserts incomplete results with no declaration and no insertion for opaque and spread owner tables."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0226",
@@ -26062,13 +26517,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0226",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The unit test asserts a CJK declaration UTF-8 byte start/end (plus its UTF-16 start) after an emoji and CRLF line; this matches the TS case assertion that declaration offsets are UTF-8 bytes rather than UTF-16 indices.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 161,
+            "test": "alias_registration_and_cjk_emoji_ranges_are_exact",
+            "fully_qualified": "script_symbol_facts::alias_registration_and_cjk_emoji_ranges_are_exact",
+            "note": "Asserts complete=true and exact UTF-8 declaration start/end plus the UTF-16 start after CJK and emoji text."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0242",
@@ -26129,7 +26603,33 @@
       "status": "planned",
       "capabilities": [
         "version"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0242",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Malformed queries are rejected with Unsupported and empty outputs rather than the TS RequestError channel; the refusal semantics match, but the error representation differs, so this stays weaker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 614,
+            "test": "invalid_queries_are_unsupported_without_panicking",
+            "fully_qualified": "script_symbol_facts::invalid_queries_are_unsupported_without_panicking",
+            "note": "Asserts five malformed queries return Unsupported, incomplete and empty channel arrays without panicking."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 2424,
+            "test": "symbols_reject_a_subject_outside_the_prepared_view",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::symbols_reject_a_subject_outside_the_prepared_view",
+            "note": "Asserts a subject outside the view is Unsupported and starts no session."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0264",
@@ -26188,7 +26688,26 @@
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0264",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "A declaration and this-alias read are present, but the test is Partial because of computed access and does not assert the exact read range; kept weaker than the TS complete this.method case.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 525,
+            "test": "handler_alias_reads_are_published_but_computed_access_is_partial",
+            "fully_qualified": "script_symbol_facts::handler_alias_reads_are_published_but_computed_access_is_partial",
+            "note": "Asserts a declaration and this-alias read, but marks the result Partial and does not assert the exact read range."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0286",
@@ -26244,7 +26763,26 @@
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0286",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Shorthand destructuring is Partial with a reason and no fabricated occurrence, but the TS never-edited assertion is not exercised through the edit plan; kept weaker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 397,
+            "test": "aliases_destructuring_and_bare_setdata_are_partial",
+            "fully_qualified": "script_symbol_facts::aliases_destructuring_and_bare_setdata_are_partial",
+            "note": "Asserts destructuring and bare setData are incomplete with a destructuring/alias reason."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0299",
@@ -26353,11 +26891,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0312",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The other.setData branch asserts complete=false and zero occurrences, exactly matching the TS case that another receiver must not be edited or claimed complete; literal keys with a computed key remain pinned in the same test.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 370,
+            "test": "setdata_computed_keys_are_partial_but_literal_keys_remain",
+            "fully_qualified": "script_symbol_facts::setdata_computed_keys_are_partial_but_literal_keys_remain",
+            "note": "Asserts the other.setData receiver is incomplete with zero occurrences; also pins the literal setData occurrence alongside a computed key."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0324",
@@ -26414,7 +26971,33 @@
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0324",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Dynamic this.data access and dynamic spread are Partial with a reason, but the TS fixture rest/Object.keys shapes are not all covered; kept weaker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 344,
+            "test": "dynamic_data_members_and_escaped_this_data_are_partial",
+            "fully_qualified": "script_symbol_facts::dynamic_data_members_and_escaped_this_data_are_partial",
+            "note": "Asserts computed data-member access is Partial with a reason and publishes no read."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 318,
+            "test": "static_spread_resolves_and_dynamic_spread_is_partial",
+            "fully_qualified": "script_symbol_facts::static_spread_resolves_and_dynamic_spread_is_partial",
+            "note": "Asserts dynamic data spread is incomplete and Partial with no declaration."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0336",
@@ -26471,7 +27054,26 @@
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0336",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "sourceComplete=false is Partial with a reason and starts no session, but the test does not assert an empty fields array as the TS case does; kept weaker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 2446,
+            "test": "symbols_with_an_incomplete_source_are_partial",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::symbols_with_an_incomplete_source_are_partial",
+            "note": "Asserts incomplete source is Partial with a reason and no native session, but not an empty DataRoots field list."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0346",
@@ -26532,7 +27134,26 @@
       "status": "planned",
       "capabilities": [
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0346",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The existing-methods insertion is exact, but the TS case also applies the edit and parses it to prove no TS1005; the Rust test does not parse the applied text, so it stays weaker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 108,
+            "test": "component_missing_handler_uses_existing_methods_without_wrapping",
+            "fully_qualified": "script_symbol_facts::component_missing_handler_uses_existing_methods_without_wrapping",
+            "note": "Asserts the insertion text and offset inside an existing methods object, but does not reparse the applied text."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0367",
@@ -26593,7 +27214,33 @@
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0367",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The reserved-name test asserts data, property and method names are reserved for DataRoots, but not both TS dataPath queries; kept weaker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 504,
+            "test": "component_data_roots_reserve_data_properties_and_methods",
+            "fully_qualified": "script_symbol_facts::component_data_roots_reserve_data_properties_and_methods",
+            "note": "Asserts data and property fields plus method names are reserved for a component DataRoots query."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 242,
+            "test": "page_reserved_names_do_not_include_data_fields",
+            "fully_qualified": "script_symbol_facts::page_reserved_names_do_not_include_data_fields",
+            "note": "Asserts page method names are reserved while data fields remain available roots."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0391",
@@ -26650,7 +27297,26 @@
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0391",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Another-script setData makes the result incomplete with an another-script reason, but the TS status and zero-occurrence assertions are missing; kept weaker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 438,
+            "test": "another_script_setdata_blocks_complete",
+            "fully_qualified": "script_symbol_facts::another_script_setdata_blocks_complete",
+            "note": "Asserts an arbitrary other-script setData receiver makes the result incomplete with an another-script reason."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0406",
@@ -26707,7 +27373,26 @@
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0406",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "This alias and destructuring are Partial with an alias/destructuring reason, but dynamic access through the alias is not asserted as in the TS case; kept weaker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 397,
+            "test": "aliases_destructuring_and_bare_setdata_are_partial",
+            "fully_qualified": "script_symbol_facts::aliases_destructuring_and_bare_setdata_are_partial",
+            "note": "Asserts this aliases, destructuring and bare setData are Partial with an alias/destructuring reason."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0425",
@@ -26823,7 +27508,26 @@
       "oracle_type": "assertion",
       "comparison_type": "safety_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SYMBOLS-0439",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "304aa2046e4d0741e1ddcb03b6142974be7df3f9",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The nested setData segment and text are asserted, but the exact start/end of the nested occurrence are not; kept weaker than the TS exact nested-segment case.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_symbol_facts.rs",
+            "line": 209,
+            "test": "setdata_nested_objects_have_segment_tokens",
+            "fully_qualified": "script_symbol_facts::setdata_nested_objects_have_segment_tokens",
+            "note": "Asserts the nested segment index and expected text, but not the exact nested occurrence start/end."
+          }
+        ]
+      }
     }
   ],
   "integrator_decision": {

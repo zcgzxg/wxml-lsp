@@ -6,9 +6,18 @@ Base HEAD: `60f4c6c` (ledger evidence head: `6ba407b`)
 Scope: docs-only backlog. No production, Cargo, delivery, ledger, ADR, or commit changes.
 No case is marked `green`, `reviewed`, or `closed` by this plan.
 
+> **2026-11-20 后续状态（wave-5 回填）**：8 个 exact 用例已提升为 `green`
+> （`TS-COMPLETION-0127`、`TS-COMPLETION-0153`、`TS-EVENTS-0108`、
+> `TS-SYMBOLS-0061/0150/0215/0226/0312`）。其中 7 个由无证据转为 exact，
+> `TS-EVENTS-0108` 由 blocked 证据转为 exact；另新增 17 weaker、1 blocked、
+> 1 structural 证据，并对 14 个既有证据用例追加 wave-5 测试。当前台账为
+> 44 `green` / 259 `planned` / 36 retired，其中 158 个 planned 无证据。本文下面的
+> 270/189 表是计划制定时的基线快照，不随回填改写；见
+> `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave5.md`。
+>
 > **2026-11-19 后续状态（P6 回填）**：3 个 exact 用例已提升为 `green`
 > （`TS-COMPLETION-0175`、`TS-COMPLETION-0193`、`TS-PROBES-0169`），另有
-> `TS-META-0009`、`TS-SERVER-0237` 登记 weaker 证据。当前台账为 36 `green` /
+> `TS-META-0009`、`TS-SERVER-0237` 登记 weaker 证据。P6 回填后的台账为 36 `green` /
 > 267 `planned` / 36 retired，其中 184 个 planned 无证据。本文下面的 270/189
 > 表是计划制定时的基线快照，不随回填改写；见
 > `docs/evidence/2026-11-19-tsgo-ledger-backfill.md`。

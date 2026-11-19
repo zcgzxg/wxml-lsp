@@ -19,11 +19,11 @@
 | `split` | 11 |
 | `obsolete` | 36（Candidate B/symbol-bridge 内部布局） |
 | `blocked-decision` | 0 |
-| `green` | 36（真实 Rust 测试证据，未独立 review） |
-| `planned` | 267 |
+| `green` | 44（真实 Rust 测试证据，未独立 review） |
+| `planned` | 259 |
 | `retired-with-decision` | 36 |
 
-计数在 P6 回填（2026-11-19）后为 `green` 36 / `planned` 267；P5/P5.1 的历史快照见台账 §14。
+计数在 wave-5 回填（2026-11-20）后为 `green` 44 / `planned` 259；P6 回填（2026-11-19）后为 36/267，P5/P5.1 的历史快照见台账 §14。
 
 `obsolete` 不等于“未迁移的通过项”。36 个 Candidate B 用例只作为历史 A/B 证据保留；生产 LSP
 不传 `layoutId`，原位 shadow 用例仍全部强制。`TS-META-0027` 由 F0 引擎/类型资产 pin 测试替代。
