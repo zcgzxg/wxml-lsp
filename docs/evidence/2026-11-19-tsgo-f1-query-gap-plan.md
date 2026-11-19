@@ -4,8 +4,9 @@
 - HEAD：`576c231`（`docs(plan): record native hover gate increment`）
 - 审计日期：2026-11-19
 - 范围：已提交的 definition 端到端、native hover evidence + adapter、completion 基础、document symbols 接入后的 F1 查询缺口；pinned TypeScript `7.1.0-beta` 的实际 API；现有 native session/query 与 LSP adapter。
-- 边界：只读审计，只新增本文；未修改生产代码、测试、Cargo、合同、ADR、计划正文；未提交。工作树中未提交的 document-symbol scheduler/HIGH 与 asset-lock L1 不属于本文范围，本文不修改、不评估它们。
+- 边界：只读审计，只改本文这一篇文档；未修改生产代码、测试、Cargo、合同、ADR、计划正文。初版提交 `462848a`，本细化版待提交。工作树中未提交的 document-symbol scheduler/HIGH 与 asset-lock L1 不属于本文范围，本文不修改、不评估它们。
 - 引用约定：以下路径均从 worktree 根开始，行号以 HEAD `576c231` 为准；`backend_tsgo/mod.rs`、`backend_tsgo/mapping.rs` 等工作树有并行改动，本文引用的是 HEAD 版本。路径前保留空白符，便于 VS Code 跳转。
+- 写入期间并行会话又提交了 document-symbol/asset-lock 等切片（HEAD 已前进），本文不评估这些提交；若当前工作树行号与本文不同，以 `git show 576c231:<path>` 为准。
 - 结论先行：**F1/P6/G5 均未关闭。** 本文列出的查询层工作最多把若干缺口从“静默缺失”变成“可验证的 Partial/Unsupported”，不等于 F1 验收，也不等于默认后端切换。
 
 ---
@@ -109,6 +110,8 @@
 | 逐项 auto-import origin | 无 | 否 | **BLOCKED**；`sortText`/`symbol`/模块名都不足以证明“未导入” |
 | 可执行 import edit | 无 `textEdit`/`data`/import specifier | C0 也没有 `additionalTextEdits` | **BLOCKED** |
 | `isIncomplete` | 有 | 映射成 status gap，但 LSP 输出丢成 false | 可修；是 auto-import 的前置真实性修复 |
+
+`insertText` 的保守规则：只有它与 label 不同、且不含 snippet 标记（`$1`、`${`）时才使用；否则回退 label 并把结果标 `Partial`（reason: insertText format unknown）。不要猜 `InsertTextFormat::Snippet`，也不要把 snippet 文本当 plain text 插入。
 
 ### 1.4 可选方案
 
@@ -231,6 +234,7 @@
 - keyword/literal 条目没有 symbol；
 - alias/target 的文档可能不同；auto-import 条目没有稳定 origin；
 - 文档是“symbol 的文档”，不是“该补全条目在编辑器详情面板中应显示的内容”；
+- P1-A 的等价路径表把“条目内 symbol + getTypeOfSymbol/getDocumentationComment”列为 PARTIAL 组合，但这只是实验路径，不是原生 completion details： /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/docs/evidence/2026-11-17-tsgo-native-api-spike.md:418
 - 合同 §9.7 明确禁止这种冒充；
 - `getSymbolAtPosition` 只能取光标处 symbol，不能给列表中的每个候选取文档。
 
@@ -468,9 +472,9 @@
    - 去重键改为 `(owner_file_identity, code, start, end, message)`。
 4. 文件身份：
    - `RequestPlan.file_id(path)` 已有绝对路径 -> `FileId` 映射：
-     /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/src/backend_tsgo/input.rs:130
+     /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/src/backend_tsgo/input.rs:131
    - `PreparedView.target.script_file` 是 owning script 的 `FileId`：
-     /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/src/project_host.rs:201
+     /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/src/project_host.rs:202
    - 用 VFS 绝对路径比较 `fileName`，不要直接发布 engine 路径。
 5. 不在 WXML 结果中伪造 script URI；script 诊断暂时只以 `Partial` 警告体现“被排除”。
 
@@ -555,6 +559,8 @@
 2. **Gate 1 的 WXML 子集**：用 `EditPlan` + `recheck` 证明 caller/component template 属性编辑可应用、可 parse；script declaration 部分保持 BLOCKED，直到 native script symbols 接入。
 3. **Gate 3 的拒绝路径**：先覆盖 property→data、component data→property、另一脚本 nested `setData` 等 WXML 可判定的冲突；`this.data[key]`/动态别名必须有 native script 角色事实，否则保持 BLOCKED。
 
+**三个 gate 的二进制结论：** 只有 `assert_native_edit_reparses_and_typechecks` 能完整先解；`native_component_property_edit_applies_and_reparses` 和 `native_rejects_cross_namespace_and_dynamic_edits` 只能先解各自子集，不能把 `BlockedGate` 标绿。Gate 3 的前置是 native script symbols/roles，**不是** native rename API；正向 rename 才需要后者，而且当前连完整性 flag 都没有。
+
 **不要声称 rename 可实现。** native 没有 rename API，也没有完整性 flag；上述 gate 只证明“编辑安全/拒绝”，不证明“正向 rename 与旧行为等价”。
 
 ### 6.4 最小文件范围与测试
@@ -614,6 +620,8 @@
 - F1：B-06（hover display parts/逐 overload）、B-07（completion 详情/auto-import 参数）、B-08（外部 `.d.ts` definition）、B-09（rename 完整性）仍未关闭；F1-21/22/23 仍是 planned。
 - P6：默认后端仍是 Node，native 只是 opt-in；P6-3/P6-4 未完成。
 - G5：parity 的 `MIGRATED_CASES` 仍为空，不能声称 G5 关闭。
+  /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/docs/evidence/README.md:120
+  /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/tests/native_parity/symbols_edits.rs:15
 - 本文不修改默认后端、不删除 Node、不提交、不关闭任何 gate。
 
 ---
