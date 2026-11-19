@@ -1,8 +1,8 @@
 # Rust + tsgo 测试迁移账本（P1-B + P3-S/P4-B + P5/P5.1 状态回填）
 
-生成时间：2026-11-17T23:08:57+08:00；P3-S/P4-B 证据与 P5 状态回填：2026-11-18；P5.1 适配器/定义/性能回填：2026-11-19；wave-8 断言补齐回填：2026-11-20
+生成时间：2026-11-17T23:08:57+08:00；P3-S/P4-B 证据与 P5 状态回填：2026-11-18；P5.1 适配器/定义/性能回填：2026-11-19；wave-8 断言补齐回填：2026-11-20；wave-9 台账回填：2026-11-20
 
-状态：**green 55 / planned 248 / retired-with-decision 36**（P5 将 32 个 exact-parity 用例提升为 `green`；P5.1 将 1 个 adapter exact 用例提升为 `green`；P6 回填再提升 3 个 exact 用例并登记 2 个 weaker 证据；wave-5 回填再提升 8 个 exact 用例并登记 26 个新证据；wave-6 先新增 6 个 weaker + 3 个 blocked 证据，随后的组件绑定跟进把其中 4 个提升为 exact `green`、2 个明确保持 blocked；wave-8 为 7 个只差少量断言的用例补齐断言后提升为 exact `green`；3 个 near-exact 保留 `planned` + green recommendation；36 个 Candidate B 不变；未删除任何旧测试）
+状态：**green 58 / planned 245 / retired-with-decision 36**（P5 将 32 个 exact-parity 用例提升为 `green`；P5.1 将 1 个 adapter exact 用例提升为 `green`；P6 回填再提升 3 个 exact 用例并登记 2 个 weaker 证据；wave-5 回填再提升 8 个 exact 用例并登记 26 个新证据；wave-6 先新增 6 个 weaker + 3 个 blocked 证据，随后的组件绑定跟进把其中 4 个提升为 exact `green`、2 个明确保持 blocked；wave-8 为 7 个只差少量断言的用例补齐断言后提升为 exact `green`；wave-9 再把 3 个 wave-7 weaker 用例补齐为 exact `green`；3 个 near-exact 保留 `planned` + green recommendation；36 个 Candidate B 不变；未删除任何旧测试）
 
 基线：`b9616c557e54a06b7d756e516e6dd7c4016664cf`（`tsgo/migration`，包含 `4d59ca7`）
 
@@ -15,6 +15,8 @@
 实现 HEAD（wave-7 台账回填）：`94c8a668b3903904a00343459563181c265925f8`
 
 实现 HEAD（wave-8 断言补齐回填）：`807a1578173992ad16f15e22b45f8dd62b024df3`（断言改动仍在工作树，未提交）
+
+实现 HEAD（wave-9 台账回填）：`16e88b24917a34e225a4ec66b6ea0e0751262dc4`（3 个 case 的测试改动仍在工作树，未提交）
 
 机器可读账本：`docs/plans/tsgo-test-ledger.json`
 
@@ -35,6 +37,7 @@ P0 证据：`docs/evidence/2026-11-17-tsgo-migration-baseline.md`
 - 未闭合成员补全跟进（2026-11-20）：`{{ user.na` 通过 bare root + synthetic dot 查询 native 成员，只替换 typed `na`；CJK/CRLF/emoji 的 UTF-16/byte range 已精确断言。`TS-COMPLETION-0104` 仍为 weaker：native 非空 completion 因 pinned API 无 per-entry documentation/auto-import origin 而保持 Partial，TS oracle 断言 `supported`；未提升 green。逐条见 §18 和 `docs/evidence/2026-11-20-tsgo-completion-unclosed-member.md`。
 - Wave-7 台账回填（2026-11-20，记录 HEAD `94c8a668b3903904a00343459563181c265925f8`）：逐条复核 definitions/hover/diagnostics/completion/events/guards/locals 的 32 个 weaker/blocked 候选后，没有断言完全等价的新 exact case，因此不提升任何 case；`TS-COMPLETION-0104` 的未闭合成员补全仍依赖并行会话的未提交测试，保持 planned。新增 6 个 weaker 证据（`TS-ANALYSIS-0078/0093/0139/0174`、`TS-PROBES-0027`、`TS-GUARDS-0302`），`assessed_cases` 154→160、`weaker` 74→80、无证据 planned 149→143；`green` 48 / `planned` 255 / `blocked` 22 不变。逐条见 §19 和 `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave7.md`。
 - Wave-8 断言补齐回填（2026-11-20，验证 HEAD `807a1578173992ad16f15e22b45f8dd62b024df3` + 未提交测试改动）：wave-7 逐条列出的 7 个“只差少量断言”用例全部在现有 Rust 测试中补齐 oracle 断言，达到 exact 并提升为 `green`（`TS-EVENTS-0301/0322/0461`、`TS-LOCALS-0063/0089/0144`、`TS-GUARDS-0075`）。最终 **55 green / 248 planned / 36 retired-with-decision**；`exact` 48→55、`weaker` 80→73，`assessed_cases` 160、无证据 planned 143、`near_exact` 3、`structural` 7、`blocked` 22 不变。本轮只改测试断言和台账，不改生产代码。逐条见 §21 和 `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave8.md`。
+- Wave-9 台账回填（2026-11-20，验证 HEAD `16e88b24917a34e225a4ec66b6ea0e0751262dc4` + 未提交测试改动）：wave-7 证据文档中的 3 个 weaker 用例已由并行会话补齐 oracle 断言，本轮复核后提升为 exact `green`（`TS-PROBES-0027`、`TS-ANALYSIS-0139`、`TS-ANALYSIS-0174`）。最终 **58 green / 245 planned / 36 retired-with-decision**；`exact` 55→58、`weaker` 73→70，`assessed_cases` 160、无证据 planned 143、`near_exact` 3、`structural` 7、`blocked` 22 不变。`TS-ANALYSIS-0078/0093` 与 `TS-GUARDS-0302` 保持原状态。本轮只改台账、validator 常量和文档，不改测试断言本身。逐条见 §22 和 `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave9.md`。
 - 本轮 TS 套件实际执行：339 个，通过 338，失败 1，跳过 0。
 - 计划对账：计划 273 静态 / ~338 展开，实际 **274 / 339**（+1）；原因是 `events.test.ts` 实际 24 个声明而非计划表中的 23。
 - 23 个 Rust `#[ignore]` 测试全部映射到必跑原生命令；2 个 `semantic_tools` 静默 return 路径同样映射；均不计为已迁移。
@@ -160,7 +163,7 @@ P0 证据：`docs/evidence/2026-11-17-tsgo-migration-baseline.md`
 | unit | 114 | 纯函数/codec/验证：locals、guards、rewrite、mapping math、protocol validation。 |
 | parity | 100 | scenario matrix、overlay、mapping/run、性能采样。 |
 
-55 条 `status=green`、248 条 `status=planned`、36 条 `status=retired-with-decision`；`oracle_revision` 已冻结为 `F2 frozen 2026-11-17 (dcc1f15)`；独立 `reviewer` 尚未签署。P5/P5.1/P6/wave-5/wave-6/wave-8 只提升 exact-parity 用例；near-exact/weaker/structural/blocked 的逐条证据和状态见 §14/§15/§16/§17/§19/§21。
+58 条 `status=green`、245 条 `status=planned`、36 条 `status=retired-with-decision`；`oracle_revision` 已冻结为 `F2 frozen 2026-11-17 (dcc1f15)`；独立 `reviewer` 尚未签署。P5/P5.1/P6/wave-5/wave-6/wave-8/wave-9 只提升 exact-parity 用例；near-exact/weaker/structural/blocked 的逐条证据和状态见 §14/§15/§16/§17/§19/§21/§22。
 
 ## 8. Dirty 必保增量（D1–D7）
 
@@ -1528,3 +1531,62 @@ git diff --check
 
 结果：`cargo test -p wxml-lsp --test native_parity` 68 passed / 0 failed / 26 ignored。
 逐条断言映射与实际输出见 `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave8.md`。
+
+## 22. Wave-9 台账回填（2026-11-20）
+
+### 22.1 边界与结论
+
+- 验证基线 HEAD：`16e88b24917a34e225a4ec66b6ea0e0751262dc4`。3 个 case 的测试改动仍在
+  工作树、未提交；工作树同时存在并行会话的 delivery/F3 与 native-gate 改动，本轮不引用、
+  不覆盖。
+- 本轮只改 `docs/plans/tsgo-test-ledger.json`、本 Markdown、contract 状态表和
+  `crates/wxml-lsp/tests/native_parity/ledger.rs` 的计数常量，并新增 wave-9 证据文档。
+  没有改测试断言、生产代码、`fixture_hash.rs`、oracle manifest JSON、live/frozen 逻辑、
+  wave-7/wave-8 证据或 README。
+- 结论：**3 个 wave-7 weaker 用例达到 exact 并提升为 `green`**。
+  `green` 55 → 58、`planned` 248 → 245、`exact` 55 → 58、`weaker` 73 → 70；
+  `assessed_cases` 160、无证据 planned 143、`near_exact` 3、`structural` 7、
+  `blocked` 22、`retired` 36 不变。
+- `TS-ANALYSIS-0078/0093` 与 `TS-GUARDS-0302` 的缺口不变，保持原状态。
+
+### 22.2 新增 exact → `green`（3）
+
+判定口径与 §14.3/§21.2 相同：TS oracle 的每条可观察断言都能在同一 Rust 测试里找到等价断言。
+`status_applied=green`、`target_rust_test_status=migrated_green`、
+`migration_evidence.parity=exact`、`green_eligible=true`。
+`target_rust_test` 仍保留既有 `native_parity/*.rs` 路由，实际执行证据记录在
+`migration_evidence.rust_tests`。
+
+| Case | Rust test（path:line） | 覆盖的 oracle 断言 |
+| --- | --- | --- |
+| `TS-PROBES-0027` |  crates/wxml-backend-tsgo/src/shadow/layout.rs:2467 | plain/BOM/hashbang/BOM+hashbang 四种 fixture 的 `check`、`injectionOffset`、`neutralizeOffset`、`bomLength`，以及构建后的 BOM drop 与 pragma `at_utf16`。 |
+| `TS-ANALYSIS-0139` |  crates/wxml-backend-tsgo/tests/script_properties.rs:99<br> crates/wxml-lsp/src/backend_tsgo/tests.rs:4251 | 声明事实保留 `number`、`type_complete`、未解析默认值原文与完整 properties；hover 在 native 回答 `string` 时仍返回 `number`/Known/Supported 且 range 精确。 |
+| `TS-ANALYSIS-0174` |  crates/wxml-lsp/src/backend_tsgo/tests.rs:4297 | project root 不存在时 hover 仍成功并返回 `string`/Known/Supported；session 输入根为该不存在路径，且只提交内存快照中的单个文件。 |
+
+### 22.3 分区计数
+
+| 分区 | routed | 有证据 | green | planned 有证据 | exact | near-exact | weaker | structural | blocked | 无证据 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `guards_js` | 25 | 13 | 7 | 6 | 7 | 0 | 1 | 0 | 5 | 12 |
+| `hover_docs` | 10 | 7 | 2 | 5 | 2 | 0 | 5 | 0 | 0 | 3 |
+| **合计（变化项）** | **35** | **20** | **9** | **11** | **9** | **0** | **6** | **0** | **5** | **15** |
+
+其余分区不变；全表以 JSON `counts.migration_evidence.by_partition` 为准。
+
+### 22.4 Validator 改动
+
+- `GREEN_CASES` 55 → 58、`PLANNED_CASES` 248 → 245、`WEAKER_CASES` 73 → 70。
+- `TOTAL_CASES` 339、`RETIRED_CASES` 36、`NEAR_EXACT_CASES` 3、`STRUCTURAL_CASES` 7、
+  `BLOCKED_CASES` 22 不变。
+- `oracle_manifest::*`、live/frozen 校验、`fixture_hash.rs`、manifest JSON 未改动。
+
+### 22.5 验证
+
+```sh
+jq empty docs/plans/tsgo-test-ledger.json
+cargo test -p wxml-lsp --test native_parity
+cargo fmt --all -- --check
+git diff --check
+```
+
+结果见 `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave9.md` §3。

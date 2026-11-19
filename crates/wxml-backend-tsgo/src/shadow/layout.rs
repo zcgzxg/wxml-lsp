@@ -2267,6 +2267,18 @@ mod tests {
         SourceFile::new(path, text, DocumentRevision::new(1)).expect("valid source")
     }
 
+    fn build_js_with_policy(text: &str, policy: JsCheckPolicy) -> BuiltShadow {
+        let script = source_file("index.js", text);
+        let request = ShadowRequest {
+            script: &script,
+            root: RootKind::Component,
+            fragments: &[],
+            js_check: policy,
+            check_js: false,
+        };
+        build_in_place_shadow(&request).expect("layout")
+    }
+
     fn build(text: &str, root: RootKind) -> Result<BuiltShadow, ShadowError> {
         let script = source_file("index.ts", text);
         let request = ShadowRequest::new(&script, root);
@@ -2448,6 +2460,119 @@ mod tests {
                 .collect::<String>(),
             "// @ts-check\n"
         );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // one fixture per oracle branch keeps the offsets auditable
+    fn case_probes_0027_pragma_scanning_handles_plain_files_bom_and_hashbang() {
+        let plain_text = "// @ts-check\nconst a = 1;\nComponent({ data: {} });\n";
+        let plain = scan_pragmas(plain_text, true);
+        assert!(plain.check, "the leading @ts-check must be recognised");
+        assert!(!plain.no_check);
+        assert_eq!(plain.injection_offset, 0);
+        assert_eq!(
+            utf16_len(&plain_text[..plain.neutralize_offset]),
+            u32::try_from("// @ts-check\n".len()).expect("length"),
+            "the leading pragma block ends after the check line"
+        );
+        assert_eq!(plain.bom_length_utf16, 0);
+        // `dropBom` is the layout decision built from the scan: a plain file
+        // never drops a BOM.
+        let plain_built = build_js_with_policy(plain_text, JsCheckPolicy::Inherit);
+        assert_eq!(
+            plain_built.js_check_applied,
+            JsCheckApplied::Inherit,
+            "the source pragma enables checking without the shadow-only injection"
+        );
+        assert!(
+            plain_built
+                .view
+                .insertions
+                .iter()
+                .all(|insertion| insertion.insertion_id != "bom"),
+            "a plain file must not record a BOM edit"
+        );
+
+        let bom_text = "\u{FEFF}const a = 1;\nComponent({ data: {} });\n";
+        let bom = scan_pragmas(bom_text, true);
+        assert_eq!(bom.bom_length_utf16, 1);
+        assert_eq!(
+            utf16_len(&bom_text[..bom.injection_offset]),
+            1,
+            "the pragma goes after the dropped BOM"
+        );
+        let bom_built = build_js_with_policy(bom_text, JsCheckPolicy::Pragma);
+        let bom_edit = bom_built
+            .view
+            .insertions
+            .iter()
+            .find(|insertion| insertion.insertion_id == "bom")
+            .expect("BOM edit");
+        assert_eq!(bom_edit.replace_length_utf16, 1);
+        let bom_pragma = bom_built
+            .view
+            .edits
+            .iter()
+            .find(|edit| edit.id == "pragma")
+            .expect("pragma edit");
+        assert_eq!(bom_pragma.at_utf16, 1);
+
+        let shebang_text = "#!/usr/bin/env node\nconst a = 1;\nComponent({ data: {} });\n";
+        let shebang = scan_pragmas(shebang_text, true);
+        assert_eq!(
+            utf16_len(&shebang_text[..shebang.injection_offset]),
+            20,
+            "the pragma goes after the hashbang line"
+        );
+        assert_eq!(shebang.bom_length_utf16, 0);
+        let shebang_built = build_js_with_policy(shebang_text, JsCheckPolicy::Pragma);
+        assert!(
+            shebang_built
+                .view
+                .insertions
+                .iter()
+                .all(|insertion| insertion.insertion_id != "bom"),
+            "a hashbang file without a BOM must not record a BOM edit"
+        );
+        let shebang_pragma = shebang_built
+            .view
+            .edits
+            .iter()
+            .find(|edit| edit.id == "pragma")
+            .expect("pragma edit");
+        assert_eq!(shebang_pragma.at_utf16, 20);
+
+        let both_text = "\u{FEFF}#!/usr/bin/env node\nconst a = 1;\nComponent({ data: {} });\n";
+        let both = scan_pragmas(both_text, true);
+        assert_eq!(both.bom_length_utf16, 1);
+        assert_eq!(utf16_len(&both_text[..both.injection_offset]), 21);
+        let both_built = build_js_with_policy(both_text, JsCheckPolicy::Pragma);
+        assert!(
+            both_built
+                .view
+                .insertions
+                .iter()
+                .any(|insertion| insertion.insertion_id == "bom"),
+            "a BOM before the hashbang is dropped"
+        );
+        let both_pragma = both_built
+            .view
+            .edits
+            .iter()
+            .find(|edit| edit.id == "pragma")
+            .expect("pragma edit");
+        assert_eq!(both_pragma.at_utf16, 21);
+        assert!(both_built.view.text.starts_with("#!"));
+
+        // `neutralizeOffset` is where the policy-off `@ts-nocheck` goes.
+        let neutralized = build_js_with_policy(plain_text, JsCheckPolicy::Off);
+        let nocheck = neutralized
+            .view
+            .edits
+            .iter()
+            .find(|edit| edit.id == "nocheck")
+            .expect("nocheck edit");
+        assert_eq!(nocheck.at_utf16, 13);
     }
 
     #[test]

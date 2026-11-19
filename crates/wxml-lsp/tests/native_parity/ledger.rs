@@ -19,18 +19,18 @@ pub(crate) const LEDGER_RELATIVE_PATH: &str = "docs/plans/tsgo-test-ledger.json"
 
 /// Frozen expanded registration count.
 pub(crate) const TOTAL_CASES: usize = 339;
-/// Exact-parity cases promoted to `green`; the wave-8 assertion backfill
-/// promoted seven more.
-pub(crate) const GREEN_CASES: usize = 55;
-/// Cases still `planned` after the 2026-11-20 wave-8 assertion backfill.
-pub(crate) const PLANNED_CASES: usize = 248;
+/// Exact-parity cases promoted to `green`; the wave-9 assertion backfill
+/// promoted three more.
+pub(crate) const GREEN_CASES: usize = 58;
+/// Cases still `planned` after the 2026-11-20 wave-9 assertion backfill.
+pub(crate) const PLANNED_CASES: usize = 245;
 /// Frozen retired-with-decision count.
 pub(crate) const RETIRED_CASES: usize = 36;
 /// Near-exact cases intentionally left `planned` with a green recommendation.
 pub(crate) const NEAR_EXACT_CASES: usize = 3;
-/// Weaker evidence cases left `planned` after the 2026-11-20 wave-8 assertion
-/// backfill, which promoted seven previously weaker cases to exact.
-pub(crate) const WEAKER_CASES: usize = 73;
+/// Weaker evidence cases left `planned` after the 2026-11-20 wave-9 assertion
+/// backfill, which promoted three previously weaker cases to exact.
+pub(crate) const WEAKER_CASES: usize = 70;
 /// Structural evidence cases left `planned` after the wave-6 component-binding
 /// follow-up.
 pub(crate) const STRUCTURAL_CASES: usize = 7;

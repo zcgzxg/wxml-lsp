@@ -164,17 +164,17 @@
     },
     "migration_evidence": {
       "assessed_at": "2026-11-20",
-      "implementation_head": "807a1578173992ad16f15e22b45f8dd62b024df3",
+      "implementation_head": "16e88b24917a34e225a4ec66b6ea0e0751262dc4",
       "rust_test_command": "cargo test -p wxml-lsp --lib; cargo test -p wxml-lsp --test native_parity; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored; cargo test -p wxml-delivery --test assets_lock_root",
-      "rust_test_result": "wave-8 ledger backfill: seven planned cases with complete Rust assertion coverage promoted to exact green (TS-EVENTS-0301/0322/0461, TS-LOCALS-0063/0089/0144, TS-GUARDS-0075). cargo test -p wxml-lsp --test native_parity 68 passed/0 failed/26 ignored (includes the parallel oracle-manifest suite).",
+      "rust_test_result": "wave-9 ledger backfill: three wave-7 weaker cases with newly complete Rust assertion coverage promoted to exact green (TS-PROBES-0027, TS-ANALYSIS-0139/0174). cargo test -p wxml-lsp --test native_parity 75 passed/0 failed/26 ignored (includes the parallel oracle-manifest and native-gate suites).",
       "assessed_cases": 160,
-      "exact": 55,
+      "exact": 58,
       "near_exact": 3,
-      "weaker": 73,
+      "weaker": 70,
       "structural": 7,
       "blocked": 22,
-      "green_eligible": 55,
-      "promoted_to_green": 55,
+      "green_eligible": 58,
+      "promoted_to_green": 58,
       "remaining_planned_without_evidence": 143,
       "by_partition": {
         "behaviors": {
@@ -240,24 +240,24 @@
         "guards_js": {
           "routed_cases": 25,
           "evidence_cases": 13,
-          "green_cases": 6,
-          "planned_evidence_cases": 7,
+          "green_cases": 7,
+          "planned_evidence_cases": 6,
           "unassessed_cases": 12,
-          "exact": 6,
+          "exact": 7,
           "near_exact": 0,
-          "weaker": 2,
+          "weaker": 1,
           "structural": 0,
           "blocked": 5
         },
         "hover_docs": {
           "routed_cases": 10,
           "evidence_cases": 7,
-          "green_cases": 0,
-          "planned_evidence_cases": 7,
+          "green_cases": 2,
+          "planned_evidence_cases": 5,
           "unassessed_cases": 3,
-          "exact": 0,
+          "exact": 2,
           "near_exact": 0,
-          "weaker": 7,
+          "weaker": 5,
           "structural": 0,
           "blocked": 0
         },
@@ -374,15 +374,15 @@
       "rust_unit_test_result": "wxml-lsp lib 789 passed, 0 failed, 0 ignored",
       "near_exact_recommendations": 3,
       "statuses": {
-        "planned": 248,
-        "green": 55,
+        "planned": 245,
+        "green": 58,
         "retired-with-decision": 36
       },
       "status_policy": "Only parity=exact cases are green. near_exact, weaker, structural and blocked cases stay planned with status_recommendation recorded; no empty evidence is accepted."
     },
     "statuses": {
-      "planned": 248,
-      "green": 55,
+      "planned": 245,
+      "green": 58,
       "retired-with-decision": 36
     }
   },
@@ -3162,29 +3162,36 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "hover"
       ],
       "migration_evidence": {
         "case_id": "TS-ANALYSIS-0139",
         "assessed_at": "2026-11-20",
-        "implementation_head": "94c8a668b3903904a00343459563181c265925f8",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "The script property fact keeps the declared `number` type text when the default value is a mismatched literal, but the case's unresolved enum default and the hover `typeOnly == \"number\"` are not asserted.",
+        "implementation_head": "16e88b24917a34e225a4ec66b6ea0e0751262dc4",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Rust asserts the declared `Number` fact survives the unresolved `MissingEnum.Preview` default (`type_text == \"number\"`, complete properties, verbatim default) and the adapter hover returns `number`/Known/Supported with an exact range although the native answer says `string`, exercising the declaration-derived property overlay.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_properties.rs",
-            "line": 72,
-            "test": "case_component_0292_only_optional_types_and_defaults_are_preserved",
-            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_properties.rs::case_component_0292_only_optional_types_and_defaults_are_preserved",
-            "note": "Asserts `defaulted` keeps `type_text == \"number\"` with the mismatched literal default `\"not-a-number\"`."
+            "line": 99,
+            "test": "case_analysis_0139_declared_property_types_survive_an_unresolved_default_value",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_properties.rs::case_analysis_0139_declared_property_types_survive_an_unresolved_default_value",
+            "note": "Asserts `approvalStatus` keeps `type_text == \"number\"`, `type_complete`, the verbatim unresolved default `MissingEnum.Preview` and complete properties."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 4251,
+            "test": "case_analysis_0139_declared_property_types_survive_an_unresolved_default_value",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::case_analysis_0139_declared_property_types_survive_an_unresolved_default_value",
+            "note": "Asserts the oracle fixture reaches the session and the declaration overlay answers `number` with Known/Supported and the exact `approvalStatus` range while the fake native answer is `string`."
           }
         ]
       }
@@ -3300,10 +3307,10 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "compiler",
         "hover",
@@ -3312,13 +3319,20 @@
       "migration_evidence": {
         "case_id": "TS-ANALYSIS-0174",
         "assessed_at": "2026-11-20",
-        "implementation_head": "94c8a668b3903904a00343459563181c265925f8",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "The native VFS only answers snapshot files and the startup canary fails when the engine touches a host file, but no test analyzes over a nonexistent project root and asserts the hover.",
+        "implementation_head": "16e88b24917a34e225a4ec66b6ea0e0751262dc4",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Rust asserts hover succeeds over a project root that does not exist on disk and returns `string`/Known/Supported at the exact token; the session input root is that nonexistent path and only the in-memory snapshot file is submitted, so no project-root file or tsconfig is read.",
         "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 4297,
+            "test": "case_analysis_0174_hover_never_reads_the_project_root_tsconfig",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::case_analysis_0174_hover_never_reads_the_project_root_tsconfig",
+            "note": "Asserts the fixture root is absent, hover returns `string` with Known/Supported and the exact range, and the session receives the nonexistent root plus only `pages/index/index.ts`."
+          },
           {
             "path": "crates/wxml-backend-tsgo/src/native/vfs.rs",
             "line": 1385,
@@ -21403,10 +21417,10 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "config",
         "mapping"
@@ -21414,19 +21428,19 @@
       "migration_evidence": {
         "case_id": "TS-PROBES-0027",
         "assessed_at": "2026-11-20",
-        "implementation_head": "94c8a668b3903904a00343459563181c265925f8",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "The layout applies a shadow-only `@ts-check` after a BOM and hashbang and records the BOM/pragma insertions, but the TS `scanPragmas` tuple (check/noCheck, injectionOffset, neutralizeOffset, dropBom) and the standalone plain/BOM variants are not asserted.",
+        "implementation_head": "16e88b24917a34e225a4ec66b6ea0e0751262dc4",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Rust asserts the full `scan_pragmas` tuple for the plain, BOM, hashbang and BOM+hashbang fixtures (check/noCheck, injection/neutralize offsets, BOM length) plus the layout BOM drop and pragma insertion for each built variant, matching every oracle assertion.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
-            "line": 2415,
-            "test": "js_pragma_and_bom_edits_are_recorded",
-            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::js_pragma_and_bom_edits_are_recorded",
-            "note": "Asserts the BOM replacement and pragma insertion are recorded for a BOM+hashbang script under `JsCheckPolicy::Pragma`."
+            "line": 2467,
+            "test": "case_probes_0027_pragma_scanning_handles_plain_files_bom_and_hashbang",
+            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::case_probes_0027_pragma_scanning_handles_plain_files_bom_and_hashbang",
+            "note": "Asserts plain/BOM/hashbang/BOM+hashbang check flags, injection and neutralize offsets, BOM lengths and the built BOM drop/pragma insertion edits."
           }
         ]
       }

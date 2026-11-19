@@ -96,6 +96,30 @@ fn case_component_0292_only_optional_types_and_defaults_are_preserved() {
 }
 
 #[test]
+fn case_analysis_0139_declared_property_types_survive_an_unresolved_default_value() {
+    // Oracle: TS-ANALYSIS-0139. The declared `Number` type must stay readable
+    // even though the default value is an imported enum member the analysis
+    // cannot resolve.
+    let result = analysis(
+        &[(
+            "index.ts",
+            "import { MissingEnum } from './missing';\nComponent({\n  properties: {\n    approvalStatus: { type: Number, value: MissingEnum.Preview },\n  },\n  data: {},\n  methods: {},\n});\n",
+        )],
+        "index.ts",
+        RegistrationKind::Component,
+    );
+    let approval = property(&result, "approvalStatus");
+    assert_eq!(approval.type_text, "number");
+    assert!(approval.type_complete);
+    assert_eq!(
+        approval.default_text.as_deref(),
+        Some("MissingEnum.Preview"),
+        "the unresolved default is kept verbatim, never folded into the type"
+    );
+    assert!(result.properties.complete);
+}
+
+#[test]
 fn case_component_0514_literal_data_types_are_conservative_and_exact() {
     // Oracle: TS-COMPONENT-0514. Structural: literal inference without a
     // checker; anything unreadable must be `any` and incomplete.

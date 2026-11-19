@@ -4248,6 +4248,92 @@ fn hover_at_the_fragment_end_still_maps_to_the_last_identifier() {
 }
 
 #[test]
+fn case_analysis_0139_declared_property_types_survive_an_unresolved_default_value() {
+    const WXML: &str = "<view>{{ approvalStatus }}</view>";
+    const SCRIPT: &str = "import { MissingEnum } from './missing';\nComponent({\n  properties: {\n    approvalStatus: { type: Number, value: MissingEnum.Preview },\n  },\n  data: {},\n  methods: {},\n});\n";
+    let mut view = prepared_view_with_files(
+        WXML,
+        "approvalStatus",
+        vec![prepared_file(SCRIPT_PATH, SCRIPT)],
+    );
+    view.target.as_mut().expect("target").owner = RootKind::Component;
+    // The native answer says `string`; only the declaration-derived property
+    // `type: Number` may produce the oracle's `number` hover.
+    let behavior = FakeBehavior {
+        type_outcome: FakeTypeOutcome::Known("string".to_owned()),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "approvalStatus"),
+        })
+        .expect("hover");
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert_eq!(result.quality, wxml_types::TypeQuality::Known);
+    assert_eq!(result.contents, "```ts\nnumber\n```");
+    let start = offset_of(WXML, "approvalStatus");
+    let range = result.range.expect("hover range");
+    assert_eq!(
+        range.range(),
+        wxml_text::TextRange::new(start, start + 14).expect("range")
+    );
+
+    let log = log.lock().expect("log");
+    let input = log.opened_inputs.first().expect("opened input");
+    assert!(
+        input.file(SCRIPT_PATH).is_some(),
+        "the oracle fixture's owning script reaches the session"
+    );
+    let derived = input.file(SCRIPT_PATH).expect("script").text();
+    assert!(
+        derived.contains("__wxml_props_0.approvalStatus"),
+        "a declared property root is mounted behind the props prefix: {derived}"
+    );
+}
+
+#[test]
+fn case_analysis_0174_hover_never_reads_the_project_root_tsconfig() {
+    const WXML: &str = "<view>{{ title }}</view>";
+    const SCRIPT: &str = "Page({ data: { title: \"首页\" } });\n";
+    const PROJECT_ROOT: &str = "/nonexistent/wxml-analysis-0174-project-root";
+    assert!(
+        !std::path::Path::new(PROJECT_ROOT).exists(),
+        "the fixture root must not exist on disk"
+    );
+    let mut view = prepared_view(WXML, SCRIPT, "title");
+    view.project_root = PathBuf::from(PROJECT_ROOT);
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let result = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "title"),
+        })
+        .expect("hover with a nonexistent project root");
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert_eq!(result.quality, wxml_types::TypeQuality::Known);
+    assert_eq!(result.contents, "```ts\nstring\n```");
+    assert_eq!(
+        result.range.expect("range").start(),
+        offset_of(WXML, "title")
+    );
+
+    let log = log.lock().expect("log");
+    let input = log.opened_inputs.first().expect("opened input");
+    assert_eq!(input.root().as_str(), PROJECT_ROOT);
+    assert_eq!(
+        input
+            .files()
+            .iter()
+            .map(wxml_backend_tsgo::input::SourceFile::path)
+            .collect::<Vec<_>>(),
+        vec![SCRIPT_PATH],
+        "only the in-memory snapshot reaches the session; no project-root file is read"
+    );
+}
+
+#[test]
 fn host_syntax_diagnostics_are_merged_into_native_results() {
     let mut view = prepared_view(WXML, SCRIPT, "user.name");
     view.syntax_diagnostics = vec![syntax_diagnostic(WXML, "user", "unclosed tag")];
