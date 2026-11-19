@@ -58,6 +58,28 @@ pub(crate) enum ScriptViewError {
     Unavailable(String),
 }
 
+/// Why one template request plan could not be built.
+///
+/// The split is user-visible and must not be collapsed: an owner shape the
+/// shadow deliberately cannot analyze (for example a non-literal `Page(...)`
+/// registration) is a static language limit and keeps `Unsupported`
+/// semantics, while a host or native-input failure stays `Unavailable` so a
+/// real backend failure is never reported as an unsupported language form.
+/// Reasons are path-free: they describe the owner shape, never project paths.
+#[derive(Debug)]
+pub(crate) enum PlanError {
+    /// The template owner has no statically analyzable shape.
+    Unsupported(String),
+    /// The host or the native input layer could not provide a plan.
+    Backend(BackendError),
+}
+
+impl From<BackendError> for PlanError {
+    fn from(error: BackendError) -> Self {
+        Self::Backend(error)
+    }
+}
+
 /// Supplies the effective project view for one template snapshot.
 pub(crate) trait ViewProvider: Send + Sync {
     /// Prepares the view or returns a path-free host error.
@@ -605,7 +627,7 @@ pub(crate) fn build_request_plan(
     provider: &dyn ViewProvider,
     context: &RequestContext,
     environment: &Environment,
-) -> Result<RequestPlan, BackendError> {
+) -> Result<RequestPlan, PlanError> {
     build_request_plan_with_completion(provider, context, environment, None)
 }
 
@@ -620,7 +642,7 @@ pub(crate) fn build_completion_request_plan(
     context: &RequestContext,
     environment: &Environment,
     fragment: &CompletionFragment,
-) -> Result<RequestPlan, BackendError> {
+) -> Result<RequestPlan, PlanError> {
     build_request_plan_with_completion(provider, context, environment, Some(fragment))
 }
 
@@ -631,7 +653,7 @@ fn build_request_plan_with_completion(
     context: &RequestContext,
     environment: &Environment,
     completion: Option<&CompletionFragment>,
-) -> Result<RequestPlan, BackendError> {
+) -> Result<RequestPlan, PlanError> {
     let snapshot = context.source();
     let view = prepare_view(provider, snapshot)?;
     let target = view.target.as_ref().ok_or_else(|| {
@@ -650,9 +672,9 @@ fn build_request_plan_with_completion(
             )
         })?;
     if Language::from_path(&script_path).is_none() {
-        return Err(BackendError::Unavailable(
+        return Err(PlanError::Backend(BackendError::Unavailable(
             "the owning script uses a language the native input cannot represent".to_owned(),
-        ));
+        )));
     }
     let original = SourceFile::new(
         script.path.as_str(),
@@ -828,9 +850,9 @@ fn build_request_plan_with_completion(
         };
         if Language::from_path(path).is_none() {
             if target_file {
-                return Err(BackendError::Unavailable(
+                return Err(PlanError::Backend(BackendError::Unavailable(
                     "the owning script language is not supported by the native input".to_owned(),
-                ));
+                )));
             }
             merge_reason(
                 &mut degradation,
@@ -847,7 +869,7 @@ fn build_request_plan_with_completion(
             }
             Err(error) => {
                 if target_file {
-                    return Err(input_error(&error));
+                    return Err(PlanError::Backend(input_error(&error)));
                 }
                 merge_reason(
                     &mut degradation,
@@ -1355,6 +1377,20 @@ pub(crate) fn input_error(error: &wxml_backend_tsgo::input::InputError) -> Backe
     BackendError::Unavailable(format!("native input is unavailable: {error}"))
 }
 
-fn shadow_error(error: &wxml_backend_tsgo::shadow::ShadowError) -> BackendError {
-    BackendError::Unavailable(format!("shadow layout is unavailable: {error}"))
+fn shadow_error(error: &wxml_backend_tsgo::shadow::ShadowError) -> PlanError {
+    use wxml_backend_tsgo::shadow::ShadowError;
+
+    match error {
+        // A registration/root shape the shadow deliberately cannot analyze is
+        // a static language limit, not a dead backend. `feature` is a stable
+        // marker and `reason` is a bounded owner-shape description, so the
+        // published reason is path-free.
+        ShadowError::Unsupported { feature, reason } => PlanError::Unsupported(format!(
+            "the template owner is not statically analyzable ({feature}): {reason}"
+        )),
+        // Budgets, malformed input and mapping failures stay fail-closed.
+        _ => PlanError::Backend(BackendError::Unavailable(format!(
+            "shadow layout is unavailable: {error}"
+        ))),
+    }
 }

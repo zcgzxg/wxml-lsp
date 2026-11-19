@@ -17,6 +17,12 @@
 //! missing owning script, mapping gaps and native failures are typed errors or
 //! explicit degraded statuses; they never become a supported empty result.
 //!
+//! A template owner that the in-place shadow deliberately cannot analyze (for
+//! example a non-literal `Page(options)` registration) is a static language
+//! limit: every template capability answers `Unsupported` with a path-free
+//! reason and no native session is started. Host or native-input failures stay
+//! `Unavailable`, so a static limit is never confused with a backend outage.
+//!
 //! # Type environment
 //!
 //! [`run_stdio_native`] loads the pinned type assets once through
@@ -114,8 +120,8 @@ use self::engine::DiscoveredInstall;
 use self::environment::Environment;
 use self::event_completion::EventCandidateCache;
 use self::input::{
-    OpenPlan, PlanIdentity, RequestPlan, ScriptViewError, ViewProvider, build_request_plan,
-    build_script_request_plan, merge_reason,
+    OpenPlan, PlanError, PlanIdentity, RequestPlan, ScriptViewError, ViewProvider,
+    build_request_plan, build_script_request_plan, merge_reason,
 };
 use self::sandbox::SandboxSessionFactory;
 use self::session::{NativeSessionFactory, QuerySession, SessionFactory};
@@ -301,7 +307,7 @@ impl TsgoBackendAdapter {
         self.epoch.fetch_add(1, Ordering::SeqCst).saturating_add(1)
     }
 
-    fn prepare(&self, context: &wxml_types::RequestContext) -> Result<RequestPlan, BackendError> {
+    fn prepare(&self, context: &wxml_types::RequestContext) -> Result<RequestPlan, PlanError> {
         build_request_plan(self.views.as_ref(), context, &self.environment)
     }
 
@@ -710,12 +716,15 @@ impl TsgoBackendAdapter {
             &fragment,
         ) {
             Ok(plan) => plan,
-            Err(BackendError::Unavailable(reason)) => {
+            Err(
+                PlanError::Unsupported(reason)
+                | PlanError::Backend(BackendError::Unavailable(reason)),
+            ) => {
                 return Ok(completion::unsupported_completion(&format!(
                     "the incomplete member expression cannot be mounted: {reason}"
                 )));
             }
-            Err(error) => return Err(error),
+            Err(PlanError::Backend(error)) => return Err(error),
         };
         let Some(position) = completion_plan.completion_query else {
             return Ok(completion::unsupported_completion(
@@ -749,7 +758,11 @@ impl Backend for TsgoBackendAdapter {
         if !self.epoch_matches(&request.context) {
             return Err(BackendError::Cancelled);
         }
-        let plan = self.prepare(&request.context)?;
+        let plan = match self.prepare(&request.context) {
+            Ok(plan) => plan,
+            Err(PlanError::Unsupported(reason)) => return Ok(unsupported_hover(&reason)),
+            Err(PlanError::Backend(error)) => return Err(error),
+        };
         let script_path = plan.identity.script_path.clone();
         self.with_session_environment(&plan, |session, degradation| {
             hover::hover(
@@ -767,11 +780,22 @@ impl Backend for TsgoBackendAdapter {
         if !self.epoch_matches(&request.context) {
             return Err(BackendError::Cancelled);
         }
-        let Ok(plan) = self.prepare(&request.context) else {
-            return Ok(unavailable_diagnostics(
-                crate::project_host::parse_syntax_diagnostics(request.context.source()),
-                "type backend unavailable",
-            ));
+        let plan = match self.prepare(&request.context) {
+            Ok(plan) => plan,
+            Err(PlanError::Unsupported(reason)) => {
+                // A statically unanalyzable owner still publishes host syntax
+                // evidence; only the type-backed part is `Unsupported`.
+                return Ok(unsupported_diagnostics(
+                    crate::project_host::parse_syntax_diagnostics(request.context.source()),
+                    &reason,
+                ));
+            }
+            Err(PlanError::Backend(_)) => {
+                return Ok(unavailable_diagnostics(
+                    crate::project_host::parse_syntax_diagnostics(request.context.source()),
+                    "type backend unavailable",
+                ));
+            }
         };
         let script_path = plan.identity.script_path.clone();
         let syntax = merged_syntax(&plan.syntax_diagnostics, request.context.source());
@@ -809,7 +833,11 @@ impl Backend for TsgoBackendAdapter {
         if !self.epoch_matches(&request.context) {
             return Err(BackendError::Cancelled);
         }
-        let plan = self.prepare(&request.context)?;
+        let plan = match self.prepare(&request.context) {
+            Ok(plan) => plan,
+            Err(PlanError::Unsupported(reason)) => return Ok(unsupported_definition(&reason)),
+            Err(PlanError::Backend(error)) => return Err(error),
+        };
         let Some(position) = definition::query_position(&plan.layout, request.offset)? else {
             return Ok(definition::outside_expression());
         };
@@ -853,7 +881,13 @@ impl Backend for TsgoBackendAdapter {
             // requiring the normal shadow plan to be representable.
             return self.completion_member(&request, prefix.clone(), *prefix_range, *replace);
         }
-        let plan = self.prepare(&request.context)?;
+        let plan = match self.prepare(&request.context) {
+            Ok(plan) => plan,
+            Err(PlanError::Unsupported(reason)) => {
+                return Ok(completion::unsupported_completion(&reason));
+            }
+            Err(PlanError::Backend(error)) => return Err(error),
+        };
         let script_path = plan.identity.script_path.clone();
         if let Some(position) = completion::query_position(&plan.layout, request.offset)? {
             return self.with_session_environment(&plan, |session, degradation| {
@@ -892,7 +926,13 @@ impl Backend for TsgoBackendAdapter {
         if !self.epoch_matches(&request.context) {
             return Err(BackendError::Cancelled);
         }
-        let plan = self.prepare(&request.context)?;
+        let plan = match self.prepare(&request.context) {
+            Ok(plan) => plan,
+            Err(PlanError::Unsupported(reason)) => {
+                return Ok(DocumentSymbolsResult::unsupported(reason));
+            }
+            Err(PlanError::Backend(error)) => return Err(error),
+        };
         if plan.file_id(&plan.identity.script_path).as_ref() != Some(&request.subject) {
             return Ok(DocumentSymbolsResult::unsupported(
                 document_symbol::OWNING_SCRIPT_ONLY,
@@ -1061,6 +1101,42 @@ fn unavailable_diagnostics(
     DiagnosticsResult {
         diagnostics,
         status: CapabilityStatus::Unavailable {
+            reason: reason.to_owned(),
+        },
+    }
+}
+
+/// Returns an empty `Unsupported` hover; the owner shape has no type probe.
+fn unsupported_hover(reason: &str) -> HoverResult {
+    HoverResult {
+        contents: String::new(),
+        markup: wxml_types::MarkupKind::Markdown,
+        range: None,
+        status: CapabilityStatus::Unsupported {
+            reason: reason.to_owned(),
+        },
+        quality: wxml_types::TypeQuality::Unknown,
+    }
+}
+
+/// Returns an empty `Unsupported` definition; no location is invented.
+fn unsupported_definition(reason: &str) -> DefinitionResult {
+    DefinitionResult {
+        locations: Vec::new(),
+        status: CapabilityStatus::Unsupported {
+            reason: reason.to_owned(),
+        },
+    }
+}
+
+/// Returns host syntax evidence with an explicit `Unsupported` type status.
+fn unsupported_diagnostics(
+    diagnostics: Vec<wxml_types::Diagnostic>,
+    reason: &str,
+) -> DiagnosticsResult {
+    DiagnosticsResult {
+        diagnostics,
+        status: CapabilityStatus::Unsupported {
             reason: reason.to_owned(),
         },
     }

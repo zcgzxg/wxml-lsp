@@ -3748,6 +3748,206 @@ fn a_missing_target_script_is_unavailable() {
     assert!(matches!(error, BackendError::Unavailable(_)));
 }
 
+/// A non-literal `Page(options)` registration: the shadow has no owner object
+/// to analyze, so every template capability must answer `Unsupported` without
+/// starting a session. This is the E2E-21 non-literal status class.
+#[test]
+fn a_non_literal_page_registration_is_unsupported_and_starts_no_session() {
+    const NONLITERAL_SCRIPT: &str = "const options = {\n  data: { user: { name: \"Ada\" } },\n  onTap() {},\n};\nPage(options);\n";
+    let view = prepared_view(WXML, NONLITERAL_SCRIPT, "user.name");
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+
+    let diagnostics = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, WXML),
+        })
+        .expect("diagnostics must not return Err");
+    assert!(
+        diagnostics.diagnostics.is_empty(),
+        "a statically unanalyzable owner must not fabricate diagnostics: {:?}",
+        diagnostics.diagnostics
+    );
+    let CapabilityStatus::Unsupported { reason } = &diagnostics.status else {
+        panic!(
+            "non-literal registration must be Unsupported, got {:?}",
+            diagnostics.status
+        );
+    };
+    assert!(reason.contains("registration"), "{reason}");
+    assert!(reason.contains("object literal"), "{reason}");
+    assert!(
+        !reason.contains('/'),
+        "the unsupported reason must be path-free: {reason}"
+    );
+
+    let hover = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("hover must answer, not fail");
+    assert!(
+        matches!(hover.status, CapabilityStatus::Unsupported { .. }),
+        "{:?}",
+        hover.status
+    );
+    assert!(hover.contents.is_empty());
+
+    let definition = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("definition must answer, not fail");
+    assert!(
+        matches!(definition.status, CapabilityStatus::Unsupported { .. }),
+        "{:?}",
+        definition.status
+    );
+    assert!(definition.locations.is_empty());
+
+    let completion = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("completion must answer, not fail");
+    assert!(
+        matches!(completion.status, CapabilityStatus::Unsupported { .. }),
+        "{:?}",
+        completion.status
+    );
+    assert!(completion.items.is_empty());
+
+    let symbols = adapter
+        .document_symbols(DocumentSymbolsRequest {
+            context: context(&adapter, WXML),
+            subject: script_file(),
+        })
+        .expect("document symbols must answer, not fail");
+    assert!(
+        matches!(symbols.status, CapabilityStatus::Unsupported { .. }),
+        "{:?}",
+        symbols.status
+    );
+    assert!(symbols.symbols.is_empty());
+
+    assert_eq!(
+        log.lock().expect("log").starts,
+        0,
+        "a static owner limit must not start a native session"
+    );
+}
+
+/// A malformed owner script is an invalid input, not an unsupported language
+/// form: it must stay `Unavailable` so real planning failures are not
+/// downgraded.
+#[test]
+fn a_malformed_owner_script_stays_unavailable() {
+    const MALFORMED_SCRIPT: &str = "Page({ data: { user: { name: \"Ada\" } }";
+    let view = prepared_view(WXML, MALFORMED_SCRIPT, "user.name");
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let diagnostics = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, WXML),
+        })
+        .expect("diagnostics must not return Err");
+    assert!(
+        matches!(diagnostics.status, CapabilityStatus::Unavailable { .. }),
+        "malformed input must stay Unavailable, got {:?}",
+        diagnostics.status
+    );
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+/// Reproduces the frozen E2E-21 fixture: `pages/nonliteral/nonliteral.wxml`
+/// is owned by `Page(options)`. The real project host prepares the view and
+/// the classification happens before any native session exists.
+#[test]
+fn the_e2e21_non_literal_page_fixture_is_unsupported_not_unavailable() {
+    use crate::project_host::{ProjectHost, ProjectState};
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("tests/fixtures/events-basic")
+        .canonicalize()
+        .expect("events-basic fixture root");
+    let host = Arc::new(ProjectState::new());
+    host.open_root(Some(&format!("file://{}", root.display())))
+        .expect("open the events-basic fixture");
+
+    let (factory, log) = FakeFactory::new(FakeBehavior::default());
+    let adapter = TsgoBackendAdapter::new(
+        PinnedEngine::pinned(),
+        Arc::new(super::input::HostViewProvider::new(host.clone())),
+        Arc::new(factory),
+    );
+    let context_for = |relative: &str| {
+        let path = project_path(relative);
+        let file = ProjectHost::file_id(host.as_ref(), &path).expect("fixture file id");
+        let target = ProjectHost::view_for(host.as_ref(), &path).expect("fixture view");
+        let text = std::fs::read_to_string(root.join(relative)).expect("fixture template");
+        RequestContext::new(
+            ProjectHost::project_revision(host.as_ref()),
+            target.view_revision,
+            adapter.epoch(),
+            Arc::new(SourceSnapshot::new(
+                file,
+                SourceRevision::new(1),
+                SnapshotId::new(1),
+                text,
+            )),
+        )
+        .expect("fixture request context")
+    };
+
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context_for("pages/nonliteral/nonliteral.wxml"),
+        })
+        .expect("diagnostics must not return Err");
+    assert!(
+        result.diagnostics.is_empty(),
+        "the non-literal fixture must not produce noise: {:?}",
+        result.diagnostics
+    );
+    let CapabilityStatus::Unsupported { reason } = &result.status else {
+        panic!(
+            "the non-literal fixture must be Unsupported, got {:?}",
+            result.status
+        );
+    };
+    assert!(reason.contains("object literal"), "{reason}");
+    assert!(
+        !reason.contains('/'),
+        "the unsupported reason must be path-free: {reason}"
+    );
+    assert_eq!(
+        log.lock().expect("log").starts,
+        0,
+        "the fixture classification must not start a native session"
+    );
+
+    // The multi-registration fixture keeps its `Partial` class; only the
+    // non-literal owner shape is `Unsupported`.
+    let multi = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context_for("pages/multi/multi.wxml"),
+        })
+        .expect("multi diagnostics must not return Err");
+    assert!(
+        multi.diagnostics.is_empty(),
+        "the multi fixture must not produce noise: {:?}",
+        multi.diagnostics
+    );
+    assert!(
+        matches!(multi.status, CapabilityStatus::Partial { .. }),
+        "multi registrations must stay Partial, got {:?}",
+        multi.status
+    );
+}
+
 #[test]
 fn an_unsupported_native_type_query_is_explicitly_unsupported() {
     let behavior = FakeBehavior {
@@ -5055,6 +5255,69 @@ fn optional_real_engine_hover_smoke() {
         offset_of(WXML, "name") + u32::try_from("name".len()).expect("length")
     );
     assert!(result.contents.contains("string"));
+}
+
+/// Real-engine opt-in: a non-literal `Page(options)` owner must be classified
+/// as `Unsupported` before the native engine is started.
+///
+/// The classification is pure Rust planning, so the engine must stay untouched
+/// (the sandbox stays empty). This test fails closed when
+/// `WXML_REQUIRE_REAL_ENGINE=1` and no engine is configured.
+#[test]
+fn optional_real_engine_non_literal_page_is_unsupported_without_an_engine() {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    const NONLITERAL_SCRIPT: &str = "const options = {\n  data: { user: { name: \"Ada\" } },\n  onTap() {},\n};\nPage(options);\n";
+    let Ok(bin) = std::env::var("TSGO_BIN") else {
+        let required = matches!(
+            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
+            Ok("1" | "true")
+        );
+        assert!(
+            !required,
+            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
+        );
+        eprintln!(
+            "optional real-engine adapter test skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc"
+        );
+        return;
+    };
+    let executable = PathBuf::from(&bin);
+    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let sandbox = std::env::temp_dir().join(format!(
+        "wxml-tsgo-nonliteral-{}-{count}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&sandbox).expect("sandbox");
+    let _cleanup = Cleanup(sandbox.clone());
+
+    let adapter = TsgoBackendAdapter::new(
+        PinnedEngine::pinned(),
+        Arc::new(FakeViews::new(prepared_view(
+            WXML,
+            NONLITERAL_SCRIPT,
+            "user.name",
+        ))),
+        Arc::new(super::session::NativeSessionFactory::new(
+            SessionOptions::new(executable, sandbox.clone()),
+        )),
+    );
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, WXML),
+        })
+        .expect("diagnostics must not return Err");
+    assert!(
+        matches!(result.status, CapabilityStatus::Unsupported { .. }),
+        "a real engine must not change the static class: {:?}",
+        result.status
+    );
+    assert!(result.diagnostics.is_empty());
+    assert_eq!(
+        std::fs::read_dir(&sandbox).expect("sandbox").count(),
+        0,
+        "the static class must be decided before the engine starts"
+    );
 }
 
 /// Returns every descendant PID of `root` using `/proc` (Linux only).
