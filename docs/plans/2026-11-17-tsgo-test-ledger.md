@@ -1,8 +1,8 @@
 # Rust + tsgo 测试迁移账本（P1-B + P3-S/P4-B + P5/P5.1 状态回填）
 
-生成时间：2026-11-17T23:08:57+08:00；P3-S/P4-B 证据与 P5 状态回填：2026-11-18；P5.1 适配器/定义/性能回填：2026-11-19；wave-8 断言补齐回填：2026-11-20；wave-9 台账回填：2026-11-20；wave-10 台账回填：2026-11-20；wave-10 near-exact 跟进：2026-11-20；wave-10 exact 回填：2026-11-20；wave-10b weaker 回填：2026-11-20；wave-10 conditional 回填：2026-11-20
+生成时间：2026-11-17T23:08:57+08:00；P3-S/P4-B 证据与 P5 状态回填：2026-11-18；P5.1 适配器/定义/性能回填：2026-11-19；wave-8 断言补齐回填：2026-11-20；wave-9 台账回填：2026-11-20；wave-10 台账回填：2026-11-20；wave-10 near-exact 跟进：2026-11-20；wave-10 exact 回填：2026-11-20；wave-10b weaker 回填：2026-11-20；wave-10 conditional 回填：2026-11-20；wave-11 retire：2026-11-20；wave-11 exact 回填：2026-11-20
 
-状态：**green 70 / planned 233 / retired-with-decision 36**（P5 将 32 个 exact-parity 用例提升为 `green`；P5.1 将 1 个 adapter exact 用例提升为 `green`；P6 回填再提升 3 个 exact 用例并登记 2 个 weaker 证据；wave-5 回填再提升 8 个 exact 用例并登记 26 个新证据；wave-6 先新增 6 个 weaker + 3 个 blocked 证据，随后的组件绑定跟进把其中 4 个提升为 exact `green`、2 个明确保持 blocked；wave-8 为 7 个只差少量断言的用例补齐断言后提升为 exact `green`；wave-9 再把 3 个 wave-7 weaker 用例补齐为 exact `green`；wave-10 为 12 个 B 类 weaker 候选登记现有测试证据、不提升任何 case，随后把补齐断言的 `TS-REWRITE-0207` 从 near-exact 提升为 exact `green`，再把 9 个 exact-ready 候选提升为 `green`；wave-10b 再登记 wave-9 规划 §3.2 剩余的 13 个 B 类 weaker 候选、不提升任何 case；wave-10 conditional 把 `TS-ANALYSIS-0184` 与 `TS-REWRITE-0197` 提升为 exact `green`，并把 `TS-ANALYSIS-0161` 登记为 weaker、保持 `planned`；剩余 2 个 near-exact 保留 `planned` + green recommendation；36 个 Candidate B 不变；未删除任何旧测试）
+状态：**green 82 / planned 219 / retired-with-decision 38**（P5 将 32 个 exact-parity 用例提升为 `green`；P5.1 将 1 个 adapter exact 用例提升为 `green`；P6 回填再提升 3 个 exact 用例并登记 2 个 weaker 证据；wave-5 回填再提升 8 个 exact 用例并登记 26 个新证据；wave-6 先新增 6 个 weaker + 3 个 blocked 证据，随后的组件绑定跟进把其中 4 个提升为 exact `green`、2 个明确保持 blocked；wave-8 为 7 个只差少量断言的用例补齐断言后提升为 exact `green`；wave-9 再把 3 个 wave-7 weaker 用例补齐为 exact `green`；wave-10 为 12 个 B 类 weaker 候选登记现有测试证据、不提升任何 case，随后把补齐断言的 `TS-REWRITE-0207` 从 near-exact 提升为 exact `green`，再把 9 个 exact-ready 候选提升为 `green`；wave-10b 再登记 wave-9 规划 §3.2 剩余的 13 个 B 类 weaker 候选、不提升任何 case；wave-10 conditional 把 `TS-ANALYSIS-0184` 与 `TS-REWRITE-0197` 提升为 exact `green`，并把 `TS-ANALYSIS-0161` 登记为 weaker、保持 `planned`；wave-11 retire 把 `TS-COMPONENT-0774` 作为第 37 个 obsolete Candidate-B-only case 退休，并把 `TS-META-0027` 作为 superseded contract 退休；wave-11 exact 回填再把 `TS-ANALYSIS-0315/0332` 与 10 个 messages/probes case 提升为 exact `green`；剩余 2 个 near-exact 保留 `planned` + green recommendation；36 个历史 Candidate B 不变；未删除任何旧测试）
 
 基线：`b9616c557e54a06b7d756e516e6dd7c4016664cf`（`tsgo/migration`，包含 `4d59ca7`）
 
@@ -23,6 +23,10 @@
 实现 HEAD（wave-10b weaker 回填）：`43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12`（只登记 13 个 B 类 weaker 证据，未改生产/测试）
 
 实现 HEAD（wave-10 conditional 回填）：`43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12`（2 个 exact + 1 个 weaker；测试改动在并行 session 的工作树，未提交）
+
+实现 HEAD（wave-11 retire）：`51abc13384f91329135943b383ec4f578a5cc3c6`（只改台账、validator、契约与证据；未改生产/测试，未提交）
+
+实现 HEAD（wave-11 exact 回填）：`68f852cf0aa04baf791f6fae9867bc1641b0c88d`（2 个 layout/request isolation 测试已提交；10 个 messages/probes 测试在并行工作树，未提交；本轮只改台账/validator/契约/证据）
 
 机器可读账本：`docs/plans/tsgo-test-ledger.json`
 
@@ -49,6 +53,8 @@ P0 证据：`docs/evidence/2026-11-17-tsgo-migration-baseline.md`
 - Wave-10 exact 回填（2026-11-20，验证 HEAD `8a56f27edcc9b91264f4b2bd0f3609450b17ab7c` + 未提交测试）：wave-9 规划 §3.1 的 9 个 exact-ready 候选补齐现有 Rust 测试证据（`TS-PROBES-0048/0059`、`TS-ANALYSIS-0196/0349`、`TS-PROTOCOL-0126/0280/0319/0600`、`TS-SERVER-0150`），全部提升为 exact `green`。最终 **68 green / 235 planned / 36 retired-with-decision**；`exact` 59→68、`planned` 244→235、`assessed_cases` 172→181、无证据 planned 131→122；`near_exact` 2、`weaker` 82、`structural` 7、`blocked` 22 不变。`TS-ANALYSIS-0196/0349` 的 note 如实记录 typed-error 替代口径。逐条见 §23.7。
 - Wave-10b weaker 回填（2026-11-20，验证 HEAD `43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12`）：wave-9 规划 §3.2 中剩余 13 个 B 类 weaker 候选（`TS-COMPLETION-0066`、`TS-MATRIX-0271`、`TS-OVERLAY-0076`、`TS-PROTOCOL-0053/0098/0306/0438/0505/0525/0549`、`TS-REWRITE-0368`、`TS-SERVER-0216/0267`）登记现有 Rust 测试证据及其实际缺口，不提升任何 case。最终 **68 green / 235 planned / 36 retired-with-decision**；`assessed_cases` 181→194、`weaker` 82→95、无证据 planned 122→109；`exact` 68、`near_exact` 2、`structural` 7、`blocked` 22 不变。逐条见 §23.8 和 `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave10b.md`。
 - Wave-10 conditional 回填（2026-11-20，验证 HEAD `43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12` + 未提交测试）：`TS-ANALYSIS-0184` 与 `TS-REWRITE-0197` 由各自真实 mapping 测试提升为 exact `green`；`TS-ANALYSIS-0161` 只登记输入接线 weaker 证据并保持 `planned`。最终 **70 green / 233 planned / 36 retired-with-decision**；`exact` 68→70、`weaker` 95→96、`assessed_cases` 194→197、无证据 planned 109→106；`near_exact` 2、`structural` 7、`blocked` 22 不变。逐条见 §23.9 和 `docs/evidence/2026-11-20-tsgo-wave10-conditional-plan.md` §10。
+- Wave-11 retire（2026-11-20，HEAD `51abc13`）：只把 `TS-COMPONENT-0774`（`candidate_b_layout`，第 37 个 obsolete）与 `TS-META-0027`（`superseded_contract`）从 `planned` 移到 `retired-with-decision`，并为两者补 `retirement_decision`、稳定 decision id 和替代证据。最终 **70 green / 231 planned / 38 retired-with-decision**；`exact` 70、`near_exact` 2、`weaker` 96、`structural` 7、`blocked` 22、`assessed_cases` 197 不变；无证据 planned 106→104。`TS-REWRITE-0378` 与 3 个 `TS-EVIDENCE-*` 仍保持 `planned`。逐条见 §24 和 `docs/evidence/2026-11-20-tsgo-ledger-retire-0774-meta.md`。
+- Wave-11 exact 回填（2026-11-20，HEAD `68f852c`）：`TS-ANALYSIS-0315/0332` 与 10 个 messages/probes case（`TS-MESSAGES-0005/0016/0025/0032/0039`、`TS-PROBES-0064/0080/0098/0135/0153`）全部提升为 exact `green`。最终 **82 green / 219 planned / 38 retired-with-decision**；`exact` 70→82、`assessed_cases` 197→209、无证据 planned 104→92；`near_exact` 2、`weaker` 96、`structural` 7、`blocked` 22、`retired` 38 不变。逐条见 §25、`docs/evidence/2026-11-20-tsgo-wave11-layout-isolation.md` 与 `docs/evidence/2026-11-20-tsgo-wave11-messages-probes.md`。
 - 本轮 TS 套件实际执行：339 个，通过 338，失败 1，跳过 0。
 - 计划对账：计划 273 静态 / ~338 展开，实际 **274 / 339**（+1）；原因是 `events.test.ts` 实际 24 个声明而非计划表中的 23。
 - 23 个 Rust `#[ignore]` 测试全部映射到必跑原生命令；2 个 `semantic_tools` 静默 return 路径同样映射；均不计为已迁移。
@@ -1832,3 +1838,164 @@ live/frozen、`fixture_hash.rs`、manifest JSON、`native_parity.rs`、README
 （76 passed / 26 ignored）、`cargo fmt --all -- --check`、
 `git diff --check` 全部通过；0184 的 5 个 `case_analysis_01*` 测试与 0197
 的 `shadow_rewrite` 测试单独执行通过。
+
+## 24. Wave-11 retire（0774 + META-0027，2026-11-20）
+
+输入：`docs/evidence/2026-11-20-tsgo-wave11-retire-audit.md` §2.4/§2.5 与
+`docs/evidence/2026-11-20-tsgo-ledger-retire-0774-meta.md`。本轮只改台账、validator、契约与文档；
+未改生产代码、测试断言、README、manifest 或 fixture hash。
+
+| Case | 旧 oracle | disposition | status | scope | decision id |
+| --- | --- | --- | --- | --- | --- |
+| `TS-COMPONENT-0774` | symbol-bridge 不把已解析 behavior root 报 missing（exact 2339 过滤） | `obsolete` | `retired-with-decision` | `candidate_b_layout` | `wave11-e-0774` |
+| `TS-META-0027` | C1 文档含 TypeScript 6.0.3 / typings 5.3.1 | `rewrite` | `retired-with-decision` | `superseded_contract` | `wave11-e-meta-0027` |
+
+### 24.1 `TS-COMPONENT-0774`
+
+- 生产代码证据：`backends/typescript/src/server.ts:152` 不传 `layoutId`；
+  `backends/typescript/src/analysis.ts:59-60,416` 明确生产默认 `in-place-shadow`；oracle 在
+  `backends/typescript/test/componentBindings.test.ts:774` 显式使用 `symbol-bridge`。
+- 替代证据（**不是 exact 2339 断言**）：
+   crates/wxml-lsp/tests/native_parity/native_engine_real.rs:2867 `native_component_behavior_data_and_properties`（`G-P5-E2E-11`，opt-in：`WXML_TEST_NATIVE=1` + 真引擎）；
+   crates/wxml-backend-tsgo/tests/script_behavior.rs:340 `case_component_0570_only_unresolved_behavior_is_partial_and_invents_no_field`（blocked，测试自己记录不断言 2339）；
+   crates/wxml-backend-tsgo/tests/script_behavior.rs:430 `case_component_0763_non_probe_double_underscore_data_names_remain_usable`（near_exact）。
+- 保留既有 Candidate-B 规则：`requires_decision=true`、`target_rust_test_status=not_migrated_internal_evidence`、
+  `migration_evidence` 缺失；第 37 个 `obsolete`。
+- 未补默认 exact 覆盖；若以后需要默认 2339 断言，应新增 in-place behavior-data 测试，而不是提升本 case。
+
+### 24.2 `TS-META-0027`
+
+- 旧 oracle：`backends/typescript/test/meta.test.ts:27-36` 读 `docs/reference/type-bridge-c1.md`，
+  匹配 6.0.3/5.3.1。
+- 当前 native pin：`crates/wxml-backend-tsgo/src/config.rs:20` `ENGINE_VERSION=7.1.0-beta`；
+  `crates/wxml-backend-tsgo/src/input.rs:128` `PINNED_TYPINGS_VERSION=5.3.1`。
+- 替代证据（默认运行）：
+   crates/wxml-backend-tsgo/src/config.rs:415 `pinned_identity_uses_literal_f0_values`（weaker：7.1.0-beta 是有意偏离 6.0.3）；
+   crates/wxml-backend-tsgo/src/input.rs:2201 `type_assets_validate_pin_identity_and_paths`（weaker：typings 5.3.1 版本相同，但断言机制是 package pin，不是 C1 文档字符串）；
+   crates/wxml-delivery/tests/assets_lock_root.rs:130 `repository_root_lock_is_frozen_and_canonical`（weaker：lock 的 7.1.0-beta/5.3.1 与摘要）。
+- 前置文档修正：`docs/reference/type-bridge-c1.md` 头部标注 native 路径不实现 C1，§9 的 `6.0.3`
+  改为 native `7.1.0-beta`/typings `5.3.1` 并指向上述 3 个测试；历史 Node 桥版本明确标为历史。
+- `TS-META-0009` 仍为 `planned`/`weaker`，未提升 `green`；不声称 6.0.3 与 7.1.0-beta exact 等价。
+- `replacement_case_id="F0-version-pin"` 是外部标签，不是 ledger case；真实替代以上述 3 个测试为准。
+
+### 24.3 计数与分区
+
+| 计数 | before | after |
+| --- | ---: | ---: |
+| `green` | 70 | 70 |
+| `planned` | 233 | 231 |
+| `retired-with-decision` | 36 | 38 |
+| `exact` / `near_exact` / `weaker` / `structural` / `blocked` | 70 / 2 / 96 / 7 / 22 | 不变 |
+| `assessed_cases` | 197 | 197 |
+| 无证据 planned | 106 | 104 |
+| `dispositions.rewrite` / `obsolete` | 52 / 36 | 51 / 37 |
+
+分区变化（JSON `counts.migration_evidence.by_partition`，其余不变）：
+
+| 分区 | routed | unassessed | 说明 |
+| --- | ---: | ---: | --- |
+| `behaviors` | 22→21 | 4→3 | 0774 转 obsolete |
+| `protocol_limits` | 40→39 | 22→21 | META 退休 |
+
+### 24.4 Validator 与契约
+
+- `crates/wxml-lsp/tests/native_parity/ledger.rs`：`PLANNED_CASES` 233→231、`RETIRED_CASES` 36→38；
+  新增 `NON_OBSOLETE_RETIRED_CASES=1`、`OBSOLETE_CASES=37`、`ALLOWED_RETIREMENT_SCOPES`
+  （`candidate_b_layout`/`superseded_contract`）与 `RETIREMENT_DECISIONS` 精确哨兵
+  `[("TS-COMPONENT-0774","wave11-e-0774","candidate_b_layout"),
+  ("TS-META-0027","wave11-e-meta-0027","superseded_contract")]`。
+- 新 retired 分支：`direct/rewrite/split + retired-with-decision` 必须有 `retirement_decision`，
+  校验稳定 id、`date=2026-11-20`、`owner=integrator`、非空
+  `required_by`/`reason`/`product_impact`/`evidence`、非空 `replacement` 及
+  `kind`/`strength`/`note`；`rust_test` 证据必须能在给出的 `path:line` 找到 `fn test(`。
+- 旧 36 个 `obsolete` 继续使用 2026-11-17 `accepted-obsolete`（`decision_status` +
+  `decision_at=2026-11-17`）；新增 `obsolete` case 若带 `retirement_decision` 则以
+  `scope=candidate_b_layout` 为准，不再只靠字符串“Candidate B”。
+- 旧哨兵 `decision_ids.len()==37` 与 `non_obsolete_decision_ids==["TS-META-0027"]` 已替换为：
+  `decision_ids.len()==OBSOLETE_CASES(37)`、`non_obsolete_decision_ids` 为空、
+  `retirement_decisions==RETIREMENT_DECISIONS`。`requires_decision` 只保留给 obsolete 分支。
+- `counts.integrator_decisions`：`accepted_obsolete` 36→37、`accepted_rewrite` 1→0，新增
+  `accepted_superseded_contract=1`；validator 校验 4 个桶。
+- `docs/reference/tsgo-test-contract.md` §3 增加 `retirement_decision` 规则，§8 G5 允许
+  `retired-with-decision` + `retirement_decision`；§1 计数同步。
+- `docs/reference/type-bridge-c1.md` 头部与 §9 修正 stale 6.0.3 声明。
+
+### 24.5 未改动与验证
+
+- `TS-EVIDENCE-0011/0025/0050` 与 `TS-REWRITE-0378` 保持 `planned`；本轮不处理 evidence 工具链范围与
+  rewrite perf 门禁。
+- 未改 README、`Cargo`、manifest JSON、`fixture_hash.rs`、oracle live/frozen；未 commit、未 review。
+- 验证：`jq empty docs/plans/tsgo-test-ledger.json`、`cargo test -p wxml-lsp --test native_parity`
+  （76 passed / 26 ignored）、`cargo fmt --all -- --check`、`git diff --check`。
+
+## 25. Wave-11 exact 回填（0315/0332 + messages/probes 10，2026-11-20）
+
+输入：`docs/evidence/2026-11-20-tsgo-wave11-layout-isolation.md` 与
+`docs/evidence/2026-11-20-tsgo-wave11-messages-probes.md` §5。本轮只改台账、validator、契约与
+证据；未改生产代码、测试断言、README、manifest 或 fixture hash。
+
+### 25.1 逐 case
+
+| Case | Oracle | Rust 证据（path:line） | 结论 |
+| --- | --- | --- | --- |
+| `TS-ANALYSIS-0332` | `analysis.test.ts:332` |  crates/wxml-backend-tsgo/tests/shadow_layout.rs:273 `case_analysis_0332_one_expression_may_appear_under_two_fragment_ids` | exact：同一表达式两个 fragment → `f0#0`/`f1#0` 两个 mount，derived/target/segments/源映射精确，不折叠；C1 `response.fragments` 由 `view.mounts[].fragment_id` 表达 |
+| `TS-ANALYSIS-0315` | `analysis.test.ts:315` |  crates/wxml-lsp/src/backend_tsgo/tests.rs:2804 `case_analysis_0315_a_partial_definition_does_not_degrade_later_hover_or_completion` | exact：definition `Partial` 原因精确且 locations 空；后续 hover/completion/diagnostics `Supported`；再次 definition 同 `Partial`；`starts==1`/`shutdowns==0` |
+| `TS-MESSAGES-0005` | `messages.test.ts:5` |  crates/wxml-backend-tsgo/src/query/message.rs:485 `case_messages_0005_helper_names_are_removed` | exact：纯 Rust `sanitize_message` 去掉 `__wxml_root.`、把 `__wxml_check_0` 换成 `helper`；精确字符串 |
+| `TS-MESSAGES-0016` | `messages.test.ts:16` |  crates/wxml-backend-tsgo/src/query/message.rs:497 `case_messages_0016_typings_internals_are_unwrapped` | exact：纯 Rust 清洗 `FilterUnknownType`/`PropertyOptionToData`，含完整字符串断言 |
+| `TS-MESSAGES-0025` | `messages.test.ts:25` |  crates/wxml-backend-tsgo/src/query/message.rs:510 `case_messages_0025_generated_overlay_type_names_are_replaced` | exact：`__WxmlProps_0` → `declared properties`，整句精确 |
+| `TS-MESSAGES-0032` | `messages.test.ts:32` |  crates/wxml-backend-tsgo/src/query/message.rs:520 `case_messages_0032_duplicated_intersection_literals_collapse` | exact：重复交叉字面量折叠，整句精确 |
+| `TS-MESSAGES-0039` | `messages.test.ts:39` |  crates/wxml-backend-tsgo/src/query/message.rs:530 `case_messages_0039_long_messages_are_truncated` | exact：200 UTF-16 预算（实际 199）、`…` 结尾、保留前缀 |
+| `TS-PROBES-0064` | `probes.test.ts:64` |  crates/wxml-backend-tsgo/src/query/probe_health.rs:455 `case_probes_0064_probe_health_rejects_a_probe_root_that_resolves_to_any` | exact：`Quality(Any)` → `probe root resolves to any` |
+| `TS-PROBES-0080` | `probes.test.ts:80` |  crates/wxml-backend-tsgo/src/query/probe_health.rs:466 `case_probes_0080_probe_health_rejects_diagnostics_that_intersect_an_insertion` | exact：诊断 `2339` 与 insertion 相交 |
+| `TS-PROBES-0098` | `probes.test.ts:98` |  crates/wxml-backend-tsgo/src/query/probe_health.rs:486 `case_probes_0098_probe_health_uses_the_exact_offsets_it_is_given_not_a_name_search` | exact：同名条目按 offset 而非名字判定 |
+| `TS-PROBES-0135` | `probes.test.ts:135` |  crates/wxml-backend-tsgo/src/query/probe_health.rs:508 `case_probes_0135_a_duplicate_helper_is_reported_through_the_insertion_check` | exact：诊断 `2300` 与 insertion 相交 |
+| `TS-PROBES-0153` | `probes.test.ts:153` |  crates/wxml-backend-tsgo/src/query/probe_health.rs:528 `case_probes_0153_probe_health_reports_a_module_classification_flip` | exact：`Script` → `Module` 分类翻转 |
+
+所有 12 个 case 的 `target_rust_test` 保持原 partition 路由标签；真实测试由
+`migration_evidence.rust_tests` 指向，validator 不要求目标标签等于真实测试。
+
+### 25.2 计数与分区
+
+| 计数 | before | after |
+| --- | ---: | ---: |
+| `green` | 70 | 82 |
+| `planned` | 231 | 219 |
+| `retired-with-decision` | 38 | 38 |
+| `exact` | 70 | 82 |
+| `near_exact` / `weaker` / `structural` / `blocked` | 2 / 96 / 7 / 22 | 不变 |
+| `assessed_cases` | 197 | 209 |
+| 无证据 planned | 104 | 92 |
+
+分区变化（JSON `counts.migration_evidence.by_partition`，其余不变）：
+
+| 分区 | evidence | green | exact | unassessed | 说明 |
+| --- | ---: | ---: | ---: | ---: | --- |
+| `project_overlay` | 10→12 | 1→3 | 1→3 | 10→8 | 0315/0332 |
+| `messages_evidence` | 0→5 | 0→5 | 0→5 | 8→3 | 5 个 messages |
+| `guards_js` | 15→20 | 9→14 | 9→14 | 10→5 | 5 个 probes |
+
+### 25.3 Validator 与边界
+
+- `crates/wxml-lsp/tests/native_parity/ledger.rs`：`GREEN_CASES` 70→82、`PLANNED_CASES` 231→219；
+  `RETIRED_CASES` 38、`NEAR_EXACT_CASES` 2、`WEAKER_CASES` 96、`STRUCTURAL_CASES` 7、
+  `BLOCKED_CASES` 22 不变。`retirement_decision` 规则、`RETIREMENT_DECISIONS` 哨兵和
+  oracle live/frozen 均未改。
+- `TS-ANALYSIS-0332` 的 C1 `response.fragments` 没有 native envelope，按
+  `view.mounts[].fragment_id` 在 layout 边界表达；`mounts` 数量、顺序、target/segment/源映射
+  均为精确断言。
+- `TS-ANALYSIS-0315` 的 oracle 只断言三个 capability status；Rust 额外精确断言 definition
+  reason、空 locations、hover/completion/diagnostics 的 `Supported` 和 session `starts==1`/
+  `shutdowns==0`。
+- `message.rs`/`probe_health.rs` 是纯 Rust 决策函数；probe health 未接 adapter，未改变
+  hover/diagnostics 的 `Supported` 语义。
+- 未改 README、`Cargo`、manifest JSON、`fixture_hash.rs`、oracle live/frozen；未 commit、未 review。
+
+### 25.4 验证
+
+- `jq empty docs/plans/tsgo-test-ledger.json`
+- `cargo test -p wxml-lsp --test native_parity`（76 passed / 26 ignored）
+- `cargo test -p wxml-backend-tsgo --test shadow_layout case_analysis_0332`（1 passed）
+- `cargo test -p wxml-lsp --lib case_analysis_0315`（1 passed）
+- `cargo test -p wxml-backend-tsgo --lib query::message`（8 passed）
+- `cargo test -p wxml-backend-tsgo --lib query::probe_health`（12 passed）
+- `cargo fmt --all -- --check`、`git diff --check`

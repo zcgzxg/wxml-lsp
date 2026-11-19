@@ -7,13 +7,17 @@
   backfill`）。实现与验证期间并行提交 `68f852c`（`test(tsgo): cover layout
   fragment reuse and request isolation`）；本文件记录验证时的实际工作树。
 - 记录日期：2026-11-20
-- 范围：只新增/修改生产 query 模块、`query/mod.rs` 导出和本证据文件。
-  未改 `native/session.rs`、adapter、`native_parity`、ledger JSON、ledger
-  Markdown、README、contract、ADR、fixture 冻结树、Cargo、脚本；未 commit，
-  未 review。
+- 范围：原始切片只新增/修改生产 query 模块、`query/mod.rs` 导出和本证据文件；
+  原始切片未改 `native/session.rs`、adapter、`native_parity`、ledger JSON、ledger
+  Markdown、README、contract、ADR、fixture 冻结树、Cargo、脚本。后续 wave-11 exact
+  台账回填只改 ledger/validator/契约/证据（见 §5）；未 commit，未 review。
+- 台账回填：本切片 10 个 exact 与 `TS-ANALYSIS-0315/0332` 合并落账；当前
+  **82 green / 219 planned / 38 retired**，`exact` 82、`assessed_cases` 209、
+  无证据 planned 92（HEAD `68f852c`）。
 - 工作树并行状态：`crates/wxml-lsp/tests/native_parity/*`、
   `docs/plans/tsgo-test-ledger.json`、`docs/reference/*` 等由其他 session
-  修改，本切片没有触碰；本文件 §6 的台账建议必须在该并行改动落定后重新计数。
+  修改，原始切片没有触碰；后续 wave-11 exact 回填只同步 ledger/validator/契约/证据，
+  并以当时实际计数重新计算。
 - 输入：`docs/evidence/2026-11-20-tsgo-wave11-native-capability-triage.md`
   §4.1/§4.2/§6.2/§6.3，C 类 59 个 case 中可无条件 exact 的 10 个。
 
@@ -316,11 +320,15 @@ git diff --check                                   # DIFF_CHECK_OK
 
 ### 5.3 计数变化（读取时 70/231/38）
 
+> 本表是 10 个 messages/probes case 的独立增量，基线为读取时的 70/231/38。
+> 与 `TS-ANALYSIS-0315/0332` 合并落账后的最终台账为 **82 green / 219 planned /
+> 38 retired**，`exact` 82、`assessed_cases` 209、无证据 planned 92。
+
 当前读取值：`green 70`、`planned 231`、`retired 38`；`exact 70`、
 `near_exact 2`、`weaker 96`、`structural 7`、`blocked 22`、`assessed_cases
 197`、无证据 planned `104`。
 
-10 个 case 全部 promoted 后应为：
+10 个 case 单独 promoted 后的增量为：
 
 | 字段 | 建议值 |
 | --- | ---: |
@@ -345,7 +353,7 @@ git diff --check                                   # DIFF_CHECK_OK
   `weaker/structural/blocked` 不变。
 
 `crates/wxml-lsp/tests/native_parity/ledger.rs` 的冻结常量需同步为
-`GREEN_CASES = 80`、`PLANNED_CASES = 221`；`NEAR_EXACT_CASES = 2`、
+`GREEN_CASES = 82`、`PLANNED_CASES = 219`（已与 0315/0332 合并）；`NEAR_EXACT_CASES = 2`、
 `WEAKER_CASES = 96`、`STRUCTURAL_CASES = 7`、`BLOCKED_CASES = 22` 不变。
 本切片按要求没有修改该文件或 ledger。
 

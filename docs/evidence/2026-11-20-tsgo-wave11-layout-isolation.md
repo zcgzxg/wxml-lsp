@@ -1,10 +1,10 @@
 # Wave 11-C/D：重复表达式 mount 与每请求状态隔离
 
 - 工作区：`/home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration`
-- HEAD：`51abc13`
+- HEAD：`68f852c`（测试提交；本切片验证时基于 `51abc13`）
 - 日期：2026-11-20
 - 范围：`TS-ANALYSIS-0332`（W11-C）、`TS-ANALYSIS-0315`（W11-D）
-- 结论：**2 exact / 0 blocked**；未改生产代码、ledger、README、`native_parity.rs` 或冻结 fixture；未 commit。
+- 结论：**2 exact / 0 blocked**。台账回填后本切片为 72 green / 229 planned / 38 retired；与 messages/probes 10 个 exact 合并后当前台账为 **82 green / 219 planned / 38 retired**（`exact` 82）。生产代码未改；本轮只改台账、validator、契约与证据，未 commit。
 
 ## 汇总
 
@@ -75,11 +75,11 @@ Oracle 只断言三个 capability 的 status，不断言 reason 文本。
 
 Oracle 在纯 `finishedStates` 聚合器上断言；Rust 没有同名聚合器，本测试在同一条 adapter 请求序列上断言相同的三个 status，并额外精确断言 Rust 适配器实际产生的 definition reason。reason 文本属于 Rust 行为，不是对 oracle 文本的臆造。
 
-## 建议 ledger（本任务未修改）
+## 台账回填（已应用）
 
 ### Markdown ledger
 
-`docs/plans/2026-11-17-tsgo-test-ledger.md` 表 `analysis.test.ts` 的两行建议改为：
+`docs/plans/2026-11-17-tsgo-test-ledger.md` §25 记录本切片的逐 case 证据；用例索引表保持结构不变。
 
 | Case | 建议 status | 建议证据 |
 | --- | --- | --- |
@@ -88,20 +88,20 @@ Oracle 在纯 `finishedStates` 聚合器上断言；Rust 没有同名聚合器�
 
 ### JSON ledger
 
-`docs/plans/tsgo-test-ledger.json` 建议：
+`docs/plans/tsgo-test-ledger.json` 已应用：
 
 - `TS-ANALYSIS-0332`
-  - `target_rust_test`: `crates/wxml-backend-tsgo/tests/shadow_layout.rs::case_analysis_0332_one_expression_may_appear_under_two_fragment_ids`
+  - `target_rust_test`: 保持 partition 路由 `crates/wxml-lsp/tests/native_parity/project_overlay.rs::case_analysis_0332_one_expression_may_appear_under_two_fragment_ids`；真实测试在 `migration_evidence.rust_tests`
   - `target_rust_test_status`: `migrated_green`
   - `status`: `green`
   - `migration_evidence.parity`: `exact`
-  - `migration_evidence.rust_tests`: 上述 path/line/test，note 记录“两个 mount、顺序、derived range、target range、segments、不合并；C1 `response.fragments` 由 mounts fragment_id 表达”
+  - `migration_evidence.rust_tests`:  crates/wxml-backend-tsgo/tests/shadow_layout.rs:273，note 记录“两个 mount、顺序、derived range、target range、segments、不合并；C1 `response.fragments` 由 mounts fragment_id 表达”
 - `TS-ANALYSIS-0315`
-  - `target_rust_test`: `crates/wxml-lsp/src/backend_tsgo/tests.rs::case_analysis_0315_a_partial_definition_does_not_degrade_later_hover_or_completion`
+  - `target_rust_test`: 保持 partition 路由 `crates/wxml-lsp/tests/native_parity/project_overlay.rs::case_analysis_0315_a_dropped_definition_downgrades_only_the_definition_capability`；真实测试在 `migration_evidence.rust_tests`
   - `target_rust_test_status`: `migrated_green`
   - `status`: `green`
   - `migration_evidence.parity`: `exact`
-  - `migration_evidence.rust_tests`: 上述 path/line/test，note 记录“dropped generated target → definition `Partial`；hover/completion/diagnostics `Supported`；session 不重启；每请求状态不共享”
+  - `migration_evidence.rust_tests`:  crates/wxml-lsp/src/backend_tsgo/tests.rs:2804，note 记录“dropped generated target → definition `Partial`；hover/completion/diagnostics `Supported`；session 不重启；每请求状态不共享”
 
 ## 验证
 

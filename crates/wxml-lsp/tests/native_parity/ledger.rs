@@ -21,13 +21,22 @@ pub(crate) const LEDGER_RELATIVE_PATH: &str = "docs/plans/tsgo-test-ledger.json"
 pub(crate) const TOTAL_CASES: usize = 339;
 /// Exact-parity cases promoted to `green`; the wave-9 assertion backfill
 /// promoted three more, the wave-10 follow-up promoted `TS-REWRITE-0207` plus
-/// nine exact-ready cases, and the wave-10 conditional follow-up promoted
-/// `TS-ANALYSIS-0184` plus `TS-REWRITE-0197`.
-pub(crate) const GREEN_CASES: usize = 70;
-/// Cases still `planned` after the 2026-11-20 wave-10 conditional backfill.
-pub(crate) const PLANNED_CASES: usize = 233;
-/// Frozen retired-with-decision count.
-pub(crate) const RETIRED_CASES: usize = 36;
+/// nine exact-ready cases, the wave-10 conditional follow-up promoted
+/// `TS-ANALYSIS-0184` plus `TS-REWRITE-0197`, and the wave-11 exact backfill
+/// promoted `TS-ANALYSIS-0315/0332` plus ten messages/probes cases.
+pub(crate) const GREEN_CASES: usize = 82;
+/// Cases still `planned` after the 2026-11-20 wave-11 exact backfill.
+pub(crate) const PLANNED_CASES: usize = 219;
+/// Frozen retired-with-decision count: the 2026-11-17 Candidate-B decision
+/// (36 cases) plus the wave-11 `TS-COMPONENT-0774` and `TS-META-0027` cases.
+pub(crate) const RETIRED_CASES: usize = 38;
+/// Retired cases that keep a non-obsolete disposition and therefore stay in
+/// the routed target set. Wave-11 retires `TS-META-0027` as a superseded
+/// contract without changing its `rewrite` disposition.
+const NON_OBSOLETE_RETIRED_CASES: usize = 1;
+/// Retired cases with `disposition = obsolete`: the 36 historical Candidate-B
+/// cases plus the wave-11 `TS-COMPONENT-0774` Candidate-B-only case.
+const OBSOLETE_CASES: usize = RETIRED_CASES - NON_OBSOLETE_RETIRED_CASES;
 /// Near-exact cases intentionally left `planned` with a green recommendation
 /// after `TS-REWRITE-0207` was promoted to exact.
 pub(crate) const NEAR_EXACT_CASES: usize = 2;
@@ -89,6 +98,32 @@ const ALLOWED_STATUSES: &[&str] = &["planned", "green", "retired-with-decision"]
 const ALLOWED_ORACLE_TYPES: &[&str] = &["assertion", "unit", "parity"];
 const ALLOWED_PARITIES: &[&str] = &["exact", "near_exact", "weaker", "structural", "blocked"];
 const ALLOWED_RECOMMENDATIONS: &[&str] = &["green", "planned"];
+/// Retirement scopes accepted by the wave-11 `retirement_decision` extension.
+/// Adding a scope requires extending this list, the test contract and the
+/// affected case together; an unknown scope must never slip through.
+const ALLOWED_RETIREMENT_SCOPES: &[&str] = &["candidate_b_layout", "superseded_contract"];
+/// Every wave-11 retirement is decided on this date.
+const RETIREMENT_DECISION_DATE: &str = "2026-11-20";
+/// Legacy Candidate-B decision date. Only the frozen 2026-11-17 cases may
+/// retire through the reason string instead of a `retirement_decision`.
+const LEGACY_CANDIDATE_B_DECISION_DATE: &str = "2026-11-17";
+/// Replacement kinds and strengths accepted inside a retirement decision.
+const ALLOWED_REPLACEMENT_KINDS: &[&str] = &["rust_test", "none"];
+const ALLOWED_REPLACEMENT_STRENGTHS: &[&str] = &[
+    "exact",
+    "near_exact",
+    "weaker",
+    "structural",
+    "blocked",
+    "opt_in",
+];
+/// Exact wave-11 retirement decisions as `(case_id, decision_id, scope)`.
+/// This is the retired-decision sentinel: a new retirement must add its stable
+/// id here and in the test contract instead of only editing a count.
+const RETIREMENT_DECISIONS: &[(&str, &str, &str)] = &[
+    ("TS-COMPONENT-0774", "wave11-e-0774", "candidate_b_layout"),
+    ("TS-META-0027", "wave11-e-meta-0027", "superseded_contract"),
+];
 const GREEN_TARGET_STATUS: &str = "migrated_green";
 const PLANNED_TARGET_STATUS: &str = "proposed";
 const RETIRED_TARGET_STATUS: &str = "not_migrated_internal_evidence";
@@ -362,6 +397,131 @@ fn is_case_id(value: &str) -> bool {
         && value.bytes().all(|byte| {
             byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
         })
+}
+
+/// Validates one wave-11 retirement decision and returns its stable id/scope.
+///
+/// The 36 legacy Candidate-B cases keep only the 2026-11-17
+/// `accepted-obsolete` decision, so they are not routed through this helper.
+/// Every new retired case must carry the object: the scope decides why the
+/// oracle stopped being a product gate, and the replacement list must name
+/// real tests with an honest strength. `migration_evidence` is intentionally
+/// not accepted on a retired case.
+fn validate_retirement_decision<'a>(
+    case: &'a Map<String, Value>,
+    case_id: &str,
+    workspace: &Path,
+) -> (&'a str, &'a str) {
+    let decision = required_object(case, "retirement_decision", case_id);
+    let id = required_str(decision, "id", case_id);
+    assert!(
+        !id.is_empty()
+            && id.bytes().all(|byte| {
+                byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-' || byte == b'_'
+            }),
+        "{case_id} retirement decision id is not a stable slug: {id}"
+    );
+    assert_eq!(
+        required_str(decision, "date", case_id),
+        RETIREMENT_DECISION_DATE,
+        "{case_id} retirement decision date drifted"
+    );
+    assert_eq!(
+        required_str(decision, "owner", case_id),
+        "integrator",
+        "{case_id} retirement decision owner drifted"
+    );
+    assert!(
+        !required_str(decision, "required_by", case_id).is_empty(),
+        "{case_id} retirement decision needs a required_by"
+    );
+    let scope = required_str(decision, "scope", case_id);
+    assert!(
+        ALLOWED_RETIREMENT_SCOPES.contains(&scope),
+        "{case_id} has unexpected retirement scope {scope:?}"
+    );
+    let reason = required_str(decision, "reason", case_id);
+    assert!(
+        reason.len() > 40,
+        "{case_id} retirement decision needs a substantive reason"
+    );
+    assert!(
+        !required_str(decision, "product_impact", case_id).is_empty(),
+        "{case_id} retirement decision needs a product_impact"
+    );
+
+    let evidence = required_string_array(decision, "evidence", case_id);
+    assert!(
+        !evidence.is_empty(),
+        "{case_id} retirement decision needs non-empty code evidence"
+    );
+    assert!(
+        evidence.iter().all(|entry| !entry.is_empty()),
+        "{case_id} retirement decision has empty code evidence"
+    );
+
+    let replacement = required_array(decision, "replacement", case_id);
+    assert!(
+        !replacement.is_empty(),
+        "{case_id} retirement decision needs replacement evidence"
+    );
+    for item in replacement {
+        let item = object(item, &format!("{case_id}.retirement_decision.replacement"));
+        let kind = required_str(item, "kind", case_id);
+        assert!(
+            ALLOWED_REPLACEMENT_KINDS.contains(&kind),
+            "{case_id} has unexpected replacement kind {kind:?}"
+        );
+        let strength = required_str(item, "strength", case_id);
+        assert!(
+            ALLOWED_REPLACEMENT_STRENGTHS.contains(&strength),
+            "{case_id} has unexpected replacement strength {strength:?}"
+        );
+        let note = required_str(item, "note", case_id);
+        assert!(
+            note.len() > 20,
+            "{case_id} replacement {kind} needs a substantive note"
+        );
+        if kind == "rust_test" {
+            let path = required_str(item, "path", case_id);
+            assert!(
+                !path.is_empty() && !Path::new(path).is_absolute(),
+                "{case_id} replacement path must stay repository-relative: {path}"
+            );
+            assert!(
+                Path::new(path)
+                    .extension()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("rs")),
+                "{case_id} replacement path is not a .rs file: {path}"
+            );
+            let line = usize::try_from(required_u64(item, "line", case_id))
+                .expect("replacement line fits usize");
+            let test = required_str(item, "test", case_id);
+            assert!(
+                !test.is_empty()
+                    && test.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'
+                    }),
+                "{case_id} replacement test name is not a Rust function: {test}"
+            );
+            let source = std::fs::read_to_string(workspace.join(path)).unwrap_or_else(|error| {
+                panic!(
+                    "{case_id} replacement source is missing at {}: {error}",
+                    workspace.join(path).display()
+                )
+            });
+            let declaration = source
+                .lines()
+                .nth(line.saturating_sub(1))
+                .unwrap_or_default();
+            assert!(
+                declaration.trim_start().starts_with(&format!("fn {test}(")),
+                "{case_id} replacement {test} is not declared at {path}:{line}"
+            );
+        }
+    }
+
+    (id, scope)
 }
 
 /// Returns the native-parity module named by a ledger target path.
@@ -684,9 +844,9 @@ fn ledger_counts_and_dispositions_are_frozen() {
     let dispositions = tally(cases, "disposition", ALLOWED_DISPOSITIONS);
     let expected_dispositions = [
         ("direct", 240_usize),
-        ("rewrite", 52),
+        ("rewrite", 51),
         ("split", 11),
-        ("obsolete", 36),
+        ("obsolete", 37),
     ];
     for (disposition, expected) in expected_dispositions {
         assert_eq!(
@@ -841,17 +1001,30 @@ fn ledger_counts_and_dispositions_are_frozen() {
 
     let integrator = required_object(counts, "integrator_decisions", "ledger.counts");
     assert_eq!(
+        integrator.len(),
+        4,
+        "the integrator decision buckets drifted"
+    );
+    assert_eq!(
         required_u64(
             integrator,
             "accepted_obsolete",
             "ledger.counts.integrator_decisions"
         ),
-        36
+        u64::try_from(OBSOLETE_CASES).expect("obsolete count fits u64")
     );
     assert_eq!(
         required_u64(
             integrator,
             "accepted_rewrite",
+            "ledger.counts.integrator_decisions"
+        ),
+        0
+    );
+    assert_eq!(
+        required_u64(
+            integrator,
+            "accepted_superseded_contract",
             "ledger.counts.integrator_decisions"
         ),
         1
@@ -874,11 +1047,13 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
     let all_case_ids = case_ids(cases);
     assert_eq!(all_case_ids.len(), TOTAL_CASES, "duplicate case IDs");
 
+    let workspace = workspace_root();
     let mut targets = BTreeSet::new();
     let mut non_obsolete = 0_usize;
     let mut obsolete = 0_usize;
     let mut decision_ids = Vec::new();
     let mut non_obsolete_decision_ids = Vec::new();
+    let mut retirement_decisions = Vec::new();
 
     for case in cases {
         let context = "ledger case";
@@ -973,6 +1148,17 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
                 non_obsolete_decision_ids.push(case_id);
             }
         }
+        let retirement_scope = if case.get("retirement_decision").is_some() {
+            assert_eq!(
+                status, "retired-with-decision",
+                "{case_id} carries a retirement_decision without retired status"
+            );
+            let (id, scope) = validate_retirement_decision(case, case_id, &workspace);
+            retirement_decisions.push((case_id, id, scope));
+            Some(scope)
+        } else {
+            None
+        };
 
         let target = required_str(case, "target_rust_test", case_id);
         match disposition {
@@ -980,11 +1166,29 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
                 obsolete += 1;
                 assert_eq!(status, "retired-with-decision", "{case_id}");
                 assert_eq!(target_status, RETIRED_TARGET_STATUS, "{case_id}");
-                assert!(
-                    reason.contains("Candidate B"),
-                    "{case_id} must cite the retired Candidate B layout"
-                );
                 assert!(requires_decision, "{case_id} needs an integrator decision");
+                match retirement_scope {
+                    Some(scope) => assert_eq!(
+                        scope, "candidate_b_layout",
+                        "{case_id} obsolete retirement must use candidate_b_layout"
+                    ),
+                    None => {
+                        assert_eq!(
+                            required_str(case, "decision_status", case_id),
+                            "accepted-obsolete",
+                            "{case_id} needs a retirement_decision or the 2026-11-17 accepted-obsolete decision"
+                        );
+                        assert_eq!(
+                            required_str(case, "decision_at", case_id),
+                            LEGACY_CANDIDATE_B_DECISION_DATE,
+                            "{case_id} legacy Candidate-B decision date drifted"
+                        );
+                        assert!(
+                            reason.contains("Candidate B"),
+                            "{case_id} must cite the retired Candidate B layout"
+                        );
+                    }
+                }
             }
             "direct" | "rewrite" | "split" => {
                 non_obsolete += 1;
@@ -1012,6 +1216,17 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
                         );
                     }
                     "planned" => assert_eq!(target_status, PLANNED_TARGET_STATUS, "{case_id}"),
+                    "retired-with-decision" => {
+                        assert_eq!(target_status, RETIRED_TARGET_STATUS, "{case_id}");
+                        assert!(
+                            case.get("migration_evidence").is_none(),
+                            "{case_id} retired evidence must stay outside the migration ledger"
+                        );
+                        assert!(
+                            retirement_scope.is_some(),
+                            "{case_id} non-obsolete retirement needs a retirement_decision"
+                        );
+                    }
                     other => panic!("{case_id} has unexpected status {other:?}"),
                 }
             }
@@ -1019,12 +1234,25 @@ fn ledger_cases_are_unique_and_routed_without_claims() {
         }
     }
 
-    assert_eq!(non_obsolete, PLANNED_CASES + GREEN_CASES);
-    assert_eq!(obsolete, RETIRED_CASES);
-    assert_eq!(targets.len(), PLANNED_CASES + GREEN_CASES);
-    assert_eq!(decision_ids.len(), 37);
-    non_obsolete_decision_ids.sort_unstable();
-    assert_eq!(non_obsolete_decision_ids, ["TS-META-0027"]);
+    assert_eq!(
+        non_obsolete,
+        PLANNED_CASES + GREEN_CASES + NON_OBSOLETE_RETIRED_CASES
+    );
+    assert_eq!(obsolete, OBSOLETE_CASES);
+    assert_eq!(
+        targets.len(),
+        PLANNED_CASES + GREEN_CASES + NON_OBSOLETE_RETIRED_CASES
+    );
+    assert_eq!(decision_ids.len(), OBSOLETE_CASES);
+    assert!(
+        non_obsolete_decision_ids.is_empty(),
+        "wave-11 retirements must use retirement_decision, not requires_decision: {non_obsolete_decision_ids:?}"
+    );
+    retirement_decisions.sort_unstable();
+    assert_eq!(
+        retirement_decisions, RETIREMENT_DECISIONS,
+        "the wave-11 retirement decision ids/scopes drifted"
+    );
 
     let dirty_increments = required_array(root, "dirty_increments", "ledger root");
     assert_eq!(dirty_increments.len(), DIRTY_INCREMENT_IDS.len());
@@ -1102,13 +1330,18 @@ fn ledger_migration_evidence_is_complete_and_consistent() {
         let status = required_str(case, "status", case_id);
         let target_status = required_str(case, "target_rust_test_status", case_id);
 
-        if disposition == "obsolete" {
-            assert_eq!(status, "retired-with-decision", "{case_id}");
+        if status == "retired-with-decision" {
             assert_eq!(target_status, RETIRED_TARGET_STATUS, "{case_id}");
             assert!(
                 case.get("migration_evidence").is_none(),
                 "{case_id} retired evidence must stay outside the migration ledger"
             );
+            if disposition != "obsolete" {
+                assert!(
+                    case.get("retirement_decision").is_some(),
+                    "{case_id} non-obsolete retirement needs a retirement_decision"
+                );
+            }
             continue;
         }
 

@@ -15,23 +15,28 @@
 | 静态 `test()` 声明 | 274（273 字面 + 1 动态） |
 | 展开注册 | 339 |
 | `direct` | 240 |
-| `rewrite` | 52 |
+| `rewrite` | 51 |
 | `split` | 11 |
-| `obsolete` | 36（Candidate B/symbol-bridge 内部布局） |
+| `obsolete` | 37（36 个历史 Candidate B + wave-11 `TS-COMPONENT-0774`） |
 | `blocked-decision` | 0 |
-| `green` | 70（真实 Rust 测试证据，未独立 review） |
-| `planned` | 233 |
-| `retired-with-decision` | 36 |
-| `assessed_cases` | 197 |
-| `exact` | 70 |
+| `green` | 82（真实 Rust 测试证据，未独立 review） |
+| `planned` | 219 |
+| `retired-with-decision` | 38 |
+| `assessed_cases` | 209 |
+| `exact` | 82 |
 | `near_exact` | 2 |
 | `weaker` | 96 |
 | `structural` | 7 |
 | `blocked` | 22 |
 
-计数在 wave-10 conditional 回填（2026-11-20）后为 `green` 70 / `planned` 233 /
-`assessed_cases` 197（`exact` 70、`near_exact` 2、`weaker` 96、`structural` 7、
-`blocked` 22），无证据 planned 106；wave-10b weaker 回填结束时为 68/235/194
+计数在 wave-11 exact 回填（2026-11-20，HEAD `68f852c`）后为 `green` 82 / `planned` 219 /
+`retired-with-decision` 38，`assessed_cases` 209（`exact` 82、`near_exact` 2、`weaker` 96、
+`structural` 7、`blocked` 22），无证据 planned 92。wave-11 先把 `TS-COMPONENT-0774`
+（`candidate_b_layout`）与 `TS-META-0027`（`superseded_contract`）移到 `retired-with-decision`，
+再把 `TS-ANALYSIS-0315/0332` 与 10 个 messages/probes case 提升为 exact `green`
+（`exact` 70→82）。此前的 wave-10 conditional 回填（2026-11-20）后为
+`green` 70 / `planned` 233 / `assessed_cases` 197（`exact` 70、`near_exact` 2、`weaker` 96、
+`structural` 7、`blocked` 22），无证据 planned 106；wave-10b weaker 回填结束时为 68/235/194
 （`weaker` 95、无证据 109），wave-10 exact 回填结束时为 68/235/181
 （`weaker` 82、无证据 122），wave-10 near-exact 跟进结束时为 59/244/172
 （`exact` 59、`near_exact` 2、无证据 131），wave-10 weaker 回填结束时为
@@ -43,8 +48,10 @@
 `blocked` 20），wave-5 后为 44/259/145，P6 回填（2026-11-19）后为 36/267，
 P5/P5.1 的历史快照见台账 §14，wave-5/wave-6/组件绑定/wave-7/wave-8/wave-9/wave-10/wave-10b/wave-10-conditional 见 §15/§16/§17/§19/§21/§22/§23。
 
-`obsolete` 不等于“未迁移的通过项”。36 个 Candidate B 用例只作为历史 A/B 证据保留；生产 LSP
-不传 `layoutId`，原位 shadow 用例仍全部强制。`TS-META-0027` 由 F0 引擎/类型资产 pin 测试替代。
+`obsolete` 不等于“未迁移的通过项”。37 个 Candidate B/symbol-bridge 用例（36 个历史 +
+wave-11 `TS-COMPONENT-0774`）只作为历史 A/B 证据保留；生产 LSP 不传 `layoutId`，原位 shadow
+用例仍全部强制。`TS-META-0027` 已按 `superseded_contract` 退休，由 F0 引擎/类型资产 pin 测试
+替代；C1 文档的版本段已改为 native `7.1.0-beta`。
 
 ## 2. Oracle 与 fixture 冻结
 
@@ -91,8 +98,18 @@ P5/P5.1 的历史快照见台账 §14，wave-5/wave-6/组件绑定/wave-7/wave-8
 
 `planned` → `red` → `green` → `reviewed` → `closed`；或 `planned` → `retired-with-decision`。
 
+`retired-with-decision` 有两种合法来源：
+
+- `disposition=obsolete`：沿用 2026-11-17 Candidate-B 裁决（36 个历史 case），或带
+  `retirement_decision.scope=candidate_b_layout`（wave-11 `TS-COMPONENT-0774`）；
+- `direct/rewrite/split`：必须带 `retirement_decision` 对象，包含稳定 `id`、`date`、`owner`、
+  `required_by`、`scope`、非空 `evidence` 与 `replacement`；`scope` 当前只允许
+  `candidate_b_layout` 和 `superseded_contract`（wave-11 `TS-META-0027`）。新增 scope 必须同时
+  扩展 validator、本契约与 case 证据。
+
 不得把 `planned` 批量改成 `green`；不得用“旧测试已删除”代替新测试通过。任何 `obsolete` 必须有
-集成负责人裁决与代码证据。
+集成负责人裁决与代码证据。`retired-with-decision` 是终态非 green 桶，不是迁移证据，不得计入
+`exact` 或 `green`。
 
 ## 4. 差分比较规则
 
@@ -147,5 +164,6 @@ P5/P5.1 的历史快照见台账 §14，wave-5/wave-6/组件绑定/wave-7/wave-8
 ## 8. 退出条件
 
 F2 冻结需要：原生契约 F0/F1 已评审；测试分区 owner 已指定；比较器反向自测通过；fixture v1 hash
-可复现；36 个 `obsolete` 与 1 个 `rewrite` 有裁决记录。G5 通过需要全部 `direct/rewrite/split` 用例
-为 `green/reviewed`，没有真实引擎缺失导致的 skip，且 23 个 ignored 与 2 个静默 return 已转为强制门禁。
+可复现；37 个 `obsolete` 与 1 个 `superseded_contract` 有裁决记录。G5 通过需要全部
+`direct/rewrite/split` 用例为 `green/reviewed`，或为 `retired-with-decision` 且有
+`retirement_decision`；没有真实引擎缺失导致的 skip，且 23 个 ignored 与 2 个静默 return 已转为强制门禁。

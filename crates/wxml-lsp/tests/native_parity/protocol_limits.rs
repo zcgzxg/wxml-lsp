@@ -2,13 +2,15 @@
 //!
 //! Status: **blocked skeleton (P3-T)**. `MIGRATED_CASES` is intentionally
 //! empty; no ledger case in this partition has been implemented or executed.
-//! The 40 planned cases exclude the one retired Candidate B target that also
-//! points here. Future tests must go through `ParityRunner`; there is no skip
-//! path.
+//! The 39 planned/green cases exclude the one retired Candidate B target that
+//! also points here. The retired `TS-META-0027` label keeps one additional
+//! non-obsolete target, so the partition total stays 40.
+//! Future tests must go through `ParityRunner`; there is no skip path.
 
 use crate::harness::Partition;
 
-/// Ledger target for this partition (40 planned cases).
+/// Ledger target for this partition (40 non-obsolete cases; 39 active plus the
+/// retired `TS-META-0027` label).
 pub(crate) const PARTITION: Partition = Partition::new("protocol_limits", 40);
 
 /// Cases with a real Rust assertion. Empty until the native backend lands.

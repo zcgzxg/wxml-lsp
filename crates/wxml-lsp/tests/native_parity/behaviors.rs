@@ -6,8 +6,8 @@
 
 use crate::harness::Partition;
 
-/// Ledger target for this partition (22 planned cases).
-pub(crate) const PARTITION: Partition = Partition::new("behaviors", 22);
+/// Ledger target for this partition (21 non-obsolete cases).
+pub(crate) const PARTITION: Partition = Partition::new("behaviors", 21);
 
 /// Cases with a real Rust assertion. Empty until the native backend lands.
 pub(crate) const MIGRATED_CASES: &[&str] = &[];

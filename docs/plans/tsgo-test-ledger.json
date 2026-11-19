@@ -114,9 +114,9 @@
     "matrix_dynamic_registrations": 66,
     "dispositions": {
       "direct": 240,
-      "rewrite": 52,
+      "rewrite": 51,
       "split": 11,
-      "obsolete": 36,
+      "obsolete": 37,
       "blocked-decision": 0
     },
     "oracle_types": {
@@ -158,31 +158,32 @@
     },
     "blocked_decision_count": 0,
     "integrator_decisions": {
-      "accepted_obsolete": 36,
-      "accepted_rewrite": 1,
+      "accepted_obsolete": 37,
+      "accepted_rewrite": 0,
+      "accepted_superseded_contract": 1,
       "remaining_blocked": 0
     },
     "migration_evidence": {
       "assessed_at": "2026-11-20",
-      "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
-      "rust_test_command": "cargo test -p wxml-lsp --lib; cargo test -p wxml-lsp --test native_parity; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored; cargo test -p wxml-delivery --test assets_lock_root",
-      "rust_test_result": "wave-10 conditional backfill: TS-ANALYSIS-0184 and TS-REWRITE-0197 promoted to exact green from their real mapping tests; TS-ANALYSIS-0161 registered as weaker and stays planned. green 68 -> 70, planned 235 -> 233, exact 68 -> 70, weaker 95 -> 96, assessed_cases 194 -> 197 and no-evidence 109 -> 106; near_exact 2, structural 7, blocked 22 and retired 36 are unchanged.",
-      "assessed_cases": 197,
-      "exact": 70,
+      "implementation_head": "68f852cf0aa04baf791f6fae9867bc1641b0c88d",
+      "rust_test_command": "cargo test -p wxml-lsp --lib; cargo test -p wxml-backend-tsgo --lib; cargo test -p wxml-backend-tsgo --test shadow_layout; cargo test -p wxml-lsp --test native_parity; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored; cargo test -p wxml-delivery --test assets_lock_root",
+      "rust_test_result": "wave-11 exact backfill: TS-ANALYSIS-0315/0332 and the ten wave-11 messages/probes cases promoted from planned to exact green. green 70 -> 82, planned 231 -> 219, exact 70 -> 82, assessed_cases 197 -> 209 and no-evidence 104 -> 92; near_exact 2, weaker 96, structural 7, blocked 22 and retired 38 are unchanged.",
+      "assessed_cases": 209,
+      "exact": 82,
       "near_exact": 2,
       "weaker": 96,
       "structural": 7,
       "blocked": 22,
-      "green_eligible": 70,
-      "promoted_to_green": 70,
-      "remaining_planned_without_evidence": 106,
+      "green_eligible": 82,
+      "promoted_to_green": 82,
+      "remaining_planned_without_evidence": 92,
       "by_partition": {
         "behaviors": {
-          "routed_cases": 22,
+          "routed_cases": 21,
           "evidence_cases": 18,
           "green_cases": 1,
           "planned_evidence_cases": 17,
-          "unassessed_cases": 4,
+          "unassessed_cases": 3,
           "exact": 1,
           "near_exact": 2,
           "weaker": 6,
@@ -239,11 +240,11 @@
         },
         "guards_js": {
           "routed_cases": 25,
-          "evidence_cases": 15,
-          "green_cases": 9,
+          "evidence_cases": 20,
+          "green_cases": 14,
           "planned_evidence_cases": 6,
-          "unassessed_cases": 10,
-          "exact": 9,
+          "unassessed_cases": 5,
+          "exact": 14,
           "near_exact": 0,
           "weaker": 1,
           "structural": 0,
@@ -287,11 +288,11 @@
         },
         "messages_evidence": {
           "routed_cases": 8,
-          "evidence_cases": 0,
-          "green_cases": 0,
+          "evidence_cases": 5,
+          "green_cases": 5,
           "planned_evidence_cases": 0,
-          "unassessed_cases": 8,
-          "exact": 0,
+          "unassessed_cases": 3,
+          "exact": 5,
           "near_exact": 0,
           "weaker": 0,
           "structural": 0,
@@ -311,22 +312,22 @@
         },
         "project_overlay": {
           "routed_cases": 20,
-          "evidence_cases": 10,
-          "green_cases": 1,
+          "evidence_cases": 12,
+          "green_cases": 3,
           "planned_evidence_cases": 9,
-          "unassessed_cases": 10,
-          "exact": 1,
+          "unassessed_cases": 8,
+          "exact": 3,
           "near_exact": 0,
           "weaker": 9,
           "structural": 0,
           "blocked": 0
         },
         "protocol_limits": {
-          "routed_cases": 40,
+          "routed_cases": 39,
           "evidence_cases": 18,
           "green_cases": 5,
           "planned_evidence_cases": 13,
-          "unassessed_cases": 22,
+          "unassessed_cases": 21,
           "exact": 5,
           "near_exact": 0,
           "weaker": 13,
@@ -374,16 +375,16 @@
       "rust_unit_test_result": "wxml-lsp lib 789 passed, 0 failed, 0 ignored",
       "near_exact_recommendations": 2,
       "statuses": {
-        "planned": 233,
-        "green": 70,
-        "retired-with-decision": 36
+        "planned": 219,
+        "green": 82,
+        "retired-with-decision": 38
       },
       "status_policy": "Only parity=exact cases are green. near_exact, weaker, structural and blocked cases stay planned with status_recommendation recorded; no empty evidence is accepted."
     },
     "statuses": {
-      "planned": 233,
-      "green": 70,
-      "retired-with-decision": 36
+      "planned": 219,
+      "green": 82,
+      "retired-with-decision": 38
     }
   },
   "plan_reconciliation": {
@@ -4108,15 +4109,34 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "definition",
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0315",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "68f852cf0aa04baf791f6fae9867bc1641b0c88d",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Oracle `analysis.test.ts:315` only asserts capability statuses after one definition target is dropped. The adapter keeps no run-wide capability state: the first definition returns `Partial` with reason `some definition targets could not be represented` and empty locations, hover/completion/diagnostics stay `Supported`, and a second definition repeats the same `Partial`. The fake session log asserts one start and zero shutdowns.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 2804,
+            "test": "case_analysis_0315_a_partial_definition_does_not_degrade_later_hover_or_completion",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::case_analysis_0315_a_partial_definition_does_not_degrade_later_hover_or_completion",
+            "note": "Dropped generated target yields the exact `Partial` reason and empty locations; subsequent hover, completion and diagnostics remain `Supported`; a second definition is unchanged; `starts == 1` and `shutdowns == 0`."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0332",
@@ -4171,13 +4191,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0332",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "68f852cf0aa04baf791f6fae9867bc1641b0c88d",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Oracle `analysis.test.ts:332` keeps one mount per fragment id even when both fragments carry the same expression. The native layout has no expression-level dedup: `view.mounts` keeps `f0#0` and `f1#0` in order, each derived range equals `__wxml_root.title`, each target range is the WXML `0..5` identifier, and each segment list is the exact 12 UTF-16 synthetic prefix plus the 5 UTF-16 source span. C1 `response.fragments` is represented by `view.mounts[].fragment_id` at the layout boundary.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 273,
+            "test": "case_analysis_0332_one_expression_may_appear_under_two_fragment_ids",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_layout.rs::case_analysis_0332_one_expression_may_appear_under_two_fragment_ids",
+            "note": "Asserts two mounts, ordered ids `f0#0`/`f1#0`, non-overlapping derived spans, exact target ranges and segment boundaries for the same WXML `0..5` expression; no merge."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0349",
@@ -7891,16 +7930,58 @@
       },
       "dirty_increments": [],
       "target_rust_test": "crates/wxml-lsp/tests/native_parity/behaviors.rs::case_component_0774_symbol_bridge_does_not_report_resolved_behavior_roots_as_missing",
-      "disposition": "rewrite",
-      "disposition_reason": "Resolved behavior roots must not be reported missing in the selected layout; candidate-B framing is not ported.",
-      "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "disposition": "obsolete",
+      "disposition_reason": "Candidate B/symbol-bridge is an internal experimental layout; production uses in-place shadow and never passes a layoutId. Resolved behavior roots must not be reported missing in the selected layout, but the symbol-bridge-only oracle is retired. No user-visible behavior is removed.",
+      "requires_decision": true,
+      "target_rust_test_status": "not_migrated_internal_evidence",
       "oracle_type": "assertion",
-      "comparison_type": "semantic_exact",
-      "status": "planned",
+      "comparison_type": "blocked_decision",
+      "status": "retired-with-decision",
       "capabilities": [
         "diagnostics"
-      ]
+      ],
+      "decision_status": "accepted-obsolete",
+      "retirement_decision": {
+        "id": "wave11-e-0774",
+        "date": "2026-11-20",
+        "owner": "integrator",
+        "required_by": "P7-1 ledger zero",
+        "scope": "candidate_b_layout",
+        "reason": "The oracle uses an explicit symbol-bridge layoutId, an internal Candidate-B layout that production never selects. It is the same mechanism as the 2026-11-17 Candidate-B retirements; the in-place production path keeps other behavior coverage. Retirement is not parity: no exact 2339 assertion is claimed.",
+        "product_impact": "none-user-visible; symbol-bridge is not selectable through the LSP and production uses in-place shadow",
+        "evidence": [
+          "backends/typescript/src/server.ts:152: analyze(params, { backendDir }) passes no layoutId",
+          "backends/typescript/src/analysis.ts:59-60,416: candidate layout is internal and production defaults to in-place-shadow",
+          "backends/typescript/test/componentBindings.test.ts:774: oracle sets layoutId symbol-bridge explicitly",
+          "docs/evidence/2026-11-20-tsgo-wave11-retire-audit.md §2.5"
+        ],
+        "replacement": [
+          {
+            "kind": "rust_test",
+            "path": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs",
+            "line": 2867,
+            "test": "native_component_behavior_data_and_properties",
+            "strength": "opt_in",
+            "note": "G-P5-E2E-11 is opt-in (WXML_TEST_NATIVE=1 plus a real engine) and asserts behavior-backed component data; it is not a default exact 2339 assertion."
+          },
+          {
+            "kind": "rust_test",
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 340,
+            "test": "case_component_0570_only_unresolved_behavior_is_partial_and_invents_no_field",
+            "strength": "blocked",
+            "note": "Partial behavior coverage only; the test explicitly records that checker diagnostics and 2339 are not asserted."
+          },
+          {
+            "kind": "rust_test",
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 430,
+            "test": "case_component_0763_non_probe_double_underscore_data_names_remain_usable",
+            "strength": "near_exact",
+            "note": "Near-exact behavior-facts coverage; it does not reproduce the symbol-bridge 2339 filter."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-DEFINITIONS-0013",
@@ -20823,14 +20904,33 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "evidence",
         "messages"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MESSAGES-0005",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "68f852cf0aa04baf791f6fae9867bc1641b0c88d",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Rust `sanitize_message` is a pure decision function: it removes the `__wxml_root.` prefix and replaces `__wxml_check_0` with `helper`. Both oracle inputs are asserted as exact output strings; no adapter or checker path is involved.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/query/message.rs",
+            "line": 485,
+            "test": "case_messages_0005_helper_names_are_removed",
+            "fully_qualified": "wxml_backend_tsgo::query::message::tests::case_messages_0005_helper_names_are_removed",
+            "note": "Asserts both oracle inputs produce the exact cleaned strings."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MESSAGES-0016",
@@ -20882,11 +20982,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-MESSAGES-0016",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "68f852cf0aa04baf791f6fae9867bc1641b0c88d",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The pure Rust message sanitizer unwraps `FilterUnknownType`/`PropertyOptionToData` internals and yields `{ state: string; }`; the test also asserts a full exact string for the declared-properties message. No adapter path is involved.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/query/message.rs",
+            "line": 497,
+            "test": "case_messages_0016_typings_internals_are_unwrapped",
+            "fully_qualified": "wxml_backend_tsgo::query::message::tests::case_messages_0016_typings_internals_are_unwrapped",
+            "note": "Asserts the cleaned output contains the unwrapped literal and exactly matches the full declared-properties message."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MESSAGES-0025",
@@ -20936,14 +21055,33 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "evidence",
         "messages"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MESSAGES-0025",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "68f852cf0aa04baf791f6fae9867bc1641b0c88d",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The pure Rust sanitizer replaces the generated `__WxmlProps_0` overlay name with `declared properties`; the full message is asserted by exact equality, not a substring match. No adapter path is involved.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/query/message.rs",
+            "line": 510,
+            "test": "case_messages_0025_generated_overlay_type_names_are_replaced",
+            "fully_qualified": "wxml_backend_tsgo::query::message::tests::case_messages_0025_generated_overlay_type_names_are_replaced",
+            "note": "Asserts the exact `{ state: string; } & declared properties` message."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MESSAGES-0032",
@@ -20993,14 +21131,33 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "evidence",
         "messages"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MESSAGES-0032",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "68f852cf0aa04baf791f6fae9867bc1641b0c88d",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The pure Rust sanitizer collapses duplicated intersection literals (`{ name: string; } & { name: string; }` to `{ name: string; }`); the full message is asserted by exact equality. No adapter path is involved.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/query/message.rs",
+            "line": 520,
+            "test": "case_messages_0032_duplicated_intersection_literals_collapse",
+            "fully_qualified": "wxml_backend_tsgo::query::message::tests::case_messages_0032_duplicated_intersection_literals_collapse",
+            "note": "Asserts the exact collapsed intersection message."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MESSAGES-0039",
@@ -21051,13 +21208,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "messages"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-MESSAGES-0039",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "68f852cf0aa04baf791f6fae9867bc1641b0c88d",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "The pure Rust sanitizer truncates a 60-field message to the 200 UTF-16 budget (actual length 199 after `trimEnd`) and appends `…` while preserving the `Property 'x' does not exist` prefix; exact string assertions. No adapter path is involved.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/query/message.rs",
+            "line": 530,
+            "test": "case_messages_0039_long_messages_are_truncated",
+            "fully_qualified": "wxml_backend_tsgo::query::message::tests::case_messages_0039_long_messages_are_truncated",
+            "note": "Asserts the UTF-16 length bound, the trailing ellipsis and the preserved diagnostic prefix."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-META-0009",
@@ -21198,26 +21374,58 @@
       "dirty_increments": [],
       "target_rust_test": "crates/wxml-lsp/tests/native_parity/protocol_limits.rs::case_meta_0027_the_c1_contract_documents_the_pinned_versions",
       "disposition": "rewrite",
-      "disposition_reason": "Historical C1 TS-backend document version assertions are replaced by the F0 native engine/type-asset pin test (7.1.0-beta + miniprogram-api-typings 5.3.1); no user-visible behavior is dropped.",
-      "requires_decision": true,
-      "target_rust_test_status": "proposed",
+      "disposition_reason": "Historical C1 TS-backend document version assertions are superseded by the native F0 engine/type-asset pins (TypeScript 7.1.0-beta and miniprogram-api-typings 5.3.1). The C1 document is marked historical for the native path; no user-visible behavior is dropped.",
+      "requires_decision": false,
+      "target_rust_test_status": "not_migrated_internal_evidence",
       "oracle_type": "unit",
       "comparison_type": "blocked_decision",
-      "status": "planned",
+      "status": "retired-with-decision",
       "capabilities": [
         "version"
       ],
-      "decision_status": "accepted-rewrite",
       "replacement_case_id": "F0-version-pin",
-      "decision_owner": "integrator",
-      "decision_required_by": "P2/F2 freeze",
-      "decision_reason": "Asserts the historical C1 TS-backend contract document versions. The replacement is an F0/F1 native version/schema pin test, which does not exist in this ledger yet; blocked until that replacement is specified and reviewed.",
-      "decision_evidence": [
-        "backends/typescript/test/meta.test.ts:27-36 reads docs/reference/type-bridge-c1.md",
-        "docs/reference/type-bridge-c1.md is the old TS backend contract"
-      ],
-      "proposed_replacement": "F0/F1 native contract/version pin test, to be created in P2",
-      "decision_at": "2026-11-17"
+      "retirement_decision": {
+        "id": "wave11-e-meta-0027",
+        "date": "2026-11-20",
+        "owner": "integrator",
+        "required_by": "P2/F2 freeze",
+        "scope": "superseded_contract",
+        "reason": "The oracle pins the historical Node C1 document at TypeScript 6.0.3/typings 5.3.1. The native contract pins TypeScript 7.1.0-beta/typings 5.3.1 and the C1 document is now marked historical for the native path. The version-pin intent is covered by default F0 tests; replacement_case_id F0-version-pin is an external label, not a ledger case.",
+        "product_impact": "none-user-visible; the retired oracle asserts a historical document string, while engine/typings pins remain product gates in F0 tests",
+        "evidence": [
+          "backends/typescript/test/meta.test.ts:27-36 reads docs/reference/type-bridge-c1.md and matches 6.0.3/5.3.1",
+          "docs/reference/type-bridge-c1.md:389-393 now records the native 7.1.0-beta/5.3.1 pins and the historical C1 status",
+          "crates/wxml-backend-tsgo/src/config.rs:20 defines ENGINE_VERSION = 7.1.0-beta",
+          "crates/wxml-backend-tsgo/src/input.rs:128 defines PINNED_TYPINGS_VERSION = 5.3.1",
+          "docs/evidence/2026-11-20-tsgo-ledger-retire-0774-meta.md"
+        ],
+        "replacement": [
+          {
+            "kind": "rust_test",
+            "path": "crates/wxml-backend-tsgo/src/config.rs",
+            "line": 415,
+            "test": "pinned_identity_uses_literal_f0_values",
+            "strength": "weaker",
+            "note": "Asserts the exact native 7.1.0-beta engine identity (gitHead, tarball, binary, AST v9); the engine version intentionally differs from the retired 6.0.3 oracle."
+          },
+          {
+            "kind": "rust_test",
+            "path": "crates/wxml-backend-tsgo/src/input.rs",
+            "line": 2201,
+            "test": "type_assets_validate_pin_identity_and_paths",
+            "strength": "weaker",
+            "note": "Asserts the miniprogram-api-typings 5.3.1 package pin; the version matches the retired oracle, but the assertion mechanism is a package pin rather than the C1 document string."
+          },
+          {
+            "kind": "rust_test",
+            "path": "crates/wxml-delivery/tests/assets_lock_root.rs",
+            "line": 130,
+            "test": "repository_root_lock_is_frozen_and_canonical",
+            "strength": "weaker",
+            "note": "Asserts the committed repository lock pins 7.1.0-beta and 5.3.1 with its summary digest; the engine version intentionally differs from 6.0.3."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-OVERLAY-0023",
@@ -22005,11 +22213,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-PROBES-0064",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "68f852cf0aa04baf791f6fae9867bc1641b0c88d",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "`check_probe_health` is a pure Rust decision function over supplied inputs; a `Quality(Any)` probe root yields exactly `probe root resolves to any` with `truncated == false`. Probe health is not wired into the adapter or hover/diagnostics state machine.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/query/probe_health.rs",
+            "line": 455,
+            "test": "case_probes_0064_probe_health_rejects_a_probe_root_that_resolves_to_any",
+            "fully_qualified": "wxml_backend_tsgo::query::probe_health::tests::case_probes_0064_probe_health_rejects_a_probe_root_that_resolves_to_any",
+            "note": "Asserts the exact problem list and the untruncated flag for a `Quality(Any)` root."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROBES-0080",
@@ -22060,13 +22287,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROBES-0080",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "68f852cf0aa04baf791f6fae9867bc1641b0c88d",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Pure Rust probe-health decision: diagnostic `2339` intersecting insertion `probe` (start 10, length 40) yields exactly `diagnostic 2339 intersects insertion probe`. Probe health is not wired into the adapter.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/query/probe_health.rs",
+            "line": 466,
+            "test": "case_probes_0080_probe_health_rejects_diagnostics_that_intersect_an_insertion",
+            "fully_qualified": "wxml_backend_tsgo::query::probe_health::tests::case_probes_0080_probe_health_rejects_diagnostics_that_intersect_an_insertion",
+            "note": "Asserts the exact intersection problem for diagnostic `2339`."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROBES-0098",
@@ -22122,13 +22368,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROBES-0098",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "68f852cf0aa04baf791f6fae9867bc1641b0c88d",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Pure Rust probe-health decision: two same-named `__wxml_root` entries are resolved per supplied offset, not by name. Both `Symbol` yields no problems; the second being `NoSymbol` yields only `probe helper __wxml_root has no symbol`. Probe health is not wired into the adapter.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/query/probe_health.rs",
+            "line": 486,
+            "test": "case_probes_0098_probe_health_uses_the_exact_offsets_it_is_given_not_a_name_search",
+            "fully_qualified": "wxml_backend_tsgo::query::probe_health::tests::case_probes_0098_probe_health_uses_the_exact_offsets_it_is_given_not_a_name_search",
+            "note": "Asserts offset-based resolution for two same-named entries and the exact single problem when the second has no symbol."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROBES-0135",
@@ -22179,11 +22444,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-PROBES-0135",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "68f852cf0aa04baf791f6fae9867bc1641b0c88d",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Pure Rust probe-health decision: duplicate-identifier diagnostic `2300` intersecting insertion `probe` yields exactly `diagnostic 2300 intersects insertion probe`. Probe health is not wired into the adapter.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/query/probe_health.rs",
+            "line": 508,
+            "test": "case_probes_0135_a_duplicate_helper_is_reported_through_the_insertion_check",
+            "fully_qualified": "wxml_backend_tsgo::query::probe_health::tests::case_probes_0135_a_duplicate_helper_is_reported_through_the_insertion_check",
+            "note": "Asserts the exact intersection problem for duplicate-identifier diagnostic `2300`."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROBES-0153",
@@ -22234,11 +22518,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
-      "capabilities": []
+      "status": "green",
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-PROBES-0153",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "68f852cf0aa04baf791f6fae9867bc1641b0c88d",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Pure Rust probe-health decision: a `Script` to `Module` classification change yields exactly `module classification flipped from script to module`. Probe health is not wired into the adapter.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/query/probe_health.rs",
+            "line": 528,
+            "test": "case_probes_0153_probe_health_reports_a_module_classification_flip",
+            "fully_qualified": "wxml_backend_tsgo::query::probe_health::tests::case_probes_0153_probe_health_reports_a_module_classification_flip",
+            "note": "Asserts the exact module-classification-flip problem."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROBES-0169",
@@ -28842,11 +29145,12 @@
   ],
   "integrator_decision": {
     "date": "2026-11-17",
-    "decision": "Retire 36 Candidate-B/symbol-bridge cases as internal, non-user-selectable evidence; replace TS-META-0027 with the F0 engine/type-asset pin test.",
+    "decision": "Retire 36 Candidate-B/symbol-bridge cases as internal, non-user-selectable evidence; replace TS-META-0027 with the F0 engine/type-asset pin test. 2026-11-20 wave-11: TS-COMPONENT-0774 retires as the 37th Candidate-B-only case and TS-META-0027 retires as a superseded contract; both carry retirement_decision records.",
     "evidence": [
       "backends/typescript/src/server.ts:152",
       "backends/typescript/src/analysis.ts:59-60",
-      "backends/typescript/src/analysis.ts:416"
+      "backends/typescript/src/analysis.ts:416",
+      "docs/evidence/2026-11-20-tsgo-ledger-retire-0774-meta.md"
     ],
     "invariant": "In-place-shadow matrix cases, protocol validation, mapping, diagnostics and edit-safety cases remain mandatory.",
     "remaining_blocked": 0
