@@ -9,10 +9,10 @@
 //! - A PATH shim cannot rule out an absolute-path Node invocation. It is
 //!   auxiliary evidence, not the `strace -f -e trace=execve,execveat` audit
 //!   required by F3-02. This test therefore does not close F3-02.
-//! - A native stdio LSP session is not asserted: the test derives the
-//!   `NodeBackend::new` line from `crates/wxml-lsp/src/main.rs` and prints
-//!   `LSP_NATIVE: BLOCKED` while it is present. Without it, the status is
-//!   `UNVERIFIED`, never PASS.
+//! - The native default selector is checked statically: `serve_default` must
+//!   not construct `NodeBackend`, while the deprecated `serve_node` branch must
+//!   still do so for `--backend node`. A missing or malformed selector is
+//!   `UNVERIFIED`, never PASS; this guard does not run a live LSP session.
 //! - Two-version real-engine `upgrade`/`rollback` is not exercised here; the
 //!   CLI flow test uses a shell fixture engine and the real-asset harness covers
 //!   only one install version.
@@ -476,21 +476,56 @@ struct LspStatus {
 
 fn lsp_native_status() -> LspStatus {
     let path = repository_root().join("crates/wxml-lsp/src/main.rs");
-    let line = fs::read_to_string(&path).ok().and_then(|text| {
-        text.lines()
-            .position(|line| line.contains("NodeBackend::new"))
-            .map(|index| index + 1)
-    });
-    line.map_or_else(
-        || LspStatus {
+    let Ok(text) = fs::read_to_string(&path) else {
+        return LspStatus {
             status: "UNVERIFIED",
-            detail: format!("{} has no NodeBackend::new", path.display()),
-        },
-        |line| LspStatus {
+            detail: format!("cannot read {}", path.display()),
+        };
+    };
+    let Some(default_body) = function_body(&text, "fn serve_default()") else {
+        return LspStatus {
+            status: "UNVERIFIED",
+            detail: format!("{} has no serve_default()", path.display()),
+        };
+    };
+    let Some(node_body) = function_body(&text, "fn serve_node()") else {
+        return LspStatus {
+            status: "UNVERIFIED",
+            detail: format!("{} has no serve_node()", path.display()),
+        };
+    };
+    if default_body.contains("NodeBackend::new") {
+        return LspStatus {
             status: "BLOCKED",
-            detail: format!("{}:{line} still wires NodeBackend", path.display()),
-        },
-    )
+            detail: format!(
+                "{} serve_default() still constructs NodeBackend",
+                path.display()
+            ),
+        };
+    }
+    if !node_body.contains("NodeBackend::new") {
+        return LspStatus {
+            status: "BLOCKED",
+            detail: format!(
+                "{} serve_node() must retain the explicit NodeBackend",
+                path.display()
+            ),
+        };
+    }
+    LspStatus {
+        status: "PASS",
+        detail: format!(
+            "{} serve_default() is native; serve_node() retains explicit Node",
+            path.display()
+        ),
+    }
+}
+
+fn function_body<'a>(text: &'a str, signature: &str) -> Option<&'a str> {
+    let start = text.find(signature)?;
+    let rest = &text[start..];
+    let end = rest.find("\n}")?;
+    Some(&rest[..end])
 }
 
 struct FileBuilder {
@@ -975,8 +1010,8 @@ fn installer_cli_never_executes_path_node() {
         );
     }
     println!(
-        "F3-02: BLOCKED (no execve audit, no native stdio LSP session, \
-         no two-version real-engine upgrade/rollback)"
+        "F3-02: guard scope only (execve evidence is f3_exec_audit; \
+         live native LSP and two-version real-engine upgrade/rollback are separate)"
     );
 
     if std::env::var_os("WXML_KEEP_TEST_ROOT").is_some() {
