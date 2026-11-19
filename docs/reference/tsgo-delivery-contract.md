@@ -8,8 +8,8 @@
 > `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`、linux-x64 SRI/`lib/tsc` SHA-256 见 §2）作为唯一
 > 候选基线。临时 Python spike 已执行一次可执行安装器证明，见
 > [P1-C 证据 §11](../evidence/2026-11-17-tsgo-delivery-spike.md)；该证明**不是**生产安装器，
-> 不改变本文 draft/未接受状态。当前 F3 进度为 **14 closed / 2 partial / 0 blocked**
-> （F3-06/09 partial），见 §9.5。
+> 不改变本文 draft/未接受状态。当前 F3 进度为 **15 closed / 1 partial / 0 blocked**
+> （F3-06 partial），见 §9.5。
 
 **关系**：[ADR-0007](../adr/0007-local-delivery-trust-model.md)（accepted，信任/离线/原子安装/回滚规则继续有效）；
 [ADR-0008](../adr/0008-rust-tsgo-no-node-backend.md)（proposed，迁移方向）；实施计划
@@ -1224,9 +1224,11 @@ target 优先前滚，而不是再写一次 `current` 切回。这样避免第�
 
 ### 9.2 测试矩阵
 
-2026-11-20 逐项审计后，F3 整体仍未全部通过：16 项中 **14 closed / 2 partial / 0 blocked**（见 §9.5）。
+2026-11-20 逐项审计后，F3 整体仍未全部通过：16 项中 **15 closed / 1 partial / 0 blocked**（见 §9.5）。
 真实资产、包级安装/回滚、ABI、ptrace exec 审计、缓存升级/回滚与部分篡改/恶意归档已有实测；
-Zed UI、第二个真实 release、真实 legacy 发布包与若干边界用例仍缺。下表中的测试文件多数已存在
+Zed UI、第二个真实 release 与若干边界用例仍缺；真实 legacy schema v1 包已由
+[`2026-11-20-tsgo-f3-legacy-real.md`](../evidence/2026-11-20-tsgo-f3-legacy-real.md) 补齐。
+下表中的测试文件多数已存在
 （早期 `new` 标注是历史计划），但存在不等于通过；`extend` 的文件仍需新增/保留 schema v2 断言。
 状态以 §9.5 和证据为准，不能把“文件存在”或“默认测试绿”当作 F3 关闭。
 
@@ -1240,7 +1242,7 @@ Zed UI、第二个真实 release、真实 legacy 发布包与若干边界用例�
 | F3-06 | `N1→N2` 升级失败/中断：switch 前 N1 digest/current 不变、N2 不激活；switch 后进程崩溃时对已验证 N2 前滚补 state；进程存活且 state 仍指 N1 时才允许切回已验证 N1（非崩溃语义）；无混合资产 | `crates/wxml-delivery/tests/f3_kill_window.rs`（new，真实 CLI SIGKILL）+ `crates/wxml-delivery/tests/native_delivery.rs`（new）`upgrade_failure_keeps_n1` + `crates/wxml-delivery/tests/native_rollback.rs`（new）`native_after_state_write_rolls_forward_without_switching_back` | NF-10 | `crates/wxml-delivery/tests/f3_acceptance/transactions.rs` 的 `InstallHooks` 四窗口（fixture/seam）；`installer_flow.rs` 部分 v1 |
 | F3-07 | 离线回滚到 N1：重新完整校验/探针后切换；current=N1；state.previous=N2；不联网 | `crates/wxml-delivery/tests/native_delivery.rs`（new）`offline_rollback_reverifies_n1` | NF-06/10 | `offline_rollback...` 仅 v1 |
 | F3-08 | schema v1 回滚目标明确拒绝；v1 目录字节不变；原生 current 不变；不执行 Node | `crates/wxml-delivery/tests/native_delivery.rs`（new）`rollback_rejects_schema_v1` | NF-07/10 | 无 |
-| F3-09 | legacy current → 原生：成功一次切换、旧树字节不变、legacy 标记；switch 前失败/中断旧 current 与旧树不变且无 native state；switch 后失败（含进程崩溃）对已验证 target 前滚补 state，永不恢复/执行 Node | `crates/wxml-delivery/tests/f3_kill_window.rs`（new，真实 CLI SIGKILL）+ `crates/wxml-delivery/tests/native_rollback.rs`（new）+ `crates/wxml-delivery/tests/native_delivery.rs`（new）`legacy_migration_succeeds_once_and_keeps_legacy_read_only` | NF-10 | `crates/wxml-delivery/tests/f3_acceptance/legacy.rs` 的 `InstallHooks` seam（v1 fixture） |
+| F3-09 | legacy current → 原生：成功一次切换、旧树字节不变、legacy 标记；switch 前失败/中断旧 current 与旧树不变且无 native state；switch 后失败（含进程崩溃）对已验证 target 前滚补 state，永不恢复/执行 Node | `crates/wxml-delivery/tests/f3_kill_window.rs`（new，真实 CLI SIGKILL）+ `crates/wxml-delivery/tests/f3_legacy_real.rs`（new，真实 v1 包）+ `crates/wxml-delivery/tests/native_rollback.rs`（new）+ `crates/wxml-delivery/tests/native_delivery.rs`（new）`legacy_migration_succeeds_once_and_keeps_legacy_read_only` | NF-10 | 无；真实 v1 包与失败/中断/回滚/恢复见 §9.5 |
 | F3-10 | 篡改检测：archive SRI/SHA-256、manifest、逐文件哈希、额外/缺失文件、许可文件；全部在激活前拒绝，current 不变 | `crates/wxml-delivery/tests/installer_security.rs`（extend）+ `crates/wxml-delivery/tests/provisioning.rs`（new） | NF-09/10 | `rejects_a_bad_archive_hash` 等仅 v1 |
 | F3-11 | 恶意归档：绝对路径、`..`、symlink、hardlink、FIFO/设备、重复、超长/超大；拒绝且不越界解包 | `crates/wxml-delivery/tests/installer_security.rs`（extend）`archive_rejects_traversal_links_and_budget` | NF-09/10 | 仅部分 PAX/redirect 用例 |
 | F3-12 | 离线 fail-closed：无缓存安装失败且无网络；有效缓存可安装/升级/回滚；损坏缓存失败；代理 sink 无连接 | `crates/wxml-delivery/tests/native_delivery.rs`（new）+ `scripts/verify-no-node.sh`（new） | NF-04/08 | `offline_install...` 仅 v1 |
@@ -1319,6 +1321,11 @@ Zed UI、第二个真实 release、真实 legacy 发布包与若干边界用例�
   [clean-env 证据](../evidence/2026-11-18-tsgo-f3-clean-env.md) 逐项复核，结果见 §9.5。
   本次复核不修改任何历史证据；`closed` 只表示合同列出的条件已有可复查证据，不表示发布、
   签名、其他平台或 Zed UI 已完成。
+- 2026-11-20：新增 [F3-09 真实 legacy 包证据](../evidence/2026-11-20-tsgo-f3-legacy-real.md)：
+  `scripts/f3-legacy-real.sh` 从 `e4fed4a` clean `git archive` 用生产 v1 packager、真实
+  release 二进制、真实 `backends/typescript` 构建产物和真实 Zed wasm 打出 schema v1 包，
+  生产 v1 安装器安装后用 `f3_legacy_real` 完成迁移/失败/中断/回滚/恢复验收。F3-09 由
+  partial 升为 closed；F3-06 仍 partial（N2 provenance）。
 
 ### 9.5 逐项状态（2026-11-20 审计）
 
@@ -1332,7 +1339,9 @@ Zed UI、第二个真实 release、真实 legacy 发布包与若干边界用例�
 `partial` 行不是“没有证据”；它们已有下表所列 PASS 证据，但仍有合同子条件未满足，不能按
 `PASS` 字样关闭。审计基线：逐项审计证据运行 HEAD 为 `561b00a`（real release）和 `0b3b3da`
 （acceptance），在 `0ca4375` 工作树复核；F3-06/F3-09 的进程级 kill-window 证据运行于
-`28c5e18`。`crates/wxml-delivery/src` 在 `561b00a..28c5e18` 无变化；包内 `bin/wxml-lsp`
+`28c5e18`，F3-09 的真实 v1 包证据从 `e4fed4a` 的 clean `git archive` 构建（脚本
+`--source-rev e4fed4a`）。
+`crates/wxml-delivery/src` 在 `561b00a..28c5e18` 无变化；包内 `bin/wxml-lsp`
 是 2026-11-19 23:21 从含并发未提交改动的工作树构建，不是任一 HEAD 的逐字节重建，F3-03/04
 的包/安装结论不声明该二进制的来源可复现。
 
@@ -1346,7 +1355,7 @@ Zed UI、第二个真实 release、真实 legacy 发布包与若干边界用例�
 | F3-06 | **partial** | ` crates/wxml-delivery/tests/f3_kill_window.rs` + `tests/f3_kill_window/**` + `scripts/f3-kill-window.sh`：真实 `wxml-lsp-install` 在 U1/U3/U5/U5-durable/U6 被外部 SIGKILL（Linux x86_64、opt-in），杀后由真实 `recover`/`verify` 证明 U5/U5-durable 前滚、U6 幂等确认、U1/U3 不自动激活；` crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `real_release_upgrade_rollback_and_recover_without_node`（真实 N1→N2→N1、N1 树不变）；` crates/wxml-delivery/tests/f3_acceptance/transactions.rs` 的 `f3_06_real_upgrade_and_rollback_failpoint_windows`（`InstallHooks` 四窗口，覆盖进程存活的 AfterSwitch 切回分支）；` crates/wxml-delivery/tests/native_rollback.rs` 的 `native_after_state_write_rolls_forward_without_switching_back`（fixture） | 第二个真实 release（N2 是 N1 生产二进制同长度版本常量重标，不是独立发布产物）；这是 provenance 子条件，`SIGKILL` 窗口不能替代。进程级附加窗口 U0/U2/U4/U7/U8 未覆盖（plan 的 P1/P2，不在本行合同子条件内）。 |
 | F3-07 | **closed** | ` crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `real_release_upgrade_rollback_and_recover_without_node`：`rollback --to 0.1.0 --offline`，`current=0.1.0`、`state.previous=0.2.0`，N1/N2 指纹不变；` crates/wxml-delivery/tests/native_delivery.rs` 的 `rollback_refuses_legacy_and_tampered_native_targets`（fixture 负例） | 无合同项。真实包只跑正向 rollback；“拒绝篡改目标”的完整校验负例是 fixture。 |
 | F3-08 | **closed** | ` crates/wxml-delivery/tests/f3_acceptance/legacy.rs` 的 `f3_08_09_15_legacy_migration_inert_env_and_v1_rollback`：`rollback --to 0.0.9` 拒绝，v1 树/current/state 不变，tripwire 未触发 | 无合同项。v1 包是生产 v1 packager 生成的 fixture，不是历史发布包（已标注）。 |
-| F3-09 | **partial** | ` crates/wxml-delivery/tests/f3_kill_window.rs` + `tests/f3_kill_window/**`：真实 `wxml-lsp-install` 在 L3（switch 前）/L4（switch 后）被外部 SIGKILL；L3 后 `current`/旧树不变且无 state，L4 后 `recover` 前滚并写 `state=active:0.1.0/previous:null`，legacy marker 未执行；` crates/wxml-delivery/tests/f3_acceptance/legacy.rs` 的 `f3_08_09_15_legacy_migration_inert_env_and_v1_rollback`：真实 N1 + v1 fixture 的成功迁移、缺 typings 失败、`AfterRename`/`AfterSwitch` seam；` crates/wxml-delivery/tests/native_rollback.rs` 的 `post_switch_failures_roll_forward_legacy_migration`（fixture） | 真实 legacy 发布包（legacy current 是生产 v1 packager 生成的 fixture，不是历史发布包）；这是包身份子条件，`SIGKILL` 状态机证据不能替代。进程级附加窗口 L0/L1/L2/L5/L6 未覆盖（plan 的 P1，不在本行合同子条件内）。 |
+| F3-09 | **closed** | ` crates/wxml-delivery/tests/f3_legacy_real.rs` + ` scripts/f3-legacy-real.sh`（new，真实 v1 包）：生产 v1 packager 用真实 release 二进制、真实 `backends/typescript` 构建产物和真实 Zed wasm 打出 schema v1 包（333 文件，archive SHA-256 `b62d3112…d970ae`），生产 v1 安装器安装后 `current=versions/0.1.0`、无 state、tree fingerprint `0555701…5ed62`；`--version` 与 `--stdio --backend node` 的真实 LSP initialize 通过。迁移到真实资产 N2：`migrated to 0.2.0 (native)`、`state=active:0.2.0/previous:null`、legacy 树/二进制/backend 哈希不变、无 Node/server.js 进程；真实 N2 派生缺 typings 包在激活前失败且 legacy 不变；`AfterSwitch` 中断对已验证 N2 前滚写 state；`rollback --to 0.1.0` 拒绝 legacy；`recover` 不恢复 legacy、未观察到 Node 执行，legacy 根仍无 state；重复 install 幂等。` crates/wxml-delivery/tests/f3_kill_window.rs` + `tests/f3_kill_window/**` 的进程级 L3/L4 SIGKILL 仍作为 switch 窗口证据（fixture legacy）。 | 无合同项。包是 `e4fed4a` clean `git archive` 的全保真构建，不是历史发布产物；`bin/wxml-lsp` 默认 backend 已是 native，legacy Node 入口用显式 `--backend node` 验证。若合同要求历史产物 provenance，应另开 waiver。进程级附加窗口 L0/L1/L2/L5/L6 未覆盖（plan 的 P1，不在本行合同子条件内）。 |
 | F3-10 | **closed** | ` crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `tampered_real_release_archive_fails_before_activation`；` crates/wxml-delivery/tests/f3_acceptance/package_guards.rs` 的 `f3_10_manifest_file_license_extra_missing_tamper_fails_before_activation`（manifest/逐文件/许可/额外/缺失/缺失许可六类） | 无合同项。六类是真实包 + 单点受控变异；各变体重算 index SRI，失败发生在树校验。 |
 | F3-11 | **closed** | ` crates/wxml-delivery/tests/f3_acceptance/package_guards.rs:267` 的 `f3_11_malicious_real_archive_shapes_fail_before_activation`：15 类真实 `install --from-dir` 恶意归档（绝对路径、FIFO/字符/块设备、重复项、GNU long-name >4096 B、PAX 扩展预算 128 KiB > 64 KiB、PAX size 覆盖、PAX 绝对路径、PAX 超长路径、traversal/symlink/hardlink/malformed PAX/per-entry budget）全部在激活前拒绝，无 current/versions/state。 | 无合同项。归档构造是测试侧受控输入，不是已发布恶意包。 |
 | F3-12 | **closed** | ` crates/wxml-delivery/tests/f3_acceptance/cache.rs:34` 的 `f3_12_real_cache_driven_upgrade_rollback_and_corrupt_fail_closed`：真实 N1 安装 + 缓存、N2 缓存预热、离线缓存驱动升级/回滚、损坏 archive/index/缺 index fail closed、proxy sink 0 连接；` crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `real_release_offline_cache_reinstall_and_fail_closed` 覆盖重装/空缓存。 | 无合同项。内核 `connect` 级审计属于 F3-02；本项只要求网络命名空间/代理 sink。 |
@@ -1358,10 +1367,16 @@ Zed UI、第二个真实 release、真实 legacy 发布包与若干边界用例�
 对 `2026-11-19-tsgo-f3-real-release.md` 的“可按合同评审关闭”逐项复核：F3-03/04/07/13 维持
 `closed`。后续 `50e4a21`/`040898c` 补上了缓存驱动 upgrade/rollback、恶意归档完整形态、Zed
 legacy 变量移除、activated 幂等与 `WXML_LSP_BIN` 升级/回滚优先级，因此 F3-11/12/15/16
-升为 `closed`。`f2952c2` 的 ptrace exec audit 补齐 F3-02 的 execve 证据，因此升为
-**14 closed / 2 partial / 0 blocked**：`28c5e18` 的 `f3_kill_window` 已把 F3-06/F3-09 的
-switch 前/后进程级 SIGKILL 子条件补齐（Linux x86_64、opt-in；U1/U3/U5/U5-durable/U6 与
-L3/L4）；F3-06 仍缺真实第二版本（N2 provenance），F3-09 仍缺真实 legacy 发布包。
+升为 `closed`。`f2952c2` 的 ptrace exec audit 补齐 F3-02 的 execve 证据。`28c5e18` 的
+`f3_kill_window` 已把 F3-06/F3-09 的 switch 前/后进程级 SIGKILL 子条件补齐（Linux x86_64、
+opt-in；U1/U3/U5/U5-durable/U6 与 L3/L4）。` scripts/f3-legacy-real.sh` 和
+` crates/wxml-delivery/tests/f3_legacy_real.rs` 又在
+[`2026-11-20-tsgo-f3-legacy-real.md`](../evidence/2026-11-20-tsgo-f3-legacy-real.md) 中用生产
+v1 packager 的真实 v1 包（真实 Rust/Node/Zed 产物）完成安装、入口、迁移、pre-switch 失败、
+post-switch 中断、legacy 回滚拒绝和 `recover` 验收，F3-09 的包身份子条件不再由 fixture
+承担，因此升为 **15 closed / 1 partial / 0 blocked**。F3-06 仍缺真实第二版本（N2
+provenance）；F3-09 的包是 `e4fed4a` clean `git archive` 的全保真构建，不是历史发布产物，若要求历史 provenance
+需另开 waiver。
 `5020ae7` 的默认 `--stdio` native 切换 + `b095258` 的 Zed 冒烟脚本经
 ` scripts/f3-zed-smoke.sh --direct` 在 HEAD `5020ae7` 重新构建的真实包上验证，F3-14
 已由 blocked 升为 closed。崩溃后的前滚/切回语义裁决见
@@ -1374,7 +1389,7 @@ F3-05/10 的单点变异性质保留并已标注，不作为“真实发布缺�
 
 | ID | 2026-11-17 状态 | 阻塞 | 影响 | 退出条件 |
 | --- | --- | --- | --- | --- |
-| B1 | **PARTIAL**（2026-11-20：F3 14 closed / 2 partial / 0 blocked） | v2 库与 `wxml-lsp-install` 的 install/verify/upgrade/rollback/recover、本地 `--from-dir` 获取、state/journal、legacy 读取器已实现；F3-01/02/03/04/05/07/08/10/11/12/13/14/15/16 已按证据关闭；F3-06/09 partial；真实第二版本与真实 legacy 发布包仍缺（进程级 SIGKILL 已由 `28c5e18` 覆盖） | 生产 native 安装/升级/回滚仍未全部验收 | D 包 Rust 实现并关闭 F3-01～F3-12；fixture 不能替代真实资产 |
+| B1 | **PARTIAL**（2026-11-20：F3 15 closed / 1 partial / 0 blocked） | v2 库与 `wxml-lsp-install` 的 install/verify/upgrade/rollback/recover、本地 `--from-dir` 获取、state/journal、legacy 读取器已实现；F3-01/02/03/04/05/07/08/09/10/11/12/13/14/15/16 已按证据关闭；F3-06 partial；真实第二版本仍缺（进程级 SIGKILL 已由 `28c5e18` 覆盖，F3-09 已由真实 v1 包补齐） | 生产 native 安装/升级/回滚仍未全部验收 | D 包 Rust 实现并关闭 F3-01～F3-12；fixture 不能替代真实资产 |
 | B2 | **PARTIAL**（spike clean-env） | 无 Node PATH、offline、ptrace exec 审计已在 spike 上执行；Rust build/test/CI/Zed 未在 clean-env 运行；F3-01/02 已关闭 | 生产无 Node 门禁未关闭 | Rust 构建/测试/发布/CI/Zed 在无 Node 环境通过 F3-01/02/12 |
 | B3 | **BLOCKED**（2026-11-20：Linux x86_64 ABI 已测） | 平台矩阵未测试；F3-13 已记录 Linux x86_64 的 `readelf`/`ldd`/GLIBC_2.39，其他平台仍无证据 | 只能宣称 Linux x86_64；aarch64/macOS/Windows/musl 无证据 | F3-13 记录 Rust glibc/ABI；其他平台保持“不支持” |
 | B4 | **PARTIAL**（2026-11-20：资产/ABI 证据已补） | 真实 tarball 的 SRI/SHA-256/size、122 文件、`lib/tsc` SHA/`--version` 已复核；F3-13 已记录 Rust glibc/ABI；F0 API/AST 握手、`tsc.sig` 用途仍未验证 | 资产身份与 ABI 可用，但安装器未消费真实 API/AST 探针 | F0/F3 安装器消费可重放 SRI/解包/探针/`readelf` 证据 |
