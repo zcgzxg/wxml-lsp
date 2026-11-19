@@ -3,8 +3,11 @@
 //! The engine may only see files from the current snapshot and directory
 //! listings derived from those files. Every callback answer comes from the
 //! in-memory table; the host filesystem is never consulted and `useOS` is
-//! never returned. Paths outside the project root fail closed with the
-//! callback-specific negative shape:
+//! never returned. Besides project files, a full snapshot may contain verified
+//! TypeScript standard-library and mini-program typings assets mounted from
+//! their fixed roots. Assets answer callbacks but never appear in
+//! `source_paths()` or content handles. Paths outside the project root and the
+//! fixed asset roots fail closed with the callback-specific negative shape:
 //!
 //! | callback | outside/invalid answer |
 //! | --- | --- |
@@ -27,12 +30,16 @@
 //! outside the root is answered as `missing` for both `readFile` and `stat`.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::input::{AnalysisInput, InputError, ProjectRoot};
+use crate::input::{
+    AnalysisInput, CompilerOptions, InputError, MINIPROGRAM_TYPINGS, ProjectRoot, TypeAssetError,
+    TypeAssetFile, TypeAssets,
+};
 
 /// Name of the synthesized project configuration file.
 pub const VIRTUAL_TSCONFIG: &str = "tsconfig.json";
@@ -46,19 +53,54 @@ pub const FILE_MODE: u32 = 0o100_644;
 /// POSIX mode reported for a virtual directory.
 pub const DIRECTORY_MODE: u32 = 0o040_755;
 
+/// One explicit degradation applied while building the type environment.
+///
+/// The native VFS never reads the host filesystem. A project `typeRoots`,
+/// `baseUrl` or `paths` target that falls outside the virtual snapshot is
+/// dropped instead of being handed to the engine, and recorded here so the
+/// adapter can publish `Partial` rather than a silent TS2688/no-op.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentDegradation {
+    field: &'static str,
+    reason: &'static str,
+}
+
+impl EnvironmentDegradation {
+    /// Names the compiler-option field that was filtered.
+    #[must_use]
+    pub const fn field(&self) -> &'static str {
+        self.field
+    }
+
+    /// Returns the stable degradation reason.
+    #[must_use]
+    pub const fn reason(&self) -> &'static str {
+        self.reason
+    }
+}
+
 /// One file in the virtual snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VirtualFile {
-    text: String,
+    text: Arc<str>,
     hash: String,
     size: u64,
 }
 
 impl VirtualFile {
-    fn new(text: String) -> Self {
+    fn new(text: impl Into<Arc<str>>) -> Self {
+        let text = text.into();
         let hash = hex_lower(&Sha256::digest(text.as_bytes()));
         let size = u64::try_from(text.len()).unwrap_or(u64::MAX);
         Self { text, hash, size }
+    }
+
+    fn from_asset(asset: &TypeAssetFile) -> Self {
+        Self {
+            text: Arc::clone(asset.text_arc()),
+            hash: asset.sha256().to_owned(),
+            size: asset.size(),
+        }
     }
 
     /// Returns the exact text.
@@ -104,25 +146,37 @@ impl DirectoryEntries {
 }
 
 /// In-memory snapshot filesystem used to answer engine callbacks.
+///
+/// Project files live under the project root. Verified type assets are kept in
+/// a separate table with their own directory index, so `source_paths()` and
+/// content handles never expose them while `fileSystem.kind="full"` snapshots
+/// still contain them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VirtualFileSystem {
     root: String,
     files: BTreeMap<String, VirtualFile>,
+    assets: BTreeMap<String, VirtualFile>,
     directories: BTreeMap<String, DirectoryEntries>,
+    asset_directories: BTreeMap<String, DirectoryEntries>,
+    environment_degradations: Vec<EnvironmentDegradation>,
     tsconfig_path: String,
 }
 
 impl VirtualFileSystem {
     /// Builds the virtual filesystem for one analysis input.
     ///
-    /// A `tsconfig.json` with `noLib`, `strict` and the sorted project files is
-    /// synthesized at the project root. The input's own files must be
-    /// TypeScript/JavaScript; the configuration is separate and never appears
-    /// in [`AnalysisInput`].
+    /// Project files are mounted under the project root. An input created with
+    /// [`AnalysisInput::with_environment`] additionally mounts the verified
+    /// standard-library and typings declarations and synthesizes a
+    /// `tsconfig.json` from the project compiler options; the legacy
+    /// [`AnalysisInput::new`] keeps the historical `noLib:true` probe
+    /// configuration.
     ///
     /// # Errors
     ///
-    /// Rejects duplicate absolute paths or an unusable project root.
+    /// Rejects duplicate absolute paths, an unusable project root, an asset
+    /// outside its fixed root, a duplicate asset path or an asset that collides
+    /// with a project file.
     pub fn from_analysis_input(input: &AnalysisInput) -> Result<Self, VfsError> {
         let root = input.root().as_str().to_owned();
         let mut files = BTreeMap::new();
@@ -130,7 +184,7 @@ impl VirtualFileSystem {
         for file in input.files() {
             let absolute = join_root(&root, file.path())?;
             if files
-                .insert(absolute, VirtualFile::new(file.text().to_owned()))
+                .insert(absolute, VirtualFile::new(file.text()))
                 .is_some()
             {
                 return Err(VfsError::DuplicateFile {
@@ -141,17 +195,38 @@ impl VirtualFileSystem {
         }
         relative_paths.sort();
         relative_paths.dedup();
-        let tsconfig = tsconfig_text(&relative_paths);
         let tsconfig_path = join_root(&root, VIRTUAL_TSCONFIG)?;
-        files.insert(tsconfig_path.clone(), VirtualFile::new(tsconfig));
+        let (assets, asset_directories, environment_degradations) = if let Some(assets) =
+            input.type_assets()
+        {
+            let (tsconfig, degradations) =
+                environment_tsconfig_text(&root, &relative_paths, input.compiler_options(), assets);
+            files.insert(tsconfig_path.clone(), VirtualFile::new(tsconfig));
+            let (assets, directories) = mount_type_assets(&files, assets)?;
+            (assets, directories, degradations)
+        } else {
+            files.insert(
+                tsconfig_path.clone(),
+                VirtualFile::new(tsconfig_text(&relative_paths)),
+            );
+            (BTreeMap::new(), BTreeMap::new(), Vec::new())
+        };
 
-        Self::build(root, files, tsconfig_path)
+        Self::build(
+            root,
+            files,
+            assets,
+            asset_directories,
+            environment_degradations,
+            tsconfig_path,
+        )
     }
 
     /// Builds a virtual filesystem from explicit absolute paths and texts.
     ///
     /// This is used by the handshake/schema probe, which needs a minimal
-    /// snapshot without an [`AnalysisInput`].
+    /// snapshot without an [`AnalysisInput`]. It never mounts type assets and
+    /// keeps the legacy `noLib:true` configuration.
     ///
     /// # Errors
     ///
@@ -185,68 +260,33 @@ impl VirtualFileSystem {
                 VirtualFile::new(tsconfig_text(&relative)),
             );
         }
-        Self::build(root, table, tsconfig_path)
+        Self::build(
+            root,
+            table,
+            BTreeMap::new(),
+            BTreeMap::new(),
+            Vec::new(),
+            tsconfig_path,
+        )
     }
 
     fn build(
         root: String,
         files: BTreeMap<String, VirtualFile>,
+        assets: BTreeMap<String, VirtualFile>,
+        asset_directories: BTreeMap<String, DirectoryEntries>,
+        environment_degradations: Vec<EnvironmentDegradation>,
         tsconfig_path: String,
     ) -> Result<Self, VfsError> {
-        let mut directories = BTreeMap::<String, DirectoryEntries>::new();
-        directories.entry(root.clone()).or_default();
-
-        for path in files.keys() {
-            let Some(parent) = parent_directory(path) else {
-                return Err(VfsError::InvalidPath {
-                    reason: "virtual file has no parent directory",
-                });
-            };
-            if !within_root(&root, parent) {
-                return Err(VfsError::InvalidPath {
-                    reason: "virtual file is outside the project root",
-                });
-            }
-            let Some(name) = file_name(path) else {
-                return Err(VfsError::InvalidPath {
-                    reason: "virtual file has no name",
-                });
-            };
-            directories
-                .entry(parent.to_owned())
-                .or_default()
-                .files
-                .push(name.to_owned());
-
-            let mut current = parent;
-            while within_root(&root, current) && current != root {
-                let Some(parent_of_current) = parent_directory(current) else {
-                    break;
-                };
-                let Some(name) = file_name(current) else {
-                    break;
-                };
-                directories
-                    .entry(parent_of_current.to_owned())
-                    .or_default()
-                    .directories
-                    .push(name.to_owned());
-                directories.entry(current.to_owned()).or_default();
-                current = parent_of_current;
-            }
-        }
-
-        for entries in directories.values_mut() {
-            entries.files.sort();
-            entries.files.dedup();
-            entries.directories.sort();
-            entries.directories.dedup();
-        }
+        let directories = index_project_directories(&root, &files)?;
 
         Ok(Self {
             root,
             files,
+            assets,
             directories,
+            asset_directories,
+            environment_degradations,
             tsconfig_path,
         })
     }
@@ -257,18 +297,28 @@ impl VirtualFileSystem {
         &self.root
     }
 
+    /// Returns the explicit type-environment degradations.
+    #[must_use]
+    pub fn environment_degradations(&self) -> &[EnvironmentDegradation] {
+        &self.environment_degradations
+    }
+
     /// Returns the absolute path of the synthesized `tsconfig.json`.
     #[must_use]
     pub fn tsconfig_path(&self) -> &str {
         &self.tsconfig_path
     }
 
-    /// Returns all absolute paths, including the configuration file.
+    /// Returns all project absolute paths, including the configuration file.
+    ///
+    /// Type assets are intentionally excluded; they are not project documents
+    /// and must never appear in `openFiles` or content handles.
     pub fn absolute_paths(&self) -> impl Iterator<Item = &str> {
         self.files.keys().map(String::as_str)
     }
 
-    /// Returns only absolute source-file paths (excluding `tsconfig.json`).
+    /// Returns only absolute project source-file paths (excluding
+    /// `tsconfig.json` and type assets).
     pub fn source_paths(&self) -> impl Iterator<Item = &str> {
         self.files
             .keys()
@@ -276,13 +326,24 @@ impl VirtualFileSystem {
             .filter(|path| *path != self.tsconfig_path)
     }
 
-    /// Returns the file at an absolute path.
+    /// Returns the project file at an absolute path.
     #[must_use]
     pub fn file(&self, absolute: &str) -> Option<&VirtualFile> {
         self.files.get(absolute)
     }
 
-    /// Returns the content hash at an absolute path.
+    /// Returns the verified type asset at an absolute path.
+    #[must_use]
+    pub fn asset(&self, absolute: &str) -> Option<&VirtualFile> {
+        self.assets.get(absolute)
+    }
+
+    /// Returns every mounted type-asset path, sorted.
+    pub fn asset_paths(&self) -> impl Iterator<Item = &str> {
+        self.assets.keys().map(String::as_str)
+    }
+
+    /// Returns the content hash at an absolute project path.
     #[must_use]
     pub fn hash(&self, absolute: &str) -> Option<&str> {
         self.files.get(absolute).map(VirtualFile::hash)
@@ -290,10 +351,15 @@ impl VirtualFileSystem {
 
     /// Returns an owned copy of every absolute path and text for snapshot
     /// request construction.
+    ///
+    /// The full snapshot contains project files, `tsconfig.json` and every
+    /// mounted type asset. The engine makes zero filesystem callbacks for a
+    /// `kind="full"` snapshot, so assets must be present in this dictionary.
     #[must_use]
     pub fn snapshot_files(&self) -> BTreeMap<String, String> {
         self.files
             .iter()
+            .chain(self.assets.iter())
             .map(|(path, file)| (path.clone(), file.text().to_owned()))
             .collect()
     }
@@ -326,28 +392,30 @@ impl VirtualFileSystem {
         match method {
             "readFile" => {
                 let path = path_param(params, "readFile")?;
-                Ok(match self.classify(path) {
-                    PathClass::InRoot(path) if self.files.contains_key(path) => {
-                        json!({"kind": "value", "value": self.files.get(path).map(VirtualFile::text)})
-                    }
-                    _ => json!({"kind": "missing"}),
-                })
+                Ok(self.virtual_file(path).map_or_else(
+                    || json!({"kind": "missing"}),
+                    |file| json!({"kind": "value", "value": file.text()}),
+                ))
             }
             "fileExists" => {
                 let path = path_param(params, "fileExists")?;
-                let exists = matches!(self.classify(path), PathClass::InRoot(path) if self.files.contains_key(path));
-                Ok(json!({"kind": "value", "value": exists}))
+                Ok(json!({"kind": "value", "value": self.virtual_file(path).is_some()}))
             }
             "directoryExists" => {
                 let path = path_param(params, "directoryExists")?;
-                let exists = matches!(self.classify(path), PathClass::InRoot(path) if self.directories.contains_key(path));
+                let exists = validate_absolute(path).is_ok()
+                    && (self.directories.contains_key(path)
+                        || self.asset_directories.contains_key(path));
                 Ok(json!({"kind": "value", "value": exists}))
             }
             "getAccessibleEntries" => {
                 let path = path_param(params, "getAccessibleEntries")?;
-                let entries = match self.classify(path) {
-                    PathClass::InRoot(path) => self.directories.get(path),
-                    PathClass::Outside | PathClass::Invalid => None,
+                let entries = if validate_absolute(path).is_ok() {
+                    self.directories
+                        .get(path)
+                        .or_else(|| self.asset_directories.get(path))
+                } else {
+                    None
                 };
                 Ok(json!({
                     "kind": "value",
@@ -453,7 +521,7 @@ impl VirtualFileSystem {
     #[must_use]
     pub fn request_size_upper_bound(&self) -> usize {
         let mut total = 512usize;
-        for (path, file) in &self.files {
+        for (path, file) in self.files.iter().chain(self.assets.iter()) {
             total = total.saturating_add(json_escaped_upper_bound(path));
             total = total.saturating_add(json_escaped_upper_bound(file.text()));
             total = total.saturating_add(file_uri_upper_bound(path).saturating_mul(2));
@@ -462,18 +530,30 @@ impl VirtualFileSystem {
         total.saturating_add(file_uri_upper_bound(&self.tsconfig_path))
     }
 
+    /// Returns the virtual file for a validated absolute path.
+    ///
+    /// Project files are checked first, then mounted type assets. Invalid
+    /// paths and paths outside both tables return `None`; the host filesystem
+    /// is never consulted.
+    fn virtual_file(&self, path: &str) -> Option<&VirtualFile> {
+        if validate_absolute(path).is_err() {
+            return None;
+        }
+        self.files.get(path).or_else(|| self.assets.get(path))
+    }
+
     fn stat_value(&self, path: &str) -> Value {
-        let (mode, size) = match self.classify(path) {
-            PathClass::InRoot(path) => {
-                if let Some(file) = self.files.get(path) {
-                    (FILE_MODE, file.size())
-                } else if self.directories.contains_key(path) {
-                    (DIRECTORY_MODE, 0)
-                } else {
-                    return json!({"kind": "missing"});
-                }
-            }
-            PathClass::Outside | PathClass::Invalid => return json!({"kind": "missing"}),
+        if validate_absolute(path).is_err() {
+            return json!({"kind": "missing"});
+        }
+        let (mode, size) = if let Some(file) =
+            self.files.get(path).or_else(|| self.assets.get(path))
+        {
+            (FILE_MODE, file.size())
+        } else if self.directories.contains_key(path) || self.asset_directories.contains_key(path) {
+            (DIRECTORY_MODE, 0)
+        } else {
+            return json!({"kind": "missing"});
         };
         json!({
             "kind": "value",
@@ -483,17 +563,6 @@ impl VirtualFileSystem {
                 "mtime": VIRTUAL_MTIME,
             },
         })
-    }
-
-    fn classify<'a>(&self, path: &'a str) -> PathClass<'a> {
-        if validate_absolute(path).is_err() {
-            return PathClass::Invalid;
-        }
-        if within_root(&self.root, path) {
-            PathClass::InRoot(path)
-        } else {
-            PathClass::Outside
-        }
     }
 }
 
@@ -558,12 +627,21 @@ pub enum VfsError {
         /// Host path used by the canary.
         path: String,
     },
-}
-
-enum PathClass<'a> {
-    InRoot(&'a str),
-    Outside,
-    Invalid,
+    /// A type asset is invalid, duplicated or outside its fixed root.
+    #[error(transparent)]
+    Asset(#[from] TypeAssetError),
+    /// Two type assets resolve to the same virtual path.
+    #[error("duplicate type asset: {path}")]
+    DuplicateAsset {
+        /// Duplicated path.
+        path: String,
+    },
+    /// A type asset uses the same virtual path as a project file.
+    #[error("type asset collides with a project file: {path}")]
+    AssetCollision {
+        /// Colliding path.
+        path: String,
+    },
 }
 
 fn path_param<'a>(params: &'a Value, method: &'static str) -> Result<&'a str, CallbackError> {
@@ -682,6 +760,172 @@ fn validate_absolute(path: &str) -> Result<(), VfsError> {
     Ok(())
 }
 
+fn index_project_directories(
+    root: &str,
+    files: &BTreeMap<String, VirtualFile>,
+) -> Result<BTreeMap<String, DirectoryEntries>, VfsError> {
+    let mut directories = BTreeMap::<String, DirectoryEntries>::new();
+    directories.entry(root.to_owned()).or_default();
+
+    for path in files.keys() {
+        let Some(parent) = parent_directory(path) else {
+            return Err(VfsError::InvalidPath {
+                reason: "virtual file has no parent directory",
+            });
+        };
+        if !within_root(root, parent) {
+            return Err(VfsError::InvalidPath {
+                reason: "virtual file is outside the project root",
+            });
+        }
+        let Some(name) = file_name(path) else {
+            return Err(VfsError::InvalidPath {
+                reason: "virtual file has no name",
+            });
+        };
+        directories
+            .entry(parent.to_owned())
+            .or_default()
+            .files
+            .push(name.to_owned());
+
+        let mut current = parent;
+        while within_root(root, current) && current != root {
+            let Some(parent_of_current) = parent_directory(current) else {
+                break;
+            };
+            let Some(name) = file_name(current) else {
+                break;
+            };
+            directories
+                .entry(parent_of_current.to_owned())
+                .or_default()
+                .directories
+                .push(name.to_owned());
+            directories.entry(current.to_owned()).or_default();
+            current = parent_of_current;
+        }
+    }
+
+    sort_directory_entries(&mut directories);
+    Ok(directories)
+}
+
+/// Indexes the fixed asset roots and their descendants only.
+///
+/// Ancestors above a fixed root are deliberately absent so a full snapshot
+/// never exposes host directory names. Prefix work is bounded by
+/// [`crate::input::MAX_ASSET_PATH_COMPONENTS`] and the 256-file asset cap.
+fn index_asset_directories(
+    standard_lib_root: &str,
+    typings_root: &str,
+    assets: &BTreeMap<String, VirtualFile>,
+) -> BTreeMap<String, DirectoryEntries> {
+    let mut directories = BTreeMap::<String, DirectoryEntries>::new();
+    for path in assets.keys() {
+        let root = if within_root(standard_lib_root, path) {
+            standard_lib_root
+        } else if within_root(typings_root, path) {
+            typings_root
+        } else {
+            continue;
+        };
+        let Some(parent) = parent_directory(path) else {
+            continue;
+        };
+        if !within_root(root, parent) {
+            continue;
+        }
+        let Some(name) = file_name(path) else {
+            continue;
+        };
+        directories
+            .entry(parent.to_owned())
+            .or_default()
+            .files
+            .push(name.to_owned());
+
+        let mut current = parent;
+        while current != root {
+            let Some(parent_of_current) = parent_directory(current) else {
+                break;
+            };
+            if !within_root(root, parent_of_current) {
+                break;
+            }
+            let Some(name) = file_name(current) else {
+                break;
+            };
+            directories
+                .entry(parent_of_current.to_owned())
+                .or_default()
+                .directories
+                .push(name.to_owned());
+            current = parent_of_current;
+        }
+        directories.entry(root.to_owned()).or_default();
+    }
+
+    sort_directory_entries(&mut directories);
+    directories
+}
+
+fn sort_directory_entries(directories: &mut BTreeMap<String, DirectoryEntries>) {
+    for entries in directories.values_mut() {
+        entries.files.sort();
+        entries.files.dedup();
+        entries.directories.sort();
+        entries.directories.dedup();
+    }
+}
+
+/// Mounted asset files plus their separate directory index.
+type AssetMount = (
+    BTreeMap<String, VirtualFile>,
+    BTreeMap<String, DirectoryEntries>,
+);
+
+/// Mounts verified declarations and re-checks them at the VFS boundary.
+fn mount_type_assets(
+    project: &BTreeMap<String, VirtualFile>,
+    assets: &TypeAssets,
+) -> Result<AssetMount, VfsError> {
+    let standard_lib_root = assets.standard_lib_root().as_str();
+    let typings_package_root = assets.typings_package_root();
+    let mut table = BTreeMap::new();
+    for asset in assets.files() {
+        let path = asset.path().as_str();
+        if !within_root(standard_lib_root, path) && !within_root(&typings_package_root, path) {
+            return Err(VfsError::Asset(TypeAssetError::InvalidPath {
+                path: path.to_owned(),
+                reason: "outside fixed asset roots",
+            }));
+        }
+        if validate_absolute(path).is_err() {
+            return Err(VfsError::Asset(TypeAssetError::InvalidPath {
+                path: path.to_owned(),
+                reason: "not a normalized absolute path",
+            }));
+        }
+        if project.contains_key(path) {
+            return Err(VfsError::AssetCollision {
+                path: path.to_owned(),
+            });
+        }
+        if table
+            .insert(path.to_owned(), VirtualFile::from_asset(asset))
+            .is_some()
+        {
+            return Err(VfsError::DuplicateAsset {
+                path: path.to_owned(),
+            });
+        }
+    }
+    let directories =
+        index_asset_directories(standard_lib_root, assets.typings_root().as_str(), &table);
+    Ok((table, directories))
+}
+
 fn tsconfig_text(relative_paths: &[String]) -> String {
     json!({
         "compilerOptions": {
@@ -693,6 +937,156 @@ fn tsconfig_text(relative_paths: &[String]) -> String {
         "files": relative_paths,
     })
     .to_string()
+}
+
+/// Synthesizes the production type-environment configuration.
+///
+/// Only `noEmit:true`, the mandatory typings entry/root and the project's
+/// validated options are emitted. `noLib`, `strict`, `target`, `module` and
+/// `skipLibCheck` are never forced; the Node production path does not add
+/// them either. Project `typeRoots`/`baseUrl`/`paths` entries that point
+/// outside the virtual snapshot are dropped and reported as explicit
+/// degradations instead of being forwarded to the engine.
+fn environment_tsconfig_text(
+    project_root: &str,
+    relative_paths: &[String],
+    options: &CompilerOptions,
+    assets: &TypeAssets,
+) -> (String, Vec<EnvironmentDegradation>) {
+    let mut compiler = serde_json::Map::new();
+    let mut degradations = Vec::new();
+    compiler.insert("noEmit".to_owned(), Value::Bool(true));
+
+    let mut types = options_string_array(options.get("types"));
+    push_unique(&mut types, MINIPROGRAM_TYPINGS.to_owned());
+    compiler.insert(
+        "types".to_owned(),
+        Value::Array(types.into_iter().map(Value::String).collect()),
+    );
+
+    let mut type_roots = Vec::new();
+    for entry in options_string_array(options.get("typeRoots")) {
+        if type_root_is_virtual(project_root, assets, &entry) {
+            type_roots.push(entry);
+        } else {
+            push_degradation(
+                &mut degradations,
+                "typeRoots",
+                "entry outside the virtual snapshot",
+            );
+        }
+    }
+    push_unique(&mut type_roots, assets.typings_root().as_str().to_owned());
+    compiler.insert(
+        "typeRoots".to_owned(),
+        Value::Array(type_roots.into_iter().map(Value::String).collect()),
+    );
+
+    let base_url_removed = options
+        .get("baseUrl")
+        .and_then(Value::as_str)
+        .is_some_and(|base| {
+            if base.starts_with('/') {
+                !within_root(project_root, base)
+            } else {
+                base.split('/').any(|component| component == "..")
+            }
+        });
+    if base_url_removed {
+        push_degradation(
+            &mut degradations,
+            "baseUrl",
+            "baseUrl outside the virtual snapshot",
+        );
+    } else if let Some(value) = options.get("baseUrl") {
+        compiler.insert("baseUrl".to_owned(), value.clone());
+    }
+
+    if let Some(paths) = options.get("paths").and_then(Value::as_object) {
+        let mut kept = serde_json::Map::new();
+        let mut dropped = base_url_removed;
+        for (name, targets) in paths {
+            let all_virtual = targets.as_array().is_some_and(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .all(path_target_is_virtual)
+            });
+            if !base_url_removed && all_virtual {
+                kept.insert(name.clone(), targets.clone());
+            } else {
+                dropped = true;
+            }
+        }
+        if dropped {
+            push_degradation(
+                &mut degradations,
+                "paths",
+                "mapping target outside the virtual snapshot",
+            );
+        }
+        if !kept.is_empty() {
+            compiler.insert("paths".to_owned(), Value::Object(kept));
+        }
+    }
+
+    for (key, value) in options.values() {
+        if matches!(key.as_str(), "types" | "typeRoots" | "baseUrl" | "paths") {
+            continue;
+        }
+        compiler.insert(key.clone(), value.clone());
+    }
+
+    let tsconfig = json!({
+        "compilerOptions": Value::Object(compiler),
+        "files": relative_paths,
+    })
+    .to_string();
+    (tsconfig, degradations)
+}
+
+fn type_root_is_virtual(project_root: &str, assets: &TypeAssets, entry: &str) -> bool {
+    if !entry.starts_with('/') {
+        return !entry.split('/').any(|component| component == "..");
+    }
+    within_root(project_root, entry)
+        || within_root(assets.standard_lib_root().as_str(), entry)
+        || within_root(assets.typings_root().as_str(), entry)
+}
+
+fn path_target_is_virtual(target: &str) -> bool {
+    !target.starts_with('/') && !target.split('/').any(|component| component == "..")
+}
+
+fn push_degradation(
+    degradations: &mut Vec<EnvironmentDegradation>,
+    field: &'static str,
+    reason: &'static str,
+) {
+    if !degradations
+        .iter()
+        .any(|item| item.field == field && item.reason == reason)
+    {
+        degradations.push(EnvironmentDegradation { field, reason });
+    }
+}
+
+fn options_string_array(value: Option<&Value>) -> Vec<String> {
+    value
+        .and_then(Value::as_array)
+        .map_or_else(Vec::new, |items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.contains(&value) {
+        values.push(value);
+    }
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -735,8 +1129,10 @@ const fn file_uri_upper_bound(path: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::test_support::{fixture_files_at, pin_for};
     use crate::input::{
-        DocumentRevision, Language, ProjectKey, ProjectRoot, SnapshotRevision, SourceFile,
+        AssetPath, CompilerOptions, DocumentRevision, Language, ProjectKey, ProjectRoot,
+        SnapshotRevision, SourceFile, TypeAssets,
     };
 
     fn input(files: &[(&str, &str)]) -> AnalysisInput {
@@ -767,6 +1163,40 @@ mod tests {
     #[allow(clippy::needless_pass_by_value)]
     fn answer(vfs: &VirtualFileSystem, method: &str, params: Value) -> Value {
         vfs.answer(method, &params).expect("callback answer")
+    }
+
+    fn type_assets() -> TypeAssets {
+        let (standard_lib_root, typings_root, files) =
+            fixture_files_at("/pkg/engine/lib", "/pkg/typings", "vfs");
+        let pin = pin_for(&standard_lib_root, &typings_root, &files);
+        TypeAssets::new(
+            AssetPath::new(standard_lib_root).expect("stdlib root"),
+            AssetPath::new(typings_root).expect("typings root"),
+            files,
+            pin,
+        )
+        .expect("type assets")
+    }
+
+    fn environment_input(
+        files: &[(&str, &str)],
+        options: BTreeMap<String, Value>,
+    ) -> AnalysisInput {
+        let files = files
+            .iter()
+            .map(|(path, text)| {
+                SourceFile::new(*path, *text, DocumentRevision::new(1)).expect("source file")
+            })
+            .collect();
+        AnalysisInput::with_environment(
+            ProjectKey::new("demo"),
+            ProjectRoot::new("/work/demo").expect("root"),
+            SnapshotRevision::new(1),
+            files,
+            CompilerOptions::new(options).expect("compiler options"),
+            Arc::new(type_assets()),
+        )
+        .expect("environment input")
     }
 
     #[test]
@@ -1051,6 +1481,365 @@ mod tests {
         assert_eq!(
             Language::TypeScript,
             Language::from_path("probe.ts").expect("language")
+        );
+    }
+
+    #[test]
+    fn mounts_standard_lib_and_typings_as_virtual_files() {
+        let input = environment_input(
+            &[
+                ("main.ts", "const x = 1;\n"),
+                ("src/nested.ts", "export {};\n"),
+            ],
+            BTreeMap::new(),
+        );
+        let vfs = VirtualFileSystem::from_analysis_input(&input).expect("environment vfs");
+
+        let snapshot = vfs.snapshot_files();
+        assert!(snapshot.contains_key("/work/demo/main.ts"));
+        assert!(snapshot.contains_key("/work/demo/tsconfig.json"));
+        assert!(snapshot.contains_key("/pkg/engine/lib/lib.d.ts"));
+        assert!(snapshot.contains_key("/pkg/engine/lib/lib.es5.d.ts"));
+        assert!(snapshot.contains_key("/pkg/typings/miniprogram-api-typings/index.d.ts"));
+        assert!(snapshot.contains_key("/pkg/typings/miniprogram-api-typings/types/index.d.ts"));
+
+        let sources: Vec<&str> = vfs.source_paths().collect();
+        assert_eq!(
+            sources,
+            vec!["/work/demo/main.ts", "/work/demo/src/nested.ts"]
+        );
+        assert!(sources.iter().all(|path| !path.contains("/pkg/")));
+        assert!(vfs.absolute_paths().all(|path| !path.contains("/pkg/")));
+        assert!(vfs.file("/pkg/engine/lib/lib.d.ts").is_none());
+        assert!(vfs.asset("/pkg/engine/lib/lib.d.ts").is_some());
+        assert_eq!(
+            vfs.asset_paths().count(),
+            usize::try_from(crate::input::PINNED_TYPE_ASSET_FILES).expect("count")
+        );
+    }
+
+    #[test]
+    fn environment_tsconfig_uses_project_options_without_forcing_defaults() {
+        let options = BTreeMap::from([
+            ("strict".to_owned(), Value::Bool(false)),
+            ("target".to_owned(), Value::String("ES2020".to_owned())),
+            ("module".to_owned(), Value::String("CommonJS".to_owned())),
+            (
+                "moduleResolution".to_owned(),
+                Value::String("node10".to_owned()),
+            ),
+            ("skipLibCheck".to_owned(), Value::Bool(true)),
+            (
+                "lib".to_owned(),
+                Value::Array(vec![Value::String("es2020".to_owned())]),
+            ),
+            ("allowJs".to_owned(), Value::Bool(true)),
+            ("checkJs".to_owned(), Value::Bool(false)),
+            (
+                "types".to_owned(),
+                Value::Array(vec![Value::String("custom".to_owned())]),
+            ),
+        ]);
+        let input = environment_input(
+            &[
+                ("model.ts", "export const y = 2;\n"),
+                ("main.ts", "const x = 1;\n"),
+            ],
+            options,
+        );
+        let vfs = VirtualFileSystem::from_analysis_input(&input).expect("environment vfs");
+        let text = vfs.file(vfs.tsconfig_path()).expect("tsconfig").text();
+        let value: Value = serde_json::from_str(text).expect("tsconfig json");
+        let compiler = &value["compilerOptions"];
+
+        assert!(compiler.get("noLib").is_none());
+        assert_eq!(compiler["noEmit"], true);
+        assert_eq!(compiler["strict"], false);
+        assert_eq!(compiler["target"], "ES2020");
+        assert_eq!(compiler["module"], "CommonJS");
+        assert_eq!(compiler["moduleResolution"], "node10");
+        assert_eq!(compiler["skipLibCheck"], true);
+        assert_eq!(compiler["allowJs"], true);
+        assert_eq!(compiler["checkJs"], false);
+        assert_eq!(compiler["lib"], json!(["es2020"]));
+        assert_eq!(
+            compiler["types"],
+            json!(["custom", "miniprogram-api-typings"])
+        );
+        assert_eq!(compiler["typeRoots"], json!(["/pkg/typings"]));
+        assert_eq!(value["files"], json!(["main.ts", "model.ts"]));
+        assert!(compiler.get("moduleDetection").is_none());
+    }
+
+    #[test]
+    fn legacy_inputs_keep_no_lib_and_mount_no_assets() {
+        for vfs in [
+            VirtualFileSystem::from_analysis_input(&input(&[("main.ts", "")])).expect("vfs"),
+            VirtualFileSystem::from_root_and_files(
+                "/tmp/opencode/probe",
+                [("/tmp/opencode/probe/probe.ts".to_owned(), String::new())],
+            )
+            .expect("probe vfs"),
+        ] {
+            let value: Value =
+                serde_json::from_str(vfs.file(vfs.tsconfig_path()).expect("tsconfig").text())
+                    .expect("tsconfig json");
+            assert_eq!(value["compilerOptions"]["noLib"], true);
+            assert!(vfs.asset_paths().next().is_none());
+            assert_eq!(vfs.snapshot_files().len(), vfs.absolute_paths().count());
+        }
+    }
+
+    #[test]
+    fn keeps_asset_type_roots_and_rejects_relative_base_url_escape() {
+        let options = BTreeMap::from([
+            ("typeRoots".to_owned(), json!(["/pkg/typings"])),
+            ("baseUrl".to_owned(), json!("../outside")),
+            ("paths".to_owned(), json!({"@/*": ["src/*"]})),
+        ]);
+        let vfs =
+            VirtualFileSystem::from_analysis_input(&environment_input(&[("main.ts", "")], options))
+                .expect("environment vfs");
+        let value: Value =
+            serde_json::from_str(vfs.file(vfs.tsconfig_path()).expect("tsconfig").text())
+                .expect("tsconfig json");
+        assert_eq!(
+            value["compilerOptions"]["typeRoots"],
+            json!(["/pkg/typings"])
+        );
+        assert!(value["compilerOptions"].get("baseUrl").is_none());
+        assert!(value["compilerOptions"].get("paths").is_none());
+        assert!(
+            vfs.environment_degradations()
+                .iter()
+                .any(|item| item.field() == "baseUrl")
+        );
+    }
+
+    #[test]
+    fn keeps_virtual_base_url_and_partially_filters_paths() {
+        let options = BTreeMap::from([
+            (
+                "typeRoots".to_owned(),
+                json!(["/work/demo/types", "/pkg/typings"]),
+            ),
+            ("baseUrl".to_owned(), json!("/work/demo")),
+            (
+                "paths".to_owned(),
+                json!({
+                    "@good/*": ["src/*"],
+                    "@escape/*": ["../outside/*"],
+                    "@absolute/*": ["/etc/*"],
+                }),
+            ),
+        ]);
+        let vfs =
+            VirtualFileSystem::from_analysis_input(&environment_input(&[("main.ts", "")], options))
+                .expect("environment vfs");
+        let value: Value =
+            serde_json::from_str(vfs.file(vfs.tsconfig_path()).expect("tsconfig").text())
+                .expect("tsconfig json");
+        let compiler = &value["compilerOptions"];
+        assert_eq!(compiler["baseUrl"], "/work/demo");
+        assert_eq!(
+            compiler["typeRoots"],
+            json!(["/work/demo/types", "/pkg/typings"])
+        );
+        assert_eq!(compiler["paths"], json!({"@good/*": ["src/*"]}));
+        assert!(
+            vfs.environment_degradations()
+                .iter()
+                .any(|item| item.field() == "paths")
+        );
+    }
+
+    #[test]
+    fn filters_project_resolution_options_outside_the_virtual_snapshot() {
+        let options = BTreeMap::from([
+            (
+                "typeRoots".to_owned(),
+                json!(["/etc/types", "../outside-types", "local-types"]),
+            ),
+            ("baseUrl".to_owned(), json!("/outside/base")),
+            (
+                "paths".to_owned(),
+                json!({"@/*": ["src/*"], "@escape/*": ["../../etc/*"]}),
+            ),
+        ]);
+        let vfs =
+            VirtualFileSystem::from_analysis_input(&environment_input(&[("main.ts", "")], options))
+                .expect("environment vfs");
+        let value: Value =
+            serde_json::from_str(vfs.file(vfs.tsconfig_path()).expect("tsconfig").text())
+                .expect("tsconfig json");
+        let compiler = &value["compilerOptions"];
+        assert_eq!(
+            compiler["typeRoots"],
+            json!(["local-types", "/pkg/typings"])
+        );
+        assert!(compiler.get("baseUrl").is_none());
+        assert!(compiler.get("paths").is_none());
+
+        let degradations = vfs.environment_degradations();
+        assert!(degradations.iter().any(|item| item.field() == "typeRoots"));
+        assert!(degradations.iter().any(|item| item.field() == "baseUrl"));
+        assert!(degradations.iter().any(|item| item.field() == "paths"));
+    }
+
+    #[test]
+    fn rejects_asset_project_collisions() {
+        let project_files = vec![
+            SourceFile::new(
+                "lib.d.ts",
+                "declare const projectLib: true;\n",
+                DocumentRevision::new(1),
+            )
+            .expect("project d.ts"),
+        ];
+        let (standard_lib_root, typings_root, asset_files) =
+            fixture_files_at("/work/demo", "/pkg/typings-collision", "collision");
+        let pin = pin_for(&standard_lib_root, &typings_root, &asset_files);
+        let assets = TypeAssets::new(
+            AssetPath::new(standard_lib_root).expect("stdlib root"),
+            AssetPath::new(typings_root).expect("typings root"),
+            asset_files,
+            pin,
+        )
+        .expect("assets");
+        let input = AnalysisInput::with_environment(
+            ProjectKey::new("demo"),
+            ProjectRoot::new("/work/demo").expect("root"),
+            SnapshotRevision::new(1),
+            project_files,
+            CompilerOptions::default(),
+            Arc::new(assets),
+        )
+        .expect("input");
+        assert!(matches!(
+            VirtualFileSystem::from_analysis_input(&input),
+            Err(VfsError::AssetCollision { .. })
+        ));
+    }
+
+    #[test]
+    fn asset_directories_answer_component_confined_entries() {
+        let vfs = VirtualFileSystem::from_analysis_input(&environment_input(
+            &[("main.ts", "")],
+            BTreeMap::new(),
+        ))
+        .expect("environment vfs");
+
+        let stdlib = answer(
+            &vfs,
+            "getAccessibleEntries",
+            Value::String("/pkg/engine/lib".to_owned()),
+        );
+        assert_eq!(
+            stdlib["value"]["files"].as_array().map(Vec::len),
+            Some(usize::try_from(crate::input::PINNED_STANDARD_LIB_FILE_COUNT).expect("count"))
+        );
+        assert_eq!(stdlib["value"]["files"][0], "lib.d.ts");
+        assert_eq!(stdlib["value"]["directories"], json!([]));
+
+        let typings = answer(
+            &vfs,
+            "getAccessibleEntries",
+            Value::String("/pkg/typings/miniprogram-api-typings".to_owned()),
+        );
+        assert_eq!(typings["value"]["files"], json!(["index.d.ts"]));
+        assert_eq!(typings["value"]["directories"], json!(["types"]));
+
+        let typings_root = answer(
+            &vfs,
+            "getAccessibleEntries",
+            Value::String("/pkg/typings".to_owned()),
+        );
+        assert_eq!(typings_root["value"]["files"], json!([]));
+        assert_eq!(
+            typings_root["value"]["directories"],
+            json!(["miniprogram-api-typings"])
+        );
+
+        for outside in ["/", "/pkg", "/pkg/engine", "/work"] {
+            let entries = answer(
+                &vfs,
+                "getAccessibleEntries",
+                Value::String(outside.to_owned()),
+            );
+            assert_eq!(entries["value"]["files"], json!([]), "{outside}");
+            assert_eq!(entries["value"]["directories"], json!([]), "{outside}");
+            assert_eq!(
+                answer(&vfs, "directoryExists", Value::String(outside.to_owned())),
+                json!({"kind": "value", "value": false}),
+                "{outside}"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_and_stats_assets_without_exposing_them_as_project_files() {
+        let vfs = VirtualFileSystem::from_analysis_input(&environment_input(
+            &[("main.ts", "")],
+            BTreeMap::new(),
+        ))
+        .expect("environment vfs");
+
+        let path = "/pkg/engine/lib/lib.d.ts";
+        assert_eq!(
+            answer(&vfs, "readFile", Value::String(path.to_owned())),
+            json!({"kind": "value", "value": "declare const stdlib0: number; // vfs\n"})
+        );
+        assert_eq!(
+            answer(&vfs, "fileExists", Value::String(path.to_owned())),
+            json!({"kind": "value", "value": true})
+        );
+        assert_eq!(
+            answer(
+                &vfs,
+                "directoryExists",
+                Value::String("/pkg/engine/lib".to_owned())
+            ),
+            json!({"kind": "value", "value": true})
+        );
+        let stat = answer(&vfs, "stat", Value::String(path.to_owned()));
+        assert_eq!(stat["kind"], "value");
+        assert_eq!(stat["value"]["mode"], FILE_MODE);
+        assert_eq!(
+            stat["value"]["size"],
+            u64::try_from("declare const stdlib0: number; // vfs\n".len()).expect("size")
+        );
+
+        // Still fail closed for real host files outside both tables.
+        assert_eq!(
+            answer(&vfs, "readFile", Value::String("/etc/passwd".to_owned())),
+            json!({"kind": "missing"})
+        );
+        assert_eq!(
+            answer(&vfs, "stat", Value::String("/etc/passwd".to_owned())),
+            json!({"kind": "missing"})
+        );
+    }
+
+    #[test]
+    fn request_bound_includes_assets() {
+        let legacy =
+            VirtualFileSystem::from_analysis_input(&input(&[("main.ts", "")])).expect("legacy vfs");
+        let environment = VirtualFileSystem::from_analysis_input(&environment_input(
+            &[("main.ts", "")],
+            BTreeMap::new(),
+        ))
+        .expect("environment vfs");
+
+        let asset_bytes: usize = environment
+            .asset_paths()
+            .filter_map(|path| environment.asset(path))
+            .map(|file| file.text().len())
+            .sum();
+        assert!(asset_bytes > 0);
+        assert!(environment.request_size_upper_bound() > legacy.request_size_upper_bound());
+        assert!(
+            environment.request_size_upper_bound()
+                > legacy.request_size_upper_bound() + asset_bytes
         );
     }
 }

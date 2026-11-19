@@ -14,7 +14,13 @@
 //! A session owns one current snapshot and a bounded ledger of older engine
 //! snapshots that have not been confirmed released. [`NativeSession::open_project`]
 //! creates a full virtual filesystem plus a synthesized `tsconfig.json` and
-//! opens the project and its files. [`NativeSession::update_project`] sends the
+//! opens the project and its files. An input created with
+//! [`AnalysisInput::with_environment`](crate::input::AnalysisInput::with_environment)
+//! also mounts the verified TypeScript standard library and mini-program
+//! typings as virtual files; the legacy constructor keeps the historical
+//! `noLib:true` probe configuration. An invalid or incomplete asset set is
+//! rejected as `Unavailable(MissingAsset)` before any snapshot is created.
+//! [`NativeSession::update_project`] sends the
 //! required `closeFiles` + `openFiles` (and closes/reopens the project) in one
 //! `updateSnapshot`, then releases the previous snapshot within a bounded
 //! deadline and enforces the contract's live-snapshot budget. Every response is
@@ -40,7 +46,7 @@ use std::time::Duration;
 use serde_json::Value;
 
 use crate::config::{MAX_LIVE_SNAPSHOTS, PinnedEngine};
-use crate::input::{AnalysisInput, ProjectKey, SnapshotRevision};
+use crate::input::{AnalysisInput, ProjectKey, SnapshotRevision, TypeEnvironmentIdentity};
 use crate::native::ast::{
     AstError, AstHeader, AstRange, AstTree, IDENTIFIER_KIND, decode_base64, find_declaration_name,
     find_identifier, node_span,
@@ -65,7 +71,7 @@ use crate::native::supervisor::{
     Deadline, EngineSupervisor, HANDSHAKE_DEADLINE_MS, InboundEvent, ProcessSession,
     SHUTDOWN_DEADLINE_MS, ShutdownReport, SpawnError, SupervisorError, verify_engine_executable,
 };
-use crate::native::vfs::{CallbackError, VfsError, VirtualFileSystem};
+use crate::native::vfs::{CallbackError, EnvironmentDegradation, VfsError, VirtualFileSystem};
 use crate::native::wire::{
     RawCompletionList, RawDiagnostic, RawJsDocTag, RawReferencedSymbol, RawSourceFile, RawSymbol,
     RawSymbolReference, RawType, SnapshotChanges, SnapshotFileSystem, completion_params,
@@ -278,6 +284,7 @@ pub struct NativeSession {
     project_id: Option<String>,
     project_key: Option<ProjectKey>,
     project_root: Option<String>,
+    type_environment: Option<TypeEnvironmentIdentity>,
     vfs: Option<VirtualFileSystem>,
     initialize: Option<InitializeResult>,
     options: SessionOptions,
@@ -315,6 +322,7 @@ impl NativeSession {
             project_id: None,
             project_key: None,
             project_root: None,
+            type_environment: None,
             vfs: None,
             initialize: None,
             options,
@@ -350,6 +358,20 @@ impl NativeSession {
     #[must_use]
     pub fn project_id(&self) -> Option<&str> {
         self.project_id.as_deref()
+    }
+
+    /// Returns the identity of the open type environment.
+    #[must_use]
+    pub const fn type_environment_identity(&self) -> Option<&TypeEnvironmentIdentity> {
+        self.type_environment.as_ref()
+    }
+
+    /// Returns explicit type-environment degradations from the open VFS.
+    #[must_use]
+    pub fn environment_degradations(&self) -> &[EnvironmentDegradation] {
+        self.vfs
+            .as_ref()
+            .map_or(&[], VirtualFileSystem::environment_degradations)
     }
 
     /// Returns the accepted initialize result.
@@ -592,6 +614,7 @@ impl NativeSession {
 
         let vfs = VirtualFileSystem::from_analysis_input(input).map_err(|error| map_vfs(&error))?;
         self.check_snapshot_budget(&vfs)?;
+        let type_environment = input.type_environment_identity();
         let changes = Self::create_changes(&vfs);
         let tsconfig = vfs.tsconfig_path().to_owned();
         // Install the VFS before createSnapshot: the engine may resolve
@@ -638,12 +661,14 @@ impl NativeSession {
         self.project_id = Some(project);
         self.project_key = Some(input.project().clone());
         self.project_root = Some(input.root().as_str().to_owned());
+        self.type_environment = type_environment;
         self.dispatch.clear_abandoned();
         if let Err(error) = self.enforce_live_cap() {
             self.epoch = None;
             self.project_id = None;
             self.project_key = None;
             self.project_root = None;
+            self.type_environment = None;
             self.vfs = None;
             return Err(error);
         }
@@ -684,6 +709,8 @@ impl NativeSession {
                 reason: "snapshot revision must advance",
             });
         }
+        let type_environment = input.type_environment_identity();
+        validate_environment_transition(self.type_environment.as_ref(), type_environment.as_ref())?;
 
         let vfs = VirtualFileSystem::from_analysis_input(input).map_err(|error| map_vfs(&error))?;
         self.check_snapshot_budget(&vfs)?;
@@ -750,6 +777,7 @@ impl NativeSession {
             revision: input.revision(),
         });
         self.project_id = Some(project);
+        self.type_environment = type_environment;
         self.dispatch.clear_abandoned();
 
         let release = self.release_snapshot(epoch.snapshot, Deadline::release());
@@ -782,6 +810,7 @@ impl NativeSession {
         self.project_id = None;
         self.project_key = None;
         self.project_root = None;
+        self.type_environment = None;
         self.vfs = None;
         self.dispatch.clear_abandoned();
         first_error.map_or(Ok(()), Err)
@@ -833,6 +862,7 @@ impl NativeSession {
         let result = self.release_snapshot(epoch.snapshot, deadline);
         self.epoch = None;
         self.project_id = None;
+        self.type_environment = None;
         result
     }
 
@@ -2159,6 +2189,30 @@ fn definition_target_from_ast(
     })
 }
 
+/// Rejects an update that would silently replace the open type environment.
+///
+/// The engine program and every published handle belong to the environment
+/// captured at open time. Adding, dropping or changing it requires a reopen so
+/// handles cannot survive a different lib/typings closure.
+fn validate_environment_transition(
+    current: Option<&TypeEnvironmentIdentity>,
+    next: Option<&TypeEnvironmentIdentity>,
+) -> Result<(), NativeError> {
+    match (current, next) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err(NativeError::InvalidParams {
+            reason: "update would add a type environment; reopen the session",
+        }),
+        (Some(_), None) => Err(NativeError::InvalidParams {
+            reason: "update would drop the type environment; reopen the session",
+        }),
+        (Some(current), Some(next)) if current == next => Ok(()),
+        (Some(_), Some(_)) => Err(NativeError::InvalidParams {
+            reason: "type environment changed; reopen the session",
+        }),
+    }
+}
+
 fn map_vfs(error: &VfsError) -> NativeError {
     match error {
         VfsError::InvalidPath { .. } | VfsError::Root(_) => NativeError::InvalidParams {
@@ -2170,6 +2224,15 @@ fn map_vfs(error: &VfsError) -> NativeError {
         VfsError::Confinement { .. } => NativeError::Unavailable {
             reason: UnavailableReason::VfsConfinement,
         },
+        // An invalid or incomplete asset set must never degrade into a
+        // no-library result; the caller sees an unavailable engine instead.
+        VfsError::Asset(_) => NativeError::Unavailable {
+            reason: UnavailableReason::MissingAsset,
+        },
+        VfsError::DuplicateAsset { .. } => NativeError::Protocol("duplicate type asset".to_owned()),
+        VfsError::AssetCollision { .. } => NativeError::InvalidParams {
+            reason: "type asset collides with a project file",
+        },
     }
 }
 
@@ -2180,6 +2243,92 @@ mod tests {
     use super::*;
     use crate::query::document_symbol::{DocumentSymbolKind, map_document_symbols};
     use wxml_types::CapabilityStatus;
+
+    #[test]
+    fn asset_failures_map_to_fail_closed_native_errors() {
+        use crate::input::TypeAssetError;
+
+        assert!(matches!(
+            map_vfs(&VfsError::Asset(TypeAssetError::MissingRequired {
+                path: "/pkg/lib.d.ts".to_owned(),
+            })),
+            NativeError::Unavailable {
+                reason: UnavailableReason::MissingAsset
+            }
+        ));
+        assert!(matches!(
+            map_vfs(&VfsError::DuplicateAsset {
+                path: "/pkg/lib.d.ts".to_owned(),
+            }),
+            NativeError::Protocol(_)
+        ));
+        assert!(matches!(
+            map_vfs(&VfsError::AssetCollision {
+                path: "/pkg/lib.d.ts".to_owned(),
+            }),
+            NativeError::InvalidParams { .. }
+        ));
+    }
+
+    #[test]
+    fn type_environment_transitions_require_reopen() {
+        use crate::input::test_support::fixture_assets;
+        use crate::input::{
+            CompilerOptions, DocumentRevision, ProjectRoot, SourceFile as InputSourceFile,
+        };
+
+        let input = |tag: &str| {
+            AnalysisInput::with_environment(
+                ProjectKey::new("environment"),
+                ProjectRoot::new("/work/environment").expect("root"),
+                SnapshotRevision::new(1),
+                vec![
+                    InputSourceFile::new("main.ts", "", DocumentRevision::new(1)).expect("main.ts"),
+                ],
+                CompilerOptions::default(),
+                std::sync::Arc::new(fixture_assets(tag)),
+            )
+            .expect("environment input")
+        };
+        let first = input("first");
+        let second = input("second");
+        let first_identity = first.type_environment_identity();
+        let second_identity = second.type_environment_identity();
+        assert!(first_identity.is_some());
+        assert_ne!(first_identity, second_identity);
+
+        assert!(validate_environment_transition(None, None).is_ok());
+        assert!(
+            validate_environment_transition(first_identity.as_ref(), first_identity.as_ref())
+                .is_ok()
+        );
+
+        for (current, next) in [
+            (None, first_identity.as_ref()),
+            (first_identity.as_ref(), None),
+            (first_identity.as_ref(), second_identity.as_ref()),
+        ] {
+            assert!(matches!(
+                validate_environment_transition(current, next),
+                Err(NativeError::InvalidParams { .. })
+            ));
+        }
+
+        let legacy = AnalysisInput::new(
+            ProjectKey::new("environment"),
+            ProjectRoot::new("/work/environment").expect("root"),
+            SnapshotRevision::new(2),
+            vec![InputSourceFile::new("main.ts", "", DocumentRevision::new(1)).expect("main.ts")],
+        )
+        .expect("legacy input");
+        assert!(
+            validate_environment_transition(
+                first_identity.as_ref(),
+                legacy.type_environment_identity().as_ref()
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn project_selection_prefers_the_configuration() {
