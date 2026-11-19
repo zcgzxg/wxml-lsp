@@ -14,6 +14,12 @@
 //! An empty symbol list with [`CapabilityStatus::Supported`] is a checked
 //! empty file. Any skipped candidate or truncation makes the result `Partial`;
 //! this module never turns dropped ranges into a supported empty answer.
+//!
+//! The C0 conversion in [`DocumentSymbolResult::to_backend_result`] re-applies
+//! the shared symbol and depth caps, verifies both coordinate systems against
+//! the source text, and accounts every dropped input node (including a dropped
+//! parent's whole subtree) in `skipped`. Native truncation and gap reasons are
+//! preserved verbatim in the `Partial` reason.
 
 use std::fmt::Write as _;
 
@@ -129,22 +135,30 @@ impl DocumentSymbolResult {
     ///
     /// `source` must be the exact script text the evidence was decoded from.
     /// Both coordinate systems are re-checked against it: a symbol whose UTF-8
-    /// and UTF-16 ranges disagree, whose selection range is outside its
-    /// declaration range, or whose range is outside its parent is dropped and
-    /// the result stays `Partial`. Ranges are never clamped. Gap starts convert
-    /// from UTF-16 to UTF-8 when possible and stay `None` otherwise; gaps are
-    /// bounded by [`wxml_types::MAX_DOCUMENT_SYMBOL_GAPS`].
+    /// and UTF-16 ranges disagree, whose range is empty or reversed, whose
+    /// selection range is outside its declaration range, or whose range is
+    /// outside its parent is dropped and the result stays `Partial`. Ranges are
+    /// never clamped.
     ///
-    /// The query status is preserved. A `Supported` status without gaps,
-    /// truncation or mapping drops stays `Supported`; an empty supported result
-    /// is a checked "this file declares nothing".
+    /// The conversion re-applies [`wxml_types::MAX_DOCUMENT_SYMBOLS`] and
+    /// [`wxml_types::MAX_DOCUMENT_SYMBOL_DEPTH`] instead of trusting native
+    /// input. A dropped parent drops its whole subtree; every dropped input
+    /// node is counted in the returned `skipped` value. Native `truncated` is
+    /// preserved, and conversion over-count also sets it. A `Supported` query
+    /// status without gaps, truncation or mapping drops stays `Supported`; any
+    /// drop makes it `Partial` with the exact native reason text preserved.
+    /// Already-degraded `Unsupported`, `Disabled`, `Unavailable` and `Unknown`
+    /// statuses are preserved when nothing is dropped; a conversion drop still
+    /// forces `Partial`. Gap starts convert from UTF-16 to UTF-8 when possible
+    /// and stay `None` otherwise; gaps are bounded by
+    /// [`wxml_types::MAX_DOCUMENT_SYMBOL_GAPS`].
     #[must_use]
     pub fn to_backend_result(&self, source: &str) -> BackendDocumentSymbolsResult {
-        let mut drops = MappingDrops::default();
+        let mut mapping = MappingState::new(source);
         let symbols = self
             .symbols
             .iter()
-            .filter_map(|symbol| map_backend_symbol(symbol, source, None, &mut drops))
+            .filter_map(|symbol| mapping.map_node(symbol, 0, None))
             .collect();
         let gaps = self
             .gaps
@@ -157,107 +171,210 @@ impl DocumentSymbolResult {
                 reason: gap.reason.to_owned(),
             })
             .collect();
+        let truncated = self.truncated || mapping.truncated;
+        let skipped = self.skipped.saturating_add(mapping.drops.dropped_nodes);
 
         let mut status = self.status.clone();
-        if status.is_supported() && (self.truncated || self.skipped > 0 || !self.gaps.is_empty()) {
+        let drop_reasons = mapping.drops.reasons();
+        if status.is_supported() {
+            let mut reasons =
+                native_incompleteness_reasons(self.truncated, self.skipped, &self.gaps);
+            reasons.extend(drop_reasons);
+            if !reasons.is_empty() {
+                status = CapabilityStatus::Partial {
+                    reason: reasons.join("; "),
+                };
+            }
+        } else if let CapabilityStatus::Partial { reason } = &mut status {
+            for addition in drop_reasons {
+                append_reason(reason, &addition);
+            }
+        } else if !drop_reasons.is_empty() {
+            let mut reasons = Vec::new();
+            if let Some(reason) = status.reason() {
+                reasons.push(reason.to_owned());
+            }
+            reasons.extend(drop_reasons);
             status = CapabilityStatus::Partial {
-                reason: "the document symbol evidence is incomplete".to_owned(),
+                reason: reasons.join("; "),
             };
         }
-        drops.record(&mut status);
 
         BackendDocumentSymbolsResult {
             symbols,
             status,
-            truncated: self.truncated,
-            skipped: self.skipped,
+            truncated,
+            skipped,
             gaps,
         }
     }
 }
 
-/// Counts symbols that could not be represented in C0 coordinates.
+/// Walks query symbols under the C0 output caps.
+struct MappingState<'a> {
+    source: &'a str,
+    emitted: usize,
+    truncated: bool,
+    drops: MappingDrops,
+}
+
+impl<'a> MappingState<'a> {
+    const fn new(source: &'a str) -> Self {
+        Self {
+            source,
+            emitted: 0,
+            truncated: false,
+            drops: MappingDrops {
+                mismatched_ranges: 0,
+                selections_outside: 0,
+                children_outside: 0,
+                over_depth: 0,
+                over_count: 0,
+                dropped_nodes: 0,
+            },
+        }
+    }
+
+    fn map_node(
+        &mut self,
+        symbol: &DocumentSymbol,
+        depth: usize,
+        parent: Option<BackendSourceRange>,
+    ) -> Option<BackendDocumentSymbol> {
+        if depth >= wxml_types::MAX_DOCUMENT_SYMBOL_DEPTH {
+            self.drops.drop_subtree(symbol, DropKind::OverDepth);
+            return None;
+        }
+        if self.emitted >= wxml_types::MAX_DOCUMENT_SYMBOLS {
+            self.truncated = true;
+            self.drops.drop_subtree(symbol, DropKind::OverCount);
+            return None;
+        }
+        let Some(range) = verified_range(self.source, symbol.range, symbol.utf16) else {
+            self.drops.drop_subtree(symbol, DropKind::MismatchedRange);
+            return None;
+        };
+        let Some(selection_range) =
+            verified_range(self.source, symbol.selection_range, symbol.selection_utf16)
+        else {
+            self.drops.drop_subtree(symbol, DropKind::MismatchedRange);
+            return None;
+        };
+        if selection_range.start() < range.start() || selection_range.end() > range.end() {
+            self.drops.drop_subtree(symbol, DropKind::SelectionOutside);
+            return None;
+        }
+        if let Some(parent) = parent {
+            if range.start() < parent.start() || range.end() > parent.end() {
+                self.drops.drop_subtree(symbol, DropKind::ChildOutside);
+                return None;
+            }
+        }
+        self.emitted = self.emitted.saturating_add(1);
+        let children = symbol
+            .children
+            .iter()
+            .filter_map(|child| self.map_node(child, depth.saturating_add(1), Some(range)))
+            .collect();
+        Some(BackendDocumentSymbol {
+            name: symbol.name.clone(),
+            kind: backend_kind(symbol),
+            range,
+            selection_range,
+            children,
+        })
+    }
+}
+
+/// Why one input subtree was not represented in the C0 result.
+#[derive(Clone, Copy, Debug)]
+enum DropKind {
+    MismatchedRange,
+    SelectionOutside,
+    ChildOutside,
+    OverDepth,
+    OverCount,
+}
+
+/// Counts input nodes that could not be represented in C0 coordinates.
+///
+/// `dropped_nodes` includes every node in a dropped subtree; the per-reason
+/// counters sum to the same total.
 #[derive(Debug, Default)]
 struct MappingDrops {
     mismatched_ranges: usize,
     selections_outside: usize,
     children_outside: usize,
+    over_depth: usize,
+    over_count: usize,
+    dropped_nodes: usize,
 }
 
 impl MappingDrops {
-    fn record(&self, status: &mut CapabilityStatus) {
+    fn drop_subtree(&mut self, symbol: &DocumentSymbol, kind: DropKind) {
+        let nodes = subtree_len(symbol);
+        self.dropped_nodes = self.dropped_nodes.saturating_add(nodes);
+        let counter = match kind {
+            DropKind::MismatchedRange => &mut self.mismatched_ranges,
+            DropKind::SelectionOutside => &mut self.selections_outside,
+            DropKind::ChildOutside => &mut self.children_outside,
+            DropKind::OverDepth => &mut self.over_depth,
+            DropKind::OverCount => &mut self.over_count,
+        };
+        *counter = counter.saturating_add(nodes);
+    }
+
+    fn reasons(&self) -> Vec<String> {
+        let mut reasons = Vec::new();
         if self.mismatched_ranges > 0 {
-            mark_partial(
-                status,
-                &format!(
-                    "{} document symbol range(s) did not match the script text",
-                    self.mismatched_ranges
-                ),
-            );
+            reasons.push(format!(
+                "{} document symbol node(s) did not match the script text",
+                self.mismatched_ranges
+            ));
         }
         if self.selections_outside > 0 {
-            mark_partial(
-                status,
-                &format!(
-                    "{} document symbol selection range(s) were outside the declaration range",
-                    self.selections_outside
-                ),
-            );
+            reasons.push(format!(
+                "{} document symbol node(s) had a selection range outside the declaration range",
+                self.selections_outside
+            ));
         }
         if self.children_outside > 0 {
-            mark_partial(
-                status,
-                &format!(
-                    "{} document symbol child range(s) were outside the parent range",
-                    self.children_outside
-                ),
-            );
+            reasons.push(format!(
+                "{} document symbol node(s) were outside the parent range",
+                self.children_outside
+            ));
         }
+        if self.over_depth > 0 {
+            reasons.push(format!(
+                "{} document symbol node(s) exceeded the {}-level conversion depth cap",
+                self.over_depth,
+                wxml_types::MAX_DOCUMENT_SYMBOL_DEPTH
+            ));
+        }
+        if self.over_count > 0 {
+            reasons.push(format!(
+                "{} document symbol node(s) were dropped after the {}-symbol conversion cap",
+                self.over_count,
+                wxml_types::MAX_DOCUMENT_SYMBOLS
+            ));
+        }
+        reasons
     }
 }
 
-fn map_backend_symbol(
-    symbol: &DocumentSymbol,
-    source: &str,
-    parent: Option<BackendSourceRange>,
-    drops: &mut MappingDrops,
-) -> Option<BackendDocumentSymbol> {
-    let Some(range) = verified_range(source, symbol.range, symbol.utf16) else {
-        drops.mismatched_ranges = drops.mismatched_ranges.saturating_add(1);
-        return None;
-    };
-    let Some(selection_range) =
-        verified_range(source, symbol.selection_range, symbol.selection_utf16)
-    else {
-        drops.mismatched_ranges = drops.mismatched_ranges.saturating_add(1);
-        return None;
-    };
-    if selection_range.start() < range.start() || selection_range.end() > range.end() {
-        drops.selections_outside = drops.selections_outside.saturating_add(1);
-        return None;
-    }
-    if let Some(parent) = parent {
-        if range.start() < parent.start() || range.end() > parent.end() {
-            drops.children_outside = drops.children_outside.saturating_add(1);
-            return None;
-        }
-    }
-    let children = symbol
-        .children
-        .iter()
-        .filter_map(|child| map_backend_symbol(child, source, Some(range), drops))
-        .collect();
-    Some(BackendDocumentSymbol {
-        name: symbol.name.clone(),
-        kind: backend_kind(symbol),
-        range,
-        selection_range,
-        children,
+/// Counts one symbol and all of its descendants.
+fn subtree_len(symbol: &DocumentSymbol) -> usize {
+    symbol.children.iter().fold(1usize, |total, child| {
+        total.saturating_add(subtree_len(child))
     })
 }
 
 /// Verifies that the native UTF-8 and UTF-16 ranges describe the same
 /// non-empty token in `source`, then returns the UTF-8 range.
+///
+/// This is the fail-closed boundary for presentation-layer `SourceRange::new`
+/// values, which do not validate bounds: empty or reversed ranges and ranges
+/// whose two coordinate systems disagree are rejected rather than clamped.
 fn verified_range(
     source: &str,
     bytes: SourceRange,
@@ -289,26 +406,50 @@ const fn backend_kind(symbol: &DocumentSymbol) -> BackendDocumentSymbolKind {
     }
 }
 
-fn mark_partial(status: &mut CapabilityStatus, reason: &str) {
-    if status.is_supported() {
-        *status = CapabilityStatus::Partial {
-            reason: reason.to_owned(),
-        };
+fn append_reason(existing: &mut String, addition: &str) {
+    if existing.split("; ").any(|part| part == addition) {
         return;
     }
-    if let CapabilityStatus::Partial { reason: existing } = status {
-        if !existing.split("; ").any(|part| part == reason) {
-            existing.push_str("; ");
-            existing.push_str(reason);
-        }
+    if !existing.is_empty() {
+        existing.push_str("; ");
     }
+    existing.push_str(addition);
+}
+
+/// Formats the native truncation and skipped-candidate reasons without
+/// dropping their exact text.
+fn native_incompleteness_reasons(
+    truncated: bool,
+    skipped: usize,
+    gaps: &[DocumentSymbolGap],
+) -> Vec<String> {
+    let mut reasons = Vec::new();
+    if truncated {
+        reasons.push(format!(
+            "document symbol list was truncated at {MAX_DOCUMENT_SYMBOLS} entries"
+        ));
+    }
+    if skipped > 0 {
+        let mut reason = format!("{skipped} declaration candidate(s) were skipped");
+        if let Some(gap) = gaps.first() {
+            reason.push_str("; first gap: ");
+            reason.push_str(gap.reason);
+            if let Some(name_kind) = gap.name_kind {
+                let _ = write!(reason, " (name kind {name_kind})");
+            }
+        }
+        reasons.push(reason);
+    }
+    reasons
 }
 
 /// Maps native document-symbol evidence.
 ///
 /// `Supported` requires no gap and no truncation. Every decoded symbol is kept
 /// even when another candidate was skipped, so the result stays useful without
-/// claiming completeness.
+/// claiming completeness. This layer preserves native evidence verbatim; C0
+/// caps, coordinate checks and conversion accounting are applied by
+/// [`DocumentSymbolResult::to_backend_result`].
 #[must_use]
 pub fn map_document_symbols(evidence: &DocumentSymbolsEvidence) -> DocumentSymbolResult {
     let mut mapping_failures = 0usize;
@@ -318,23 +459,8 @@ pub fn map_document_symbols(evidence: &DocumentSymbolsEvidence) -> DocumentSymbo
         .filter_map(|symbol| map_symbol(symbol, &mut mapping_failures))
         .collect::<Vec<_>>();
 
-    let mut reasons = Vec::new();
-    if evidence.truncated {
-        reasons.push(format!(
-            "document symbol list was truncated at {MAX_DOCUMENT_SYMBOLS} entries"
-        ));
-    }
-    if evidence.skipped > 0 {
-        let mut reason = format!("{} declaration candidate(s) were skipped", evidence.skipped);
-        if let Some(gap) = evidence.gaps.first() {
-            reason.push_str("; first gap: ");
-            reason.push_str(gap.reason);
-            if let Some(name_kind) = gap.name_kind {
-                let _ = write!(reason, " (name kind {name_kind})");
-            }
-        }
-        reasons.push(reason);
-    }
+    let mut reasons =
+        native_incompleteness_reasons(evidence.truncated, evidence.skipped, &evidence.gaps);
     if mapping_failures > 0 {
         reasons.push(format!(
             "{mapping_failures} decoded symbol kind(s) had no LSP mapping"
@@ -550,6 +676,22 @@ mod tests {
         map_document_symbols(evidence)
     }
 
+    fn c0_total(symbols: &[wxml_types::DocumentSymbol]) -> usize {
+        symbols
+            .iter()
+            .map(|symbol| 1usize.saturating_add(c0_total(&symbol.children)))
+            .fold(0usize, usize::saturating_add)
+    }
+
+    fn c0_names(symbols: &[wxml_types::DocumentSymbol]) -> Vec<String> {
+        let mut names = Vec::new();
+        for symbol in symbols {
+            names.push(symbol.name.clone());
+            names.extend(c0_names(&symbol.children));
+        }
+        names
+    }
+
     #[test]
     #[allow(clippy::too_many_lines)]
     fn backend_mapping_keeps_cjk_emoji_children_and_kinds() {
@@ -638,6 +780,7 @@ mod tests {
         let result = native.to_backend_result(source);
         assert_eq!(result.status, CapabilityStatus::Supported);
         assert!(!result.truncated);
+        assert_eq!(result.skipped, 0);
         assert_eq!(result.symbols.len(), 3);
         assert_eq!(
             result
@@ -725,16 +868,26 @@ mod tests {
         assert!(matches!(native.status, CapabilityStatus::Partial { .. }));
 
         let result = native.to_backend_result(source);
-        assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
         assert!(result.truncated);
         assert_eq!(result.skipped, skipped);
-        assert_eq!(result.symbols.len(), 1);
+        assert_eq!(c0_total(&result.symbols), 1);
         assert_eq!(result.gaps.len(), wxml_types::MAX_DOCUMENT_SYMBOL_GAPS);
         assert_eq!(
             result.gaps[0].start,
             Some(u32::try_from(gap_start).expect("gap start"))
         );
         assert_eq!(result.gaps[0].reason, "name slot is not an Identifier");
+        assert_eq!(
+            result.status.reason(),
+            Some(
+                format!(
+                    "document symbol list was truncated at {MAX_DOCUMENT_SYMBOLS} entries; \
+                     {skipped} declaration candidate(s) were skipped; first gap: \
+                     name slot is not an Identifier (name kind {OBJECT_BINDING_PATTERN_KIND})"
+                )
+                .as_str()
+            )
+        );
         assert_eq!(wxml_types::MAX_DOCUMENT_SYMBOLS, MAX_DOCUMENT_SYMBOLS);
         assert_eq!(
             wxml_types::MAX_DOCUMENT_SYMBOL_DEPTH,
@@ -747,15 +900,36 @@ mod tests {
     }
 
     #[test]
-    fn backend_mapping_drops_mismatched_and_out_of_parent_symbols() {
+    fn backend_mapping_drops_a_parent_subtree_and_counts_every_node() {
         let source = "class C { prop: number; }\n";
         let mut mismatched = evidence_at(source, FUNCTION_DECLARATION_KIND, "bad", (0, 5), (0, 3));
         // Keep the UTF-16 range but make the UTF-8 range disagree with it.
         mismatched.start_utf8 = Utf8Offset::new(1);
+        mismatched.children = vec![evidence_at(
+            source,
+            VARIABLE_DECLARATION_KIND,
+            "bad-child",
+            (0, 4),
+            (0, 1),
+        )];
 
         let class_name = source.find("C {").expect("class name");
         let prop_start = source.find("prop").expect("property");
         let prop_end = prop_start + "prop: number;".len();
+        let mut outside = evidence_at(
+            source,
+            PROPERTY_DECLARATION_KIND,
+            "outside",
+            (24, 25),
+            (24, 25),
+        );
+        outside.children = vec![evidence_at(
+            source,
+            VARIABLE_DECLARATION_KIND,
+            "outside-child",
+            (24, 25),
+            (24, 25),
+        )];
         let mut parent = evidence_at(
             source,
             CLASS_DECLARATION_KIND,
@@ -771,13 +945,7 @@ mod tests {
                 (prop_start, prop_end),
                 (prop_start, prop_start + 4),
             ),
-            evidence_at(
-                source,
-                PROPERTY_DECLARATION_KIND,
-                "outside",
-                (24, 25),
-                (24, 25),
-            ),
+            outside,
         ];
 
         let native = query_result(&DocumentSymbolsEvidence {
@@ -788,21 +956,18 @@ mod tests {
         });
         let result = native.to_backend_result(source);
 
-        assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
-        let reason = result.status.reason().expect("partial reason");
-        assert!(reason.contains("did not match the script text"), "{reason}");
-        assert!(reason.contains("outside the parent range"), "{reason}");
-        assert_eq!(result.symbols.len(), 1);
-        let parent = &result.symbols[0];
-        assert_eq!(parent.name, "C");
-        assert_eq!(parent.children.len(), 1);
-        assert_eq!(parent.children[0].name, "prop");
-        assert!(
-            !result
-                .symbols
-                .iter()
-                .any(|symbol| symbol.name == "bad" || symbol.name == "outside")
+        assert_eq!(
+            result.status.reason(),
+            Some(
+                "2 document symbol node(s) did not match the script text; \
+                 2 document symbol node(s) were outside the parent range"
+            )
         );
+        assert_eq!(c0_names(&result.symbols), vec!["C", "prop"]);
+        assert_eq!(c0_total(&result.symbols), 2);
+        assert_eq!(result.skipped, 4);
+        assert_eq!(c0_total(&result.symbols) + result.skipped, 6);
+        assert!(!result.truncated);
     }
 
     #[test]
@@ -817,6 +982,7 @@ mod tests {
         assert!(result.symbols.is_empty());
         assert!(result.gaps.is_empty());
         assert!(!result.truncated);
+        assert_eq!(result.skipped, 0);
         assert_eq!(result.status, CapabilityStatus::Supported);
     }
 
@@ -842,23 +1008,213 @@ mod tests {
     }
 
     #[test]
-    fn backend_mapping_never_claims_support_for_incomplete_evidence() {
-        let native = DocumentSymbolResult {
-            symbols: Vec::new(),
-            status: CapabilityStatus::Supported,
-            truncated: true,
+    fn backend_mapping_forces_partial_when_a_degraded_status_loses_a_node() {
+        let source = "class C {}\n";
+        let mut native = query_result(&DocumentSymbolsEvidence {
+            symbols: vec![evidence_at(
+                source,
+                FUNCTION_DECLARATION_KIND,
+                "empty",
+                (5, 5),
+                (5, 5),
+            )],
+            gaps: Vec::new(),
+            skipped: 0,
+            truncated: false,
+        });
+        native.status = CapabilityStatus::Unknown { reason: None };
+
+        let result = native.to_backend_result(source);
+        assert!(result.symbols.is_empty());
+        assert_eq!(result.skipped, 1);
+        assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+        assert_eq!(
+            result.status.reason(),
+            Some("1 document symbol node(s) did not match the script text")
+        );
+    }
+
+    #[test]
+    fn backend_mapping_merges_native_and_conversion_partial_reasons_exactly() {
+        let source = "class C {}\nconst x = 1;\n";
+        let class_name = source.find("C {").expect("class name");
+        let valid = evidence_at(
+            source,
+            CLASS_DECLARATION_KIND,
+            "C",
+            (0, 10),
+            (class_name, class_name + 1),
+        );
+        let mut invalid = evidence_at(source, FUNCTION_DECLARATION_KIND, "bad", (0, 5), (0, 3));
+        invalid.start_utf8 = Utf8Offset::new(1);
+        let gap_start = source.find("const").expect("gap");
+        let native = query_result(&DocumentSymbolsEvidence {
+            symbols: vec![valid, invalid],
+            gaps: vec![DocumentSymbolGap {
+                node_kind: VARIABLE_DECLARATION_KIND,
+                name_kind: Some(STRING_LITERAL_KIND),
+                start_utf16: u32::try_from(source[..gap_start].encode_utf16().count())
+                    .expect("gap offset"),
+                reason: "name slot is not an Identifier",
+            }],
             skipped: 1,
+            truncated: true,
+        });
+
+        let result = native.to_backend_result(source);
+        assert_eq!(
+            result.status.reason(),
+            Some(
+                format!(
+                    "document symbol list was truncated at {MAX_DOCUMENT_SYMBOLS} entries; \
+                     1 declaration candidate(s) were skipped; first gap: \
+                     name slot is not an Identifier (name kind {STRING_LITERAL_KIND}); \
+                     1 document symbol node(s) did not match the script text"
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(c0_names(&result.symbols), vec!["C"]);
+        assert_eq!(result.skipped, 2);
+        assert_eq!(c0_total(&result.symbols) + result.skipped, 3);
+        assert!(result.truncated);
+    }
+
+    #[test]
+    fn backend_mapping_gap_start_is_none_when_it_is_outside_the_text() {
+        let source = "class C {}\n";
+        let beyond = u32::try_from(source.encode_utf16().count()).expect("length") + 1;
+        let native = query_result(&DocumentSymbolsEvidence {
+            symbols: Vec::new(),
             gaps: vec![DocumentSymbolGap {
                 node_kind: VARIABLE_DECLARATION_KIND,
                 name_kind: None,
-                start_utf16: 0,
-                reason: "skipped declaration",
+                start_utf16: beyond,
+                reason: "candidate is outside the text",
             }],
-        };
-        let result = native.to_backend_result("const x = 1;\n");
-        assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+            skipped: 1,
+            truncated: false,
+        });
+
+        let result = native.to_backend_result(source);
         assert_eq!(result.gaps.len(), 1);
+        assert_eq!(result.gaps[0].start, None);
+        assert_eq!(result.gaps[0].reason, "candidate is outside the text");
         assert_eq!(result.skipped, 1);
+        assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    }
+
+    #[test]
+    fn backend_mapping_rejects_empty_and_reversed_ranges() {
+        let source = "class C { prop: number; }\n";
+        let empty = evidence_at(source, FUNCTION_DECLARATION_KIND, "empty", (5, 5), (5, 5));
+        let reversed = evidence_at(
+            source,
+            FUNCTION_DECLARATION_KIND,
+            "reversed",
+            (5, 3),
+            (5, 3),
+        );
+        let native = query_result(&DocumentSymbolsEvidence {
+            symbols: vec![empty, reversed],
+            gaps: Vec::new(),
+            skipped: 0,
+            truncated: false,
+        });
+
+        let result = native.to_backend_result(source);
+        assert!(result.symbols.is_empty());
+        assert_eq!(result.skipped, 2);
+        assert!(!result.truncated);
+        assert_eq!(
+            result.status.reason(),
+            Some("2 document symbol node(s) did not match the script text")
+        );
+    }
+
+    #[test]
+    fn backend_mapping_enforces_the_symbol_cap_at_conversion() {
+        let source = "function f() {}\n";
+        let symbols = (0..=wxml_types::MAX_DOCUMENT_SYMBOLS)
+            .map(|index| {
+                evidence_at(
+                    source,
+                    FUNCTION_DECLARATION_KIND,
+                    &format!("f{index}"),
+                    (0, 10),
+                    (9, 10),
+                )
+            })
+            .collect();
+        let native = query_result(&DocumentSymbolsEvidence {
+            symbols,
+            gaps: Vec::new(),
+            skipped: 0,
+            truncated: false,
+        });
+        assert_eq!(native.status, CapabilityStatus::Supported);
+
+        let result = native.to_backend_result(source);
         assert!(result.truncated);
+        assert_eq!(result.symbols.len(), wxml_types::MAX_DOCUMENT_SYMBOLS);
+        assert_eq!(result.skipped, 1);
+        assert_eq!(
+            result.status.reason(),
+            Some(
+                format!(
+                    "1 document symbol node(s) were dropped after the {}-symbol conversion cap",
+                    wxml_types::MAX_DOCUMENT_SYMBOLS
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(
+            c0_total(&result.symbols) + result.skipped,
+            wxml_types::MAX_DOCUMENT_SYMBOLS + 1
+        );
+        assert_eq!(
+            result.symbols.last().expect("last symbol").name,
+            format!("f{}", wxml_types::MAX_DOCUMENT_SYMBOLS - 1)
+        );
+    }
+
+    #[test]
+    fn backend_mapping_enforces_the_depth_cap_at_conversion() {
+        let source = "class C {}\n";
+        let mut node = evidence_at(source, CLASS_DECLARATION_KIND, "leaf", (0, 10), (6, 7));
+        for _ in 0..wxml_types::MAX_DOCUMENT_SYMBOL_DEPTH {
+            let mut parent = evidence_at(source, CLASS_DECLARATION_KIND, "parent", (0, 10), (6, 7));
+            parent.children = vec![node];
+            node = parent;
+        }
+        let native = query_result(&DocumentSymbolsEvidence {
+            symbols: vec![node],
+            gaps: Vec::new(),
+            skipped: 0,
+            truncated: false,
+        });
+
+        let result = native.to_backend_result(source);
+        assert!(!result.truncated);
+        assert_eq!(
+            c0_total(&result.symbols) + result.skipped,
+            wxml_types::MAX_DOCUMENT_SYMBOL_DEPTH + 1
+        );
+        assert_eq!(result.skipped, 1);
+        assert_eq!(
+            result.status.reason(),
+            Some(
+                format!(
+                    "1 document symbol node(s) exceeded the {}-level conversion depth cap",
+                    wxml_types::MAX_DOCUMENT_SYMBOL_DEPTH
+                )
+                .as_str()
+            )
+        );
+        let mut deepest = result.symbols.first().expect("root");
+        for _ in 1..wxml_types::MAX_DOCUMENT_SYMBOL_DEPTH {
+            deepest = deepest.children.first().expect("nested symbol");
+        }
+        assert!(deepest.children.is_empty());
     }
 }
