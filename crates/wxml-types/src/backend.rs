@@ -20,6 +20,7 @@ use wxml_text::SourceRange;
 
 use crate::context::RequestContext;
 use crate::contract::{BackendEpoch, FileId};
+use crate::document_symbols::{DocumentSymbolsRequest, DocumentSymbolsResult};
 use crate::status::CapabilityStatus;
 use crate::symbols::{SymbolRequest, SymbolResult};
 /// A failure reported by a type backend.
@@ -390,6 +391,21 @@ pub trait Backend: Send + Sync {
         ))
     }
 
+    /// Returns the document-symbol outline for `request`'s subject.
+    ///
+    /// The default implementation reports the feature as unsupported. A
+    /// backend that answers with an empty, supported result must have proven
+    /// that the document declares nothing; document symbols are independent of
+    /// the script symbol facts returned by [`Self::symbols`].
+    fn document_symbols(
+        &self,
+        _request: DocumentSymbolsRequest,
+    ) -> Result<DocumentSymbolsResult, BackendError> {
+        Ok(DocumentSymbolsResult::unsupported(
+            "document symbols are not implemented",
+        ))
+    }
+
     /// Drops cached state after a project/workspace identity change.
     ///
     /// **Caching backends MUST override this method.** They must make every
@@ -411,6 +427,8 @@ pub trait Backend: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::assert_is_empty)]
+
     use super::*;
     use std::sync::Arc;
 
@@ -649,6 +667,25 @@ mod tests {
     }
 
     #[test]
+    fn document_symbols_defaults_to_unsupported_rather_than_empty_success() {
+        let result = BareBackend
+            .document_symbols(DocumentSymbolsRequest {
+                context: context(),
+                subject: file(),
+            })
+            .expect("default implementation succeeds");
+        assert!(result.symbols.is_empty());
+        assert!(result.gaps.is_empty());
+        assert!(!result.truncated);
+        assert_eq!(result.skipped, 0);
+        assert!(!result.status.is_supported());
+        assert_eq!(
+            result.status.reason(),
+            Some("document symbols are not implemented")
+        );
+    }
+
+    #[test]
     fn completion_defaults_to_unsupported_rather_than_empty_success() {
         let result = BareBackend
             .completion(CompletionRequest {
@@ -720,6 +757,15 @@ mod tests {
             .diagnostics(DiagnosticsRequest { context: context() })
             .expect("diagnostics succeed");
         assert_eq!(diagnostics.diagnostics, Vec::new());
+
+        let document_symbols = backend
+            .document_symbols(DocumentSymbolsRequest {
+                context: context(),
+                subject: file(),
+            })
+            .expect("document symbol default succeeds");
+        assert!(document_symbols.symbols.is_empty());
+        assert!(!document_symbols.status.is_supported());
     }
 
     #[test]

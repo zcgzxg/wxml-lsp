@@ -2811,6 +2811,20 @@ const count = 1;
         assert_eq!(count.selection_utf16.start.get(), 204);
         assert_eq!(count.selection_utf16.end.get(), 209);
 
+        // The C0 conversion rechecks both coordinate systems against the
+        // source and must keep the same tree without fabricating symbols.
+        let backend = result.to_backend_result(source);
+        assert_eq!(backend.status, CapabilityStatus::Supported);
+        assert!(backend.gaps.is_empty());
+        assert_eq!(backend.symbols.len(), result.symbols.len());
+        assert_eq!(backend.symbols[0].name, "greet");
+        assert_eq!(backend.symbols[0].selection_range.start(), 31);
+        assert_eq!(backend.symbols[1].children.len(), 2);
+        assert_eq!(
+            backend.symbols[1].children[1].kind,
+            wxml_types::DocumentSymbolKind::Method
+        );
+
         let _ = session.shutdown();
     }
 

@@ -11,6 +11,8 @@
 //! - [`context`]: immutable source snapshots and the versioned request context.
 //! - [`status`]: six-state capability reporting.
 //! - [`backend`]: requests, results and the synchronous backend boundary.
+//! - [`document_symbols`]: per-document outline DTOs, separate from script
+//!   symbol facts.
 //! - [`mock`]: an in-process backend for parallel work and tests.
 //! - [`check`]: C1.1 template check DTOs.
 //! - [`template`]: `wx:for`/event/mustache analysis that produces check
@@ -22,6 +24,7 @@ pub mod backend;
 pub mod check;
 pub mod context;
 pub mod contract;
+pub mod document_symbols;
 pub mod mock;
 pub mod status;
 pub mod symbols;
@@ -45,6 +48,11 @@ pub use contract::{
     BackendEpoch, BackendId, ClientVersion, FileId, FileIdError, ProjectId, ProjectRevision,
     SnapshotId, SourceRevision, ViewRevision,
 };
+pub use document_symbols::{
+    DocumentSymbol, DocumentSymbolGap, DocumentSymbolKind, DocumentSymbolsRequest,
+    DocumentSymbolsResult, MAX_DOCUMENT_SYMBOL_DEPTH, MAX_DOCUMENT_SYMBOL_GAPS,
+    MAX_DOCUMENT_SYMBOLS,
+};
 pub use mock::{BackendCall, MockBackend};
 pub use status::CapabilityStatus;
 pub use symbols::{
@@ -61,4 +69,5 @@ pub use template_semantics::{
     TemplateDataKey, TemplateDataUse, TemplateDefinition, TemplateSemantics, WxsBlock,
     analyze_template_semantics, resolve_static_specifier, summarize_wxs_block,
 };
+pub use wxml_text::SourceRange;
 pub use wxs::{WxsMember, WxsMemberKind, WxsRequire, WxsSummary, summarize_wxs};

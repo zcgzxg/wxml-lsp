@@ -17,7 +17,11 @@
 
 use std::fmt::Write as _;
 
-use wxml_types::CapabilityStatus;
+use wxml_types::{
+    CapabilityStatus, DocumentSymbol as BackendDocumentSymbol,
+    DocumentSymbolGap as BackendDocumentSymbolGap, DocumentSymbolKind as BackendDocumentSymbolKind,
+    DocumentSymbolsResult as BackendDocumentSymbolsResult, SourceRange as BackendSourceRange,
+};
 
 use crate::native::ast::{
     CLASS_DECLARATION_KIND, ENUM_DECLARATION_KIND, ENUM_MEMBER_KIND, FUNCTION_DECLARATION_KIND,
@@ -28,6 +32,7 @@ use crate::native::ast::{
 use crate::native::document_symbol::{
     DocumentSymbolEvidence, DocumentSymbolGap, DocumentSymbolsEvidence, MAX_DOCUMENT_SYMBOLS,
 };
+use crate::native::strings::{Utf8Offset, Utf16Offset, utf16_to_utf8};
 use crate::script::symbols::Utf16Range;
 use crate::shadow::mapping::SourceRange;
 
@@ -117,6 +122,186 @@ pub struct DocumentSymbolResult {
     pub gaps: Vec<DocumentSymbolGap>,
     /// Total skipped candidates, including those beyond `gaps`.
     pub skipped: usize,
+}
+
+impl DocumentSymbolResult {
+    /// Converts this query result to the shared C0 document-symbol DTO.
+    ///
+    /// `source` must be the exact script text the evidence was decoded from.
+    /// Both coordinate systems are re-checked against it: a symbol whose UTF-8
+    /// and UTF-16 ranges disagree, whose selection range is outside its
+    /// declaration range, or whose range is outside its parent is dropped and
+    /// the result stays `Partial`. Ranges are never clamped. Gap starts convert
+    /// from UTF-16 to UTF-8 when possible and stay `None` otherwise; gaps are
+    /// bounded by [`wxml_types::MAX_DOCUMENT_SYMBOL_GAPS`].
+    ///
+    /// The query status is preserved. A `Supported` status without gaps,
+    /// truncation or mapping drops stays `Supported`; an empty supported result
+    /// is a checked "this file declares nothing".
+    #[must_use]
+    pub fn to_backend_result(&self, source: &str) -> BackendDocumentSymbolsResult {
+        let mut drops = MappingDrops::default();
+        let symbols = self
+            .symbols
+            .iter()
+            .filter_map(|symbol| map_backend_symbol(symbol, source, None, &mut drops))
+            .collect();
+        let gaps = self
+            .gaps
+            .iter()
+            .take(wxml_types::MAX_DOCUMENT_SYMBOL_GAPS)
+            .map(|gap| BackendDocumentSymbolGap {
+                start: utf16_to_utf8(source, Utf16Offset::new(gap.start_utf16))
+                    .ok()
+                    .map(Utf8Offset::get),
+                reason: gap.reason.to_owned(),
+            })
+            .collect();
+
+        let mut status = self.status.clone();
+        if status.is_supported() && (self.truncated || self.skipped > 0 || !self.gaps.is_empty()) {
+            status = CapabilityStatus::Partial {
+                reason: "the document symbol evidence is incomplete".to_owned(),
+            };
+        }
+        drops.record(&mut status);
+
+        BackendDocumentSymbolsResult {
+            symbols,
+            status,
+            truncated: self.truncated,
+            skipped: self.skipped,
+            gaps,
+        }
+    }
+}
+
+/// Counts symbols that could not be represented in C0 coordinates.
+#[derive(Debug, Default)]
+struct MappingDrops {
+    mismatched_ranges: usize,
+    selections_outside: usize,
+    children_outside: usize,
+}
+
+impl MappingDrops {
+    fn record(&self, status: &mut CapabilityStatus) {
+        if self.mismatched_ranges > 0 {
+            mark_partial(
+                status,
+                &format!(
+                    "{} document symbol range(s) did not match the script text",
+                    self.mismatched_ranges
+                ),
+            );
+        }
+        if self.selections_outside > 0 {
+            mark_partial(
+                status,
+                &format!(
+                    "{} document symbol selection range(s) were outside the declaration range",
+                    self.selections_outside
+                ),
+            );
+        }
+        if self.children_outside > 0 {
+            mark_partial(
+                status,
+                &format!(
+                    "{} document symbol child range(s) were outside the parent range",
+                    self.children_outside
+                ),
+            );
+        }
+    }
+}
+
+fn map_backend_symbol(
+    symbol: &DocumentSymbol,
+    source: &str,
+    parent: Option<BackendSourceRange>,
+    drops: &mut MappingDrops,
+) -> Option<BackendDocumentSymbol> {
+    let Some(range) = verified_range(source, symbol.range, symbol.utf16) else {
+        drops.mismatched_ranges = drops.mismatched_ranges.saturating_add(1);
+        return None;
+    };
+    let Some(selection_range) =
+        verified_range(source, symbol.selection_range, symbol.selection_utf16)
+    else {
+        drops.mismatched_ranges = drops.mismatched_ranges.saturating_add(1);
+        return None;
+    };
+    if selection_range.start() < range.start() || selection_range.end() > range.end() {
+        drops.selections_outside = drops.selections_outside.saturating_add(1);
+        return None;
+    }
+    if let Some(parent) = parent {
+        if range.start() < parent.start() || range.end() > parent.end() {
+            drops.children_outside = drops.children_outside.saturating_add(1);
+            return None;
+        }
+    }
+    let children = symbol
+        .children
+        .iter()
+        .filter_map(|child| map_backend_symbol(child, source, Some(range), drops))
+        .collect();
+    Some(BackendDocumentSymbol {
+        name: symbol.name.clone(),
+        kind: backend_kind(symbol),
+        range,
+        selection_range,
+        children,
+    })
+}
+
+/// Verifies that the native UTF-8 and UTF-16 ranges describe the same
+/// non-empty token in `source`, then returns the UTF-8 range.
+fn verified_range(
+    source: &str,
+    bytes: SourceRange,
+    units: Utf16Range,
+) -> Option<BackendSourceRange> {
+    let start = utf16_to_utf8(source, units.start).ok()?.get();
+    let end = utf16_to_utf8(source, units.end).ok()?.get();
+    if start >= end || bytes.start.get() != start || bytes.end.get() != end {
+        return None;
+    }
+    BackendSourceRange::from_bounds(start, end).ok()
+}
+
+/// Maps the local LSP kind, keeping type aliases distinct from interfaces.
+const fn backend_kind(symbol: &DocumentSymbol) -> BackendDocumentSymbolKind {
+    if symbol.node_kind == TYPE_ALIAS_DECLARATION_KIND {
+        return BackendDocumentSymbolKind::TypeAlias;
+    }
+    match symbol.kind {
+        DocumentSymbolKind::Module => BackendDocumentSymbolKind::Module,
+        DocumentSymbolKind::Class => BackendDocumentSymbolKind::Class,
+        DocumentSymbolKind::Method => BackendDocumentSymbolKind::Method,
+        DocumentSymbolKind::Property => BackendDocumentSymbolKind::Property,
+        DocumentSymbolKind::Enum => BackendDocumentSymbolKind::Enum,
+        DocumentSymbolKind::Interface => BackendDocumentSymbolKind::Interface,
+        DocumentSymbolKind::Function => BackendDocumentSymbolKind::Function,
+        DocumentSymbolKind::Variable => BackendDocumentSymbolKind::Variable,
+        DocumentSymbolKind::EnumMember => BackendDocumentSymbolKind::EnumMember,
+    }
+}
+
+fn mark_partial(status: &mut CapabilityStatus, reason: &str) {
+    if status.is_supported() {
+        *status = CapabilityStatus::Partial {
+            reason: reason.to_owned(),
+        };
+        return;
+    }
+    if let CapabilityStatus::Partial { reason: existing } = status {
+        if !existing.split("; ").any(|part| part == reason) {
+            existing.push_str("; ");
+            existing.push_str(reason);
+        }
+    }
 }
 
 /// Maps native document-symbol evidence.
@@ -209,9 +394,15 @@ mod tests {
     #![allow(clippy::assert_is_empty)]
 
     use super::*;
-    use crate::native::ast::{CONSTRUCTOR_KIND, STRING_LITERAL_KIND};
-    use crate::native::document_symbol::{DocumentSymbolGap, DocumentSymbolsEvidence};
+    use crate::native::ast::{
+        CONSTRUCTOR_KIND, FUNCTION_DECLARATION_KIND, OBJECT_BINDING_PATTERN_KIND,
+        STRING_LITERAL_KIND, TYPE_ALIAS_DECLARATION_KIND, VARIABLE_DECLARATION_KIND,
+    };
+    use crate::native::document_symbol::{
+        DocumentSymbolGap, DocumentSymbolsEvidence, MAX_DOCUMENT_SYMBOL_GAPS,
+    };
     use crate::native::strings::{Utf8Offset, Utf16Offset};
+    use wxml_types::DocumentSymbolKind as C0SymbolKind;
 
     fn evidence(node_kind: u32, name: &str, start: u32, end: u32) -> DocumentSymbolEvidence {
         DocumentSymbolEvidence {
@@ -327,5 +518,347 @@ mod tests {
         assert_eq!(symbol.selection_utf16.start.get(), 2);
         assert_eq!(symbol.selection_range.start.get(), 4);
         assert_eq!(symbol.selection_range.end.get(), 10);
+    }
+
+    fn evidence_at(
+        source: &str,
+        node_kind: u32,
+        name: &str,
+        declaration: (usize, usize),
+        selection: (usize, usize),
+    ) -> DocumentSymbolEvidence {
+        let offset = |byte: usize| u32::try_from(byte).expect("byte offset");
+        let units = |byte: usize| {
+            u32::try_from(source[..byte].encode_utf16().count()).expect("UTF-16 offset")
+        };
+        DocumentSymbolEvidence {
+            name: name.to_owned(),
+            node_kind,
+            start_utf16: Utf16Offset::new(units(declaration.0)),
+            end_utf16: Utf16Offset::new(units(declaration.1)),
+            start_utf8: Utf8Offset::new(offset(declaration.0)),
+            end_utf8: Utf8Offset::new(offset(declaration.1)),
+            selection_start_utf16: Utf16Offset::new(units(selection.0)),
+            selection_end_utf16: Utf16Offset::new(units(selection.1)),
+            selection_start_utf8: Utf8Offset::new(offset(selection.0)),
+            selection_end_utf8: Utf8Offset::new(offset(selection.1)),
+            children: Vec::new(),
+        }
+    }
+
+    fn query_result(evidence: &DocumentSymbolsEvidence) -> DocumentSymbolResult {
+        map_document_symbols(evidence)
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn backend_mapping_keeps_cjk_emoji_children_and_kinds() {
+        let source = "// 😀 文档\nclass 用户 {\n  name: string;\n  greet😀(): void {}\n}\n\
+                      type Shape = { area(): number };\nnamespace A.B { const inner = 1; }\n";
+        let class_start = source.find("class ").expect("class");
+        let class_end = source.find("\ntype Shape").expect("class end");
+        let class_name = source.find("用户").expect("class name");
+        let name_start = source.find("name:").expect("property");
+        let name_end = name_start + "name: string;".len();
+        let method_start = source.find("greet😀").expect("method");
+        let method_end = method_start + "greet😀(): void {}".len();
+        let mut class = evidence_at(
+            source,
+            CLASS_DECLARATION_KIND,
+            "用户",
+            (class_start, class_end),
+            (class_name, class_name + "用户".len()),
+        );
+        class.children = vec![
+            evidence_at(
+                source,
+                PROPERTY_DECLARATION_KIND,
+                "name",
+                (name_start, name_end),
+                (name_start, name_start + 4),
+            ),
+            evidence_at(
+                source,
+                METHOD_DECLARATION_KIND,
+                "greet😀",
+                (method_start, method_end),
+                (method_start, method_start + "greet😀".len()),
+            ),
+        ];
+
+        let alias_start = source.find("type Shape").expect("alias");
+        let alias_end = source.find("\nnamespace").expect("alias end");
+        let alias_name = source.find("Shape").expect("alias name");
+        let alias = evidence_at(
+            source,
+            TYPE_ALIAS_DECLARATION_KIND,
+            "Shape",
+            (alias_start, alias_end),
+            (alias_name, alias_name + "Shape".len()),
+        );
+
+        let namespace_start = source.find("namespace A.B").expect("namespace");
+        let namespace_end = source.len();
+        let module_a_name = namespace_start + "namespace ".len();
+        let module_b_start = source.find("B {").expect("module B");
+        let inner_start = source.find("inner").expect("inner name");
+        let inner_start_decl = source.find("const inner").expect("inner declaration");
+        let inner_end = source.find("; }").expect("inner end") + 1;
+        let mut module_b = evidence_at(
+            source,
+            MODULE_DECLARATION_KIND,
+            "B",
+            (module_b_start, namespace_end),
+            (module_b_start, module_b_start + 1),
+        );
+        module_b.children = vec![evidence_at(
+            source,
+            VARIABLE_DECLARATION_KIND,
+            "inner",
+            (inner_start_decl, inner_end),
+            (inner_start, inner_start + "inner".len()),
+        )];
+        let mut module_a = evidence_at(
+            source,
+            MODULE_DECLARATION_KIND,
+            "A",
+            (namespace_start, namespace_end),
+            (module_a_name, module_a_name + 1),
+        );
+        module_a.children = vec![module_b];
+
+        let native = query_result(&DocumentSymbolsEvidence {
+            symbols: vec![class, alias, module_a],
+            gaps: Vec::new(),
+            skipped: 0,
+            truncated: false,
+        });
+        assert_eq!(native.status, CapabilityStatus::Supported);
+
+        let result = native.to_backend_result(source);
+        assert_eq!(result.status, CapabilityStatus::Supported);
+        assert!(!result.truncated);
+        assert_eq!(result.symbols.len(), 3);
+        assert_eq!(
+            result
+                .symbols
+                .iter()
+                .map(|symbol| (symbol.name.as_str(), symbol.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                ("用户", C0SymbolKind::Class),
+                ("Shape", C0SymbolKind::TypeAlias),
+                ("A", C0SymbolKind::Module),
+            ]
+        );
+
+        let class = &result.symbols[0];
+        assert_eq!(
+            class.range.start(),
+            u32::try_from(class_start).expect("class start")
+        );
+        assert_eq!(
+            class.range.end(),
+            u32::try_from(class_end).expect("class end")
+        );
+        assert_eq!(
+            class.selection_range.start(),
+            u32::try_from(class_name).expect("name start")
+        );
+        assert_eq!(
+            class.selection_range.end(),
+            u32::try_from(class_name + "用户".len()).expect("name end")
+        );
+        assert_eq!(class.children.len(), 2);
+        assert_eq!(class.children[0].kind, C0SymbolKind::Property);
+        assert_eq!(class.children[1].kind, C0SymbolKind::Method);
+        assert_eq!(class.children[1].name, "greet😀");
+        assert_eq!(class.children[1].selection_range.len(), 9);
+        assert!(class.children[1].selection_range.start() >= class.range.start());
+        assert!(class.children[1].selection_range.end() <= class.range.end());
+
+        let module_a = &result.symbols[2];
+        assert_eq!(module_a.children.len(), 1);
+        assert_eq!(module_a.children[0].name, "B");
+        assert_eq!(module_a.children[0].kind, C0SymbolKind::Module);
+        assert_eq!(module_a.children[0].children.len(), 1);
+        assert_eq!(
+            module_a.children[0].children[0].kind,
+            C0SymbolKind::Variable
+        );
+        assert_eq!(module_a.children[0].children[0].name, "inner");
+        assert!(module_a.range.start() <= module_a.children[0].range.start());
+        assert!(module_a.children[0].range.end() <= module_a.range.end());
+    }
+
+    #[test]
+    fn backend_mapping_keeps_caps_gaps_truncation_and_partial_status() {
+        let source = "// 😀 note\nclass C {}\nconst { a } = config;\n";
+        let class_start = source.find("class C").expect("class");
+        let class_end = source.find("\nconst").expect("class end");
+        let class_name = source.find("C {").expect("class name");
+        let class = evidence_at(
+            source,
+            CLASS_DECLARATION_KIND,
+            "C",
+            (class_start, class_end),
+            (class_name, class_name + 1),
+        );
+        let gap_start = source.find("const").expect("gap");
+        let gap_units =
+            u32::try_from(source[..gap_start].encode_utf16().count()).expect("UTF-16 offset");
+        let gaps = (0..=MAX_DOCUMENT_SYMBOL_GAPS)
+            .map(|index| DocumentSymbolGap {
+                node_kind: VARIABLE_DECLARATION_KIND,
+                name_kind: Some(OBJECT_BINDING_PATTERN_KIND),
+                start_utf16: gap_units + u32::try_from(index).expect("gap index"),
+                reason: "name slot is not an Identifier",
+            })
+            .collect::<Vec<_>>();
+        let skipped = gaps.len();
+        let native = query_result(&DocumentSymbolsEvidence {
+            symbols: vec![class],
+            gaps,
+            skipped,
+            truncated: true,
+        });
+        assert!(matches!(native.status, CapabilityStatus::Partial { .. }));
+
+        let result = native.to_backend_result(source);
+        assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+        assert!(result.truncated);
+        assert_eq!(result.skipped, skipped);
+        assert_eq!(result.symbols.len(), 1);
+        assert_eq!(result.gaps.len(), wxml_types::MAX_DOCUMENT_SYMBOL_GAPS);
+        assert_eq!(
+            result.gaps[0].start,
+            Some(u32::try_from(gap_start).expect("gap start"))
+        );
+        assert_eq!(result.gaps[0].reason, "name slot is not an Identifier");
+        assert_eq!(wxml_types::MAX_DOCUMENT_SYMBOLS, MAX_DOCUMENT_SYMBOLS);
+        assert_eq!(
+            wxml_types::MAX_DOCUMENT_SYMBOL_DEPTH,
+            crate::native::document_symbol::MAX_DOCUMENT_SYMBOL_DEPTH
+        );
+        assert_eq!(
+            wxml_types::MAX_DOCUMENT_SYMBOL_GAPS,
+            MAX_DOCUMENT_SYMBOL_GAPS
+        );
+    }
+
+    #[test]
+    fn backend_mapping_drops_mismatched_and_out_of_parent_symbols() {
+        let source = "class C { prop: number; }\n";
+        let mut mismatched = evidence_at(source, FUNCTION_DECLARATION_KIND, "bad", (0, 5), (0, 3));
+        // Keep the UTF-16 range but make the UTF-8 range disagree with it.
+        mismatched.start_utf8 = Utf8Offset::new(1);
+
+        let class_name = source.find("C {").expect("class name");
+        let prop_start = source.find("prop").expect("property");
+        let prop_end = prop_start + "prop: number;".len();
+        let mut parent = evidence_at(
+            source,
+            CLASS_DECLARATION_KIND,
+            "C",
+            (0, 24),
+            (class_name, class_name + 1),
+        );
+        parent.children = vec![
+            evidence_at(
+                source,
+                PROPERTY_DECLARATION_KIND,
+                "prop",
+                (prop_start, prop_end),
+                (prop_start, prop_start + 4),
+            ),
+            evidence_at(
+                source,
+                PROPERTY_DECLARATION_KIND,
+                "outside",
+                (24, 25),
+                (24, 25),
+            ),
+        ];
+
+        let native = query_result(&DocumentSymbolsEvidence {
+            symbols: vec![mismatched, parent],
+            gaps: Vec::new(),
+            skipped: 0,
+            truncated: false,
+        });
+        let result = native.to_backend_result(source);
+
+        assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+        let reason = result.status.reason().expect("partial reason");
+        assert!(reason.contains("did not match the script text"), "{reason}");
+        assert!(reason.contains("outside the parent range"), "{reason}");
+        assert_eq!(result.symbols.len(), 1);
+        let parent = &result.symbols[0];
+        assert_eq!(parent.name, "C");
+        assert_eq!(parent.children.len(), 1);
+        assert_eq!(parent.children[0].name, "prop");
+        assert!(
+            !result
+                .symbols
+                .iter()
+                .any(|symbol| symbol.name == "bad" || symbol.name == "outside")
+        );
+    }
+
+    #[test]
+    fn backend_mapping_keeps_a_checked_empty_answer() {
+        let native = query_result(&DocumentSymbolsEvidence {
+            symbols: Vec::new(),
+            gaps: Vec::new(),
+            skipped: 0,
+            truncated: false,
+        });
+        let result = native.to_backend_result("const x = 1;\n");
+        assert!(result.symbols.is_empty());
+        assert!(result.gaps.is_empty());
+        assert!(!result.truncated);
+        assert_eq!(result.status, CapabilityStatus::Supported);
+    }
+
+    #[test]
+    fn backend_mapping_does_not_upgrade_unsupported() {
+        let native = DocumentSymbolResult {
+            symbols: Vec::new(),
+            status: CapabilityStatus::Unsupported {
+                reason: "native document symbols are unavailable".to_owned(),
+            },
+            truncated: false,
+            skipped: 0,
+            gaps: Vec::new(),
+        };
+        let result = native.to_backend_result("");
+        assert!(!result.status.is_supported());
+        assert_eq!(
+            result.status.reason(),
+            Some("native document symbols are unavailable")
+        );
+        assert!(result.symbols.is_empty());
+        assert!(result.gaps.is_empty());
+    }
+
+    #[test]
+    fn backend_mapping_never_claims_support_for_incomplete_evidence() {
+        let native = DocumentSymbolResult {
+            symbols: Vec::new(),
+            status: CapabilityStatus::Supported,
+            truncated: true,
+            skipped: 1,
+            gaps: vec![DocumentSymbolGap {
+                node_kind: VARIABLE_DECLARATION_KIND,
+                name_kind: None,
+                start_utf16: 0,
+                reason: "skipped declaration",
+            }],
+        };
+        let result = native.to_backend_result("const x = 1;\n");
+        assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+        assert_eq!(result.gaps.len(), 1);
+        assert_eq!(result.skipped, 1);
+        assert!(result.truncated);
     }
 }
