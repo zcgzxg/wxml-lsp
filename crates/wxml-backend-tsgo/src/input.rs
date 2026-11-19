@@ -2099,6 +2099,38 @@ mod tests {
     }
 
     #[test]
+    fn case_protocol_0280_unknown_compiler_options_are_rejected_and_strict_switches_pass_through() {
+        // Oracle: `protocol.test.ts:280`. An option outside the frozen
+        // allow-list is a typed `unsupported-option` error, never dropped.
+        let unknown =
+            BTreeMap::from([("allowImportingTsExtensions".to_owned(), Value::Bool(true))]);
+        match CompilerOptions::new(unknown) {
+            Err(InputError::UnsupportedCompilerOption { key }) => {
+                assert_eq!(key, "allowImportingTsExtensions");
+            }
+            other => panic!("expected the typed unsupported-option error, got {other:?}"),
+        }
+
+        // The strict-family switches are known keys and keep their values.
+        let strict = BTreeMap::from([
+            ("strictNullChecks".to_owned(), Value::Bool(false)),
+            ("noUncheckedIndexedAccess".to_owned(), Value::Bool(true)),
+            ("strictBuiltinIteratorReturn".to_owned(), Value::Bool(true)),
+        ]);
+        let options = CompilerOptions::new(strict).expect("strict switches are accepted");
+        assert_eq!(options.get("strictNullChecks"), Some(&Value::Bool(false)));
+        assert_eq!(
+            options.get("noUncheckedIndexedAccess"),
+            Some(&Value::Bool(true))
+        );
+        assert_eq!(
+            options.get("strictBuiltinIteratorReturn"),
+            Some(&Value::Bool(true)),
+            "new strict-family switches must pass through"
+        );
+    }
+
+    #[test]
     fn compiler_options_reject_wrong_value_shapes() {
         for (key, value) in [
             ("strict", Value::String("true".to_owned())),

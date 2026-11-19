@@ -2576,6 +2576,118 @@ mod tests {
     }
 
     #[test]
+    fn case_probes_0048_the_last_pragma_in_the_leading_block_wins() {
+        // Oracle: `probes.test.ts:48`. TypeScript lets the last leading pragma
+        // decide, so `@ts-check` followed by `@ts-nocheck` disables checking and
+        // the neutralising insertion goes after the whole comment block.
+        let check_then_no_check_text = "// @ts-check\n// @ts-nocheck\nconst a = 1;\n";
+        let check_then_no_check = scan_pragmas(check_then_no_check_text, false);
+        assert!(!check_then_no_check.check);
+        assert!(check_then_no_check.no_check);
+        assert_eq!(
+            check_then_no_check.neutralize_offset,
+            "// @ts-check\n// @ts-nocheck\n".len()
+        );
+        assert_eq!(
+            utf16_len(&check_then_no_check_text[..check_then_no_check.neutralize_offset]),
+            28,
+            "two ASCII pragma lines are 28 UTF-16 code units"
+        );
+
+        let no_check_then_check_text = "// @ts-nocheck\n// @ts-check\nconst a = 1;\n";
+        let no_check_then_check = scan_pragmas(no_check_then_check_text, false);
+        assert!(no_check_then_check.check);
+        assert!(!no_check_then_check.no_check);
+        assert_eq!(
+            no_check_then_check.neutralize_offset,
+            "// @ts-nocheck\n// @ts-check\n".len()
+        );
+        assert_eq!(
+            utf16_len(&no_check_then_check_text[..no_check_then_check.neutralize_offset]),
+            28
+        );
+    }
+
+    #[test]
+    fn case_probes_0059_ts_nocheck_outside_the_leading_comments_is_ignored() {
+        // Oracle: `probes.test.ts:59`. Only the leading comment block is scanned.
+        let ordinary_text = "// ordinary comment\nPage({ data: { x: 1 } });\n";
+        let ordinary = scan_pragmas(ordinary_text, false);
+        assert!(!ordinary.check);
+        assert!(!ordinary.no_check);
+        assert_eq!(
+            ordinary.neutralize_offset,
+            "// ordinary comment\n".len(),
+            "an ordinary leading comment is consumed but does not disable checking"
+        );
+
+        let after_code_text = "const a = 1;\n// @ts-nocheck\n";
+        let after_code = scan_pragmas(after_code_text, false);
+        assert!(!after_code.check);
+        assert!(!after_code.no_check);
+        assert_eq!(
+            after_code.neutralize_offset, 0,
+            "the scan stops at the first non-comment token, so the later pragma is not seen"
+        );
+    }
+
+    #[test]
+    fn case_analysis_0349_duplicate_fragment_ids_are_a_structured_error() {
+        // Oracle: `analysis.test.ts:349` rejects duplicate fragment ids with the
+        // structured `bad-fragment` code. Native reports the typed
+        // `Invalid { feature: "fragment.id" }` before producing a view.
+        let text = "Page({ data: { title: 'x' } });";
+        let script = source_file("index.ts", text);
+        let duplicate = [
+            FragmentSpec::new("f0", "title", SourceRange::new(0, 5)),
+            FragmentSpec::new("f0", "title", SourceRange::new(0, 5)),
+        ];
+        let request = ShadowRequest {
+            script: &script,
+            root: RootKind::Page,
+            fragments: &duplicate,
+            js_check: JsCheckPolicy::Inherit,
+            check_js: false,
+        };
+        let error = build_in_place_shadow(&request).expect_err("duplicate fragment id");
+        match error {
+            ShadowError::Invalid { feature, reason } => {
+                assert_eq!(feature, "fragment.id");
+                assert_eq!(reason, "fragment ids must be non-empty and unique");
+            }
+            other => panic!("expected the typed fragment.id error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn case_protocol_0600_legacy_fragments_without_target_or_locals_still_build() {
+        // Oracle: `protocol.test.ts:600`. A fragment with no `target` and no
+        // `locals` is the legacy shape and must still validate and mount.
+        let text = "Page({ data: { title: 'x', user: { name: 'Ada' } } });";
+        let script = source_file("index.ts", text);
+        let title = FragmentSpec::new("title", "title", SourceRange::new(0, 5));
+        let name = FragmentSpec::new("user.name", "user.name", SourceRange::new(6, 15));
+        assert!(title.target.is_none());
+        assert_eq!(title.locals.len(), 0);
+        assert_eq!(title.bindings.len(), 0);
+        assert_eq!(title.guards.len(), 0);
+        assert!(name.target.is_none());
+        assert_eq!(name.locals.len(), 0);
+
+        let request = ShadowRequest {
+            script: &script,
+            root: RootKind::Page,
+            fragments: &[title, name],
+            js_check: JsCheckPolicy::Inherit,
+            check_js: false,
+        };
+        let built = build_in_place_shadow(&request).expect("legacy fragments build");
+        assert_eq!(built.view.mounts.len(), 2);
+        assert_eq!(built.view.mounts[0].text, "__wxml_root.title");
+        assert_eq!(built.view.mounts[1].text, "__wxml_root.user.name");
+    }
+
+    #[test]
     fn fragments_mount_and_map_back_to_wxml_bytes() {
         let text = "Page({ data: { user: { name: 'Ada' } } });";
         let script = source_file("index.ts", text);

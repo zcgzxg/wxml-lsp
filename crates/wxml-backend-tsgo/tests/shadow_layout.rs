@@ -564,6 +564,44 @@ fn source_ts_check_is_neutralised_when_the_policy_is_off() {
 }
 
 #[test]
+fn case_protocol_0319_explicit_off_neutralises_a_source_ts_check_in_the_derived_view() {
+    // Oracle: `protocol.test.ts:319` (scenario `js-source-check-off`).
+    let built = build(
+        "index.js",
+        "// @ts-check\nPage({ data: {} });",
+        RootKind::Page,
+        &[],
+        JsCheckPolicy::Off,
+        false,
+    )
+    .expect("layout");
+    assert_eq!(built.js_check_applied, JsCheckApplied::Off);
+
+    let neutralise = built
+        .view
+        .insertions
+        .iter()
+        .find(|insertion| insertion.insertion_id == "nocheck")
+        .expect("a neutralising pragma insertion");
+    assert_eq!(neutralise.start_utf16, 13, "after the source pragma line");
+    assert_eq!(neutralise.length_utf16, 15, "`// @ts-nocheck\\n`");
+    assert_eq!(neutralise.replace_length_utf16, 0);
+
+    assert!(
+        built.notes.iter().any(|note| note.contains("neutralised")),
+        "the layout notes the neutralisation"
+    );
+    assert!(
+        built
+            .view
+            .text
+            .starts_with("// @ts-check\n// @ts-nocheck\n"),
+        "the neutralising pragma comes after the source pragma: {}",
+        built.view.text
+    );
+}
+
+#[test]
 fn scripts_are_not_subject_to_the_expression_node_budget() {
     let mut text = String::from("Page({ data: {");
     for index in 0..6_000 {

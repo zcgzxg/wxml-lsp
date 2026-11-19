@@ -566,6 +566,65 @@ mod tests {
     }
 
     #[test]
+    fn case_protocol_0126_a_same_name_nested_chain_is_accepted_and_groups_two_levels() {
+        // Oracle: `protocol.test.ts:126` — an inner loop may shadow an outer
+        // name; array order encodes nesting, not uniqueness.
+        let bindings = [
+            binding("item", LocalRole::Item, "groups"),
+            binding("index", LocalRole::Index, "groups"),
+            binding("item", LocalRole::Item, "item.members"),
+            binding("index", LocalRole::Index, "item.members"),
+        ];
+        let levels =
+            group_local_levels(&bindings, DEFAULT_LOCAL_BUDGET).expect("same-name chain accepted");
+        assert_eq!(levels.len(), 2);
+        assert_eq!(
+            levels[0].item.as_ref().map(|item| item.name.as_str()),
+            Some("item")
+        );
+        assert_eq!(
+            levels[0].index.as_ref().map(|index| index.name.as_str()),
+            Some("index")
+        );
+        assert_eq!(
+            levels[1].item.as_ref().map(|item| item.name.as_str()),
+            Some("item")
+        );
+        assert_eq!(
+            levels[1].index.as_ref().map(|index| index.name.as_str()),
+            Some("index")
+        );
+        assert_eq!(
+            levels[1]
+                .item
+                .as_ref()
+                .map(|item| item.source_expr.as_str()),
+            Some("item.members")
+        );
+
+        // The inner declaration captures the outer binding, so the generated
+        // code has no temporal dead zone.
+        let rendered = render(&bindings, "", Syntax::TypeScript);
+        assert!(!rendered.unresolved);
+        assert!(
+            rendered
+                .text
+                .contains("const __wxml_capture_item_0 = item;")
+        );
+        assert!(
+            rendered
+                .text
+                .contains("const item = __wxml_item(__wxml_capture_item_0.members);")
+        );
+        assert!(
+            !rendered
+                .text
+                .contains("const item = __wxml_item(item.members)"),
+            "the inner declaration must not reference its own binding (TDZ)"
+        );
+    }
+
+    #[test]
     fn levels_are_grouped_by_array_order_not_source_expression() {
         let levels = group_local_levels(
             &[

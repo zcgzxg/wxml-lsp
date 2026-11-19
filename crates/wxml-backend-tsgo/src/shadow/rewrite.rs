@@ -771,6 +771,34 @@ mod tests {
     }
 
     #[test]
+    fn case_analysis_0196_target_must_be_a_whole_identifier_in_the_expression() {
+        // Oracle: `analysis.test.ts:196` — an explicit target that is not a
+        // whole identifier token in the expression is a structured error, not a
+        // silently ignored override.
+        for target in ["nmae", "nam", "user.name"] {
+            let error = rewrite_expression("user.name", Some(target), &RewriteOptions::default())
+                .expect_err("target must be rejected");
+            assert!(
+                matches!(
+                    &error,
+                    ShadowError::BadExpression { detail }
+                        if detail.contains("not a whole identifier")
+                ),
+                "{target}: {error}"
+            );
+        }
+
+        // Positive controls: both the root and a member name are whole
+        // identifier tokens, so they resolve to their exact mounted offsets.
+        let root = rewrite_expression("user.name", Some("user"), &RewriteOptions::default())
+            .expect("root target");
+        assert_eq!(root.target_offset_utf16, 12);
+        let member = rewrite_expression("user.name", Some("name"), &RewriteOptions::default())
+            .expect("member target");
+        assert_eq!(member.target_offset_utf16, 17);
+    }
+
+    #[test]
     fn rewrites_preserve_source_segments_and_target_offsets() {
         let result = rewrite_expression("!title", None, &RewriteOptions::default()).expect("valid");
         assert_eq!(result.text, "!__wxml_root.title");

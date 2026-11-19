@@ -9,7 +9,7 @@
 
 //! Behavior-graph facts.
 //!
-//! These tests assert the script-fact layer only. They intentionally do not
+//! These tests assert script facts and the shadow build gate only. They do not
 //! claim checker parity (hover types, diagnostics, `this.data` instance types);
 //! each case names its TypeScript oracle and is marked structural. Structural
 //! equivalence means the same fields/methods/status are selected from the same
@@ -252,27 +252,88 @@ fn case_component_0498_spread_and_dynamic_data_members_stay_partial_and_any() {
 
 #[test]
 fn case_component_0521_named_imports_and_reexport_aliases_resolve_statically() {
-    // Oracle: TS-COMPONENT-0521.
+    // Oracle: TS-COMPONENT-0521. The TS fragment id `count` hovers
+    // `namedCount`; the native fact field is the renamed observable for that
+    // type. `states.hover.status == "supported"` is the TS build/hover gate;
+    // native proves every input to it (behavior, data, properties, overall).
+    let index =
+        "import { shared } from \"./shared\";\nComponent({ behaviors: [shared], data: {} });";
+    let shared = "const implementation = Behavior({ data: { namedCount: 4 } });\nexport { implementation as shared };";
     let result = analysis(
-        &[
-            (
-                "index.ts",
-                "import { shared } from \"./shared\";\nComponent({ behaviors: [shared], data: {} });",
-            ),
-            (
-                "shared.ts",
-                "const implementation = Behavior({ data: { namedCount: 4 } });\nexport { implementation as shared };",
-            ),
-        ],
+        &[("index.ts", index), ("shared.ts", shared)],
         "index.ts",
         RegistrationKind::Component,
     );
-    assert_eq!(data(&result, "namedCount").type_text, "number");
+    let count = data(&result, "namedCount");
+    assert_eq!(count.name, "namedCount");
+    assert_eq!(count.type_text, "number");
+    assert!(count.exact, "{}", count.type_text);
+    assert_eq!(count.path, "shared.ts");
+    assert_eq!(count.range.text(shared), Some("namedCount"));
+    assert_eq!(result.behavior.units.len(), 1);
+    assert_eq!(result.behavior.units[0].path, "shared.ts");
+    assert_eq!(result.behavior.units[0].alias.as_deref(), Some("shared"));
+    assert!(!result.behavior.data_incomplete);
+    assert!(!result.behavior.properties_incomplete);
+    assert!(
+        result.behavior.problems.is_empty(),
+        "{:?}",
+        result.behavior.problems
+    );
     assert!(
         result.behavior.status.is_supported(),
         "{:?}",
         result.behavior.problems
     );
+    assert!(result.registration.complete);
+    assert_eq!(result.registration.candidates.len(), 1);
+    assert!(matches!(
+        result.data.root,
+        wxml_backend_tsgo::script::properties::DataRootKind::Object
+    ));
+    assert!(result.data.complete);
+    assert!(result.properties.complete);
+    assert!(result.status.is_supported(), "{:?}", result.reasons);
+    assert!(result.reasons.is_empty(), "{:?}", result.reasons);
+
+    // TS `states.hover.status` is gated by the layout build status. Native
+    // proves the same gate: one registration, object data root, complete
+    // properties, complete behavior properties and no partial reason.
+    let index_source =
+        SourceFile::new("index.ts", index, DocumentRevision::new(1)).expect("source");
+    let fragment = wxml_backend_tsgo::shadow::layout::FragmentSpec::new(
+        "count",
+        "namedCount",
+        wxml_backend_tsgo::shadow::mapping::SourceRange::new(0, 10),
+    );
+    let overlay = wxml_backend_tsgo::shadow::layout::BehaviorPropertyOverlay {
+        properties: &result.behavior.properties,
+        complete: !result.behavior.properties_incomplete && result.behavior.status.is_supported(),
+        reason: result.behavior.status.reason(),
+    };
+    let built = wxml_backend_tsgo::shadow::layout::build_in_place_shadow_with_behavior(
+        &wxml_backend_tsgo::shadow::layout::ShadowRequest {
+            script: &index_source,
+            root: wxml_backend_tsgo::shadow::layout::RootKind::Component,
+            fragments: &[fragment],
+            js_check: wxml_backend_tsgo::shadow::layout::JsCheckPolicy::Inherit,
+            check_js: false,
+        },
+        Some(&overlay),
+    )
+    .expect("shadow");
+    assert_eq!(
+        built.status,
+        wxml_backend_tsgo::shadow::layout::BuildStatus::Supported
+    );
+    assert_eq!(built.reason, None);
+    assert_eq!(built.registration.count, 1);
+    assert!(matches!(
+        built.data_root,
+        wxml_backend_tsgo::shadow::layout::DataRootKind::Object
+    ));
+    assert!(built.properties.complete);
+    assert!(built.view.text.contains("__wxml_root.namedCount"));
 }
 
 #[test]
@@ -367,17 +428,45 @@ fn case_component_0724_import_equals_alias_does_not_hijack_behavior_binding() {
 
 #[test]
 fn case_component_0763_non_probe_double_underscore_data_names_remain_usable() {
-    // Oracle: TS-COMPONENT-0763.
+    // Oracle: TS-COMPONENT-0763. `build.behaviorIncomplete` is the OR of
+    // data-incomplete, properties-incomplete and behavior problems; native
+    // asserts all three inputs instead of only the data flag.
+    let script = "Component({ behaviors: [Behavior({ data: { __state: 1 } })], data: {} });";
     let result = analysis(
-        &[(
-            "index.ts",
-            "Component({ behaviors: [Behavior({ data: { __state: 1 } })], data: {} });",
-        )],
+        &[("index.ts", script)],
         "index.ts",
         RegistrationKind::Component,
     );
-    assert_eq!(data(&result, "__state").type_text, "number");
+    let state = data(&result, "__state");
+    assert_eq!(state.name, "__state");
+    assert_eq!(state.type_text, "number");
+    assert!(state.exact, "{}", state.type_text);
+    assert_eq!(state.path, "index.ts");
+    assert_eq!(state.range.text(script), Some("__state"));
+    assert_eq!(result.behavior.units.len(), 1);
+    assert_eq!(result.behavior.units[0].path, "index.ts");
     assert!(!result.behavior.data_incomplete);
+    assert!(!result.behavior.properties_incomplete);
+    assert!(
+        result.behavior.problems.is_empty(),
+        "{:?}",
+        result.behavior.problems
+    );
+    assert!(
+        result.behavior.status.is_supported(),
+        "{:?}",
+        result.behavior.problems
+    );
+    assert!(result.registration.complete);
+    assert_eq!(result.registration.candidates.len(), 1);
+    assert!(matches!(
+        result.data.root,
+        wxml_backend_tsgo::script::properties::DataRootKind::Object
+    ));
+    assert!(result.data.complete);
+    assert!(result.properties.complete);
+    assert!(result.status.is_supported(), "{:?}", result.reasons);
+    assert!(result.reasons.is_empty(), "{:?}", result.reasons);
 }
 
 #[test]

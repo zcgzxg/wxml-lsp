@@ -2561,6 +2561,57 @@ mod tests {
     }
 
     #[test]
+    fn case_server_0150_json_rpc_notifications_never_produce_a_response() {
+        // Oracle: `server.test.ts:150`. Notifications may change state and may
+        // schedule diagnostics, but they never answer; the first reply belongs
+        // to the request that follows them.
+        let (mut server, _) = setup();
+        initialize(&mut server);
+
+        assert!(
+            server
+                .handle_incoming(notification("nope", json!({})))
+                .is_empty(),
+            "an unknown notification is ignored"
+        );
+        assert!(
+            server
+                .handle_incoming(notification("textDocument/didOpen", json!({})))
+                .is_empty(),
+            "a malformed notification is ignored"
+        );
+        assert!(
+            server
+                .handle_incoming(notification(
+                    "textDocument/didOpen",
+                    json!({
+                        "textDocument": {
+                            "uri": URI,
+                            "languageId": "wxml",
+                            "version": 1,
+                            "text": "<view>{{ title }}</view>",
+                        }
+                    }),
+                ))
+                .is_empty(),
+            "a valid notification only schedules work"
+        );
+
+        let outgoing = only(server.handle_incoming(request(json!(7), "shutdown", json!(null))));
+        match &outgoing {
+            Outgoing::Response { id, .. } => {
+                assert_eq!(id, &json!(7), "the first reply must belong to the request");
+            }
+            other => panic!("expected the shutdown response, got {other:?}"),
+        }
+        assert!(
+            server
+                .handle_incoming(notification("exit", json!(null)))
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn invalid_parameters_are_rejected() {
         let (mut server, _) = setup();
         initialize(&mut server);

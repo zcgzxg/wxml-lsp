@@ -227,22 +227,40 @@ fn case_rewrite_0190_object_shorthand_is_expanded_safely() {
 
 #[test]
 fn case_rewrite_0207_wxmlrange_must_match_the_expression_byte_length() {
-    let script = source_file("Page({ data: {} });");
-    let fragment = FragmentSpec::new("f0", "title", SourceRange::new(0, 99));
-    let request = ShadowRequest {
+    // Oracle: TS-REWRITE-0207. TS asserts RequestError code `bad-fragment`;
+    // native replaces that code with the typed `Invalid { feature:
+    // "fragment.range" }`. The same expression with the correct byte length is
+    // the positive control, so the rejection is length-specific.
+    let script = source_file("Page({ data: { title: \"x\" } });");
+    let valid = FragmentSpec::new("f0", "title", SourceRange::new(0, 5));
+    let valid_request = ShadowRequest {
         script: &script,
         root: RootKind::Page,
-        fragments: &[fragment],
+        fragments: &[valid],
         js_check: JsCheckPolicy::Inherit,
         check_js: false,
     };
-    assert!(matches!(
-        build_in_place_shadow(&request),
-        Err(ShadowError::Invalid {
-            feature: "fragment.range",
-            ..
-        })
-    ));
+    assert!(build_in_place_shadow(&valid_request).is_ok());
+
+    let invalid = FragmentSpec::new("f0", "title", SourceRange::new(0, 99));
+    let invalid_request = ShadowRequest {
+        script: &script,
+        root: RootKind::Page,
+        fragments: &[invalid],
+        js_check: JsCheckPolicy::Inherit,
+        check_js: false,
+    };
+    let error = build_in_place_shadow(&invalid_request).expect_err("wrong wxmlRange length");
+    match error {
+        ShadowError::Invalid { feature, reason } => {
+            assert_eq!(feature, "fragment.range");
+            assert_eq!(
+                reason,
+                "wxmlRange length 99 does not match expression byte length 5"
+            );
+        }
+        other => panic!("expected the typed fragment.range error, got {other:?}"),
+    }
 }
 
 #[test]
