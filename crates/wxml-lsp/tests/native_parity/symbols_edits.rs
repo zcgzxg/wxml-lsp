@@ -1,22 +1,31 @@
 //! `symbols_edits` native parity partition.
 //!
-//! The three mandatory native edit gates are authored here. They replace the
-//! two `semantic_tools` silent returns and the optional `tsc` branch recorded
-//! in `docs/plans/tsgo-test-ledger.json`:
+//! The three mandatory native edit gates are authored here. They cover the
+//! three old silent surfaces in `semantic_tools` recorded by
+//! `docs/plans/tsgo-test-ledger.json`:
 //!
-//! - [`native_component_property_edit_applies_and_reparses`] applies a real
-//!   component-property rename to an isolated overlay, reparses every applied
-//!   template and rechecks the applied snapshot through the native engine.
-//! - [`assert_native_edit_reparses_and_typechecks`] is a standalone gate: a
+//! - [`native_component_property_edit_applies_and_reparses`] replaces the
+//!   `G-P5-E2E-22` silent return when the legacy Node backend artifact is
+//!   absent. It applies a real component-property rename to an isolated
+//!   overlay, reparses every applied template and rechecks the applied
+//!   snapshot through the native engine.
+//! - [`assert_native_edit_reparses_and_typechecks`] replaces the optional
+//!   `G-P5-E2E-22` `tsc` post-edit branch. It is a standalone gate: a
 //!   verifiable TypeScript edit must reparse/typecheck cleanly, and a positive
 //!   control must produce a real type error. No `tsc`, no Node.
-//! - [`native_rejects_cross_namespace_and_dynamic_edits`] proves that
-//!   cross-namespace, cross-script and dynamic edits are rejected (or answered
-//!   `Partial`) with zero edits and unchanged sources.
+//! - [`native_rejects_cross_namespace_and_dynamic_edits`] replaces the
+//!   `G-P5-E2E-23` silent return. It proves that cross-namespace, cross-script
+//!   and dynamic edits are rejected (or answered `Partial`) with zero edits and
+//!   unchanged sources.
 //!
 //! Every test is `#[ignore]`: the default job reports it ignored, never passed.
 //! The required native job runs them with `--ignored`; a missing package or
 //! engine in required mode is a hard failure, never a skip.
+//!
+//! The old `semantic_tools` tests are **not** deleted here. Their ledger status
+//! stays `required_not_migrated` until the required native job records green
+//! evidence and the replacement is reviewed; only then may the old Node paths
+//! be removed.
 
 use std::path::Path;
 
@@ -36,11 +45,36 @@ pub(crate) const MIGRATED_CASES: &[&str] = &[
     "native_rejects_cross_namespace_and_dynamic_edits",
 ];
 
+/// Old silent `semantic_tools` surfaces and the authored gate that covers each.
+///
+/// This is the explicit coverage map for the two silent returns plus the
+/// optional `tsc` branch. Every replacement named here must also appear in
+/// [`MIGRATED_CASES`] and in the ledger `replacement_test`/`tsc_replacement`
+/// fields, which `native_gates.rs` cross-checks.
+pub(crate) const COVERED_OLD_SURFACES: &[(&str, &str)] = &[
+    (
+        "G-P5-E2E-22 silent return when the legacy Node backend is absent",
+        "native_component_property_edit_applies_and_reparses",
+    ),
+    (
+        "G-P5-E2E-22 optional tsc post-edit branch",
+        "assert_native_edit_reparses_and_typechecks",
+    ),
+    (
+        "G-P5-E2E-23 silent return when the legacy Node backend is absent",
+        "native_rejects_cross_namespace_and_dynamic_edits",
+    ),
+];
+
 /// Future tests that must run before the old silent edit paths can be removed.
 ///
-/// Empty: every registered replacement is now authored above. The ledger
-/// status of the old silent surfaces is still `required_not_migrated` until
-/// the required native job records green evidence.
+/// Empty: all three old silent surfaces (the two legacy backend early
+/// returns and the optional `tsc` branch) are already covered by
+/// [`COVERED_OLD_SURFACES`] and authored in [`MIGRATED_CASES`]. The old tests
+/// themselves stay in place: the ledger still records them as
+/// `required_not_migrated`, so deletion remains blocked by the required native
+/// job recording green evidence and by replacement review, not by an unauthored
+/// gate.
 pub(crate) const BLOCKED_NATIVE_GATES: &[BlockedGate] = &[];
 
 /// Workspace-relative file that declares the native edit gates.

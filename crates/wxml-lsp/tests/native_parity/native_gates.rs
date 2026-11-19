@@ -25,15 +25,25 @@
 //!
 //! `gate_green` is an opt-in required-native-job result (`--ignored`), not a
 //! default-CI pass and not `mandatory_green`.
+//!
+//! Each `ignored_rust_tests` entry may additionally carry the optional
+//! `old_test_removed` flag (default `false`). P7 uses it only after the old
+//! `#[ignore]` test has really left the tree. A removed gate must stay
+//! `gate_green`, keep a linked native replacement, and resolve every
+//! `related_ledger_cases` entry inside the frozen legacy oracle manifest.
+//! Marking a still-present gate as removed, or removing a gate without that
+//! frozen evidence, is a hard failure. No gate is removed by this slice.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+use serde_json::{Map, Value};
 use wxml_backend_tsgo::config::{AST_PROTOCOL_VERSION, ENGINE_VERSION, PinnedEngine};
 
 use crate::fixture_hash::collect_tree_files;
 use crate::ledger;
 use crate::native_engine_real::{GATE_REPLACEMENTS, IGNORED_GATE_TESTS, NATIVE_GATE_FILE};
+use crate::oracle_manifest::{self, LegacySourceMode};
 use crate::source_scan;
 use crate::symbols_edits::{IGNORED_GATE_TESTS as NATIVE_EDIT_GATE_TESTS, NATIVE_EDIT_GATE_FILE};
 
@@ -150,7 +160,7 @@ fn ignored_functions() -> (usize, BTreeSet<(String, String)>) {
 }
 
 fn assert_related_cases_exist(
-    gate: &serde_json::Map<String, serde_json::Value>,
+    gate: &Map<String, Value>,
     gate_id: &str,
     case_ids: &BTreeSet<String>,
 ) {
@@ -165,11 +175,7 @@ fn assert_related_cases_exist(
     }
 }
 
-fn assert_required_text(
-    gate: &serde_json::Map<String, serde_json::Value>,
-    gate_id: &str,
-    keys: &[&str],
-) {
+fn assert_required_text(gate: &Map<String, Value>, gate_id: &str, keys: &[&str]) {
     for key in keys {
         assert!(
             !ledger::required_str(gate, key, gate_id).is_empty(),
@@ -192,7 +198,7 @@ fn assert_git_object_id(value: &str, context: &str) {
 /// removal condition, the exact opt-in command and the pinned engine/asset
 /// identity. Empty evidence or a different engine must fail here rather than
 /// silently counting as a pass.
-fn assert_gate_green_evidence(gate: &serde_json::Map<String, serde_json::Value>, gate_id: &str) {
+fn assert_gate_green_evidence(gate: &Map<String, Value>, gate_id: &str) {
     for key in [
         "replacement_test",
         "replacement_kind",
@@ -303,6 +309,138 @@ fn assert_gate_green_evidence(gate: &serde_json::Map<String, serde_json::Value>,
     );
 }
 
+/// The only status that may ever leave the old Rust test tree.
+const REMOVABLE_GATE_STATUS: &str = "gate_green";
+
+/// Result of validating the optional `old_test_removed` flag.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct OldTestRemovalReport {
+    /// Gates whose old `#[ignore]` test must no longer exist.
+    removed: BTreeSet<String>,
+    /// Gates whose old `#[ignore]` test must still exist.
+    present: BTreeSet<String>,
+}
+
+/// Reads the optional `old_test_removed` flag, defaulting to `false`.
+///
+/// Any non-boolean value is a hard schema failure: a gate may not be removed
+/// through a truthy string, a number or a typo.
+fn old_test_removed(gate: &Map<String, Value>, gate_id: &str) -> Result<bool, String> {
+    match gate.get("old_test_removed") {
+        None => Ok(false),
+        Some(Value::Bool(removed)) => Ok(*removed),
+        Some(_) => Err(format!(
+            "{gate_id}.old_test_removed must be a boolean when present"
+        )),
+    }
+}
+
+fn gate_str<'a>(gate: &'a Map<String, Value>, key: &str, gate_id: &str) -> Result<&'a str, String> {
+    gate.get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{gate_id}.{key} must be a string"))
+}
+
+fn gate_string_array<'a>(
+    gate: &'a Map<String, Value>,
+    key: &str,
+    gate_id: &str,
+) -> Result<Vec<&'a str>, String> {
+    let entries = gate
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("{gate_id}.{key} must be an array"))?;
+    entries
+        .iter()
+        .map(|entry| {
+            entry
+                .as_str()
+                .ok_or_else(|| format!("{gate_id}.{key} must contain only strings"))
+        })
+        .collect()
+}
+
+/// Validates every gate's optional `old_test_removed` declaration.
+///
+/// The rules are deliberately asymmetric:
+/// - `false`/absent means the old `#[ignore]` test must still be present; a
+///   silently vanished test fails before it can be mistaken for a pass.
+/// - `true` means the gate may leave the tree only as a `gate_green` gate with
+///   a linked native replacement, while the legacy oracle manifest is frozen
+///   (the live TypeScript tree is gone) and still carries every related case.
+///
+/// The checker takes the scanned test inventory and the frozen manifest as
+/// inputs so the deletion, missing-replacement and tamper paths can be
+/// exercised without touching the real tree.
+fn validate_old_test_removals(
+    gates: &[Value],
+    actual: &BTreeSet<(String, String)>,
+    linked_replacements: &BTreeSet<String>,
+    oracle_frozen: bool,
+    frozen_cases: &BTreeSet<String>,
+) -> Result<OldTestRemovalReport, String> {
+    let mut report = OldTestRemovalReport::default();
+    for gate in gates {
+        let gate = gate
+            .as_object()
+            .ok_or_else(|| "ignored gate must be a JSON object".to_owned())?;
+        let gate_id = gate_str(gate, "gate_id", "ignored gate")?;
+        let status = gate_str(gate, "status", gate_id)?;
+        let file = gate_str(gate, "file", gate_id)?;
+        let test = gate_str(gate, "test", gate_id)?;
+        let key = (file.to_owned(), test.to_owned());
+        if old_test_removed(gate, gate_id)? {
+            if status != REMOVABLE_GATE_STATUS {
+                return Err(format!(
+                    "{gate_id} is marked old_test_removed with status {status:?}; only \
+                     {REMOVABLE_GATE_STATUS} gates may leave the old test tree"
+                ));
+            }
+            if actual.contains(&key) {
+                return Err(format!(
+                    "{gate_id} is marked old_test_removed but {file}::{test} still carries the \
+                     ignore attribute; delete the old test or clear the flag"
+                ));
+            }
+            if !linked_replacements.contains(gate_id) {
+                return Err(format!(
+                    "{gate_id} is marked old_test_removed without a linked native replacement"
+                ));
+            }
+            if !oracle_frozen {
+                return Err(format!(
+                    "{gate_id} is marked old_test_removed but the legacy oracle manifest is not \
+                     frozen; the live TypeScript tree must be gone before an old gate is deleted"
+                ));
+            }
+            for case in gate_string_array(gate, "related_ledger_cases", gate_id)? {
+                if !frozen_cases.contains(case) {
+                    return Err(format!(
+                        "{gate_id} related case {case} is missing from the frozen oracle manifest"
+                    ));
+                }
+            }
+            if !report.removed.insert(gate_id.to_owned()) {
+                return Err(format!("duplicate removed gate {gate_id}"));
+            }
+        } else {
+            if !actual.contains(&key) {
+                return Err(format!(
+                    "{gate_id} is not marked old_test_removed but {file}::{test} is missing \
+                     from the #[ignore] inventory"
+                ));
+            }
+            if !report.present.insert(gate_id.to_owned()) {
+                return Err(format!("duplicate present gate {gate_id}"));
+            }
+        }
+    }
+    if report.removed.len() + report.present.len() != gates.len() {
+        return Err("old_test_removed coverage drifted".to_owned());
+    }
+    Ok(report)
+}
+
 fn native_parity_function(target: &str, gate_id: &str) -> String {
     let (file, rest) = target
         .split_once("::")
@@ -350,6 +488,7 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
     let case_ids = ledger::case_ids(cases);
     let mut gate_ids = BTreeSet::new();
     let mut expected = BTreeSet::new();
+    let mut old_tests = BTreeMap::new();
     let mut green = BTreeSet::new();
     let mut required = BTreeSet::new();
 
@@ -407,6 +546,7 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
             expected.insert((file.to_owned(), test.to_owned())),
             "duplicate ignored test {file}::{test}"
         );
+        old_tests.insert(gate_id.to_owned(), (file.to_owned(), test.to_owned()));
     }
 
     let frozen_green: BTreeSet<String> = GATE_GREEN_IDS
@@ -442,7 +582,48 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
     );
     assert_eq!(green.len() + required.len(), IGNORED_GATE_COUNT);
 
+    let workspace = ledger::workspace_root();
+    let manifest = oracle_manifest::load_manifest(&workspace);
+    let oracle_report = oracle_manifest::verify_legacy_oracle(
+        &ledger_value,
+        &manifest,
+        &workspace.join(oracle_manifest::LEGACY_TEST_SOURCE_ROOT),
+    )
+    .unwrap_or_else(|error| panic!("legacy oracle gate: {error}"));
+    let frozen_cases: BTreeSet<String> = manifest
+        .cases
+        .iter()
+        .map(|case| case.case_id.clone())
+        .collect();
+    let linked_replacements: BTreeSet<String> = GATE_REPLACEMENTS
+        .iter()
+        .map(|(gate_id, _)| (*gate_id).to_owned())
+        .collect();
+
     let (count, mut actual) = ignored_functions();
+    let removals = validate_old_test_removals(
+        gates,
+        &actual,
+        &linked_replacements,
+        oracle_report.mode == LegacySourceMode::Frozen,
+        &frozen_cases,
+    )
+    .unwrap_or_else(|error| panic!("old_test_removed schema: {error}"));
+    assert_eq!(
+        removals.removed.len() + removals.present.len(),
+        IGNORED_GATE_COUNT,
+        "every ledger gate must be classified as present or removed"
+    );
+    for gate_id in &removals.removed {
+        let key = old_tests
+            .get(gate_id)
+            .unwrap_or_else(|| panic!("removed gate {gate_id} has no old test coordinates"));
+        assert!(
+            expected.remove(key),
+            "removed gate {gate_id} shares its old test coordinates with another gate"
+        );
+    }
+
     let native = declared_native_gate_tests();
     let edit = declared_native_edit_gate_tests();
     assert_eq!(
@@ -457,9 +638,10 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
     );
     assert_eq!(
         count,
-        gates.len() + native.len() + edit.len(),
-        "found {count} #[ignore] lines but the ledger records {} old gates plus {} native gate tests and {} native edit gates",
+        gates.len() - removals.removed.len() + native.len() + edit.len(),
+        "found {count} #[ignore] lines but the ledger records {} old gates ({} removed) plus {} native gate tests and {} native edit gates",
         gates.len(),
+        removals.removed.len(),
         native.len(),
         edit.len()
     );
@@ -482,7 +664,7 @@ fn native_replacements_are_linked_with_gate_green_evidence() {
     let ledger_value = ledger::load_ledger();
     let root = ledger::object(&ledger_value, "ledger root");
     let gates = ledger::required_array(root, "ignored_rust_tests", "ledger root");
-    let mut by_id = std::collections::BTreeMap::new();
+    let mut by_id = BTreeMap::new();
     for gate in gates {
         let gate = ledger::object(gate, "ledger.ignored_rust_tests[]");
         let gate_id = ledger::required_str(gate, "gate_id", "ignored gate");
@@ -772,6 +954,15 @@ fn semantic_tools_silent_returns_are_mandatory_unmigrated_gates() {
 
         let body = source_scan::function_body(&source, line)
             .unwrap_or_else(|| panic!("{gate_id} function body was not found at {file}:{line}"));
+        assert!(
+            body.contains("common::native_edit::requested()"),
+            "{file}::{test} must derive the native gate request from both \
+             WXML_TEST_NATIVE and WXML_REQUIRE_REAL_ENGINE"
+        );
+        assert!(
+            body.contains(&format!("common::native_edit::require(\"{gate_id}\")")),
+            "{file}::{test} must validate the native package/engine before any silent skip"
+        );
         let else_block = source_scan::else_block_after(body, "real_node_paths()")
             .unwrap_or_else(|| panic!("{gate_id} has no real_node_paths() else block"));
         let normalized = normalize_whitespace(else_block);
@@ -810,6 +1001,19 @@ fn semantic_tools_silent_returns_are_mandatory_unmigrated_gates() {
         }
     }
     assert_eq!(replacements.len(), 3);
+    let covered: BTreeSet<String> = crate::symbols_edits::COVERED_OLD_SURFACES
+        .iter()
+        .map(|(_, replacement)| (*replacement).to_owned())
+        .collect();
+    assert_eq!(
+        crate::symbols_edits::COVERED_OLD_SURFACES.len(),
+        3,
+        "the coverage map must keep exactly the two silent returns plus the tsc branch"
+    );
+    assert_eq!(
+        covered, replacements,
+        "the explicit coverage map must match the ledger replacements exactly"
+    );
     for gate in crate::symbols_edits::BLOCKED_NATIVE_GATES {
         assert!(
             !gate.reason.is_empty(),
@@ -906,4 +1110,267 @@ fn semantic_tools_silent_returns_are_mandatory_unmigrated_gates() {
     let tsc_replacement = ledger::required_str(tsc_entry, "replacement_test", "tsc silent skip");
     let tsc_replacement = native_parity_function(tsc_replacement, "tsc silent skip");
     assert_native_edit_gate(&tsc_replacement, "tsc silent skip");
+}
+
+#[test]
+fn native_edit_guard_honors_both_opt_in_flags() {
+    let workspace = ledger::workspace_root();
+    let file = "crates/wxml-lsp/tests/common/native_edit.rs";
+    let source = read_source(&workspace.join(file));
+    for variable in ["WXML_TEST_NATIVE", "WXML_REQUIRE_REAL_ENGINE"] {
+        assert!(
+            source.contains(&format!("\"{variable}\"")),
+            "{file} must read {variable}; the old Node tests may not ignore either opt-in flag"
+        );
+    }
+
+    let requested_line = source
+        .lines()
+        .position(|line| line.contains("fn requested()"))
+        .map_or_else(
+            || panic!("{file} must declare requested()"),
+            |index| index + 1,
+        );
+    let requested = source_scan::function_body(&source, requested_line)
+        .unwrap_or_else(|| panic!("{file}::requested body is missing"));
+    for constant in ["NATIVE_GATE_ENV", "REQUIRE_REAL_ENGINE_ENV"] {
+        assert!(
+            requested.contains(constant),
+            "{file}::requested must consult {constant}"
+        );
+    }
+
+    let flag_line = source
+        .lines()
+        .position(|line| line.contains("fn flag("))
+        .map_or_else(|| panic!("{file} must declare flag()"), |index| index + 1);
+    let flag = source_scan::function_body(&source, flag_line)
+        .unwrap_or_else(|| panic!("{file}::flag body is missing"));
+    assert!(
+        flag.contains("== \"1\"") && flag.contains("eq_ignore_ascii_case(\"true\")"),
+        "{file}::flag must accept exactly 1/true"
+    );
+
+    let require_line = source
+        .lines()
+        .position(|line| line.contains("fn require(gate_id: &str)"))
+        .map_or_else(
+            || panic!("{file} must declare require()"),
+            |index| index + 1,
+        );
+    let require = source_scan::function_body(&source, require_line)
+        .unwrap_or_else(|| panic!("{file}::require body is missing"));
+    assert!(
+        require.contains("panic!"),
+        "{file}::require must panic when no native package/engine is configured"
+    );
+    for source_env in ["NATIVE_PACKAGE_ENV", "TSGO_ASSET_ROOT_ENV", "TSGO_BIN_ENV"] {
+        assert!(
+            require.contains(source_env),
+            "{file}::require must accept {source_env}"
+        );
+    }
+}
+
+fn synthetic_gate(gate_id: &str, status: &str, removed: Option<Value>, related: &[&str]) -> Value {
+    let slug = gate_id.to_ascii_lowercase();
+    let mut gate = serde_json::json!({
+        "gate_id": gate_id,
+        "file": format!("crates/wxml-lsp/tests/{slug}.rs"),
+        "test": format!("old_{}", slug.replace('-', "_")),
+        "status": status,
+        "related_ledger_cases": related,
+    });
+    if let Some(removed) = removed {
+        gate.as_object_mut()
+            .expect("synthetic gate object")
+            .insert("old_test_removed".to_owned(), removed);
+    }
+    gate
+}
+
+fn old_test_key(gate: &Value) -> (String, String) {
+    let gate = gate.as_object().expect("synthetic gate object");
+    (
+        gate["file"].as_str().expect("synthetic file").to_owned(),
+        gate["test"].as_str().expect("synthetic test").to_owned(),
+    )
+}
+
+fn removal_error(
+    gates: &[Value],
+    actual: &BTreeSet<(String, String)>,
+    linked: &BTreeSet<String>,
+    oracle_frozen: bool,
+    cases: &BTreeSet<String>,
+) -> String {
+    validate_old_test_removals(gates, actual, linked, oracle_frozen, cases)
+        .expect_err("the old_test_removed schema must fail closed")
+}
+
+#[test]
+fn old_test_removed_defaults_to_false_and_rejects_a_vanished_gate() {
+    let gate = synthetic_gate("G-SYNTH-01", "gate_green", None, &[]);
+    let key = old_test_key(&gate);
+    let actual: BTreeSet<(String, String)> = std::iter::once(key).collect();
+    let report = validate_old_test_removals(
+        std::slice::from_ref(&gate),
+        &actual,
+        &BTreeSet::new(),
+        false,
+        &BTreeSet::new(),
+    )
+    .expect("an absent old_test_removed flag keeps the old test present");
+    assert_eq!(report.present, BTreeSet::from(["G-SYNTH-01".to_owned()]));
+    assert!(report.removed.is_empty());
+
+    let error = removal_error(
+        std::slice::from_ref(&gate),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        false,
+        &BTreeSet::new(),
+    );
+    assert!(
+        error.contains("is not marked old_test_removed") && error.contains("is missing"),
+        "a vanished old test must fail closed: {error}"
+    );
+}
+
+#[test]
+fn old_test_removed_rejects_a_gate_that_is_still_ignored() {
+    let gate = synthetic_gate("G-SYNTH-02", "gate_green", Some(Value::Bool(true)), &[]);
+    let actual: BTreeSet<(String, String)> = std::iter::once(old_test_key(&gate)).collect();
+    let linked = BTreeSet::from(["G-SYNTH-02".to_owned()]);
+    let error = removal_error(
+        std::slice::from_ref(&gate),
+        &actual,
+        &linked,
+        true,
+        &BTreeSet::new(),
+    );
+    assert!(
+        error.contains("still carries the ignore attribute"),
+        "a still-present gate may not be marked removed: {error}"
+    );
+}
+
+#[test]
+fn old_test_removed_requires_gate_green_and_a_linked_replacement() {
+    let gate = synthetic_gate(
+        "G-SYNTH-03",
+        "required_not_migrated",
+        Some(Value::Bool(true)),
+        &[],
+    );
+    let linked = BTreeSet::from(["G-SYNTH-03".to_owned()]);
+    let error = removal_error(
+        std::slice::from_ref(&gate),
+        &BTreeSet::new(),
+        &linked,
+        true,
+        &BTreeSet::new(),
+    );
+    assert!(
+        error.contains("only gate_green gates may leave"),
+        "a non-green gate may not be removed: {error}"
+    );
+
+    let gate = synthetic_gate("G-SYNTH-03", "gate_green", Some(Value::Bool(true)), &[]);
+    let error = removal_error(
+        std::slice::from_ref(&gate),
+        &BTreeSet::new(),
+        &BTreeSet::new(),
+        true,
+        &BTreeSet::new(),
+    );
+    assert!(
+        error.contains("without a linked native replacement"),
+        "a removed gate must keep its native replacement: {error}"
+    );
+}
+
+#[test]
+fn old_test_removed_requires_the_frozen_oracle_manifest() {
+    let gate = synthetic_gate(
+        "G-SYNTH-04",
+        "gate_green",
+        Some(Value::Bool(true)),
+        &["TS-SYNTH-0001"],
+    );
+    let linked = BTreeSet::from(["G-SYNTH-04".to_owned()]);
+    let error = removal_error(
+        std::slice::from_ref(&gate),
+        &BTreeSet::new(),
+        &linked,
+        false,
+        &BTreeSet::new(),
+    );
+    assert!(
+        error.contains("is not frozen"),
+        "a live legacy oracle may not authorize deletion: {error}"
+    );
+
+    let error = removal_error(
+        std::slice::from_ref(&gate),
+        &BTreeSet::new(),
+        &linked,
+        true,
+        &BTreeSet::new(),
+    );
+    assert!(
+        error.contains("missing from the frozen oracle manifest"),
+        "every related case must resolve inside the frozen manifest: {error}"
+    );
+
+    let cases = BTreeSet::from(["TS-SYNTH-0001".to_owned()]);
+    let report = validate_old_test_removals(
+        std::slice::from_ref(&gate),
+        &BTreeSet::new(),
+        &linked,
+        true,
+        &cases,
+    )
+    .expect("a frozen manifest with the related case authorizes the deletion");
+    assert_eq!(report.removed, BTreeSet::from(["G-SYNTH-04".to_owned()]));
+}
+
+#[test]
+fn old_test_removed_rejects_non_boolean_tamper() {
+    for tampered in [
+        Value::String("true".to_owned()),
+        Value::from(1),
+        Value::Null,
+    ] {
+        let gate = synthetic_gate("G-SYNTH-05", "gate_green", Some(tampered), &[]);
+        let error = removal_error(
+            std::slice::from_ref(&gate),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            true,
+            &BTreeSet::new(),
+        );
+        assert!(
+            error.contains("old_test_removed must be a boolean"),
+            "a truthy string, number or null must not remove a gate: {error}"
+        );
+    }
+}
+
+#[test]
+fn old_test_removed_accepts_a_simulated_deletion_with_frozen_evidence() {
+    let present = synthetic_gate("G-SYNTH-06", "gate_green", None, &[]);
+    let removed = synthetic_gate(
+        "G-SYNTH-07",
+        "gate_green",
+        Some(Value::Bool(true)),
+        &["TS-SYNTH-0002"],
+    );
+    let actual: BTreeSet<(String, String)> = std::iter::once(old_test_key(&present)).collect();
+    let linked = BTreeSet::from(["G-SYNTH-06".to_owned(), "G-SYNTH-07".to_owned()]);
+    let cases = BTreeSet::from(["TS-SYNTH-0002".to_owned()]);
+    let report = validate_old_test_removals(&[present, removed], &actual, &linked, true, &cases)
+        .expect("the simulated deletion must pass with frozen evidence");
+    assert_eq!(report.removed, BTreeSet::from(["G-SYNTH-07".to_owned()]));
+    assert_eq!(report.present, BTreeSet::from(["G-SYNTH-06".to_owned()]));
 }
