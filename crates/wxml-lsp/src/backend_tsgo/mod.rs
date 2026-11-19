@@ -79,6 +79,7 @@
 )]
 
 pub(crate) mod completion;
+pub(crate) mod component_bindings;
 pub(crate) mod definition;
 pub(crate) mod diagnostics;
 pub(crate) mod document_symbol;
@@ -812,6 +813,7 @@ impl Backend for TsgoBackendAdapter {
         let run = diagnostics::diagnostics(
             session.as_mut(),
             &plan.layout,
+            &plan.view,
             &script_path,
             &plan.identity.project_root,
             &syntax,
@@ -986,7 +988,7 @@ impl Backend for TsgoBackendAdapter {
             },
             diagnostics: CapabilityStatus::Partial {
                 reason:
-                    "host syntax plus native fragment diagnostics are wired; standalone project script diagnostics are routed through the separate script seam; event-handler and component diagnostics are not covered"
+                    "host syntax plus native fragment diagnostics are wired; standalone project script diagnostics are routed through the separate script seam; event-handler diagnostics are served by host static semantics; local component property binding diagnostics are wired, while composite expressions, array/object structure and unresolved component declarations may degrade to Partial"
                         .to_owned(),
             },
             definition: CapabilityStatus::Partial {

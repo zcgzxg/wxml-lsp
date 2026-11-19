@@ -56,18 +56,21 @@ use wxml_backend_tsgo::shadow::mapping::SourceRange as NativeSourceRange;
 use wxml_project::ProjectPath;
 use wxml_text::SourceRange;
 use wxml_types::{
-    Backend, BackendEpoch, BackendError, BackendId, CapabilityStatus, CheckFragment,
-    CompletionItemKind, CompletionKind, CompletionRequest, CompletionResult, DefinitionRequest,
-    Diagnostic, DiagnosticSeverity, DiagnosticsRequest, DocumentSymbolKind, DocumentSymbolsRequest,
-    FileId, HoverRequest, MarkupKind, ProjectId, ProjectRevision, RequestContext, RootKind,
-    SnapshotId, SourceRevision, SourceSnapshot, SymbolQuery, SymbolRequest, ViewRevision,
+    AttributeValueKind, Backend, BackendEpoch, BackendError, BackendId, CapabilityStatus,
+    CheckFragment, CompletionItemKind, CompletionKind, CompletionRequest, CompletionResult,
+    ComponentAttribute, ComponentUsage, DefinitionRequest, Diagnostic, DiagnosticSeverity,
+    DiagnosticsRequest, DocumentSymbolKind, DocumentSymbolsRequest, FileId, HoverRequest,
+    MarkupKind, ProjectId, ProjectRevision, RequestContext, RootKind, SnapshotId, SourceRevision,
+    SourceSnapshot, SymbolQuery, SymbolRequest, ViewRevision,
 };
 
 use super::hover::resolved_status;
 use super::input::ViewProvider;
 use super::session::{HoverDocumentation, QuerySession};
 use super::{BACKEND_ID, TsgoBackendAdapter};
-use crate::project_host::{HostError, PreparedFile, PreparedView, ViewTarget};
+use crate::project_host::{
+    HostError, PreparedFile, PreparedView, ProjectHost, ProjectState, ViewTarget,
+};
 
 const WXML: &str = "<view>{{ user.name }}</view>";
 const SCRIPT: &str = "Page({\n  data: { user: { name: \"Ada\", age: 42 } },\n});\n";
@@ -167,6 +170,55 @@ fn empty_view(wxml: &str, files: Vec<PreparedFile>) -> PreparedView {
         status_hint: None,
         source_complete: true,
     }
+}
+
+fn component_attribute(wxml: &str, name: &str, expression: &str) -> ComponentAttribute {
+    let start = offset_of(wxml, expression);
+    let range = SourceRange::from_bounds(
+        start,
+        start + u32::try_from(expression.len()).expect("expression length"),
+    )
+    .expect("attribute range");
+    ComponentAttribute {
+        name: name.to_owned(),
+        value_kind: AttributeValueKind::Mustache,
+        expr_text: Some(expression.to_owned()),
+        expr_range: Some(range),
+        attribute_range: range,
+    }
+}
+
+fn component_usage(
+    tag: &str,
+    component: &str,
+    attributes: Vec<ComponentAttribute>,
+) -> ComponentUsage {
+    ComponentUsage {
+        tag: tag.to_owned(),
+        component_file: Some(FileId::new(project(), component).expect("component file")),
+        attributes,
+    }
+}
+
+/// Builds a page view with one mounted `expression` and one custom component.
+fn prepared_component_view(
+    wxml: &str,
+    script: &str,
+    expression: &str,
+    component_path: &str,
+    component_script: &str,
+    attributes: Vec<ComponentAttribute>,
+) -> PreparedView {
+    let mut view = prepared_view_with_files(
+        wxml,
+        expression,
+        vec![
+            prepared_file(SCRIPT_PATH, script),
+            prepared_file(component_path, component_script),
+        ],
+    );
+    view.components = Arc::from(vec![component_usage("card", component_path, attributes)]);
+    view
 }
 
 fn syntax_diagnostic(wxml: &str, needle: &str, message: &str) -> Diagnostic {
@@ -6230,4 +6282,341 @@ fn event_completion_rejected_value_is_unsupported_not_supported_empty() {
         result.status,
         CapabilityStatus::Unsupported { .. }
     ));
+}
+
+// ---------------------------------------------------------------------------
+// Component property binding diagnostics (E2E-20)
+// ---------------------------------------------------------------------------
+
+const COMPONENT_CARD: &str =
+    "Component({\n  properties: {\n    title: { type: String },\n  },\n});\n";
+const COMPONENT_PATH: &str = "components/card/card.ts";
+const COMPONENT_SCRIPT: &str = "Page({\n  data: { total: 3 },\n});\n";
+
+#[test]
+fn component_binding_diagnostics_are_published_with_shadow_ranges() {
+    let wxml = r#"<view><card title="{{ total }}" /></view>"#;
+    let view = prepared_component_view(
+        wxml,
+        COMPONENT_SCRIPT,
+        "total",
+        COMPONENT_PATH,
+        COMPONENT_CARD,
+        vec![component_attribute(wxml, "title", "total")],
+    );
+    let behavior = FakeBehavior {
+        type_outcome: FakeTypeOutcome::Known("number".to_owned()),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, wxml),
+        })
+        .expect("diagnostics");
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    let diagnostic = &result.diagnostics[0];
+    assert_eq!(diagnostic.range.start(), offset_of(wxml, "total"));
+    assert_eq!(
+        diagnostic.range.end(),
+        offset_of(wxml, "total") + u32::try_from("total".len()).expect("length")
+    );
+    assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+    assert!(diagnostic.message.contains("component property \"title\""));
+    assert!(diagnostic.message.contains("expects string, got number"));
+    let log = log.lock().expect("log");
+    assert_eq!(log.type_calls.len(), 1);
+    assert_eq!(log.type_calls[0].0, SCRIPT_PATH);
+}
+
+#[test]
+fn component_binding_any_type_degrades_to_partial() {
+    let wxml = r#"<view><card title="{{ total }}" /></view>"#;
+    let view = prepared_component_view(
+        wxml,
+        COMPONENT_SCRIPT,
+        "total",
+        COMPONENT_PATH,
+        COMPONENT_CARD,
+        vec![component_attribute(wxml, "title", "total")],
+    );
+    let behavior = FakeBehavior {
+        type_outcome: FakeTypeOutcome::Any("any".to_owned()),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, wxml),
+        })
+        .expect("diagnostics");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let CapabilityStatus::Partial { reason } = &result.status else {
+        panic!("expected Partial, got {:?}", result.status);
+    };
+    assert!(
+        reason.starts_with("some component bindings could not be resolved and were not checked"),
+        "{reason}"
+    );
+    assert!(
+        !reason.contains('/'),
+        "the reason must stay path-free: {reason}"
+    );
+}
+
+#[test]
+fn component_binding_type_query_failure_keeps_backend_diagnostics() {
+    let wxml = r#"<view><card title="{{ total }}" /></view>"#;
+    let view = prepared_component_view(
+        wxml,
+        COMPONENT_SCRIPT,
+        "total",
+        COMPONENT_PATH,
+        COMPONENT_CARD,
+        vec![component_attribute(wxml, "title", "total")],
+    );
+    let behavior = FakeBehavior {
+        type_outcome: FakeTypeOutcome::Failure(FakeFailure::Timeout),
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![FakeDiagnostic {
+            needle: "total",
+            code: 2339,
+            category: 1,
+            message: "backend semantic error",
+            file_name: None,
+        }]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, wxml),
+        })
+        .expect("diagnostics must not return Err");
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    assert_eq!(result.diagnostics[0].code.as_deref(), Some("2339"));
+    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    assert_eq!(log.lock().expect("log").shutdowns, 0);
+}
+
+#[test]
+fn component_binding_pass_is_not_run_for_script_diagnostics() {
+    let wxml = r#"<view><card title="{{ total }}" /></view>"#;
+    let view = prepared_component_view(
+        wxml,
+        COMPONENT_SCRIPT,
+        "total",
+        COMPONENT_PATH,
+        COMPONENT_CARD,
+        vec![component_attribute(wxml, "title", "total")],
+    );
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(view)),
+        FakeBehavior {
+            type_outcome: FakeTypeOutcome::Known("number".to_owned()),
+            ..FakeBehavior::default()
+        },
+    );
+    let result = adapter
+        .script_diagnostics(&DiagnosticsRequest {
+            context: script_context(&adapter, SCRIPT_PATH, COMPONENT_SCRIPT),
+        })
+        .expect("script diagnostics");
+    assert!(result.status.is_supported(), "{:?}", result.status);
+    assert!(log.lock().expect("log").type_calls.is_empty());
+}
+
+#[test]
+fn component_binding_pass_is_not_run_when_no_custom_components() {
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        FakeBehavior::default(),
+    );
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, WXML),
+        })
+        .expect("diagnostics");
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert!(result.diagnostics.is_empty());
+    assert!(log.lock().expect("log").type_calls.is_empty());
+}
+
+#[test]
+fn completion_plan_does_not_query_component_types() {
+    let wxml = "<view>{{ user.name }}</view>";
+    let mut view = prepared_view(wxml, SCRIPT, "user.name");
+    view.components = Arc::from(vec![component_usage(
+        "card",
+        COMPONENT_PATH,
+        vec![component_attribute(wxml, "title", "user.name")],
+    )]);
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "name"),
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("completion");
+    assert!(log.lock().expect("log").type_calls.is_empty());
+}
+
+#[test]
+fn capabilities_do_not_claim_component_diagnostics_uncovered() {
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        FakeBehavior::default(),
+    );
+    let capabilities = adapter.capabilities();
+    let CapabilityStatus::Partial { reason } = &capabilities.diagnostics else {
+        panic!("diagnostics capability must stay Partial");
+    };
+    assert!(
+        !reason.contains("component diagnostics are not covered"),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("component property binding diagnostics are wired"),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("event-handler diagnostics are served by host static semantics"),
+        "{reason}"
+    );
+}
+
+/// Real-engine opt-in end-to-end check for the `component-bindings` fixture.
+///
+/// The view is prepared by the real `ProjectState` from the checked-in fixture;
+/// a minimal `globals.d.ts` supplies `Page`/`this.data` typing because the test
+/// does not load the mini-program typings package. This verifies the exact
+/// property error range and both hover types through the pinned engine. Event
+/// diagnostics and definitions are produced by the static LSP layer and are
+/// covered by the existing integration tests, not by this adapter seam.
+#[test]
+fn optional_real_engine_component_binding_fixture() {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    const GLOBALS: &str = "declare function Page(options: {\n  data: { pageTitle: string; total: number };\n  __wxml_check_0(this: { data: { pageTitle: string; total: number } }): void;\n  onCardTap(): void;\n}): void;\n";
+    let Ok(bin) = std::env::var("TSGO_BIN") else {
+        let required = matches!(
+            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
+            Ok("1" | "true")
+        );
+        assert!(
+            !required,
+            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
+        );
+        eprintln!(
+            "optional real-engine component binding test skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc"
+        );
+        return;
+    };
+    let executable = PathBuf::from(&bin);
+    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("tests/fixtures/component-bindings")
+        .canonicalize()
+        .expect("fixture root");
+    let host = ProjectState::new();
+    host.open_root(Some(&format!("file://{}", root.display())))
+        .expect("open fixture root");
+    let path = ProjectPath::new("pages/index/index.wxml").expect("wxml path");
+    let text = std::fs::read_to_string(root.join("pages/index/index.wxml")).expect("wxml text");
+    let file = host.file_id(&path).expect("wxml file id");
+    let target = host.view_for(&path).expect("view target");
+    let snapshot = Arc::new(SourceSnapshot::new(
+        file,
+        SourceRevision::new(1),
+        SnapshotId::new(1),
+        text.clone(),
+    ));
+    let mut view = host.analysis(&snapshot).expect("prepared view");
+    let mut files: Vec<PreparedFile> = view.files.iter().cloned().collect();
+    files.push(PreparedFile {
+        file: FileId::new(host.project_id(), "globals.d.ts").expect("globals id"),
+        path: ProjectPath::new("globals.d.ts").expect("globals path"),
+        kind: "ts",
+        text: Arc::from(GLOBALS),
+        source_revision: 1,
+    });
+    view.files = Arc::from(files);
+    assert_eq!(view.components.len(), 2);
+
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let sandbox = std::env::temp_dir().join(format!(
+        "wxml-tsgo-component-{}-{count}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&sandbox).expect("sandbox");
+    let _cleanup = Cleanup(sandbox.clone());
+
+    let adapter = TsgoBackendAdapter::new(
+        PinnedEngine::pinned(),
+        Arc::new(FakeViews::new(view)),
+        Arc::new(super::session::NativeSessionFactory::new(
+            SessionOptions::new(executable, sandbox),
+        )),
+    );
+    let context = RequestContext::new(
+        host.project_revision(),
+        target.view_revision,
+        adapter.epoch(),
+        snapshot,
+    )
+    .expect("fixture context");
+
+    let page_title = text.find("pageTitle").expect("pageTitle");
+    let hover = adapter
+        .hover(HoverRequest {
+            context: context.clone(),
+            offset: u32::try_from(page_title + 1).expect("offset"),
+        })
+        .expect("pageTitle hover");
+    assert!(
+        hover.contents.contains("string"),
+        "pageTitle hover: {:?}",
+        hover.contents
+    );
+
+    let count_total =
+        text.find(r#"count="{{ total }}""#).expect("count total") + r#"count="{{ "#.len();
+    let hover = adapter
+        .hover(HoverRequest {
+            context: context.clone(),
+            offset: u32::try_from(count_total + 1).expect("offset"),
+        })
+        .expect("count hover");
+    assert!(
+        hover.contents.contains("number"),
+        "count hover: {:?}",
+        hover.contents
+    );
+
+    let result = adapter
+        .diagnostics(DiagnosticsRequest { context })
+        .expect("component diagnostics");
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Supported,
+        "{:?}",
+        result.status
+    );
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    let diagnostic = &result.diagnostics[0];
+    let title_total =
+        text.rfind(r#"title="{{ total }}""#).expect("second title") + r#"title="{{ "#.len();
+    assert_eq!(
+        diagnostic.range.start(),
+        u32::try_from(title_total).expect("start")
+    );
+    assert_eq!(
+        diagnostic.range.end(),
+        u32::try_from(title_total + "total".len()).expect("end")
+    );
+    assert!(diagnostic.message.contains("component property \"title\""));
+    assert!(diagnostic.message.contains("expects string"));
+    assert!(diagnostic.message.contains("number"));
 }

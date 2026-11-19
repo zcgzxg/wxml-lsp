@@ -302,6 +302,11 @@ pub(crate) struct RequestPlan {
     /// [`Self::degradation`] alone so a project `types`/`typeRoots` setting
     /// cannot make them falsely `Partial`.
     pub(crate) environment_degradation: Option<String>,
+    /// Host-prepared view used by the component-property binding pass.
+    ///
+    /// Hover/definition/completion never read it; only template diagnostics
+    /// resolve component declarations and attribute mounts.
+    pub(crate) view: PreparedView,
 }
 
 impl RequestPlan {
@@ -918,6 +923,7 @@ fn build_request_plan_with_completion(
         syntax_diagnostics: view.syntax_diagnostics.clone(),
         degradation,
         environment_degradation,
+        view,
     })
 }
 

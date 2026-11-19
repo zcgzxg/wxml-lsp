@@ -26,8 +26,10 @@ use wxml_types::{
     SourceSnapshot,
 };
 
+use crate::backend_tsgo::component_bindings;
 use crate::backend_tsgo::mapping::{NativeRange, ShadowLayout};
 use crate::backend_tsgo::session::QuerySession;
+use crate::project_host::PreparedView;
 
 /// One diagnostics run plus whether the native session must be dropped.
 #[derive(Debug)]
@@ -46,6 +48,7 @@ pub(crate) struct DiagnosticsRun {
 pub(crate) fn diagnostics(
     session: &mut dyn QuerySession,
     layout: &ShadowLayout,
+    view: &PreparedView,
     script_path: &str,
     project_root: &str,
     syntax: &[Diagnostic],
@@ -148,6 +151,21 @@ pub(crate) fn diagnostics(
                  excluded from this template result"
             ),
         );
+    }
+    let component = component_bindings::diagnostics(session, layout, view, script_path);
+    for diagnostic in component.diagnostics {
+        let key = (
+            diagnostic.code.clone(),
+            diagnostic.range.start(),
+            diagnostic.range.end(),
+            diagnostic.message.clone(),
+        );
+        if seen.insert(key) {
+            diagnostics.push(diagnostic);
+        }
+    }
+    if let Some(component_status) = component.status {
+        status = merge_status(status, component_status);
     }
     if let Some(reason) = degradation {
         status = merge_status(

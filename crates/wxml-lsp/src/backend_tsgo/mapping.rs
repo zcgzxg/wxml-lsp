@@ -72,6 +72,28 @@ impl ShadowLayout {
         self.script_map.original()
     }
 
+    /// Returns the original template bytes.
+    ///
+    /// Component binding diagnostics publish these bytes directly and use them
+    /// to verify that a reported expression range still matches its text.
+    #[must_use]
+    pub(crate) fn original_wxml(&self) -> &str {
+        &self.original_wxml
+    }
+
+    /// Returns the mount whose original expression range is exactly `range`.
+    ///
+    /// Exact range matching is deliberate: the same expression text can occur
+    /// more than once in one template, and a text/position search would attach
+    /// the wrong mount or the wrong type.
+    #[must_use]
+    pub(crate) fn mount_for_range(&self, range: TemplateRange) -> Option<&MountRecord> {
+        self.fragments
+            .iter()
+            .find(|fragment| fragment.wxml_range == range)
+            .map(|fragment| &fragment.mount)
+    }
+
     /// Returns the number of mounted template fragments.
     #[must_use]
     pub(crate) fn fragment_count(&self) -> usize {
