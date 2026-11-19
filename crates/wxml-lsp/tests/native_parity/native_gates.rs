@@ -31,8 +31,13 @@
 //! `#[ignore]` test has really left the tree. A removed gate must stay
 //! `gate_green`, keep a linked native replacement, and resolve every
 //! `related_ledger_cases` entry inside the frozen legacy oracle manifest.
-//! Marking a still-present gate as removed, or removing a gate without that
-//! frozen evidence, is a hard failure. No gate is removed by this slice.
+//! The ledger has no `p7_action` field, so the frozen P7 evidence
+//! (`docs/evidence/data/legacy-p7-freeze.json`) is the read-only authority for
+//! the delete/retarget split: only `p7_action=delete` gates may carry
+//! `old_test_removed=true`; a `retarget` gate that tries to leave the tree is a
+//! hard failure. Marking a still-present gate as removed, or removing a gate
+//! without that frozen evidence, is also a hard failure. No gate is removed by
+//! this slice.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -85,6 +90,45 @@ const GATE_GREEN_COUNT: usize = 23;
 const REQUIRED_NOT_MIGRATED_COUNT: usize = 0;
 /// Frozen ignored-gate inventory size; P6-2 never deletes a gate.
 const IGNORED_GATE_COUNT: usize = 23;
+/// Frozen `p7_action=delete` count from the P7 freeze evidence.
+const P7_DELETE_GATE_COUNT: usize = 12;
+/// Frozen `p7_action=retarget` count from the P7 freeze evidence.
+const P7_RETARGET_GATE_COUNT: usize = 11;
+/// Frozen P7 evidence carrying each gate's read-only `p7_action`.
+const P7_FREEZE_RELATIVE_PATH: &str = "docs/evidence/data/legacy-p7-freeze.json";
+/// The only action that may leave the old Rust test tree.
+const P7_ACTION_DELETE: &str = "delete";
+/// The action that must keep the old `#[ignore]` test in the tree.
+const P7_ACTION_RETARGET: &str = "retarget";
+/// Frozen `p7_action=delete` gate ids; the only legal removal candidates.
+const P7_DELETE_GATE_IDS: &[&str] = &[
+    "G-P5-E2E-01",
+    "G-P5-E2E-02",
+    "G-P5-E2E-03",
+    "G-P5-E2E-04",
+    "G-P5-E2E-05",
+    "G-P5-E2E-15",
+    "G-P5-E2E-16",
+    "G-P5-E2E-17",
+    "G-P5-E2E-18",
+    "G-P5-E2E-19",
+    "G-P5-E2E-20",
+    "G-P5-E2E-21",
+];
+/// Frozen `p7_action=retarget` gate ids; they may never be marked removed.
+const P7_RETARGET_GATE_IDS: &[&str] = &[
+    "G-P5-E2E-06",
+    "G-P5-E2E-07",
+    "G-P5-E2E-08",
+    "G-P5-E2E-09",
+    "G-P5-E2E-10",
+    "G-P5-E2E-11",
+    "G-P5-E2E-12",
+    "G-P5-E2E-13",
+    "G-P5-E2E-14",
+    "G-P5-PERF-01",
+    "G-P5-STABILITY-01",
+];
 /// Pinned size of the `7.1.0-beta` `lib/tsc` artifact.
 const PINNED_ENGINE_SIZE: u64 = 24_522_912;
 
@@ -360,22 +404,78 @@ fn gate_string_array<'a>(
         .collect()
 }
 
+/// Loads the frozen `gate_id -> p7_action` map from the P7 evidence.
+///
+/// The migration ledger does not carry `p7_action`, so the freeze JSON is the
+/// only read-only authority for the delete/retarget split. A gate without a
+/// recorded action, an unknown action or a duplicate gate is a hard failure:
+/// the action never defaults to `delete`.
+fn load_p7_actions() -> BTreeMap<String, String> {
+    let path = ledger::workspace_root().join(P7_FREEZE_RELATIVE_PATH);
+    let text = std::fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+    let value: Value = serde_json::from_str(&text)
+        .unwrap_or_else(|error| panic!("{} is not valid JSON: {error}", path.display()));
+    let root = value
+        .as_object()
+        .unwrap_or_else(|| panic!("{} must be a JSON object", path.display()));
+    let gates = root
+        .get("old_ignored_gates")
+        .and_then(Value::as_object)
+        .and_then(|section| section.get("gates"))
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{} must carry old_ignored_gates.gates[]", path.display()));
+
+    let mut actions = BTreeMap::new();
+    for gate in gates {
+        let gate = gate.as_object().unwrap_or_else(|| {
+            panic!(
+                "{} old_ignored_gates.gates[] must be objects",
+                path.display()
+            )
+        });
+        let gate_id = gate
+            .get("gate_id")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{} has a gate without gate_id", path.display()));
+        let action = gate
+            .get("p7_action")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{gate_id} has no recorded p7_action in {}", path.display()));
+        assert!(
+            action == P7_ACTION_DELETE || action == P7_ACTION_RETARGET,
+            "{gate_id} has an unknown p7_action {action:?}"
+        );
+        assert!(
+            actions
+                .insert(gate_id.to_owned(), action.to_owned())
+                .is_none(),
+            "duplicate p7_action for {gate_id}"
+        );
+    }
+    actions
+}
+
 /// Validates every gate's optional `old_test_removed` declaration.
 ///
 /// The rules are deliberately asymmetric:
 /// - `false`/absent means the old `#[ignore]` test must still be present; a
 ///   silently vanished test fails before it can be mistaken for a pass.
-/// - `true` means the gate may leave the tree only as a `gate_green` gate with
-///   a linked native replacement, while the legacy oracle manifest is frozen
-///   (the live TypeScript tree is gone) and still carries every related case.
+/// - `true` means the gate may leave the tree only as a `gate_green` gate whose
+///   frozen P7 action is `delete`, with a linked native replacement, while the
+///   legacy oracle manifest is frozen (the live TypeScript tree is gone) and
+///   still carries every related case. A `retarget` gate is not a deletion
+///   candidate and must keep its old `#[ignore]` test.
 ///
-/// The checker takes the scanned test inventory and the frozen manifest as
-/// inputs so the deletion, missing-replacement and tamper paths can be
-/// exercised without touching the real tree.
+/// The checker takes the scanned test inventory, the frozen manifest and the
+/// read-only P7 actions as inputs so the deletion, missing-replacement,
+/// retarget-deletion and tamper paths can be exercised without touching the
+/// real tree.
 fn validate_old_test_removals(
     gates: &[Value],
     actual: &BTreeSet<(String, String)>,
     linked_replacements: &BTreeSet<String>,
+    p7_actions: &BTreeMap<String, String>,
     oracle_frozen: bool,
     frozen_cases: &BTreeSet<String>,
 ) -> Result<OldTestRemovalReport, String> {
@@ -394,6 +494,19 @@ fn validate_old_test_removals(
                 return Err(format!(
                     "{gate_id} is marked old_test_removed with status {status:?}; only \
                      {REMOVABLE_GATE_STATUS} gates may leave the old test tree"
+                ));
+            }
+            let action = p7_actions.get(gate_id).ok_or_else(|| {
+                format!(
+                    "{gate_id} is marked old_test_removed but has no recorded p7_action in \
+                     {P7_FREEZE_RELATIVE_PATH}"
+                )
+            })?;
+            if action.as_str() != P7_ACTION_DELETE {
+                return Err(format!(
+                    "{gate_id} is marked old_test_removed but its p7_action is {action:?}; only \
+                     p7_action=delete gates may leave the old test tree; {P7_ACTION_RETARGET} \
+                     gates must keep the old #[ignore] test"
                 ));
             }
             if actual.contains(&key) {
@@ -600,11 +713,47 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
         .map(|(gate_id, _)| (*gate_id).to_owned())
         .collect();
 
+    let p7_actions = load_p7_actions();
+    let ledger_gate_ids: BTreeSet<&str> = gate_ids.iter().map(String::as_str).collect();
+    let recorded_gate_ids: BTreeSet<&str> = p7_actions.keys().map(String::as_str).collect();
+    assert_eq!(
+        recorded_gate_ids, ledger_gate_ids,
+        "the P7 freeze evidence must classify every ledger gate exactly once"
+    );
+    let delete_ids: BTreeSet<&str> = p7_actions
+        .iter()
+        .filter(|(_, action)| action.as_str() == P7_ACTION_DELETE)
+        .map(|(gate_id, _)| gate_id.as_str())
+        .collect();
+    let retarget_ids: BTreeSet<&str> = p7_actions
+        .iter()
+        .filter(|(_, action)| action.as_str() == P7_ACTION_RETARGET)
+        .map(|(gate_id, _)| gate_id.as_str())
+        .collect();
+    let frozen_delete: BTreeSet<&str> = P7_DELETE_GATE_IDS.iter().copied().collect();
+    let frozen_retarget: BTreeSet<&str> = P7_RETARGET_GATE_IDS.iter().copied().collect();
+    assert_eq!(
+        delete_ids, frozen_delete,
+        "the delete gate classification drifted from {P7_FREEZE_RELATIVE_PATH}"
+    );
+    assert_eq!(
+        retarget_ids, frozen_retarget,
+        "the retarget gate classification drifted from {P7_FREEZE_RELATIVE_PATH}"
+    );
+    assert_eq!(delete_ids.len(), P7_DELETE_GATE_COUNT);
+    assert_eq!(retarget_ids.len(), P7_RETARGET_GATE_COUNT);
+    assert_eq!(
+        delete_ids.len() + retarget_ids.len(),
+        IGNORED_GATE_COUNT,
+        "every ignored gate must be either a delete or a retarget gate"
+    );
+
     let (count, mut actual) = ignored_functions();
     let removals = validate_old_test_removals(
         gates,
         &actual,
         &linked_replacements,
+        &p7_actions,
         oracle_report.mode == LegacySourceMode::Frozen,
         &frozen_cases,
     )
@@ -1197,14 +1346,22 @@ fn old_test_key(gate: &Value) -> (String, String) {
     )
 }
 
+fn synthetic_p7_actions(gate_ids: &[&str], action: &str) -> BTreeMap<String, String> {
+    gate_ids
+        .iter()
+        .map(|gate_id| ((*gate_id).to_owned(), action.to_owned()))
+        .collect()
+}
+
 fn removal_error(
     gates: &[Value],
     actual: &BTreeSet<(String, String)>,
     linked: &BTreeSet<String>,
+    p7_actions: &BTreeMap<String, String>,
     oracle_frozen: bool,
     cases: &BTreeSet<String>,
 ) -> String {
-    validate_old_test_removals(gates, actual, linked, oracle_frozen, cases)
+    validate_old_test_removals(gates, actual, linked, p7_actions, oracle_frozen, cases)
         .expect_err("the old_test_removed schema must fail closed")
 }
 
@@ -1217,6 +1374,7 @@ fn old_test_removed_defaults_to_false_and_rejects_a_vanished_gate() {
         std::slice::from_ref(&gate),
         &actual,
         &BTreeSet::new(),
+        &BTreeMap::new(),
         false,
         &BTreeSet::new(),
     )
@@ -1228,6 +1386,7 @@ fn old_test_removed_defaults_to_false_and_rejects_a_vanished_gate() {
         std::slice::from_ref(&gate),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &BTreeMap::new(),
         false,
         &BTreeSet::new(),
     );
@@ -1242,10 +1401,12 @@ fn old_test_removed_rejects_a_gate_that_is_still_ignored() {
     let gate = synthetic_gate("G-SYNTH-02", "gate_green", Some(Value::Bool(true)), &[]);
     let actual: BTreeSet<(String, String)> = std::iter::once(old_test_key(&gate)).collect();
     let linked = BTreeSet::from(["G-SYNTH-02".to_owned()]);
+    let actions = synthetic_p7_actions(&["G-SYNTH-02"], P7_ACTION_DELETE);
     let error = removal_error(
         std::slice::from_ref(&gate),
         &actual,
         &linked,
+        &actions,
         true,
         &BTreeSet::new(),
     );
@@ -1264,10 +1425,12 @@ fn old_test_removed_requires_gate_green_and_a_linked_replacement() {
         &[],
     );
     let linked = BTreeSet::from(["G-SYNTH-03".to_owned()]);
+    let actions = synthetic_p7_actions(&["G-SYNTH-03"], P7_ACTION_DELETE);
     let error = removal_error(
         std::slice::from_ref(&gate),
         &BTreeSet::new(),
         &linked,
+        &actions,
         true,
         &BTreeSet::new(),
     );
@@ -1281,6 +1444,7 @@ fn old_test_removed_requires_gate_green_and_a_linked_replacement() {
         std::slice::from_ref(&gate),
         &BTreeSet::new(),
         &BTreeSet::new(),
+        &actions,
         true,
         &BTreeSet::new(),
     );
@@ -1299,10 +1463,12 @@ fn old_test_removed_requires_the_frozen_oracle_manifest() {
         &["TS-SYNTH-0001"],
     );
     let linked = BTreeSet::from(["G-SYNTH-04".to_owned()]);
+    let actions = synthetic_p7_actions(&["G-SYNTH-04"], P7_ACTION_DELETE);
     let error = removal_error(
         std::slice::from_ref(&gate),
         &BTreeSet::new(),
         &linked,
+        &actions,
         false,
         &BTreeSet::new(),
     );
@@ -1315,6 +1481,7 @@ fn old_test_removed_requires_the_frozen_oracle_manifest() {
         std::slice::from_ref(&gate),
         &BTreeSet::new(),
         &linked,
+        &actions,
         true,
         &BTreeSet::new(),
     );
@@ -1328,6 +1495,7 @@ fn old_test_removed_requires_the_frozen_oracle_manifest() {
         std::slice::from_ref(&gate),
         &BTreeSet::new(),
         &linked,
+        &actions,
         true,
         &cases,
     )
@@ -1347,6 +1515,7 @@ fn old_test_removed_rejects_non_boolean_tamper() {
             std::slice::from_ref(&gate),
             &BTreeSet::new(),
             &BTreeSet::new(),
+            &BTreeMap::new(),
             true,
             &BTreeSet::new(),
         );
@@ -1369,8 +1538,63 @@ fn old_test_removed_accepts_a_simulated_deletion_with_frozen_evidence() {
     let actual: BTreeSet<(String, String)> = std::iter::once(old_test_key(&present)).collect();
     let linked = BTreeSet::from(["G-SYNTH-06".to_owned(), "G-SYNTH-07".to_owned()]);
     let cases = BTreeSet::from(["TS-SYNTH-0002".to_owned()]);
-    let report = validate_old_test_removals(&[present, removed], &actual, &linked, true, &cases)
-        .expect("the simulated deletion must pass with frozen evidence");
+    let actions = synthetic_p7_actions(&["G-SYNTH-07"], P7_ACTION_DELETE);
+    let report = validate_old_test_removals(
+        &[present, removed],
+        &actual,
+        &linked,
+        &actions,
+        true,
+        &cases,
+    )
+    .expect("the simulated deletion must pass with frozen evidence");
     assert_eq!(report.removed, BTreeSet::from(["G-SYNTH-07".to_owned()]));
     assert_eq!(report.present, BTreeSet::from(["G-SYNTH-06".to_owned()]));
+}
+
+#[test]
+fn retarget_cannot_be_marked_removed() {
+    let gate = synthetic_gate("G-P5-E2E-06", "gate_green", Some(Value::Bool(true)), &[]);
+    let linked = BTreeSet::from(["G-P5-E2E-06".to_owned()]);
+    let actions = synthetic_p7_actions(&["G-P5-E2E-06"], P7_ACTION_RETARGET);
+    let error = removal_error(
+        std::slice::from_ref(&gate),
+        &BTreeSet::new(),
+        &linked,
+        &actions,
+        true,
+        &BTreeSet::new(),
+    );
+    assert!(
+        error.contains("p7_action is \"retarget\""),
+        "a retarget gate may not be marked removed: {error}"
+    );
+    assert!(
+        error.contains("only p7_action=delete gates may leave the old test tree"),
+        "the failure must name the delete-only rule: {error}"
+    );
+
+    let error = removal_error(
+        std::slice::from_ref(&gate),
+        &BTreeSet::new(),
+        &linked,
+        &BTreeMap::new(),
+        true,
+        &BTreeSet::new(),
+    );
+    assert!(
+        error.contains("has no recorded p7_action"),
+        "a gate without frozen action evidence may not be removed: {error}"
+    );
+
+    let actions = load_p7_actions();
+    assert_eq!(
+        actions.get("G-P5-E2E-06").map(String::as_str),
+        Some(P7_ACTION_RETARGET),
+        "the real freeze evidence must classify G-P5-E2E-06 as retarget"
+    );
+    assert_eq!(
+        actions.get("G-P5-E2E-01").map(String::as_str),
+        Some(P7_ACTION_DELETE)
+    );
 }

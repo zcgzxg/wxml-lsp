@@ -190,3 +190,79 @@ BLOCKED，原因不在 replacement 缺失，而在 ledger 仍记录
 - 不声称 P7-1 台账归零、P7-2 oracle 已 Frozen 或 P7-4/P7-5 已完成。
 - 不声称 `old_test_removed` 已被任何真实 gate 使用；本切片只提供 schema、校验和
   fail-closed 模拟测试。
+
+---
+
+## 8. 增补：`p7_action` 删除 guard（2026-11-20，HEAD `5cc1255`）
+
+本节补上第 2 节当时的缺口：`old_test_removed` 只校验 `gate_green`、linked
+replacement、Frozen oracle 和 related cases；11 个 `p7_action=retarget` gate
+同样满足这些条件，误删并标记 `old_test_removed: true` 会通过。ledger 没有
+`p7_action` 字段，因此 guard 从冻结证据派生分类。
+
+### 8.1 实现
+
+- `crates/wxml-lsp/tests/native_parity/native_gates.rs` 新增
+  `load_p7_actions()`，只读加载
+  `docs/evidence/data/legacy-p7-freeze.json` 的
+  `old_ignored_gates.gates[].p7_action`。缺失 `gate_id`、未知 action、重复
+  gate 都是硬失败，**不会默认成 `delete`**。
+- 受控常量 `P7_DELETE_GATE_IDS`（12 个）和 `P7_RETARGET_GATE_IDS`（11 个）
+  与 freeze JSON 逐项相等；主测试同时断言 action map 恰好覆盖 ledger 的 23 个
+  `gate_id`，且 `12 + 11 = 23`。分类来自现有 freeze 证据，没有新增或改动任何
+  gate 的 delete/retarget 归属。
+- `validate_old_test_removals(...)` 新增 `p7_actions` 参数：当
+  `old_test_removed=true` 时，除原有 `gate_green` 检查外，必须先满足
+  `p7_action == "delete"`；`retarget` gate 直接失败，不会进入后续
+  replacement/Frozen 检查。
+- ledger、freeze JSON、`scripts/p7-freeze.sh`、生产代码、README 均未修改。
+  23 个 gate 当前仍是 `old_test_removed=false`，真实树状态不变。
+
+错误文本（`retarget` 标记 removed）：
+
+```text
+G-P5-E2E-06 is marked old_test_removed but its p7_action is "retarget"; only
+p7_action=delete gates may leave the old test tree; retarget gates must keep the
+old #[ignore] test
+```
+
+缺少 action 记录时：
+
+```text
+<gate_id> is marked old_test_removed but has no recorded p7_action in
+docs/evidence/data/legacy-p7-freeze.json
+```
+
+### 8.2 测试
+
+保留原有 6 个 `old_test_removed_*` 正向/负向测试（现在显式传入合成
+`p7_action` map，错误断言不变），并新增
+`retarget_cannot_be_marked_removed`：
+
+- 合成 `p7_action=retarget` gate 标记 removed：断言错误包含
+  `p7_action is "retarget"` 和 `only p7_action=delete gates may leave the old
+  test tree`；
+- 没有 action 记录的 gate：断言 `has no recorded p7_action`；
+- 真实 freeze 证据仍把 `G-P5-E2E-06` 分类为 `retarget`、`G-P5-E2E-01`
+  分类为 `delete`，防止常量与证据漂移。
+
+### 8.3 验证
+
+| 命令 | 结果 |
+| --- | --- |
+| `cargo test -p wxml-lsp --test native_parity` | `76 passed, 26 ignored`（新增 1 个测试） |
+| `cargo fmt --check -- crates/wxml-lsp/tests/native_parity/native_gates.rs` | 通过 |
+| `cargo clippy -p wxml-lsp --test native_parity -- -D warnings` | 通过 |
+| `git diff --check` | 通过 |
+
+`cargo clippy -p wxml-lsp --all-targets -- -D warnings` 当时还会报
+`crates/wxml-lsp/src/backend_tsgo/tests.rs` 的 3 个未提交并行改动告警
+（`needless_raw_string_hashes` ×2、`doc_markdown` ×1）；该文件不属于本切片，
+本切片涉及的 `native_parity` target clippy 无 issue。
+
+### 8.4 明确不声称
+
+- 不声称任何 gate 已删除或 `old_test_removed` 已置 true；本补丁只收紧删除条件。
+- 不声称 freeze JSON 的 `p7_action` 分类一定长期正确；后续若要调整分类，必须
+  同时改 freeze 证据、受控常量和评审记录，否则测试会失败。
+- 不声称 `p7-freeze.sh --check` 或 P7-1/P7-3/P7-4 已完成。
