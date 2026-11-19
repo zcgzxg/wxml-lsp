@@ -3,6 +3,12 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      native_gates:
+        description: "Run the opt-in native gates (requires a pre-provisioned package)"
+        type: boolean
+        default: false
 
 env:
   CARGO_TERM_COLOR: always
@@ -133,3 +139,70 @@ jobs:
             scripts/verify-no-node.sh \
               --installer "$release/bin/wxml-lsp-install" \
               --root "$root"
+
+  # Opt-in P7 native gate job. The pinned 7.1.0-beta engine (24,522,912 bytes)
+  # is not vendored in this repository, so this job requires a pre-provisioned
+  # package on the runner. Configure repository variables:
+  #   TSGO_NATIVE_PACKAGE  absolute path to an installed v2 package containing
+  #                        engine/lib/tsc and typings/ (required)
+  #   TSGO_NATIVE_TYPINGS  optional absolute typings root override
+  #   TSGO_NATIVE_RUNNER   optional runner label (defaults to ubuntu-latest);
+  #                        use a self-hosted Linux x86_64 runner with the
+  #                        package mounted
+  # The package path may also be supplied as the TSGO_NATIVE_PACKAGE secret
+  # (for example when a private provisioning step writes it); the variable
+  # takes precedence. When requested, a missing package fails the job
+  # explicitly; it never skips.
+  native-gates:
+    name: native gates (opt-in, real engine)
+    if: github.event_name == 'workflow_dispatch' && inputs.native_gates
+    runs-on: ${{ vars.TSGO_NATIVE_RUNNER != '' && vars.TSGO_NATIVE_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 60
+    env:
+      TSGO_NATIVE_PACKAGE: ${{ vars.TSGO_NATIVE_PACKAGE }}
+      TSGO_NATIVE_PACKAGE_SECRET: ${{ secrets.TSGO_NATIVE_PACKAGE }}
+      TSGO_NATIVE_TYPINGS: ${{ vars.TSGO_NATIVE_TYPINGS }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: native-gates
+      - name: Require a pre-provisioned native package
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="${TSGO_NATIVE_PACKAGE:-${TSGO_NATIVE_PACKAGE_SECRET:-}}"
+          if [ -z "$package" ]; then
+            echo "::error::native-gates needs repository variable or secret TSGO_NATIVE_PACKAGE (absolute path to an installed v2 package with engine/lib/tsc and typings/); refusing to skip."
+            exit 1
+          fi
+          if [ ! -d "$package" ]; then
+            echo "::error::TSGO_NATIVE_PACKAGE does not exist on this runner: $package"
+            exit 1
+          fi
+          if [ -n "${TSGO_NATIVE_TYPINGS:-}" ] && [ ! -d "$TSGO_NATIVE_TYPINGS" ]; then
+            echo "::error::TSGO_NATIVE_TYPINGS does not exist on this runner: $TSGO_NATIVE_TYPINGS"
+            exit 1
+          fi
+      - name: Run the 26 native gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="${TSGO_NATIVE_PACKAGE:-${TSGO_NATIVE_PACKAGE_SECRET:-}}"
+          if [ -z "$package" ]; then
+            echo "::error::native-gates needs repository variable or secret TSGO_NATIVE_PACKAGE; refusing to skip."
+            exit 1
+          fi
+          args=(--package "$package" --output "$RUNNER_TEMP/native-gates")
+          if [ -n "${TSGO_NATIVE_TYPINGS:-}" ]; then
+            args+=(--typings "$TSGO_NATIVE_TYPINGS")
+          fi
+          scripts/native-gates.sh "${args[@]}"
+      - name: Upload native gate logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-gates
+          path: ${{ runner.temp }}/native-gates
+          if-no-files-found: warn
