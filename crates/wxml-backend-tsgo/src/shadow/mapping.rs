@@ -161,7 +161,12 @@ pub fn byte_to_utf16(text: &str, byte: usize) -> Result<u32, ShadowError> {
     })
 }
 
-/// One mounted expression with absolute derived coordinates.
+/// One mounted derived region with absolute derived coordinates.
+///
+/// A guarded fragment's region starts at its rendered `if (...)`/`else if`
+/// block and continues through the rewritten expression, so a checker
+/// diagnostic on the wrapper copy maps to the original condition bytes.
+/// An unguarded region is the rewritten expression alone.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MountRecord {
     /// Stable mount identifier (`fragment#0`).
@@ -170,7 +175,7 @@ pub struct MountRecord {
     pub fragment_id: String,
     /// Insertion that contains this mount.
     pub insertion_id: String,
-    /// Mounted expression text.
+    /// Mounted derived text.
     pub text: String,
     /// Inclusive UTF-16 start in the derived script.
     pub start_utf16: u32,
@@ -206,7 +211,13 @@ impl MountRecord {
 pub struct MappedSpan {
     /// Mapped WXML byte range, when attributable.
     pub range: Option<SourceRange>,
-    /// The span started inside synthetic text and was clamped to source text.
+    /// Source text was cropped: the span crossed a synthetic gap or was reduced
+    /// to the target identifier inside the span.
+    ///
+    /// A leading synthetic segment is not a crop. A rewrite prefix such as
+    /// `__wxml_root.` has no original bytes by construction, so a span that
+    /// starts inside it and continues into exactly one source segment maps to
+    /// that segment's exact source projection.
     pub trimmed_synthetic_prefix: bool,
     /// The span cannot be attributed to original WXML text.
     pub unattributable: bool,
@@ -217,13 +228,21 @@ pub struct MappedSpan {
 /// Rules (ported from the TypeScript oracle):
 ///
 /// - a span entirely inside synthetic text is unattributable;
-/// - a span that starts in synthetic text is clamped to the following source
-///   segment;
+/// - a span that starts in synthetic text and continues into exactly one
+///   source segment maps to that segment's exact source projection (the
+///   inserted prefix has no original bytes, so nothing attributable is lost);
 /// - a span crossing a synthetic gap is cropped to the target identifier when
 ///   the target is fully inside the span, otherwise to the largest-overlap
-///   source segment;
+///   source segment; both crops drop source text and are reported as
+///   approximate;
 /// - out-of-bounds spans and boundaries that split a surrogate pair are typed
 ///   errors instead of a silent clamp.
+///
+/// The TypeScript oracle keeps `trimmedSyntheticPrefix` as a reporting label
+/// for every trim. This adapter uses it as an approximation signal that
+/// degrades the capability to `Partial`, so a pure leading rewrite prefix must
+/// not set it: the oracle documents that clamp as the intended mapping for
+/// `possibly null` diagnostics on `__wxml_root.maybeUser`.
 #[allow(clippy::too_many_lines)] // one linear mapping algorithm; helpers live in map_within
 pub fn map_span_to_source(
     mount: &MountRecord,
@@ -310,11 +329,12 @@ pub fn map_span_to_source(
             unattributable: true,
         });
     }
-
     for segment in &source_segments {
         let segment_end = segment.start_utf16 + segment.length_utf16;
         if effective_start >= segment.start_utf16 && end <= segment_end {
-            return map_within(mount, segment, effective_start, end, trimmed, mount_end);
+            // Only leading synthetic text was skipped: the mapped range is the
+            // exact source projection of the span.
+            return map_within(mount, segment, effective_start, end, false, mount_end);
         }
     }
 
@@ -719,10 +739,68 @@ impl ShadowMapper for ShadowMap {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shadow::rewrite::{AppliedEdit, EditKind, MountedSegment, ShadowEdit, apply_edits};
+    use crate::shadow::rewrite::{
+        AppliedEdit, EditKind, MountedSegment, RewriteOptions, ShadowEdit, apply_edits,
+        rewrite_expression,
+    };
 
     fn range(start: u32, end: u32) -> SourceRange {
         SourceRange::new(start, end)
+    }
+
+    /// Mounts a real rewritten expression at `start_utf16` with absolute WXML
+    /// byte sources offset by `origin`.
+    fn rewritten_mount(expr: &str, origin: u32, start_utf16: u32) -> MountRecord {
+        let rewritten =
+            rewrite_expression(expr, None, &RewriteOptions::default()).expect("rewrite");
+        let segments: Vec<MountedSegment> = rewritten
+            .segments
+            .iter()
+            .map(|segment| MountedSegment {
+                start_utf16: start_utf16 + segment.start_utf16,
+                length_utf16: segment.length_utf16,
+                source: segment
+                    .source
+                    .map(|source| range(origin + source.start.get(), origin + source.end.get())),
+            })
+            .collect();
+        let target_end = identifier_end(&rewritten.text, rewritten.target_offset_utf16);
+        MountRecord {
+            mount_id: "f#0".to_owned(),
+            fragment_id: "f".to_owned(),
+            insertion_id: "probe".to_owned(),
+            text: rewritten.text,
+            start_utf16,
+            target_start_utf16: start_utf16 + rewritten.target_offset_utf16,
+            target_length_utf16: target_end - rewritten.target_offset_utf16,
+            segments,
+        }
+    }
+
+    fn identifier_end(text: &str, offset_utf16: u32) -> u32 {
+        let byte = utf16_to_byte(text, offset_utf16).expect("target boundary");
+        let rest = &text[byte..];
+        let mut characters = rest.chars();
+        let Some(first) = characters.next() else {
+            return offset_utf16;
+        };
+        if !(first == '_' || first == '$' || first.is_alphabetic()) {
+            return offset_utf16;
+        }
+        let mut length = u32::try_from(first.len_utf16()).expect("small unit length");
+        for character in characters {
+            if character == '_' || character == '$' || character.is_alphanumeric() {
+                length += u32::try_from(character.len_utf16()).expect("small unit length");
+            } else {
+                break;
+            }
+        }
+        offset_utf16 + length
+    }
+
+    fn derived_offset_of(text: &str, needle: &str) -> u32 {
+        let byte = text.find(needle).expect("needle in mounted text");
+        utf16_len(&text[..byte])
     }
 
     fn segment(start: u32, length: u32, source: Option<SourceRange>) -> MountedSegment {
@@ -779,16 +857,121 @@ mod tests {
     }
 
     #[test]
-    fn mapped_span_trims_a_synthetic_prefix_and_keeps_the_source_part() {
+    fn a_leading_rewrite_prefix_is_not_an_approximate_crop() {
+        // E2E-16: the nullable-object error is reported on
+        // `__wxml_root.maybeUser`. The prefix is inserted by the rewrite and
+        // has no original bytes, so the diagnostic belongs exactly to
+        // `maybeUser`; the result must not degrade the status to Partial.
         let mount = mount(
             100,
-            "__wxml_root.maybeUser",
-            vec![segment(100, 12, None), segment(112, 9, Some(range(10, 19)))],
+            "__wxml_root.maybeUser.name",
+            vec![
+                segment(100, 12, None),
+                segment(112, 9, Some(range(10, 19))),
+                segment(121, 5, Some(range(19, 24))),
+            ],
             None,
         );
         let mapped = map_span_to_source(&mount, Utf16Offset::new(100), 21).expect("mapped");
         assert_eq!(mapped.range, Some(range(10, 19)));
-        assert!(mapped.trimmed_synthetic_prefix);
+        assert!(!mapped.trimmed_synthetic_prefix);
+        assert!(!mapped.unattributable);
+    }
+
+    #[test]
+    fn a_rewritten_expression_maps_the_nullable_object_to_its_identifier() {
+        let expr = "maybeUser.name";
+        let origin = 40;
+        let mount = rewritten_mount(expr, origin, 100);
+        assert_eq!(mount.text, "__wxml_root.maybeUser.name");
+        let object_end = derived_offset_of(&mount.text, ".name");
+        let mapped = map_span_to_source(&mount, Utf16Offset::new(100), object_end)
+            .expect("mapped nullable object");
+        assert_eq!(mapped.range, Some(range(origin, origin + 9)));
+        assert!(!mapped.trimmed_synthetic_prefix);
+
+        let whole = map_span_to_source(&mount, Utf16Offset::new(100), utf16_len(&mount.text))
+            .expect("mapped whole member expression");
+        assert_eq!(whole.range, Some(range(origin, origin + 14)));
+        assert!(!whole.trimmed_synthetic_prefix);
+    }
+
+    #[test]
+    fn cross_gap_and_right_side_crops_stay_approximate() {
+        let mount = rewritten_mount("a + b", 0, 0);
+        assert_eq!(mount.text, "__wxml_root.a + __wxml_root.b");
+        let b_start = derived_offset_of(&mount.text, "__wxml_root.b");
+        // A span that covers the first identifier through the second identifier
+        // crosses a synthetic gap. Only source text can be published, so the
+        // source crop is approximate.
+        let crossing =
+            map_span_to_source(&mount, Utf16Offset::new(12), utf16_len(&mount.text) - 12)
+                .expect("mapped crossing span");
+        // The cross-gap rule publishes the target identifier: `b` is fully
+        // inside the span, so the crop is exact about `b` but still
+        // approximate because `a + ` was dropped.
+        assert_eq!(crossing.range, Some(range(4, 5)));
+        assert!(crossing.trimmed_synthetic_prefix);
+        // A span that starts in source text and ends in generated text is also
+        // a crop: it must not silently look exact.
+        let right_crop = map_span_to_source(&mount, Utf16Offset::new(12), b_start - 12 + 2)
+            .expect("mapped right crop");
+        assert_eq!(right_crop.range, Some(range(0, 4)));
+        assert!(right_crop.trimmed_synthetic_prefix);
+        // A span entirely inside the second identifier is exact.
+        let exact = map_span_to_source(&mount, Utf16Offset::new(b_start + 12), 1)
+            .expect("mapped identifier");
+        assert_eq!(exact.range, Some(range(4, 5)));
+        assert!(!exact.trimmed_synthetic_prefix);
+    }
+
+    #[test]
+    fn utf16_offsets_stay_exact_after_cjk_emoji_and_crlf_text() {
+        for expr in ["`中文😀` + title", "\"😀\" + title", "`a\r\nb` + title"] {
+            let origin = 12;
+            let mount = rewritten_mount(expr, origin, 50);
+            let derived = derived_offset_of(&mount.text, "__wxml_root.title");
+            let mapped = map_span_to_source(&mount, Utf16Offset::new(50 + derived), 17)
+                .expect("mapped rewritten identifier");
+            let expected = u32::try_from(expr.find("title").expect("title")).expect("small offset");
+            assert_eq!(
+                mapped.range,
+                Some(range(origin + expected, origin + expected + 5)),
+                "{expr:?}"
+            );
+            assert!(!mapped.trimmed_synthetic_prefix, "{expr:?}");
+        }
+    }
+
+    #[test]
+    fn a_bom_and_crlf_shifted_origin_maps_to_absolute_wxml_bytes() {
+        let wxml = "\u{FEFF}<view>\r\n  <text>{{ title }}</text>\r\n</view>";
+        let origin = u32::try_from(wxml.find("title").expect("title")).expect("small offset");
+        let mount = rewritten_mount("title", origin, 0);
+        let mapped = map_span_to_source(&mount, Utf16Offset::new(0), utf16_len(&mount.text))
+            .expect("mapped identifier");
+        assert_eq!(mapped.range, Some(range(origin, origin + 5)));
+    }
+
+    #[test]
+    fn a_guard_condition_diagnostic_maps_to_the_original_condition_bytes() {
+        // `wx:if="{{ title === 1 }}"` with a `string` title: the native checker
+        // reports the comparison on the whole condition expression. The
+        // standalone condition fragment must map it to exactly `title === 1`.
+        let expr = "title === 1";
+        let origin = 100;
+        let mount = rewritten_mount(expr, origin, 7);
+        assert_eq!(mount.text, "__wxml_root.title === 1");
+        let mapped = map_span_to_source(&mount, Utf16Offset::new(7), utf16_len(&mount.text))
+            .expect("mapped guard condition");
+        assert_eq!(
+            mapped.range,
+            Some(range(
+                origin,
+                origin + u32::try_from(expr.len()).expect("small")
+            ))
+        );
+        assert!(!mapped.trimmed_synthetic_prefix);
     }
 
     #[test]

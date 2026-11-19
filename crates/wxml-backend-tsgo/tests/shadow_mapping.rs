@@ -113,7 +113,10 @@ fn case_mapping_0020_mapped_span_trims_a_synthetic_prefix_and_keeps_the_source_p
     );
     let mapped = map_span_to_source(&record, Utf16Offset::new(100), 21).expect("mapped");
     assert_eq!(mapped.range, Some(SourceRange::new(10, 19)));
-    assert!(mapped.trimmed_synthetic_prefix);
+    // The inserted root prefix has no original bytes, so trimming it is the
+    // exact source projection, not an approximate crop. This is the E2E-16
+    // `maybeUser` path: a `null` object diagnostic must stay `Supported`.
+    assert!(!mapped.trimmed_synthetic_prefix);
 }
 
 #[test]

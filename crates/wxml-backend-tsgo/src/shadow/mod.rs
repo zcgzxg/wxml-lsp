@@ -12,6 +12,9 @@
 //! - expression-root rewriting for template fragments, template locals and
 //!   object shorthand ([`expression`], [`rewrite`]),
 //! - typed `wx:for` locals and `wx:if` guard rendering ([`locals`], [`guards`]),
+//! - guard-wrapper source segments folded into the owning fragment mount, so a
+//!   diagnostic on the generated `if (...)` copy maps to the original
+//!   `wx:if`/`wx:elif` condition bytes ([`guards`], [`layout`]),
 //! - original ⇄ generated script offset mapping and mounted-expression spans
 //!   back to WXML bytes ([`mapping`]).
 //!
@@ -49,10 +52,12 @@
 //!   derived-text level (`@ts-check` injection).
 //! - `TS-GUARDS-0261`: the full nested-loop guard narrowing needs the checker.
 //!   Only rendered structure is asserted.
-//! - Behavior graph resolution (imports, spreads, nested behaviors) and
-//!   behavior-derived `data` overlay locals are **BLOCKED**. The build reports
-//!   `Partial` and a note instead of guessing; it does not claim the behavior
-//!   overlay is checked. The shadow still uses `this.data`.
+//! - Behavior graph resolution (imports, spreads, nested behaviors) is owned by
+//!   [`crate::script::behavior`]. The in-place shadow consumes its merged
+//!   properties only through [`layout::build_in_place_shadow_with_behavior`];
+//!   without an overlay a non-empty behavior list stays `Partial`. Behavior
+//!   `data` is still read from the mini-program typings via `this.data` and is
+//!   not enumerated here.
 //!
 //! # Syntax and resource limits
 //!
@@ -65,11 +70,12 @@
 //!
 //! # Slice test coverage (not an oracle-case count)
 //!
-//! This slice adds 73 module unit tests and 94 integration tests across
+//! This slice adds 75 module unit tests and 98 integration tests across
 //! `tests/shadow_layout.rs` (33), `tests/shadow_locals_guards.rs` (21),
-//! `tests/shadow_mapping.rs` (18) and `tests/shadow_rewrite.rs` (22). The
-//! package run is 247 tests total because it also executes 80 pre-existing
-//! crate tests. These are test-function counts, not TypeScript oracle cases.
+//! `tests/shadow_mapping.rs` (18), `tests/shadow_rewrite.rs` (22) and
+//! `tests/shadow_guard_ranges.rs` (8). The package run is 598 tests total
+//! because it also executes the pre-existing crate tests. These are
+//! test-function counts, not TypeScript oracle cases.
 //! Tests named `case_<file>_<line>_...` assert only the text/mapping/status
 //! layer named in the test; structural guard tests are named without the
 //! `case_` prefix and are listed as BLOCKED for narrowing.

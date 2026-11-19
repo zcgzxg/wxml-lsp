@@ -373,19 +373,20 @@ fn case_rewrite_0309_rewritten_mounts_map_target_spans_and_trim_synthetic_prefix
     );
 
     // Start inside the first synthetic prefix, end in the first source piece:
-    // the mapped span is trimmed to the source part.
+    // the inserted prefix has no original bytes, so the source projection is
+    // exact rather than an approximate crop.
     let trimmed =
         map_span_to_source(sum, Utf16Offset::new(sum.start_utf16 + 5), 9).expect("trimmed prefix");
-    assert!(trimmed.trimmed_synthetic_prefix);
+    assert!(!trimmed.trimmed_synthetic_prefix);
     assert_eq!(
         trimmed.range,
         Some(SourceRange::new(origin + 10, origin + 12))
     );
 
-    // The second synthetic prefix (`user`) is trimmed the same way.
+    // The second synthetic prefix (`user`) is attributed the same way.
     let second =
         map_span_to_source(sum, Utf16Offset::new(sum.start_utf16 + 25), 10).expect("second prefix");
-    assert!(second.trimmed_synthetic_prefix);
+    assert!(!second.trimmed_synthetic_prefix);
     assert_eq!(
         second.range,
         Some(SourceRange::new(origin + 10 + 8, origin + 10 + 11))

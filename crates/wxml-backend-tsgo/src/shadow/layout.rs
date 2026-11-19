@@ -23,17 +23,21 @@
 //! reference (rejected) or a general expression (reported `Partial`, because
 //! field-level roots cannot be enumerated without a checker). `properties` is
 //! read syntactically (`type` + `optionalTypes` + `JSDoc`) for the overlay.
-//! `behaviors` is not resolved in this slice; a non-empty behavior list makes
-//! the build `Partial` instead of pretending the overlay is complete.
+//! [`build_in_place_shadow_with_behavior`] additionally merges the statically
+//! resolved behavior properties from [`crate::script::behavior`], so the
+//! generated `__WxmlProps_0` keeps behavior-declared unions. A dynamic or
+//! unresolved behavior graph stays `Partial`; the shadow never invents a
+//! property.
 
 #![allow(clippy::format_push_string)] // generated probe text is tiny; format! stays readable
 
 use std::collections::BTreeSet;
 
 use crate::input::SourceFile;
+use crate::script::behavior::BehaviorProperty;
 use crate::shadow::ShadowError;
 use crate::shadow::expression::{self, Token, TokenKind};
-use crate::shadow::guards::{GuardChain, render_guards};
+use crate::shadow::guards::{GuardChain, PlannedGuards, render_guards_planned};
 use crate::shadow::locals::{
     DEFAULT_LOCAL_BUDGET, LocalBinding, Syntax, group_local_levels, indent_lines,
     local_declarations, local_helpers, render_locals,
@@ -222,8 +226,11 @@ pub struct DeclaredProperty {
     pub has_optional_types: bool,
     /// `JSDoc` text, whitespace-collapsed.
     pub doc: String,
-    /// Byte range of the property key in the original script.
-    pub source: SourceRange,
+    /// Byte range of the property key in the original owning script.
+    ///
+    /// `None` for a property contributed by a behavior in another file; the
+    /// generated declaration then has no original-script definition target.
+    pub source: Option<SourceRange>,
 }
 
 /// Syntactic `properties` scan.
@@ -245,6 +252,24 @@ impl PropertyScan {
             problems: Vec::new(),
         }
     }
+}
+
+/// Resolved behavior contribution for the declaration-derived `properties`
+/// overlay.
+///
+/// `properties` is the precedence-merged behavior table from
+/// [`crate::script::behavior`]; the component's own `properties` still win when
+/// both declare the same name. A dynamic or partly unresolved behavior graph
+/// sets `complete = false`, so the shadow reports `Partial` instead of
+/// pretending the overlay covers every property.
+#[derive(Debug, Clone, Copy)]
+pub struct BehaviorPropertyOverlay<'a> {
+    /// Merged behavior properties, later behaviors first.
+    pub properties: &'a [BehaviorProperty],
+    /// True when every reachable behavior and its properties were read.
+    pub complete: bool,
+    /// Degradation reason when `complete` is false.
+    pub reason: Option<&'a str>,
 }
 
 /// Registration selected by the layout.
@@ -426,6 +451,31 @@ impl<'a> Script<'a> {
 /// Builds the in-place shadow for one registration and its fragments.
 #[allow(clippy::too_many_lines)] // one linear assembly pass; split only with a contract change
 pub fn build_in_place_shadow(request: &ShadowRequest<'_>) -> Result<BuiltShadow, ShadowError> {
+    build_in_place_shadow_with_behavior(request, None)
+}
+
+/// Builds the in-place shadow with an explicit behavior properties overlay.
+///
+/// `behavior` is the statically resolved behavior contribution. Passing `None`
+/// keeps the historical behavior of [`build_in_place_shadow`]: a non-empty
+/// `behaviors` member is reported as `Partial` because the shadow cannot know
+/// which properties it contributes.
+///
+/// # Errors
+///
+/// Returns the same errors as [`build_in_place_shadow`].
+pub fn build_in_place_shadow_with_behavior(
+    request: &ShadowRequest<'_>,
+    behavior: Option<&BehaviorPropertyOverlay<'_>>,
+) -> Result<BuiltShadow, ShadowError> {
+    build_in_place_shadow_inner(request, behavior)
+}
+
+#[allow(clippy::too_many_lines)] // one linear assembly pass; split only with a contract change
+fn build_in_place_shadow_inner(
+    request: &ShadowRequest<'_>,
+    behavior: Option<&BehaviorPropertyOverlay<'_>>,
+) -> Result<BuiltShadow, ShadowError> {
     let script = Script::new(request.script.text())?;
     let wanted = match request.root {
         RootKind::Page => &[RootKind::Page, RootKind::Component][..],
@@ -504,7 +554,10 @@ pub fn build_in_place_shadow(request: &ShadowRequest<'_>) -> Result<BuiltShadow,
         DataRootKind::Object => {}
     }
 
-    let properties = scan_properties(&script, &registration);
+    let mut properties = scan_properties(&script, &registration);
+    if let Some(overlay) = behavior {
+        merge_behavior_properties(&mut properties, request.script.path(), overlay);
+    }
     if !properties.complete {
         reasons.push(format!(
             "component properties are incomplete: {}",
@@ -515,7 +568,20 @@ pub fn build_in_place_shadow(request: &ShadowRequest<'_>) -> Result<BuiltShadow,
                 .to_owned(),
         );
     }
-    if behaviors_incomplete(&script, &registration) {
+    let behaviors_present = member_last(&registration.members, "behaviors").is_some();
+    if let Some(overlay) = behavior {
+        if behaviors_present && !overlay.complete {
+            reasons.push(format!(
+                "component behaviors are partially resolved: {}",
+                overlay
+                    .reason
+                    .unwrap_or("the static behavior graph is incomplete")
+            ));
+            notes.push(
+                "behavior properties that cannot be resolved statically are not checked".to_owned(),
+            );
+        }
+    } else if behaviors_incomplete(&script, &registration) {
         reasons.push(
             "component behaviors are partially resolved: behavior graph resolution is not implemented in the Rust shadow slice"
                 .to_owned(),
@@ -572,12 +638,14 @@ pub fn build_in_place_shadow(request: &ShadowRequest<'_>) -> Result<BuiltShadow,
             body.push(&rendered);
             body.push("\n");
             for member in members {
-                body.generated.push(GeneratedDraft {
-                    name: member.name.clone(),
-                    start_utf16: start + member.offset,
-                    length_utf16: utf16_len(&member.name),
-                    source: Some(member.source),
-                });
+                if let Some(source) = member.source {
+                    body.generated.push(GeneratedDraft {
+                        name: member.name.clone(),
+                        start_utf16: start + member.offset,
+                        length_utf16: utf16_len(&member.name),
+                        source: Some(source),
+                    });
+                }
             }
         }
         let (rendered, members) = render_props_value(&properties.properties, BODY_INDENT, syntax);
@@ -588,12 +656,14 @@ pub fn build_in_place_shadow(request: &ShadowRequest<'_>) -> Result<BuiltShadow,
             body.mark_props = Some(start + offset);
         }
         for member in members {
-            body.generated.push(GeneratedDraft {
-                name: member.name.clone(),
-                start_utf16: start + member.offset,
-                length_utf16: utf16_len(&member.name),
-                source: Some(member.source),
-            });
+            if let Some(source) = member.source {
+                body.generated.push(GeneratedDraft {
+                    name: member.name.clone(),
+                    start_utf16: start + member.offset,
+                    length_utf16: utf16_len(&member.name),
+                    source: Some(source),
+                });
+            }
         }
     }
 
@@ -696,56 +766,120 @@ pub fn build_in_place_shadow(request: &ShadowRequest<'_>) -> Result<BuiltShadow,
             scope.local_text = locals.text;
             scope.local_close = locals.close;
         }
+        let local_names = effective_local_names(fragment);
         for guard in &fragment.guards {
-            let local_names = if fragment.bindings.is_empty() {
-                fragment.locals.iter().cloned().collect::<BTreeSet<_>>()
-            } else {
-                fragment
-                    .bindings
-                    .iter()
-                    .filter(|binding| expression::is_binding_identifier(&binding.name))
-                    .map(|binding| binding.name.clone())
-                    .collect::<BTreeSet<_>>()
-            };
-            let rendered = render_guards(
+            let planned_guards = render_guards_planned(
                 guard,
                 &scope.guard_indent(scope.opened_guards),
                 &mut |expr| rewrite_condition(expr, &property_names, &local_names),
             );
-            if rendered.unresolved {
+            if planned_guards.rendered.unresolved {
                 unresolved_guards += 1;
                 scope.unresolved = true;
             }
-            if !rendered.open.is_empty() {
+            if !planned_guards.rendered.open.is_empty() {
                 scope.opened_guards += 1;
             }
-            scope.guards.push(rendered);
+            scope.guards.push(planned_guards);
         }
+
+        // A guard wrapper is generated text. Fold the rendered guard block into
+        // this fragment's mount when every rendered condition has a provable
+        // original range; a checker diagnostic on the `if (...)` copy then maps
+        // to the same WXML bytes as the standalone condition fragment instead
+        // of being dropped as an unmapped generated range.
+        let guard_text = scope.guard_text();
+        let guards_start = body.length_utf16 + scope.open_prefix_len();
+        let mut guard_offsets = Vec::with_capacity(scope.guards.len());
+        let mut guard_offset = 0_u32;
+        for guard in &scope.guards {
+            guard_offsets.push(guard_offset);
+            guard_offset += utf16_len(&guard.rendered.open);
+        }
+        let mut guard_segments: Vec<MountedSegment> = Vec::new();
+        let mut fold = !guard_text.is_empty();
+        let mut rendered_conditions = 0_usize;
+        for (chain_index, guard) in scope.guards.iter().enumerate() {
+            for condition in &guard.conditions {
+                rendered_conditions += 1;
+                let Some(expr) = fragment
+                    .guards
+                    .get(chain_index)
+                    .and_then(|chain| chain.conditions.get(condition.condition_index))
+                    .map(|condition| condition.expr.as_str())
+                else {
+                    fold = false;
+                    continue;
+                };
+                let Some(source) = guard_condition_source(
+                    request.fragments,
+                    fragment,
+                    chain_index,
+                    expr,
+                    &property_names,
+                    &condition.text,
+                ) else {
+                    fold = false;
+                    continue;
+                };
+                let origin = source.start.get();
+                let base = guard_offsets[chain_index] + condition.open_start_utf16;
+                for segment in &condition.segments {
+                    guard_segments.push(MountedSegment {
+                        start_utf16: base + segment.start_utf16,
+                        length_utf16: segment.length_utf16,
+                        source: segment.source.map(|source| {
+                            SourceRange::new(
+                                origin.saturating_add(source.start.get()),
+                                origin.saturating_add(source.end.get()),
+                            )
+                        }),
+                    });
+                }
+            }
+        }
+        if rendered_conditions == 0 || guard_segments.is_empty() {
+            fold = false;
+        }
+
         body.push(&scope.open());
         body.push(scope.mount_indent());
-        let relative_start = body.length_utf16;
+        let expression_start = body.length_utf16;
         body.push(&planned.rewritten.text);
+        let mount_start = if fold { guards_start } else { expression_start };
+        let prefix_len = expression_start.saturating_sub(mount_start);
         let origin = fragment.wxml_range.start.get();
-        let segments = planned
-            .rewritten
-            .segments
-            .iter()
-            .map(|segment| MountedSegment {
-                start_utf16: segment.start_utf16,
-                length_utf16: segment.length_utf16,
-                source: segment.source.map(|source| {
-                    SourceRange::new(
-                        origin.saturating_add(source.start.get()),
-                        origin.saturating_add(source.end.get()),
-                    )
+        let mut segments: Vec<MountedSegment> = if fold { guard_segments } else { Vec::new() };
+        segments.extend(
+            planned
+                .rewritten
+                .segments
+                .iter()
+                .map(|segment| MountedSegment {
+                    start_utf16: prefix_len + segment.start_utf16,
+                    length_utf16: segment.length_utf16,
+                    source: segment.source.map(|source| {
+                        SourceRange::new(
+                            origin.saturating_add(source.start.get()),
+                            origin.saturating_add(source.end.get()),
+                        )
+                    }),
                 }),
-            })
-            .collect();
+        );
+        let mount_text = if fold {
+            format!(
+                "{guard_text}{}{}",
+                scope.mount_indent(),
+                planned.rewritten.text
+            )
+        } else {
+            planned.rewritten.text.clone()
+        };
         body.fragments.push(PendingFragment {
             fragment_id: fragment.id.clone(),
-            relative_start_utf16: relative_start,
-            text: planned.rewritten.text.clone(),
-            target_offset_utf16: planned.rewritten.target_offset_utf16,
+            relative_start_utf16: mount_start,
+            text: mount_text,
+            target_offset_utf16: prefix_len + planned.rewritten.target_offset_utf16,
             segments,
         });
         body.push(";\n");
@@ -978,12 +1112,9 @@ struct PlannedFragment {
     rewritten: RewrittenExpression,
 }
 
-fn plan_fragment(
-    fragment: &FragmentSpec,
-    property_names: &BTreeSet<String>,
-    syntax: Syntax,
-) -> Result<PlannedFragment, ShadowError> {
-    let local_names: BTreeSet<String> = if fragment.bindings.is_empty() {
+/// Effective local names of one fragment, in the same order as [`RewriteOptions`].
+fn effective_local_names(fragment: &FragmentSpec) -> BTreeSet<String> {
+    if fragment.bindings.is_empty() {
         fragment
             .locals
             .iter()
@@ -997,13 +1128,20 @@ fn plan_fragment(
             .filter(|binding| expression::is_binding_identifier(&binding.name))
             .map(|binding| binding.name.clone())
             .collect()
-    };
+    }
+}
+
+fn plan_fragment(
+    fragment: &FragmentSpec,
+    property_names: &BTreeSet<String>,
+    syntax: Syntax,
+) -> Result<PlannedFragment, ShadowError> {
     let options = RewriteOptions {
         root_prefix: ROOT_PREFIX.to_owned(),
         props_prefix: PROPS_PREFIX.to_owned(),
         property_overlay: property_names.clone(),
         data_overlay: BTreeSet::new(),
-        locals: local_names,
+        locals: effective_local_names(fragment),
     };
     let rewritten = rewrite_expression(&fragment.expr, fragment.target.as_deref(), &options)?;
     let _ = syntax;
@@ -1031,7 +1169,7 @@ fn rewrite_condition(
     expr: &str,
     property_names: &BTreeSet<String>,
     locals: &BTreeSet<String>,
-) -> Option<String> {
+) -> Option<RewrittenExpression> {
     let options = RewriteOptions {
         root_prefix: ROOT_PREFIX.to_owned(),
         props_prefix: PROPS_PREFIX.to_owned(),
@@ -1039,16 +1177,64 @@ fn rewrite_condition(
         data_overlay: BTreeSet::new(),
         locals: locals.clone(),
     };
-    rewrite_expression(expr, None, &options)
-        .ok()
-        .map(|rewritten| rewritten.text)
+    rewrite_expression(expr, None, &options).ok()
+}
+
+/// Returns the original WXML range of one rendered guard condition.
+///
+/// The template analyzer emits every `wx:if`/`wx:elif` mustache as its own
+/// fragment, but `FragmentSpec::guards` only carries the condition text (the
+/// `wxml_types::GuardCondition::range` is not handed to the shadow). A wrapper
+/// mount may therefore only use a range that is provably the same expression:
+///
+/// - exactly one other fragment has the same expression text and byte length;
+/// - its enclosing guard chains equal this chain's outer chains;
+/// - rewriting it with its own scope produces exactly the rendered text.
+///
+/// Any ambiguity returns `None`; the wrapper copy is then left unmapped instead
+/// of being attributed to a guessed range.
+fn guard_condition_source(
+    fragments: &[FragmentSpec],
+    owner: &FragmentSpec,
+    chain_index: usize,
+    expr: &str,
+    property_names: &BTreeSet<String>,
+    expected_text: &str,
+) -> Option<SourceRange> {
+    let outer = owner.guards.get(..chain_index)?;
+    let expected_bytes = u32::try_from(expr.len()).ok()?;
+    let mut found: Option<SourceRange> = None;
+    for candidate in fragments {
+        if candidate.id == owner.id || candidate.expr != expr {
+            continue;
+        }
+        if candidate.guards.as_slice() != outer {
+            continue;
+        }
+        if candidate.wxml_range.len() != expected_bytes {
+            continue;
+        }
+        let rewritten = rewrite_condition(
+            &candidate.expr,
+            property_names,
+            &effective_local_names(candidate),
+        )?;
+        if rewritten.text != expected_text {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(candidate.wxml_range);
+    }
+    found
 }
 
 struct ScopeBuilder {
     open_line: String,
     local_text: String,
     local_close: String,
-    guards: Vec<crate::shadow::guards::RenderedGuards>,
+    guards: Vec<PlannedGuards>,
     guard_base: String,
     opened_guards: usize,
     mount_indent: String,
@@ -1078,10 +1264,18 @@ impl ScopeBuilder {
         &self.mount_indent
     }
 
-    fn open(&self) -> String {
-        let mut text = format!("{}\n{}", self.open_line, self.local_text);
+    fn open_prefix(&self) -> String {
+        format!("{}\n{}", self.open_line, self.local_text)
+    }
+
+    fn open_prefix_len(&self) -> u32 {
+        utf16_len(&self.open_line) + 1 + utf16_len(&self.local_text)
+    }
+
+    fn guard_text(&self) -> String {
+        let mut text = String::new();
         for guard in &self.guards {
-            text.push_str(&guard.open);
+            text.push_str(&guard.rendered.open);
         }
         if self.unresolved {
             text.push_str(&format!("{}// @ts-ignore\n", self.mount_indent));
@@ -1089,10 +1283,14 @@ impl ScopeBuilder {
         text
     }
 
+    fn open(&self) -> String {
+        format!("{}{}", self.open_prefix(), self.guard_text())
+    }
+
     fn close(&self) -> String {
         let mut text = String::new();
         for guard in self.guards.iter().rev() {
-            text.push_str(&guard.close);
+            text.push_str(&guard.rendered.close);
         }
         text.push_str(&self.local_close);
         text.push_str(&format!("{BODY_INDENT}}}\n"));
@@ -1149,7 +1347,7 @@ impl BodyBuilder {
 struct RenderedMemberInfo {
     name: String,
     offset: u32,
-    source: SourceRange,
+    source: Option<SourceRange>,
 }
 
 fn render_props_type(
@@ -1706,6 +1904,34 @@ fn is_same_file_type(script: &Script<'_>, name: &str) -> bool {
     false
 }
 
+/// Merges behavior-contributed properties into the own `properties` scan.
+///
+/// The component's own declaration wins over every behavior. Behavior
+/// properties from another file keep `source = None` because a generated
+/// declaration has no owning-file definition target.
+fn merge_behavior_properties(
+    properties: &mut PropertyScan,
+    script_path: &str,
+    overlay: &BehaviorPropertyOverlay<'_>,
+) {
+    for property in overlay.properties {
+        if properties
+            .properties
+            .iter()
+            .any(|existing| existing.name == property.name)
+        {
+            continue;
+        }
+        properties.properties.push(DeclaredProperty {
+            name: property.name.clone(),
+            type_text: property.type_text.clone(),
+            has_optional_types: property.has_optional_types,
+            doc: property.documentation.clone(),
+            source: (property.path == script_path).then_some(property.range.utf8),
+        });
+    }
+}
+
 fn scan_properties(script: &Script<'_>, registration: &Registration) -> PropertyScan {
     let Some(member) = member_last(&registration.members, "properties") else {
         return PropertyScan::empty();
@@ -1763,7 +1989,7 @@ fn scan_properties(script: &Script<'_>, registration: &Registration) -> Property
             type_text,
             has_optional_types,
             doc: doc_before(script.text, entry.key_start),
-            source: entry.key_range(),
+            source: Some(entry.key_range()),
         });
     }
     PropertyScan {

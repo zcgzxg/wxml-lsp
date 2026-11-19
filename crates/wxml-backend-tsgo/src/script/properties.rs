@@ -74,6 +74,8 @@ pub struct PropertyFact {
     pub name: String,
     /// Union text from `type` + `optionalTypes`.
     pub type_text: String,
+    /// True when every `type`/`optionalTypes` entry was readable.
+    pub type_complete: bool,
     /// True when `optionalTypes` is present.
     pub has_optional_types: bool,
     /// `JSDoc` text.
@@ -349,6 +351,7 @@ fn build_properties(
         let property = PropertyFact {
             name: name.clone(),
             type_text,
+            type_complete: union_complete,
             has_optional_types: member_last(&options, "optionalTypes").is_some(),
             documentation: doc_before(script.text, entry.key_start),
             default_text,
@@ -397,6 +400,7 @@ fn property_from_behavior(property: &BehaviorProperty, own_override: bool) -> Pr
     PropertyFact {
         name: property.name.clone(),
         type_text: property.type_text.clone(),
+        type_complete: property.type_complete,
         has_optional_types: property.has_optional_types,
         documentation: property.documentation.clone(),
         default_text: property.default_text.clone(),

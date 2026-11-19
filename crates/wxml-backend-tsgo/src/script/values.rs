@@ -634,17 +634,38 @@ pub(crate) fn token_bounds(script: &Script<'_>, resolved: &ExprRange) -> (usize,
     (start, end)
 }
 
+/// One `type`/`optionalTypes` constructor value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Constructor {
+    /// A recognized constructor mapped to its TypeScript type text.
+    Known(&'static str),
+    /// A value with no union contribution, such as `undefined`.
+    Ignored,
+    /// A value this syntactic slice cannot prove.
+    Unreadable,
+}
+
 /// Reads `type` plus `optionalTypes` into a conservative union text.
+///
+/// The text order matches the Node overlay: `type` first, then every
+/// `optionalTypes` entry in array order, with duplicate texts removed.
+/// `null` maps to `any`; `undefined` is ignored exactly like the Node
+/// `constructorText` lookup. An unreadable entry is skipped and reported via
+/// the returned completeness flag instead of being guessed.
 pub(crate) fn union_text(
     script: &Script<'_>,
     options: &[super::scanner::Member],
 ) -> Option<(String, bool)> {
-    let mut parts: Vec<String> = Vec::new();
+    let mut parts: Vec<&'static str> = Vec::new();
     let mut complete = true;
-    if let Some(main) = constructor_text(script, options, "type") {
-        parts.push(main);
-    } else if super::scanner::member_last(options, "type").is_some() {
-        complete = false;
+    match constructor_member(script, options, "type") {
+        Some(Constructor::Known(text)) => parts.push(text),
+        Some(Constructor::Ignored) => {}
+        Some(Constructor::Unreadable) | None => {
+            if super::scanner::member_last(options, "type").is_some() {
+                complete = false;
+            }
+        }
     }
     if let Some(optional) = super::scanner::member_last(options, "optionalTypes") {
         if optional.kind == MemberKind::Property
@@ -654,12 +675,14 @@ pub(crate) fn union_text(
             if let Ok(close) = script.close_of(optional.value_start) {
                 if close + 1 == optional.value_end {
                     for (start, end) in array_elements(script, optional.value_start, close) {
-                        if let Some(text) = constructor_token(script, start, end) {
-                            if !parts.contains(&text) {
-                                parts.push(text);
+                        match constructor_token(script, start, end) {
+                            Constructor::Known(text) => {
+                                if !parts.contains(&text) {
+                                    parts.push(text);
+                                }
                             }
-                        } else {
-                            complete = false;
+                            Constructor::Ignored => {}
+                            Constructor::Unreadable => complete = false,
                         }
                     }
                 } else {
@@ -679,35 +702,42 @@ pub(crate) fn union_text(
     }
 }
 
-fn constructor_text(
+fn constructor_member(
     script: &Script<'_>,
     options: &[super::scanner::Member],
     name: &str,
-) -> Option<String> {
+) -> Option<Constructor> {
     let member = super::scanner::member_last(options, name)?;
-    if member.kind != MemberKind::Property || member.value_start + 1 != member.value_end {
-        return None;
+    if member.kind != MemberKind::Property {
+        return Some(Constructor::Unreadable);
     }
-    constructor_token(script, member.value_start, member.value_end)
+    Some(constructor_token(
+        script,
+        member.value_start,
+        member.value_end,
+    ))
 }
 
-fn constructor_token(script: &Script<'_>, start: usize, end: usize) -> Option<String> {
+fn constructor_token(script: &Script<'_>, start: usize, end: usize) -> Constructor {
     if start + 1 != end {
-        return None;
+        return Constructor::Unreadable;
     }
-    let token = script.tokens.get(start)?;
+    let Some(token) = script.tokens.get(start) else {
+        return Constructor::Unreadable;
+    };
     match token.kind {
         TokenKind::Identifier => match token.text(script.text) {
-            "String" => Some("string".to_owned()),
-            "Number" => Some("number".to_owned()),
-            "Boolean" => Some("boolean".to_owned()),
-            "Array" => Some("any[]".to_owned()),
-            "Object" => Some("Record<string, any>".to_owned()),
-            "Function" => Some("(...args: any[]) => any".to_owned()),
-            "null" => Some("any".to_owned()),
-            _ => None,
+            "String" => Constructor::Known("string"),
+            "Number" => Constructor::Known("number"),
+            "Boolean" => Constructor::Known("boolean"),
+            "Array" => Constructor::Known("any[]"),
+            "Object" => Constructor::Known("Record<string, any>"),
+            "Function" => Constructor::Known("(...args: any[]) => any"),
+            "null" => Constructor::Known("any"),
+            "undefined" => Constructor::Ignored,
+            _ => Constructor::Unreadable,
         },
-        _ => None,
+        _ => Constructor::Unreadable,
     }
 }
 

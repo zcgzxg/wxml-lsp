@@ -38,7 +38,7 @@ const BLOCKED_CASES: &[(&str, &str)] = &[
     ),
     (
         "FEATURE-BEHAVIOR-GRAPH",
-        "behavior data/properties overlay resolution is BLOCKED",
+        "behavior data overlay locals are BLOCKED; behavior properties are merged only through the explicit overlay API",
     ),
 ];
 
