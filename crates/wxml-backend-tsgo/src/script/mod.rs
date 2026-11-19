@@ -13,7 +13,9 @@
 //! - script-side event handler registration and resolution for all
 //!   `bind*`/`catch*`/`capture-*` forms ([`events`]);
 //! - stable symbols with UTF-8/UTF-16 ranges and conservative rename safety
-//!   ([`symbols`]).
+//!   ([`symbols`]);
+//! - reusable symbol-channel facts for data paths, references, `setData`
+//!   occurrences and missing-handler insertions ([`symbol_facts`]).
 //!
 //! # Evidence boundary
 //!
@@ -40,11 +42,16 @@
 //! code units required by LSP/native APIs. Text is never normalized.
 
 pub mod behavior;
+pub mod data_path;
 pub mod events;
+pub mod insertion;
+pub mod occurrences;
 pub mod properties;
+pub mod references;
 pub mod registration;
 pub mod scanner;
 pub mod snapshot;
+pub mod symbol_facts;
 pub mod symbols;
 pub mod values;
 

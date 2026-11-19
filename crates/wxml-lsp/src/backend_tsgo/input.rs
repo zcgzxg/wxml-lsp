@@ -193,6 +193,13 @@ pub(crate) struct RequestIdentity {
     pub(crate) source_revision: SourceRevision,
     /// Template snapshot id.
     pub(crate) source_snapshot: SnapshotId,
+    /// Content-aware fingerprint of every file sent to the native engine.
+    ///
+    /// The fingerprint covers path, document revision and text, including
+    /// non-owner overlay files and the derived owner shadow. It makes a
+    /// non-owner overlay change visible even when the request context's
+    /// project/view revisions and the prepared `view_id` are unchanged.
+    pub(crate) files_hash: u64,
     /// Owning script path.
     pub(crate) script_path: String,
     /// Host revision of the owning script.
@@ -378,7 +385,8 @@ pub(crate) struct ScriptIdentity {
     pub(crate) script_path: String,
     /// Effective script byte length.
     pub(crate) script_bytes: usize,
-    /// Stable hash of the project file paths and revisions sent to the engine.
+    /// Content-aware hash of the project file paths, revisions and text sent
+    /// to the engine.
     pub(crate) files_hash: u64,
     /// Normalized project root.
     pub(crate) project_root: String,
@@ -859,6 +867,7 @@ fn build_request_plan_with_completion(
         source: context.file().clone(),
         source_revision: snapshot.revision(),
         source_snapshot: snapshot.snapshot(),
+        files_hash: input_files_hash(&files),
         script_path: script_path.clone(),
         script_revision: script.source_revision,
         script_bytes: derived.len(),
@@ -1057,27 +1066,40 @@ fn environment_degradation(
     })
 }
 
-/// Hashes the sorted `(path, revision)` pairs of one input file set.
+/// Hashes the sorted path, revision and text of one input file set.
+///
+/// The hash is deliberately content-aware: a host that reuses a revision or a
+/// stale `view_id` must still force an in-place snapshot update when a
+/// non-owner overlay text changes. Length prefixes keep adjacent fields
+/// unambiguous.
 fn input_files_hash(files: &[SourceFile]) -> u64 {
     const FNV_OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
     let mut entries = files
         .iter()
-        .map(|file| (file.path(), file.revision().get()))
+        .map(|file| (file.path(), file.revision().get(), file.text()))
         .collect::<Vec<_>>();
-    entries.sort_unstable();
+    entries.sort_unstable_by(|left, right| left.0.cmp(right.0));
     let mut hash = FNV_OFFSET_BASIS;
-    for (path, revision) in entries {
-        for byte in path.as_bytes().iter().copied().chain([0xff]) {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
-        for byte in revision.to_le_bytes() {
-            hash ^= u64::from(byte);
-            hash = hash.wrapping_mul(FNV_PRIME);
-        }
+    for (path, revision, text) in entries {
+        hash_bytes(&mut hash, path.as_bytes(), FNV_PRIME);
+        hash_bytes(&mut hash, &revision.to_le_bytes(), FNV_PRIME);
+        hash_bytes(&mut hash, text.as_bytes(), FNV_PRIME);
     }
     hash
+}
+
+/// Mixes one length-prefixed byte slice into an FNV-1a hash.
+fn hash_bytes(hash: &mut u64, bytes: &[u8], prime: u64) {
+    let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
+    for byte in length
+        .to_le_bytes()
+        .into_iter()
+        .chain(bytes.iter().copied())
+    {
+        *hash ^= u64::from(byte);
+        *hash = hash.wrapping_mul(prime);
+    }
 }
 
 /// Fragments that can be mounted, plus counts of the two rejection reasons.

@@ -79,7 +79,7 @@ use crate::native::strings::{
     Utf8Offset, Utf16Offset, Utf16Position, position_to_offset, utf16_len, utf16_to_utf8,
 };
 use crate::native::supervisor::{
-    Deadline, EngineSupervisor, HANDSHAKE_DEADLINE_MS, InboundEvent, ProcessSession,
+    Deadline, EngineSupervisor, HANDSHAKE_DEADLINE_MS, InboundEvent, Lifecycle, ProcessSession,
     SHUTDOWN_DEADLINE_MS, ShutdownReport, SpawnError, SupervisorError, verify_engine_executable,
 };
 use crate::native::vfs::{CallbackError, EnvironmentDegradation, VfsError, VirtualFileSystem};
@@ -492,6 +492,24 @@ impl NativeSession {
         self.vfs
             .as_ref()
             .map_or(&[], VirtualFileSystem::environment_degradations)
+    }
+
+    /// Returns whether the engine process is still ready and not poisoned.
+    ///
+    /// This is a non-blocking health check used only to decide whether one
+    /// restart-and-retry is justified after a fatal query. A `Ready` lifecycle
+    /// alone is not enough: the child may have exited between requests, or the
+    /// transport may have been poisoned by a timeout/framing fault.
+    pub fn is_alive(&mut self) -> bool {
+        if self.supervisor.lifecycle() != Lifecycle::Ready {
+            return false;
+        }
+        if !matches!(self.supervisor.try_wait(), Ok(None)) {
+            return false;
+        }
+        self.supervisor
+            .session()
+            .is_some_and(|session| !session.is_poisoned())
     }
 
     /// Returns the accepted initialize result.

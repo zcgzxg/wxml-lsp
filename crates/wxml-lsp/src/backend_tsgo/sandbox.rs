@@ -427,6 +427,10 @@ impl QuerySession for SandboxedSession {
         self.inner.environment_degradation()
     }
 
+    fn is_alive(&mut self) -> bool {
+        self.inner.is_alive()
+    }
+
     fn shutdown(self: Box<Self>) {
         let Self { inner, sandbox } = *self;
         inner.shutdown();

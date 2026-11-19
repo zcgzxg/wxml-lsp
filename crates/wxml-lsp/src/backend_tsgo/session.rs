@@ -157,6 +157,16 @@ pub(crate) trait QuerySession: Send {
         None
     }
 
+    /// Returns whether the underlying engine process is still usable.
+    ///
+    /// The adapter consults this only after a fatal query result to decide
+    /// whether one restart-and-retry is justified. A real native session
+    /// reports a poisoned, exited or non-ready process as dead. Fakes and
+    /// decorators default to `true` so historical behavior is unchanged.
+    fn is_alive(&mut self) -> bool {
+        true
+    }
+
     /// Releases the snapshot and stops the process.
     fn shutdown(self: Box<Self>);
 }
@@ -280,6 +290,10 @@ impl QuerySession for LiveQuerySession {
 
     fn environment_degradation(&self) -> Option<String> {
         super::environment::degradation_reason(self.session.environment_degradations())
+    }
+
+    fn is_alive(&mut self) -> bool {
+        self.session.is_alive()
     }
 
     fn shutdown(self: Box<Self>) {

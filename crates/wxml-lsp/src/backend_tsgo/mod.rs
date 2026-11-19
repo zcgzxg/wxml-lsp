@@ -32,15 +32,17 @@
 //! native failures, not on a lazy start or snapshot update: the in-flight
 //! request is already stamped and [`RequestIdentity`] guards input changes.
 //!
-//! # Blocked capabilities
+//! # Capabilities and blocked operations
 //!
-//! Rename edits and script symbol facts remain explicitly `Unsupported`. The
-//! native API has no `getRenameInfo` or `getEditsForRename`, and script symbol
-//! extraction is not wired into this adapter. Definition is limited to
-//! expression-member targets that the native referenced-symbol path can decode
-//! and map back to original text; the cursor must be inside a mounted template
-//! expression. The adapter does not fake locations or edits and does not call a
-//! Node fallback.
+//! Rename edits remain explicitly `Unsupported`: the native API has no
+//! `getRenameInfo` or `getEditsForRename`. Script symbol facts
+//! (`DataRoots`/`DataPath`/`EventHandler`) are wired from the Rust script
+//! overlay through [`Backend::symbols`] and do not open a native
+//! session; they are conservative and report `Partial` whenever a dynamic or
+//! cross-file shape is not proven. Definition is limited to expression-member
+//! targets that the native referenced-symbol path can decode and map back to
+//! original text; the cursor must be inside a mounted template expression. The
+//! adapter does not fake locations or edits and does not call a Node fallback.
 //!
 //! Standalone script diagnostics are implemented at the adapter seam
 //! ([`TsgoBackendAdapter::script_diagnostics`]) without a shadow or template
@@ -82,6 +84,7 @@ pub(crate) mod input;
 pub(crate) mod mapping;
 pub(crate) mod sandbox;
 pub(crate) mod session;
+pub(crate) mod symbols;
 
 pub use self::engine::EngineDiscoveryError;
 pub use self::environment::EnvironmentLoadError;
@@ -158,13 +161,9 @@ pub fn run_stdio_native() -> Result<crate::ServerOutcome, NativeStartupError> {
     crate::server::run_stdio_with_host(Arc::new(adapter), host).map_err(NativeStartupError::Server)
 }
 
-/// Reason returned for script symbol facts until they are wired.
-///
-/// Document symbols have their own [`Backend::document_symbols`] method and
-/// are not expressed by the C0 [`SymbolRequest`]/[`SymbolResult`] DTOs; this
-/// reason only covers the data-root/handler/reference facts those requests
-/// need.
-pub(crate) const SYMBOLS_UNSUPPORTED: &str = "native data-root, handler and reference symbol facts are not wired to the C0 SymbolRequest/SymbolResult DTOs";
+/// One reusable session operation for the restart retry path.
+type SessionOperation<'a, R> =
+    dyn FnMut(&mut dyn QuerySession, Option<String>) -> Result<R, BackendError> + 'a;
 
 /// Opt-in adapter between the LSP project host and the native session.
 ///
@@ -320,7 +319,7 @@ impl TsgoBackendAdapter {
     fn with_session<R>(
         &self,
         plan: &dyn OpenPlan,
-        operation: impl FnOnce(&mut dyn QuerySession) -> Result<R, BackendError>,
+        mut operation: impl FnMut(&mut dyn QuerySession) -> Result<R, BackendError>,
     ) -> Result<R, BackendError> {
         self.with_session_mode(plan, false, |session, _degradation| operation(session))
     }
@@ -332,19 +331,123 @@ impl TsgoBackendAdapter {
     fn with_session_environment<R>(
         &self,
         plan: &dyn OpenPlan,
-        operation: impl FnOnce(&mut dyn QuerySession, Option<String>) -> Result<R, BackendError>,
+        operation: impl FnMut(&mut dyn QuerySession, Option<String>) -> Result<R, BackendError>,
     ) -> Result<R, BackendError> {
         self.with_session_mode(plan, true, operation)
     }
 
+    /// Runs one session operation with a single dead-session restart retry.
+    ///
+    /// A fatal result whose engine process is already dead is retried once on
+    /// a freshly started session. The retry deliberately does not advance the
+    /// adapter epoch when it succeeds: the request's own stamp is still
+    /// current, and the old process cannot publish a competing result because
+    /// the adapter lock is held for the whole operation. An external
+    /// invalidation during the query is never retried and keeps the historical
+    /// `Cancelled` result. Non-fatal errors, `Ok(None)` and `Unsupported`
+    /// results are returned without a retry.
     fn with_session_mode<R>(
         &self,
         plan: &dyn OpenPlan,
         include_environment: bool,
-        operation: impl FnOnce(&mut dyn QuerySession, Option<String>) -> Result<R, BackendError>,
+        mut operation: impl FnMut(&mut dyn QuerySession, Option<String>) -> Result<R, BackendError>,
     ) -> Result<R, BackendError> {
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         self.ensure_open(&mut state, plan)?;
+        let first =
+            Self::run_session_operation(&mut state, plan, include_environment, &mut operation);
+
+        let current = self.epoch.load(Ordering::SeqCst);
+        if state.generation != current {
+            let dead = Self::take_session(&mut state);
+            state.generation = current;
+            drop(state);
+            if let Some(session) = dead {
+                session.shutdown();
+            }
+            return Err(BackendError::Cancelled);
+        }
+
+        let first_is_fatal = first.as_ref().is_err_and(fatal_error);
+        let dead_session = first_is_fatal
+            && state
+                .session
+                .as_mut()
+                .is_some_and(|session| !session.is_alive());
+        if !dead_session {
+            let dead = if first_is_fatal {
+                self.fail_session(&mut state)
+            } else {
+                None
+            };
+            drop(state);
+            if let Some(session) = dead {
+                session.shutdown();
+            }
+            return first;
+        }
+
+        // The engine died during the query. Drop it without advancing the
+        // epoch and make exactly one fresh attempt. If an external
+        // invalidation races with the restart, the request is stale and must
+        // not be retried.
+        let dead = Self::take_session(&mut state);
+        drop(state);
+        if let Some(session) = dead {
+            session.shutdown();
+        }
+
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let current = self.epoch.load(Ordering::SeqCst);
+        if state.generation != current {
+            let dead = Self::take_session(&mut state);
+            state.generation = current;
+            drop(state);
+            if let Some(session) = dead {
+                session.shutdown();
+            }
+            return Err(BackendError::Cancelled);
+        }
+        if let Err(error) = self.ensure_open(&mut state, plan) {
+            let dead = self.fail_session(&mut state);
+            drop(state);
+            if let Some(session) = dead {
+                session.shutdown();
+            }
+            return Err(error);
+        }
+        let retry =
+            Self::run_session_operation(&mut state, plan, include_environment, &mut operation);
+        let current = self.epoch.load(Ordering::SeqCst);
+        if state.generation != current {
+            let dead = Self::take_session(&mut state);
+            state.generation = current;
+            drop(state);
+            if let Some(session) = dead {
+                session.shutdown();
+            }
+            return Err(BackendError::Cancelled);
+        }
+        let retry_is_fatal = retry.as_ref().is_err_and(fatal_error);
+        let dead = if retry_is_fatal {
+            self.fail_session(&mut state)
+        } else {
+            None
+        };
+        drop(state);
+        if let Some(session) = dead {
+            session.shutdown();
+        }
+        retry
+    }
+
+    /// Runs one operation against the currently open session.
+    fn run_session_operation<R>(
+        state: &mut AdapterState,
+        plan: &dyn OpenPlan,
+        include_environment: bool,
+        operation: &mut SessionOperation<'_, R>,
+    ) -> Result<R, BackendError> {
         let mut degradation = plan.degradation();
         if include_environment {
             merge_reason(&mut degradation, plan.environment_degradation());
@@ -353,37 +456,21 @@ impl TsgoBackendAdapter {
         let session = state.session.as_mut().ok_or_else(|| {
             BackendError::Unavailable("native session was not established".to_owned())
         })?;
-        let outcome = operation(session.as_mut(), degradation);
-        let current = self.epoch.load(Ordering::SeqCst);
-        let invalidated = state.generation != current;
-        let fatal = matches!(
-            &outcome,
-            Err(BackendError::Unavailable(_) | BackendError::Protocol(_) | BackendError::Timeout)
-        );
-        let dead = if invalidated {
-            let session = state.session.take();
-            state.open = None;
-            state.environment_reason = None;
-            state.generation = current;
-            session
-        } else if fatal {
-            let next = self.advance_epoch();
-            state.generation = next;
-            let session = state.session.take();
-            state.open = None;
-            state.environment_reason = None;
-            session
-        } else {
-            None
-        };
-        drop(state);
-        if let Some(session) = dead {
-            session.shutdown();
-        }
-        if invalidated {
-            return Err(BackendError::Cancelled);
-        }
-        outcome
+        operation(session.as_mut(), degradation)
+    }
+
+    /// Removes the open session without changing the epoch.
+    fn take_session(state: &mut AdapterState) -> Option<Box<dyn QuerySession>> {
+        state.open = None;
+        state.environment_reason = None;
+        state.session.take()
+    }
+
+    /// Advances the epoch, removes the open session and returns it for shutdown.
+    fn fail_session(&self, state: &mut AdapterState) -> Option<Box<dyn QuerySession>> {
+        let next = self.advance_epoch();
+        state.generation = next;
+        Self::take_session(state)
     }
 
     fn ensure_open(
@@ -795,7 +882,7 @@ impl Backend for TsgoBackendAdapter {
         if !self.epoch_matches(&request.context) {
             return Err(BackendError::Cancelled);
         }
-        Ok(SymbolResult::unsupported(SYMBOLS_UNSUPPORTED))
+        symbols::symbols(self.views.as_ref(), &request)
     }
 
     fn document_symbols(
@@ -981,6 +1068,15 @@ fn unavailable_diagnostics(
 
 fn unavailable_script_diagnostics(reason: &str) -> DiagnosticsResult {
     unavailable_diagnostics(Vec::new(), reason)
+}
+
+/// Returns whether an error is a transport/session failure that can justify
+/// one dead-session restart retry.
+const fn fatal_error(error: &BackendError) -> bool {
+    matches!(
+        error,
+        BackendError::Unavailable(_) | BackendError::Protocol(_) | BackendError::Timeout
+    )
 }
 
 pub(crate) fn map_native_error(error: NativeError) -> BackendError {

@@ -585,7 +585,10 @@ pub(crate) fn selection_integrity(
     }
 }
 
-fn find_options_open(script: &Script<'_>, fact: &RegistrationFact) -> Result<usize, ScriptError> {
+pub(crate) fn find_options_open(
+    script: &Script<'_>,
+    fact: &RegistrationFact,
+) -> Result<usize, ScriptError> {
     let mut candidates = Vec::new();
     for index in 0..script.tokens.len() {
         if !script.is_punct(index, '{') {

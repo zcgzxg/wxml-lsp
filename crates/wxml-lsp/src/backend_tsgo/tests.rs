@@ -13,6 +13,7 @@
     clippy::too_many_lines
 )]
 
+use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
@@ -446,6 +447,8 @@ struct FakeBehavior {
     document_symbols: FakeDocumentSymbolOutcome,
     update_failure: Option<FakeFailure>,
     start_failure: Option<FakeFailure>,
+    /// Reports the fake engine process as dead for the one-shot retry path.
+    dead: bool,
     type_gate: Option<Arc<SlowGate>>,
     definition_gate: Option<Arc<SlowGate>>,
 }
@@ -464,6 +467,7 @@ impl Default for FakeBehavior {
             document_symbols: FakeDocumentSymbolOutcome::CheckedEmpty,
             update_failure: None,
             start_failure: None,
+            dead: false,
             type_gate: None,
             definition_gate: None,
         }
@@ -534,6 +538,42 @@ impl super::session::SessionFactory for FakeFactory {
         }
         Ok(Box::new(FakeSession {
             behavior: self.behavior.clone(),
+            log: Arc::clone(&self.log),
+            input: None,
+        }))
+    }
+}
+
+/// A session factory that returns a different behavior for each start.
+struct SequencedFactory {
+    behaviors: Mutex<VecDeque<FakeBehavior>>,
+    log: Arc<Mutex<FakeLog>>,
+}
+
+impl SequencedFactory {
+    fn new(behaviors: Vec<FakeBehavior>) -> (Self, Arc<Mutex<FakeLog>>) {
+        let log = Arc::new(Mutex::new(FakeLog::default()));
+        (
+            Self {
+                behaviors: Mutex::new(behaviors.into()),
+                log: Arc::clone(&log),
+            },
+            log,
+        )
+    }
+}
+
+impl super::session::SessionFactory for SequencedFactory {
+    fn start(&self) -> Result<Box<dyn QuerySession>, NativeError> {
+        self.log.lock().expect("log").starts += 1;
+        let behavior = self
+            .behaviors
+            .lock()
+            .expect("behaviors")
+            .pop_front()
+            .unwrap_or_default();
+        Ok(Box::new(FakeSession {
+            behavior,
             log: Arc::clone(&self.log),
             input: None,
         }))
@@ -869,6 +909,10 @@ impl QuerySession for FakeSession {
             }
             FakeDocumentSymbolOutcome::Failure(failure) => Err(failure.native()),
         }
+    }
+
+    fn is_alive(&mut self) -> bool {
+        !self.behavior.dead
     }
 
     fn shutdown(self: Box<Self>) {
@@ -2261,24 +2305,106 @@ fn a_non_expression_completion_kind_is_explicitly_unsupported() {
 }
 
 #[test]
-fn symbols_are_explicitly_unsupported() {
+fn symbols_answer_data_roots_without_starting_a_session() {
     let (adapter, log) = adapter_with(
         Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
         FakeBehavior::default(),
     );
-    let context = context(&adapter, WXML);
-    let symbols = adapter
+    let result = adapter
         .symbols(SymbolRequest {
-            context,
+            context: context(&adapter, WXML),
             subject: script_file(),
             query: SymbolQuery::DataRoots,
         })
         .expect("symbols");
-    assert!(!symbols.complete);
+    assert!(result.complete, "{:?}", result.reason);
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert!(result.fields.iter().any(|field| field.name == "user"));
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn symbols_answer_a_nested_data_path_without_starting_a_session() {
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        FakeBehavior::default(),
+    );
+    let result = adapter
+        .symbols(SymbolRequest {
+            context: context(&adapter, WXML),
+            subject: script_file(),
+            query: SymbolQuery::DataPath {
+                path: vec!["user".to_owned(), "name".to_owned()],
+            },
+        })
+        .expect("symbols");
+    assert!(result.complete, "{:?}", result.reason);
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    let declaration = result.declaration.expect("nested declaration");
+    assert_eq!(declaration.expected_text.as_deref(), Some("name"));
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn symbols_create_a_missing_handler_insertion_without_starting_a_session() {
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        FakeBehavior::default(),
+    );
+    let result = adapter
+        .symbols(SymbolRequest {
+            context: context(&adapter, WXML),
+            subject: script_file(),
+            query: SymbolQuery::EventHandler {
+                name: "onSave".to_owned(),
+            },
+        })
+        .expect("symbols");
+    assert!(result.complete, "{:?}", result.reason);
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert!(result.declaration.is_none());
+    let insertion = result.insertion.expect("handler insertion");
+    assert!(insertion.text.contains("onSave()"), "{}", insertion.text);
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn symbols_reject_a_subject_outside_the_prepared_view() {
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        FakeBehavior::default(),
+    );
+    let other = FileId::new(project(), "other.ts").expect("other script");
+    let result = adapter
+        .symbols(SymbolRequest {
+            context: context(&adapter, WXML),
+            subject: other,
+            query: SymbolQuery::DataRoots,
+        })
+        .expect("symbols");
+    assert!(!result.complete);
     assert!(matches!(
-        symbols.status,
+        result.status,
         CapabilityStatus::Unsupported { .. }
     ));
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn symbols_with_an_incomplete_source_are_partial() {
+    let mut view = prepared_view(WXML, SCRIPT, "user.name");
+    view.source_complete = false;
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let result = adapter
+        .symbols(SymbolRequest {
+            context: context(&adapter, WXML),
+            subject: script_file(),
+            query: SymbolQuery::DataRoots,
+        })
+        .expect("symbols");
+    assert!(!result.complete);
+    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    assert!(result.reason.is_some());
     assert_eq!(log.lock().expect("log").starts, 0);
 }
 
@@ -2749,6 +2875,334 @@ fn a_slow_definition_is_cancelled_by_invalidation_and_drops_the_session() {
     assert_eq!(log.lock().expect("log").shutdowns, 1);
     assert_eq!(log.lock().expect("log").definition_calls.len(), 1);
     assert_eq!(log.lock().expect("log").starts, 1);
+}
+
+#[test]
+fn a_non_owner_overlay_content_change_updates_the_same_session() {
+    let initial_files = vec![
+        prepared_file(SCRIPT_PATH, SCRIPT),
+        prepared_file(MODEL_PATH, MODEL),
+    ];
+    let views = Arc::new(MutableViews::new(prepared_view_with_files(
+        WXML,
+        "user.name",
+        initial_files,
+    )));
+    let (adapter, log) = adapter_with(
+        Arc::clone(&views) as Arc<dyn ViewProvider>,
+        FakeBehavior::default(),
+    );
+    let first = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("first hover");
+    assert_eq!(first.contents, "```ts\nstring\n```");
+    assert_eq!(log.lock().expect("log").starts, 1);
+    assert_eq!(log.lock().expect("log").updates, 0);
+
+    let overlay = "// 中文😀\r\nexport interface User {\r\n  name: \"OVERLAY\";\r\n}\r\n";
+    views.replace(prepared_view_with_files(
+        WXML,
+        "user.name",
+        vec![
+            prepared_file(SCRIPT_PATH, SCRIPT),
+            prepared_file(MODEL_PATH, overlay),
+        ],
+    ));
+    let second = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("second hover");
+    assert_eq!(second.contents, "```ts\nstring\n```");
+    {
+        let log = log.lock().expect("log");
+        assert_eq!(log.starts, 1, "a non-owner change must not restart");
+        assert_eq!(log.updates, 1, "a non-owner change must update in place");
+    }
+    assert_eq!(
+        log.lock()
+            .expect("log")
+            .updated_inputs
+            .last()
+            .expect("updated input")
+            .file(MODEL_PATH)
+            .expect("model input")
+            .text(),
+        overlay,
+        "the updated native input must carry the non-owner overlay text"
+    );
+
+    adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("third hover");
+    assert_eq!(
+        log.lock().expect("log").updates,
+        1,
+        "an unchanged non-owner input must reuse the open snapshot"
+    );
+}
+
+#[test]
+fn multiple_non_owner_overlays_update_independently() {
+    const EXTRA_PATH: &str = "extra.ts";
+    const EXTRA_DISK: &str = "export interface Extra { count: number }\n";
+    const EXTRA_OVERLAY: &str = "export interface Extra { count: 7 }\n";
+    let files = |model: &str, extra: &str| {
+        vec![
+            prepared_file(SCRIPT_PATH, SCRIPT),
+            prepared_file(MODEL_PATH, model),
+            prepared_file(EXTRA_PATH, extra),
+        ]
+    };
+    let views = Arc::new(MutableViews::new(prepared_view_with_files(
+        WXML,
+        "user.name",
+        files(MODEL, EXTRA_DISK),
+    )));
+    let (adapter, log) = adapter_with(
+        Arc::clone(&views) as Arc<dyn ViewProvider>,
+        FakeBehavior::default(),
+    );
+    let hover = || {
+        adapter
+            .hover(HoverRequest {
+                context: context(&adapter, WXML),
+                offset: offset_of(WXML, "name"),
+            })
+            .expect("hover")
+    };
+    hover();
+
+    views.replace(prepared_view_with_files(
+        WXML,
+        "user.name",
+        files("export interface User { name: \"A\" }\n", EXTRA_DISK),
+    ));
+    hover();
+    {
+        let log = log.lock().expect("log");
+        assert_eq!(log.starts, 1);
+        assert_eq!(log.updates, 1);
+        let input = log.updated_inputs.last().expect("updated input");
+        assert_eq!(input.file(EXTRA_PATH).expect("extra").text(), EXTRA_DISK);
+    }
+
+    views.replace(prepared_view_with_files(
+        WXML,
+        "user.name",
+        files("export interface User { name: \"A\" }\n", EXTRA_OVERLAY),
+    ));
+    hover();
+    {
+        let log = log.lock().expect("log");
+        assert_eq!(log.starts, 1);
+        assert_eq!(log.updates, 2);
+        let input = log.updated_inputs.last().expect("updated input");
+        assert_eq!(
+            input.file(MODEL_PATH).expect("model").text(),
+            "export interface User { name: \"A\" }\n"
+        );
+        assert_eq!(input.file(EXTRA_PATH).expect("extra").text(), EXTRA_OVERLAY);
+    }
+
+    // Closing the second overlay restores its disk text without touching the
+    // first overlay.
+    views.replace(prepared_view_with_files(
+        WXML,
+        "user.name",
+        files("export interface User { name: \"A\" }\n", EXTRA_DISK),
+    ));
+    hover();
+    {
+        let log = log.lock().expect("log");
+        assert_eq!(log.starts, 1);
+        assert_eq!(log.updates, 3);
+        let input = log.updated_inputs.last().expect("updated input");
+        assert_eq!(
+            input.file(MODEL_PATH).expect("model").text(),
+            "export interface User { name: \"A\" }\n"
+        );
+        assert_eq!(input.file(EXTRA_PATH).expect("extra").text(), EXTRA_DISK);
+    }
+}
+
+#[test]
+fn a_cjk_crlf_non_owner_overlay_change_updates_and_maps() {
+    const WXML_CJK: &str = "中文😀\r\n<view>{{ user.name }}</view>";
+    let views = Arc::new(MutableViews::new(prepared_view_with_files(
+        WXML_CJK,
+        "user.name",
+        vec![
+            prepared_file(SCRIPT_PATH, SCRIPT),
+            prepared_file(MODEL_PATH, MODEL),
+        ],
+    )));
+    let (adapter, log) = adapter_with(
+        Arc::clone(&views) as Arc<dyn ViewProvider>,
+        FakeBehavior::default(),
+    );
+    let result = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML_CJK),
+            offset: offset_of(WXML_CJK, "name"),
+        })
+        .expect("cjk hover");
+    let range = result.range.expect("hover range");
+    assert_eq!(range.start(), offset_of(WXML_CJK, "name"));
+    assert_eq!(
+        range.end(),
+        offset_of(WXML_CJK, "name") + u32::try_from("name".len()).expect("length")
+    );
+
+    views.replace(prepared_view_with_files(
+        WXML_CJK,
+        "user.name",
+        vec![
+            prepared_file(SCRIPT_PATH, SCRIPT),
+            prepared_file(
+                MODEL_PATH,
+                "// 😀\r\nexport interface User {\r\n  name: \"OVERLAY\";\r\n}\r\n",
+            ),
+        ],
+    ));
+    adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML_CJK),
+            offset: offset_of(WXML_CJK, "name"),
+        })
+        .expect("cjk overlay hover");
+    let log = log.lock().expect("log");
+    assert_eq!(log.starts, 1);
+    assert_eq!(log.updates, 1);
+}
+
+#[test]
+fn a_dead_session_is_restarted_once_for_the_current_request() {
+    let behaviors = vec![
+        FakeBehavior {
+            hover_outcome: FakeHoverOutcome::Failure(FakeFailure::Exited),
+            dead: true,
+            ..FakeBehavior::default()
+        },
+        FakeBehavior::default(),
+    ];
+    let (factory, log) = SequencedFactory::new(behaviors);
+    let adapter = TsgoBackendAdapter::new(
+        PinnedEngine::pinned(),
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        Arc::new(factory),
+    );
+    let before = adapter.epoch();
+    let result = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("the one-shot retry must answer the current request");
+    assert_eq!(result.contents, "```ts\nstring\n```");
+    assert_eq!(
+        adapter.epoch(),
+        before,
+        "a successful retry must not invalidate the stamp"
+    );
+    assert_eq!(log.lock().expect("log").starts, 2);
+    assert_eq!(log.lock().expect("log").shutdowns, 1);
+}
+
+#[test]
+fn a_dead_session_retry_is_bounded_to_one_attempt() {
+    let behaviors = vec![
+        FakeBehavior {
+            hover_outcome: FakeHoverOutcome::Failure(FakeFailure::Exited),
+            dead: true,
+            ..FakeBehavior::default()
+        },
+        FakeBehavior {
+            hover_outcome: FakeHoverOutcome::Failure(FakeFailure::Exited),
+            dead: true,
+            ..FakeBehavior::default()
+        },
+    ];
+    let (factory, log) = SequencedFactory::new(behaviors);
+    let adapter = TsgoBackendAdapter::new(
+        PinnedEngine::pinned(),
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        Arc::new(factory),
+    );
+    let before = adapter.epoch();
+    let error = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect_err("two dead sessions must fail");
+    assert!(matches!(error, BackendError::Unavailable(_)));
+    assert_eq!(log.lock().expect("log").starts, 2);
+    assert_eq!(log.lock().expect("log").shutdowns, 2);
+    assert!(adapter.epoch().get() > before.get());
+}
+
+#[test]
+fn an_unsupported_result_is_not_retried_as_a_new_query() {
+    let behavior = FakeBehavior {
+        hover_outcome: FakeHoverOutcome::Failure(FakeFailure::Unsupported("hover")),
+        dead: true,
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let result = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("unsupported hover is a checked result");
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Unsupported { .. }
+    ));
+    assert_eq!(log.lock().expect("log").starts, 1);
+    assert_eq!(log.lock().expect("log").shutdowns, 0);
+}
+
+#[test]
+fn an_external_invalidation_is_not_retried() {
+    let gate = Arc::new(SlowGate::default());
+    let behavior = FakeBehavior {
+        hover_outcome: FakeHoverOutcome::Failure(FakeFailure::Exited),
+        dead: true,
+        type_gate: Some(Arc::clone(&gate)),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let adapter = Arc::new(adapter);
+    let first_context = context(adapter.as_ref(), WXML);
+    let worker = Arc::clone(&adapter);
+    let handle = thread::spawn(move || {
+        worker.hover(HoverRequest {
+            context: first_context,
+            offset: offset_of(WXML, "name"),
+        })
+    });
+    gate.wait_until_entered();
+    adapter.invalidate();
+    gate.release();
+    let result = handle.join().expect("hover thread");
+    assert!(matches!(result, Err(BackendError::Cancelled)));
+    assert_eq!(log.lock().expect("log").starts, 1);
+    assert_eq!(log.lock().expect("log").shutdowns, 1);
 }
 
 const SYMBOL_SCRIPT: &str = "// 😀 文档\nclass 用户 { // 😀\n  name: string = \"😀\";\n  greet(): void {}\n}\ntype Shape = { area(): number };\nPage({\n  data: { user: { name: \"Ada\", age: 42 } },\n});\nfunction after(): number {\n  return 1;\n}\n";
@@ -4603,6 +5057,164 @@ fn optional_real_engine_hover_smoke() {
     assert!(result.contents.contains("string"));
 }
 
+/// Returns every descendant PID of `root` using `/proc` (Linux only).
+#[cfg(target_os = "linux")]
+fn descendants(root: u32) -> Vec<u32> {
+    let mut found = Vec::new();
+    let mut seen = Vec::new();
+    let mut queue = vec![root];
+    while let Some(pid) = queue.pop() {
+        if seen.contains(&pid) {
+            continue;
+        }
+        seen.push(pid);
+        let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
+            continue;
+        };
+        for task in tasks.flatten() {
+            let children = std::path::Path::new("/proc")
+                .join(pid.to_string())
+                .join("task")
+                .join(task.file_name())
+                .join("children");
+            let Ok(text) = std::fs::read_to_string(&children) else {
+                continue;
+            };
+            for child in text
+                .split_whitespace()
+                .filter_map(|value| value.parse::<u32>().ok())
+            {
+                found.push(child);
+                queue.push(child);
+            }
+        }
+    }
+    found
+}
+
+/// Kills the engine child whose executable and cwd match the test sandbox.
+#[cfg(target_os = "linux")]
+fn kill_engine_child(executable: &std::path::Path, sandbox: &std::path::Path) -> bool {
+    let executable = std::fs::canonicalize(executable).expect("canonical executable");
+    let sandbox = std::fs::canonicalize(sandbox).expect("canonical sandbox");
+    for pid in descendants(std::process::id()) {
+        let Ok(child_executable) = std::fs::read_link(format!("/proc/{pid}/exe")) else {
+            continue;
+        };
+        if child_executable != executable {
+            continue;
+        }
+        let Ok(child_cwd) = std::fs::read_link(format!("/proc/{pid}/cwd")) else {
+            continue;
+        };
+        if child_cwd != sandbox {
+            continue;
+        }
+        let status = std::process::Command::new("kill")
+            .arg("-9")
+            .arg(pid.to_string())
+            .status();
+        if status.is_ok_and(|status| status.success()) {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn optional_real_engine_kill_restart_answers_first_hover_with_overlay() {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let Ok(bin) = std::env::var("TSGO_BIN") else {
+        let required = matches!(
+            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
+            Ok("1" | "true")
+        );
+        assert!(
+            !required,
+            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
+        );
+        eprintln!(
+            "optional real-engine restart test skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc"
+        );
+        return;
+    };
+    let executable = PathBuf::from(&bin);
+    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let sandbox = std::env::temp_dir().join(format!(
+        "wxml-tsgo-adapter-restart-{}-{count}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&sandbox).expect("sandbox");
+    let _cleanup = Cleanup(sandbox.clone());
+
+    let owner = "import type { User } from \"../../model\";\nPage({ data: { user: null as unknown as User } });\n";
+    let model = "export interface User { name: \"OVERLAY\" }\n";
+    let globals = "declare function Page<T>(options: {\n  data: T;\n  __wxml_check_0(this: { data: T }): void;\n}): void;\n";
+    let files = vec![
+        prepared_file(SCRIPT_PATH, owner),
+        prepared_file(MODEL_PATH, model),
+        prepared_file("globals.d.ts", globals),
+    ];
+    let views = Arc::new(FakeViews::new(prepared_view_with_files(
+        WXML,
+        "user.name",
+        files,
+    )));
+    let adapter = TsgoBackendAdapter::new(
+        PinnedEngine::pinned(),
+        views,
+        Arc::new(super::session::NativeSessionFactory::new(
+            SessionOptions::new(executable.clone(), sandbox.clone()),
+        )),
+    );
+    let first = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("initial real engine hover");
+    assert!(
+        first.contents.contains("OVERLAY"),
+        "the non-owner overlay must be visible before restart: {:?}",
+        first.contents
+    );
+    assert_eq!(
+        first.range.expect("initial range").start(),
+        offset_of(WXML, "name")
+    );
+
+    assert!(
+        kill_engine_child(&executable, &sandbox),
+        "the native engine child under the test sandbox was not found"
+    );
+    thread::sleep(Duration::from_millis(50));
+    let before = adapter.epoch();
+    let restarted = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("the first hover after a killed engine must retry and succeed");
+    assert!(
+        restarted.contents.contains("OVERLAY"),
+        "the restarted engine must replay the non-owner overlay: {:?}",
+        restarted.contents
+    );
+    let range = restarted.range.expect("restart range");
+    assert_eq!(range.start(), offset_of(WXML, "name"));
+    assert_eq!(
+        range.end(),
+        offset_of(WXML, "name") + u32::try_from("name".len()).expect("length")
+    );
+    assert_eq!(
+        adapter.epoch(),
+        before,
+        "a successful one-shot retry must not invalidate the request stamp"
+    );
+}
+
 #[test]
 fn optional_real_engine_script_diagnostics_smoke() {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -5145,6 +5757,16 @@ struct MutableViews {
 }
 
 impl MutableViews {
+    fn new(view: PreparedView) -> Self {
+        Self {
+            view: Mutex::new(view),
+        }
+    }
+
+    fn replace(&self, view: PreparedView) {
+        *self.view.lock().expect("view") = view;
+    }
+
     fn set_script(&self, text: &str, revision: u64) {
         let mut view = self.view.lock().expect("view");
         view.files = Arc::from(vec![prepared_file_at(SCRIPT_PATH, text, revision)]);
