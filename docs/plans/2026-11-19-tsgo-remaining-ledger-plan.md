@@ -613,6 +613,12 @@ Handoff per case:
 | `TS-MATRIX-0092` | "Every scenario runs both candidates" includes the retired symbol-bridge candidate. The integrator retired 36 cases overall (33 matrix + 2 matrix top-level + 1 protocol), so this assertion cannot be exact until re-scoped to in-place shadow only. |
 | No case ID (platform) | Windows drive-letter/UNC project roots: native input rejects them and the contract says they are unverified. No ledger case may claim Windows-root support until the native path contract and assets change. |
 
+2026-11-20 限定：`TS-REWRITE-0197` 已由
+` case_rewrite_0197_a_member_typo_keeps_the_exact_wxml_byte_range`
+（ ` crates/wxml-backend-tsgo/tests/shadow_rewrite.rs` ）用真实 shadow build +
+`map_span_to_source` 覆盖 page-basic 的 `134..138`；本行的剩余限定只适用于
+`TS-MAPPING-0188/0208/0306`。checker 只贡献“诊断存在”这一 arrange 前提，不参与 range。
+
 Not contract-blocked, but currently evidence-blocked (unblock by implementation):
 `TS-COMPILER-0132` (custom `typeRoots` must keep the pinned mini-program declarations;
 D3 is an implementation gate), `TS-COMPONENT-0292/0498/0570/0676`,

@@ -1,8 +1,8 @@
 # Rust + tsgo 测试迁移账本（P1-B + P3-S/P4-B + P5/P5.1 状态回填）
 
-生成时间：2026-11-17T23:08:57+08:00；P3-S/P4-B 证据与 P5 状态回填：2026-11-18；P5.1 适配器/定义/性能回填：2026-11-19；wave-8 断言补齐回填：2026-11-20；wave-9 台账回填：2026-11-20；wave-10 台账回填：2026-11-20；wave-10 near-exact 跟进：2026-11-20；wave-10 exact 回填：2026-11-20
+生成时间：2026-11-17T23:08:57+08:00；P3-S/P4-B 证据与 P5 状态回填：2026-11-18；P5.1 适配器/定义/性能回填：2026-11-19；wave-8 断言补齐回填：2026-11-20；wave-9 台账回填：2026-11-20；wave-10 台账回填：2026-11-20；wave-10 near-exact 跟进：2026-11-20；wave-10 exact 回填：2026-11-20；wave-10b weaker 回填：2026-11-20；wave-10 conditional 回填：2026-11-20
 
-状态：**green 68 / planned 235 / retired-with-decision 36**（P5 将 32 个 exact-parity 用例提升为 `green`；P5.1 将 1 个 adapter exact 用例提升为 `green`；P6 回填再提升 3 个 exact 用例并登记 2 个 weaker 证据；wave-5 回填再提升 8 个 exact 用例并登记 26 个新证据；wave-6 先新增 6 个 weaker + 3 个 blocked 证据，随后的组件绑定跟进把其中 4 个提升为 exact `green`、2 个明确保持 blocked；wave-8 为 7 个只差少量断言的用例补齐断言后提升为 exact `green`；wave-9 再把 3 个 wave-7 weaker 用例补齐为 exact `green`；wave-10 为 12 个 B 类 weaker 候选登记现有测试证据、不提升任何 case，随后把补齐断言的 `TS-REWRITE-0207` 从 near-exact 提升为 exact `green`，再把 9 个 exact-ready 候选提升为 `green`；剩余 2 个 near-exact 保留 `planned` + green recommendation；36 个 Candidate B 不变；未删除任何旧测试）
+状态：**green 70 / planned 233 / retired-with-decision 36**（P5 将 32 个 exact-parity 用例提升为 `green`；P5.1 将 1 个 adapter exact 用例提升为 `green`；P6 回填再提升 3 个 exact 用例并登记 2 个 weaker 证据；wave-5 回填再提升 8 个 exact 用例并登记 26 个新证据；wave-6 先新增 6 个 weaker + 3 个 blocked 证据，随后的组件绑定跟进把其中 4 个提升为 exact `green`、2 个明确保持 blocked；wave-8 为 7 个只差少量断言的用例补齐断言后提升为 exact `green`；wave-9 再把 3 个 wave-7 weaker 用例补齐为 exact `green`；wave-10 为 12 个 B 类 weaker 候选登记现有测试证据、不提升任何 case，随后把补齐断言的 `TS-REWRITE-0207` 从 near-exact 提升为 exact `green`，再把 9 个 exact-ready 候选提升为 `green`；wave-10b 再登记 wave-9 规划 §3.2 剩余的 13 个 B 类 weaker 候选、不提升任何 case；wave-10 conditional 把 `TS-ANALYSIS-0184` 与 `TS-REWRITE-0197` 提升为 exact `green`，并把 `TS-ANALYSIS-0161` 登记为 weaker、保持 `planned`；剩余 2 个 near-exact 保留 `planned` + green recommendation；36 个 Candidate B 不变；未删除任何旧测试）
 
 基线：`b9616c557e54a06b7d756e516e6dd7c4016664cf`（`tsgo/migration`，包含 `4d59ca7`）
 
@@ -19,6 +19,10 @@
 实现 HEAD（wave-9 台账回填）：`16e88b24917a34e225a4ec66b6ea0e0751262dc4`（3 个 case 的测试改动仍在工作树，未提交）
 
 实现 HEAD（wave-10 台账回填 + near-exact/exact 跟进）：`8a56f27edcc9b91264f4b2bd0f3609450b17ab7c`（12 个 weaker 登记 + `TS-REWRITE-0207` + 9 个 exact；Rust 测试改动仍在工作树，未提交）
+
+实现 HEAD（wave-10b weaker 回填）：`43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12`（只登记 13 个 B 类 weaker 证据，未改生产/测试）
+
+实现 HEAD（wave-10 conditional 回填）：`43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12`（2 个 exact + 1 个 weaker；测试改动在并行 session 的工作树，未提交）
 
 机器可读账本：`docs/plans/tsgo-test-ledger.json`
 
@@ -43,6 +47,8 @@ P0 证据：`docs/evidence/2026-11-17-tsgo-migration-baseline.md`
 - Wave-10 台账回填（2026-11-20，验证 HEAD `8a56f27edcc9b91264f4b2bd0f3609450b17ab7c`）：wave-9 规划 §3.2 的 12 个 B 类 weaker 候选全部登记 `migration_evidence`，逐条指向现有 Rust 测试和实际缺口；不提升任何 case。该步结束时 **58 green / 245 planned / 36 retired-with-decision**；`assessed_cases` 160→172、`weaker` 70→82、无证据 planned 143→131，`exact` 58、`near_exact` 3、`structural` 7、`blocked` 22 不变。逐条见 §23 和 `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave10.md`。
 - Wave-10 near-exact 跟进（2026-11-20，验证 HEAD `8a56f27edcc9b91264f4b2bd0f3609450b17ab7c` + 未提交测试）：`TS-REWRITE-0207` 的 `wxmlRange` 长度断言已补齐，typed `ShadowError::Invalid { feature: "fragment.range" }` 与 reason 全文匹配，并有正确长度的正向对照，因此从 near-exact/planned 提升为 exact `green`。该步结束时 **59 green / 244 planned / 36 retired-with-decision**；`exact` 58→59、`near_exact` 3→2、`planned` 245→244；`assessed_cases` 172、`weaker` 82、`structural` 7、`blocked` 22、无证据 planned 131 不变。`TS-COMPONENT-0521/0763` 仍为 near-exact/planned。逐条见 §23.6。
 - Wave-10 exact 回填（2026-11-20，验证 HEAD `8a56f27edcc9b91264f4b2bd0f3609450b17ab7c` + 未提交测试）：wave-9 规划 §3.1 的 9 个 exact-ready 候选补齐现有 Rust 测试证据（`TS-PROBES-0048/0059`、`TS-ANALYSIS-0196/0349`、`TS-PROTOCOL-0126/0280/0319/0600`、`TS-SERVER-0150`），全部提升为 exact `green`。最终 **68 green / 235 planned / 36 retired-with-decision**；`exact` 59→68、`planned` 244→235、`assessed_cases` 172→181、无证据 planned 131→122；`near_exact` 2、`weaker` 82、`structural` 7、`blocked` 22 不变。`TS-ANALYSIS-0196/0349` 的 note 如实记录 typed-error 替代口径。逐条见 §23.7。
+- Wave-10b weaker 回填（2026-11-20，验证 HEAD `43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12`）：wave-9 规划 §3.2 中剩余 13 个 B 类 weaker 候选（`TS-COMPLETION-0066`、`TS-MATRIX-0271`、`TS-OVERLAY-0076`、`TS-PROTOCOL-0053/0098/0306/0438/0505/0525/0549`、`TS-REWRITE-0368`、`TS-SERVER-0216/0267`）登记现有 Rust 测试证据及其实际缺口，不提升任何 case。最终 **68 green / 235 planned / 36 retired-with-decision**；`assessed_cases` 181→194、`weaker` 82→95、无证据 planned 122→109；`exact` 68、`near_exact` 2、`structural` 7、`blocked` 22 不变。逐条见 §23.8 和 `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave10b.md`。
+- Wave-10 conditional 回填（2026-11-20，验证 HEAD `43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12` + 未提交测试）：`TS-ANALYSIS-0184` 与 `TS-REWRITE-0197` 由各自真实 mapping 测试提升为 exact `green`；`TS-ANALYSIS-0161` 只登记输入接线 weaker 证据并保持 `planned`。最终 **70 green / 233 planned / 36 retired-with-decision**；`exact` 68→70、`weaker` 95→96、`assessed_cases` 194→197、无证据 planned 109→106；`near_exact` 2、`structural` 7、`blocked` 22 不变。逐条见 §23.9 和 `docs/evidence/2026-11-20-tsgo-wave10-conditional-plan.md` §10。
 - 本轮 TS 套件实际执行：339 个，通过 338，失败 1，跳过 0。
 - 计划对账：计划 273 静态 / ~338 展开，实际 **274 / 339**（+1）；原因是 `events.test.ts` 实际 24 个声明而非计划表中的 23。
 - 23 个 Rust `#[ignore]` 测试全部映射到必跑原生命令；2 个 `semantic_tools` 静默 return 路径同样映射；均不计为已迁移。
@@ -168,7 +174,7 @@ P0 证据：`docs/evidence/2026-11-17-tsgo-migration-baseline.md`
 | unit | 114 | 纯函数/codec/验证：locals、guards、rewrite、mapping math、protocol validation。 |
 | parity | 100 | scenario matrix、overlay、mapping/run、性能采样。 |
 
-68 条 `status=green`、235 条 `status=planned`、36 条 `status=retired-with-decision`；`oracle_revision` 已冻结为 `F2 frozen 2026-11-17 (dcc1f15)`；独立 `reviewer` 尚未签署。P5/P5.1/P6/wave-5/wave-6/wave-8/wave-9 只提升 exact-parity 用例；wave-7/wave-10 登记 weaker 证据，wave-10 后续再把补齐断言的 `TS-REWRITE-0207` 和 9 个 exact-ready 候选提升为 exact；near-exact/weaker/structural/blocked 的逐条证据和状态见 §14/§15/§16/§17/§19/§21/§22/§23。
+70 条 `status=green`、233 条 `status=planned`、36 条 `status=retired-with-decision`；`oracle_revision` 已冻结为 `F2 frozen 2026-11-17 (dcc1f15)`；独立 `reviewer` 尚未签署。P5/P5.1/P6/wave-5/wave-6/wave-8/wave-9 只提升 exact-parity 用例；wave-7/wave-10/wave-10b 登记 weaker 证据，wave-10 后续再把补齐断言的 `TS-REWRITE-0207` 和 9 个 exact-ready 候选提升为 exact；wave-10 conditional 把 `TS-ANALYSIS-0184`、`TS-REWRITE-0197` 提升为 exact 并登记 `TS-ANALYSIS-0161` weaker；near-exact/weaker/structural/blocked 的逐条证据和状态见 §14/§15/§16/§17/§19/§21/§22/§23。
 
 ## 8. Dirty 必保增量（D1–D7）
 
@@ -1741,3 +1747,88 @@ Validator：`GREEN_CASES` 68、`PLANNED_CASES` 235、`NEAR_EXACT_CASES` 2、
 `STRUCTURAL_CASES` 7、`BLOCKED_CASES` 22 不变。`oracle_manifest::*`、
 live/frozen、`fixture_hash.rs`、manifest JSON、`native_parity.rs`、README
 未改动。
+
+### 23.8 Wave-10b weaker 回填（13）
+
+wave-9 规划 §3.2 的 12 个 B 类候选已由 §23.2 登记；本节处理其剩余 13 个
+（`TS-COMPLETION-0066`、`TS-MATRIX-0271`、`TS-OVERLAY-0076`、
+`TS-PROTOCOL-0053/0098/0306/0438/0505/0525/0549`、`TS-REWRITE-0368`、
+`TS-SERVER-0216/0267`）。所有 case 保持 `status=planned`、
+`target_rust_test_status=proposed`、`parity=weaker`、`green_eligible=false`、
+`status_recommendation=planned`、`status_applied=planned`，只新增
+`migration_evidence`，不提升任何 case。
+
+| Case | Oracle | 现有 Rust 落点（path:line） | 仍缺什么 |
+| --- | --- | --- | --- |
+| `TS-COMPLETION-0066` | `backends/typescript/test/completion.test.ts:66` |  crates/wxml-lsp/tests/lsp.rs:771<br> crates/wxml-lsp/src/backend_tsgo/tests.rs:2411 | native 没有 `RequestError`/`bad-params`/`bad-limit` 码，也没有 256 字节 prefix 上限；`u32` offset 让负数/小数 offset 不可表示而不是被拒绝；unknown kind 降级为 typed Unsupported。 |
+| `TS-MATRIX-0271` | `backends/typescript/test/matrix.test.ts:271` |  crates/wxml-lsp/src/backend_tsgo/hover/tests.rs:113<br> crates/wxml-lsp/src/backend_tsgo/hover/tests.rs:597<br> crates/wxml-lsp/tests/component_intelligence.rs:515 | union 与 JSDoc 都有等价断言，但没有 `documentationSource="copied"` 字段、没有对 oracle 固定文档串的端到端断言，也没有 symbol-bridge layout。 |
+| `TS-OVERLAY-0076` | `backends/typescript/test/overlay.test.ts:76` |  crates/wxml-backend-tsgo/src/native/vfs.rs:1385<br> crates/wxml-lsp/src/backend_tsgo/tests.rs:1251 | 没有“snapshot 缺 models.ts 后 hover 仍为 any/unknown”的 cross-file overlay 测试；unknown 只证明 degraded，不是同一场景；无第二 layout。 |
+| `TS-PROTOCOL-0053` | `backends/typescript/test/protocol.test.ts:53` |  crates/wxml-backend-tsgo/src/shadow/locals.rs:569<br> crates/wxml-backend-tsgo/src/shadow/guards.rs:310<br> crates/wxml-lsp/src/backend_tsgo/component_bindings.rs:2053<br> crates/wxml-backend-tsgo/tests/script_events.rs:83 | 四类结构化输入都被各自 typed API 接受，但没有单一 C1 `validateRequest`，也没有 `protocolVersion=2` 字段可断言。 |
+| `TS-PROTOCOL-0098` | `backends/typescript/test/protocol.test.ts:98` |  crates/wxml-backend-tsgo/src/shadow/locals.rs:558<br> crates/wxml-backend-tsgo/src/shadow/layout.rs:2724 | 非法 role 由 enum 变成不可表示，非法 name 被丢弃为 Partial；reversed range 是 typed `Invalid { feature: "fragment.range" }`，不是 `bad-fragment` RequestError。 |
+| `TS-PROTOCOL-0306` | `backends/typescript/test/protocol.test.ts:306` |  crates/wxml-backend-tsgo/tests/script_registration.rs:394<br> crates/wxml-backend-tsgo/tests/shadow_layout.rs:367<br> crates/wxml-backend-tsgo/tests/shadow_layout.rs:550<br> crates/wxml-backend-tsgo/src/shadow/layout.rs:2467 | registration count/kind、top-level 与 `jsCheckApplied` 在内部有断言；没有 response envelope，也没有 `fnv1a:` digest、`fileCount`/`fragmentCount`。 |
+| `TS-PROTOCOL-0438` | `backends/typescript/test/protocol.test.ts:438` |  crates/wxml-backend-tsgo/tests/shadow_mapping.rs:529<br> crates/wxml-backend-tsgo/tests/shadow_layout.rs:78<br> crates/wxml-backend-tsgo/src/shadow/layout.rs:2427 | 同一 run 的 insertion 有记录，但没有一次断言 `{bom,nocheck,probe}` 三个 id；shadow 是单文件，`insertion.file` 与 `request.scriptFileId` 字段不存在。 |
+| `TS-PROTOCOL-0505` | `backends/typescript/test/protocol.test.ts:505` |  crates/wxml-backend-tsgo/tests/shadow_mapping.rs:305<br> crates/wxml-backend-tsgo/src/shadow/layout.rs:2663 | mount 按 request fragment id 生成 `{id}#0`，但没有把 `f0/f1/f2` 改名后断言 response 的 fragment/mount id 列表。 |
+| `TS-PROTOCOL-0525` | `backends/typescript/test/protocol.test.ts:525` |  crates/wxml-backend-tsgo/tests/shadow_mapping.rs:305<br> crates/wxml-backend-tsgo/src/shadow/layout.rs:2663 | 每个 FragmentSpec 独立 mount，但现有测试是两个不同表达式；没有同一表达式挂到 `f0`/`f1` 的断言，也没有 response envelope。 |
+| `TS-PROTOCOL-0549` | `backends/typescript/test/protocol.test.ts:549` |  crates/wxml-backend-tsgo/src/shadow/layout.rs:2635 | 重复 id 在 build 前返回 typed `Invalid { feature: "fragment.id" }`；没有 `states.hover=unavailable` 聚合，也不是“不抛错、0 fragments”的降级响应。 |
+| `TS-REWRITE-0368` | `backends/typescript/test/rewrite.test.ts:368` |  crates/wxml-backend-tsgo/tests/shadow_rewrite.rs:85<br> crates/wxml-backend-tsgo/tests/shadow_rewrite.rs:364 | 两种表达式都能完整 rewrite，但 native 没有 per-fragment diagnostics 或 `states`；“不伪造诊断”仍被 `BLOCKED_CASES` 记为需要真实 checker。 |
+| `TS-SERVER-0216` | `backends/typescript/test/server.test.ts:216` |  crates/wxml-lsp/tests/lsp.rs:504 | 200 个 pipelined request 全部在同一 stream 应答；native 没有 `ping`/`analyze` 方法，单 worker 串行执行，不等价于 10 个并发 analyze。 |
+| `TS-SERVER-0267` | `backends/typescript/test/server.test.ts:267` |  crates/wxml-delivery/src/install.rs:721<br> crates/wxml-lsp/tests/lsp.rs:233 | native 通过 `current` symlink 解析安装版本并正常应答 stdio 请求；没有 Node `resolveBackendDir(server.ts)` 入口探测，也没有 `ping`。 |
+
+计数：`green` 68、`planned` 235、`retired` 36 不变；`exact` 68、
+`near_exact` 2、`structural` 7、`blocked` 22 不变；`assessed_cases`
+181→194、`weaker` 82→95、无证据 planned 122→109。
+
+分区变化（其余不变）：
+
+| 分区 | 有证据 | planned 有证据 | weaker | 无证据 |
+| --- | ---: | ---: | ---: | ---: |
+| `completion` | 8→9 | 3→4 | 3→4 | 1→0 |
+| `mapping_utf16` | 18→19 | 12→13 | 11→12 | 3→2 |
+| `project_overlay` | 9→10 | 8→9 | 8→9 | 11→10 |
+| `protocol_limits` | 9→18 | 4→13 | 4→13 | 31→22 |
+| `scenario_matrix` | 3→4 | 3→4 | 3→4 | 40→39 |
+
+Validator：`WEAKER_CASES` 82→95；`GREEN_CASES` 68、`PLANNED_CASES` 235、
+`NEAR_EXACT_CASES` 2、`TOTAL_CASES` 339、`RETIRED_CASES` 36、
+`STRUCTURAL_CASES` 7、`BLOCKED_CASES` 22 不变。`oracle_manifest::*`、
+live/frozen、`fixture_hash.rs`、manifest JSON、`native_parity.rs`、README
+未改动。
+
+### 23.9 Wave-10 conditional 回填（2 exact + 1 weaker）
+
+输入：`docs/evidence/2026-11-20-tsgo-wave10-conditional-plan.md` §10 的实施结果。
+并行 session 的测试改动仍在工作树、未提交；本轮只回填台账与文档，不改测试。
+
+| Case | Oracle | Rust 证据（path:line） | 结论 |
+| --- | --- | --- | --- |
+| `TS-ANALYSIS-0184` | `backends/typescript/test/analysis.test.ts:184` |  crates/wxml-lsp/src/backend_tsgo/tests.rs:4460<br> crates/wxml-lsp/src/backend_tsgo/tests.rs:4498 | exact `green`：fake 只 arrange 原始 diagnostic，最终 WXML range 由 Rust mapping 决定；page-basic 三 fragment `35..40`/`85..94`/`129..138`，`nmae` → `134..138` Supported，whole mount span → `129..138` Supported 对照。 |
+| `TS-REWRITE-0197` | `backends/typescript/test/rewrite.test.ts:197` |  crates/wxml-backend-tsgo/tests/shadow_rewrite.rs:465 | exact `green`：真 `build_in_place_shadow` + `map_span_to_source`，tight `nmae` → `134..138`，whole mount `129..138` 对照；checker 仅提供诊断存在性。`BLOCKED_CASES` 已移除 0197，剩余限定仅指 `TS-MAPPING-0188/0208/0306`。 |
+| `TS-ANALYSIS-0161` | `backends/typescript/test/analysis.test.ts:161` |  crates/wxml-lsp/src/backend_tsgo/tests.rs:4410 | weaker、保持 `planned`：断言 session 输入含未保存 JSDoc/`name: 42`、project root 不存在、只提交内存文件；oracle 的 `typeOnly`/`documentation` 仍是 checker 产物。 |
+
+字段：0184/0197 为 `status=green`、`target_rust_test_status=migrated_green`、
+`parity=exact`、`green_eligible=true`、`status_recommendation=green`、
+`status_applied=green`；0161 为 `status=planned`、
+`target_rust_test_status=proposed`、`parity=weaker`、`green_eligible=false`、
+`status_recommendation=planned`、`status_applied=planned`。
+
+计数：`green` 68→70、`planned` 235→233、`exact` 68→70、`weaker` 95→96、
+`assessed_cases` 194→197、无证据 planned 109→106；`near_exact` 2、
+`structural` 7、`blocked` 22、`retired` 36 不变。
+
+分区变化（其余不变）：
+
+| 分区 | 有证据 | green | planned 有证据 | exact | weaker | 无证据 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `hover_docs` | 8→10 | 3→4 | 5→6 | 3→4 | 5→6 | 2→0 |
+| `shadow_rewrite` | 18→19 | 4→5 | 14（不变） | 4→5 | 14（不变） | 1→0 |
+
+Validator：`GREEN_CASES` 68→70、`PLANNED_CASES` 235→233、`WEAKER_CASES` 95→96；
+`NEAR_EXACT_CASES` 2、`TOTAL_CASES` 339、`RETIRED_CASES` 36、
+`STRUCTURAL_CASES` 7、`BLOCKED_CASES` 22 不变。`oracle_manifest::*`、
+live/frozen、`fixture_hash.rs`、manifest JSON、`native_parity.rs`、README
+未改动。
+
+验证：`jq empty`、`cargo test -p wxml-lsp --test native_parity`
+（76 passed / 26 ignored）、`cargo fmt --all -- --check`、
+`git diff --check` 全部通过；0184 的 5 个 `case_analysis_01*` 测试与 0197
+的 `shadow_rewrite` 测试单独执行通过。

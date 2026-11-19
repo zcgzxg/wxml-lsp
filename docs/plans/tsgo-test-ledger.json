@@ -164,18 +164,18 @@
     },
     "migration_evidence": {
       "assessed_at": "2026-11-20",
-      "implementation_head": "8a56f27edcc9b91264f4b2bd0f3609450b17ab7c",
+      "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
       "rust_test_command": "cargo test -p wxml-lsp --lib; cargo test -p wxml-lsp --test native_parity; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored; cargo test -p wxml-delivery --test assets_lock_root",
-      "rust_test_result": "wave-10 ledger backfill final: twelve wave-9 weaker candidates registered, TS-REWRITE-0207 promoted from near-exact, and nine wave-9 exact-ready cases promoted from planned. green 59 -> 68, planned 244 -> 235, exact 59 -> 68, assessed_cases 172 -> 181 and no-evidence 131 -> 122; near_exact 2, weaker 82, structural 7 and blocked 22 are unchanged.",
-      "assessed_cases": 181,
-      "exact": 68,
+      "rust_test_result": "wave-10 conditional backfill: TS-ANALYSIS-0184 and TS-REWRITE-0197 promoted to exact green from their real mapping tests; TS-ANALYSIS-0161 registered as weaker and stays planned. green 68 -> 70, planned 235 -> 233, exact 68 -> 70, weaker 95 -> 96, assessed_cases 194 -> 197 and no-evidence 109 -> 106; near_exact 2, structural 7, blocked 22 and retired 36 are unchanged.",
+      "assessed_cases": 197,
+      "exact": 70,
       "near_exact": 2,
-      "weaker": 82,
+      "weaker": 96,
       "structural": 7,
       "blocked": 22,
-      "green_eligible": 68,
-      "promoted_to_green": 68,
-      "remaining_planned_without_evidence": 122,
+      "green_eligible": 70,
+      "promoted_to_green": 70,
+      "remaining_planned_without_evidence": 106,
       "by_partition": {
         "behaviors": {
           "routed_cases": 22,
@@ -191,13 +191,13 @@
         },
         "completion": {
           "routed_cases": 9,
-          "evidence_cases": 8,
+          "evidence_cases": 9,
           "green_cases": 5,
-          "planned_evidence_cases": 3,
-          "unassessed_cases": 1,
+          "planned_evidence_cases": 4,
+          "unassessed_cases": 0,
           "exact": 5,
           "near_exact": 0,
-          "weaker": 3,
+          "weaker": 4,
           "structural": 0,
           "blocked": 0
         },
@@ -251,13 +251,13 @@
         },
         "hover_docs": {
           "routed_cases": 10,
-          "evidence_cases": 8,
-          "green_cases": 3,
-          "planned_evidence_cases": 5,
-          "unassessed_cases": 2,
-          "exact": 3,
+          "evidence_cases": 10,
+          "green_cases": 4,
+          "planned_evidence_cases": 6,
+          "unassessed_cases": 0,
+          "exact": 4,
           "near_exact": 0,
-          "weaker": 5,
+          "weaker": 6,
           "structural": 0,
           "blocked": 0
         },
@@ -275,13 +275,13 @@
         },
         "mapping_utf16": {
           "routed_cases": 21,
-          "evidence_cases": 18,
+          "evidence_cases": 19,
           "green_cases": 6,
-          "planned_evidence_cases": 12,
-          "unassessed_cases": 3,
+          "planned_evidence_cases": 13,
+          "unassessed_cases": 2,
           "exact": 6,
           "near_exact": 0,
-          "weaker": 11,
+          "weaker": 12,
           "structural": 1,
           "blocked": 0
         },
@@ -311,47 +311,47 @@
         },
         "project_overlay": {
           "routed_cases": 20,
-          "evidence_cases": 9,
+          "evidence_cases": 10,
           "green_cases": 1,
-          "planned_evidence_cases": 8,
-          "unassessed_cases": 11,
+          "planned_evidence_cases": 9,
+          "unassessed_cases": 10,
           "exact": 1,
           "near_exact": 0,
-          "weaker": 8,
+          "weaker": 9,
           "structural": 0,
           "blocked": 0
         },
         "protocol_limits": {
           "routed_cases": 40,
-          "evidence_cases": 9,
+          "evidence_cases": 18,
           "green_cases": 5,
-          "planned_evidence_cases": 4,
-          "unassessed_cases": 31,
+          "planned_evidence_cases": 13,
+          "unassessed_cases": 22,
           "exact": 5,
           "near_exact": 0,
-          "weaker": 4,
+          "weaker": 13,
           "structural": 0,
           "blocked": 0
         },
         "scenario_matrix": {
           "routed_cases": 43,
-          "evidence_cases": 3,
+          "evidence_cases": 4,
           "green_cases": 0,
-          "planned_evidence_cases": 3,
-          "unassessed_cases": 40,
+          "planned_evidence_cases": 4,
+          "unassessed_cases": 39,
           "exact": 0,
           "near_exact": 0,
-          "weaker": 3,
+          "weaker": 4,
           "structural": 0,
           "blocked": 0
         },
         "shadow_rewrite": {
           "routed_cases": 19,
-          "evidence_cases": 18,
-          "green_cases": 4,
+          "evidence_cases": 19,
+          "green_cases": 5,
           "planned_evidence_cases": 14,
-          "unassessed_cases": 1,
-          "exact": 4,
+          "unassessed_cases": 0,
+          "exact": 5,
           "near_exact": 0,
           "weaker": 14,
           "structural": 0,
@@ -374,15 +374,15 @@
       "rust_unit_test_result": "wxml-lsp lib 789 passed, 0 failed, 0 ignored",
       "near_exact_recommendations": 2,
       "statuses": {
-        "planned": 235,
-        "green": 68,
+        "planned": 233,
+        "green": 70,
         "retired-with-decision": 36
       },
       "status_policy": "Only parity=exact cases are green. near_exact, weaker, structural and blocked cases stay planned with status_recommendation recorded; no empty evidence is accepted."
     },
     "statuses": {
-      "planned": 235,
-      "green": 68,
+      "planned": 233,
+      "green": 70,
       "retired-with-decision": 36
     }
   },
@@ -3255,7 +3255,26 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0161",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/analysis.test.ts:161` analyzes the unsaved script text and reports the JSDoc/`name: 42` hover values. Native proves the input half: the session receives the unsaved text, the project root does not exist on disk, and only the in-memory file is submitted; the oracle's `typeOnly`/`documentation` values are checker products and remain unproven in the fake layer.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 4410,
+            "test": "case_analysis_0161_unsaved_script_text_reaches_the_session_without_a_disk_read",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::case_analysis_0161_unsaved_script_text_reaches_the_session_without_a_disk_read",
+            "note": "Asserts the session input carries the unsaved JSDoc and `name: 42`, the project root does not exist, and only the in-memory snapshot is submitted."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0174",
@@ -3403,13 +3422,39 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0184",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Oracle `backends/typescript/test/analysis.test.ts:184` publishes the `nmae` typo at WXML `134..138`. The fake session only arranges the original diagnostic; the published WXML range is computed by the real shadow mapping pipeline. Tests assert the page-basic fragments `35..40`/`85..94`/`129..138`, the tight `nmae` span mapping to `134..138` with `Supported` status, and the whole mount span mapping to `129..138`.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 4460,
+            "test": "case_analysis_0184_page_basic_typo_maps_to_wxml_134_138",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::case_analysis_0184_page_basic_typo_maps_to_wxml_134_138",
+            "note": "Arranges the three page-basic fragments (`35..40`, `85..94`, `129..138`) and asserts the `nmae` diagnostic maps to `134..138` with `Supported` status."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 4498,
+            "test": "case_analysis_0184_wider_spans_map_to_the_expression_range",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::case_analysis_0184_wider_spans_map_to_the_expression_range",
+            "note": "Rust-side control: a span covering the whole mounted `user.nmae` maps to `129..138` with `Supported` and no synthetic-prefix trim."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0196",
@@ -4866,7 +4911,33 @@
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-COMPLETION-0066",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/completion.test.ts:66` rejects a null request, negative/fractional offsets and an unknown kind with `bad-params`, and a 257-byte prefix with `bad-limit`. Native rejects malformed completion params at the LSP boundary and degrades an unknown kind to a typed Unsupported result, but has no `RequestError` codes, no 256-byte prefix cap, and `u32` offsets make negative/fractional offsets unrepresentable instead of rejected.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/lsp.rs",
+            "line": 771,
+            "test": "invalid_completion_parameters_are_rejected",
+            "fully_qualified": "lsp::invalid_completion_parameters_are_rejected",
+            "note": "A real stdio session answers a missing completion request and a non-numeric position with JSON-RPC `-32602` and stays alive."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 2411,
+            "test": "a_non_expression_completion_kind_is_explicitly_unsupported",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::a_non_expression_completion_kind_is_explicitly_unsupported",
+            "note": "An unknown completion kind returns an empty typed Unsupported result and never starts a session or fabricates items."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-COMPLETION-0078",
@@ -20391,7 +20462,40 @@
       "oracle_type": "parity",
       "comparison_type": "semantic_exact",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-MATRIX-0271",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/matrix.test.ts:271` hovers a component property and expects the declared `string | number` union, the copied JSDoc text and `documentationSource = copied` for both candidate layouts. Native derives the same union and JSDoc into hover for the in-place layout, but has no `documentationSource` field and no second layout.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/hover/tests.rs",
+            "line": 113,
+            "test": "a_declared_union_replaces_an_under_reported_native_type",
+            "fully_qualified": "wxml_lsp::backend_tsgo::hover::tests::a_declared_union_replaces_an_under_reported_native_type",
+            "note": "Applies the declared property type to hover evidence and replaces an under-reported native `string` with the declared `string | number` union."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/hover/tests.rs",
+            "line": 597,
+            "test": "the_template_plan_merges_behavior_optional_types_into_hover_facts",
+            "fully_qualified": "wxml_lsp::backend_tsgo::hover::tests::the_template_plan_merges_behavior_optional_types_into_hover_facts",
+            "note": "Builds the request plan and asserts the declared property `cardTitle` carries `string | number` into the derived layout and hover facts."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/component_intelligence.rs",
+            "line": 515,
+            "test": "unsaved_component_properties_update_static_queries",
+            "fully_qualified": "component_intelligence::unsaved_component_properties_update_static_queries",
+            "note": "An unsaved component with `optionalTypes` yields completion detail `number | string` plus the JSDoc text in documentation and hover."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-MATRIX-0283",
@@ -21493,7 +21597,33 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-OVERLAY-0076",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/overlay.test.ts:76` drops the imported model from the snapshot and requires hover to stay `any`/`unknown`, proving no disk read. Native's VFS never serves host files outside the project and an unknown hover type degrades to Partial, but no cross-file overlay test removes a model file and re-checks hover, and there is no second layout.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/native/vfs.rs",
+            "line": 1385,
+            "test": "reads_only_virtual_files_and_never_host_files",
+            "fully_qualified": "wxml_backend_tsgo::native::vfs::tests::reads_only_virtual_files_and_never_host_files",
+            "note": "Serves project virtual files, returns `missing` for unknown paths and never returns a real host file outside the project root."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 1251,
+            "test": "hover_unknown_quality_keeps_backend_partial_without_a_type_fence",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::hover_unknown_quality_keeps_backend_partial_without_a_type_fence",
+            "note": "An unknown hover type stays Partial without a fabricated type fence and keeps only the documentation, so a missing import cannot become a real type."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PERF-0012",
@@ -22412,7 +22542,47 @@
       "status": "planned",
       "capabilities": [
         "version"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROTOCOL-0053",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/protocol.test.ts:53` adds optional `bindings`, `guards`, `components` and `events` to a v2 request and expects `validateRequest` to accept them. Native accepts each structure through its own typed input (`LocalBinding`, `GuardChain`, component usages, event bindings), but has no single C1 `validateRequest` and no `protocolVersion` field to assert.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/locals.rs",
+            "line": 569,
+            "test": "case_protocol_0126_a_same_name_nested_chain_is_accepted_and_groups_two_levels",
+            "fully_qualified": "wxml_backend_tsgo::shadow::locals::tests::case_protocol_0126_a_same_name_nested_chain_is_accepted_and_groups_two_levels",
+            "note": "Accepts a same-name nested binding chain, groups it into two levels and captures the inner source without a TDZ self-reference."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/guards.rs",
+            "line": 310,
+            "test": "render_guards_opens_if_elif_and_closes_one_block",
+            "fully_qualified": "wxml_backend_tsgo::shadow::guards::tests::render_guards_opens_if_elif_and_closes_one_block",
+            "note": "Renders a structured if/elif guard chain into one narrowing block and closes it, so guards are accepted end to end."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 2053,
+            "test": "two_components_with_the_same_property_keep_their_own_types",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::two_components_with_the_same_property_keep_their_own_types",
+            "note": "Builds two component usages whose property declarations keep their own types, so structured component attributes are accepted per component."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 83,
+            "test": "case_events_0071_page_method_shorthand_function_and_arrow_resolve",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0071_page_method_shorthand_function_and_arrow_resolve",
+            "note": "Resolves shorthand, function and arrow page handlers, so structured event bindings are accepted and checked."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROTOCOL-0098",
@@ -22467,7 +22637,33 @@
       "oracle_type": "unit",
       "comparison_type": "contract_translated",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-PROTOCOL-0098",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/protocol.test.ts:98` sends an invalid binding role and a reversed source range and expects `RequestError` with `code = bad-fragment`. Native models roles as an enum, so an invalid role is unrepresentable and invalid names degrade to Partial; a reversed fragment range is a typed `ShadowError::Invalid`, not a request error code.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/locals.rs",
+            "line": 558,
+            "test": "invalid_binding_names_are_ignored",
+            "fully_qualified": "wxml_backend_tsgo::shadow::locals::tests::invalid_binding_names_are_ignored",
+            "note": "Drops invalid and duplicate binding names instead of fabricating declarations, reporting the degraded level rather than a protocol error."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
+            "line": 2724,
+            "test": "invalid_fragment_ranges_are_rejected",
+            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::invalid_fragment_ranges_are_rejected",
+            "note": "A fragment range whose length differs from the expression bytes is rejected with typed `ShadowError::Invalid { feature: \"fragment.range\" }`."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROTOCOL-0126",
@@ -22981,7 +23177,47 @@
       "capabilities": [
         "compiler",
         "config"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROTOCOL-0306",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/protocol.test.ts:306` reads registration `{kind, count, topLevel}`, `jsCheckApplied`, an `fnv1a:` options digest, `fileCount`/`fragmentCount` and the off policy from one response. Native records registration count/kind, top-level selection and `js_check_applied` internally, but publishes no response envelope, no digest and no file/fragment counts.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_registration.rs",
+            "line": 394,
+            "test": "s1_two_top_level_pages_are_ambiguous_and_partial",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_registration.rs::s1_two_top_level_pages_are_ambiguous_and_partial",
+            "note": "Two top-level pages are ambiguous, the first registration is selected and marked top-level, and the analysis stays Partial."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 367,
+            "test": "multiple_registrations_are_partial_and_choose_the_first",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_layout.rs::multiple_registrations_are_partial_and_choose_the_first",
+            "note": "Two page registrations yield `registration.count == 2`, a `2 page registrations` reason and no merged mounts."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 550,
+            "test": "source_ts_check_is_neutralised_when_the_policy_is_off",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_layout.rs::source_ts_check_is_neutralised_when_the_policy_is_off",
+            "note": "Policy off is applied as `JsCheckApplied::Off`: the source `@ts-check` stays and a neutralising `@ts-nocheck` is added."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
+            "line": 2467,
+            "test": "case_probes_0027_pragma_scanning_handles_plain_files_bom_and_hashbang",
+            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::case_probes_0027_pragma_scanning_handles_plain_files_bom_and_hashbang",
+            "note": "A plain `@ts-check` source applies `JsCheckApplied::Inherit` without a shadow pragma, and the BOM variant records the BOM edit."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROTOCOL-0319",
@@ -23448,7 +23684,40 @@
       "status": "planned",
       "capabilities": [
         "config"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROTOCOL-0438",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/protocol.test.ts:438` expects one run to publish `bom`, `nocheck` and `probe` insertions that all name the script fileId, with `request.scriptFileId = index.js`. Native records the same insertion ids on one derived view, but the shadow is single-file so insertions carry no `file`, and no test asserts the three ids together.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 529,
+            "test": "case_mapping_0239_published_evidence_carries_insertions_and_mounts_for_every_run",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0239_published_evidence_carries_insertions_and_mounts_for_every_run",
+            "note": "Runs four scenarios, including the shebang/BOM pragma case, and requires every published run to carry insertions plus mounts that reference them."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 78,
+            "test": "case_layouts_0049_page_options_accept_an_injected_probe_member",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_layout.rs::case_layouts_0049_page_options_accept_an_injected_probe_member",
+            "note": "Records the injected `probe` insertion and proves that removing it reconstructs the original script byte for byte."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
+            "line": 2427,
+            "test": "js_pragma_and_bom_edits_are_recorded",
+            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::js_pragma_and_bom_edits_are_recorded",
+            "note": "A BOM plus hashbang JavaScript source records both the `bom` and `pragma` insertions and keeps the shebang first."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROTOCOL-0450",
@@ -23767,7 +24036,33 @@
       "status": "planned",
       "capabilities": [
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROTOCOL-0505",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/protocol.test.ts:505` renames request fragments to `f0`/`f1`/`f2` and expects the response fragment ids and `f0#0` mount ids to echo them. Native keys mounts by the request fragment id and builds `{id}#0` mount ids, but no test renames fragments or asserts the published id lists.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 305,
+            "test": "case_mapping_0145_every_mount_carries_an_explicit_synthetic_source_split",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0145_every_mount_carries_an_explicit_synthetic_source_split",
+            "note": "Two fragments whose ids differ from their expression text each mount once, and every mount resolves back to its own fragment id and recorded insertion."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
+            "line": 2663,
+            "test": "case_protocol_0600_legacy_fragments_without_target_or_locals_still_build",
+            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::case_protocol_0600_legacy_fragments_without_target_or_locals_still_build",
+            "note": "Two legacy fragments without target or locals still mount independently in one request and keep their prefixed text."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROTOCOL-0525",
@@ -23832,7 +24127,33 @@
       "capabilities": [
         "mapping",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROTOCOL-0525",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/protocol.test.ts:525` mounts the same `title` expression under `f0` and `f1` and expects two mounts. Native creates one mount per fragment spec, so two fragments with distinct ids already mount twice, but no test duplicates one expression under two ids, and there is no response envelope.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs",
+            "line": 305,
+            "test": "case_mapping_0145_every_mount_carries_an_explicit_synthetic_source_split",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_mapping.rs::case_mapping_0145_every_mount_carries_an_explicit_synthetic_source_split",
+            "note": "Two fragments in one request produce two mount records with distinct fragment ids and explicit synthetic/source splits."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
+            "line": 2663,
+            "test": "case_protocol_0600_legacy_fragments_without_target_or_locals_still_build",
+            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::case_protocol_0600_legacy_fragments_without_target_or_locals_still_build",
+            "note": "Legacy fragments without target or locals are planned per fragment, so each fragment spec gets its own mount."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROTOCOL-0549",
@@ -23895,7 +24216,26 @@
       "capabilities": [
         "hover",
         "shadow"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROTOCOL-0549",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/protocol.test.ts:549` duplicates a fragment and expects no crash, `states.hover.status = unavailable` with a `bad-fragment` reason and zero response fragments. Native rejects duplicate ids with typed `ShadowError::Invalid { feature: \"fragment.id\" }` before any view exists; there is no `states` aggregate or non-throwing degraded response.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
+            "line": 2635,
+            "test": "case_analysis_0349_duplicate_fragment_ids_are_a_structured_error",
+            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::case_analysis_0349_duplicate_fragment_ids_are_a_structured_error",
+            "note": "Duplicate fragment ids fail the build with the typed `fragment.id` Invalid error and the uniqueness reason before a view or mount is produced."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROTOCOL-0561",
@@ -25074,13 +25414,32 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0197",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Oracle `backends/typescript/test/rewrite.test.ts:197` keeps the exact WXML byte range for a member typo. The test builds the real in-place shadow for page-basic and maps `nmae` through `map_span_to_source` to `134..138`; the checker only contributes the diagnostic's existence. A Rust-side control maps the whole mount span to `129..138`, and `BLOCKED_CASES` no longer lists `TS-REWRITE-0197`.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 465,
+            "test": "case_rewrite_0197_a_member_typo_keeps_the_exact_wxml_byte_range",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs::case_rewrite_0197_a_member_typo_keeps_the_exact_wxml_byte_range",
+            "note": "Builds the real in-place shadow and maps the tight `nmae` target to `134..138`; the whole mount span maps to `129..138` as a proportional control."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0207",
@@ -25922,7 +26281,33 @@
       "status": "planned",
       "capabilities": [
         "diagnostics"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-REWRITE-0368",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/rewrite.test.ts:368` rewrites `user.age + user.name` and `-title`, expects `ok`, zero fragment diagnostics and `states.diagnostics.status = supported`. Native rewrites both shapes without host-syntax diagnostics, but has no per-fragment diagnostics or `states`; the suite still lists this case as checker-blocked.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 85,
+            "test": "case_rewrite_0051_unary_parenthesized_and_multi_root_expressions_are_fully_rewritten",
+            "fully_qualified": "shadow_rewrite::case_rewrite_0051_unary_parenthesized_and_multi_root_expressions_are_fully_rewritten",
+            "note": "Rewrites unary, parenthesized and multi-root expressions fully, so `-title` and member arithmetic stay valid host syntax."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_rewrite.rs",
+            "line": 364,
+            "test": "case_rewrite_0309_rewritten_mounts_map_target_spans_and_trim_synthetic_prefixes",
+            "fully_qualified": "shadow_rewrite::case_rewrite_0309_rewritten_mounts_map_target_spans_and_trim_synthetic_prefixes",
+            "note": "Checks that rewritten mounts map target spans and trim synthetic prefixes across several root shapes."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-REWRITE-0378",
@@ -26562,7 +26947,26 @@
       "oracle_type": "assertion",
       "comparison_type": "mechanism_replaced",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SERVER-0216",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/server.test.ts:216` sends ten pipelined `ping`/`analyze` requests and expects every id answered on one stream. Native answers 200 pipelined hover requests on one stream, but has no `ping`/`analyze` methods and serialises queries on one worker.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-lsp/tests/lsp.rs",
+            "line": 504,
+            "test": "many_frames_without_reading_do_not_drop_responses",
+            "fully_qualified": "lsp::many_frames_without_reading_do_not_drop_responses",
+            "note": "Sends 200 hover requests before reading and still receives every response id plus shutdown on the same stdout stream."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SERVER-0237",
@@ -26704,7 +27108,33 @@
       "oracle_type": "assertion",
       "comparison_type": "mechanism_replaced",
       "status": "planned",
-      "capabilities": []
+      "capabilities": [],
+      "migration_evidence": {
+        "case_id": "TS-SERVER-0267",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "43625ee7cd6233b5fbac7d8cc4f2d1cbdd469f12",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "Oracle `backends/typescript/test/server.test.ts:267` starts the server from a symlinked entry and expects a `ping` reply. Native resolves its install through the `current` symlink and answers stdio requests with matching ids, but has no Node `resolveBackendDir` entry detection and no `ping` method.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-delivery/src/install.rs",
+            "line": 721,
+            "test": "versions_are_sorted_and_current_requires_a_valid_link",
+            "fully_qualified": "wxml_delivery::install::tests::versions_are_sorted_and_current_requires_a_valid_link",
+            "note": "Switches the `current` symlink to a versioned directory and reads the version back through that link."
+          },
+          {
+            "path": "crates/wxml-lsp/tests/lsp.rs",
+            "line": 233,
+            "test": "initialize_hover_shutdown_flow",
+            "fully_qualified": "lsp::initialize_hover_shutdown_flow",
+            "note": "A real stdio session answers initialize and hover with matching ids before a clean shutdown."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-SYMBOLS-0061",

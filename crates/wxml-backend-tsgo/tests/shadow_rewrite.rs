@@ -21,11 +21,12 @@ use wxml_backend_tsgo::shadow::rewrite::{
     EditKind, RewriteOptions, ShadowEdit, apply_edits, rewrite_expression,
 };
 
+// Checker-dependent cases stay here. `TS-REWRITE-0197` is no longer blocked:
+// its oracle asserts only the published WXML byte range, which
+// `case_rewrite_0197_a_member_typo_keeps_the_exact_wxml_byte_range` produces
+// from the real shadow build. The checker contributes only the diagnostic's
+// existence, which this file deliberately does not claim.
 const BLOCKED_CASES: &[(&str, &str)] = &[
-    (
-        "TS-REWRITE-0197",
-        "exact diagnostic range requires the checker",
-    ),
     (
         "TS-REWRITE-0349",
         "cross-gap diagnostics require the checker",
@@ -59,6 +60,26 @@ fn utf16_slice(text: &str, start: u32, length: u32) -> String {
         .collect();
     String::from_utf16(&units).expect("valid UTF-16 slice")
 }
+
+/// The frozen `backends/typescript/samples/page-basic/index.ts` script used by
+/// the `rewrite.test.ts` `pageRequest()` fixture.
+const PAGE_BASIC_SCRIPT: &str = r"Page({
+  data: {
+    /** 页面标题 */
+    title: '首页',
+    /** 当前用户 */
+    user: {
+      /** 用户显示名称 */
+      name: 'Ada',
+      /** 用户年龄 */
+      age: 36,
+    },
+  },
+  onShow() {
+    this.setData({ title: '欢迎回来' });
+  },
+});
+";
 
 #[test]
 fn case_rewrite_0051_unary_parenthesized_and_multi_root_expressions_are_fully_rewritten() {
@@ -441,6 +462,75 @@ fn case_rewrite_0309_rewritten_mounts_map_target_spans_and_trim_synthetic_prefix
 }
 
 #[test]
+fn case_rewrite_0197_a_member_typo_keeps_the_exact_wxml_byte_range() {
+    // Oracle: `rewrite.test.ts:197`. The request is the frozen `page-basic`
+    // fixture; "the checker found a member typo" is only an arrange premise,
+    // and the assertion is the published WXML byte range. The range is produced
+    // by the real shadow build and reverse mapping, not by a fake session.
+    let script = source_file(PAGE_BASIC_SCRIPT);
+    let fragments = [
+        FragmentSpec::new("title", "title", SourceRange::new(35, 40)),
+        FragmentSpec::new("user.name", "user.name", SourceRange::new(85, 94)),
+        // The oracle request has no explicit target; the default is the
+        // rightmost value identifier, which is `nmae`.
+        FragmentSpec::new("user.nmae", "user.nmae", SourceRange::new(129, 138)),
+    ];
+    let built = build_in_place_shadow(&ShadowRequest {
+        script: &script,
+        root: RootKind::Page,
+        fragments: &fragments,
+        js_check: JsCheckPolicy::Inherit,
+        check_js: false,
+    })
+    .expect("layout");
+    let mount = built
+        .view
+        .mounts
+        .iter()
+        .find(|mount| mount.fragment_id == "user.nmae")
+        .expect("user.nmae mount");
+    assert_eq!(
+        mount.target_length_utf16, 4,
+        "default target must be `nmae`"
+    );
+    assert_eq!(
+        utf16_slice(
+            &mount.text,
+            mount.target_start_utf16 - mount.start_utf16,
+            mount.target_length_utf16,
+        ),
+        "nmae"
+    );
+
+    // The checker's tight typo span (`nmae`) maps one-to-one.
+    let tight = map_span_to_source(
+        mount,
+        Utf16Offset::new(mount.target_start_utf16),
+        mount.target_length_utf16,
+    )
+    .expect("mapped target");
+    assert_eq!(tight.range, Some(SourceRange::new(134, 138)));
+    assert!(!tight.trimmed_synthetic_prefix);
+    assert!(!tight.unattributable);
+
+    // A diagnostic that covers the whole mounted expression does not exist in
+    // the oracle; it is a Rust-side control. `user.nmae` has no synthetic gap
+    // *inside* the expression, so the leading `__wxml_root.` prefix is an exact
+    // projection (not a crop) and the published range is the whole expression.
+    // This pins that the mapping stays span-proportional instead of always
+    // forcing the target token.
+    let whole = map_span_to_source(
+        mount,
+        Utf16Offset::new(mount.start_utf16),
+        utf16_len(&mount.text),
+    )
+    .expect("whole mount");
+    assert_eq!(whole.range, Some(SourceRange::new(129, 138)));
+    assert!(!whole.trimmed_synthetic_prefix);
+    assert!(!whole.unattributable);
+}
+
+#[test]
 fn edit_plan_is_ordered_and_rejects_ambiguous_offsets() {
     let assembled = apply_edits(
         "abcd",
@@ -469,10 +559,17 @@ fn edit_plan_is_ordered_and_rejects_ambiguous_offsets() {
 
 #[test]
 fn blocked_cases_are_documented_and_not_claimed() {
+    // 0197 now has a real mapping test and stays out of the blocked list; the
+    // remaining entries still represent checker-only assertions.
+    assert!(
+        !BLOCKED_CASES
+            .iter()
+            .any(|(case, _)| *case == "TS-REWRITE-0197")
+    );
     assert!(
         BLOCKED_CASES
             .iter()
-            .any(|(case, _)| *case == "TS-REWRITE-0197")
+            .any(|(case, _)| *case == "TS-REWRITE-0349")
     );
     assert!(
         !BLOCKED_CASES

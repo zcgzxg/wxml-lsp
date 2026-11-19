@@ -82,6 +82,55 @@ const MODEL_PATH: &str = "model.ts";
 const MODEL: &str = "// 😀 模型\nexport interface User {\n  name: string;\n}\n";
 const COMMENT: &str = "Display name.";
 
+/// The frozen `page-basic` template from
+/// `backends/typescript/src/scenarios.ts` (`PAGE_BASIC_WXML`).
+const PAGE_BASIC_WXML: &str = r#"<view class="page">
+  <text class="title">{{ title }}</text>
+  <text class="name">{{ user.name }}</text>
+  <text class="typo">{{ user.nmae }}</text>
+</view>
+"#;
+
+/// The frozen `backends/typescript/samples/page-basic/index.ts` script.
+const PAGE_BASIC_SCRIPT: &str = r"Page({
+  data: {
+    /** 页面标题 */
+    title: '首页',
+    /** 当前用户 */
+    user: {
+      /** 用户显示名称 */
+      name: 'Ada',
+      /** 用户年龄 */
+      age: 36,
+    },
+  },
+  onShow() {
+    this.setData({ title: '欢迎回来' });
+  },
+});
+";
+
+/// The same script with the unsaved edit from
+/// `backends/typescript/test/analysis.test.ts:161`: a new `JSDoc` and
+/// `name: 42` replacing the on-disk `name: 'Ada'`.
+const PAGE_BASIC_UNSAVED_SCRIPT: &str = r"Page({
+  data: {
+    /** 页面标题 */
+    title: '首页',
+    /** 当前用户 */
+    user: {
+      /** 未保存的名称 */
+      name: 42,
+      /** 用户年龄 */
+      age: 36,
+    },
+  },
+  onShow() {
+    this.setData({ title: '欢迎回来' });
+  },
+});
+";
+
 fn project() -> ProjectId {
     ProjectId::new("demo")
 }
@@ -112,6 +161,30 @@ fn fragment(wxml: &str, expression: &str, id: &str) -> CheckFragment {
             u32::try_from(end).expect("end"),
         )
         .expect("fragment range"),
+        fragment_revision: 1,
+        root: RootKind::Page,
+    }
+}
+
+/// Builds one `page-basic` fragment with the frozen WXML byte range.
+///
+/// `fragment()` locates the expression with `str::find`, which is ambiguous for
+/// `title` because `class="title"` precedes `{{ title }}`; the page-basic
+/// cases therefore pin the absolute ranges explicitly.
+fn page_basic_fragment(
+    id: &str,
+    expression: &str,
+    start: u32,
+    end: u32,
+    target: Option<&str>,
+) -> CheckFragment {
+    CheckFragment {
+        fragment_id: id.to_owned(),
+        expr_text: expression.to_owned(),
+        target: target.map(str::to_owned),
+        bindings: Vec::new(),
+        guards: Vec::new(),
+        wxml_range: SourceRange::from_bounds(start, end).expect("fragment range"),
         fragment_revision: 1,
         root: RootKind::Page,
     }
@@ -4331,6 +4404,133 @@ fn case_analysis_0174_hover_never_reads_the_project_root_tsconfig() {
         vec![SCRIPT_PATH],
         "only the in-memory snapshot reaches the session; no project-root file is read"
     );
+}
+
+#[test]
+fn case_analysis_0161_unsaved_script_text_reaches_the_session_without_a_disk_read() {
+    // Oracle: `analysis.test.ts:161` rewrites the request's script text before
+    // analysis. The native architecture hands the host's overlay-first prepared
+    // text to the session, so this test proves the input half exactly: the
+    // unsaved JSDoc/`name: 42` reach the engine input, the project root does not
+    // exist, and only the in-memory snapshot is submitted. The oracle's
+    // `hover.typeOnly`/`hover.documentation` values are checker products and are
+    // deliberately not asserted here (see the wave-10 conditional plan).
+    const PROJECT_ROOT: &str = "/nonexistent/wxml-analysis-0161-project-root";
+    assert!(
+        !std::path::Path::new(PROJECT_ROOT).exists(),
+        "the fixture root must not exist on disk"
+    );
+    let mut view = prepared_view(PAGE_BASIC_WXML, PAGE_BASIC_UNSAVED_SCRIPT, "user.name");
+    view.project_root = PathBuf::from(PROJECT_ROOT);
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let name = offset_of(PAGE_BASIC_WXML, "user.name")
+        + u32::try_from("user.".len()).expect("prefix length");
+    let hover = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, PAGE_BASIC_WXML),
+            offset: name,
+        })
+        .expect("hover with unsaved script text");
+    let range = hover.range.expect("hover range");
+    assert_eq!(range.start(), name);
+    assert_eq!(range.end(), name + 4);
+
+    let log = log.lock().expect("log");
+    let input = log.opened_inputs.first().expect("opened input");
+    assert_eq!(input.root().as_str(), PROJECT_ROOT);
+    let text = input.file(SCRIPT_PATH).expect("owner script").text();
+    assert!(text.contains("/** 未保存的名称 */"), "{text}");
+    assert!(text.contains("name: 42"), "{text}");
+    assert!(
+        !text.contains("用户显示名称"),
+        "the on-disk JSDoc must not reach the engine: {text}"
+    );
+    assert_eq!(
+        input
+            .files()
+            .iter()
+            .map(wxml_backend_tsgo::input::SourceFile::path)
+            .collect::<Vec<_>>(),
+        vec![SCRIPT_PATH],
+        "only the in-memory snapshot reaches the session; no project-root file is read"
+    );
+}
+
+#[test]
+fn case_analysis_0184_page_basic_typo_maps_to_wxml_134_138() {
+    // Oracle: `analysis.test.ts:184` asserts only the published `nmae` WXML
+    // byte range. The fake session supplies the diagnostic as an arrange input;
+    // the published range is computed by the real shadow mapping pipeline.
+    let fragments = vec![
+        page_basic_fragment("title", "title", 35, 40, Some("title")),
+        page_basic_fragment("user.name", "user.name", 85, 94, Some("name")),
+        page_basic_fragment("user.nmae", "user.nmae", 129, 138, Some("nmae")),
+    ];
+    let view = prepared_view_with_fragments(
+        PAGE_BASIC_WXML,
+        vec![prepared_file(SCRIPT_PATH, PAGE_BASIC_SCRIPT)],
+        fragments,
+    );
+    let behavior = FakeBehavior {
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![FakeDiagnostic {
+            needle: "nmae",
+            code: 2339,
+            category: 1,
+            message: "Property 'nmae' does not exist.",
+            file_name: None,
+        }]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, PAGE_BASIC_WXML),
+        })
+        .expect("diagnostics");
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    let diagnostic = &result.diagnostics[0];
+    assert_eq!(diagnostic.range.start(), 134);
+    assert_eq!(diagnostic.range.end(), 138);
+}
+
+#[test]
+fn case_analysis_0184_wider_spans_map_to_the_expression_range() {
+    // Rust-side control, not an oracle assertion. `user.nmae` has no synthetic
+    // gap inside the expression, so a checker span covering the whole mounted
+    // expression is an exact projection of `user.nmae` (`129..138`) and stays
+    // `Supported`; only a span on the `nmae` token publishes `134..138`.
+    let fragments = vec![
+        page_basic_fragment("title", "title", 35, 40, Some("title")),
+        page_basic_fragment("user.name", "user.name", 85, 94, Some("name")),
+        page_basic_fragment("user.nmae", "user.nmae", 129, 138, Some("nmae")),
+    ];
+    let view = prepared_view_with_fragments(
+        PAGE_BASIC_WXML,
+        vec![prepared_file(SCRIPT_PATH, PAGE_BASIC_SCRIPT)],
+        fragments,
+    );
+    let behavior = FakeBehavior {
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![FakeDiagnostic {
+            needle: "__wxml_root.user.nmae",
+            code: 2339,
+            category: 1,
+            message: "Property 'nmae' does not exist.",
+            file_name: None,
+        }]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, PAGE_BASIC_WXML),
+        })
+        .expect("diagnostics");
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    let diagnostic = &result.diagnostics[0];
+    assert_eq!(diagnostic.range.start(), 129);
+    assert_eq!(diagnostic.range.end(), 138);
 }
 
 #[test]
