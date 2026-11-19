@@ -108,7 +108,7 @@ pub(crate) fn event_site(text: &str, offset: u32) -> Option<EventValueSite> {
                 continue;
             }
             return Some(match class {
-                EventAttributeClass::Handler => static_handler(text, value, offset),
+                EventAttributeClass::Handler => static_handler(text, value, Some(offset)),
                 EventAttributeClass::Rejected(_) | EventAttributeClass::Other => {
                     EventValueSite::NotStatic
                 }
@@ -118,11 +118,42 @@ pub(crate) fn event_site(text: &str, offset: u32) -> Option<EventValueSite> {
     None
 }
 
+/// Returns every static handler value of one document in source order.
+///
+/// This is the document-wide form of [`event_site`]: both share
+/// [`static_handler`], so a missing-handler diagnostic, a hover and a
+/// definition cannot disagree about which values are static handler tokens.
+pub(crate) fn event_handler_sites(text: &str) -> Vec<EventValueSite> {
+    let tree = wxml_syntax::parse(text).tree;
+    let mut sites = Vec::new();
+    for element in tree.document().elements() {
+        for attribute in element.attributes() {
+            let Some(name) = attribute.name() else {
+                continue;
+            };
+            if catalog::classify_event_attribute(name) != EventAttributeClass::Handler {
+                continue;
+            }
+            let Some(value) = attribute.value() else {
+                continue;
+            };
+            let site = static_handler(text, value, None);
+            if matches!(site, EventValueSite::Handler { .. }) {
+                sites.push(site);
+            }
+        }
+    }
+    sites
+}
+
 /// Returns the exact handler token for one event value, or `NotStatic`.
+///
+/// `offset` restricts the answer to a cursor inside the handler token; the
+/// document-wide scan passes `None` because it is not answering a point query.
 fn static_handler(
     text: &str,
     value: wxml_syntax::AttributeValue<'_>,
-    offset: u32,
+    offset: Option<u32>,
 ) -> EventValueSite {
     if value.mustaches().next().is_some() {
         return EventValueSite::NotStatic;
@@ -152,7 +183,7 @@ fn handler_range(
     value: wxml_syntax::AttributeValue<'_>,
     literal: &str,
     handler: &str,
-    offset: u32,
+    offset: Option<u32>,
 ) -> Option<SourceRange> {
     let range = value.text_range();
     let quote = u32::from(value.is_quoted());
@@ -162,7 +193,10 @@ fn handler_range(
         .checked_add(quote)?
         .checked_add(u32::try_from(leading).ok()?)?;
     let end = start.checked_add(u32::try_from(handler.len()).ok()?)?;
-    if end > range.end() || offset < start || offset > end {
+    if end > range.end() {
+        return None;
+    }
+    if offset.is_some_and(|offset| offset < start || offset > end) {
         return None;
     }
     SourceRange::from_bounds(start, end).ok()
@@ -226,14 +260,17 @@ pub(crate) fn resolve(view: &PreparedView, handler: &str) -> EventDefinitionAnsw
 }
 
 /// One analyzed view plus the files that could not be represented.
-struct ViewAnalysis<'a> {
-    view: &'a PreparedView,
-    analysis: ScriptAnalysis,
-    dropped: usize,
+pub(crate) struct ViewAnalysis<'a> {
+    /// Prepared view the analysis was built from.
+    pub(crate) view: &'a PreparedView,
+    /// Script facts for the owning registration.
+    pub(crate) analysis: ScriptAnalysis,
+    /// Prepared files that could not be represented.
+    pub(crate) dropped: usize,
 }
 
 /// Builds the event method table from the prepared script files.
-fn analyze<'a>(
+pub(crate) fn analyze<'a>(
     view: &'a PreparedView,
     script_path: &str,
     owner: RootKind,
@@ -653,6 +690,37 @@ mod tests {
             assert_eq!(site(template), EventValueSite::NotStatic, "{template}");
         }
         assert_eq!(event_site("<view class=\"on|Tap\" />", 12), None);
+    }
+
+    #[test]
+    fn the_document_wide_scan_matches_the_point_query_tokens() {
+        let text = concat!(
+            "🙂<view bindtap=\"onTap\" />\n",
+            "<view catch:tap=\"保存\" />\n",
+            "<view bindtap=\"{{dynamic}}\" />\n",
+            "<view bindtap=\"\" />\n",
+            "<view bindtap=\"this.onTap\" />\n",
+            "<view bindtap=\"onTap()\" />\n",
+            "<view class=\"onTap\" />",
+        );
+        let sites = event_handler_sites(text);
+        assert_eq!(sites.len(), 2, "{sites:?}");
+        for (site, (needle, token)) in sites.iter().zip([("onTap", "onTap"), ("保存", "保存")])
+        {
+            let EventValueSite::Handler {
+                handler,
+                token: range,
+            } = site
+            else {
+                panic!("expected a static handler site: {site:?}");
+            };
+            let start = u32::try_from(text.find(needle).expect("token")).expect("start");
+            assert_eq!(handler, token);
+            assert_eq!(
+                (range.start(), range.end()),
+                (start, start + u32::try_from(needle.len()).expect("len"))
+            );
+        }
     }
 
     #[test]

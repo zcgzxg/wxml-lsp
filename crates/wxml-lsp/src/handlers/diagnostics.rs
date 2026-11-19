@@ -1,5 +1,6 @@
 //! Document synchronization and diagnostics publication.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
@@ -15,6 +16,7 @@ use super::{
 use crate::jsonrpc::Outgoing;
 use crate::project_host::{ChangeDocument, DocumentRoute, HostUpdate, OpenDocument};
 use crate::scheduler::{Job, JobKind, Outcome, WorkDone};
+use crate::semantics::event_diagnostics::EventDiagnostics;
 use crate::server::{CachedDiagnostics, MAX_DEBOUNCED_DIAGNOSTICS, Server, log};
 use crate::workspace::Document;
 
@@ -113,22 +115,38 @@ const fn failure_message(error: &BackendError) -> &'static str {
 }
 
 /// Builds the publish payload from backend and local diagnostics.
+///
+/// Diagnostic order is deterministic: the merged list is stably sorted by
+/// source range, so a payload does not depend on which source produced a
+/// diagnostic. Duplicates are removed by exact range and message so a backend
+/// that reports the same missing handler cannot appear twice.
 fn publish_value(
     document: &Document,
     backend: &[Diagnostic],
     local: &[Diagnostic],
+    event: &[Diagnostic],
     status: Option<&CapabilityStatus>,
     failure: bool,
 ) -> Value {
-    let mut diagnostics = Vec::new();
-    for diagnostic in backend.iter().chain(local.iter()) {
+    let mut mapped = Vec::new();
+    let mut seen = HashSet::new();
+    for diagnostic in backend.iter().chain(local.iter()).chain(event.iter()) {
+        if !seen.insert((
+            diagnostic.range.start(),
+            diagnostic.range.end(),
+            diagnostic.message.as_str(),
+        )) {
+            continue;
+        }
         match diagnostic_value(document, diagnostic) {
-            Some(value) => diagnostics.push(value),
+            Some(value) => mapped.push((diagnostic.range.start(), diagnostic.range.end(), value)),
             None => log(format_args!(
                 "skipping diagnostic with an invalid source range"
             )),
         }
     }
+    mapped.sort_by_key(|(start, end, _)| (*start, *end));
+    let mut diagnostics: Vec<Value> = mapped.into_iter().map(|(_, _, value)| value).collect();
     match status {
         Some(status) if !status.is_supported() => {
             diagnostics.push(status_diagnostic(status));
@@ -141,6 +159,45 @@ fn publish_value(
         "version": document.client_version().get(),
         "diagnostics": diagnostics,
     })
+}
+
+/// Merges the local event coverage into the backend diagnostics status.
+///
+/// The backend reason wins whenever it is already degraded: publishing the
+/// local event reason instead would hide why the rest of the template was not
+/// checked. When the backend claimed a complete check, the local event gap is
+/// the only degradation to report.
+fn merged_status(
+    backend: Option<CapabilityStatus>,
+    event: Option<CapabilityStatus>,
+) -> Option<CapabilityStatus> {
+    match (backend, event) {
+        (backend, None) => backend,
+        (None, event) => event,
+        (Some(backend), Some(event)) => {
+            if backend.is_supported() {
+                Some(event)
+            } else {
+                Some(backend)
+            }
+        }
+    }
+}
+
+/// Runs the local missing-event-handler check for one open template.
+///
+/// Node publishes event-handler diagnostics itself and reports a `Supported`
+/// diagnostics capability, so the local check only fills the gap for a
+/// degraded or absent backend. A host without a prepared view (synthetic or
+/// project-less documents) stays quiet instead of failing the publish.
+fn local_event_diagnostics(server: &Server, document: &Document) -> EventDiagnostics {
+    if server.capabilities.diagnostics.is_supported() {
+        return EventDiagnostics::empty();
+    }
+    let Ok(view) = server.host.analysis(document.snapshot()) else {
+        return EventDiagnostics::empty();
+    };
+    crate::semantics::event_diagnostics::diagnostics(&view, document.text())
 }
 
 impl Server {
@@ -295,7 +352,7 @@ impl Server {
             self.cancel_debounced_diagnostics(&uri);
             let _ = self.schedule_diagnostics(&uri);
         }
-        let style_paths: std::collections::HashSet<&str> =
+        let style_paths: HashSet<&str> =
             update.style_views.iter().map(ProjectPath::as_str).collect();
         let style_uris: Vec<String> = self
             .workspace
@@ -617,6 +674,7 @@ impl Server {
             return Vec::new();
         };
         let local = self.host.style_diagnostics(document.snapshot());
+        let event = local_event_diagnostics(self, document);
         let (backend, status, failure) = match done.outcome {
             Ok(Outcome::Diagnostics(result)) => {
                 self.backend_diagnostics.insert(
@@ -665,7 +723,14 @@ impl Server {
                 (Vec::new(), Some(status), false)
             }
         };
-        let mut params = publish_value(document, &backend, &local, status.as_ref(), failure);
+        let mut params = publish_value(
+            document,
+            &backend,
+            &local,
+            &event.diagnostics,
+            merged_status(status, event.status).as_ref(),
+            failure,
+        );
         let mode = super::mode_diagnostics::diagnostics(document);
         if !mode.is_empty() {
             if let Some(diagnostics) = params.get_mut("diagnostics").and_then(Value::as_array_mut) {
@@ -682,26 +747,38 @@ impl Server {
             return Vec::new();
         };
         let local = self.host.style_diagnostics(document.snapshot());
+        let event = local_event_diagnostics(self, document);
         let cached = self
             .backend_diagnostics
             .get(uri)
             .filter(|cached| self.workspace.is_current(&cached.stamp))
             .cloned();
-        if cached.is_none() && local.is_empty() {
-            return Vec::new();
-        }
         let mode = super::mode_diagnostics::diagnostics(document);
-        if cached.is_none() && local.is_empty() && mode.is_empty() {
+        if cached.is_none() && local.is_empty() && event.diagnostics.is_empty() && mode.is_empty() {
             return Vec::new();
         }
+        let status = merged_status(
+            cached.as_ref().map(|cached| cached.status.clone()),
+            event.status,
+        );
         let mut params = cached.map_or_else(
-            || publish_value(document, &[], &local, None, false),
+            || {
+                publish_value(
+                    document,
+                    &[],
+                    &local,
+                    &event.diagnostics,
+                    status.as_ref(),
+                    false,
+                )
+            },
             |cached| {
                 publish_value(
                     document,
                     &cached.diagnostics,
                     &local,
-                    Some(&cached.status),
+                    &event.diagnostics,
+                    status.as_ref(),
                     false,
                 )
             },
@@ -716,57 +793,4 @@ impl Server {
 }
 
 #[cfg(test)]
-mod tests {
-    use serde_json::json;
-
-    use super::*;
-
-    #[test]
-    fn status_diagnostics_explain_the_degradation() {
-        let value = status_diagnostic(&CapabilityStatus::Disabled {
-            reason: "policy".to_owned(),
-        });
-        assert_eq!(value["severity"], json!(2));
-        assert!(
-            value["message"]
-                .as_str()
-                .expect("message")
-                .contains("disabled")
-        );
-        assert!(
-            value["message"]
-                .as_str()
-                .expect("message")
-                .contains("policy")
-        );
-        let dirty = status_diagnostic(&CapabilityStatus::Partial {
-            reason: "x\u{1b}[2Jy".to_owned(),
-        });
-        let message = dirty["message"].as_str().expect("message");
-        assert!(!message.contains('\u{1b}'), "{message}");
-        assert!(message.contains("x [2Jy"), "{message}");
-        let bare = status_diagnostic(&CapabilityStatus::Unknown { reason: None });
-        assert_eq!(bare["message"], json!("type checking is unknown"));
-    }
-
-    #[test]
-    fn failure_diagnostics_hide_backend_details() {
-        let value = failure_diagnostic();
-        let message = value["message"].as_str().expect("message");
-        assert!(message.contains("unavailable"), "{message}");
-        assert!(!message.contains('/'), "{message}");
-        assert_eq!(failure_message(&BackendError::Timeout), "backend timed out");
-        assert_eq!(
-            failure_message(&BackendError::Protocol("frame".to_owned())),
-            "backend protocol error"
-        );
-        assert_eq!(
-            failure_message(&BackendError::Cancelled),
-            "backend request cancelled"
-        );
-        assert_eq!(
-            failure_message(&BackendError::Internal("bug".to_owned())),
-            "backend internal error"
-        );
-    }
-}
+mod tests;

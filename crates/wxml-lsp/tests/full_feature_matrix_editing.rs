@@ -24,7 +24,7 @@ use support::{
     Session, TempProject, apply_completion_item, apply_edits, assert_parses_cleanly,
     definition_uris, diagnostic_codes, item, labels, link_targets, offset_at, position_at,
 };
-use wxml_types::{Backend, MockBackend};
+use wxml_types::{Backend, BackendCapabilities, CapabilityStatus, MockBackend};
 
 fn hover_text(hover: &Value) -> String {
     hover["contents"]["value"]
@@ -760,5 +760,102 @@ fn it_13_event_handler_definition_uses_script_facts_without_a_type_backend() {
         assert!(definition.is_null(), "{needle}: {definition}");
     }
 
+    session.finish();
+}
+
+/// Starts a session whose backend reports a degraded diagnostics capability.
+///
+/// The local missing-event-handler check only fills that gap, so this is the
+/// real dispatch path a native/absent backend takes.
+fn start_with_partial_diagnostics(project: &TempProject) -> Session {
+    Session::start_with(project, json!({}), json!({}), |_| {
+        let backend = MockBackend::new();
+        let capabilities = BackendCapabilities {
+            diagnostics: CapabilityStatus::Partial {
+                reason: "native fragment diagnostics only".to_owned(),
+            },
+            ..backend.capabilities()
+        };
+        backend.set_capabilities(capabilities);
+        Arc::new(backend) as Arc<dyn Backend>
+    })
+}
+
+/// IT-14: missing event-handler diagnostics are published from Rust script
+/// facts without Node or a type backend.
+///
+/// The range is the exact handler token, the message matches the Node oracle,
+/// and dynamic/empty/member values stay quiet. A handler that exists is never
+/// reported, and removing the only missing binding clears the publish.
+#[test]
+fn it_14_missing_event_handler_diagnostics_use_script_facts() {
+    let project = TempProject::new("wxml-it14");
+    project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
+    let script = "Page({\n  onTap() {},\n  保存() {},\n});";
+    project.write("pages/index/index.ts", script);
+    project.write("pages/index/index.wxml", "<view />");
+    let mut session = start_with_partial_diagnostics(&project);
+    let uri = project.uri("pages/index/index.wxml");
+    let template = concat!(
+        "🙂<view bindtap=\"onTap\" />\n",
+        "<view catch:tap=\"保存\" />\n",
+        "<view bind:tap=\"missing\" />\n",
+        "<view bindtap=\"{{dynamic}}\" />\n",
+        "<view bindtap=\"\" />\n",
+        "<view bindtap=\"this.onTap\" />",
+    );
+    session.open_wxml(&uri, template, 1);
+
+    let published = session.diagnostics_version(&uri, 1);
+    let diagnostics = published["params"]["diagnostics"]
+        .as_array()
+        .expect("diagnostics");
+    assert_eq!(diagnostics.len(), 1, "{published}");
+    let diagnostic = &diagnostics[0];
+    assert_eq!(diagnostic["severity"], json!(1), "{published}");
+    assert_eq!(diagnostic["source"], json!("wxml-lsp"), "{published}");
+    assert!(diagnostic.get("code").is_none(), "{published}");
+    assert_eq!(
+        diagnostic["message"],
+        json!("Event handler \"missing\" for \"tap\" is not defined on this page")
+    );
+    let (start, end) = byte_range(template, &diagnostic["range"]);
+    assert_eq!(&template[start..end], "missing");
+
+    let cleared = "<view bindtap=\"onTap\" />\n<view catch:tap=\"保存\" />";
+    session.change(&uri, cleared, 2);
+    let published = session.diagnostics_version(&uri, 2);
+    assert!(
+        published["params"]["diagnostics"]
+            .as_array()
+            .is_some_and(Vec::is_empty),
+        "{published}"
+    );
+
+    session.finish();
+}
+
+/// IT-14b: a synthetic template has no prepared view; the local event check
+/// stays quiet instead of failing the publish.
+#[test]
+fn it_14b_synthetic_templates_do_not_crash_event_diagnostics() {
+    let project = TempProject::new("wxml-it14b");
+    project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
+    project.write("pages/index/index.ts", "Page({ onTap() {} });");
+    project.write("pages/index/index.wxml", "<view />");
+    let mut session = start_with_partial_diagnostics(&project);
+    let uri = "untitled:Untitled-1";
+    session.open_wxml(uri, "<view bindtap=\"missing\" />", 1);
+    let published = session.diagnostics_version(uri, 1);
+    assert!(
+        published["params"]["diagnostics"]
+            .as_array()
+            .is_some_and(
+                |diagnostics| diagnostics.iter().all(|diagnostic| !diagnostic["message"]
+                    .as_str()
+                    .is_some_and(|message| message.contains("missing")))
+            ),
+        "{published}"
+    );
     session.finish();
 }
