@@ -28,7 +28,9 @@ published to the Zed extension marketplace.
   reuse an existing install, set `WASI_SDK_PATH` to the directory containing
   `bin/clang`.
 - A built `wxml-lsp` binary from this repository.
-- For type-aware features, the TypeScript backend and **Node.js >= 24**.
+- For type-aware features with the current default backend: the TypeScript
+  backend and **Node.js >= 24**. The native package does not need Node, but the
+  extension itself never selects a backend; `wxml-lsp` owns that decision.
 
 ## 1. Build the language server
 
@@ -42,7 +44,8 @@ cargo build -p wxml-lsp --release
 
 The binary is at `target/debug/wxml-lsp` or `target/release/wxml-lsp`.
 
-Type-aware features additionally require the TypeScript backend:
+For a local Node-backed development setup, type-aware features additionally
+require the TypeScript backend:
 
 ```bash
 cd backends/typescript
@@ -50,25 +53,12 @@ npm ci
 npm run build
 ```
 
-Then point the server at the built backend before launching Zed:
-
-```bash
-export WXML_TYPE_BACKEND=/absolute/path/to/wxml-lsp/backends/typescript/dist/server.js
-# optional: override the backend working directory (contains node_modules)
-# export WXML_BACKEND_DIR=/absolute/path/to/wxml-lsp/backends/typescript
-```
-
-`WXML_TYPE_BACKEND` must be absolute; the server rejects relative values.
-`WXML_BACKEND_DIR` is not a replacement for the server path: it overrides the
-backend working directory (the directory containing `node_modules`), defaults
-to the parent of `dist/`, and must also be absolute. Without
-`WXML_TYPE_BACKEND`, `wxml-lsp` only probes an executable-relative backend
-layout (`backends/typescript/dist/server.js` or
-`wxml-type-backend/server.js`) and otherwise degrades to syntax-only
-diagnostics. It never probes the process working directory. Set `WXML_NODE` to
-an executable name or an absolute path if `node` is not on Zed's `PATH`.
-`WXML_ANALYZE_TIMEOUT_MS` (default 15000) and `WXML_TEMPLATE_CHECK`
-(`off`/`pragma`/`inherit`, default `pragma`) are optional.
+Backend selection belongs to `wxml-lsp`, not to this extension. The extension
+starts the binary with `--stdio` and does **not** forward
+`WXML_TYPE_BACKEND`, `WXML_BACKEND_DIR` or `WXML_NODE`; the installed native
+package needs none of them. `WXML_ANALYZE_TIMEOUT_MS` (default 15000) and
+`WXML_TEMPLATE_CHECK` (`off`/`pragma`/`inherit`, default `pragma`) are the only
+variables the extension adds to the server command.
 
 ## 2. Install the dev extension
 
@@ -104,8 +94,7 @@ instead of using the GUI flow:
 with `index.json` marking `wxml-lsp` as `dev = true` and including the WXML
 language entry. This is an equivalent manual dev install, not a substitute for
 validating the standard UI flow. Restart Zed after placing it, and export
-`WXML_LSP_BIN` (plus `WXML_TYPE_BACKEND` for type features) in the shell that
-starts Zed; see section 3.
+`WXML_LSP_BIN` in the shell that starts Zed; see section 3.
 
 Zed normally builds the pinned grammar during `install dev extension`. To
 reproduce the real grammar artifact with wasi-sdk 34, from a
@@ -129,10 +118,6 @@ Export absolute paths in the environment Zed inherits, then restart Zed:
 
 ```bash
 export WXML_LSP_BIN=/absolute/path/to/wxml-lsp/target/debug/wxml-lsp
-# local development: point at the built TypeScript backend
-export WXML_TYPE_BACKEND=/absolute/path/to/wxml-lsp/backends/typescript/dist/server.js
-# optional: backend working directory (contains node_modules)
-# export WXML_BACKEND_DIR=/absolute/path/to/wxml-lsp/backends/typescript
 ```
 
 The extension reads the variable from Zed's shell environment
@@ -143,9 +128,13 @@ Zed started is not visible until Zed is restarted from that environment.
 `target/...` probing and no `PATH` lookup. Opening an untrusted project does
 not by itself make the extension run a project-controlled executable.
 
+The extension does not forward the legacy Node variables
+`WXML_TYPE_BACKEND`, `WXML_BACKEND_DIR` or `WXML_NODE`. Do not use them to
+select a backend; the native package requires none of them.
+
 `Worktree::shell_env` still includes Zed's shell environment. If direnv is
 enabled and a project's `.envrc` has been explicitly allowed, that `.envrc` is
-a shell-environment source and can set `WXML_LSP_BIN` (or backend variables).
+a shell-environment source and can set `WXML_LSP_BIN`.
 Allowing `.envrc` already executes project code, so review the file before
 running `direnv allow`; the extension only validates the resulting path.
 
@@ -173,18 +162,19 @@ string-based on purpose: the extension is compiled to `wasm32-wasip2`, whose
 path APIs have POSIX semantics and would misclassify Windows drive/UNC paths on
 a Windows host.
 
-## Backend environment forwarding
+## Server environment forwarding
 
-The extension adds these variables from the shell environment to the language
-server command when present:
+The extension adds only these non-legacy tuning variables from the shell
+environment to the language server command when present:
 
 | Variable | Constraint |
 | --- | --- |
-| `WXML_TYPE_BACKEND` | Absolute `server.js` path; relative values are rejected |
-| `WXML_BACKEND_DIR` | Absolute backend directory containing `node_modules`; defaults to the parent of `dist/`; does not select `server.js` |
-| `WXML_NODE` | Executable name or absolute path; default `node` |
 | `WXML_ANALYZE_TIMEOUT_MS` | Per-request timeout in milliseconds; default `15000` |
 | `WXML_TEMPLATE_CHECK` | `off` / `pragma` / `inherit`; default `pragma` |
+
+`WXML_TYPE_BACKEND`, `WXML_BACKEND_DIR` and `WXML_NODE` are deliberately not
+forwarded (delivery contract §8.6). The extension never injects them, and the
+native package must not need them.
 
 Their full semantics are documented in
 [crates/wxml-lsp/src/main.rs](../../crates/wxml-lsp/src/main.rs).
@@ -218,7 +208,7 @@ The optional `projectRoot` defaults to that entry's `root`:
 | Field | Meaning |
 | --- | --- |
 | `root` | Directory containing the mini-program's `app.json` |
-| `projectRoot` | Type-backend project directory containing `tsconfig.json`; not the backend executable directory selected by `WXML_BACKEND_DIR` |
+| `projectRoot` | Type-backend project directory containing `tsconfig.json`; independent of any backend-selection environment variable |
 
 Both paths are relative to the **LSP workspace root** (`rootUri`, or the first
 `workspaceFolders` root), not the `.zed` directory. For example, opening the
@@ -384,7 +374,7 @@ cargo build --target wasm32-wasip2 --release --locked
 The last two commands require the `wasm32-wasip2` target. Zed performs the same
 build during `install dev extension`.
 
-Current snapshot (2026-11-16): all six commands pass; `cargo test --locked`
-reports 22 passed (1 suite). The built extension wasm is 7,633,946 B (debug)
+Current snapshot (2026-11-20): all six commands pass; `cargo test --locked`
+reports 26 passed (1 suite). The built extension wasm is 7,633,946 B (debug)
 and 238,792 B (release); the real grammar artifact is about 23,806 B
 (gitignored).
