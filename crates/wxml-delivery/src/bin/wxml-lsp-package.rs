@@ -56,16 +56,20 @@ immutable, content-addressed cache. This build never downloads:
   --lock FILE               repository assets.lock.json (required)
   --cache DIR               absolute cache directory (required; 0700 on create)
   --from-dir DIR            absolute directory containing the exact locked
-                            tarball file names (the only accepted source)
-  --offline                 reserved for scripts; this build is always offline
-                            and never contacts the network
-  --print-plan              print cache keys, hits and sources; write nothing
+                            tarball file names
+  --offline                 default behavior: nothing is downloaded; cached
+                            verified tarballs may be reused without --from-dir
+  --print-plan              print cache keys, payload/archive hits and sources;
+                            write nothing
   --allow-download          rejected: the HTTPS download path is not implemented
   --help                    print this message
 
-Every cache hit is re-hashed (provenance, payload files, tree digest and
-bundles); corrupt or foreign entries fail closed and are never repaired in
-place. This command never executes node/npm/npx/pnpm/yarn.";
+Provisioning stores every verified tarball in a content-addressed archive cache
+(`archives/<asset>/<sha256>-<size>`), so a later run can rebuild the payload
+after the source tarballs are deleted. Every payload and archive hit is
+re-hashed against the submitted lock (size, SHA-256 and SHA-512 SRI); corrupt or
+foreign entries fail closed and are never repaired in place. This command never
+downloads and never executes node/npm/npx/pnpm/yarn.";
 
 const NATIVE_USAGE: &str = "\
 Usage: wxml-lsp-package native --input DIR --output DIR --assets-lock FILE --cache DIR [OPTIONS]
@@ -298,7 +302,6 @@ fn parse_provision_options(
             }
             "--offline" => {
                 offline = true;
-                eprintln!("note: --offline is reserved; this build always runs offline");
             }
             "--print-plan" => print_plan = true,
             "--allow-download" => allow_download = true,

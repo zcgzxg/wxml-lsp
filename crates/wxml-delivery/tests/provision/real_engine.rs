@@ -10,8 +10,8 @@ use wxml_delivery::error::DeliveryError;
 use wxml_delivery::provision::{SourceKind, plan, provision, provision_asset};
 
 use crate::support::{
-    Spec, TempDir, npm_tar_gz, provision_options, sha256_hex, sha512_sri, tree_digest_pairs,
-    valid_value, write_repo_lock_value,
+    Spec, TempDir, mode_of, npm_tar_gz, provision_options, sha256_hex, sha512_sri,
+    tree_digest_pairs, valid_value, write_repo_lock_value,
 };
 
 const ENGINE_TARBALL_NAME: &str = "typescript-linux-x64-7.1.0-beta.tgz";
@@ -247,7 +247,7 @@ fn real_engine_provisions_and_full_run_uses_cache() {
 
     let cache = temp.path().join("cache");
     let mut options = provision_options(&lock_path, &cache);
-    options.from_dir = Some(from_dir);
+    options.from_dir = Some(from_dir.clone());
     options.offline = true;
     let report = provision(&options).unwrap();
     assert_eq!(report.lock_sha256, lock.lock_sha256().unwrap());
@@ -312,7 +312,70 @@ fn real_engine_provisions_and_full_run_uses_cache() {
     assert_eq!(fs::read_dir(entries).unwrap().count(), 2);
 
     assert_cli_reports(&lock_path, &cache);
+    archive_cache_rebuilds_payload(
+        &lock_path,
+        &cache,
+        &from_dir,
+        engine_value["payload"]["treeDigest"].as_str().unwrap(),
+    );
     assert_eq!(lock.assets.len(), 2);
+}
+
+/// P8a: the verified archive cache alone must rebuild both payloads after the
+/// payload cache and the whole source directory are deleted.
+fn archive_cache_rebuilds_payload(
+    lock_path: &Path,
+    cache: &Path,
+    from_dir: &Path,
+    engine_tree_digest: &str,
+) {
+    assert_eq!(mode_of(&cache.join("archives")), 0o700);
+    let engine_archive = cache
+        .join("archives")
+        .join(crate::fixtures::ENGINE_ASSET)
+        .join(format!(
+            "{}-{}",
+            crate::fixtures::ENGINE_SHA256,
+            crate::fixtures::ENGINE_TARBALL_SIZE
+        ));
+    assert_eq!(mode_of(&engine_archive), 0o700);
+    assert_eq!(mode_of(&engine_archive.join("archive.tgz")), 0o600);
+    fs::remove_dir_all(cache.join("assets")).unwrap();
+    fs::remove_dir_all(from_dir).unwrap();
+
+    let mut archive_only = provision_options(lock_path, cache);
+    archive_only.from_dir = None;
+    let archive_plan = plan(&archive_only).unwrap();
+    assert!(archive_plan.assets.iter().all(|asset| !asset.cache_hit));
+    assert!(
+        archive_plan
+            .assets
+            .iter()
+            .all(|asset| asset.source == Some(SourceKind::ArchiveCache))
+    );
+    let rebuilt = provision(&archive_only).unwrap();
+    assert_eq!(rebuilt.entries.len(), 2);
+    assert!(
+        rebuilt
+            .entries
+            .iter()
+            .all(|entry| entry.source == SourceKind::ArchiveCache)
+    );
+    let rebuilt_engine = rebuilt
+        .entries
+        .iter()
+        .find(|entry| entry.name == crate::fixtures::ENGINE_ASSET)
+        .unwrap();
+    assert_eq!(
+        rebuilt_engine.file_count,
+        crate::fixtures::ENGINE_FILE_COUNT
+    );
+    assert_eq!(
+        rebuilt_engine.total_bytes,
+        crate::fixtures::ENGINE_UNPACKED_SIZE
+    );
+    assert_eq!(rebuilt_engine.payload_tree_digest, engine_tree_digest);
+    assert!(cache.join("assets").is_dir());
 }
 
 fn assert_cli_reports(lock_path: &Path, cache: &Path) {

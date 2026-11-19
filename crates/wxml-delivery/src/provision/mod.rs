@@ -1,27 +1,32 @@
 //! Build-time provisioning of locked npm assets (F3-03 L2).
 //!
-//! The provisioner turns the submitted `assets.lock.json` plus local npm
+//! The provisioner turns the submitted `assets.lock.json` plus verified npm
 //! tarballs into an immutable, content-addressed cache. It never downloads:
-//! the only accepted source is `--from-dir`. `--offline` is therefore the
-//! effective mode of this build; `--allow-download` is rejected explicitly
-//! until the HTTPS path is implemented.
+//! the only accepted inputs are `--from-dir` and the verified archive cache.
+//! `--offline` is therefore the effective mode of this build;
+//! `--allow-download` is rejected explicitly until the HTTPS path is
+//! implemented.
 //!
 //! # Pipeline
 //!
 //! 1. P0: read, parse and validate the repository lock before any cache I/O.
 //! 2. P1: require a linux-x64 host (the lock is currently frozen to it).
-//! 3. P2: look up the cache key `<payload.treeDigest>.<lockSha256[..16]>`.
-//! 4. P3-P5: stage the exact `--from-dir` tarball and verify size/SRI/SHA-256
-//!    before extraction.
+//! 3. P2: look up the payload key `<payload.treeDigest>.<lockSha256[..16]>`.
+//! 4. P3-P5: stage one exact tarball (from `--from-dir` or the verified
+//!    archive cache) and verify size/SRI/SHA-256 against the lock.
 //! 5. P6-P7: safely unpack a npm tarball (`package/` prefix, normalized modes)
 //!    and verify every upstream byte before assembling the payload.
 //! 6. P8: write provenance, the submitted lock and payload checksums, fsync and
 //!    atomically rename into `assets/<name>/<key>/`.
-//! 7. P9: every cache hit is re-hashed; a corrupt or foreign entry is never
-//!    repaired in place.
+//! 7. P8a: publish the staged, verified tarball into the content-addressed
+//!    archive cache `archives/<name>/<sha256>-<size>/`, so a later offline run
+//!    can reassemble the payload after the source tarball is gone.
+//! 8. P9: every cache hit is re-hashed; a corrupt or foreign entry is never
+//!    repaired in place and never falls back to the network.
 //!
 //! No function in this module starts a process or executes Node/npm.
 
+mod archive_cache;
 mod assemble;
 mod entry;
 mod extract;
@@ -37,6 +42,7 @@ use crate::error::{DeliveryError, Result};
 use crate::manifest::set_mode;
 use crate::paths::{validate_relative_path, validate_sha256};
 
+pub use archive_cache::CACHE_ARCHIVES_DIR;
 pub use extract::extract_npm_tar_gz;
 
 /// Cache directory holding immutable provisioned entries.
@@ -78,7 +84,9 @@ pub struct ProvisionOptions {
 pub enum SourceKind {
     /// Staged from `--from-dir`.
     FromDir,
-    /// Read from an existing, fully re-verified cache entry.
+    /// Reassembled from the verified, content-addressed tarball archive cache.
+    ArchiveCache,
+    /// Read from an existing, fully re-verified payload cache entry.
     Cache,
 }
 
@@ -88,6 +96,7 @@ impl SourceKind {
     pub const fn label(self) -> &'static str {
         match self {
             Self::FromDir => "from-dir",
+            Self::ArchiveCache => "archive-cache",
             Self::Cache => "cache",
         }
     }
@@ -100,7 +109,7 @@ pub struct AssetPlan {
     pub name: String,
     /// `<payload.treeDigest>.<lockSha256[..16]>`.
     pub cache_key: String,
-    /// Whether an entry directory with provenance is present.
+    /// Whether a payload entry directory with provenance is present.
     pub cache_hit: bool,
     /// Source that `provision` would use, if any.
     pub source: Option<SourceKind>,
@@ -276,6 +285,7 @@ pub fn plan(options: &ProvisionOptions) -> Result<ProvisionPlan> {
     let context = LockContext::load(options, false)?;
     check_existing_private_subdir(&context.cache, CACHE_ASSETS_DIR)?;
     check_existing_private_subdir(&context.cache, CACHE_TMP_DIR)?;
+    check_existing_private_subdir(&context.cache, CACHE_ARCHIVES_DIR)?;
     let mut states = Vec::with_capacity(context.lock.assets.len());
     for asset in &context.lock.assets {
         let entry_dir = cache_entry_dir(&context.cache, asset, &context.lock_sha256)?;
@@ -298,9 +308,12 @@ pub fn plan(options: &ProvisionOptions) -> Result<ProvisionPlan> {
         let source = if state == CacheState::Present {
             Some(SourceKind::Cache)
         } else if let Some(directory) = from_dir.as_deref() {
-            source::find_tarball(directory, asset)?.map(|_| SourceKind::FromDir)
+            match source::find_tarball(directory, asset)? {
+                Some(_) => Some(SourceKind::FromDir),
+                None => archive_cache::available(&context.cache, asset)?,
+            }
         } else {
-            None
+            archive_cache::available(&context.cache, asset)?
         };
         assets.push(AssetPlan {
             name: asset.name.clone(),
@@ -318,8 +331,10 @@ pub fn plan(options: &ProvisionOptions) -> Result<ProvisionPlan> {
 
 /// Provisions every locked asset into the cache.
 ///
-/// Cache hits are re-verified with P9; misses require `--from-dir`. Failures
-/// remove the temporary workspace and never leave a partial cache entry.
+/// Payload hits are re-verified with P9. A miss is rebuilt from `--from-dir` or
+/// from the verified content-addressed archive cache, so the source tarball is
+/// only needed once. Failures remove the temporary workspace and never leave a
+/// partial payload or archive entry.
 ///
 /// # Errors
 ///
@@ -356,6 +371,12 @@ pub fn provision(options: &ProvisionOptions) -> Result<ProvisionReport> {
 /// per-asset pipeline re-checks the upstream/payload tables but does not repeat
 /// the frozen-constant reconciliation.
 ///
+/// A payload hit is re-verified. A miss is rebuilt from the exact
+/// `--from-dir` tarball, or from the verified content-addressed archive cache
+/// when the source tarball is gone. The tarball is always re-verified against
+/// the submitted lock before extraction; cache metadata and directory names are
+/// never trusted on their own.
+///
 /// # Errors
 ///
 /// See [`provision`].
@@ -386,16 +407,24 @@ pub fn provision_asset(
         CacheState::Missing => {}
     }
     let from_dir = source::prepare_from_dir(from_dir)?;
-    let Some(from_dir) = from_dir else {
-        return Err(no_source_error(asset, "no --from-dir was supplied"));
+    let from_tarball = match from_dir.as_deref() {
+        Some(directory) => source::find_tarball(directory, asset)?,
+        None => None,
+    };
+    let (tarball, origin) = if let Some(tarball) = from_tarball {
+        (tarball, SourceKind::FromDir)
+    } else if let Some(tarball) = archive_cache::present(&cache, asset)? {
+        (tarball, SourceKind::ArchiveCache)
+    } else {
+        let detail = if from_dir.is_some() {
+            let file_name = source::tarball_file_name(asset)?;
+            format!("`{file_name}` is missing from --from-dir")
+        } else {
+            "no --from-dir was supplied".to_owned()
+        };
+        return Err(no_source_error(asset, &detail));
     };
     let file_name = source::tarball_file_name(asset)?;
-    let Some(tarball) = source::find_tarball(&from_dir, asset)? else {
-        return Err(no_source_error(
-            asset,
-            &format!("`{file_name}` is missing from --from-dir"),
-        ));
-    };
     source::provision_new_entry(
         asset,
         &cache,
@@ -404,6 +433,7 @@ pub fn provision_asset(
         file_name,
         lock_sha256,
         lock_bytes,
+        origin,
     )
 }
 
@@ -616,7 +646,7 @@ pub(super) fn is_already_exists(error: &DeliveryError) -> bool {
     )
 }
 
-fn require_private_mode(metadata: &std::fs::Metadata, label: &str) -> Result<()> {
+pub(super) fn require_private_mode(metadata: &std::fs::Metadata, label: &str) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -654,7 +684,7 @@ pub(super) fn create_directory(path: &Path, mode: u32) -> Result<()> {
 fn no_source_error(asset: &Asset, detail: &str) -> DeliveryError {
     let name = source::tarball_file_name(asset).unwrap_or("the locked tarball");
     DeliveryError::InvalidArgument(format!(
-        "asset `{}` has no verified cache entry and no usable source: {detail}; pass --from-dir <dir> containing `{name}` (network downloads are not implemented)",
+        "asset `{}` has no verified payload or archive cache entry and no usable source: {detail}; pass --from-dir <dir> containing `{name}` (provisioning never downloads)",
         asset.name
     ))
 }
@@ -675,7 +705,7 @@ fn cache_entry_dir(cache: &Path, asset: &Asset, lock_sha256: &str) -> Result<Pat
         .join(cache_key(asset, lock_sha256)?))
 }
 
-fn validate_asset_name(asset: &Asset) -> Result<()> {
+pub(super) fn validate_asset_name(asset: &Asset) -> Result<()> {
     if asset.name.is_empty()
         || asset.name.len() > 64
         || asset

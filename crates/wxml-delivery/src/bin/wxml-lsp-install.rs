@@ -60,7 +60,10 @@ binary or Node backend, never probes `node --version`, and never reactivates a
 legacy package as a rollback target. `env` prints only WXML_LSP_BIN.
 
 Download is disabled unless --enable-download is passed with a remote source.
-A local --from-dir is an explicit offline source. WXML_LSP_BIN always takes
+A local --from-dir is an explicit offline source. Every verified release
+archive is cached privately under the install root; `--offline` re-verifies a
+cached archive against the exact index.json (also cached from the last explicit
+source) and never contacts the network. WXML_LSP_BIN always takes
 precedence: when set it is validated and used, and no install or download is
 attempted; when set but invalid the command fails and never falls back.
 
@@ -287,7 +290,7 @@ fn install(options: &Options) -> Result<()> {
                 options,
                 &root,
                 &lock,
-                source,
+                Some(source),
                 &bytes,
                 AcquireModeV2::Exact(version),
             );
@@ -296,6 +299,15 @@ fn install(options: &Options) -> Result<()> {
             return Err(unsupported_index_schema(schema));
         }
         reject_v1_over_native(&root)?;
+    } else if let Some(bytes) = wxml_delivery::acquire_v2::read_cached_native_index(&root)? {
+        return install_native_version(
+            options,
+            &root,
+            &lock,
+            None,
+            &bytes,
+            AcquireModeV2::Exact(version),
+        );
     } else if active_is_native(&root)? {
         return Err(native_source_required());
     }
@@ -329,7 +341,7 @@ fn upgrade(options: &Options) -> Result<()> {
                 options,
                 &root,
                 &lock,
-                source,
+                Some(source),
                 &bytes,
                 AcquireModeV2::Latest,
             );
@@ -338,6 +350,8 @@ fn upgrade(options: &Options) -> Result<()> {
             return Err(unsupported_index_schema(schema));
         }
         reject_v1_over_native(&root)?;
+    } else if let Some(bytes) = wxml_delivery::acquire_v2::read_cached_native_index(&root)? {
+        return install_native_version(options, &root, &lock, None, &bytes, AcquireModeV2::Latest);
     } else if active_is_native(&root)? {
         return Err(native_source_required());
     }
@@ -477,14 +491,21 @@ fn install_native_version(
     options: &Options,
     root: &InstallRoot,
     lock: &InstallLock,
-    source: &Source,
+    source: Option<&Source>,
     index_bytes: &[u8],
     mode: AcquireModeV2,
 ) -> Result<()> {
     let index = wxml_delivery::index_v2::parse_index_v2(index_bytes)?;
+    if source.is_some() {
+        // Keep the exact descriptor that the user's explicit source supplied so
+        // a later `--offline` command can select and re-verify cached archives
+        // without any source tarball. Archives are always re-verified against
+        // this index; the cache is never its own authority.
+        wxml_delivery::acquire_v2::store_native_index(root, index_bytes)?;
+    }
     let acquired = acquire_v2(&AcquireOptionsV2 {
         root,
-        source: Some(source),
+        source,
         index: &index,
         mode,
         allow_download: options.enable_download,
@@ -600,7 +621,7 @@ fn reject_v1_over_native(root: &InstallRoot) -> Result<()> {
 
 fn native_source_required() -> DeliveryError {
     DeliveryError::InstallState(
-        "a native source is required; offline installs need --from-dir because no native archive cache is implemented"
+        "a native release index is required: no source was supplied and no cached native index exists; pass --from-dir containing index.json (archives are reused from the verified cache)"
             .to_owned(),
     )
 }

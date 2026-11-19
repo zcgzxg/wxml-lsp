@@ -1148,3 +1148,357 @@ fn concurrent_legacy_and_native_install_cannot_wedge_state() {
     let mut verify = command_for(&root, "verify");
     assert_success(&run(&mut verify));
 }
+
+fn private_mode(path: &Path) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    fs::symlink_metadata(path).unwrap().permissions().mode() & 0o777
+}
+
+/// Returns `(version, entry directory)` for every native archive cache entry.
+fn native_cache_entries(root: &Path) -> Vec<(String, PathBuf)> {
+    let directory = root.join("cache/v2");
+    let Ok(entries) = fs::read_dir(&directory) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Ok(bytes) = fs::read(path.join("entry.json")) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        if let Some(version) = value["version"].as_str() {
+            found.push((version.to_owned(), path));
+        }
+    }
+    found.sort_by(|left, right| left.0.cmp(&right.0));
+    found
+}
+
+fn cached_archive(root: &Path, version: &str) -> PathBuf {
+    native_cache_entries(root)
+        .into_iter()
+        .find(|(cached, _)| cached == version)
+        .unwrap_or_else(|| panic!("no native archive cache entry for {version}"))
+        .1
+        .join("archive.tar.gz")
+}
+
+/// Copies only `index.json`; every archive is expected to come from the cache.
+fn index_only_source(release: &Path, destination: &Path) -> PathBuf {
+    fs::create_dir_all(destination).unwrap();
+    fs::copy(release.join("index.json"), destination.join("index.json")).unwrap();
+    destination.to_path_buf()
+}
+
+fn rollback_to(root: &Path, version: &str) -> Output {
+    let mut command = installer();
+    command.args([
+        "rollback",
+        "--root",
+        root.to_str().unwrap(),
+        "--to",
+        version,
+        "--offline",
+    ]);
+    run(&mut command)
+}
+
+fn offline_upgrade(root: &Path, shims: &Path, proxy: Option<&str>) -> Output {
+    let mut command = installer();
+    command
+        .env("PATH", shims)
+        .args(["upgrade", "--root", root.to_str().unwrap(), "--offline"]);
+    if let Some(proxy) = proxy {
+        for name in [
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+        ] {
+            command.env(name, proxy);
+        }
+    }
+    run(&mut command)
+}
+
+#[test]
+fn offline_cli_reuses_the_verified_native_archive_cache_without_network() {
+    use std::net::TcpListener;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    let base = TempDir::new("native-cli-cache-reuse");
+    let release = pack_native_release(
+        base.path(),
+        &[(V1, Scripts::default()), (V2, Scripts::default())],
+    );
+    let root = base.path().join("root");
+    let shims = no_node_path(base.path());
+
+    assert_success(&native_install(&root, &release, V1));
+    assert_success(&native_upgrade(&root, &release, &shims));
+    assert_success(&rollback_to(&root, V1));
+    assert_eq!(active_version(&root), V1);
+
+    let entries = native_cache_entries(&root);
+    assert_eq!(entries.len(), 2, "{entries:?}");
+    for (version, directory) in &entries {
+        assert_eq!(
+            private_mode(directory),
+            0o700,
+            "{version} cache entry must be private"
+        );
+        assert_eq!(private_mode(&directory.join("archive.tar.gz")), 0o600);
+        assert_eq!(private_mode(&directory.join("entry.json")), 0o644);
+    }
+    assert_eq!(private_mode(&root.join("cache/v2")), 0o700);
+    let cached_before: Vec<(String, Vec<u8>)> = entries
+        .iter()
+        .map(|(version, directory)| {
+            (
+                version.clone(),
+                fs::read(directory.join("archive.tar.gz")).unwrap(),
+            )
+        })
+        .collect();
+
+    // A proxy sink: only a TCP connection would increment this counter.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let proxy = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+    let connections = Arc::new(AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let sink = {
+        let connections = Arc::clone(&connections);
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            while !stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok(_) => {
+                        connections.fetch_add(1, Ordering::Relaxed);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        })
+    };
+
+    // The whole source directory is gone: the index and both archives come
+    // from the private cache.
+    fs::remove_dir_all(&release).unwrap();
+
+    let upgrade = offline_upgrade(&root, &shims, Some(&proxy));
+    assert_success(&upgrade);
+    assert!(
+        stdout(&upgrade).contains("upgraded to 0.2.0 (native)"),
+        "{}",
+        stdout(&upgrade)
+    );
+    assert_eq!(active_version(&root), V2);
+    let rollback = rollback_to(&root, V1);
+    assert_success(&rollback);
+    assert_eq!(active_version(&root), V1);
+
+    // `--offline` with a remote source is rejected before any client exists.
+    let mut remote = installer();
+    for name in [
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+    ] {
+        remote.env(name, &proxy);
+    }
+    remote.args([
+        "upgrade",
+        "--root",
+        root.to_str().unwrap(),
+        "--source",
+        "http://127.0.0.1:9/",
+        "--offline",
+    ]);
+    let remote = run(&mut remote);
+    assert_failure(&remote, "offline");
+
+    stop.store(true, Ordering::Relaxed);
+    sink.join().unwrap();
+    assert_eq!(
+        connections.load(Ordering::Relaxed),
+        0,
+        "offline cache installs must never open a network connection"
+    );
+
+    // Cached archives are reused byte for byte and never rewritten.
+    for (version, bytes) in cached_before {
+        assert_eq!(
+            fs::read(cached_archive(&root, &version)).unwrap(),
+            bytes,
+            "{version} cache archive changed"
+        );
+    }
+    let combined = format!("{}{}", stdout(&upgrade), stdout(&rollback));
+    assert!(
+        !combined.contains(root.join("cache").to_string_lossy().as_ref()),
+        "CLI output must not print absolute cache paths: {combined}"
+    );
+    assert_no_node(base.path());
+}
+
+#[test]
+fn offline_cli_cold_archive_cache_fails_closed() {
+    let base = TempDir::new("native-cli-cache-cold");
+    let release = pack_native_release(base.path(), &[(V1, Scripts::default())]);
+    let index_only = index_only_source(&release, &base.path().join("index-only"));
+    let root = base.path().join("root");
+
+    let mut install = installer();
+    install.args([
+        "install",
+        "--root",
+        root.to_str().unwrap(),
+        "--from-dir",
+        index_only.to_str().unwrap(),
+        "--version",
+        V1,
+        "--offline",
+    ]);
+    let result = run(&mut install);
+    assert_failure(&result, "verified cache");
+    assert_failure(&result, "--from-dir");
+    assert!(!root.join("current").exists());
+    assert_eq!(native_cache_entries(&root).len(), 0);
+    if root.join("versions").exists() {
+        assert_eq!(fs::read_dir(root.join("versions")).unwrap().count(), 0);
+    }
+
+    // With no source at all the cached index may exist, but the archive miss is
+    // still fail-closed and current is never created.
+    let mut install = installer();
+    install.args([
+        "install",
+        "--root",
+        root.to_str().unwrap(),
+        "--version",
+        V1,
+        "--offline",
+    ]);
+    let result = run(&mut install);
+    assert_failure(&result, "--from-dir");
+    assert!(!root.join("current").exists());
+    assert_eq!(native_cache_entries(&root).len(), 0);
+}
+
+#[test]
+fn offline_cli_rejects_tampered_native_archive_cache_without_changing_current() {
+    let base = TempDir::new("native-cli-cache-tamper");
+    let release = pack_native_release(base.path(), &[(V1, Scripts::default())]);
+    let index_only = index_only_source(&release, &base.path().join("index-only"));
+    let root = base.path().join("root");
+    assert_success(&native_install(&root, &release, V1));
+    let version_dir = root.join("versions").join(V1);
+    let fingerprint = tree_fingerprint(&version_dir).unwrap();
+
+    let archive = cached_archive(&root, V1);
+    let original = fs::read(&archive).unwrap();
+
+    let mut tampered = original.clone();
+    tampered[0] ^= 0xff;
+    fs::write(&archive, &tampered).unwrap();
+    let mut install = installer();
+    install.args([
+        "install",
+        "--root",
+        root.to_str().unwrap(),
+        "--from-dir",
+        index_only.to_str().unwrap(),
+        "--version",
+        V1,
+        "--offline",
+    ]);
+    let result = run(&mut install);
+    assert_failure(&result, "sri");
+    assert_eq!(active_version(&root), V1);
+    assert_eq!(tree_fingerprint(&version_dir).unwrap(), fingerprint);
+    assert_eq!(fs::read(&archive).unwrap(), tampered);
+
+    fs::write(&archive, &original).unwrap();
+    let file = fs::OpenOptions::new().write(true).open(&archive).unwrap();
+    file.set_len(u64::try_from(original.len()).unwrap() - 1)
+        .unwrap();
+    drop(file);
+    let result = run(&mut install);
+    assert_failure(&result, "size");
+    assert_eq!(active_version(&root), V1);
+    assert_eq!(tree_fingerprint(&version_dir).unwrap(), fingerprint);
+
+    fs::write(&archive, &original).unwrap();
+    let entry = archive.parent().unwrap().join("entry.json");
+    let entry_original = fs::read(&entry).unwrap();
+    let mut value: serde_json::Value = serde_json::from_slice(&entry_original).unwrap();
+    value["sha256"] = serde_json::json!("0".repeat(64));
+    fs::write(&entry, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
+    let result = run(&mut install);
+    assert_failure(&result, "does not match");
+    assert_eq!(active_version(&root), V1);
+    assert_eq!(tree_fingerprint(&version_dir).unwrap(), fingerprint);
+
+    fs::write(&entry, &entry_original).unwrap();
+    fs::remove_file(&archive).unwrap();
+    let result = run(&mut install);
+    assert_failure(&result, "regular archive");
+    assert_eq!(active_version(&root), V1);
+    assert_eq!(tree_fingerprint(&version_dir).unwrap(), fingerprint);
+    assert_eq!(fs::read_dir(root.join("versions")).unwrap().count(), 1);
+    assert_tmp_empty(&root);
+}
+
+#[test]
+fn offline_cli_rejects_a_tampered_cached_index_and_insecure_cache() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let base = TempDir::new("native-cli-cache-index");
+    let release = pack_native_release(base.path(), &[(V1, Scripts::default())]);
+    let root = base.path().join("root");
+    assert_success(&native_install(&root, &release, V1));
+    let version_dir = root.join("versions").join(V1);
+    let fingerprint = tree_fingerprint(&version_dir).unwrap();
+    fs::remove_dir_all(&release).unwrap();
+
+    let index = root.join("cache/v2/index.json");
+    let original = fs::read(&index).unwrap();
+    fs::write(&index, b"{}\n").unwrap();
+    let mut upgrade = installer();
+    upgrade.args(["upgrade", "--root", root.to_str().unwrap(), "--offline"]);
+    let result = run(&mut upgrade);
+    assert_failure(&result, "index");
+    assert_eq!(active_version(&root), V1);
+    assert_eq!(tree_fingerprint(&version_dir).unwrap(), fingerprint);
+    fs::write(&index, &original).unwrap();
+
+    let cache = root.join("cache/v2");
+    fs::set_permissions(&cache, fs::Permissions::from_mode(0o755)).unwrap();
+    let result = run(&mut upgrade);
+    assert_failure(&result, "private");
+    assert_eq!(active_version(&root), V1);
+    assert_eq!(tree_fingerprint(&version_dir).unwrap(), fingerprint);
+    fs::set_permissions(&cache, fs::Permissions::from_mode(0o700)).unwrap();
+
+    // Restoring the mode makes the same command succeed again.
+    let result = run(&mut upgrade);
+    assert_success(&result);
+    assert_eq!(active_version(&root), V1);
+}

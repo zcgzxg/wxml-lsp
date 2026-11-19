@@ -12,7 +12,7 @@ use crate::manifest::{MAX_ARCHIVE_BYTES, set_mode};
 use crate::paths::validate_relative_path;
 use crate::sri::verify_asset_file;
 
-use super::{CACHE_TMP_DIR, CacheEntry, assemble, entry, extract};
+use super::{CACHE_TMP_DIR, CacheEntry, SourceKind, assemble, entry, extract};
 
 const COPY_BUFFER_BYTES: usize = 64 * 1024;
 const TMP_ATTEMPTS: u64 = 32;
@@ -100,6 +100,10 @@ pub(super) fn find_tarball(directory: &Path, asset: &Asset) -> Result<Option<Pat
 }
 
 /// Runs P4-P8 for one asset and returns the resulting cache entry.
+///
+/// `origin` records how `tarball` was obtained. Whichever the origin, the
+/// staged copy is verified against the lock and published to the archive cache
+/// before extraction, so a later offline run does not need the source tarball.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn provision_new_entry(
     asset: &Asset,
@@ -109,23 +113,18 @@ pub(super) fn provision_new_entry(
     file_name: &str,
     lock_sha256: &str,
     lock_bytes: &[u8],
+    origin: SourceKind,
 ) -> Result<CacheEntry> {
     let workspace = TmpWorkspace::new(&cache.join(CACHE_TMP_DIR))?;
     let staged = workspace.path().join(file_name);
     stage_and_verify(tarball, &staged, asset)?;
+    super::archive_cache::store(cache, asset, &staged)?;
     let extracted = workspace.path().join("extracted");
     let files = extract::extract_npm_tar_gz(&staged, &extracted, &asset.extract)?;
     extract::verify_upstream(asset, &files)?;
     let entry_dir = workspace.path().join("entry");
     let summary = assemble::assemble_payload(asset, &extracted, &entry_dir)?;
-    entry::write_metadata(
-        &entry_dir,
-        asset,
-        lock_sha256,
-        lock_bytes,
-        super::SourceKind::FromDir,
-        &summary,
-    )?;
+    entry::write_metadata(&entry_dir, asset, lock_sha256, lock_bytes, origin, &summary)?;
     match entry::publish(&entry_dir, final_dir)? {
         entry::Publish::Created => Ok(CacheEntry {
             name: asset.name.clone(),
@@ -134,7 +133,7 @@ pub(super) fn provision_new_entry(
             payload_tree_digest: summary.tree_digest,
             file_count: summary.file_count,
             total_bytes: summary.total_bytes,
-            source: super::SourceKind::FromDir,
+            source: origin,
         }),
         entry::Publish::Existing => {
             assemble::verify_cache_entry(asset, final_dir, lock_sha256, lock_bytes)
@@ -199,7 +198,7 @@ fn stage_and_verify(source: &Path, destination: &Path, asset: &Asset) -> Result<
     Ok(())
 }
 
-fn copy_bounded(input: &mut File, output: &mut File, label: &Path) -> Result<u64> {
+pub(super) fn copy_bounded(input: &mut File, output: &mut File, label: &Path) -> Result<u64> {
     let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
     let mut copied = 0_u64;
     loop {

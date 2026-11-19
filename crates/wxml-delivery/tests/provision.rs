@@ -38,5 +38,8 @@ mod extract;
 #[path = "provision/pipeline.rs"]
 mod pipeline;
 
+#[path = "provision/cache.rs"]
+mod cache;
+
 #[path = "provision/real_engine.rs"]
 mod real_engine;
