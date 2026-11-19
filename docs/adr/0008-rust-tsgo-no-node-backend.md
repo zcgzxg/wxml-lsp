@@ -1,7 +1,7 @@
 # ADR-0008: Rust + tsgo 类型后端，移除 Node 依赖
 
 **Date**: 2026-11-17
-**Status**: proposed（用户已选择迁移方向，并已于 2026-11-17 有条件接受 7.1.0-beta 作为唯一候选基线；2026-11-18 接受 B-02 补偿控制；2026-11-20 默认 `--stdio` 已实现 native/HostOnly，但 Node 保留显式 `--backend node`，P7 删除与 G5/G6/G7 未完成，仍不升级为 accepted）
+**Status**: proposed（用户已选择迁移方向，并已于 2026-11-17 有条件接受 7.1.0-beta 作为唯一候选基线；2026-11-18 接受 B-02 补偿控制；2026-11-20 默认 `--stdio` 已实现 native/HostOnly，F3 交付合同已 16 closed / 0 partial / 0 blocked，但 Node 保留显式 `--backend node`，P7 删除与 G5/G6/G7 未完成，仍不升级为 accepted）
 **Deciders**: 项目维护者；planner、architect、Rust 测试及交付盘点参与设计
 
 本文记录已采用的迁移方向；接口与能力验证完成前保持 proposed。实施计划见 `docs/plans/2026-11-17-rust-tsgo-migration.md`。本文件不表示迁移、测试或交付已经完成。
@@ -105,11 +105,11 @@ P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、Definit
 
 - **默认入口**：`5020ae7` 已把默认 `--stdio` 切到 native。验证安装存在时使用固定引擎；只有 `EngineDiscoveryError::NotInstalled` 降级 `HostOnly`，manifest/引擎/类型资产缺失、损坏或不匹配一律在 LSP handshake 前 fail closed。`--backend native` 仍是严格选择器，`--backend node` 保留为 deprecated 过渡路径。`7f9116a` 的 no-Node guard 只对默认分支做静态源码检查，不运行 live LSP，也不关闭 F3-02 的 `execve` 审计。
 - **门禁**：23 个旧 Node gate 的 native replacement 已全部 `gate_green`、`required_not_migrated` 为 0；但它们仍是 opt-in `--ignored` 结果，不是 `mandatory_green`，也不是默认 CI 通过。
-- **编辑安全与测试迁移**：`899a89a` 已实现 3 个 native edit gate（`G-P5-E2E-22/23`），但旧 23 个 gate、旧 `semantic_tools` 默认 Node 路径和可选 `tsc` 分支仍在；ledger 为 48 `green` / 255 `planned` / 36 `retired-with-decision`（wave-6 组件绑定跟进后）。
-- **交付**：F3 状态为 14 closed / 2 partial / 0 blocked（F3-06/09 partial）。F3-14 已由 `5020ae7` 默认 `--stdio` 重新构建的真实 v2 包 + 真实 Zed 默认路径冒烟关闭（Xvfb，16/16；无 wrapper、无 Node）。
-- **删除**：P7-0 预删除冻结和 P7-3..P7-7 删除均未开始；`backend_node`、旧 TS 源码/测试和 v1 packager 写路径仍存在。
+- **编辑安全与测试迁移**：`899a89a` 已实现 3 个 native edit gate（`G-P5-E2E-22/23`），但旧 23 个 gate、旧 `semantic_tools` 默认 Node 路径和可选 `tsc` 分支仍在；台账在 wave-9（`6fc7a00`）后为 58 `green` / 245 `planned` / 36 `retired-with-decision`（339 总数）。case `green` 与 gate `gate_green` 是两个状态轴，245 个 `planned` 仍未迁移。
+- **交付**：F3 状态为 16 closed / 0 partial / 0 blocked。F3-06 已由 `fb6047e` 的真实 N1 `0.1.0` / N2 `0.2.0` 两次独立构建、安装/升级/回退/中断窗口关闭；F3-09 已由真实 v1 legacy 包（`e4fed4a`）关闭；F3-14 已由 `5020ae7` 默认 `--stdio` 重新构建的真实 v2 包 + 真实 Zed 默认路径冒烟关闭（Xvfb，16/16；无 wrapper、无 Node）。F3 合同收口不等于迁移完成。
+- **删除**：P7-0 预删除冻结已完成（冻结清单见 `75040c2` 证据），但 P7-1 台账归零与 P7-3..P7-7 删除均未开始。删除仍被以下事实阻塞：23 个旧 gate 仍全部 `#[ignore]`，只有 opt-in `gate_green`，没有 `mandatory_green`/替换审查；`semantic_tools` 的 2 个静默 return 和可选 `tsc` 分支仍在默认 Node 路径；v1 packager 写路径仍存在；legacy oracle 仍是 Live 而非 Frozen；`backend_node` 与旧 TS 源码/测试树未删除。`native_gates.rs` 已支持 `old_test_removed` fail-closed 语义，但实际标记 removed 的 gate 为 0/23。
 
-因此 Validation 第 2、3、4、6 项仍未满足；本 ADR 保持 proposed。不得写成 accepted，不得声称 Node 已移除、P7 已完成或迁移完成。
+因此 Validation 第 2、6 项仍未满足；第 3 项的 23 个 native replacement 虽已全部 `gate_green`，仍是 opt-in required job，不是 `mandatory_green` 或默认 CI 绿；第 4 项的平台证据仍只有 Linux x86_64。本 ADR 保持 proposed。不得写成 accepted，不得声称 Node 已移除、P7 已完成或迁移完成。
 
 ## 与既有 ADR 的关系
 
@@ -129,5 +129,8 @@ P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、Definit
 - `docs/evidence/2026-11-17-tsgo-migration-baseline.md`、`docs/evidence/2026-11-17-tsgo-delivery-spike.md`：P0 测试基线及 P1-C 交付盘点。
 - `docs/evidence/2026-11-20-tsgo-p6-default-switch-plan.md`：P6-8 默认选择器、HostOnly、P7 删除顺序与 blocker 设计（只读）。
 - `docs/evidence/2026-11-20-tsgo-p6-edit-gates.md`：3 个 native edit gate 与 required job 运行记录。
-- `docs/evidence/2026-11-20-tsgo-f3-14-zed-smoke.md`：opt-in wrapper 的 Zed UI 冒烟；F3-14 仍 blocked。
+- `docs/evidence/2026-11-20-tsgo-f3-06-real-n2.md`：真实 N1 `0.1.0` / N2 `0.2.0` 双构建、安装/升级/回退/中断窗口与 F3-06 关闭依据。
+- `docs/evidence/2026-11-20-tsgo-f3-14-zed-smoke.md`：默认 `--stdio` 真实包的 Zed UI 冒烟；F3-14 关闭依据。
+- `docs/evidence/2026-11-20-tsgo-p7-gate-removal-readiness.md`：`old_test_removed` fail-closed 语义与 P7 删除就绪矩阵（0/23 可删）。
+- `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave9.md`：台账 wave-9 回填，58 `green` / 245 `planned` / 36 retired。
 - Microsoft TypeScript 官方源码，调研提交 `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`：`packages/typescript/src/api/async/client.ts`、`api/options.ts`、`api/proto.generated.ts`、`tsc/internal/ipc/protocol_jsonrpc.go`、`tsc/internal/api/encoder/encoder.go`、`tsc/internal/api/callbackfs.go`。源码调研与本次二进制实测相互独立；未实测的字段不得当成已验证。

@@ -1,6 +1,6 @@
 # WXML LSP：需求与实施计划
 
-更新日期：2026-11-17。
+更新日期：2026-11-17（W4）；Rust + tsgo 迁移状态补充：2026-11-20。
 
 架构决策于 2026-11-15 整理至 [ADR 索引](docs/adr/README.md)，包含模块边界、类型检查与源码映射、文档同步及并行交付方案；2026-11-16 的 [ADR-0006](docs/adr/0006-explicit-mini-program-roots.md) 补充显式小程序根配置。架构边界以有效 ADR 为准；`accepted` 不表示功能已实现，实际进度与证据仍见本文。
 
@@ -20,6 +20,8 @@
 | 样本与证据 | `tests/fixtures/`、`docs/evidence/` | AC-001..AC-013 样本与 schema 校验；类型桥、P7/P8、G1、[W2 集成证据](docs/evidence/full-feature-w2.md)、[W3 语义工具证据](docs/evidence/full-feature-w3.md) 与 [W4 最终验收证据](docs/evidence/full-feature-final.md) |
 
 当前状态快照（W4 `9b804d4`）：W4 固定日志为 Rust workspace `1283 passed / 0 failed / 23 ignored`（49 suites，含 doctests），Node 串行 `333 / 333`；23 个 ignored 门禁（performance 1、q2_stability 1、real_node 5、stdio 9、wave5 7）全部通过；覆盖率 lines 87.24% / functions 88.85% / regions 86.71%；`cargo audit` 0 vulnerabilities、`cargo deny` advisories ok。最终 release 两次构建 SHA-256 均为 `c09062b16dd6bfea4ee03f99f13665cf4858130aae83eefec9c04cd94d3815ab`（8,696,984 B、protocol 2、214 files），install/verify/verify-package 通过；Linux Zed 运行时冒烟使用最终发布包，hover/definition/成员补全/诊断均通过。W3 的 `1251 / 21`、Node `326 / 326` 与 W2 的 `1095 / 20`、Node `304 / 305`、Zed `25 passed` 保持各自历史记录，不与 W4 混用。Q1 `f46dec9` 的 `cargo test -p wxml-delivery` 结果也保持原记录。W4 的 Linux 冒烟是手工安装发布包，不是标准 UI 重跑；标准 Dev Extension 安装仍引用 [P8 第 13 节](docs/evidence/p8-zed.md) 的历史证据。
+
+Rust + tsgo 迁移状态（2026-11-20，F3-06 `fb6047e` / 台账 `6fc7a00`）：F3 交付合同 **16 closed / 0 partial / 0 blocked**；测试迁移台账 **58 `green` / 245 `planned` / 36 `retired-with-decision`**（339 总数）；默认 `--stdio` 已是 native（引擎未安装时退化为 `HostOnly`），显式 `--backend node` 仍保留为 deprecated 过渡；P7 删除未开始，Node 尚未移除。详见 [ADR-0008](docs/adr/0008-rust-tsgo-no-node-backend.md)（仍为 proposed）与[迁移计划 §12](docs/plans/2026-11-17-rust-tsgo-migration.md)。
 
 ### 0.2 验证命令
 
@@ -66,6 +68,8 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test performance_bench -- --ignored --
 samples 字段；最终数字见[W4 证据](docs/evidence/full-feature-final.md)。
 
 ### 0.3 在 Zed 中运行
+
+默认 `--stdio` 自 `5020ae7` 起走 native（未安装引擎时为 `HostOnly`）；`backends/typescript` 的构建、`WXML_TYPE_BACKEND`/`WXML_BACKEND_DIR` 等只对显式 `--backend node` 过渡路径或旧测试有效，Zed 扩展当前不传该参数。原生包的构建与安装见本节「本地打包、安装、升级与回退」。
 
 1. 构建服务与后端：`cargo build -p wxml-lsp --release`，并在 `backends/typescript` 执行 `npm ci && npm run build`。
 2. 在仓库根目录、启动 Zed 前导出绝对路径（必须是**绝对路径**，扩展不探测 worktree、不查 `PATH`）：

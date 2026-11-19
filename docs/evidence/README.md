@@ -55,7 +55,6 @@
 | 2026-11-20 | [events/locals/guards 7 例 exact](2026-11-20-tsgo-events-locals-guards-exact.md) | `75040c2` / 7.1.0-beta | E0 | `TS-EVENTS-0301/0322/0461`、`TS-LOCALS-0063/0089/0144`、`TS-GUARDS-0075` 逐条补齐 Supported/absent definition/unresolved/text/close/index name；全部 exact，建议 55 green |
 | 2026-11-20 | [tsgo 测试台账 wave-8 回填](2026-11-20-tsgo-ledger-backfill-wave8.md) | `75040c2` / 7.1.0-beta | E0 | 7 个 exact case 入库，台账 55 `green` / 248 `planned` / 36 retired；exact 55、weaker 73、assessed 160、无证据 143；分区 events 13/7、loops 8/0、guards_js 6/2 |
 | 2026-11-20 | [P7-2 legacy oracle manifest](2026-11-20-tsgo-p7-oracle-manifest.md) | `75040c2` / 7.1.0-beta | E1 | 339 case/21 文件/4 fixture 树冻结清单，projection `14cd870e…`；live 树存在时校验 SHA/行/body，缺失时与 ledger 冻结比对；模拟删除 21/339 Frozen 通过，篡改/缺失/重复/排序失败；P7 删除未执行 |
-
 | 2026-11-20 | [P7 native 编辑门禁](2026-11-20-tsgo-p6-edit-gates.md) | `899a89a` / 7.1.0-beta | E1 | 3 个 native edit gate 真实实现（组件属性 rename 后重解析/类型检查、独立 reparse+typecheck、跨 namespace/动态编辑拒绝）；旧 semantic_tools 在 native 请求模式下 fail-closed；required native 3 passed/12.83s；ledger silent gates 仍 required，旧 23 gate 仍 `#[ignore]` |
 | 2026-11-19 | [F3 真实 release 验收](2026-11-19-tsgo-f3-real-release.md) | `561b00a` / 7.1.0-beta / 真实 Rust + Zed 产物 | E1 | 真实 lock/tarball 的两次打包逐字节一致（157 文件）、真实包空安装/verify/current/env、N1→N2→N1、离线回滚、recover、archive 篡改拒绝、readelf/ldd/GLIBC_2.39、平台拒绝和进程级 Zed 启动；F3-02/14 blocked；F3-12 只覆盖缓存 install |
 | 2026-11-19 | [F3 剩余验收矩阵](2026-11-19-tsgo-f3-acceptance.md) | `0b3b3da` / 真实包 + 受控变异 | E1 | 6 个 opt-in 测试：F3-05 缺资产/探针、F3-10 六类篡改、F3-11 五种恶意归档经真实 `--from-dir`、F3-08/09/15 legacy、F3-06 四窗口 seam、F3-16 journal 注入/并发；F3-06/09 进程级 kill 仍 blocked |
@@ -69,6 +68,11 @@
 | 2026-11-20 | [F3-06/09 切换后崩溃语义裁决](2026-11-20-tsgo-f3-crash-semantics.md) | `28c5e18` / 文档 `b095258` | E0 | pre-switch 旧 current/旧树字节不变；post-switch 崩溃前滚已验证 native target，legacy/Node 永不恢复；合同 §6.3 第 975 行拆为“进程存活/崩溃”两行；F3-06/09 仍 partial，剩余缺口为 N2 provenance 与真实 legacy 发布包 |
 | 2026-11-20 | [F3-09 真实 legacy 包与迁移验收](2026-11-20-tsgo-f3-legacy-real.md) | `e4fed4a` clean archive / 生产 v1 packager / Node 24.22.2 / 真实 Rust+Node+Zed 产物 | E1 | 真实 schema v1 包（333 文件、archive `b62d3112…d970ae`）经生产安装器安装；legacy 入口 `--version` + `--backend node` LSP initialize 通过；迁移到 N2 `migrated once`、legacy 树/二进制哈希不变、pre-switch 失败、`AfterSwitch` 前滚、legacy rollback 拒绝、`recover` 不恢复；F3-09 closed，F3-06 仍 partial |
 | 2026-11-20 | [P7-0 预删除冻结](2026-11-20-tsgo-p7-predelete-freeze.md) | `75040c2` / 7.1.0-beta | E1 | 只读冻结 `backends/typescript` 99 tracked + 34 dist、`backend_node` 8 文件、23 个旧 `#[ignore]` gate、15 个 v1 写路径、5 个 legacy env、2 个 silent return + 1 个 tsc 分支；`scripts/p7-freeze.sh --check` 在 `75040c2` 通过；oracle archive 绑定已落；ledger 55/248/36，P7-0 仅完成冻结子项，删除仍 BLOCKED |
+| 2026-11-20 | [F3-06 真实第二版本 N2](2026-11-20-tsgo-f3-06-real-n2.md) | `fb6047e` / N1 `0.1.0` + N2 `0.2.0` / 7.1.0-beta | E1 | 同一 clean 源码树两次独立编译打包；N1/N2 archive、二进制、manifest、provenance 均不同；`verify-package`、install→upgrade→rollback→recover、篡改拒绝与六个 kill-window 用例通过；F3-06 closed，F3 合同 16/0/0 |
+| 2026-11-20 | [wave-7 weaker 补断言](2026-11-20-tsgo-wave7-weaker-exact.md) | `75040c2` / 7.1.0-beta | E0 | 逐条复核 6 个 wave-7 weaker：3 个补到 exact（`TS-PROBES-0027`、`TS-ANALYSIS-0139/0174`），另 3 个保持 weaker/blocked；建议 55→58 green、248→245 planned |
+| 2026-11-20 | [tsgo 测试台账 wave-9 回填](2026-11-20-tsgo-ledger-backfill-wave9.md) | `16e88b2` / 提交 `6fc7a00` | E0 | 3 个 exact case 入库，最终 58 green / 245 planned / 36 retired；exact 58、weaker 70、assessed 160、无证据 143；只改台账/validator 常量，不改测试断言 |
+| 2026-11-20 | [P7 旧 gate 删除语义准备](2026-11-20-tsgo-p7-gate-removal-readiness.md) | 基线 `16e88b2` / 提交 `6727059` | E0 | `old_test_removed` 缺省 false 且 fail-closed；0/23 gate 实际可删；23 旧 gate 全 ignored、2 silent return + tsc 仍在；native_parity 75 passed/26 ignored、semantic_tools 41 passed；删除仍未放行 |
+| 2026-11-20 | [wave-9 剩余 planned 规划](2026-11-20-tsgo-remaining-ledger-wave9-plan.md) | 58/245/36 / 143 无证据 | E0 | 143 个无证据 planned 分为 12 exact-ready、25 少量测试、59 需 native 能力、41 需契约裁决、6 应 retired/waiver；最乐观 245→233、保守 236；不能降到 0 |
 
 ## 3. 当前门禁基线（2026-11-17，W4 最终）
 
@@ -140,14 +144,14 @@ G1 尚未关闭；7.1.0-beta 的接受与 integrity 固定、可执行安装器�
 
 | 项 | 状态 |
 | --- | --- |
-| F3-01～F3-16 | 15 closed / 1 partial / 0 blocked（2026-11-20 §3.3；F3-14 于 `5020ae7` 默认路径关闭，F3-09 于真实 v1 包验收关闭）；F3-06 partial；root lock/package cache 已落（`assets.lock.json`）；F3 整体验收仍未全部关闭 |
+| F3-01～F3-16 | 16 closed / 0 partial / 0 blocked（2026-11-20 §3.3；F3-06 由 `fb6047e` 真实 N1/N2 关闭，F3-14 于 `5020ae7` 默认路径关闭，F3-09 于真实 v1 包验收关闭）；root lock/package cache 已落（`assets.lock.json`）；F3 合同已收口，不等于迁移完成 |
 | P6-3 | 部分：backend 数据层与 adapter trusted type-assets handoff 已接线（`caf045d`）；P6-3 整体未关闭 |
 | P6-4 | P6-4a opt-in 切片已落；P6-4b/c BLOCKED |
 | G5 / G6 | 均未关闭；G7 不在当前范围 |
 | 默认后端 | `--stdio` 默认 native/HostOnly（`5020ae7`）；显式 `--backend node` 保留为过渡 |
 | ignored / silent | 26 个 `#[ignore]`（23 个旧 gate + 3 个 native replacement）；`semantic_tools` 2 个静默 return；可选 `tsc` 分支仍在 |
 | native gate 台账 | 3 `gate_green`（`G-P5-E2E-09/12/14`）/ 20 `required_not_migrated` / 23 total；3 个仍 `#[ignore]`，只在 opt-in native job 绿，不是默认 CI 绿，也不是 `mandatory_green` |
-| 迁移台账 | 36 `green` / 267 `planned` / 36 `retired-with-decision`；P6 回填新增 3 个 case 级 `green`（`TS-COMPLETION-0175/0193`、`TS-PROBES-0169`），仍无 `reviewed`/`closed` |
+| 迁移台账 | 58 `green` / 245 `planned` / 36 `retired-with-decision`（339 总数，wave-9 `6fc7a00`）；`exact` 58、`weaker` 70、无证据 planned 143；仍无 `reviewed`/`closed` |
 | 平台 | 仅 Linux x86_64 有证据；aarch64/macOS/Windows/musl 未验证 |
 
 证据层级说明：
@@ -156,23 +160,23 @@ G1 尚未关闭；7.1.0-beta 的接受与 integrity 固定、可执行安装器�
 - **真实资产/CLI**：F3-01/02 的安装/干净 PATH/网络隔离与 ptrace exec 审计是真实资产级证据（`f2952c2`，Linux x86_64）；其他交付测试多为入库 fixture。
 - **Zed/UI**：F3-14 的默认路径证据见 `2026-11-20-tsgo-f3-14-zed-smoke.md`（真实包 + 默认 `--stdio` + Xvfb 截图/OCR）；不得引用历史 Node/W4 的 Zed 结果代替。
 
-## 3.3 F3 逐项验收状态（2026-11-20 审计 + ptrace/kill-window + F3-14 默认路径 + F3-09 真实 legacy 包）
+## 3.3 F3 逐项验收状态（2026-11-20 审计 + ptrace/kill-window + F3-14 默认路径 + F3-09 真实 legacy 包 + F3-06 N2）
 
 本节只记录 2026-11-20 对 F3 证据的审计结论，权威表和关闭条件在
 ` docs/reference/tsgo-delivery-contract.md` §9.5。证据运行锚点为 `561b00a`（real release）、
 `0b3b3da`（acceptance）、`50e4a21`（partial gaps）、`f2952c2`（ptrace exec audit）、
-`28c5e18`（kill-window）、`5020ae7`（默认 native + F3-14 Zed）和 `e4fed4a`（F3-09 真实 v1
-包，clean `git archive`）；`crates/wxml-delivery/src`
+`28c5e18`（kill-window）、`5020ae7`（默认 native + F3-14 Zed）、`e4fed4a`（F3-09 真实 v1
+包，clean `git archive`）和 `fb6047e`（F3-06 真实 N1/N2 双构建）；`crates/wxml-delivery/src`
 在 `561b00a..28c5e18` 无变化（`28c5e18` 只新增 test/script/doc）。包内 `bin/wxml-lsp`
 是 2026-11-19 23:21 从含并发未提交改动的工作树构建，不是任一 HEAD 的逐字节重建；
 F3-03/04 只声明包/安装事实，不声明该二进制可从 HEAD 复现。F3-14 使用 `5020ae7`
 生产源码重新构建的独立包，不受该旧包限制；F3-09 使用 `e4fed4a` clean `git archive`
-重新构建的独立 v1 包，也不受该旧包限制。
+重新构建的独立 v1 包，F3-06 使用 `fb6047e` 的 N1/N2 独立构建，也不受该旧包限制。
 
 | 结果 | ID |
 | --- | --- |
-| **closed（15）** | F3-01、F3-02、F3-03、F3-04、F3-05、F3-07、F3-08、F3-09、F3-10、F3-11、F3-12、F3-13、F3-14、F3-15、F3-16 |
-| **partial（1）** | F3-06（N2 版本重标；进程级 kill 已由 `28c5e18` 覆盖 U1/U3/U5/U5-durable/U6） |
+| **closed（16）** | F3-01、F3-02、F3-03、F3-04、F3-05、F3-06、F3-07、F3-08、F3-09、F3-10、F3-11、F3-12、F3-13、F3-14、F3-15、F3-16 |
+| **partial（0）** | 无 |
 | **blocked（0）** | 无 |
 
 F3-05/10 是“真实包 + 单点受控变异”，F3-08/15 的 legacy 包仍是生产 v1 packager 生成的
@@ -181,13 +185,16 @@ Rust/Node/Zed 产物、生产 v1 packager/安装器，333 文件 archive `b62d31
 journal 由测试注入。F3-06/09 的进程级 switch 前/后中断已由 `28c5e18` 的 `f3_kill_window`
 覆盖（Linux x86_64、opt-in；U3/U5/U5-durable/U6 与 L3/L4），库级 `InstallHooks` seam 仍用于
 进程存活分支和 fixture 细节。崩溃后的前滚/切回裁决见
-[F3-06/09 切换后崩溃语义](2026-11-20-tsgo-f3-crash-semantics.md)；F3-06 仍 partial 的原因只剩
-N2 provenance。F3-09 的真实 v1 包不是历史发布产物，若维护者要求历史 provenance，应另开
-waiver 并把该行退回 partial。F3-11/12/15/16 的关闭依据
+[F3-06/09 切换后崩溃语义](2026-11-20-tsgo-f3-crash-semantics.md)；F3-06 的 N2 provenance
+已由 [真实 N1/N2 双构建](2026-11-20-tsgo-f3-06-real-n2.md) 补齐（`fb6047e`，N1 `0.1.0` /
+N2 `0.2.0` 独立编译打包、升级/回退/中断窗口通过），该行据此 closed。F3-09 的真实 v1 包
+不是历史发布产物，若维护者要求历史 provenance，应另开 waiver 并把该行退回 partial。
+F3-11/12/15/16 的关闭依据
 是 `50e4a21` 的真实 installer 归档形态、缓存 upgrade/rollback、Zed 变量移除与 activated
 幂等测试；F3-02 的关闭依据是 `f2952c2` 的真实 installer/native LSP ptrace exec 审计，
 Linux x86_64 以外平台仍不声明。F3-14 由 `5020ae7` 默认 `--stdio` + 真实包 + 真实 Zed
-默认路径冒烟独立关闭；上述其他测试不是其关闭依据。
+默认路径冒烟独立关闭；上述其他测试不是其关闭依据。F3 合同 16/0/0 收口不等于迁移完成，
+Node 仍保留为显式 `--backend node`，P7 删除未开始。
 
 ## 4. 维护规则
 

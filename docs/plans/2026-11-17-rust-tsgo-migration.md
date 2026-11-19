@@ -488,7 +488,7 @@ P1-C 证明旧→新的可行路径；P6/P7 用真实本地包重跑全部转换
 
 ## 12. 执行状态、证据与边界
 
-正式计划与 ADR-0008 已提交到迁移 worktree 的 `b9616c5`。P0/P1 已执行；P2 契约已落盘；P3–P6 只完成下列切片。§12.1–§12.10 记录各自历史快照（§12.1–§12.3 为 `6358925`，§12.5 为 `0a245b9`，§12.6–§12.10 为 2026-11-20 gate 波次）。迁移未完成：默认 `--stdio` 已于 `5020ae7` 切到 native（`NotInstalled` 时 HostOnly），但 Node 实现保留为显式 `--backend node`，P7 删除未开始。
+正式计划与 ADR-0008 已提交到迁移 worktree 的 `b9616c5`。P0/P1 已执行；P2 契约已落盘；P3–P7 只完成下列切片。§12.1–§12.10 记录各自历史快照（§12.1–§12.3 为 `6358925`，§12.5 为 `0a245b9`，§12.6–§12.10 为 2026-11-20 gate 波次），§12.13 为当前收口快照（基线 `fb6047e`，P7 准备 `6727059`）。迁移未完成：默认 `--stdio` 已于 `5020ae7` 切到 native（`NotInstalled` 时 HostOnly），F3 交付合同已 16 closed / 0 partial / 0 blocked，但 Node 实现保留为显式 `--backend node`，P7 删除未开始。
 
 ### 12.1 P0/P1 证据（历史）
 
@@ -798,3 +798,35 @@ F3-06 仍缺真实第二版本、F3-09 仍缺真实 legacy 发布包，故保持
   （` crates/wxml-lsp/tests/native_parity/ledger.rs:1435`、
   ` crates/wxml-lsp/tests/native_parity/fixture_hash.rs:50`）。
 - P7-3..P7-7 没有任何删除提交；`backend_node`、旧 TS 源码/测试、v1 packager 写路径都还在。
+
+### 12.13 2026-11-20 收口快照（F3-06 `fb6047e`，台账 `6fc7a00`）
+
+本节记录 §12.11/§12.12 之后的最新已提交事实；§12.6–§12.12 的历史快照不变。
+本次更新没有删除 Node、没有改生产默认值、没有提升 ledger gate，也没有开始
+P7 的任何删除。
+
+| 项 | 状态 | 证据与边界 |
+| --- | --- | --- |
+| HEAD/提交 | 基线 `fb6047e`（F3-06 N2）；并行提交 `6727059`（P7 删除语义准备） | 工作树另有并行未提交测试/证据，不属于本节事实 |
+| F3 交付合同 | **16 closed / 0 partial / 0 blocked** | F3-06 由 `fb6047e` 的真实 N1 `0.1.0` / N2 `0.2.0` 两次独立构建、安装/升级/回退/中断窗口关闭；F3-09 由 `e4fed4a` 真实 v1 legacy 包关闭；F3-14 由 `5020ae7` 默认 `--stdio` 真实包 + Zed 默认路径冒烟关闭 |
+| 测试台账 | **58 `green` / 245 `planned` / 36 `retired-with-decision`**（339 总数） | wave-9 提交 `6fc7a00`；`exact` 58、`weaker` 70、`near_exact` 3、`structural` 7、`blocked` 22；无证据 planned 143 |
+| 默认入口 | `--stdio` 默认 native/HostOnly | `5020ae7`/`7f9116a`；只有 `NotInstalled` 降级 HostOnly，损坏安装 fail closed；显式 `--backend node` 保留为 deprecated 过渡 |
+| 23 个旧 gate | 全部 `gate_green`，仍全部 `#[ignore]` | opt-in required native job 绿，不是 `mandatory_green`，默认 CI 不运行；`old_test_removed` 实际标记 0/23 |
+| 2 个 silent return + 可选 `tsc` | 仍在默认 Node 路径 | `WXML_TEST_NATIVE=1`/`WXML_REQUIRE_REAL_ENGINE=1` 下 fail-closed；默认模式仍是 skip |
+| P7-0 预删除冻结 | 冻结子项已完成 | 只读冻结清单见 `75040c2` 证据；P7-1 台账归零与 P7-3..P7-7 删除未开始 |
+| P7 删除阻塞 | 5 类 | 23 个旧 gate 仍 ignored、2 个 silent return + `tsc` 分支、v1 packager 写路径仍在、legacy oracle 仍是 Live 而非 Frozen、`backend_node` 与旧 TS 源码/测试树仍在 |
+| ADR-0008 | proposed | F3 收口不改变 ADR 状态 |
+
+边界：
+
+- F3 的 16/0/0 是交付合同验收状态，不等于迁移完成、Node 已移除或 P7 已完成；
+  生产 native 安装/升级/回滚路径已验收，但旧 Node 实现仍可选择启动。
+- 245 个 planned 中有 102 个已有证据的 weaker/near-exact/structural/blocked；
+  P7-1 的归零目标不能由 wave-9 单独完成（最乐观 245→233），剩余 143 个无证据
+  case 仍需新测试、native 能力或契约裁决。
+- `gate_green` 与 case `green` 是两个状态轴；本轮没有 gate 晋升为
+  `mandatory_green`，也没有 case 从 planned 直接记绿。
+- 平台证据仍只有 Linux x86_64；G5/G6/G7 未关闭。
+- 相关运行记录：`native_parity` 75 passed / 26 ignored、`semantic_tools`
+  41 passed、两个 native flag 的 fail-closed RED、`clippy -D warnings` 通过；
+  详见 `docs/evidence/2026-11-20-tsgo-p7-gate-removal-readiness.md` §6。
