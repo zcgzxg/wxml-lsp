@@ -19,22 +19,29 @@
 | `split` | 11 |
 | `obsolete` | 37（36 个历史 Candidate B + wave-11 `TS-COMPONENT-0774`） |
 | `blocked-decision` | 0 |
-| `green` | 82（真实 Rust 测试证据，未独立 review） |
-| `planned` | 219 |
+| `green` | 83（真实 Rust 测试证据，未独立 review） |
+| `planned` | 218 |
 | `retired-with-decision` | 38 |
 | `assessed_cases` | 209 |
-| `exact` | 82 |
-| `near_exact` | 2 |
-| `weaker` | 96 |
+| `exact` | 83 |
+| `near_exact` | 3 |
+| `weaker` | 100 |
 | `structural` | 7 |
-| `blocked` | 22 |
+| `blocked` | 16 |
 
-计数在 wave-11 exact 回填（2026-11-20，HEAD `68f852c`）后为 `green` 82 / `planned` 219 /
-`retired-with-decision` 38，`assessed_cases` 209（`exact` 82、`near_exact` 2、`weaker` 96、
-`structural` 7、`blocked` 22），无证据 planned 92。wave-11 先把 `TS-COMPONENT-0774`
-（`candidate_b_layout`）与 `TS-META-0027`（`superseded_contract`）移到 `retired-with-decision`，
-再把 `TS-ANALYSIS-0315/0332` 与 10 个 messages/probes case 提升为 exact `green`
-（`exact` 70→82）。此前的 wave-10 conditional 回填（2026-11-20）后为
+计数在 wave-11 blocked followup（2026-11-20，基线 HEAD `1c89338`）后为
+`green` 83 / `planned` 218 / `retired-with-decision` 38，`assessed_cases` 209
+（`exact` 83、`near_exact` 3、`weaker` 100、`structural` 7、`blocked` 16），
+无证据 planned 92。该步把 `TS-COMPONENT-0292` 提升为 exact `green`，
+把 `TS-EVENTS-0188` 登记为 near_exact（唯一差异 `fileId`→`EventDefinition.path`），
+并把 `TS-COMPONENT-0193`、`TS-GUARDS-0201`、`TS-LOCALS-0343`、`TS-COMPONENT-0498`
+从 `blocked` 重新登记为 `weaker`（`blocked` 22→16）。此前 wave-11 exact 回填
+（2026-11-20，HEAD `68f852c`）后为 `green` 82 / `planned` 219 /
+`retired-with-decision` 38，`assessed_cases` 209（`exact` 82、`near_exact` 2、
+`weaker` 96、`structural` 7、`blocked` 22），无证据 planned 92。wave-11 先把
+`TS-COMPONENT-0774`（`candidate_b_layout`）与 `TS-META-0027`（`superseded_contract`）
+移到 `retired-with-decision`，再把 `TS-ANALYSIS-0315/0332` 与 10 个 messages/probes case
+提升为 exact `green`（`exact` 70→82）。此前的 wave-10 conditional 回填（2026-11-20）后为
 `green` 70 / `planned` 233 / `assessed_cases` 197（`exact` 70、`near_exact` 2、`weaker` 96、
 `structural` 7、`blocked` 22），无证据 planned 106；wave-10b weaker 回填结束时为 68/235/194
 （`weaker` 95、无证据 109），wave-10 exact 回填结束时为 68/235/181
@@ -46,7 +53,7 @@
 （`weaker` 80），wave-6 组件绑定跟进结束时为 48/255/154
 （`weaker` 74、`blocked` 22），wave-6 回填结束时为 44/259/154（`weaker` 80、
 `blocked` 20），wave-5 后为 44/259/145，P6 回填（2026-11-19）后为 36/267，
-P5/P5.1 的历史快照见台账 §14，wave-5/wave-6/组件绑定/wave-7/wave-8/wave-9/wave-10/wave-10b/wave-10-conditional 见 §15/§16/§17/§19/§21/§22/§23。
+P5/P5.1 的历史快照见台账 §14，wave-5/wave-6/组件绑定/wave-7/wave-8/wave-9/wave-10/wave-10b/wave-10-conditional/wave-11/wave-11-blocked-followup 见 §15/§16/§17/§19/§21/§22/§23/§24/§25/§26。
 
 `obsolete` 不等于“未迁移的通过项”。37 个 Candidate B/symbol-bridge 用例（36 个历史 +
 wave-11 `TS-COMPONENT-0774`）只作为历史 A/B 证据保留；生产 LSP 不传 `layoutId`，原位 shadow

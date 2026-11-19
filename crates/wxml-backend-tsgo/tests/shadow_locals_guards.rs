@@ -315,6 +315,9 @@ fn case_locals_0334_an_extremely_deep_wx_for_source_degrades_instead_of_overflow
 
 #[test]
 fn case_locals_0343_a_locals_only_request_still_degrades_to_partial_with_a_typed_reason() {
+    // Oracle: TS-LOCALS-0343. Build-level: Partial, the exact stable reason,
+    // and the `undefined as any` fallback. The adapter diagnostics status and
+    // the TS per-fragment diagnostics DTO are not available here.
     let mut spec = fragment("legacy", "item.name", 0);
     spec.locals = vec!["item".to_owned()];
     let built = build(
@@ -326,11 +329,15 @@ fn case_locals_0343_a_locals_only_request_still_degrades_to_partial_with_a_typed
         false,
     );
     assert_eq!(built.status, BuildStatus::Partial);
+    assert_eq!(
+        built.reason.as_deref(),
+        Some("some template bindings or guards could not be resolved and were not checked")
+    );
     assert!(
-        built
-            .reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("could not be resolved"))
+        built.notes.iter().any(|note| note
+            == "unresolved `wx:for` bindings or `wx:if` guards are mounted as `any`/unnarrowed and not checked"),
+        "{:?}",
+        built.notes
     );
     assert!(built.view.text.contains("const item = undefined as any;"));
 }
@@ -457,6 +464,10 @@ fn guards_0097_rendered_structure_only_narrowing_blocked() {
 
 #[test]
 fn case_guards_0201_an_unparseable_guard_does_not_fabricate_a_diagnostic_and_reports_partial() {
+    // Oracle: TS-GUARDS-0201. Build-level: Partial, the exact stable reason,
+    // no rendered `if` and the `@ts-ignore` unnarrowed mount. The adapter
+    // diagnostics status, `unresolvedGuards` count and empty top-level /
+    // per-fragment diagnostics are not available at this layer.
     let mut spec = fragment("broken", "state.user.name", 0);
     spec.guards = vec![GuardChain {
         conditions: vec![condition(GuardKind::If, "state.kind === ")],
@@ -471,15 +482,34 @@ fn case_guards_0201_an_unparseable_guard_does_not_fabricate_a_diagnostic_and_rep
         false,
     );
     assert_eq!(built.status, BuildStatus::Partial);
+    assert_eq!(
+        built.reason.as_deref(),
+        Some("some template bindings or guards could not be resolved and were not checked")
+    );
     assert!(
-        built
-            .reason
-            .as_deref()
-            .is_some_and(|reason| reason.contains("could not be resolved"))
+        built.notes.iter().any(|note| note
+            == "unresolved `wx:for` bindings or `wx:if` guards are mounted as `any`/unnarrowed and not checked"),
+        "{:?}",
+        built.notes
     );
     assert!(!built.view.text.contains("if ("));
-    assert!(built.view.text.contains("// @ts-ignore"));
-    assert!(built.view.text.contains("__wxml_root.state.user.name;"));
+    // `@ts-ignore` sits on the line immediately before the unnarrowed mount.
+    let ignore = built.view.text.find("// @ts-ignore").expect("@ts-ignore");
+    let mount = built
+        .view
+        .text
+        .find("__wxml_root.state.user.name;")
+        .expect("mount");
+    assert!(ignore < mount, "{:?}", built.view.text);
+    let between = built
+        .view
+        .text
+        .get(ignore + "// @ts-ignore".len()..mount)
+        .expect("between");
+    assert!(
+        between.trim().is_empty(),
+        "the ignore must guard the mount, not another line: {between:?}"
+    );
 }
 
 #[test]

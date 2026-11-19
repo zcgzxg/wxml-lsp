@@ -605,3 +605,228 @@ fn h4_spread_expansion_is_capped_and_partial() {
         wxml_types::CapabilityStatus::Partial { .. }
     ));
 }
+
+/// Oracle: TS-COMPONENT-0498, build-level half.
+///
+/// The TS assertions are hover `typeOnly="any"` plus a hover reason matching
+/// `/behavior/i`. This pins the closest native layer: the shadow rejects the
+/// incomplete behavior graph with a behavior reason and mounts
+/// `__wxml_root.dynamic`; the script `any` is error recovery, not a modeled
+/// checker hover, so the case stays weaker.
+#[test]
+fn case_component_0498_build_reports_a_behavior_reason_and_mounts_dynamic() {
+    let script = "const extra = { value: 1 };\nComponent({ behaviors: [Behavior({ data: { ...extra, dynamic: makeValue() } })], data: {} });";
+    let result = analysis(
+        &[("index.ts", script)],
+        "index.ts",
+        RegistrationKind::Component,
+    );
+    assert!(result.behavior.data_incomplete);
+
+    let source = SourceFile::new("index.ts", script, DocumentRevision::new(1)).expect("source");
+    let fragment = wxml_backend_tsgo::shadow::layout::FragmentSpec::new(
+        "dynamic",
+        "dynamic",
+        wxml_backend_tsgo::shadow::mapping::SourceRange::new(0, 7),
+    );
+    let overlay = wxml_backend_tsgo::shadow::layout::BehaviorPropertyOverlay {
+        properties: &result.behavior.properties,
+        complete: !result.behavior.properties_incomplete && result.behavior.status.is_supported(),
+        reason: result.behavior.status.reason(),
+    };
+    let built = wxml_backend_tsgo::shadow::layout::build_in_place_shadow_with_behavior(
+        &wxml_backend_tsgo::shadow::layout::ShadowRequest {
+            script: &source,
+            root: wxml_backend_tsgo::shadow::layout::RootKind::Component,
+            fragments: &[fragment],
+            js_check: wxml_backend_tsgo::shadow::layout::JsCheckPolicy::Inherit,
+            check_js: false,
+        },
+        Some(&overlay),
+    )
+    .expect("shadow");
+    assert_eq!(
+        built.status,
+        wxml_backend_tsgo::shadow::layout::BuildStatus::Partial
+    );
+    let reason = built.reason.as_deref().expect("partial reason");
+    assert!(
+        reason.starts_with("component behaviors are partially resolved: "),
+        "{reason}"
+    );
+    assert!(reason.to_ascii_lowercase().contains("behavior"), "{reason}");
+    assert!(built.view.text.contains("__wxml_root.dynamic"));
+}
+
+#[test]
+fn structural_behavior_call_trailing_comma_matches_the_comma_free_shape() {
+    let with_comma = analysis(
+        &[(
+            "index.ts",
+            "Component({ behaviors: [Behavior({\n  data: { count: 1, },\n  properties: { title: { type: String, }, },\n  methods: { tap() {}, },\n},)], data: {} });",
+        )],
+        "index.ts",
+        RegistrationKind::Component,
+    );
+    let without_comma = analysis(
+        &[(
+            "index.ts",
+            "Component({ behaviors: [Behavior({\n  data: { count: 1 },\n  properties: { title: { type: String } },\n  methods: { tap() {} },\n})], data: {} });",
+        )],
+        "index.ts",
+        RegistrationKind::Component,
+    );
+
+    for result in [&with_comma, &without_comma] {
+        assert!(result.status.is_supported(), "{:?}", result.reasons);
+        assert!(
+            result.behavior.problems.is_empty(),
+            "{:?}",
+            result.behavior.problems
+        );
+        assert_eq!(data(result, "count").type_text, "number");
+        assert_eq!(property(result, "title").type_text, "string");
+        assert_eq!(result.behavior.units.len(), 1);
+    }
+    let shapes = |result: &ScriptAnalysis| {
+        (
+            result
+                .data
+                .fields
+                .iter()
+                .map(|field| (field.name.clone(), field.type_text.clone(), field.exact))
+                .collect::<Vec<_>>(),
+            result
+                .properties
+                .properties
+                .iter()
+                .map(|property| (property.name.clone(), property.type_text.clone()))
+                .collect::<Vec<_>>(),
+            result
+                .methods
+                .methods
+                .iter()
+                .map(|method| (method.name.clone(), method.signature.clone()))
+                .collect::<Vec<_>>(),
+        )
+    };
+    assert_eq!(shapes(&with_comma), shapes(&without_comma));
+}
+
+#[test]
+fn structural_behavior_call_trailing_comma_tolerates_comments() {
+    let result = analysis(
+        &[(
+            "index.ts",
+            "Component({\n  behaviors: [\n    Behavior(\n      {\n        data: { fromComment: 2 },\n        methods: { ping() {}, }, // object member comment\n      },\n      /* trailing comma before the call close */\n    ),\n  ],\n  data: {},\n});",
+        )],
+        "index.ts",
+        RegistrationKind::Component,
+    );
+    assert_eq!(data(&result, "fromComment").type_text, "number");
+    assert_eq!(
+        result
+            .methods
+            .methods
+            .iter()
+            .map(|method| method.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["ping"]
+    );
+    assert!(result.status.is_supported(), "{:?}", result.reasons);
+    assert!(
+        result.behavior.problems.is_empty(),
+        "{:?}",
+        result.behavior.problems
+    );
+}
+
+#[test]
+fn structural_behavior_call_trailing_comma_applies_to_local_bindings_and_behavior_roots() {
+    let local = analysis(
+        &[(
+            "index.ts",
+            "const shared = Behavior({ data: { sharedCount: 7 }, },);\nComponent({ behaviors: [shared], data: {} });",
+        )],
+        "index.ts",
+        RegistrationKind::Component,
+    );
+    assert_eq!(data(&local, "sharedCount").type_text, "number");
+    assert_eq!(local.behavior.units.len(), 1);
+    assert!(local.status.is_supported(), "{:?}", local.reasons);
+
+    let root = analysis(
+        &[("behavior.ts", "Behavior({ data: { own: 1 }, },);")],
+        "behavior.ts",
+        RegistrationKind::Behavior,
+    );
+    assert_eq!(data(&root, "own").type_text, "number");
+    assert!(root.status.is_supported(), "{:?}", root.reasons);
+}
+
+#[test]
+fn structural_behavior_call_trailing_comma_resolves_an_imported_default_fixture() {
+    // Mirrors the TS-EVENTS-0188 fixture shape: an imported default behavior
+    // whose `Behavior(...)` call carries a trailing comma after the options
+    // object and whose methods object carries its own trailing comma.
+    let index = "import base from \"./src/behaviors/base\";\nComponent({ behaviors: [base], data: {}, methods: {} });";
+    let behavior = "export default Behavior({\n  methods: {\n    /** 来自 behavior */\n    fromBehavior(event: { detail: { x: number } }) {},\n  },\n},);";
+    let result = analysis(
+        &[("index.ts", index), ("src/behaviors/base.ts", behavior)],
+        "index.ts",
+        RegistrationKind::Component,
+    );
+    assert_eq!(result.behavior.units.len(), 1);
+    assert_eq!(result.behavior.units[0].path, "src/behaviors/base.ts");
+    let method = result
+        .methods
+        .methods
+        .iter()
+        .find(|method| method.name == "fromBehavior")
+        .expect("fromBehavior method");
+    assert_eq!(method.path, "src/behaviors/base.ts");
+    assert_eq!(method.documentation, "来自 behavior");
+    assert!(
+        method.signature.contains("fromBehavior"),
+        "{}",
+        method.signature
+    );
+    assert!(result.status.is_supported(), "{:?}", result.reasons);
+    assert!(
+        result.behavior.problems.is_empty(),
+        "{:?}",
+        result.behavior.problems
+    );
+}
+
+#[test]
+fn structural_behavior_call_trailing_comma_does_not_relax_dynamic_entries() {
+    for script in [
+        "Component({ behaviors: [Behavior({ data: { leaked: 1 } }, other)], data: {} });",
+        "Component({ behaviors: [makeBehavior({ data: { leaked: 1 } },)], data: {} });",
+    ] {
+        let result = analysis(
+            &[("index.ts", script)],
+            "index.ts",
+            RegistrationKind::Component,
+        );
+        assert!(
+            matches!(
+                result.behavior.status,
+                wxml_types::CapabilityStatus::Partial { .. }
+            ),
+            "{script}: {:?}",
+            result.behavior.status
+        );
+        assert!(result.behavior.data_incomplete, "{script}");
+        assert!(
+            result
+                .data
+                .fields
+                .iter()
+                .all(|field| field.name != "leaked"),
+            "{script}: {:?}",
+            result.data.fields
+        );
+    }
+}

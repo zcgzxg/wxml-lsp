@@ -22,11 +22,12 @@ pub(crate) const TOTAL_CASES: usize = 339;
 /// Exact-parity cases promoted to `green`; the wave-9 assertion backfill
 /// promoted three more, the wave-10 follow-up promoted `TS-REWRITE-0207` plus
 /// nine exact-ready cases, the wave-10 conditional follow-up promoted
-/// `TS-ANALYSIS-0184` plus `TS-REWRITE-0197`, and the wave-11 exact backfill
-/// promoted `TS-ANALYSIS-0315/0332` plus ten messages/probes cases.
-pub(crate) const GREEN_CASES: usize = 82;
-/// Cases still `planned` after the 2026-11-20 wave-11 exact backfill.
-pub(crate) const PLANNED_CASES: usize = 219;
+/// `TS-ANALYSIS-0184` plus `TS-REWRITE-0197`, the wave-11 exact backfill
+/// promoted `TS-ANALYSIS-0315/0332` plus ten messages/probes cases, and the
+/// wave-11 blocked followup promoted `TS-COMPONENT-0292`.
+pub(crate) const GREEN_CASES: usize = 83;
+/// Cases still `planned` after the 2026-11-20 wave-11 blocked followup.
+pub(crate) const PLANNED_CASES: usize = 218;
 /// Frozen retired-with-decision count: the 2026-11-17 Candidate-B decision
 /// (36 cases) plus the wave-11 `TS-COMPONENT-0774` and `TS-META-0027` cases.
 pub(crate) const RETIRED_CASES: usize = 38;
@@ -38,19 +39,21 @@ const NON_OBSOLETE_RETIRED_CASES: usize = 1;
 /// cases plus the wave-11 `TS-COMPONENT-0774` Candidate-B-only case.
 const OBSOLETE_CASES: usize = RETIRED_CASES - NON_OBSOLETE_RETIRED_CASES;
 /// Near-exact cases intentionally left `planned` with a green recommendation
-/// after `TS-REWRITE-0207` was promoted to exact.
-pub(crate) const NEAR_EXACT_CASES: usize = 2;
+/// after `TS-REWRITE-0207` was promoted to exact; the wave-11 blocked followup
+/// added `TS-EVENTS-0188`.
+pub(crate) const NEAR_EXACT_CASES: usize = 3;
 /// Weaker evidence cases left `planned` after the 2026-11-20 wave-10 ledger
 /// backfill, which registered twelve existing-test weaker candidates, plus the
-/// wave-10b backfill of the thirteen remaining B-class candidates and the
-/// wave-10 conditional `TS-ANALYSIS-0161` registration.
-pub(crate) const WEAKER_CASES: usize = 96;
+/// wave-10b backfill of the thirteen remaining B-class candidates, the
+/// wave-10 conditional `TS-ANALYSIS-0161` registration, and the wave-11
+/// blocked followup (0193/0201/0343/0498).
+pub(crate) const WEAKER_CASES: usize = 100;
 /// Structural evidence cases left `planned` after the wave-6 component-binding
 /// follow-up.
 pub(crate) const STRUCTURAL_CASES: usize = 7;
 /// Blocked evidence cases left `planned` after the wave-6 component-binding
-/// follow-up.
-pub(crate) const BLOCKED_CASES: usize = 22;
+/// follow-up; the wave-11 blocked followup reclassified six of them.
+pub(crate) const BLOCKED_CASES: usize = 16;
 
 /// Partitions named by the test contract. P3-T creates all 16 skeletons.
 pub(crate) const PARTITION_NAMES: &[&str] = &[

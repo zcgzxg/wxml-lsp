@@ -980,8 +980,11 @@ mod tests {
     const BARE_PATH: &str = "bare.ts";
     const PLAIN_PATH: &str = "plain.ts";
     const SPREAD_PATH: &str = "spread.ts";
+    const BEHAVIOR_CARD_PATH: &str = "behavior-card.ts";
     const PAGE_SCRIPT: &str =
         "Page({\n  data: { pageTitle: '首页', total: 3, user: { name: 'Ada' } },\n});\n";
+    const BEHAVIOR_PAGE_SCRIPT: &str = "Page({\n  data: { pageTitle: 'hello', total: 3, flag: true, list: [] as string[] },\n});\n";
+    const BEHAVIOR_CARD_SCRIPT: &str = "Component({\n  behaviors: [Behavior({\n    properties: {\n      cardTitle: { type: String },\n      score: { type: String, optionalTypes: [Number], required: true, value: 1, observer() {} },\n      loose: { type: null },\n      items: { type: Array },\n      defaulted: { type: Number, value: \"not-a-number\" },\n    },\n  })],\n});\n";
     const CARD_SCRIPT: &str = "Component({\n  properties: {\n    title: { type: String },\n    count: { type: Number },\n  },\n});\n";
     const MATRIX_CARD_SCRIPT: &str = "Component({\n  properties: {\n    title: { type: String },\n    count: { type: Number },\n    active: { type: Boolean },\n    score: { type: String, optionalTypes: [Number] },\n    loose: { type: null },\n    items: { type: Array },\n    meta: { type: Object },\n    handler: { type: Function },\n  },\n});\n";
     const PLAIN_COMPONENT_SCRIPT: &str = "const shared = {};\nComponent({ properties: shared });\n";
@@ -1247,7 +1250,11 @@ mod tests {
     /// `ComponentAttribute` is a real slice of the template, exactly as the
     /// template analyzer would publish it.
     fn matrix_fixture() -> MatrixFixture {
-        let specs = vec![
+        matrix_fixture_from(matrix_specs())
+    }
+
+    fn matrix_specs() -> Vec<MatrixUsage> {
+        vec![
             MatrixUsage {
                 tag: "valid",
                 component: Some(CARD_PATH),
@@ -1381,8 +1388,15 @@ mod tests {
                     MatrixValue::UnmountedMustache("total", 9999, 10_005),
                 )],
             },
-        ];
+        ]
+    }
 
+    /// Builds the WXML text, real byte ranges and usages for a spec set.
+    ///
+    /// The WXML text is generated together with the byte ranges so every
+    /// `ComponentAttribute` is a real slice of the template, exactly as the
+    /// template analyzer would publish it.
+    fn matrix_fixture_from(specs: Vec<MatrixUsage>) -> MatrixFixture {
         let mut wxml = String::from("<view>");
         let mut usages = Vec::new();
         let mut ranges = Vec::new();
@@ -1452,6 +1466,59 @@ mod tests {
         }
     }
 
+    /// Builds the `TS-COMPONENT-0292` usage set from the Node oracle.
+    ///
+    /// The component declares its properties inside an inline `Behavior`, so
+    /// the pass can only see them through the behavior overlay.
+    fn behavior_binding_specs() -> Vec<MatrixUsage> {
+        vec![
+            MatrixUsage {
+                tag: "behavior-ok",
+                component: Some(BEHAVIOR_CARD_PATH),
+                attributes: vec![
+                    matrix_attribute("card-title", MatrixValue::Mustache("pageTitle")),
+                    matrix_attribute("score", MatrixValue::Mustache("total")),
+                    matrix_attribute("items", MatrixValue::Mustache("list")),
+                    matrix_attribute("defaulted", MatrixValue::Mustache("total")),
+                    // Undeclared: never a property and never queried.
+                    matrix_attribute("unknown", MatrixValue::Mustache("total")),
+                ],
+            },
+            MatrixUsage {
+                tag: "behavior-bad",
+                component: Some(BEHAVIOR_CARD_PATH),
+                attributes: vec![
+                    matrix_attribute("card-title", MatrixValue::Mustache("total")),
+                    matrix_attribute("score", MatrixValue::Mustache("flag")),
+                    // A string literal is accepted by `string | number`.
+                    matrix_attribute("score", MatrixValue::Literal("literal")),
+                    matrix_attribute("defaulted", MatrixValue::Literal("literal")),
+                ],
+            },
+            MatrixUsage {
+                tag: "behavior-loose",
+                component: Some(BEHAVIOR_CARD_PATH),
+                attributes: vec![matrix_attribute("loose", MatrixValue::Mustache("total"))],
+            },
+            MatrixUsage {
+                tag: "behavior-missing-required",
+                component: Some(BEHAVIOR_CARD_PATH),
+                attributes: Vec::new(),
+            },
+        ]
+    }
+
+    fn behavior_binding_fixture() -> MatrixFixture {
+        matrix_fixture_from(behavior_binding_specs())
+    }
+
+    fn behavior_binding_files() -> Vec<PreparedFile> {
+        vec![
+            prepared_file(SCRIPT_PATH, BEHAVIOR_PAGE_SCRIPT),
+            prepared_file(BEHAVIOR_CARD_PATH, BEHAVIOR_CARD_SCRIPT),
+        ]
+    }
+
     fn matrix_files() -> Vec<PreparedFile> {
         vec![
             prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
@@ -1490,6 +1557,19 @@ mod tests {
         tag: &str,
         answers: Answers,
     ) -> (ComponentBindingDiagnostics, Vec<(String, Utf16Position)>) {
+        run_usage_with_files(fixture, matrix_files(), tag, answers)
+    }
+
+    /// Runs one usage of `fixture` against an explicit file set.
+    ///
+    /// Native has no per-tag response array, so each usage is pinned
+    /// separately, exactly like the `TS-COMPONENT-0147` precedent.
+    fn run_usage_with_files(
+        fixture: &MatrixFixture,
+        files: Vec<PreparedFile>,
+        tag: &str,
+        answers: Answers,
+    ) -> (ComponentBindingDiagnostics, Vec<(String, Utf16Position)>) {
         let usage = fixture
             .usages
             .iter()
@@ -1497,7 +1577,7 @@ mod tests {
             .expect("matrix usage")
             .clone();
         let layout = shadow(&fixture.wxml, &fixture.ranges);
-        let view = build_view(matrix_files(), vec![usage]);
+        let view = build_view(files, vec![usage]);
         run(&layout, &view, answers)
     }
 
@@ -1769,6 +1849,10 @@ mod tests {
 
     #[test]
     fn fully_checkable_component_request_stays_supported() {
+        // Oracle: TS-COMPONENT-0193. The adapter overall status and the Node
+        // `probeProblems` array have no native counterpart; this pins the
+        // binding pass: Supported (status None), zero diagnostics, three real
+        // queries at the three mounted expression ranges, no skipped check.
         let wxml = r#"<view><valid title="{{ pageTitle }}" count="{{ total }}" items="{{ list }}" /></view>"#;
         let title = mustache_attr(wxml, "title", r#"title="{{ pageTitle }}""#, "pageTitle");
         let count = mustache_attr(wxml, "count", r#"count="{{ total }}""#, "total");
@@ -1800,6 +1884,128 @@ mod tests {
         assert_eq!(calls.len(), 3);
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(result.status.is_none(), "{:?}", result.status);
+
+        // Every query goes to the owning script at the exact mount target, in
+        // template order: the clean result is not a skipped usage.
+        let expected = ranges
+            .iter()
+            .map(|range| {
+                let mount = layout.mount_for_range(*range).expect("mount");
+                offset_to_position(layout.derived(), Utf16Offset::new(mount.target_start_utf16))
+                    .expect("position")
+            })
+            .collect::<Vec<_>>();
+        let positions = calls
+            .iter()
+            .map(|(path, position)| {
+                assert_eq!(path, SCRIPT_PATH);
+                *position
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(positions, expected);
+    }
+
+    /// Oracle: TS-COMPONENT-0292.
+    ///
+    /// The component declares its properties inside an inline `Behavior`.
+    /// Production merges them into the property overlay, and this pins every
+    /// TS assertion per usage: the clean usage, the three exact mismatch
+    /// messages at the expression/attribute ranges, the single
+    /// `behavior-loose.loose` skip and the zero-attribute usage. Native has no
+    /// per-tag response array, so the per-usage form follows the exact
+    /// `TS-COMPONENT-0147` precedent.
+    #[test]
+    fn case_component_0292_behavior_properties_and_kebab_camel_bindings_are_checked() {
+        let fixture = behavior_binding_fixture();
+        let files = behavior_binding_files();
+
+        let (ok, ok_calls) = run_usage_with_files(
+            &fixture,
+            files.clone(),
+            "behavior-ok",
+            vec![
+                Some(("string", 0)),
+                Some(("number", 0)),
+                Some(("string[]", 0)),
+                Some(("number", 0)),
+            ],
+        );
+        assert!(ok.diagnostics.is_empty(), "{:?}", ok.diagnostics);
+        assert!(ok.status.is_none(), "{:?}", ok.status);
+        assert_eq!(ok_calls.len(), 4, "{ok_calls:?}");
+        assert!(ok_calls.iter().all(|(path, _)| path == SCRIPT_PATH));
+        // The undeclared `unknown` attribute is not a property and is never
+        // queried; the four declared attributes are checked.
+        assert_eq!(
+            fixture
+                .usages
+                .iter()
+                .find(|usage| usage.tag == "behavior-ok")
+                .expect("usage")
+                .attributes
+                .len(),
+            5
+        );
+
+        let (bad, bad_calls) = run_usage_with_files(
+            &fixture,
+            files.clone(),
+            "behavior-bad",
+            vec![Some(("number", 0)), Some(("boolean", 0))],
+        );
+        assert!(bad.status.is_none(), "{:?}", bad.status);
+        assert_eq!(bad_calls.len(), 2, "{bad_calls:?}");
+        let card_title = matrix_attribute_of(&fixture, "behavior-bad", "card-title");
+        let score = matrix_attribute_of(&fixture, "behavior-bad", "score");
+        let defaulted = matrix_attribute_of(&fixture, "behavior-bad", "defaulted");
+        let mut expected = vec![
+            (
+                card_title.expr_range.expect("card-title expression"),
+                "component property \"card-title\" expects string, got number (bound expression \"total\")",
+            ),
+            (
+                score.expr_range.expect("score expression"),
+                "component property \"score\" expects string | number, got boolean (bound expression \"flag\")",
+            ),
+            (
+                defaulted.attribute_range,
+                "component property \"defaulted\" expects number, got string literal",
+            ),
+        ];
+        expected.sort_by_key(|(range, _)| range.start());
+        let actual = bad
+            .diagnostics
+            .iter()
+            .map(|diagnostic| {
+                assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+                (diagnostic.range, diagnostic.message.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+
+        let (loose, loose_calls) =
+            run_usage_with_files(&fixture, files.clone(), "behavior-loose", Vec::new());
+        assert!(loose_calls.is_empty(), "{loose_calls:?}");
+        assert!(loose.diagnostics.is_empty(), "{:?}", loose.diagnostics);
+        let CapabilityStatus::Partial { reason } = loose
+            .status
+            .as_ref()
+            .expect("behavior-loose must be Partial")
+        else {
+            panic!("expected Partial");
+        };
+        // `skipped == 1` and `skippedDetails == ["behavior-loose.loose"]`.
+        assert_eq!(reason, &format!("{SKIPPED_PREFIX} (behavior-loose.loose)"));
+
+        let (missing, missing_calls) =
+            run_usage_with_files(&fixture, files, "behavior-missing-required", Vec::new());
+        assert!(missing_calls.is_empty(), "{missing_calls:?}");
+        assert!(missing.diagnostics.is_empty(), "{:?}", missing.diagnostics);
+        assert!(
+            missing.status.is_none(),
+            "a zero-attribute usage is checked and clean: {:?}",
+            missing.status
+        );
     }
 
     #[test]

@@ -165,30 +165,30 @@
     },
     "migration_evidence": {
       "assessed_at": "2026-11-20",
-      "implementation_head": "68f852cf0aa04baf791f6fae9867bc1641b0c88d",
+      "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
       "rust_test_command": "cargo test -p wxml-lsp --lib; cargo test -p wxml-backend-tsgo --lib; cargo test -p wxml-backend-tsgo --test shadow_layout; cargo test -p wxml-lsp --test native_parity; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored; cargo test -p wxml-delivery --test assets_lock_root",
-      "rust_test_result": "wave-11 exact backfill: TS-ANALYSIS-0315/0332 and the ten wave-11 messages/probes cases promoted from planned to exact green. green 70 -> 82, planned 231 -> 219, exact 70 -> 82, assessed_cases 197 -> 209 and no-evidence 104 -> 92; near_exact 2, weaker 96, structural 7, blocked 22 and retired 38 are unchanged.",
+      "rust_test_result": "wave-11 blocked followup: TS-COMPONENT-0292 promoted planned -> exact green; TS-EVENTS-0188 registered near_exact (planned, green recommendation); TS-COMPONENT-0193, TS-GUARDS-0201, TS-LOCALS-0343 and TS-COMPONENT-0498 registered weaker (planned). green 82 -> 83, planned 219 -> 218, exact 82 -> 83, near_exact 2 -> 3, weaker 96 -> 100, blocked 22 -> 16; assessed_cases 209, structural 7, retired 38 and no-evidence 92 unchanged.",
       "assessed_cases": 209,
-      "exact": 82,
-      "near_exact": 2,
-      "weaker": 96,
+      "exact": 83,
+      "near_exact": 3,
+      "weaker": 100,
       "structural": 7,
-      "blocked": 22,
-      "green_eligible": 82,
-      "promoted_to_green": 82,
+      "blocked": 16,
+      "green_eligible": 83,
+      "promoted_to_green": 83,
       "remaining_planned_without_evidence": 92,
       "by_partition": {
         "behaviors": {
           "routed_cases": 21,
           "evidence_cases": 18,
-          "green_cases": 1,
-          "planned_evidence_cases": 17,
+          "green_cases": 2,
+          "planned_evidence_cases": 16,
           "unassessed_cases": 3,
-          "exact": 1,
+          "exact": 2,
           "near_exact": 2,
-          "weaker": 6,
+          "weaker": 7,
           "structural": 5,
-          "blocked": 4
+          "blocked": 2
         },
         "completion": {
           "routed_cases": 9,
@@ -210,9 +210,9 @@
           "unassessed_cases": 3,
           "exact": 8,
           "near_exact": 0,
-          "weaker": 1,
+          "weaker": 2,
           "structural": 0,
-          "blocked": 7
+          "blocked": 6
         },
         "definitions": {
           "routed_cases": 5,
@@ -233,10 +233,10 @@
           "planned_evidence_cases": 8,
           "unassessed_cases": 3,
           "exact": 13,
-          "near_exact": 0,
+          "near_exact": 1,
           "weaker": 7,
           "structural": 0,
-          "blocked": 1
+          "blocked": 0
         },
         "guards_js": {
           "routed_cases": 25,
@@ -246,9 +246,9 @@
           "unassessed_cases": 5,
           "exact": 14,
           "near_exact": 0,
-          "weaker": 1,
+          "weaker": 2,
           "structural": 0,
-          "blocked": 5
+          "blocked": 4
         },
         "hover_docs": {
           "routed_cases": 10,
@@ -270,9 +270,9 @@
           "unassessed_cases": 5,
           "exact": 8,
           "near_exact": 0,
-          "weaker": 2,
+          "weaker": 3,
           "structural": 0,
-          "blocked": 1
+          "blocked": 0
         },
         "mapping_utf16": {
           "routed_cases": 21,
@@ -373,17 +373,17 @@
       },
       "rust_unit_test_command": "cargo test -p wxml-backend-tsgo --lib",
       "rust_unit_test_result": "wxml-lsp lib 789 passed, 0 failed, 0 ignored",
-      "near_exact_recommendations": 2,
+      "near_exact_recommendations": 3,
       "statuses": {
-        "planned": 219,
-        "green": 82,
+        "planned": 218,
+        "green": 83,
         "retired-with-decision": 38
       },
       "status_policy": "Only parity=exact cases are green. near_exact, weaker, structural and blocked cases stay planned with status_recommendation recorded; no empty evidence is accepted."
     },
     "statuses": {
-      "planned": 219,
-      "green": 82,
+      "planned": 218,
+      "green": 83,
       "retired-with-decision": 38
     }
   },
@@ -5813,23 +5813,23 @@
       "migration_evidence": {
         "case_id": "TS-COMPONENT-0193",
         "assessed_at": "2026-11-20",
-        "implementation_head": "0bf666b994163d2a44a4b87b0b8bb5d4e9101bf1",
-        "parity": "blocked",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "weaker",
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "The three bindings now produce no diagnostics, three mounts, three real queries and a None/Supported status, which covers the clean per-tag result and skipped=0 semantics. The TS probeProblems=[] assertion is Node probe-helper/root health; the native shadow has no probe anchors or probeProblems surface, so that one assertion has no native counterpart and the case cannot be called exact without fabricating a vacuous check.",
+        "note": "Extended `fully_checkable_component_request_stays_supported` proves three clean bindings, zero diagnostics, three real queries at the exact mount target positions in template order and status None (Supported), covering the clean per-tag result, skipped=0 and the query ranges. The TS `probeProblems=[]` is a Node probe-health field with no native counterpart, and the adapter overall status is not asserted; kept weaker.",
         "rust_tests": [
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
-            "line": 1771,
+            "line": 1851,
             "test": "fully_checkable_component_request_stays_supported",
             "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::fully_checkable_component_request_stays_supported",
-            "note": "Three declared properties, three mounts and three queries stay clean and Supported; no skipped check."
+            "note": "Three declared properties, three mounts and three real queries at the exact target positions stay clean and Supported; no skipped check. The Node probeProblems array is not asserted."
           },
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
-            "line": 1523,
+            "line": 1603,
             "test": "matching_root_binding_is_clean",
             "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::matching_root_binding_is_clean",
             "note": "Two matching root bindings produce no diagnostics and no Partial reason; both attributes are checked."
@@ -6346,29 +6346,29 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "messages"
       ],
       "migration_evidence": {
         "case_id": "TS-COMPONENT-0292",
-        "assessed_at": "2026-11-18",
-        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
-        "parity": "blocked",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "TS asserts component-binding diagnostics for behavior properties; Rust asserts declaration facts only and never runs the binding check.",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Production merges behavior properties into the property overlay. The new per-usage test reproduces the TS `behavior-card.ts` fixture and pins all three exact messages (`card-title` number, `score` boolean, `defaulted` string literal), the clean usage (4 real queries, status None), the single `behavior-loose.loose` skip (`skipped==1`, exact detail) and the zero-attribute usage (status None). Under the exact TS-COMPONENT-0147 per-usage precedent this is exact.",
         "rust_tests": [
           {
-            "path": "crates/wxml-backend-tsgo/tests/script_properties.rs",
-            "line": 72,
-            "test": "case_component_0292_only_optional_types_and_defaults_are_preserved",
-            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_properties.rs::case_component_0292_only_optional_types_and_defaults_are_preserved",
-            "note": "TS asserts component-binding diagnostics for behavior properties; Rust asserts declaration facts only and never runs the binding check."
+            "path": "crates/wxml-lsp/src/backend_tsgo/component_bindings.rs",
+            "line": 1918,
+            "test": "case_component_0292_behavior_properties_and_kebab_camel_bindings_are_checked",
+            "fully_qualified": "wxml_lsp::backend_tsgo::component_bindings::tests::case_component_0292_behavior_properties_and_kebab_camel_bindings_are_checked",
+            "note": "Pins the three exact mismatch messages and their expression/attribute ranges, the clean 4-query usage with status None, the single `behavior-loose.loose` Partial skip and the zero-attribute usage."
           }
         ]
       }
@@ -6863,27 +6863,34 @@
       ],
       "migration_evidence": {
         "case_id": "TS-COMPONENT-0498",
-        "assessed_at": "2026-11-18",
-        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
-        "parity": "blocked",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "weaker",
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "TS asserts hover any plus a behavior reason; the two Rust tests assert data/property spread completeness facts only.",
+        "note": "Script facts prove `dynamic` is any/not exact and behavior data is incomplete; the new build-level test proves Partial with a `component behaviors are partially resolved:` reason and the `__wxml_root.dynamic` mount. TS asserts hover `typeOnly=\"any\"` plus a behavior hover reason; no hover adapter test exists and behavior data is not merged into the shadow, so the any is error recovery rather than a modeled probe-layer field. Kept weaker.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
             "line": 236,
             "test": "case_component_0498_spread_and_dynamic_data_members_stay_partial_and_any",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0498_spread_and_dynamic_data_members_stay_partial_and_any",
-            "note": "TS asserts hover any plus a behavior reason; the two Rust tests assert data/property spread completeness facts only."
+            "note": "Script facts: `dynamic` is `any`/not exact and behavior data is incomplete; no hover result is claimed."
           },
           {
             "path": "crates/wxml-backend-tsgo/tests/script_properties.rs",
-            "line": 179,
+            "line": 203,
             "test": "case_component_0498_only_property_spread_keeps_known_properties",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_properties.rs::case_component_0498_only_property_spread_keeps_known_properties",
-            "note": "TS asserts hover any plus a behavior reason; the two Rust tests assert data/property spread completeness facts only."
+            "note": "Property spread keeps known properties but marks `properties.complete=false`; no hover result is claimed."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_behavior.rs",
+            "line": 617,
+            "test": "case_component_0498_build_reports_a_behavior_reason_and_mounts_dynamic",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_behavior.rs::case_component_0498_build_reports_a_behavior_reason_and_mounts_dynamic",
+            "note": "Shadow build is Partial with a `component behaviors are partially resolved:` reason and mounts `__wxml_root.dynamic`; hover `typeOnly` and probe-layer checks are not run."
           }
         ]
       }
@@ -9079,20 +9086,27 @@
       ],
       "migration_evidence": {
         "case_id": "TS-EVENTS-0188",
-        "assessed_at": "2026-11-18",
-        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
-        "parity": "blocked",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "near_exact",
         "green_eligible": false,
-        "status_recommendation": "planned",
+        "status_recommendation": "green",
         "status_applied": "planned",
-        "note": "Native resolves the inline behavior method and asserts its Chinese documentation, but the TS stub-view case additionally asserts the behavior fileId (`src/behaviors/base.ts`) and the handler signature; the inline fixture models neither, so the case stays blocked.",
+        "note": "`case_events_0188_imported_behavior_handler_matches_the_oracle_path_and_signature` aligns the fixture to `src/behaviors/base.ts`/`fromBehavior` and asserts Supported, the exact definition path/range, the signature and `来自 behavior`. The only difference is the renamed field `definition.fileId` -> `EventDefinition.path`; the case cannot be called exact until the ledger accepts that rename. The fixture omits the oracle trailing comma after `Behavior({...})` because `behavior_unit` rejects it; that parser gap is a separate production fix.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
-            "line": 558,
+            "line": 583,
+            "test": "case_events_0188_imported_behavior_handler_matches_the_oracle_path_and_signature",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0188_imported_behavior_handler_matches_the_oracle_path_and_signature",
+            "note": "Asserts Supported, `src/behaviors/base.ts` definition path and exact `fromBehavior` range, the signature and `来自 behavior`; only `fileId` is renamed to `path`."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
+            "line": 562,
             "test": "case_events_0188_only_inline_behavior_methods_resolve",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0188_only_inline_behavior_methods_resolve",
-            "note": "TS asserts the behavior fileId/signature/docs from a stub view; Rust resolves inline behavior script facts only."
+            "note": "Secondary inline-behavior evidence: Supported, definition present and the Chinese documentation, with no missing diagnostic."
           },
           {
             "path": "crates/wxml-lsp/src/semantics/event_diagnostics.rs",
@@ -11287,20 +11301,20 @@
       ],
       "migration_evidence": {
         "case_id": "TS-GUARDS-0201",
-        "assessed_at": "2026-11-18",
-        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
-        "parity": "blocked",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "weaker",
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "TS asserts diagnostics Partial, the reason, empty diagnostics and no fabricated 2339; Rust pins the rendered structure and Partial reason only.",
+        "note": "Extended build-level test proves BuildStatus::Partial, the exact stable `some template bindings or guards could not be resolved and were not checked` reason, the matching note, no rendered `if`, and `@ts-ignore` immediately guarding the unnarrowed mount. `unresolvedGuards=1`, the adapter diagnostics status and empty top-level/per-fragment diagnostics are not available (no count/DTO, no checker run); kept weaker.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
-            "line": 448,
+            "line": 466,
             "test": "case_guards_0201_an_unparseable_guard_does_not_fabricate_a_diagnostic_and_reports_partial",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_guards_0201_an_unparseable_guard_does_not_fabricate_a_diagnostic_and_reports_partial",
-            "note": "TS asserts diagnostics Partial, the reason, empty diagnostics and no fabricated 2339; Rust pins the rendered structure and Partial reason only."
+            "note": "Partial with the exact stable unresolved bindings/guards reason, the matching note, no fabricated `if`, and `@ts-ignore` directly above the unnarrowed mount. The unresolvedGuards count and per-fragment diagnostics are not exposed."
           }
         ]
       }
@@ -13498,20 +13512,20 @@
       ],
       "migration_evidence": {
         "case_id": "TS-LOCALS-0343",
-        "assessed_at": "2026-11-18",
-        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
-        "parity": "blocked",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "1c89338843925386ccc49da5b2af562354d17d64",
+        "parity": "weaker",
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "TS asserts diagnostics Partial, the typed reason and empty fragment diagnostics; Rust pins the layout status/reason and fallback text only.",
+        "note": "Extended build-level test proves Partial, the exact stable `some template bindings or guards could not be resolved and were not checked` reason, the matching note and the `const item = undefined as any;` fallback. The adapter diagnostics status and empty per-fragment diagnostics are not asserted; native has a flat diagnostics list with no per-fragment DTO; kept weaker.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
-            "line": 307,
+            "line": 317,
             "test": "case_locals_0343_a_locals_only_request_still_degrades_to_partial_with_a_typed_reason",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_locals_0343_a_locals_only_request_still_degrades_to_partial_with_a_typed_reason",
-            "note": "TS asserts diagnostics Partial, the typed reason and empty fragment diagnostics; Rust pins the layout status/reason and fallback text only."
+            "note": "Partial with the exact stable reason, the matching note and the `const item = undefined as any;` fallback; the adapter status and per-fragment diagnostics DTO are not asserted."
           }
         ]
       }

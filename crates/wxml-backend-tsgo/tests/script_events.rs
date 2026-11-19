@@ -580,6 +580,44 @@ fn case_events_0188_only_inline_behavior_methods_resolve() {
 }
 
 #[test]
+fn case_events_0188_imported_behavior_handler_matches_the_oracle_path_and_signature() {
+    // Oracle: TS-EVENTS-0188. The TS fixture resolves `fromBehavior` from
+    // `src/behaviors/base.ts`; this uses the same project-relative path so the
+    // TS `definition.fileId` maps one-to-one to `EventDefinition.path`.
+    //
+    // The oracle source carries a trailing comma after the `Behavior({...})`
+    // options object. `behavior_unit` now accepts that exact `}` `,` `)` form,
+    // so this fixture keeps the comma instead of masking the parser gap. The
+    // only remaining difference is the `fileId` -> `EventDefinition.path`
+    // naming, which is why this case stays near-exact rather than green.
+    let index = "import base from \"./src/behaviors/base\";\nComponent({ behaviors: [base], data: {}, methods: {} })";
+    let behavior = "export default Behavior({\n  methods: {\n    /** 来自 behavior */\n    fromBehavior(event: { detail: { x: number } }) {}\n  }\n},);";
+    let result = analysis(
+        &[("index.ts", index), ("src/behaviors/base.ts", behavior)],
+        "index.ts",
+        RegistrationKind::Component,
+    );
+    let resolution = result
+        .resolve_events(&[binding("fromBehavior")])
+        .results
+        .remove(0);
+    assert!(resolution.status.is_supported(), "{:?}", resolution.status);
+    assert!(resolution.diagnostic.is_none());
+    let definition = resolution.definition.as_ref().expect("definition");
+    assert_eq!(definition.path, "src/behaviors/base.ts");
+    let start = behavior.find("fromBehavior").expect("handler") as u32;
+    assert_eq!(definition.range.utf8.start.get(), start);
+    assert_eq!(
+        definition.range.utf8.end.get(),
+        start + u32::try_from("fromBehavior".len()).unwrap()
+    );
+    let signature = resolution.signature.as_deref().expect("signature");
+    assert!(signature.contains("fromBehavior"), "{signature}");
+    assert!(signature.contains("detail"), "{signature}");
+    assert_eq!(resolution.documentation.as_deref(), Some("来自 behavior"));
+}
+
+#[test]
 fn case_events_0236_unresolved_behavior_graph_keeps_missing_handlers_unproven() {
     // Oracle: TS-EVENTS-0236 / dirty D2.
     let result = analysis(

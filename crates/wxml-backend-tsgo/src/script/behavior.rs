@@ -408,7 +408,12 @@ fn behavior_unit(
         return None;
     }
     let close = script.close_of(open).ok()?;
-    let closes_call = close + 1 == end || (close + 2 == end && script.is_punct(close + 1, ')'));
+    // `Behavior({...})`, `Behavior({...},)` and `Behavior({...})` without the
+    // closing call token (nested range). Any other argument shape, such as a
+    // second argument or a spread, stays unresolved.
+    let closes_call = close + 1 == end
+        || (close + 2 == end && script.is_punct(close + 1, ')'))
+        || (close + 3 == end && script.is_punct(close + 1, ',') && script.is_punct(close + 2, ')'));
     if !closes_call {
         return None;
     }
