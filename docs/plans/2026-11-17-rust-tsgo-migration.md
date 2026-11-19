@@ -567,7 +567,7 @@ G1 仍未关闭；7.1.0-beta 仅由维护者有条件接受并固定 integrity�
 | --- | --- | --- |
 | `cargo test -p wxml-lsp --lib` | 668 passed / 0 failed（在 `953ee1e` 工作树记录） | 仅 lib 单元；包含无 `TSGO_BIN` 时直接返回的 opt-in smoke，不能证明真实引擎 |
 | 真实引擎 adapter hover smoke | 1 passed / 0 failed | pinned 7.1.0-beta、`WXML_REQUIRE_REAL_ENGINE=1`；lib 级 adapter，不是 stdio/CLI |
-| 首波 native gate `G-P5-E2E-09/12/14` | 3 passed / 0 failed / 36 filtered | 仍 `#[ignore]`；ledger 仍 `required_not_migrated`；`36 filtered` 未运行 |
+| 首波 native gate `G-P5-E2E-09/12/14` | 3 passed / 0 failed / 36 filtered | 仍 `#[ignore]`；`36 filtered` 未运行；当轮 ledger 仍 `required_not_migrated`（后续 2026-11-19 提升见 §12.6） |
 | loader 验证 | `asset_loader` 19 passed / 4 ignored；显式 fixture gate 4 passed；`wxml-backend-tsgo` 542 passed / 4 ignored；clippy 无问题 | 执行会话记录，本次未重跑，stdout 未入库；clippy 范围不外推为 workspace 全绿 |
 
 上述结果只在各自范围内成立，均为执行会话记录；本次状态更新未重跑 `cargo`，原始 stdout 未入库，不合并为 workspace、CLI、真实包或 Zed 全绿。
@@ -576,7 +576,7 @@ G1 仍未关闭；7.1.0-beta 仅由维护者有条件接受并固定 integrity�
 
 - **默认后端**：默认 `--stdio` 仍构造 `NodeBackend`（ /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/src/main.rs:184 ），Node 未删除；`--backend native` 仍是 opt-in。F3、P6、G5、G6 均未关闭。
 - **P6-3-4 trusted pin**：生产接线仍 BLOCKED；adapter 的 `RequestPlan::input` 仍调用 `AnalysisInput::new`（ /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/src/backend_tsgo/input.rs:121 ），未消费 trusted loader。`assets.lock.json`、真实 tarball 身份与 F3-03/B6 仍未闭环。
-- **台账**：本轮 gate 运行未自动晋级 ledger；`G-P5-E2E-09/12/14` 仍为 `required_not_migrated`，关联 case 仍为 `planned`，没有新增 case 级 `green`。
+- **台账**：本轮 gate 运行未自动晋级 ledger；`G-P5-E2E-09/12/14` 仍为 `required_not_migrated`，关联 case 仍为 `planned`，没有新增 case 级 `green`。（`0a245b9` 快照；2026-11-19 的 3/20/23 台账提升见 §12.6。）
 - **document symbols**：`27bec99`（`e303e1d` 的父提交）已把脚本 document symbols 接入 LSP；§12.3 的“adapter 与 LSP 路由未接线”是 `6358925` 快照。当前仍有未提交的 scheduler/HIGH 修复，未完成、未提交。
 - **未提交 WIP**：记录时工作树包含 document-symbol scheduler/HIGH 修复（`scheduler.rs`、`server.rs`、`structure.rs`、`backend_tsgo/document_symbol.rs` 等）和 F3 asset-lock L1 review-fix（`crates/wxml-delivery/src/assets_lock*`、`verify_v2.rs` 等）。两者都不在 HEAD `0a245b9`，不得写成已完成或已提交。
 
@@ -588,3 +588,26 @@ G1 仍未关闭；7.1.0-beta 仅由维护者有条件接受并固定 integrity�
 4. **F3-03 L2**：在 L1 提交后继续真实 tarball 的 SRI/SHA-256/size、provisioning、`assets.lock.json` 与打包器/安装器交叉校验；不据此关闭 F3-03。
 5. **P6-4b/4c**：真实资产启动；真实包 + `strace`/PATH tripwire 的无 Node 进程审计。
 6. **P6/P7 默认切换与 Node 删除**：最后执行；前置是 G5/G6 与真实包/安装/回滚/Zed 验收完成。
+
+### 12.6 2026-11-19 native gate 台账提升（P6-2）
+
+本节记录 §12.5 之后的状态变化；§12.5 仍是 `0a245b9` 快照，其中“ledger 仍 `required_not_migrated`”只描述当轮。本次未改生产代码、Node、默认后端、`Cargo.toml` 或任何 `#[ignore]` 属性，也未删除 gate。
+
+| 项 | 状态 |
+| --- | --- |
+| `gate_green` | 3：`G-P5-E2E-09`、`G-P5-E2E-12`、`G-P5-E2E-14` |
+| `required_not_migrated` | 20 |
+| 合计 | 23（不增不减） |
+| 运行证据 | `3 passed / 0 failed / 36 filtered`；运行锚点 `953ee1e`；台账记录锚点 `7bdab96` |
+| fail-closed RED | `0 passed / 3 failed / 36 filtered`（不带 `WXML_TEST_NATIVE=1`，各 gate panic，不是 skip） |
+| 触发命令 | `WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored --test-threads=1` |
+| 引擎身份 | TypeScript `7.1.0-beta`，AST v9，`lib/tsc` SHA-256 `a183b195…`，size 24,522,912 B |
+| 资产身份 | `TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine` 的 `engine/lib` 116 个 `lib*.d.ts`；未使用 miniprogram typings payload |
+| case 计数 | 仍为 339 total / 33 `green` / 270 `planned` / 36 `retired-with-decision`；未新增 case 级 `green` |
+
+边界：
+
+- 3 个 replacement 仍 `#[ignore]`；默认 `cargo test` 不运行它们，`gate_green` 是 opt-in required native job 状态，不是默认 CI 绿，也不是 `mandatory_green`。
+- 其余 20 个 gate 仍未验证；P6-3/P6-4、G5、G6、F3 均未关闭；默认后端仍是 Node。
+- 本次复跑被并行未提交的 trusted type-assets WIP 阻塞（native gate 启动报 `native type assets are unavailable: a required type declaration is missing`），因此绿色结论仍只锚定 `953ee1e` 的既有运行，不是当前工作树结果。
+- 详细证据与限制见 /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/docs/evidence/2026-11-19-tsgo-native-gate-status.md 。

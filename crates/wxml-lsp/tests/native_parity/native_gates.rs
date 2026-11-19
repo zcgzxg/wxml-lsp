@@ -5,14 +5,33 @@
 //! and the two `semantic_tools` early returns recorded by the ledger. The
 //! 23 gates and the two silent returns must become real native commands before
 //! the old Node-backed tests may be deleted or treated as green.
+//!
+//! P6-2 records the first-wave opt-in native result: exactly three gates
+//! (`G-P5-E2E-09/12/14`) are `gate_green` with frozen evidence, while the
+//! other 20 stay `required_not_migrated`. `gate_green` is an opt-in
+//! required-native-job result (`--ignored`), not a default-CI pass and not
+//! `mandatory_green`.
 
 use std::collections::BTreeSet;
 use std::path::Path;
+
+use wxml_backend_tsgo::config::{AST_PROTOCOL_VERSION, ENGINE_VERSION, PinnedEngine};
 
 use crate::fixture_hash::collect_tree_files;
 use crate::ledger;
 use crate::native_engine_real::{GATE_REPLACEMENTS, IGNORED_GATE_TESTS, NATIVE_GATE_FILE};
 use crate::source_scan;
+
+/// The only gates allowed to carry `gate_green` in P6-2.
+const GATE_GREEN_IDS: &[&str] = &["G-P5-E2E-09", "G-P5-E2E-12", "G-P5-E2E-14"];
+/// Frozen `gate_green` count after the P6-2 promotion.
+const GATE_GREEN_COUNT: usize = 3;
+/// Frozen `required_not_migrated` count after the P6-2 promotion.
+const REQUIRED_NOT_MIGRATED_COUNT: usize = 20;
+/// Frozen ignored-gate inventory size; P6-2 never deletes a gate.
+const IGNORED_GATE_COUNT: usize = 23;
+/// Pinned size of the `7.1.0-beta` `lib/tsc` artifact.
+const PINNED_ENGINE_SIZE: u64 = 24_522_912;
 
 /// The exact first-wave ignored-native-gate set.
 fn declared_native_gate_tests() -> BTreeSet<(String, String)> {
@@ -106,6 +125,126 @@ fn assert_required_text(
     }
 }
 
+fn assert_git_object_id(value: &str, context: &str) {
+    assert_eq!(value.len(), 40, "{context} must be a git object id");
+    assert!(
+        value.bytes().all(|byte| byte.is_ascii_hexdigit()),
+        "{context} must be hex: {value}"
+    );
+}
+
+/// Requires complete, pinned evidence for a `gate_green` gate.
+///
+/// A green gate must name its replacement, its native prerequisite, its
+/// removal condition, the exact opt-in command and the pinned engine/asset
+/// identity. Empty evidence or a different engine must fail here rather than
+/// silently counting as a pass.
+fn assert_gate_green_evidence(gate: &serde_json::Map<String, serde_json::Value>, gate_id: &str) {
+    for key in [
+        "replacement_test",
+        "replacement_kind",
+        "native_prerequisite",
+        "removal_condition",
+    ] {
+        assert!(
+            !ledger::required_str(gate, key, gate_id).is_empty(),
+            "{gate_id}.{key} must not be empty for a gate_green gate"
+        );
+    }
+
+    let evidence = ledger::required_object(gate, "gate_evidence", gate_id);
+    assert_required_text(
+        evidence,
+        &format!("{gate_id}.gate_evidence"),
+        &["command", "run_date", "result", "scope"],
+    );
+
+    let command = ledger::required_str(evidence, "command", gate_id);
+    for expected in [
+        "WXML_TEST_NATIVE=1",
+        "WXML_REQUIRE_REAL_ENGINE=1",
+        "native_engine_real",
+        "--ignored",
+    ] {
+        assert!(
+            command.contains(expected),
+            "{gate_id} evidence command must contain {expected:?}: {command}"
+        );
+    }
+
+    let result = ledger::required_str(evidence, "result", gate_id);
+    assert!(
+        result.contains("3 passed") && result.contains("36 filtered"),
+        "{gate_id} evidence must record the first-wave 3 passed / 36 filtered run: {result}"
+    );
+    assert_eq!(
+        ledger::required_u64(evidence, "exit", gate_id),
+        0,
+        "{gate_id} evidence must record a zero exit"
+    );
+
+    for key in ["run_head", "recorded_at_head"] {
+        assert_git_object_id(
+            ledger::required_str(evidence, key, gate_id),
+            &format!("{gate_id}.gate_evidence.{key}"),
+        );
+    }
+
+    let engine = ledger::required_object(evidence, "engine_identity", gate_id);
+    let pinned = PinnedEngine::pinned();
+    assert_eq!(
+        ledger::required_str(engine, "version", gate_id),
+        ENGINE_VERSION,
+        "{gate_id} engine identity drifted from the pin"
+    );
+    assert_eq!(
+        ledger::required_str(engine, "git_head", gate_id),
+        pinned.git_head(),
+        "{gate_id} engine git head drifted from the pin"
+    );
+    assert_eq!(
+        ledger::required_str(engine, "executable_sha256", gate_id),
+        pinned.executable_sha256(),
+        "{gate_id} engine SHA-256 drifted from the pin"
+    );
+    assert_eq!(
+        ledger::required_u64(engine, "ast_protocol", gate_id),
+        u64::from(AST_PROTOCOL_VERSION),
+        "{gate_id} AST protocol drifted from the pin"
+    );
+    assert_eq!(
+        ledger::required_u64(engine, "executable_size_bytes", gate_id),
+        PINNED_ENGINE_SIZE,
+        "{gate_id} engine size drifted from the pin"
+    );
+
+    let asset = ledger::required_object(evidence, "asset_identity", gate_id);
+    assert_required_text(
+        asset,
+        &format!("{gate_id}.gate_evidence.asset_identity"),
+        &["tsgo_asset_root", "standard_library", "typings_payload"],
+    );
+
+    let red = ledger::required_object(evidence, "fail_closed_evidence", gate_id);
+    assert_required_text(
+        red,
+        &format!("{gate_id}.gate_evidence.fail_closed_evidence"),
+        &["command", "result", "reason"],
+    );
+    let red_command = ledger::required_str(red, "command", gate_id);
+    assert!(
+        red_command.contains("--ignored") && !red_command.contains("WXML_TEST_NATIVE=1"),
+        "{gate_id} fail-closed command must run the ignored gate without the opt-in \
+         flag: {red_command}"
+    );
+    let red_result = ledger::required_str(red, "result", gate_id);
+    assert!(
+        red_result.contains("0 passed") && red_result.contains("3 failed"),
+        "{gate_id} fail-closed evidence must record the 0 passed / 3 failed run: \
+         {red_result}"
+    );
+}
+
 fn native_parity_function(target: &str, gate_id: &str) -> String {
     let (file, rest) = target
         .split_once("::")
@@ -137,16 +276,22 @@ fn normalize_whitespace(text: &str) -> String {
 }
 
 #[test]
-fn all_ignored_rust_tests_are_mandatory_unmigrated_gates() {
+fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
     let ledger_value = ledger::load_ledger();
     let root = ledger::object(&ledger_value, "ledger root");
     let gates = ledger::required_array(root, "ignored_rust_tests", "ledger root");
-    assert_eq!(gates.len(), 23, "the frozen ignored-test inventory drifted");
+    assert_eq!(
+        gates.len(),
+        IGNORED_GATE_COUNT,
+        "the frozen ignored-test inventory drifted"
+    );
 
     let cases = ledger::required_array(root, "cases", "ledger root");
     let case_ids = ledger::case_ids(cases);
     let mut gate_ids = BTreeSet::new();
     let mut expected = BTreeSet::new();
+    let mut green = BTreeSet::new();
+    let mut required = BTreeSet::new();
 
     for gate in gates {
         let gate = ledger::object(gate, "ledger.ignored_rust_tests[]");
@@ -159,11 +304,25 @@ fn all_ignored_rust_tests_are_mandatory_unmigrated_gates() {
             ledger::required_bool(gate, "must_migrate", gate_id),
             "{gate_id} must remain a required migration gate"
         );
-        assert_eq!(
-            ledger::required_str(gate, "status", gate_id),
-            "required_not_migrated",
-            "{gate_id} must not be marked migrated"
-        );
+        match ledger::required_str(gate, "status", gate_id) {
+            "required_not_migrated" => {
+                assert!(
+                    required.insert(gate_id.to_owned()),
+                    "duplicate required gate {gate_id}"
+                );
+            }
+            "gate_green" => {
+                assert_gate_green_evidence(gate, gate_id);
+                assert!(
+                    green.insert(gate_id.to_owned()),
+                    "duplicate gate_green gate {gate_id}"
+                );
+            }
+            other => panic!(
+                "{gate_id} has unexpected status {other:?}; P6-2 only promotes the \
+                 three evidence-backed first-wave gates"
+            ),
+        }
         assert_required_text(
             gate,
             gate_id,
@@ -183,6 +342,26 @@ fn all_ignored_rust_tests_are_mandatory_unmigrated_gates() {
             "duplicate ignored test {file}::{test}"
         );
     }
+
+    let frozen_green: BTreeSet<String> = GATE_GREEN_IDS
+        .iter()
+        .map(|gate_id| (*gate_id).to_owned())
+        .collect();
+    assert_eq!(
+        green, frozen_green,
+        "only the first-wave evidence gates may be gate_green"
+    );
+    assert_eq!(
+        green.len(),
+        GATE_GREEN_COUNT,
+        "the gate_green count drifted from the P6-2 promotion"
+    );
+    assert_eq!(
+        required.len(),
+        REQUIRED_NOT_MIGRATED_COUNT,
+        "the remaining gates must stay required_not_migrated"
+    );
+    assert_eq!(green.len() + required.len(), IGNORED_GATE_COUNT);
 
     let (count, mut actual) = ignored_functions();
     let native = declared_native_gate_tests();
@@ -209,11 +388,11 @@ fn all_ignored_rust_tests_are_mandatory_unmigrated_gates() {
         "the #[ignore] test set drifted from the ledger; update the ledger \
          deliberately and never drop a gate silently"
     );
-    assert_eq!(gate_ids.len(), 23);
+    assert_eq!(gate_ids.len(), IGNORED_GATE_COUNT);
 }
 
 #[test]
-fn first_wave_native_replacements_are_linked_without_promoting_the_ledger() {
+fn first_wave_native_replacements_are_linked_with_gate_green_evidence() {
     let ledger_value = ledger::load_ledger();
     let root = ledger::object(&ledger_value, "ledger root");
     let gates = ledger::required_array(root, "ignored_rust_tests", "ledger root");
@@ -235,8 +414,13 @@ fn first_wave_native_replacements_are_linked_without_promoting_the_ledger() {
             .unwrap_or_else(|| panic!("ledger is missing the first-wave gate {gate_id}"));
         assert_eq!(
             ledger::required_str(gate, "status", gate_id),
-            "required_not_migrated",
-            "{gate_id} must stay required_not_migrated; a green replacement is not a ledger promotion"
+            "gate_green",
+            "{gate_id} must be gate_green only with the recorded opt-in native evidence"
+        );
+        assert_eq!(
+            ledger::required_str(gate, "replacement_test", gate_id),
+            format!("{NATIVE_GATE_FILE}::{replacement}"),
+            "{gate_id} replacement_test must name the linked native gate"
         );
         assert!(
             replacements.contains(*replacement),
@@ -247,6 +431,7 @@ fn first_wave_native_replacements_are_linked_without_promoting_the_ledger() {
             "{replacement} is linked to more than one ledger gate"
         );
     }
+    assert_eq!(GATE_REPLACEMENTS.len(), GATE_GREEN_COUNT);
     assert_eq!(
         linked, replacements,
         "every first-wave native replacement must link to exactly one ledger gate"

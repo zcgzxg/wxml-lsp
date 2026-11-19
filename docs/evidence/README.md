@@ -45,6 +45,7 @@
 | 2026-11-18 | [tsgo typings 26 vs 23 裁决](2026-11-18-tsgo-typings-26-23-decision.md) | `f6f175f` | E1 | 交付 payload 定为 23 文件 / 2,548,075 B / `ba3eb83…`，上游身份保留 26 文件；lock 与真实 tarball 未冻结，F3-03 仍 BLOCKED |
 | 2026-11-18/19 | [P6-2 mandatory-gate 转换计划](2026-11-18-tsgo-p6-gate-conversion-plan.md) | `f6f175f` | E0 | 0/23 gate 绿；3 enable-now / 8 keep-gated / 12 delete-at-P7；2 个静默 return + 可选 `tsc` 转为 3 个强制原生 gate；S0–S9 与 no-false-green 规则 |
 | 2026-11-19 | [tsgo native hover 与首波 native gate 证据](2026-11-19-tsgo-hover-gates.md) | `953ee1e` / 7.1.0-beta | E0 | `wxml-lsp` lib 668 passed（执行会话记录，未重跑）；真实引擎 adapter hover 1 passed；首波 3 个 native gate 3 passed / 36 filtered（G-P5-E2E-09/12/14）；ledger 仍 `required_not_migrated`；默认仍 Node；记录时 workspace clippy 被并行 loader 的 `unreadable_literal` 阻塞（后续 `ca0b554` 未重跑，不声称已绿） |
+| 2026-11-19 | [tsgo native gate 台账提升](2026-11-19-tsgo-native-gate-status.md) | `7bdab96` / 证据 `953ee1e` / 7.1.0-beta | E0 | P6-2 台账 3 `gate_green`（`G-P5-E2E-09/12/14`）/ 20 `required_not_migrated` / 23 total；green 带命令、pinned 引擎/资产身份与 3 passed 证据；3 个仍 `#[ignore]`，默认 CI 不跑；本次复跑被并行 type-assets WIP 阻塞，green 仍锚定 `953ee1e`；P6/G5/G6/F3 未关闭 |
 | 2026-11-19 | [F1 event-handler completion 实施计划](2026-11-19-tsgo-event-handler-completion-plan.md) | `bff58d1` / S1 `939831b` | E0 | 设计 only：保留宽松直接事件形式，避免 `bindgetphonenumber` 等回归；缓存键排除 `view_id`；S1 顶层注册选择已提交，S2+ 尚未实现；无 native checker/auto-import/自定义事件；F1/P6/G5 未关闭 |
 
 ## 3. 当前门禁基线（2026-11-17，W4 最终）
@@ -120,8 +121,9 @@ G1 尚未关闭；7.1.0-beta 的接受与 integrity 固定、可执行安装器�
 | P6-4 | P6-4a opt-in 切片已落；P6-4b/c BLOCKED |
 | G5 / G6 | 均未关闭；G7 不在当前范围 |
 | 默认后端 | 仍为 Node；`--backend native` 只是 opt-in |
-| ignored / silent | 23 个 `#[ignore]`；`semantic_tools` 2 个静默 return；可选 `tsc` 分支仍在 |
-| 迁移台账 | 33 `green` / 270 `planned` / 36 `retired-with-decision`；本轮没有新增 `green`、`reviewed` 或 `closed` |
+| ignored / silent | 26 个 `#[ignore]`（23 个旧 gate + 3 个 native replacement）；`semantic_tools` 2 个静默 return；可选 `tsc` 分支仍在 |
+| native gate 台账 | 3 `gate_green`（`G-P5-E2E-09/12/14`）/ 20 `required_not_migrated` / 23 total；3 个仍 `#[ignore]`，只在 opt-in native job 绿，不是默认 CI 绿，也不是 `mandatory_green` |
+| 迁移台账 | 33 `green` / 270 `planned` / 36 `retired-with-decision`；本轮没有新增 case 级 `green`、`reviewed` 或 `closed` |
 | 平台 | 仅 Linux x86_64 有证据；aarch64/macOS/Windows/musl 未验证 |
 
 证据层级说明：
