@@ -44,8 +44,10 @@
 //!
 //! Standalone script diagnostics are implemented at the adapter seam
 //! ([`TsgoBackendAdapter::script_diagnostics`]) without a shadow or template
-//! syntax. The server does not schedule script URIs yet; that routing needs a
-//! backend/DTO decision and remains explicitly blocked.
+//! syntax. [`Backend::script_diagnostics`] exposes that seam to the LSP server,
+//! which routes project `.ts`/`.js`/`.mts`/`.cts`/`.mjs`/`.cjs` documents here.
+//! An unsupported or unavailable result is never published as an empty,
+//! checked script.
 //!
 //! Native document symbols are wired for the prepared view's **owning script**
 //! only. `NativeSession::document_symbols` returns hierarchical symbols with
@@ -492,10 +494,9 @@ impl TsgoBackendAdapter {
 
     /// Returns native diagnostics for one standalone project script.
     ///
-    /// This is the adapter seam for the future `DocumentRoute::Script`
-    /// dispatch; the LSP server does not call it yet. It never merges template
-    /// syntax diagnostics, never opens a shadow and never invents an empty
-    /// `Supported` result:
+    /// [`Backend::script_diagnostics`] is the LSP-facing trait seam and calls
+    /// this method. It never merges template syntax diagnostics, never opens a
+    /// shadow and never invents an empty `Supported` result:
     ///
     /// - a non-script/non-project document is `Unsupported` with no entries;
     /// - a missing engine or failed session is `Unavailable`;
@@ -576,6 +577,77 @@ impl TsgoBackendAdapter {
         }
         run.result
     }
+
+    /// Answers one trailing-dot member completion through a completion-only
+    /// shadow plan.
+    ///
+    /// The script overlay decides whether the root is a declared data field
+    /// first. An unknown root is an explicit `Unsupported`/`Partial` answer; it
+    /// never falls through to a silent empty native list. A mounted prefix is
+    /// queried at a synthetic `.` while the published replacement range stays
+    /// the original typed prefix.
+    fn completion_member(
+        &self,
+        request: &CompletionRequest,
+        prefix: String,
+        prefix_range: wxml_types::SourceRange,
+        replace: wxml_types::SourceRange,
+    ) -> Result<CompletionResult, BackendError> {
+        let Some(root) = completion::member_prefix_root(&prefix) else {
+            return Ok(completion::unsupported_completion(
+                "the expression before the trailing dot has no data root",
+            ));
+        };
+        match completion::member_root(self.views.as_ref(), request, root)? {
+            completion::MemberRoot::Known => {}
+            completion::MemberRoot::UnknownComplete => {
+                return Ok(completion::unsupported_completion(&format!(
+                    "`{root}` is not a data root of the template owner"
+                )));
+            }
+            completion::MemberRoot::UnknownIncomplete(reason) => {
+                return Ok(completion::partial_completion(reason));
+            }
+            completion::MemberRoot::Unavailable(reason) => {
+                return Ok(completion::unsupported_completion(&reason));
+            }
+        }
+        let fragment = input::CompletionFragment {
+            expr: prefix,
+            wxml_range: prefix_range,
+        };
+        let completion_plan = match input::build_completion_request_plan(
+            self.views.as_ref(),
+            &request.context,
+            &self.environment,
+            &fragment,
+        ) {
+            Ok(plan) => plan,
+            Err(BackendError::Unavailable(reason)) => {
+                return Ok(completion::unsupported_completion(&format!(
+                    "the incomplete member expression cannot be mounted: {reason}"
+                )));
+            }
+            Err(error) => return Err(error),
+        };
+        let Some(position) = completion_plan.completion_query else {
+            return Ok(completion::unsupported_completion(
+                "the incomplete member query position is unavailable",
+            ));
+        };
+        let script_path = completion_plan.identity.script_path.clone();
+        self.with_session_environment(&completion_plan, |session, degradation| {
+            completion::completion(
+                session,
+                &completion_plan.layout,
+                &script_path,
+                degradation.as_deref(),
+                request,
+                Some(position),
+                Some(replace),
+            )
+        })
+    }
 }
 
 impl Backend for TsgoBackendAdapter {
@@ -597,6 +669,7 @@ impl Backend for TsgoBackendAdapter {
                 session,
                 &plan.layout,
                 &script_path,
+                &plan.declared_properties,
                 degradation.as_deref(),
                 &request,
             )
@@ -638,6 +711,13 @@ impl Backend for TsgoBackendAdapter {
         }))
     }
 
+    fn script_diagnostics(
+        &self,
+        request: DiagnosticsRequest,
+    ) -> Result<DiagnosticsResult, BackendError> {
+        Self::script_diagnostics(self, &request)
+    }
+
     fn definition(&self, request: DefinitionRequest) -> Result<DefinitionResult, BackendError> {
         if !self.epoch_matches(&request.context) {
             return Err(BackendError::Cancelled);
@@ -670,17 +750,45 @@ impl Backend for TsgoBackendAdapter {
                 truncated: false,
             });
         }
+        let text = request.context.source().text();
+        let site = completion::expression_site(text, request.offset);
+        if let Some(completion::ExpressionSite::Root { replace }) = &site {
+            // Data roots are Rust script facts: no shadow and no native session.
+            return completion::root_completion(self.views.as_ref(), &request, *replace);
+        }
+        if let Some(completion::ExpressionSite::Member {
+            prefix,
+            prefix_range,
+            replace,
+        }) = &site
+        {
+            // A trailing dot can never be a mounted fragment; answer it without
+            // requiring the normal shadow plan to be representable.
+            return self.completion_member(&request, prefix.clone(), *prefix_range, *replace);
+        }
         let plan = self.prepare(&request.context)?;
         let script_path = plan.identity.script_path.clone();
-        self.with_session_environment(&plan, |session, degradation| {
-            completion::completion(
-                session,
-                &plan.layout,
-                &script_path,
-                degradation.as_deref(),
-                &request,
-            )
-        })
+        if let Some(position) = completion::query_position(&plan.layout, request.offset)? {
+            return self.with_session_environment(&plan, |session, degradation| {
+                completion::completion(
+                    session,
+                    &plan.layout,
+                    &script_path,
+                    degradation.as_deref(),
+                    &request,
+                    Some(position),
+                    None,
+                )
+            });
+        }
+        match site {
+            Some(completion::ExpressionSite::Unsupported(reason)) => {
+                Ok(completion::unsupported_completion(reason))
+            }
+            _ => Ok(completion::unsupported_completion(
+                "the cursor is not in a completable template expression",
+            )),
+        }
     }
 
     fn symbols(&self, request: SymbolRequest) -> Result<SymbolResult, BackendError> {
@@ -751,7 +859,7 @@ impl Backend for TsgoBackendAdapter {
             },
             diagnostics: CapabilityStatus::Partial {
                 reason:
-                    "host syntax plus native fragment diagnostics are wired; standalone script diagnostics are available at the adapter seam but the server does not route script documents to them yet; event-handler and component diagnostics are not covered"
+                    "host syntax plus native fragment diagnostics are wired; standalone project script diagnostics are routed through the separate script seam; event-handler and component diagnostics are not covered"
                         .to_owned(),
             },
             definition: CapabilityStatus::Partial {
@@ -761,7 +869,7 @@ impl Backend for TsgoBackendAdapter {
             },
             completion: CapabilityStatus::Partial {
                 reason:
-                    "expression-member completion is native; prepared auto-import entries are queried but the pinned API exposes no origin or edit, so auto-import items stay Partial and no import edit is offered; the pinned API also has no per-entry documentation, so non-empty native results stay Partial; event-handler completion is served from the Rust script method table without a native session and can be Supported; `this.`/method-body completion, custom component event signatures and handler signature help are not implemented"
+                    "data-root completion from the Rust script overlay and native expression-member completion are wired; trailing-dot chains are mounted through a completion-only shadow and template-local roots (`item.` inside `wx:for`) are not resolved; prepared auto-import entries are queried but the pinned API exposes no origin or edit, so auto-import items stay Partial and no import edit is offered; the pinned API also has no per-entry documentation, so non-empty native results stay Partial; event-handler completion is served from the Rust script method table without a native session and can be Supported; `this.`/method-body completion, custom component event signatures and handler signature help are not implemented"
                         .to_owned(),
             },
         }

@@ -126,6 +126,21 @@ fn context() -> RequestContext {
     .expect("context")
 }
 
+fn script_context() -> RequestContext {
+    RequestContext::new(
+        ProjectRevision::new(project(), 1),
+        ViewRevision::new(1),
+        BackendEpoch::new(BackendId::new("node"), 1),
+        Arc::new(SourceSnapshot::new(
+            file(SCRIPT),
+            SourceRevision::new(1),
+            SnapshotId::new(1),
+            "const x: string = 1;",
+        )),
+    )
+    .expect("context")
+}
+
 struct StubHost {
     view: PreparedView,
     fail: bool,
@@ -855,6 +870,36 @@ fn capabilities_are_four_supported_features() {
     assert!(capabilities.diagnostics.is_supported());
     assert!(capabilities.definition.is_supported());
     assert!(capabilities.completion.is_supported());
+}
+
+#[test]
+fn script_diagnostics_are_unsupported_without_a_transport_request() {
+    let shared = Shared::default();
+    let backend = backend(&shared, StubHost::new(view(Vec::new())));
+    let result = backend
+        .script_diagnostics(DiagnosticsRequest {
+            context: script_context(),
+        })
+        .expect("default script diagnostics");
+    assert!(result.diagnostics.is_empty());
+    assert!(
+        matches!(result.status, CapabilityStatus::Unsupported { .. }),
+        "Node must keep the trait default: {:?}",
+        result.status
+    );
+    assert!(
+        shared
+            .requests
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_empty(),
+        "the default script seam must not send an NDJSON request"
+    );
+    assert_eq!(
+        shared.connects.load(Ordering::SeqCst),
+        0,
+        "the default script seam must not start a Node session"
+    );
 }
 
 #[test]

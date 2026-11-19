@@ -121,6 +121,50 @@ impl Session {
         )
     }
 
+    /// Waits until each URI has a `publishDiagnostics` notification.
+    ///
+    /// The first notification per URI is returned in arrival order. Other
+    /// notifications and responses are ignored rather than treated as
+    /// failures, because diagnostics are pushed asynchronously.
+    pub(crate) fn wait_for_diagnostics(&self, uris: &[&str], timeout: Duration) -> Vec<Value> {
+        let deadline = Instant::now() + timeout;
+        let mut seen: Vec<Value> = Vec::new();
+        while seen.len() < uris.len() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            assert!(
+                !remaining.is_zero(),
+                "timed out waiting for diagnostics {uris:?}; received {} of them\nserver stderr:\n{}",
+                seen.len(),
+                self.stderr_text()
+            );
+            let message = self
+                .messages
+                .recv_timeout(remaining)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "timed out waiting for diagnostics {uris:?} ({error})\nserver stderr:\n{}",
+                        self.stderr_text()
+                    )
+                });
+            if message.get("method").and_then(Value::as_str)
+                != Some("textDocument/publishDiagnostics")
+            {
+                continue;
+            }
+            let Some(uri) = message["params"]["uri"].as_str() else {
+                continue;
+            };
+            if uris.contains(&uri)
+                && !seen
+                    .iter()
+                    .any(|seen| seen["params"]["uri"].as_str() == Some(uri))
+            {
+                seen.push(message);
+            }
+        }
+        seen
+    }
+
     fn send(&mut self, value: &Value) {
         let stdin = self.stdin.as_mut().expect("stdin open");
         write_frame(stdin, value).expect("write frame");

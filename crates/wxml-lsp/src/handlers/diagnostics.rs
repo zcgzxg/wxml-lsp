@@ -7,11 +7,13 @@ use std::time::Instant;
 
 use serde_json::{Value, json};
 use wxml_project::ProjectPath;
-use wxml_types::{BackendEpoch, BackendError, CapabilityStatus, Diagnostic, ViewRevision};
+use wxml_types::{
+    BackendEpoch, BackendError, CapabilityStatus, Diagnostic, DiagnosticsResult, ViewRevision,
+};
 
 use super::{
-    content_changes, sanitized_message, sanitized_reason, severity, source_range_value,
-    status_label, string, text_document,
+    backend_available, content_changes, sanitized_message, sanitized_reason, severity,
+    source_range_value, status_label, string, text_document,
 };
 use crate::jsonrpc::Outgoing;
 use crate::project_host::{ChangeDocument, DocumentRoute, HostUpdate, OpenDocument};
@@ -22,6 +24,20 @@ use crate::workspace::Document;
 
 /// Method name used for pushed diagnostics.
 const PUBLISH: &str = "textDocument/publishDiagnostics";
+
+/// Returns `true` when `path` is a project script the type backend checks.
+///
+/// This mirrors the native input language set exactly: `.tsx`/`.jsx` stay out
+/// because the native engine has no JSX lexer yet, and `.wxs` is a WXML script
+/// format the native backend does not analyze.
+pub(crate) fn script_diagnostics_path(path: &ProjectPath) -> bool {
+    matches!(
+        path.as_str()
+            .rsplit_once('.')
+            .map(|(_, extension)| extension),
+        Some("ts" | "mts" | "cts" | "js" | "mjs" | "cjs")
+    )
+}
 
 /// Converts one backend diagnostic, returning `None` for an invalid range.
 fn diagnostic_value(document: &Document, diagnostic: &Diagnostic) -> Option<Value> {
@@ -38,6 +54,36 @@ fn diagnostic_value(document: &Document, diagnostic: &Diagnostic) -> Option<Valu
         }
     }
     Some(value)
+}
+
+/// Maps and deduplicates diagnostics with deterministic source order.
+///
+/// Duplicates are removed by exact range and message so a backend that reports
+/// the same problem twice cannot appear twice. Invalid ranges are logged and
+/// skipped instead of being clamped.
+fn diagnostic_values<'a>(
+    document: &Document,
+    diagnostics: impl IntoIterator<Item = &'a Diagnostic>,
+) -> Vec<Value> {
+    let mut mapped = Vec::new();
+    let mut seen = HashSet::new();
+    for diagnostic in diagnostics {
+        if !seen.insert((
+            diagnostic.range.start(),
+            diagnostic.range.end(),
+            diagnostic.message.as_str(),
+        )) {
+            continue;
+        }
+        match diagnostic_value(document, diagnostic) {
+            Some(value) => mapped.push((diagnostic.range.start(), diagnostic.range.end(), value)),
+            None => log(format_args!(
+                "skipping diagnostic with an invalid source range"
+            )),
+        }
+    }
+    mapped.sort_by_key(|(start, end, _)| (*start, *end));
+    mapped.into_iter().map(|(_, _, value)| value).collect()
 }
 
 /// Builds the zero-width warning that reports a degraded check.
@@ -128,31 +174,33 @@ fn publish_value(
     status: Option<&CapabilityStatus>,
     failure: bool,
 ) -> Value {
-    let mut mapped = Vec::new();
-    let mut seen = HashSet::new();
-    for diagnostic in backend.iter().chain(local.iter()).chain(event.iter()) {
-        if !seen.insert((
-            diagnostic.range.start(),
-            diagnostic.range.end(),
-            diagnostic.message.as_str(),
-        )) {
-            continue;
-        }
-        match diagnostic_value(document, diagnostic) {
-            Some(value) => mapped.push((diagnostic.range.start(), diagnostic.range.end(), value)),
-            None => log(format_args!(
-                "skipping diagnostic with an invalid source range"
-            )),
-        }
-    }
-    mapped.sort_by_key(|(start, end, _)| (*start, *end));
-    let mut diagnostics: Vec<Value> = mapped.into_iter().map(|(_, _, value)| value).collect();
+    let mut diagnostics = diagnostic_values(
+        document,
+        backend.iter().chain(local.iter()).chain(event.iter()),
+    );
     match status {
         Some(status) if !status.is_supported() => {
             diagnostics.push(status_diagnostic(status));
         }
         None if failure => diagnostics.push(failure_diagnostic()),
         _ => {}
+    }
+    json!({
+        "uri": document.uri(),
+        "version": document.client_version().get(),
+        "diagnostics": diagnostics,
+    })
+}
+
+/// Builds a script publish payload with no template, style or event diagnostics.
+///
+/// A `Partial` result publishes its real diagnostics plus one status warning so
+/// an empty partial set cannot look like a clean check. `Supported` publishes
+/// exactly the script diagnostics, including an empty clean set.
+fn script_publish_value(document: &Document, result: &DiagnosticsResult) -> Value {
+    let mut diagnostics = diagnostic_values(document, result.diagnostics.iter());
+    if matches!(result.status, CapabilityStatus::Partial { .. }) {
+        diagnostics.push(status_diagnostic(&result.status));
     }
     json!({
         "uri": document.uri(),
@@ -289,6 +337,10 @@ impl Server {
     }
 
     /// Stores a script, JSON or style overlay and schedules affected open views.
+    ///
+    /// A supported project script also schedules its own diagnostics. The
+    /// script check is separate from the WXML views the overlay makes dirty, so
+    /// script results never inherit template syntax, style or event facts.
     fn open_overlay(&mut self, uri: &str, text: String, version: Option<u64>) -> Vec<Outgoing> {
         let path = match self.host.route(uri) {
             DocumentRoute::Script(path)
@@ -296,6 +348,8 @@ impl Server {
             | DocumentRoute::Style(path) => Some(path),
             _ => None,
         };
+        let script = path.as_ref().is_some_and(script_diagnostics_path)
+            && matches!(self.host.route(uri), DocumentRoute::Script(_));
         if let Some(path) = path {
             if let Ok(file) = self.host.file_id(&path) {
                 if let Err(error) =
@@ -311,7 +365,14 @@ impl Server {
             text,
             version,
         }) {
-            Ok(update) => self.apply_host_update(&update),
+            Ok(update) => {
+                let mut outgoing = self.apply_host_update(&update);
+                if script {
+                    self.cancel_debounced_diagnostics(uri);
+                    outgoing.extend(self.schedule_script_diagnostics(uri));
+                }
+                outgoing
+            }
             Err(error) => {
                 log(format_args!("overlay open failed: {error}"));
                 Vec::new()
@@ -413,22 +474,28 @@ impl Server {
                     }
                     self.debounce_diagnostics(uri)
                 }
-                DocumentRoute::Script(_) | DocumentRoute::Json(_) | DocumentRoute::Style(_) => {
+                DocumentRoute::Script(path)
+                | DocumentRoute::Json(path)
+                | DocumentRoute::Style(path) => {
                     let text = self
                         .workspace
                         .get(uri)
                         .map(|document| document.text().to_owned());
+                    let mut outgoing = Vec::new();
                     if let Some(text) = text {
                         match self.host.change_document(ChangeDocument {
                             uri: uri.to_owned(),
                             text,
                             version,
                         }) {
-                            Ok(update) => return self.apply_host_update(&update),
+                            Ok(update) => outgoing = self.apply_host_update(&update),
                             Err(error) => log(format_args!("overlay change failed: {error}")),
                         }
                     }
-                    Vec::new()
+                    if script_diagnostics_path(&path) {
+                        outgoing.extend(self.debounce_diagnostics(uri));
+                    }
+                    outgoing
                 }
                 DocumentRoute::Unknown => {
                     if super::template_document(self, uri) {
@@ -465,6 +532,7 @@ impl Server {
         }
         let route = self.host.route(uri);
         let was_template = super::template_document(self, uri);
+        let was_script = matches!(route, DocumentRoute::Script(_));
         self.synthetic_templates.remove(uri);
         let file = self
             .workspace
@@ -477,6 +545,8 @@ impl Server {
             cancel.store(true, Ordering::SeqCst);
         }
         self.backend_diagnostics.remove(uri);
+        self.script_diagnostics_inflight.remove(uri);
+        let clear_script = self.script_diagnostics_published.remove(uri);
         self.cancel_document_requests(uri);
         let mut outgoing = match route {
             DocumentRoute::Wxml(_) => {
@@ -497,6 +567,15 @@ impl Server {
             DocumentRoute::Unknown => Vec::new(),
         };
         if was_template {
+            outgoing.push(Outgoing::notification(
+                PUBLISH,
+                json!({"uri": uri, "diagnostics": []}),
+            ));
+        }
+        if was_script && clear_script {
+            // Clearing on close is not a backend result: a script that never
+            // published supported diagnostics (for example the default Node
+            // backend) has no entry and therefore sends nothing.
             outgoing.push(Outgoing::notification(
                 PUBLISH,
                 json!({"uri": uri, "diagnostics": []}),
@@ -575,11 +654,18 @@ impl Server {
     }
 
     /// Queues diagnostics using an already observed backend epoch.
+    ///
+    /// A project script is routed to its own backend seam; WXML documents keep
+    /// the template pipeline. Sharing this entry point lets the debounce and
+    /// dirty-retry queues hold either kind without knowing which one it is.
     pub(crate) fn schedule_diagnostics_with_epoch(
         &mut self,
         uri: &str,
         epoch: &BackendEpoch,
     ) -> Vec<Outgoing> {
+        if matches!(self.host.route(uri), DocumentRoute::Script(_)) {
+            return self.schedule_script_diagnostics_with_epoch(uri, epoch);
+        }
         let Some(document) = self.workspace.get(uri) else {
             self.clear_dirty(uri);
             return Vec::new();
@@ -618,6 +704,178 @@ impl Server {
             }
         }
         Vec::new()
+    }
+
+    /// Queues diagnostics for one standalone project script.
+    ///
+    /// Only the script language set the native seam accepts is routed. The
+    /// job carries the exact stamp plus a text hash, and the same URI is not
+    /// queued twice for the same stamp while a result is in flight.
+    pub(crate) fn schedule_script_diagnostics(&mut self, uri: &str) -> Vec<Outgoing> {
+        let epoch = self.refresh_epoch();
+        self.schedule_script_diagnostics_with_epoch(uri, &epoch)
+    }
+
+    /// Queues script diagnostics using an already observed backend epoch.
+    fn schedule_script_diagnostics_with_epoch(
+        &mut self,
+        uri: &str,
+        epoch: &BackendEpoch,
+    ) -> Vec<Outgoing> {
+        if !matches!(
+            self.host.route(uri),
+            DocumentRoute::Script(ref path) if script_diagnostics_path(path)
+        ) {
+            return Vec::new();
+        }
+        let Some(document) = self.workspace.get(uri) else {
+            self.clear_dirty(uri);
+            return Vec::new();
+        };
+        let Some(context) = document.request_context(epoch) else {
+            self.clear_dirty(uri);
+            log(format_args!(
+                "script document context does not match the request"
+            ));
+            return Vec::new();
+        };
+        let stamp = document.stamp(epoch);
+        let script_hash = super::content_hash(document.text());
+        if self.script_diagnostics_inflight.get(uri) == Some(&stamp) {
+            return Vec::new();
+        }
+        self.debounced_diagnostics.remove(uri);
+        // A newer edit makes every older script request obsolete. Cancelling
+        // the queued job before moving the pointer as well as after it closes
+        // the race with the worker.
+        if let Some(previous) = self.diagnostics_cancel.remove(uri) {
+            previous.store(true, Ordering::SeqCst);
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let job = Job {
+            key: None,
+            kind: JobKind::ScriptDiagnostics { script_hash },
+            context,
+            offset: 0,
+            stamp: stamp.clone(),
+            attempt: 0,
+            cancel: Arc::clone(&cancel),
+        };
+        match self.dispatch.submit(job) {
+            Ok(()) => {
+                self.script_diagnostics_inflight
+                    .insert(uri.to_owned(), stamp);
+                self.diagnostics_cancel.insert(uri.to_owned(), cancel);
+                self.clear_dirty(uri);
+            }
+            Err(error) => {
+                log(format_args!(
+                    "script diagnostics job queued for retry: {error:?}"
+                ));
+                self.mark_dirty(uri);
+            }
+        }
+        Vec::new()
+    }
+
+    /// Publishes one finished standalone script diagnostics job.
+    ///
+    /// Stale content, revisions and epochs are dropped. `Unsupported`,
+    /// `Unavailable`, `Disabled` and `Unknown` publish nothing: an unavailable
+    /// check must not look like a clean script. The payload is built only from
+    /// this job's result, never from WXML/local/style/event diagnostics.
+    pub(crate) fn script_diagnostics_done(
+        &mut self,
+        done: WorkDone,
+        epoch: &BackendEpoch,
+    ) -> Vec<Outgoing> {
+        self.forget_script_diagnostics(&done);
+        if done.cancelled {
+            return Vec::new();
+        }
+        if done.stamp.epoch != *epoch {
+            // The backend restarted. The document may be unchanged, but the new
+            // generation has not checked it yet. Marking it dirty makes the
+            // retry that follows this completed job schedule a fresh request.
+            if self.workspace.is_current(&done.stamp) {
+                if let Some(uri) = self
+                    .workspace
+                    .get_by_file(&done.stamp.file)
+                    .map(|document| document.uri().to_owned())
+                {
+                    log(format_args!(
+                        "dropping script diagnostics for an old backend epoch and rescheduling"
+                    ));
+                    self.mark_dirty(&uri);
+                }
+            }
+            return Vec::new();
+        }
+        if !self.workspace.is_current(&done.stamp) {
+            log(format_args!(
+                "dropping script diagnostics for an old revision"
+            ));
+            return Vec::new();
+        }
+        let JobKind::ScriptDiagnostics { script_hash } = &done.kind else {
+            log(format_args!(
+                "script diagnostics job returned the wrong result kind"
+            ));
+            return Vec::new();
+        };
+        let Some(document) = self.workspace.get_by_file(&done.stamp.file) else {
+            return Vec::new();
+        };
+        if super::content_hash(document.text()) != *script_hash {
+            log(format_args!(
+                "dropping script diagnostics for changed script content"
+            ));
+            return Vec::new();
+        }
+        let result = match done.outcome {
+            Ok(Outcome::Diagnostics(result)) => *result,
+            Ok(_) => {
+                log(format_args!(
+                    "script diagnostics job returned the wrong result kind"
+                ));
+                return Vec::new();
+            }
+            Err(error) => {
+                log(format_args!(
+                    "script diagnostics failed: {}",
+                    failure_message(&error)
+                ));
+                return Vec::new();
+            }
+        };
+        if !backend_available(&result.status) {
+            log(format_args!(
+                "not publishing {} script diagnostics",
+                status_label(&result.status)
+            ));
+            return Vec::new();
+        }
+        let uri = document.uri().to_owned();
+        let params = script_publish_value(document, &result);
+        self.script_diagnostics_published.insert(uri);
+        vec![Outgoing::notification(PUBLISH, params)]
+    }
+
+    /// Removes the in-flight marker for one completed script job.
+    ///
+    /// A newer edit may already have replaced the marker; only the exact stamp
+    /// that finished is removed.
+    fn forget_script_diagnostics(&mut self, done: &WorkDone) {
+        let Some(uri) = self
+            .workspace
+            .get_by_file(&done.stamp.file)
+            .map(|document| document.uri().to_owned())
+        else {
+            return;
+        };
+        if self.script_diagnostics_inflight.get(&uri) == Some(&done.stamp) {
+            self.script_diagnostics_inflight.remove(&uri);
+        }
     }
 
     /// Publishes one finished diagnostics job.

@@ -482,7 +482,21 @@ impl Server {
                 self.save_wxml(uri, &path);
                 self.schedule_diagnostics(uri)
             }
-            DocumentRoute::Script(_) | DocumentRoute::Json(_) | DocumentRoute::Style(_) => {
+            DocumentRoute::Script(path) => {
+                let mut outgoing = match self.host.save_document(uri) {
+                    Ok(update) => self.apply_host_update(&update),
+                    Err(error) => {
+                        log(format_args!("overlay save failed: {error}"));
+                        Vec::new()
+                    }
+                };
+                if super::diagnostics::script_diagnostics_path(&path) {
+                    self.cancel_debounced_diagnostics(uri);
+                    outgoing.extend(self.schedule_script_diagnostics(uri));
+                }
+                outgoing
+            }
+            DocumentRoute::Json(_) | DocumentRoute::Style(_) => {
                 match self.host.save_document(uri) {
                     Ok(update) => self.apply_host_update(&update),
                     Err(error) => {
@@ -718,13 +732,22 @@ impl Server {
             .documents()
             .map(|document| document.uri().to_owned())
             .collect();
+        let mut clear_scripts = Vec::new();
         for uri in open {
             if template_document(self, &uri) {
                 outgoing.push(Outgoing::notification(
                     "textDocument/publishDiagnostics",
                     json!({"uri": uri, "diagnostics": []}),
                 ));
+            } else if self.script_diagnostics_published.contains(&uri) {
+                clear_scripts.push(uri);
             }
+        }
+        for uri in clear_scripts {
+            outgoing.push(Outgoing::notification(
+                "textDocument/publishDiagnostics",
+                json!({"uri": uri, "diagnostics": []}),
+            ));
         }
         // `inflight` is the only owner of response delivery. A semantic request
         // also has an auxiliary `semantic_pending` intent; clear that table
@@ -744,6 +767,8 @@ impl Server {
             cancel.store(true, Ordering::SeqCst);
         }
         self.backend_diagnostics.clear();
+        self.script_diagnostics_inflight.clear();
+        self.script_diagnostics_published.clear();
         self.dirty.clear();
         self.debounced_diagnostics.clear();
         self.synthetic_templates.clear();
@@ -809,6 +834,7 @@ impl Server {
             .collect();
         let mut updates = Vec::new();
         let mut templates = Vec::new();
+        let mut scripts = Vec::new();
         for (uri, text, version) in documents {
             match self.host.route(&uri) {
                 DocumentRoute::Wxml(path) => {
@@ -838,6 +864,7 @@ impl Server {
                 DocumentRoute::Script(path)
                 | DocumentRoute::Json(path)
                 | DocumentRoute::Style(path) => {
+                    let script = super::diagnostics::script_diagnostics_path(&path);
                     if let Ok(file) = self.host.file_id(&path) {
                         if let Err(error) = self.workspace.open_file(
                             &uri,
@@ -858,7 +885,12 @@ impl Server {
                         text,
                         version: Some(version),
                     }) {
-                        Ok(update) => updates.push(update),
+                        Ok(update) => {
+                            updates.push(update);
+                            if script {
+                                scripts.push(uri.clone());
+                            }
+                        }
                         Err(error) => log(format_args!("overlay replay failed: {error}")),
                     }
                 }
@@ -871,6 +903,9 @@ impl Server {
         }
         for uri in templates {
             let _ = self.schedule_diagnostics(&uri);
+        }
+        for uri in scripts {
+            let _ = self.schedule_script_diagnostics(&uri);
         }
         outgoing
     }

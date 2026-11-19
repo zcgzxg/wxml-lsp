@@ -54,7 +54,8 @@ mod package;
 
 pub(crate) use lsp::{Session, run_startup_failure};
 pub(crate) use package::{
-    PROJECT_JS, PROJECT_WXML, PackageDefect, broken_package, provision, provision_with_env,
+    PROJECT_JS, PROJECT_TS, PROJECT_WXML, PackageDefect, broken_package, provision,
+    provision_with_env,
 };
 
 pub(crate) const REQUIRE_ENV: &str = "WXML_REQUIRE_REAL_ENGINE";

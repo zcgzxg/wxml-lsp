@@ -52,6 +52,10 @@ pub(crate) const PROJECT_JS: &str = concat!(
     "}\n",
     "Page({ data: { user: user }, onTap: onTap });\n",
 );
+// A second project script that is not an owning page script. Its deliberate
+// type error (TS2322) is the native script-diagnostics signal; `index.js` stays
+// clean so the document-symbol gate is unaffected.
+pub(crate) const PROJECT_TS: &str = "const count: number = 'not a number';\n";
 
 /// One provisioned native package, project and PATH tripwire.
 #[derive(Debug)]
@@ -319,6 +323,7 @@ fn write_project(project: &Path) {
         ("tsconfig.json", PROJECT_TSCONFIG),
         ("pages/index/index.wxml", PROJECT_WXML),
         ("pages/index/index.js", PROJECT_JS),
+        ("pages/index/typed.ts", PROJECT_TS),
     ] {
         let path = project.join(relative);
         fs::write(&path, text).unwrap_or_else(|error| panic!("write {}: {error}", path.display()));

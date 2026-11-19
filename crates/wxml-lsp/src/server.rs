@@ -150,8 +150,21 @@ pub(crate) struct Server {
     ///
     /// Every edit supersedes the previous diagnostics request. Cancelling the
     /// old flag keeps a burst of keystrokes from queueing one multi-second
-    /// analysis per character ahead of hover and completion requests.
+    /// analysis per character ahead of hover and completion requests. Script
+    /// documents use the same per-URI slot because a document is either a
+    /// template or a script.
     pub(crate) diagnostics_cancel: HashMap<String, Arc<AtomicBool>>,
+    /// Script diagnostics jobs currently queued or running, keyed by URI.
+    ///
+    /// A request for the exact same stamp is not queued twice while its result
+    /// is still in flight. The entry is removed when that stamp completes,
+    /// fails or is superseded.
+    pub(crate) script_diagnostics_inflight: HashMap<String, crate::workspace::AnalysisStamp>,
+    /// Script documents with a published supported/partial result.
+    ///
+    /// Used only to clear the client when such a document closes. A script that
+    /// never published (for example the default Node backend) sends nothing.
+    pub(crate) script_diagnostics_published: HashSet<String>,
     /// Set by `exit` or a fatal transport error.
     pub(crate) stop: bool,
     /// Set by `shutdown`.
@@ -237,6 +250,8 @@ impl Server {
             inflight: HashMap::new(),
             dirty: VecDeque::new(),
             diagnostics_cancel: HashMap::new(),
+            script_diagnostics_inflight: HashMap::new(),
+            script_diagnostics_published: HashSet::new(),
             stop: false,
             clean_shutdown: false,
             client: ClientFlags::default(),
@@ -307,8 +322,13 @@ impl Server {
         // Read the backend generation once for this event and share it with
         // the result handler and the diagnostics retry batch.
         let epoch = self.refresh_epoch();
-        if done.kind == JobKind::Diagnostics {
-            let outgoing = self.diagnostics_done(done, &epoch);
+        let script = matches!(&done.kind, JobKind::ScriptDiagnostics { .. });
+        if script || done.kind == JobKind::Diagnostics {
+            let outgoing = if script {
+                self.script_diagnostics_done(done, &epoch)
+            } else {
+                self.diagnostics_done(done, &epoch)
+            };
             self.retry_pending_diagnostics_with_epoch(&epoch);
             return outgoing;
         }
@@ -346,7 +366,7 @@ impl Server {
             JobKind::Hover => self.hover_done(id, done, &epoch),
             JobKind::Definition => self.definition_done(id, done, &epoch),
             JobKind::Completion(_) => self.completion_done(id, done, &epoch),
-            JobKind::Diagnostics => Vec::new(),
+            JobKind::Diagnostics | JobKind::ScriptDiagnostics { .. } => Vec::new(),
             JobKind::DocumentSymbols { .. } => self.document_symbols_done(id, &uri, done, &epoch),
             JobKind::Symbols { .. } => self.symbols_done(id, done, &epoch),
         };
@@ -657,10 +677,10 @@ mod tests {
     use wxml_types::{
         BackendCapabilities, BackendError, BackendId, CapabilityStatus, CompletionItem,
         CompletionItemKind, CompletionKind, CompletionResult, DefinitionResult, Diagnostic,
-        DiagnosticSeverity, DiagnosticsResult, DocumentSymbol, DocumentSymbolKind,
-        DocumentSymbolsRequest, DocumentSymbolsResult, FileId, HoverResult, InsertTextFormat,
-        MarkupKind, MockBackend, ProjectId, ProjectRevision, RootKind, SnapshotId, SourceLocation,
-        SourceRevision, SourceSnapshot, TypeQuality, ViewRevision,
+        DiagnosticSeverity, DiagnosticsRequest, DiagnosticsResult, DocumentSymbol,
+        DocumentSymbolKind, DocumentSymbolsRequest, DocumentSymbolsResult, FileId, HoverResult,
+        InsertTextFormat, MarkupKind, MockBackend, ProjectId, ProjectRevision, RootKind,
+        SnapshotId, SourceLocation, SourceRevision, SourceSnapshot, TypeQuality, ViewRevision,
     };
 
     use super::*;
@@ -982,7 +1002,7 @@ mod tests {
 
         fn diagnostics(
             &self,
-            request: wxml_types::DiagnosticsRequest,
+            request: DiagnosticsRequest,
         ) -> Result<DiagnosticsResult, BackendError> {
             self.inner.diagnostics(request)
         }
@@ -1006,6 +1026,66 @@ mod tests {
                 .unwrap_or_else(PoisonError::into_inner)
                 .clone()
                 .ok_or_else(|| BackendError::Internal("missing answer".to_owned()))
+        }
+
+        fn capabilities(&self) -> BackendCapabilities {
+            self.inner.capabilities()
+        }
+    }
+
+    /// Backend wrapper that records standalone script diagnostics requests.
+    struct ScriptDiagnosticsBackend {
+        inner: MockBackend,
+        requests: Mutex<Vec<DiagnosticsRequest>>,
+        answer: Mutex<Option<DiagnosticsResult>>,
+    }
+
+    impl ScriptDiagnosticsBackend {
+        fn new(answer: DiagnosticsResult) -> Self {
+            Self {
+                inner: MockBackend::new(),
+                requests: Mutex::new(Vec::new()),
+                answer: Mutex::new(Some(answer)),
+            }
+        }
+
+        fn requests(&self) -> Vec<DiagnosticsRequest> {
+            self.requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl Backend for ScriptDiagnosticsBackend {
+        fn epoch(&self) -> BackendEpoch {
+            self.inner.epoch()
+        }
+
+        fn hover(&self, request: wxml_types::HoverRequest) -> Result<HoverResult, BackendError> {
+            self.inner.hover(request)
+        }
+
+        fn diagnostics(
+            &self,
+            request: DiagnosticsRequest,
+        ) -> Result<DiagnosticsResult, BackendError> {
+            self.inner.diagnostics(request)
+        }
+
+        fn script_diagnostics(
+            &self,
+            request: DiagnosticsRequest,
+        ) -> Result<DiagnosticsResult, BackendError> {
+            self.requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(request);
+            self.answer
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+                .ok_or_else(|| BackendError::Internal("missing script answer".to_owned()))
         }
 
         fn capabilities(&self) -> BackendCapabilities {
@@ -1100,6 +1180,77 @@ mod tests {
             "textDocument/documentSymbol",
             json!({"textDocument": {"uri": uri}}),
         )
+    }
+
+    fn take_script_diagnostics_job(dispatch: &ManualDispatch) -> Job {
+        let mut found = None;
+        for job in dispatch.take() {
+            if matches!(job.kind, JobKind::ScriptDiagnostics { .. }) {
+                assert!(found.is_none(), "one script diagnostics job per event");
+                found = Some(job);
+            }
+        }
+        found.expect("a script diagnostics job")
+    }
+
+    fn finish_script_diagnostics_job(
+        server: &mut Server,
+        job: &Job,
+        result: Result<DiagnosticsResult, BackendError>,
+    ) -> Vec<Outgoing> {
+        server.handle_work(WorkDone {
+            key: job.key.clone(),
+            kind: job.kind.clone(),
+            stamp: job.stamp.clone(),
+            attempt: job.attempt,
+            cancelled: false,
+            outcome: result.map(|result| Outcome::Diagnostics(Box::new(result))),
+        })
+    }
+
+    fn finish_cancelled_script_diagnostics_job(server: &mut Server, job: &Job) -> Vec<Outgoing> {
+        server.handle_work(WorkDone {
+            key: job.key.clone(),
+            kind: job.kind.clone(),
+            stamp: job.stamp.clone(),
+            attempt: job.attempt,
+            cancelled: true,
+            outcome: Err(BackendError::Cancelled),
+        })
+    }
+
+    fn run_script_diagnostics(backend: &ScriptDiagnosticsBackend, job: &Job) -> DiagnosticsResult {
+        backend
+            .script_diagnostics(DiagnosticsRequest {
+                context: job.context.clone(),
+            })
+            .expect("script diagnostics answer")
+    }
+
+    fn script_diagnostics_server(
+        backend: Arc<ScriptDiagnosticsBackend>,
+        host: Arc<ScriptHost>,
+        text: &str,
+    ) -> (Server, Arc<ManualDispatch>) {
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend,
+            MockBackend::new().capabilities(),
+            dispatch.clone(),
+            host,
+        );
+        server.diagnostics_debounce = Duration::ZERO;
+        initialize(&mut server);
+        open_script_document(&mut server, text);
+        (server, dispatch)
+    }
+
+    fn publish_params(outgoing: &Outgoing) -> &serde_json::Value {
+        let Outgoing::Notification { method, params } = outgoing else {
+            panic!("expected a diagnostics notification");
+        };
+        assert_eq!(method, "textDocument/publishDiagnostics");
+        params
     }
 
     fn take_document_symbol_job(dispatch: &ManualDispatch) -> Job {
@@ -3234,7 +3385,7 @@ mod tests {
 
             fn diagnostics(
                 &self,
-                _request: wxml_types::DiagnosticsRequest,
+                _request: DiagnosticsRequest,
             ) -> Result<DiagnosticsResult, BackendError> {
                 Ok(DiagnosticsResult {
                     diagnostics: Vec::new(),
@@ -4093,5 +4244,384 @@ mod tests {
         assert_eq!(error_code(&outgoing), jsonrpc::error_codes::REQUEST_FAILED);
         assert!(dispatch.take().is_empty());
         assert_eq!(backend.calls(), 0);
+    }
+
+    #[test]
+    fn script_diagnostics_publish_exact_uri_version_and_utf16_ranges() {
+        const TEXT: &str = "// 😀 中文\nconst 名字: string = 1;\n";
+        let start = u32::try_from(TEXT.find("名字: string").expect("name token")).expect("start");
+        let end = start + u32::try_from("名字: string".len()).expect("length");
+        let answer = DiagnosticsResult {
+            diagnostics: vec![Diagnostic {
+                range: SourceRange::from_bounds(start, end).expect("range"),
+                severity: DiagnosticSeverity::Error,
+                message: "Type 'number' is not assignable to type 'string'.".to_owned(),
+                code: Some("2322".to_owned()),
+            }],
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new(TEXT));
+        let (mut server, dispatch) = script_diagnostics_server(backend.clone(), host, TEXT);
+        let job = take_script_diagnostics_job(&dispatch);
+        assert_eq!(job.context.file().path(), "pages/index/index.ts");
+        assert_eq!(job.context.source().text(), TEXT);
+        assert_eq!(job.context.source().revision(), job.stamp.revision);
+        assert!(matches!(
+            job.kind,
+            JobKind::ScriptDiagnostics { script_hash } if script_hash != 0
+        ));
+
+        let answer = run_script_diagnostics(&backend, &job);
+        let requests = backend.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].context.file().path(), "pages/index/index.ts");
+        assert_eq!(requests[0].context.source().text(), TEXT);
+        assert_eq!(requests[0].context.source().revision(), job.stamp.revision);
+
+        let outgoing = only(finish_script_diagnostics_job(&mut server, &job, Ok(answer)));
+        let params = publish_params(&outgoing);
+        assert_eq!(params["uri"], json!(SCRIPT_URI));
+        assert_eq!(params["version"], json!(1));
+        let diagnostic = &params["diagnostics"][0];
+        assert_eq!(
+            diagnostic["range"]["start"],
+            json!({"line": 1, "character": 6})
+        );
+        assert_eq!(
+            diagnostic["range"]["end"],
+            json!({"line": 1, "character": 16})
+        );
+        assert_eq!(diagnostic["severity"], json!(1));
+        assert_eq!(diagnostic["code"], json!("2322"));
+    }
+
+    #[test]
+    fn stale_script_diagnostics_are_dropped_and_the_latest_publishes() {
+        let answer = DiagnosticsResult {
+            diagnostics: Vec::new(),
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x: string = 1;\n"));
+        let (mut server, dispatch) =
+            script_diagnostics_server(backend.clone(), host, "const x: string = 1;\n");
+        let old = take_script_diagnostics_job(&dispatch);
+
+        server.handle_incoming(notification(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {"uri": SCRIPT_URI, "version": 2},
+                "contentChanges": [{"text": "const y: string = 2;\n"}],
+            }),
+        ));
+        let latest = take_script_diagnostics_job(&dispatch);
+        assert!(
+            old.cancel.load(Ordering::SeqCst),
+            "a newer edit supersedes the queued job"
+        );
+
+        let stale = DiagnosticsResult {
+            diagnostics: vec![Diagnostic {
+                range: SourceRange::from_bounds(6, 13).expect("range"),
+                severity: DiagnosticSeverity::Error,
+                message: "stale".to_owned(),
+                code: Some("2322".to_owned()),
+            }],
+            status: CapabilityStatus::Supported,
+        };
+        assert!(
+            finish_script_diagnostics_job(&mut server, &old, Ok(stale)).is_empty(),
+            "a result for the previous revision must not publish"
+        );
+
+        let outgoing = only(finish_script_diagnostics_job(
+            &mut server,
+            &latest,
+            Ok(run_script_diagnostics(&backend, &latest)),
+        ));
+        let params = publish_params(&outgoing);
+        assert_eq!(params["uri"], json!(SCRIPT_URI));
+        assert_eq!(params["version"], json!(2));
+        assert_eq!(params["diagnostics"], json!([]));
+    }
+
+    #[test]
+    fn stale_script_diagnostics_epoch_is_dropped_and_rescheduled() {
+        let answer = DiagnosticsResult {
+            diagnostics: Vec::new(),
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x: string = 1;\n"));
+        let (mut server, dispatch) =
+            script_diagnostics_server(backend.clone(), host, "const x: string = 1;\n");
+        let job = take_script_diagnostics_job(&dispatch);
+
+        let next_epoch = BackendEpoch::new(BackendId::new("mock"), 2);
+        backend.inner.set_epoch(next_epoch.clone());
+        assert!(
+            finish_script_diagnostics_job(
+                &mut server,
+                &job,
+                Ok(run_script_diagnostics(&backend, &job))
+            )
+            .is_empty(),
+            "a result from the previous backend generation must not publish"
+        );
+        let retried = take_script_diagnostics_job(&dispatch);
+        assert_eq!(
+            retried.stamp.epoch, next_epoch,
+            "the retry must use the new backend generation"
+        );
+        assert!(
+            server.dirty.is_empty(),
+            "the retry consumed the dirty marker"
+        );
+    }
+
+    #[test]
+    fn unsupported_script_diagnostics_publish_nothing() {
+        let backend = Arc::new(MockBackend::new());
+        let host = Arc::new(ScriptHost::new("const x: string = 1;\n"));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend.clone(),
+            backend.capabilities(),
+            dispatch.clone(),
+            host,
+        );
+        server.diagnostics_debounce = Duration::ZERO;
+        initialize(&mut server);
+        open_script_document(&mut server, "const x: string = 1;\n");
+
+        let job = take_script_diagnostics_job(&dispatch);
+        let answer = Backend::script_diagnostics(
+            &*backend,
+            DiagnosticsRequest {
+                context: job.context.clone(),
+            },
+        )
+        .expect("default script diagnostics");
+        assert!(matches!(
+            answer.status,
+            CapabilityStatus::Unsupported { .. }
+        ));
+        assert!(
+            finish_script_diagnostics_job(&mut server, &job, Ok(answer)).is_empty(),
+            "Unsupported must not be published as an empty, checked script"
+        );
+        assert!(
+            server
+                .handle_incoming(notification(
+                    "textDocument/didClose",
+                    json!({"textDocument": {"uri": SCRIPT_URI}}),
+                ))
+                .is_empty(),
+            "a script that never published does not need a close clear"
+        );
+    }
+
+    #[test]
+    fn partial_script_diagnostics_publish_their_entries() {
+        let answer = DiagnosticsResult {
+            diagnostics: vec![Diagnostic {
+                range: SourceRange::from_bounds(0, 5).expect("range"),
+                severity: DiagnosticSeverity::Warning,
+                message: "partial script warning".to_owned(),
+                code: None,
+            }],
+            status: CapabilityStatus::Partial {
+                reason: "the project source list is incomplete".to_owned(),
+            },
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x = 1;\n"));
+        let (mut server, dispatch) =
+            script_diagnostics_server(backend.clone(), host, "const x = 1;\n");
+        let job = take_script_diagnostics_job(&dispatch);
+        let outgoing = only(finish_script_diagnostics_job(
+            &mut server,
+            &job,
+            Ok(run_script_diagnostics(&backend, &job)),
+        ));
+        let params = publish_params(&outgoing);
+        let diagnostics = params["diagnostics"].as_array().expect("diagnostics");
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "the entry plus a partial status warning"
+        );
+        assert_eq!(diagnostics[0]["message"], json!("partial script warning"));
+        let status = diagnostics[1]["message"].as_str().expect("status message");
+        assert!(status.contains("partial"), "{status}");
+        assert!(status.contains("incomplete"), "{status}");
+    }
+
+    #[test]
+    fn did_save_schedules_script_diagnostics_immediately() {
+        let answer = DiagnosticsResult {
+            diagnostics: Vec::new(),
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x = 1;\n"));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend,
+            MockBackend::new().capabilities(),
+            dispatch.clone(),
+            host,
+        );
+        server.diagnostics_debounce = Duration::from_millis(120);
+        initialize(&mut server);
+        open_script_document(&mut server, "const x = 1;\n");
+        dispatch.take();
+
+        server.handle_incoming(notification(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {"uri": SCRIPT_URI, "version": 2},
+                "contentChanges": [{"text": "const x = 2;\n"}],
+            }),
+        ));
+        assert!(dispatch.take().is_empty(), "typing is debounced");
+        assert_eq!(server.debounced_diagnostics.len(), 1);
+
+        server.handle_incoming(notification(
+            "textDocument/didSave",
+            json!({"textDocument": {"uri": SCRIPT_URI}}),
+        ));
+        let job = take_script_diagnostics_job(&dispatch);
+        assert_eq!(job.context.source().text(), "const x = 2;\n");
+        assert!(server.debounced_diagnostics.is_empty());
+    }
+
+    #[test]
+    fn the_same_script_stamp_is_not_queued_twice_while_in_flight() {
+        let answer = DiagnosticsResult {
+            diagnostics: Vec::new(),
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x = 1;\n"));
+        let (mut server, dispatch) = script_diagnostics_server(backend, host, "const x = 1;\n");
+        let job = take_script_diagnostics_job(&dispatch);
+
+        assert!(server.schedule_script_diagnostics(SCRIPT_URI).is_empty());
+        assert!(server.schedule_script_diagnostics(SCRIPT_URI).is_empty());
+        assert!(
+            dispatch.take().is_empty(),
+            "the exact same stamp is already in flight"
+        );
+
+        let _ = finish_script_diagnostics_job(
+            &mut server,
+            &job,
+            Ok(DiagnosticsResult {
+                diagnostics: Vec::new(),
+                status: CapabilityStatus::Supported,
+            }),
+        );
+        assert!(server.schedule_script_diagnostics(SCRIPT_URI).is_empty());
+        assert_eq!(dispatch.take().len(), 1, "a completed stamp may be retried");
+    }
+
+    #[test]
+    fn script_diagnostics_never_merge_template_diagnostics() {
+        let answer = DiagnosticsResult {
+            diagnostics: vec![Diagnostic {
+                range: SourceRange::from_bounds(0, 5).expect("range"),
+                severity: DiagnosticSeverity::Error,
+                message: "script only".to_owned(),
+                code: Some("2322".to_owned()),
+            }],
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x: string = 1;\n"));
+        let (mut server, dispatch) =
+            script_diagnostics_server(backend.clone(), host, "const x: string = 1;\n");
+        let script_job = take_script_diagnostics_job(&dispatch);
+
+        open_document(&mut server, "<view>{{ user.name }}</view>", 1);
+        let template_job = dispatch
+            .take()
+            .into_iter()
+            .find(|job| job.kind == JobKind::Diagnostics)
+            .expect("a template diagnostics job");
+
+        let outgoing = only(finish_script_diagnostics_job(
+            &mut server,
+            &script_job,
+            Ok(run_script_diagnostics(&backend, &script_job)),
+        ));
+        let params = publish_params(&outgoing);
+        assert_eq!(params["uri"], json!(SCRIPT_URI));
+        let diagnostics = params["diagnostics"].as_array().expect("diagnostics");
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0]["code"], json!("2322"));
+        assert_eq!(diagnostics[0]["message"], json!("script only"));
+
+        let outgoing = only(finish_script_diagnostics_job(
+            &mut server,
+            &template_job,
+            Ok(DiagnosticsResult {
+                diagnostics: Vec::new(),
+                status: CapabilityStatus::Supported,
+            }),
+        ));
+        let params = publish_params(&outgoing);
+        assert_eq!(params["uri"], json!(URI));
+        assert!(
+            !params["diagnostics"]
+                .as_array()
+                .expect("diagnostics")
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == json!("2322")),
+            "a script diagnostic must not appear in the template payload: {params}"
+        );
+    }
+
+    #[test]
+    fn closing_a_published_script_cancels_and_clears_it() {
+        let answer = DiagnosticsResult {
+            diagnostics: Vec::new(),
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x = 1;\n"));
+        let (mut server, dispatch) =
+            script_diagnostics_server(backend.clone(), host, "const x = 1;\n");
+        let first = take_script_diagnostics_job(&dispatch);
+        let outgoing = only(finish_script_diagnostics_job(
+            &mut server,
+            &first,
+            Ok(run_script_diagnostics(&backend, &first)),
+        ));
+        assert_eq!(publish_params(&outgoing)["uri"], json!(SCRIPT_URI));
+
+        server.handle_incoming(notification(
+            "textDocument/didSave",
+            json!({"textDocument": {"uri": SCRIPT_URI}}),
+        ));
+        let pending = take_script_diagnostics_job(&dispatch);
+        let outgoing = only(server.handle_incoming(notification(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": SCRIPT_URI}}),
+        )));
+        let params = publish_params(&outgoing);
+        assert_eq!(params["uri"], json!(SCRIPT_URI));
+        assert_eq!(params["diagnostics"], json!([]));
+        assert!(params.get("version").is_none());
+        assert!(
+            pending.cancel.load(Ordering::SeqCst),
+            "closing must cancel the pending script job"
+        );
+        assert!(
+            finish_cancelled_script_diagnostics_job(&mut server, &pending).is_empty(),
+            "a cancelled script job must not publish"
+        );
+        assert!(server.workspace.get(SCRIPT_URI).is_none());
     }
 }

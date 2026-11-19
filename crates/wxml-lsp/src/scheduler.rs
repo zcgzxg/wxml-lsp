@@ -75,6 +75,15 @@ pub(crate) enum JobKind {
     Hover,
     /// A diagnostics query that will publish a notification.
     Diagnostics,
+    /// Standalone script diagnostics that will publish a notification.
+    ///
+    /// `script_hash` is the FNV-1a hash of the client text at scheduling time.
+    /// The server re-hashes the current workspace text before publishing so a
+    /// late result can never publish ranges for different content.
+    ScriptDiagnostics {
+        /// FNV-1a hash of the script text the ranges refer to.
+        script_hash: u64,
+    },
     /// A definition query that will answer a request.
     Definition,
     /// A completion query that will answer a request.
@@ -116,7 +125,7 @@ pub(crate) struct DocumentSymbolsScope {
 impl JobKind {
     /// Returns `true` for request/response jobs that need interactive latency.
     const fn is_interactive(&self) -> bool {
-        !matches!(self, Self::Diagnostics)
+        !matches!(self, Self::Diagnostics | Self::ScriptDiagnostics { .. })
     }
 }
 
@@ -422,6 +431,11 @@ fn run(backend: &dyn Backend, job: &Job) -> Result<Outcome, BackendError> {
             .map(|hover| Outcome::Hover(Box::new(hover))),
         JobKind::Diagnostics => backend
             .diagnostics(DiagnosticsRequest {
+                context: job.context.clone(),
+            })
+            .map(|diagnostics| Outcome::Diagnostics(Box::new(diagnostics))),
+        JobKind::ScriptDiagnostics { .. } => backend
+            .script_diagnostics(DiagnosticsRequest {
                 context: job.context.clone(),
             })
             .map(|diagnostics| Outcome::Diagnostics(Box::new(diagnostics))),
@@ -1040,6 +1054,47 @@ mod tests {
             backend.diagnostics_calls.load(Ordering::SeqCst),
             1,
             "the superseded queued diagnostics job must not call the backend"
+        );
+    }
+
+    #[test]
+    fn script_diagnostics_are_coalesced_per_document() {
+        let (backend, gate) = GatedBackend::new();
+        let (sender, receiver) = mpsc::channel();
+        let scheduler = Scheduler::start(backend.clone(), move |done| {
+            let _ = sender.send(done);
+        })
+        .expect("worker");
+
+        scheduler
+            .submit(job(JobKind::Hover, Some("running"), 1))
+            .expect("running");
+        gate.wait_until_entered();
+
+        let first = job(JobKind::ScriptDiagnostics { script_hash: 1 }, None, 0);
+        let mut second = job(JobKind::ScriptDiagnostics { script_hash: 2 }, None, 0);
+        second.stamp.revision = wxml_types::SourceRevision::new(2);
+        second.stamp.snapshot = SnapshotId::new(2);
+        let second_stamp = second.stamp.clone();
+        scheduler.submit(first).expect("first script diagnostics");
+        scheduler.submit(second).expect("second script diagnostics");
+        gate.release();
+
+        let hover = receive(&receiver);
+        assert!(!hover.cancelled);
+        let diagnostics = receive(&receiver);
+        assert_eq!(
+            diagnostics.kind,
+            JobKind::ScriptDiagnostics { script_hash: 2 }
+        );
+        assert_eq!(
+            diagnostics.stamp, second_stamp,
+            "the newest queued script diagnostics job must replace the older one"
+        );
+        assert_eq!(
+            backend.diagnostics_calls.load(Ordering::SeqCst),
+            0,
+            "script jobs must not call the template diagnostics method"
         );
     }
 

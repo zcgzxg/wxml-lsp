@@ -351,6 +351,27 @@ pub trait Backend: Send + Sync {
     /// Returns the diagnostics for `request`.
     fn diagnostics(&self, request: DiagnosticsRequest) -> Result<DiagnosticsResult, BackendError>;
 
+    /// Returns diagnostics for one standalone project script.
+    ///
+    /// This is separate from [`Self::diagnostics`]: a script request has no
+    /// template shadow, no template syntax diagnostics and no WXML facts, and
+    /// its ranges are in the script snapshot's own bytes. The default
+    /// implementation reports the feature as unsupported, which is different
+    /// from a checked empty result. The LSP layer publishes nothing for an
+    /// unsupported or unavailable result, so a backend that does not implement
+    /// this method keeps script-document behavior exactly as before.
+    fn script_diagnostics(
+        &self,
+        _request: DiagnosticsRequest,
+    ) -> Result<DiagnosticsResult, BackendError> {
+        Ok(DiagnosticsResult {
+            diagnostics: Vec::new(),
+            status: CapabilityStatus::Unsupported {
+                reason: "script diagnostics are not implemented".to_owned(),
+            },
+        })
+    }
+
     /// Returns definition targets for `request`.
     ///
     /// The default implementation reports the feature as unsupported, which is
@@ -652,6 +673,19 @@ mod tests {
             assert!(!status.is_supported(), "{name}");
             assert_eq!(status.reason(), Some("not implemented"), "{name}");
         }
+    }
+
+    #[test]
+    fn script_diagnostics_defaults_to_unsupported_rather_than_empty_success() {
+        let result = BareBackend
+            .script_diagnostics(DiagnosticsRequest { context: context() })
+            .expect("default implementation succeeds");
+        assert!(result.diagnostics.is_empty());
+        assert!(!result.status.is_supported());
+        assert_eq!(
+            result.status.reason(),
+            Some("script diagnostics are not implemented")
+        );
     }
 
     #[test]

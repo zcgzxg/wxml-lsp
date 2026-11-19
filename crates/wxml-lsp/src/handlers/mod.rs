@@ -101,6 +101,20 @@ pub(crate) fn source_range_value(document: &Document, range: SourceRange) -> Opt
     line_index_range_value(document.snapshot().line_index(), range)
 }
 
+/// FNV-1a over the complete document text.
+///
+/// Script diagnostics are scheduled with this hash and the server re-hashes the
+/// current workspace text before publishing, so a late result can never be
+/// shown against different content even if its revision bookkeeping is wrong.
+pub(crate) fn content_hash(text: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
 /// Converts a byte range in any indexed text into an LSP range.
 pub(crate) fn line_index_range_value(
     line_index: &wxml_text::LineIndex,

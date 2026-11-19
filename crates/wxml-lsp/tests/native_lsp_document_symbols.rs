@@ -116,6 +116,71 @@ fn real_engine_document_symbols_for_script_and_wxml_outline() {
 }
 
 #[test]
+fn real_engine_script_diagnostics_publish_2322_without_template_facts() {
+    let Some(fixture) = provision("script-diagnostics") else {
+        return;
+    };
+    let mut session = Session::start(&fixture);
+    let initialized = session.initialize(&fixture.project_uri());
+    assert_eq!(
+        initialized["result"]["capabilities"]["positionEncoding"],
+        json!("utf-16"),
+        "{initialized}"
+    );
+
+    let wxml_uri = fixture.uri("pages/index/index.wxml");
+    let ts_uri = fixture.uri("pages/index/typed.ts");
+    session.did_open(&wxml_uri, "wxml", support::PROJECT_WXML);
+    session.did_open(&ts_uri, "typescript", support::PROJECT_TS);
+
+    let published = session.wait_for_diagnostics(&[&wxml_uri, &ts_uri], support::REQUEST_TIMEOUT);
+    let script = published
+        .iter()
+        .find(|message| message["params"]["uri"] == json!(ts_uri))
+        .unwrap_or_else(|| panic!("no script diagnostics publication: {published:?}"));
+    assert_eq!(script["params"]["version"], json!(1), "{script}");
+    let diagnostics = script["params"]["diagnostics"]
+        .as_array()
+        .expect("script diagnostics array");
+    let error = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["code"] == json!("2322"))
+        .unwrap_or_else(|| panic!("no TS2322 in the script publication: {script}"));
+    assert_eq!(error["severity"], json!(1), "{script}");
+    assert_eq!(
+        error["range"]["start"]["line"],
+        json!(0),
+        "the error is on the first line: {script}"
+    );
+    assert!(
+        diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic["code"] == json!("2322")),
+        "template/style diagnostics must not be mixed into a script payload: {script}"
+    );
+
+    let template = published
+        .iter()
+        .find(|message| message["params"]["uri"] == json!(wxml_uri))
+        .unwrap_or_else(|| panic!("no template diagnostics publication: {published:?}"));
+    assert!(
+        !template["params"]["diagnostics"]
+            .as_array()
+            .expect("template diagnostics array")
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == json!("2322")),
+        "a script diagnostic must not leak into the template payload: {template}"
+    );
+    assert!(
+        !session.stderr_text().contains("server.js"),
+        "the native path must not start Node:\n{}",
+        session.stderr_text()
+    );
+    session.shutdown();
+    fixture.tripwire().assert_absent();
+}
+
+#[test]
 fn a_missing_engine_fails_before_initialize_without_node_fallback() {
     let broken = broken_package("missing-engine", PackageDefect::MissingEngine);
     let failure = run_startup_failure(&broken);

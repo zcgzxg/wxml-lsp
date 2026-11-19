@@ -11,11 +11,22 @@
 //! never published as success, and `Unsupported` with rendered content is
 //! never published as `Supported`. Both contradictions become explicit
 //! degraded statuses instead of being smoothed over.
+//!
+//! `miniprogram-api-typings` maps a component property's instance type from
+//! `type` and drops `optionalTypes`. When the script overlay proved the full
+//! declared union, the adapter prefers it for the free template root at the
+//! cursor: a declared `{ type: String, optionalTypes: [Number] }` hovers as
+//! `string | number`. Member accesses and unreadable declarations keep the
+//! native answer.
+
+use std::collections::BTreeMap;
 
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::strings::{Utf16Offset, offset_to_position};
-use wxml_backend_tsgo::query::hover::{HoverEvidence, compose_hover_markdown};
-use wxml_backend_tsgo::query::type_info::TypeQuality as NativeTypeQuality;
+use wxml_backend_tsgo::query::hover::{HoverEvidence, HoverGap, compose_hover_markdown};
+use wxml_backend_tsgo::query::type_info::{
+    TypeInfo as NativeTypeInfo, TypeQuality as NativeTypeQuality,
+};
 use wxml_types::{
     BackendError, CapabilityStatus, HoverRequest, HoverResult, MarkupKind, TypeQuality,
 };
@@ -24,12 +35,32 @@ use crate::backend_tsgo::map_native_error;
 use crate::backend_tsgo::mapping::{MappingError, ShadowLayout};
 use crate::backend_tsgo::session::QuerySession;
 
+/// One declaration-derived property type.
+///
+/// `type` plus `optionalTypes` can declare a union that
+/// `miniprogram-api-typings` loses in the instance `data` type. The script
+/// overlay proves the union syntactically; hover prefers it for a declared
+/// property root so the tooltip keeps the declaration's contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeclaredPropertyType {
+    /// Union text such as `string | number`.
+    pub(crate) type_text: String,
+    /// False when any `type`/`optionalTypes` entry was unreadable or the
+    /// surrounding property declaration is incomplete.
+    pub(crate) complete: bool,
+}
+
 /// Returns one hover result, or an explicit unsupported result when no native
 /// evidence path applies.
+///
+/// `declared` carries the owning script's declaration-derived properties. It
+/// only overrides the native type for the free template root at the cursor; a
+/// member access such as `user.name` is never relabeled with a property union.
 pub(crate) fn hover(
     session: &mut dyn QuerySession,
     layout: &ShadowLayout,
     script_path: &str,
+    declared: &BTreeMap<String, DeclaredPropertyType>,
     degradation: Option<&str>,
     request: &HoverRequest,
 ) -> Result<HoverResult, BackendError> {
@@ -46,15 +77,125 @@ pub(crate) fn hover(
         offset_to_position(layout.derived(), Utf16Offset::new(derived)).map_err(|_| {
             BackendError::Protocol("hover position is invalid in the derived script".to_owned())
         })?;
-    let evidence = match session.hover_evidence(script_path, position) {
+    let mut evidence = match session.hover_evidence(script_path, position) {
         Ok(evidence) => evidence,
         Err(NativeError::Unsupported { .. }) => {
             return Ok(unsupported_hover("native hover evidence is unavailable"));
         }
         Err(error) => return Err(map_native_error(error)),
     };
+    apply_declared_property_type(
+        &mut evidence,
+        declared,
+        hovered_root(layout, request, derived).as_deref(),
+    );
 
     compose(layout, request, &evidence, degradation)
+}
+
+/// Replaces the native type with a declared property union.
+///
+/// The override is deliberately narrow: only a complete declaration for the
+/// free template root at the cursor is used. It never invents a type for an
+/// unreadable declaration, a member access or an undeclared name.
+pub(super) fn apply_declared_property_type(
+    evidence: &mut HoverEvidence,
+    declared: &BTreeMap<String, DeclaredPropertyType>,
+    root: Option<&str>,
+) {
+    let Some(name) = root else {
+        return;
+    };
+    let Some(fact) = declared.get(name) else {
+        return;
+    };
+    if !fact.complete || fact.type_text.trim().is_empty() {
+        return;
+    }
+    if evidence
+        .type_info
+        .as_ref()
+        .is_some_and(|info| info.text == fact.type_text)
+    {
+        return;
+    }
+    evidence.type_info = Some(NativeTypeInfo {
+        text: fact.type_text.clone(),
+        handle: 0,
+        flags: 0,
+    });
+    evidence.type_quality = NativeTypeQuality::Known;
+    // A declaration proves the type even when the native query returned
+    // `Missing`; drop only the now-stale "Missing with symbol evidence" gap.
+    evidence
+        .gaps
+        .retain(|gap| !matches!(gap, HoverGap::Blocked { .. }));
+    evidence.finalize_status();
+}
+
+/// Returns the free template root under the cursor, if the cursor is on one.
+///
+/// The template token must be mounted behind a free-root or property prefix in
+/// the derived script. That excludes two different cases:
+///
+/// - `user.name` and `user['name']` hover a member, so the character before
+///   the template token decides;
+/// - a `wx:for` local with the same name as a declared property is emitted
+///   without a prefix, so the derived text must end at the exact
+///   `__wxml_root.`/`__wxml_props_0.` prefix. A local never receives a
+///   declaration-derived property type.
+fn hovered_root(
+    layout: &ShadowLayout,
+    request: &HoverRequest,
+    derived_offset: u32,
+) -> Option<String> {
+    let range = layout.token_range(request.offset).ok().flatten()?;
+    let text = request.context.source().text();
+    let start = usize::try_from(range.start()).ok()?;
+    let end = usize::try_from(range.end()).ok()?;
+    let token = text.get(start..end)?;
+    if token.is_empty()
+        || !token
+            .chars()
+            .all(|character| character.is_alphanumeric() || matches!(character, '_' | '$'))
+    {
+        return None;
+    }
+    let before = text
+        .get(..start)?
+        .chars()
+        .rev()
+        .find(|c| !c.is_whitespace())?;
+    if matches!(before, '.' | ']' | ')' | '\'' | '"' | '`') {
+        return None;
+    }
+    if !mounted_behind_property_prefix(layout.derived(), derived_offset) {
+        return None;
+    }
+    Some(token.to_owned())
+}
+
+/// Returns whether the identifier at `derived_offset` is mounted behind a
+/// declaration-derived root prefix.
+fn mounted_behind_property_prefix(derived: &str, derived_offset: u32) -> bool {
+    let Ok(byte) = wxml_backend_tsgo::shadow::mapping::utf16_to_byte(derived, derived_offset)
+    else {
+        return false;
+    };
+    let Some(prefix) = derived.get(..byte) else {
+        return false;
+    };
+    let mut start = prefix.len();
+    while let Some((previous, character)) = prefix[..start].char_indices().next_back() {
+        if character.is_alphanumeric() || matches!(character, '_' | '$') {
+            start = previous;
+        } else {
+            break;
+        }
+    }
+    let before = prefix.get(..start).unwrap_or_default();
+    before.ends_with(wxml_backend_tsgo::shadow::layout::ROOT_PREFIX)
+        || before.ends_with(wxml_backend_tsgo::shadow::layout::PROPS_PREFIX)
 }
 
 fn compose(
@@ -216,3 +357,7 @@ fn mapping_request_error(error: MappingError) -> BackendError {
         other => BackendError::Protocol(format!("hover mapping failed: {other}")),
     }
 }
+
+#[cfg(test)]
+#[path = "hover/tests.rs"]
+mod tests;

@@ -3567,31 +3567,394 @@ fn completion_survives_literal_fragments() {
 }
 
 #[test]
-fn completion_in_an_unclosed_expression_is_explicitly_unsupported() {
+fn completion_in_an_unclosed_expression_completes_the_typed_prefix() {
     let wxml = "<view>{{ user.</view>";
     let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, SCRIPT)]);
+    let behavior = FakeBehavior {
+        completions: FakeCompletionOutcome::List {
+            entries: vec![RawCompletionEntry {
+                name: "name".to_owned(),
+                kind: 5,
+                sort_text: "11".to_owned(),
+                ..RawCompletionEntry::default()
+            }],
+            incomplete: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let cursor = offset_of(wxml, "user.") + u32::try_from("user.".len()).expect("length");
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: cursor,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("completion must not be a silent empty success");
+    assert_eq!(
+        result
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["name"]
+    );
+    assert_eq!(result.items[0].replace.start(), cursor);
+    assert_eq!(result.items[0].replace.end(), cursor);
+    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    assert_eq!(log.lock().expect("log").completion_calls.len(), 1);
+}
+
+#[test]
+fn root_completion_uses_the_script_overlay_without_a_native_session() {
+    for wxml in ["<view>{{  }}</view>", "<view>{{   }}</view>"] {
+        let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, SCRIPT)]);
+        let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+        let cursor = offset_of(wxml, "{{") + 3;
+        let result = adapter
+            .completion(CompletionRequest {
+                context: context(&adapter, wxml),
+                offset: cursor,
+                kind: CompletionKind::ExpressionMember,
+            })
+            .expect("root completion");
+        assert_eq!(
+            result
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["user"],
+            "root candidates come from the data overlay"
+        );
+        assert_eq!(result.status, CapabilityStatus::Supported);
+        assert!(!result.truncated);
+        let item = &result.items[0];
+        assert_eq!(item.replace.start(), cursor);
+        assert_eq!(item.replace.end(), cursor);
+        assert_eq!(item.kind, CompletionItemKind::Property);
+        assert_eq!(item.insert_text, "user");
+        assert_eq!(
+            item.insert_text_format,
+            wxml_types::InsertTextFormat::PlainText
+        );
+        assert_eq!(item.sort_text.as_deref(), Some("0_user"));
+        assert_eq!(item.filter_text.as_deref(), Some("user"));
+        let log = log.lock().expect("log");
+        assert_eq!(log.starts, 0, "root completion must not start a session");
+        assert!(log.completion_calls.is_empty());
+    }
+}
+
+#[test]
+fn root_completion_with_a_cjk_prefix_replaces_only_the_prefix() {
+    let wxml = "<view>😀{{ 标题 }}</view>";
+    let script = "Page({ data: { 标题: '你好' } });";
+    let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, script)]);
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let title_start = offset_of(wxml, "标题");
+    let cursor = title_start + u32::try_from("标题".len()).expect("cjk length");
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: cursor,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("cjk root completion");
+    assert_eq!(
+        result
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["标题"]
+    );
+    assert_eq!(result.items[0].replace.start(), title_start);
+    assert_eq!(result.items[0].replace.end(), cursor);
+    let log = log.lock().expect("log");
+    assert_eq!(log.starts, 0);
+    assert!(log.completion_calls.is_empty());
+}
+
+#[test]
+fn root_completion_without_a_data_member_is_a_checked_empty_answer() {
+    let wxml = "<view>{{  }}</view>";
+    let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, "Page({});")]);
     let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
     let result = adapter
         .completion(CompletionRequest {
             context: context(&adapter, wxml),
-            offset: offset_of(wxml, "user.") + u32::try_from("user.".len()).expect("length"),
+            offset: offset_of(wxml, "{{") + 3,
             kind: CompletionKind::ExpressionMember,
         })
-        .expect("completion must not be a silent empty success");
+        .expect("root completion");
+    assert_eq!(result.items, Vec::new());
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Supported,
+        "no data member is a checked empty root list, not a failed query"
+    );
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn root_completion_with_dynamic_data_is_partial() {
+    let wxml = "<view>{{  }}</view>";
+    let script = "const make = () => ({});\nPage({ data: make() });";
+    let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, script)]);
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "{{") + 3,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("root completion");
+    assert_eq!(result.items, Vec::new());
+    let reason = result.status.reason().expect("partial reason");
+    assert!(
+        reason.contains("inline object literal") || reason.contains("field-level roots"),
+        "{reason}"
+    );
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn root_completion_without_an_owning_view_is_explicitly_unsupported() {
+    let wxml = "<view>{{  }}</view>";
+    let mut view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, SCRIPT)]);
+    view.target = None;
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "{{") + 3,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("root completion");
     assert_eq!(result.items, Vec::new());
     assert!(matches!(
         result.status,
         CapabilityStatus::Unsupported { .. }
     ));
-    assert!(
+    let reason = result.status.reason().expect("unsupported reason");
+    assert!(reason.contains("no page or component script"), "{reason}");
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn trailing_dot_completion_mounts_a_synthetic_query_and_keeps_the_range() {
+    let wxml = "<view>😀{{ user. }}</view>";
+    let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, SCRIPT)]);
+    let behavior = FakeBehavior {
+        completions: FakeCompletionOutcome::List {
+            entries: vec![
+                RawCompletionEntry {
+                    name: "name".to_owned(),
+                    kind: 5,
+                    sort_text: "11".to_owned(),
+                    ..RawCompletionEntry::default()
+                },
+                RawCompletionEntry {
+                    name: "age".to_owned(),
+                    kind: 5,
+                    sort_text: "12".to_owned(),
+                    ..RawCompletionEntry::default()
+                },
+            ],
+            incomplete: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let cursor = offset_of(wxml, "user.") + u32::try_from("user.".len()).expect("length");
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: cursor,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("trailing-dot completion");
+    assert_eq!(
         result
-            .status
-            .reason()
-            .is_some_and(|reason| reason.contains("incomplete")),
-        "{:?}",
-        result.status
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["name", "age"]
     );
-    assert_eq!(log.lock().expect("log").completion_calls.len(), 0);
+    for item in &result.items {
+        assert_eq!(
+            item.replace.start(),
+            cursor,
+            "only the typed prefix after the dot is replaced"
+        );
+        assert_eq!(item.replace.end(), cursor);
+    }
+    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    let log = log.lock().expect("log");
+    assert_eq!(log.starts, 1);
+    let input = log.opened_inputs.first().expect("opened input");
+    let derived = input.file(SCRIPT_PATH).expect("shadow script").text();
+    assert!(
+        derived.contains("__wxml_root.user.__wxml_completion"),
+        "the completion plan mounts a synthetic member query: {derived}"
+    );
+    let needle = "__wxml_root.user.__wxml_completion";
+    let query = derived.find(needle).expect("synthetic needle") + "__wxml_root.user.".len();
+    let expected = offset_to_position(derived, Utf16Offset::new(utf16_len(&derived[..query])))
+        .expect("position");
+    assert_eq!(
+        log.completion_calls,
+        vec![(SCRIPT_PATH.to_owned(), expected)]
+    );
+}
+
+#[test]
+fn trailing_dot_completion_for_an_unknown_root_is_explicitly_unsupported() {
+    let wxml = "<view>{{ missing. }}</view>";
+    let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, SCRIPT)]);
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let cursor = offset_of(wxml, "missing.") + u32::try_from("missing.".len()).expect("length");
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: cursor,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("trailing-dot completion");
+    assert_eq!(result.items, Vec::new());
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Unsupported { .. }
+    ));
+    let reason = result.status.reason().expect("unsupported reason");
+    assert!(reason.contains("not a data root"), "{reason}");
+    let log = log.lock().expect("log");
+    assert_eq!(log.starts, 0, "an unknown root needs no native session");
+    assert!(log.completion_calls.is_empty());
+}
+
+#[test]
+fn trailing_dot_completion_with_dynamic_data_is_partial() {
+    let wxml = "<view>{{ record. }}</view>";
+    let script = "const makeData = () => ({});\nPage({ data: makeData() });";
+    let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, script)]);
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let cursor = offset_of(wxml, "record.") + u32::try_from("record.".len()).expect("length");
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: cursor,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("trailing-dot completion");
+    assert_eq!(result.items, Vec::new());
+    let reason = result.status.reason().expect("partial reason");
+    assert!(
+        reason.contains("incomplete script data overlay"),
+        "{reason}"
+    );
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn unclosed_quotes_and_nested_incomplete_expressions_are_explicitly_unsupported() {
+    for (wxml, typed) in [
+        ("<view>{{ \"unclosed }}</view>", "\"unclosed"),
+        ("<view>{{ (user. }}</view>", "user."),
+    ] {
+        let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, SCRIPT)]);
+        let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+        let cursor = offset_of(wxml, typed) + u32::try_from(typed.len()).expect("length");
+        let result = adapter
+            .completion(CompletionRequest {
+                context: context(&adapter, wxml),
+                offset: cursor,
+                kind: CompletionKind::ExpressionMember,
+            })
+            .expect("completion");
+        assert_eq!(result.items, Vec::new());
+        assert!(
+            matches!(
+                result.status,
+                CapabilityStatus::Unsupported { .. } | CapabilityStatus::Partial { .. }
+            ),
+            "an unsafe expression must not be a silent empty success: {:?}",
+            result.status
+        );
+        assert!(
+            result.status.reason().is_some(),
+            "an unsafe expression needs an explicit reason"
+        );
+        let log = log.lock().expect("log");
+        assert_eq!(log.starts, 0);
+        assert!(log.completion_calls.is_empty());
+    }
+}
+
+#[test]
+fn root_completion_includes_component_properties() {
+    let wxml = "<view>{{  }}</view>";
+    let script =
+        "Component({ properties: { label: { type: String, value: '' } }, data: { count: 1 } });";
+    let mut view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, script)]);
+    view.target.as_mut().expect("target").owner = RootKind::Component;
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "{{") + 3,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("component root completion");
+    assert_eq!(
+        result
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["count", "label"],
+        "component data and properties are both WXML roots, sorted by name"
+    );
+    assert!(result.status.is_supported(), "{:?}", result.status);
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn root_completion_dedupes_and_caps_at_the_shared_limit() {
+    let wxml = "<view>{{  }}</view>";
+    let fields = (0..(wxml_types::MAX_COMPLETION_ITEMS + 4))
+        .map(|index| format!("f{index}: {index}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let script = format!("Page({{ data: {{ {fields} }} }});");
+    let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, &script)]);
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "{{") + 3,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("root completion");
+    assert_eq!(result.items.len(), wxml_types::MAX_COMPLETION_ITEMS);
+    assert!(result.truncated);
+    let reason = result.status.reason().expect("partial reason");
+    assert!(reason.contains("truncated"), "{reason}");
+    let labels = result
+        .items
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect::<Vec<_>>();
+    let unique: std::collections::BTreeSet<&str> = labels.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        labels.len(),
+        "root candidates must be deduped"
+    );
+    assert_eq!(labels.first(), Some(&"f0"));
+    assert_eq!(log.lock().expect("log").starts, 0);
 }
 
 #[test]
@@ -4139,6 +4502,39 @@ fn script_diagnostics_accept_allow_js_documents() {
 }
 
 #[test]
+fn backend_trait_script_diagnostics_reaches_the_script_seam() {
+    const SCRIPT_ERROR: &str = "const x: string = 1;\n";
+    let behavior = FakeBehavior {
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![FakeDiagnostic {
+            needle: "x: string",
+            code: 2322,
+            category: 1,
+            message: "trait seam type error",
+            file_name: Some("/work/demo/pages/index/index.ts"),
+        }]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(
+            WXML,
+            SCRIPT_ERROR,
+            "user.name",
+        ))),
+        behavior,
+    );
+    let result = Backend::script_diagnostics(
+        &adapter,
+        DiagnosticsRequest {
+            context: script_context(&adapter, SCRIPT_PATH, SCRIPT_ERROR),
+        },
+    )
+    .expect("trait script diagnostics");
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert_eq!(result.diagnostics.len(), 1);
+    assert_eq!(result.diagnostics[0].code.as_deref(), Some("2322"));
+}
+
+#[test]
 fn optional_real_engine_hover_smoke() {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let Ok(bin) = std::env::var("TSGO_BIN") else {
@@ -4475,6 +4871,79 @@ export {};
             })
             .expect("real engine completion");
         assert_real_engine_completion(&result, cursor, prefix_len);
+    }
+}
+
+#[test]
+fn optional_real_engine_trailing_dot_completion_smoke() {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let Ok(bin) = std::env::var("TSGO_BIN") else {
+        let required = matches!(
+            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
+            Ok("1" | "true")
+        );
+        assert!(
+            !required,
+            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
+        );
+        eprintln!(
+            "optional real-engine trailing-dot completion test skipped: set TSGO_BIN to the \
+             pinned 7.1.0-beta lib/tsc"
+        );
+        return;
+    };
+    let executable = PathBuf::from(&bin);
+    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let sandbox = std::env::temp_dir().join(format!(
+        "wxml-tsgo-adapter-trailing-dot-completion-{}-{count}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&sandbox).expect("sandbox");
+    let _cleanup = Cleanup(sandbox.clone());
+
+    // `{{ user. }}` has no mountable fragment. The adapter must mount the
+    // valid `user` prefix and ask the engine after a synthetic dot without
+    // changing the published replacement range.
+    let wxml = "<view>😀{{ user. }}</view>";
+    let script = "Page({ data: { user: { name: \"Ada\", age: 36 } } });";
+    let globals = "declare function Page(options: {\n  data: { user: { name: string; age: number } };\n  __wxml_check_0(this: { data: { user: { name: string; age: number } } }): void;\n}): void;\n";
+    let files = vec![
+        prepared_file(SCRIPT_PATH, script),
+        prepared_file("globals.d.ts", globals),
+    ];
+    let views = Arc::new(FakeViews::new(empty_view(wxml, files)));
+    let adapter = TsgoBackendAdapter::new(
+        PinnedEngine::pinned(),
+        views,
+        Arc::new(super::session::NativeSessionFactory::new(
+            SessionOptions::new(executable, sandbox),
+        )),
+    );
+    let cursor = offset_of(wxml, "user.") + u32::try_from("user.".len()).expect("length");
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: cursor,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("real engine trailing-dot completion");
+    let labels: Vec<&str> = result
+        .items
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect();
+    eprintln!(
+        "real engine trailing-dot completion: status={:?} labels={labels:?}",
+        result.status
+    );
+    assert!(
+        labels.contains(&"name") && labels.contains(&"age"),
+        "the real engine must complete the synthetic member access: {labels:?}"
+    );
+    for item in &result.items {
+        assert_eq!(item.replace.start(), cursor);
+        assert_eq!(item.replace.end(), cursor);
     }
 }
 

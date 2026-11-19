@@ -13,18 +13,26 @@ use wxml_backend_tsgo::input::{
     AnalysisInput, CompilerOptions, DocumentRevision, Language, ProjectKey, ProjectRoot,
     SnapshotRevision, SourceFile, TypeEnvironmentIdentity,
 };
+use wxml_backend_tsgo::native::strings::{
+    Utf16Offset, Utf16Position, offset_to_position, utf16_len,
+};
 use wxml_backend_tsgo::native::vfs::environment_degradations_for;
+use wxml_backend_tsgo::script::behavior::BehaviorProperty;
+use wxml_backend_tsgo::script::registration::RegistrationKind as ScriptRegistrationKind;
+use wxml_backend_tsgo::script::{ScriptRequest, analyze_script};
 use wxml_backend_tsgo::shadow::guards::{
     GuardChain as ShadowGuardChain, GuardCondition as ShadowGuardCondition,
     GuardKind as ShadowGuardKind,
 };
 use wxml_backend_tsgo::shadow::layout::{
-    FragmentSpec, JsCheckPolicy, RootKind as ShadowRootKind, ShadowRequest, build_in_place_shadow,
+    BehaviorPropertyOverlay, FragmentSpec, JsCheckPolicy, RootKind as ShadowRootKind,
+    ShadowRequest, build_in_place_shadow_with_behavior,
 };
 use wxml_backend_tsgo::shadow::locals::{
     LocalBinding as ShadowLocalBinding, LocalRole as ShadowLocalRole,
 };
 use wxml_backend_tsgo::shadow::mapping::SourceRange as ShadowSourceRange;
+use wxml_backend_tsgo::shadow::mapping::utf16_to_byte;
 use wxml_syntax::{Expr, ExprKind};
 use wxml_types::{
     BackendError, CapabilityStatus, CheckFragment, Diagnostic, FileId, GuardBranch, GuardChain,
@@ -33,6 +41,7 @@ use wxml_types::{
 };
 
 use crate::backend_tsgo::environment::{Environment, degradation_reason};
+use crate::backend_tsgo::hover::DeclaredPropertyType;
 use crate::backend_tsgo::mapping::{FragmentMap, ShadowLayout};
 use crate::project_host::{HostError, PreparedView, ProjectHost};
 
@@ -204,6 +213,27 @@ pub(crate) struct RequestIdentity {
     pub(crate) environment: Option<TypeEnvironmentIdentity>,
 }
 
+/// Synthetic fragment id used by an incomplete-member completion plan.
+pub(crate) const COMPLETION_FRAGMENT_ID: &str = "completion#0";
+/// Synthetic suffix inserted after the mounted completion prefix.
+///
+/// Only the inserted `.` is queried: the engine sees a member-access position
+/// while every published range still comes from the original template bytes.
+const COMPLETION_QUERY_SUFFIX: &str = ".__wxml_completion";
+
+/// One valid expression prefix plus its exact original template bytes.
+///
+/// The template analyzer drops `{{ user. }}` because the expression is not
+/// valid. Completion mounts the valid prefix (`user`) and appends a synthetic
+/// member query, so the published replacement range never changes.
+#[derive(Debug, Clone)]
+pub(crate) struct CompletionFragment {
+    /// Valid expression before the trailing dot.
+    pub(crate) expr: String,
+    /// Exact original byte range of `expr`.
+    pub(crate) wxml_range: wxml_types::SourceRange,
+}
+
 /// One request plan before a native snapshot revision is assigned.
 #[derive(Debug)]
 pub(crate) struct RequestPlan {
@@ -223,6 +253,14 @@ pub(crate) struct RequestPlan {
     file_ids: BTreeMap<String, FileId>,
     /// Template-to-shadow mapping for this request.
     pub(crate) layout: ShadowLayout,
+    /// Explicit derived UTF-16 query position for a synthetic completion plan.
+    ///
+    /// Normal plans leave this `None`; completion then maps the template
+    /// offset through the shadow itself.
+    pub(crate) completion_query: Option<Utf16Position>,
+    /// Declaration-derived property types used to keep hover fidelity for
+    /// `type` + `optionalTypes` unions the native checker under-reports.
+    pub(crate) declared_properties: BTreeMap<String, DeclaredPropertyType>,
     /// Host parser/template diagnostics that must be merged into every
     /// diagnostics result, including unavailable ones.
     pub(crate) syntax_diagnostics: Vec<Diagnostic>,
@@ -425,12 +463,166 @@ impl OpenPlan for ScriptRequestPlan {
     }
 }
 
+/// Behavior facts needed by the shadow and the hover overlay.
+#[derive(Debug, Default)]
+struct ScriptFacts {
+    /// Static behavior contribution; `None` when the script has no
+    /// `behaviors` member.
+    behavior: Option<BehaviorFacts>,
+    /// Declaration-derived property types for hover fidelity.
+    declared_properties: BTreeMap<String, DeclaredPropertyType>,
+}
+
+/// Owned behavior properties plus their resolution completeness.
+#[derive(Debug)]
+struct BehaviorFacts {
+    properties: Vec<BehaviorProperty>,
+    complete: bool,
+    reason: Option<String>,
+}
+
+impl BehaviorFacts {
+    fn overlay(&self) -> BehaviorPropertyOverlay<'_> {
+        BehaviorPropertyOverlay {
+            properties: &self.properties,
+            complete: self.complete,
+            reason: self.reason.as_deref(),
+        }
+    }
+}
+
+/// Resolves the script overlay once per request plan.
+///
+/// The dedicated `script` module already owns registration selection, the
+/// behavior graph and the `type` + `optionalTypes` union. Running it here keeps
+/// the in-place shadow and the hover overlay on that single implementation
+/// instead of re-guessing behavior properties inside the shadow builder.
+///
+/// The analysis runs over the effective project text (owning script plus every
+/// prepared project file) and is bounded by the script module's member,
+/// behavior, depth and file budgets. When the script has neither `properties`
+/// nor `behaviors`, the scan is skipped.
+fn collect_script_facts(
+    view: &PreparedView,
+    project: &ProjectKey,
+    project_root: &ProjectRoot,
+    script_path: &str,
+    shadow_root: ShadowRootKind,
+) -> ScriptFacts {
+    let Some(script) = view
+        .files
+        .iter()
+        .find(|file| file.path.as_str() == script_path)
+    else {
+        return ScriptFacts::default();
+    };
+    let has_properties = script.text.contains("properties");
+    let has_behaviors = script.text.contains("behaviors");
+    if !has_properties && !has_behaviors {
+        return ScriptFacts::default();
+    }
+
+    let files = view
+        .files
+        .iter()
+        .filter(|file| Language::from_path(file.path.as_str()).is_some())
+        .filter_map(|file| {
+            SourceFile::new(
+                file.path.as_str(),
+                file.text.to_string(),
+                DocumentRevision::new(file.source_revision),
+            )
+            .ok()
+        })
+        .collect::<Vec<_>>();
+    let Ok(input) = AnalysisInput::new(
+        project.clone(),
+        project_root.clone(),
+        SnapshotRevision::new(0),
+        files,
+    ) else {
+        return ScriptFacts {
+            behavior: has_behaviors.then(|| BehaviorFacts {
+                properties: Vec::new(),
+                complete: false,
+                reason: Some("the script overlay could not be built from this project".to_owned()),
+            }),
+            declared_properties: BTreeMap::new(),
+        };
+    };
+    let kind = match shadow_root {
+        ShadowRootKind::Page => ScriptRegistrationKind::Page,
+        ShadowRootKind::Component | ShadowRootKind::Behavior => ScriptRegistrationKind::Component,
+    };
+    let Ok(analysis) = analyze_script(&ScriptRequest::new(&input, script_path, kind)) else {
+        return ScriptFacts {
+            behavior: has_behaviors.then(|| BehaviorFacts {
+                properties: Vec::new(),
+                complete: false,
+                reason: Some("the script overlay could not be analyzed".to_owned()),
+            }),
+            declared_properties: BTreeMap::new(),
+        };
+    };
+
+    let overlay_complete = analysis.properties.complete;
+    let declared_properties = analysis
+        .properties
+        .properties
+        .iter()
+        .map(|property| {
+            (
+                property.name.clone(),
+                DeclaredPropertyType {
+                    type_text: property.type_text.clone(),
+                    complete: property.type_complete && overlay_complete,
+                },
+            )
+        })
+        .collect();
+    let behavior = has_behaviors.then(|| BehaviorFacts {
+        properties: analysis.behavior.properties.clone(),
+        complete: !analysis.behavior.properties_incomplete
+            && analysis.behavior.status.is_supported(),
+        reason: analysis.behavior.status.reason().map(str::to_owned),
+    });
+    ScriptFacts {
+        behavior,
+        declared_properties,
+    }
+}
+
 /// Builds one request plan from the host view and the in-place shadow.
-#[allow(clippy::too_many_lines, reason = "one linear input/shadow pipeline")]
 pub(crate) fn build_request_plan(
     provider: &dyn ViewProvider,
     context: &RequestContext,
     environment: &Environment,
+) -> Result<RequestPlan, BackendError> {
+    build_request_plan_with_completion(provider, context, environment, None)
+}
+
+/// Builds one completion-only plan for an incomplete trailing-dot expression.
+///
+/// The plan mounts the valid expression prefix and appends a synthetic member
+/// query. It deliberately differs in identity from the normal plan (extra
+/// fragment and script bytes), so the session is updated for the query and
+/// updated back by the next non-completion request.
+pub(crate) fn build_completion_request_plan(
+    provider: &dyn ViewProvider,
+    context: &RequestContext,
+    environment: &Environment,
+    fragment: &CompletionFragment,
+) -> Result<RequestPlan, BackendError> {
+    build_request_plan_with_completion(provider, context, environment, Some(fragment))
+}
+
+/// Builds one request plan with an optional synthetic completion fragment.
+#[allow(clippy::too_many_lines, reason = "one linear input/shadow pipeline")]
+fn build_request_plan_with_completion(
+    provider: &dyn ViewProvider,
+    context: &RequestContext,
+    environment: &Environment,
+    completion: Option<&CompletionFragment>,
 ) -> Result<RequestPlan, BackendError> {
     let snapshot = context.source();
     let view = prepare_view(provider, snapshot)?;
@@ -462,11 +654,25 @@ pub(crate) fn build_request_plan(
     .map_err(|error| input_error(&error))?;
 
     let (included, omitted_literal, omitted_malformed) = eligible_fragments(&view.fragments);
-    let fragments = included
+    let mut fragments = included
         .iter()
         .map(|fragment| fragment_spec(fragment))
         .collect::<Vec<_>>();
-    let root = match target.owner {
+    if let Some(fragment) = completion {
+        fragments.push(FragmentSpec {
+            id: COMPLETION_FRAGMENT_ID.to_owned(),
+            expr: fragment.expr.clone(),
+            wxml_range: ShadowSourceRange::new(
+                fragment.wxml_range.start(),
+                fragment.wxml_range.end(),
+            ),
+            target: None,
+            locals: Vec::new(),
+            bindings: Vec::new(),
+            guards: Vec::new(),
+        });
+    }
+    let shadow_root = match target.owner {
         RootKind::Page => ShadowRootKind::Page,
         RootKind::Component => ShadowRootKind::Component,
     };
@@ -475,14 +681,59 @@ pub(crate) fn build_request_plan(
         .get("checkJs")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
-    let built = build_in_place_shadow(&ShadowRequest {
-        script: &original,
-        root,
-        fragments: &fragments,
-        js_check: JsCheckPolicy::Inherit,
-        check_js,
-    })
+    let project_root =
+        ProjectRoot::new(view.project_root.as_os_str().to_str().ok_or_else(|| {
+            BackendError::Unavailable("the project root is not valid UTF-8".to_owned())
+        })?)
+        .map_err(|error| input_error(&error))?;
+    let project = ProjectKey::new(context.file().project().as_str());
+    let facts = collect_script_facts(&view, &project, &project_root, &script_path, shadow_root);
+    let behavior_overlay = facts.behavior.as_ref().map(BehaviorFacts::overlay);
+    let built = build_in_place_shadow_with_behavior(
+        &ShadowRequest {
+            script: &original,
+            root: shadow_root,
+            fragments: &fragments,
+            js_check: JsCheckPolicy::Inherit,
+            check_js,
+        },
+        behavior_overlay.as_ref(),
+    )
     .map_err(|error| shadow_error(&error))?;
+
+    // A completion plan mounts the valid expression prefix and appends a
+    // synthetic `.` plus placeholder. The query sits after the inserted dot, so
+    // the engine sees `__wxml_root.user.|` without any original byte changing.
+    let (derived, completion_query) = if completion.is_some() {
+        let mut derived = built.view.text.clone();
+        let mount = built
+            .view
+            .mounts
+            .iter()
+            .find(|mount| mount.fragment_id == COMPLETION_FRAGMENT_ID)
+            .ok_or_else(|| {
+                BackendError::Unavailable(
+                    "the completion expression was not mounted in the shadow".to_owned(),
+                )
+            })?;
+        let end = mount
+            .start_utf16
+            .checked_add(utf16_len(&mount.text))
+            .ok_or_else(|| BackendError::Internal("completion query offset overflow".to_owned()))?;
+        let byte = utf16_to_byte(&derived, end).map_err(|_| {
+            BackendError::Internal("completion query offset is invalid in the shadow".to_owned())
+        })?;
+        derived.insert_str(byte, COMPLETION_QUERY_SUFFIX);
+        let query = end.checked_add(1).ok_or_else(|| {
+            BackendError::Internal("completion query position overflow".to_owned())
+        })?;
+        let position = offset_to_position(&derived, Utf16Offset::new(query)).map_err(|_| {
+            BackendError::Internal("completion query position is invalid in the shadow".to_owned())
+        })?;
+        (derived, Some(position))
+    } else {
+        (built.view.text.clone(), None)
+    };
 
     let mut degradation = None;
     merge_reason(
@@ -543,6 +794,19 @@ pub(crate) fn build_request_plan(
             mount: mount.clone(),
         });
     }
+    if let Some(fragment) = completion {
+        if let Some(mount) = built
+            .view
+            .mounts
+            .iter()
+            .find(|mount| mount.fragment_id == COMPLETION_FRAGMENT_ID)
+        {
+            fragment_maps.push(FragmentMap {
+                wxml_range: fragment.wxml_range,
+                mount: mount.clone(),
+            });
+        }
+    }
 
     let mut files = Vec::with_capacity(view.files.len());
     let mut file_ids = BTreeMap::new();
@@ -550,7 +814,7 @@ pub(crate) fn build_request_plan(
         let path = prepared.path.as_str();
         let target_file = path == script_path;
         let text = if target_file {
-            built.view.text.clone()
+            derived.clone()
         } else {
             prepared.text.to_string()
         };
@@ -585,15 +849,10 @@ pub(crate) fn build_request_plan(
         }
     }
 
-    let root = ProjectRoot::new(view.project_root.as_os_str().to_str().ok_or_else(|| {
-        BackendError::Unavailable("the project root is not valid UTF-8".to_owned())
-    })?)
-    .map_err(|error| input_error(&error))?;
-    let project = ProjectKey::new(context.file().project().as_str());
     let (compiler_options, environment_identity) =
         environment_options(environment, &view.compiler_options)?;
     let environment_degradation =
-        environment_degradation(environment, &root, &files, &compiler_options);
+        environment_degradation(environment, &project_root, &files, &compiler_options);
     let identity = RequestIdentity {
         project_revision: context.project_revision(),
         view_revision: context.view_revision(),
@@ -602,9 +861,9 @@ pub(crate) fn build_request_plan(
         source_snapshot: snapshot.snapshot(),
         script_path: script_path.clone(),
         script_revision: script.source_revision,
-        script_bytes: built.view.text.len(),
+        script_bytes: derived.len(),
         view_id: view.view_id.clone(),
-        project_root: root.as_str().to_owned(),
+        project_root: project_root.as_str().to_owned(),
         fragment_count: fragment_maps.len(),
         environment: environment_identity,
     };
@@ -612,17 +871,19 @@ pub(crate) fn build_request_plan(
     Ok(RequestPlan {
         identity,
         project,
-        root,
+        root: project_root,
         files,
         environment: environment.clone(),
         compiler_options,
         file_ids,
         layout: ShadowLayout::new(
             snapshot.text().to_owned(),
-            built.view.text,
+            derived,
             built.view.map,
             fragment_maps,
         ),
+        completion_query,
+        declared_properties: facts.declared_properties,
         syntax_diagnostics: view.syntax_diagnostics.clone(),
         degradation,
         environment_degradation,
@@ -940,6 +1201,14 @@ const RESERVED_ROOTS: &[&str] = &[
     "public",
     "await",
 ];
+
+/// Returns whether one parsed expression has a free data root.
+///
+/// The completion site uses this before mounting a trailing-dot prefix; a
+/// literal-only expression cannot be answered by the shadow.
+pub(crate) fn expression_has_free_root(expr: &Expr, source: &str) -> bool {
+    has_free_root(expr, source, &HashSet::new())
+}
 
 fn has_free_root(expr: &Expr, source: &str, locals: &HashSet<&str>) -> bool {
     match expr.kind() {

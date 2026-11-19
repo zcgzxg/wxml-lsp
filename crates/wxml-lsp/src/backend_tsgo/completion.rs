@@ -17,7 +17,24 @@
 //! (`data`/`textEdit`/`additionalTextEdits`). A prepared non-empty result is
 //! therefore still `Partial` with the typed native gaps, and this module never
 //! invents an `import` statement, a text edit or an auto-import marker.
+//!
+//! # Data roots and incomplete expressions
+//!
+//! The template analyzer drops empty mustaches (`{{ }}`) and expressions it
+//! cannot parse (`{{ user. }}`), so those sites have no mounted fragment.
+//! Root candidates come from the Rust
+//! [`ScriptAnalysis`](wxml_backend_tsgo::script::ScriptAnalysis) data overlay
+//! and need neither a native session nor a native snapshot. A bare identifier
+//! prefix replaces only that prefix. A trailing-dot member access is asked
+//! through a completion-only shadow plan whose valid prefix is mounted and
+//! followed by a synthetic `.` and placeholder; the published replacement
+//! range is still computed from the original text and never covers the
+//! synthetic query bytes. An expression that cannot be completed safely is an
+//! explicit `Unsupported`/`Partial` reason, never a silent empty list.
 
+use wxml_backend_tsgo::input::{
+    AnalysisInput, DocumentRevision, ProjectKey, ProjectRoot, SnapshotRevision, SourceFile,
+};
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::session::AutoImportPreparation;
 use wxml_backend_tsgo::native::strings::{Utf16Offset, Utf16Position, offset_to_position};
@@ -25,32 +42,53 @@ use wxml_backend_tsgo::query::completion::{
     AutoImportContext, CompletionEntry as NativeCompletionEntry, CompletionQueryOptions,
     map_completions_with,
 };
+use wxml_backend_tsgo::script::properties::DataRootKind;
+use wxml_backend_tsgo::script::registration::RegistrationKind;
+use wxml_backend_tsgo::script::{ScriptRequest, analyze_script};
+use wxml_syntax::{Expr, NodeKind, parse, parse_expression};
+use wxml_text::SourceRange;
 use wxml_types::{
-    BackendError, CapabilityStatus, CompletionItem, CompletionKind, CompletionRequest,
-    CompletionResult, InsertTextFormat,
+    BackendError, CapabilityStatus, CompletionItem, CompletionItemKind, CompletionKind,
+    CompletionRequest, CompletionResult, InsertTextFormat, MAX_COMPLETION_ITEMS, RequestContext,
+    RootKind,
 };
 
+use crate::backend_tsgo::input::{ViewProvider, input_error, prepare_view};
 use crate::backend_tsgo::map_native_error;
 use crate::backend_tsgo::mapping::{MappingError, ShadowLayout};
 use crate::backend_tsgo::session::QuerySession;
 
 /// Returns completion entries mapped to original template bytes.
+///
+/// `query` overrides the native position and `replace` overrides the published
+/// replacement range. The synthetic trailing-dot path uses both: its query is
+/// derived from an inserted `.` while the replacement range still comes from
+/// the original template bytes.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn completion(
     session: &mut dyn QuerySession,
     layout: &ShadowLayout,
     script_path: &str,
     degradation: Option<&str>,
     request: &CompletionRequest,
+    query: Option<Utf16Position>,
+    replace: Option<SourceRange>,
 ) -> Result<CompletionResult, BackendError> {
     if request.kind != CompletionKind::ExpressionMember {
         return Ok(unsupported_completion(
             "only expression-member completion is implemented for the native backend",
         ));
     }
-    let Some(position) = query_position(layout, request.offset)? else {
-        return Ok(unsupported_completion(
-            "the cursor is in an incomplete or unmounted template expression; member completion requires a host-parsed fragment",
-        ));
+    let position = match query {
+        Some(position) => position,
+        None => match query_position(layout, request.offset)? {
+            Some(position) => position,
+            None => {
+                return Ok(unsupported_completion(
+                    "the cursor is in an incomplete or unmounted template expression; member completion requires a host-parsed fragment",
+                ));
+            }
+        },
     };
     let (options, auto_imports, prepare_reason) = auto_import_request(session, script_path)?;
     let degradation = merge_degradation(degradation, prepare_reason);
@@ -64,7 +102,11 @@ pub(crate) fn completion(
         Err(error) => return Err(map_native_error(error)),
     };
     let mapped = map_completions_with(raw.as_ref(), auto_imports);
-    let Some(replace) = completion_replace(layout, request.offset)? else {
+    let replace = if let Some(replace) = replace {
+        replace
+    } else if let Some(replace) = completion_replace(layout, request.offset)? {
+        replace
+    } else {
         let status = if mapped.entries.is_empty() {
             mapped.status
         } else {
@@ -130,7 +172,7 @@ fn auto_import_request(
 }
 
 /// Maps the original-template offset to a native shadow position.
-fn query_position(
+pub(crate) fn query_position(
     layout: &ShadowLayout,
     offset: u32,
 ) -> Result<Option<Utf16Position>, BackendError> {
@@ -159,7 +201,7 @@ fn query_position(
 fn completion_replace(
     layout: &ShadowLayout,
     offset: u32,
-) -> Result<Option<wxml_text::SourceRange>, BackendError> {
+) -> Result<Option<SourceRange>, BackendError> {
     match layout.completion_replace_range(offset) {
         Ok(range) => Ok(Some(range)),
         Err(MappingError::NoFragment | MappingError::MappingGap) => Ok(None),
@@ -179,10 +221,7 @@ fn completion_replace(
 /// `insertText`/`filterText` are native evidence; snippet-shaped insert text
 /// was already dropped by the mapper. No `documentation`, import statement or
 /// additional text edit can be represented or is invented.
-fn completion_item(
-    entry: NativeCompletionEntry,
-    replace: wxml_text::SourceRange,
-) -> CompletionItem {
+fn completion_item(entry: NativeCompletionEntry, replace: SourceRange) -> CompletionItem {
     let sort_text = (!entry.sort_text.is_empty()).then_some(entry.sort_text);
     let insert_text = entry.insert_text.unwrap_or_else(|| entry.label.clone());
     let filter_text = entry.filter_text.unwrap_or_else(|| entry.label.clone());
@@ -224,7 +263,7 @@ fn merge_status(status: CapabilityStatus, degradation: Option<&str>) -> Capabili
     }
 }
 
-fn unsupported_completion(reason: &str) -> CompletionResult {
+pub(crate) fn unsupported_completion(reason: &str) -> CompletionResult {
     CompletionResult {
         items: Vec::new(),
         status: CapabilityStatus::Unsupported {
@@ -232,4 +271,478 @@ fn unsupported_completion(reason: &str) -> CompletionResult {
         },
         truncated: false,
     }
+}
+
+/// Returns an empty `Partial` answer with an explicit reason.
+pub(crate) const fn partial_completion(reason: String) -> CompletionResult {
+    CompletionResult {
+        items: Vec::new(),
+        status: CapabilityStatus::Partial { reason },
+        truncated: false,
+    }
+}
+
+/* ------------------------------------------------------------------ expression sites */
+
+/// One mustache completion site that may not be covered by a mounted fragment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ExpressionSite {
+    /// A bare data root (empty or an identifier prefix before the cursor).
+    Root {
+        /// Range replaced by an inserted root; only the typed prefix.
+        replace: SourceRange,
+    },
+    /// A trailing-dot member access such as `{{ user. }}`.
+    Member {
+        /// Valid expression before the trailing dot.
+        prefix: String,
+        /// Exact original byte range of `prefix`.
+        prefix_range: SourceRange,
+        /// Range replaced by an inserted member; only the typed prefix.
+        replace: SourceRange,
+    },
+    /// The expression before the cursor cannot be completed safely.
+    Unsupported(&'static str),
+}
+
+/// Classifies the mustache expression at `offset` without a prepared view.
+///
+/// Returns `None` when the cursor is not inside a mustache body. A cursor in
+/// the delimiters, outside any mustache or in a literal-only expression is not
+/// a data-root or member site.
+pub(crate) fn expression_site(text: &str, offset: u32) -> Option<ExpressionSite> {
+    let (expr_start, expr_end) = mustache_expression_range(text, offset)?;
+    let cursor = usize::try_from(offset).ok()?;
+    let start = usize::try_from(expr_start).ok()?;
+    if cursor < start {
+        let replace = SourceRange::from_bounds(offset, offset).ok()?;
+        return Some(ExpressionSite::Root { replace });
+    }
+    let before = text.get(start..cursor)?;
+    let leading_trimmed = before.trim_start();
+    let trimmed = leading_trimmed.trim_end();
+    if trimmed.is_empty() {
+        let replace_start = identifier_start(text, offset, expr_start)?;
+        let replace = SourceRange::from_bounds(replace_start, offset).ok()?;
+        return Some(ExpressionSite::Root { replace });
+    }
+    // A root prefix must be the identifier directly before the cursor. A
+    // trailing space means the cursor is between tokens, not inside a root.
+    if trimmed.len() == leading_trimmed.len() && is_identifier_text(trimmed) {
+        let replace_start = identifier_start(text, offset, expr_start)?;
+        let replace = SourceRange::from_bounds(replace_start, offset).ok()?;
+        return Some(ExpressionSite::Root { replace });
+    }
+    // A complete full expression already has a mounted fragment (or is
+    // deliberately unmountable as a literal); let the ordinary native path
+    // answer it instead of synthesizing a query.
+    let full_end = usize::try_from(expr_end).ok()?;
+    if let Some(full) = text.get(start..full_end) {
+        if !full.is_empty() {
+            let parsed = parse_expression(full, 0);
+            if parsed.errors.is_empty() && !parsed.expr.walk().any(Expr::is_missing) {
+                return if crate::backend_tsgo::input::expression_has_free_root(&parsed.expr, full) {
+                    None
+                } else {
+                    Some(ExpressionSite::Unsupported(
+                        "the expression has no data root to complete",
+                    ))
+                };
+            }
+        }
+    }
+    let chain = before.trim_end();
+    let Some(prefix) = chain.strip_suffix("?.").or_else(|| chain.strip_suffix('.')) else {
+        return Some(ExpressionSite::Unsupported(
+            "the expression before the cursor is not a data root or a member access",
+        ));
+    };
+    let prefix = prefix.trim_end();
+    if prefix.is_empty() {
+        return Some(ExpressionSite::Unsupported(
+            "the expression before the cursor has no value to complete members on",
+        ));
+    }
+    let parsed = parse_expression(prefix, 0);
+    if !parsed.errors.is_empty() || parsed.expr.walk().any(Expr::is_missing) {
+        return Some(ExpressionSite::Unsupported(
+            "the expression before the trailing dot is not a complete expression",
+        ));
+    }
+    if !crate::backend_tsgo::input::expression_has_free_root(&parsed.expr, prefix) {
+        return Some(ExpressionSite::Unsupported(
+            "the expression before the trailing dot has no data root to complete",
+        ));
+    }
+    let prefix_len = u32::try_from(prefix.len()).ok()?;
+    let prefix_range =
+        SourceRange::from_bounds(expr_start, expr_start.checked_add(prefix_len)?).ok()?;
+    let replace_start = identifier_start(text, offset, expr_start)?;
+    let replace = SourceRange::from_bounds(replace_start, offset).ok()?;
+    Some(ExpressionSite::Member {
+        prefix: prefix.to_owned(),
+        prefix_range,
+        replace,
+    })
+}
+
+/// Returns the trimmed expression range of the mustache containing `offset`.
+fn mustache_expression_range(text: &str, offset: u32) -> Option<(u32, u32)> {
+    let parsed = parse(text);
+    for (_, node) in parsed.tree.nodes() {
+        if node.kind() != NodeKind::Mustache {
+            continue;
+        }
+        let range = node.text_range();
+        let body_start = range.start().checked_add(2)?;
+        if offset < body_start {
+            continue;
+        }
+        let inside = if node.is_closed() {
+            offset <= range.end().saturating_sub(2)
+        } else {
+            offset <= range.end()
+        };
+        if !inside {
+            continue;
+        }
+        let child = node
+            .children()
+            .iter()
+            .copied()
+            .find(|child| parsed.tree.kind(*child) == Some(NodeKind::MustacheExpr))?;
+        let expr = parsed.tree.node(child)?.text_range();
+        return Some((expr.start(), expr.end()));
+    }
+    None
+}
+
+/// Returns the start of the identifier characters directly before `offset`.
+fn identifier_start(text: &str, offset: u32, floor: u32) -> Option<u32> {
+    let mut start = usize::try_from(offset).ok()?;
+    let floor = usize::try_from(floor).ok()?;
+    if start > text.len() {
+        return None;
+    }
+    while start > floor {
+        let (previous, character) = text.get(..start)?.char_indices().next_back()?;
+        if previous < floor || !is_identifier_character(character) {
+            break;
+        }
+        start = previous;
+    }
+    u32::try_from(start).ok()
+}
+
+/// Returns whether `text` is one ECMAScript-style identifier (Unicode aware).
+fn is_identifier_text(text: &str) -> bool {
+    let mut characters = text.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    (first == '_' || first == '$' || first.is_alphabetic())
+        && characters
+            .all(|character| character == '_' || character == '$' || character.is_alphanumeric())
+}
+
+fn is_identifier_character(character: char) -> bool {
+    character == '_' || character == '$' || character.is_alphanumeric()
+}
+
+/// Returns the first identifier spelling in an expression prefix.
+fn first_identifier(prefix: &str) -> Option<&str> {
+    for (index, character) in prefix.char_indices() {
+        if !(character == '_' || character == '$' || character.is_alphabetic()) {
+            continue;
+        }
+        let end = prefix[index..]
+            .char_indices()
+            .find(|(_, candidate)| !is_identifier_character(*candidate))
+            .map_or(prefix.len(), |(relative, _)| index + relative);
+        return prefix.get(index..end);
+    }
+    None
+}
+
+/* ---------------------------------------------------------------------- roots */
+
+/// One data-root candidate from the script overlay.
+struct RootCandidate {
+    name: String,
+    detail: String,
+    documentation: String,
+}
+
+/// Root facts for one prepared view.
+struct RootFacts {
+    candidates: Vec<RootCandidate>,
+    reasons: Vec<String>,
+    /// True when every data/property/registration fact was read exactly.
+    overlay_complete: bool,
+    truncated: bool,
+}
+
+/// Outcome of a root lookup.
+enum RootOutcome {
+    /// The script facts cannot answer this template at all.
+    Unsupported(String),
+    /// Root candidates plus any completeness reasons.
+    Facts(RootFacts),
+}
+
+/// Result of checking whether a member-access root is a known data field.
+pub(crate) enum MemberRoot {
+    /// The root is a declared data field, component property or behavior data.
+    Known,
+    /// The root is not declared and every overlay was read completely.
+    UnknownComplete,
+    /// The root is not declared but the overlays are incomplete.
+    UnknownIncomplete(String),
+    /// The script facts cannot answer this template.
+    Unavailable(String),
+}
+
+/// Answers a bare `{{ }}` / `{{ prefix }}` completion from the script overlay.
+pub(crate) fn root_completion(
+    provider: &dyn ViewProvider,
+    request: &CompletionRequest,
+    replace: SourceRange,
+) -> Result<CompletionResult, BackendError> {
+    let outcome = script_roots(provider, &request.context)?;
+    let facts = match outcome {
+        RootOutcome::Unsupported(reason) => return Ok(unsupported_completion(&reason)),
+        RootOutcome::Facts(facts) => facts,
+    };
+    let items = facts
+        .candidates
+        .iter()
+        .take(MAX_COMPLETION_ITEMS)
+        .map(|candidate| CompletionItem {
+            label: candidate.name.clone(),
+            kind: CompletionItemKind::Property,
+            detail: (!candidate.detail.is_empty()).then(|| candidate.detail.clone()),
+            // Script `JSDoc` is real evidence, unlike the pinned completion
+            // API which exposes no documentation.
+            documentation: (!candidate.documentation.is_empty())
+                .then(|| candidate.documentation.clone()),
+            insert_text: candidate.name.clone(),
+            insert_text_format: InsertTextFormat::PlainText,
+            replace,
+            sort_text: Some(format!("0_{}", candidate.name)),
+            filter_text: Some(candidate.name.clone()),
+        })
+        .collect();
+    let status = if facts.reasons.is_empty() {
+        CapabilityStatus::Supported
+    } else {
+        CapabilityStatus::Partial {
+            reason: bounded_reason(&facts.reasons.join("; ")),
+        }
+    };
+    Ok(CompletionResult {
+        items,
+        status,
+        truncated: facts.truncated,
+    })
+}
+
+/// Checks one member-access root against the script overlay.
+pub(crate) fn member_root(
+    provider: &dyn ViewProvider,
+    request: &CompletionRequest,
+    root: &str,
+) -> Result<MemberRoot, BackendError> {
+    match script_roots(provider, &request.context)? {
+        RootOutcome::Unsupported(reason) => Ok(MemberRoot::Unavailable(reason)),
+        RootOutcome::Facts(facts) => {
+            if facts
+                .candidates
+                .iter()
+                .any(|candidate| candidate.name == root)
+            {
+                return Ok(MemberRoot::Known);
+            }
+            if facts.overlay_complete {
+                return Ok(MemberRoot::UnknownComplete);
+            }
+            let mut reasons = facts.reasons;
+            reasons.push(format!(
+                "members of `{root}` cannot be resolved from an incomplete script data overlay"
+            ));
+            Ok(MemberRoot::UnknownIncomplete(bounded_reason(
+                &reasons.join("; "),
+            )))
+        }
+    }
+}
+
+/// Reads the Rust script overlay for one prepared view.
+#[allow(clippy::too_many_lines, reason = "one linear script-fact pipeline")]
+fn script_roots(
+    provider: &dyn ViewProvider,
+    context: &RequestContext,
+) -> Result<RootOutcome, BackendError> {
+    let view = prepare_view(provider, context.source())?;
+    let Some(target) = view.target.as_ref() else {
+        return Ok(RootOutcome::Unsupported(
+            "the template has no page or component script".to_owned(),
+        ));
+    };
+    let script_path = target.script.as_str();
+    if !view
+        .files
+        .iter()
+        .any(|file| file.path.as_str() == script_path)
+    {
+        return Err(BackendError::Unavailable(
+            "the owning script is missing from the prepared view".to_owned(),
+        ));
+    }
+    let mut files = Vec::with_capacity(view.files.len());
+    let mut dropped = 0_usize;
+    for prepared in view.files.iter() {
+        match SourceFile::new(
+            prepared.path.as_str(),
+            prepared.text.to_string(),
+            DocumentRevision::new(prepared.source_revision),
+        ) {
+            Ok(file) => files.push(file),
+            Err(error) => {
+                if prepared.path.as_str() == script_path {
+                    return Err(input_error(&error));
+                }
+                dropped = dropped.saturating_add(1);
+            }
+        }
+    }
+    let root = ProjectRoot::new(view.project_root.to_str().ok_or_else(|| {
+        BackendError::Unavailable("the project root is not valid UTF-8".to_owned())
+    })?)
+    .map_err(|error| input_error(&error))?;
+    let input = AnalysisInput::new(
+        ProjectKey::new(context.file().project().as_str()),
+        root,
+        SnapshotRevision::new(1),
+        files,
+    )
+    .map_err(|error| input_error(&error))?;
+    let kind = match target.owner {
+        RootKind::Page => RegistrationKind::Page,
+        RootKind::Component => RegistrationKind::Component,
+    };
+    let Ok(analysis) = analyze_script(&ScriptRequest::new(&input, script_path, kind)) else {
+        return Ok(RootOutcome::Unsupported(
+            "script registration facts are unavailable for this template".to_owned(),
+        ));
+    };
+
+    let mut reasons = Vec::new();
+    if let Some(reason) = view.status_hint.as_ref().and_then(CapabilityStatus::reason) {
+        reasons.push(reason.to_owned());
+    }
+    if !view.source_complete {
+        reasons.push("the prepared source file list is incomplete".to_owned());
+    }
+    if dropped > 0 {
+        reasons.push(format!("{dropped} script files could not be represented"));
+    }
+    if analysis.registration.selected.is_none() {
+        let reason = analysis
+            .data
+            .problems
+            .first()
+            .or_else(|| analysis.properties.problems.first())
+            .cloned()
+            .unwrap_or_else(|| "no statically readable page or component registration".to_owned());
+        return Ok(RootOutcome::Unsupported(reason));
+    }
+    if let Some(reason) = analysis.data.status.reason() {
+        reasons.push(reason.to_owned());
+    }
+    if let Some(reason) = analysis.properties.status.reason() {
+        reasons.push(reason.to_owned());
+    }
+    if !analysis.registration.complete {
+        reasons.push("the selected registration is not a single top-level literal call".to_owned());
+    }
+
+    let mut candidates: Vec<RootCandidate> = Vec::new();
+    for field in &analysis.data.fields {
+        push_root_candidate(
+            &mut candidates,
+            &field.name,
+            &field.type_text,
+            &field.documentation,
+        );
+    }
+    for property in &analysis.properties.properties {
+        push_root_candidate(
+            &mut candidates,
+            &property.name,
+            &property.type_text,
+            &property.documentation,
+        );
+    }
+    candidates.sort_by(|left, right| left.name.cmp(&right.name));
+    let truncated = candidates.len() > MAX_COMPLETION_ITEMS;
+    if truncated {
+        candidates.truncate(MAX_COMPLETION_ITEMS);
+        reasons.push(format!(
+            "root candidates are truncated at {MAX_COMPLETION_ITEMS} entries"
+        ));
+    }
+    let hard_unsupported = matches!(
+        analysis.data.root,
+        DataRootKind::TypeReference | DataRootKind::Unsupported
+    );
+    if hard_unsupported && candidates.is_empty() {
+        let reason = if reasons.is_empty() {
+            "the script data root cannot be enumerated".to_owned()
+        } else {
+            bounded_reason(&reasons.join("; "))
+        };
+        return Ok(RootOutcome::Unsupported(reason));
+    }
+    let overlay_complete =
+        analysis.data.complete && analysis.properties.complete && analysis.registration.complete;
+    Ok(RootOutcome::Facts(RootFacts {
+        candidates,
+        reasons,
+        overlay_complete,
+        truncated,
+    }))
+}
+
+fn push_root_candidate(
+    candidates: &mut Vec<RootCandidate>,
+    name: &str,
+    detail: &str,
+    documentation: &str,
+) {
+    if !is_identifier_text(name) || candidates.iter().any(|existing| existing.name == name) {
+        return;
+    }
+    candidates.push(RootCandidate {
+        name: name.to_owned(),
+        detail: detail.to_owned(),
+        documentation: documentation.to_owned(),
+    });
+}
+
+/// Bounds a stable degradation reason for a status.
+fn bounded_reason(reason: &str) -> String {
+    const LIMIT: usize = 512;
+    if reason.len() <= LIMIT {
+        return reason.to_owned();
+    }
+    let mut end = LIMIT;
+    while !reason.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &reason[..end])
+}
+
+/// Maps one supported member-access prefix to its first data root.
+pub(crate) fn member_prefix_root(prefix: &str) -> Option<&str> {
+    first_identifier(prefix)
 }
