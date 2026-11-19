@@ -665,6 +665,11 @@ LEDGER_STATE_JSON=$(
 )
 
 GENERATED_AT=${P7_FREEZE_NOW:-$(date +%Y-%m-%dT%H:%M:%S%:z)}
+if git -C "$REPO_ROOT" rev-parse -q --verify refs/tags/p7-pre-delete >/dev/null; then
+  TAG_CREATED=true
+else
+  TAG_CREATED=false
+fi
 
 JSON=$(
   jq -n \
@@ -674,6 +679,7 @@ JSON=$(
     --arg branch "$BRANCH" \
     --arg requested_head "$REQUESTED_HEAD" \
     --argjson frozen_paths_clean "$([[ -z $FROZEN_STATUS ]] && printf true || printf false)" \
+    --argjson tag_created "$TAG_CREATED" \
     --argjson trees "$TREES_JSON" \
     --argjson gates "$GATES_JSON" \
     --argjson silent "$SILENT_JSON" \
@@ -761,7 +767,7 @@ JSON=$(
         v1_write_paths_present:true,
         p7_0:{
           freeze_inventory:true,
-          tag_created:false,
+          tag_created:$tag_created,
           legacy_node_tests_manifest:false,
           ledger_reads_archive_manifest:true,
           fixture_hash_archive_binding:true,

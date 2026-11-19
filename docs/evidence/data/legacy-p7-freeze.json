@@ -1,6 +1,6 @@
 {
   "schema": "wxml-tsgo-p7-freeze/1",
-  "generated_at": "2026-11-20T07:05:38+08:00",
+  "generated_at": "2026-11-20T07:07:09+08:00",
   "generated_by": "scripts/p7-freeze.sh",
   "algorithm": {
     "name": "p7-freeze-tree-v1",
@@ -16,8 +16,8 @@
   },
   "commit": {
     "requested_head": "2ce462667b0309046829e8a7c29657fb968ae4b1",
-    "head": "2ce462667b0309046829e8a7c29657fb968ae4b1",
-    "head_subject": "test(p7): close out legacy ledger with scoped waiver",
+    "head": "8bda3064c3766d506d9e91aae1a7210f08618026",
+    "head_subject": "test(p7): refresh pre-delete freeze baseline",
     "branch": "tsgo/migration",
     "frozen_paths_clean": true,
     "frozen_path_diff_requested_to_head": "empty (verified with git diff --quiet)"
@@ -2375,7 +2375,7 @@
     "v1_write_paths_present": true,
     "p7_0": {
       "freeze_inventory": true,
-      "tag_created": false,
+      "tag_created": true,
       "legacy_node_tests_manifest": false,
       "ledger_reads_archive_manifest": true,
       "fixture_hash_archive_binding": true,
