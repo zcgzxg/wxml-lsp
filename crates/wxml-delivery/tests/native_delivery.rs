@@ -15,6 +15,9 @@
 
 mod support;
 
+#[path = "support/typings_payload.rs"]
+mod typings_payload;
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,12 +33,12 @@ use wxml_delivery::manifest_v2::{
     ENGINE_DISTRIBUTION, ENGINE_DISTRIBUTION_FILE_COUNT, ENGINE_DISTRIBUTION_INTEGRITY,
     ENGINE_DISTRIBUTION_SHA256, ENGINE_DISTRIBUTION_SIZE, ENGINE_DISTRIBUTION_UNPACKED_SIZE,
     ENGINE_LICENSE, ENGINE_PROBE_PREFIX, ENGINE_SOURCE_COMMIT, ENGINE_VERSION, EngineInfo,
-    EngineProbe, ExpectedManifestV2, IndexV2, MANIFEST_SCHEMA_V2, MINIPROGRAM_TYPINGS_FILE_COUNT,
-    MINIPROGRAM_TYPINGS_LICENSE, MINIPROGRAM_TYPINGS_ROOT, MINIPROGRAM_TYPINGS_VERSION, ManifestV2,
-    NATIVE_PACKAGE_PLATFORM, NativeArtifactKind, NativeBinaryArtifact, ReleaseV2,
-    STANDARD_LIB_ASSET, STANDARD_LIB_FILE_COUNT, STANDARD_LIB_INCLUDE, TypeAsset,
-    compute_type_asset_bundle, read_index_v2, read_legacy_manifest, read_manifest_schema,
-    read_manifest_v2,
+    EngineProbe, ExpectedManifestV2, IndexV2, MANIFEST_SCHEMA_V2, MINIPROGRAM_TYPINGS_ASSET,
+    MINIPROGRAM_TYPINGS_FILE_COUNT, MINIPROGRAM_TYPINGS_LICENSE, MINIPROGRAM_TYPINGS_ROOT,
+    MINIPROGRAM_TYPINGS_VERSION, ManifestV2, NATIVE_PACKAGE_PLATFORM, NativeArtifactKind,
+    NativeBinaryArtifact, ReleaseV2, STANDARD_LIB_ASSET, STANDARD_LIB_FILE_COUNT,
+    STANDARD_LIB_INCLUDE, TypeAsset, compute_type_asset_bundle, read_index_v2,
+    read_legacy_manifest, read_manifest_schema, read_manifest_v2,
 };
 use wxml_delivery::native_install::{
     CommandEngineProbe, FailPoint, InstallHooks, NativeEngineProbe, NativeInstallOutcome, NoHooks,
@@ -197,23 +200,7 @@ fn build_fixture_with_scripts(
             0o644,
         );
     }
-    builder.file(
-        "typings/miniprogram-api-typings/index.d.ts",
-        b"// miniprogram index\n",
-        0o644,
-    );
-    builder.file(
-        "typings/miniprogram-api-typings/LICENSE",
-        b"MIT fixture\n",
-        0o644,
-    );
-    for index in 0..24 {
-        builder.file(
-            &format!("typings/miniprogram-api-typings/types/t{index:02}.d.ts"),
-            format!("// typings {index}\n").as_bytes(),
-            0o644,
-        );
-    }
+    typings_payload::write_payload(|path, bytes| builder.file(path, bytes, 0o644));
     builder.file("zed-extension/extension.wasm", b"\0asm-fixture", 0o644);
     builder.file(
         "zed-extension/extension.toml",
@@ -279,7 +266,7 @@ fn build_fixture_with_scripts(
                 license_files: vec!["engine/LICENSE".to_owned(), "engine/NOTICE.txt".to_owned()],
             },
             TypeAsset {
-                name: wxml_delivery::manifest_v2::MINIPROGRAM_TYPINGS_ASSET.to_owned(),
+                name: MINIPROGRAM_TYPINGS_ASSET.to_owned(),
                 version: MINIPROGRAM_TYPINGS_VERSION.to_owned(),
                 license: MINIPROGRAM_TYPINGS_LICENSE.to_owned(),
                 root: MINIPROGRAM_TYPINGS_ROOT.to_owned(),
@@ -610,6 +597,163 @@ fn node_runtime_payloads_and_extra_executables_are_rejected() {
         mode: "0644".to_owned(),
     });
     assert!(manifest.validate(expected(VERSION_1)).is_err());
+}
+
+#[test]
+fn hand_crafted_manifest_rejects_excluded_typings_payload_paths() {
+    let base = TempDir::new("native-typings-layout");
+    for (label, relative, needle) in [
+        (
+            "readme-en",
+            "README-en.md",
+            "not part of the frozen miniprogram typings payload",
+        ),
+        (
+            "readme-en-case",
+            "README-EN.MD",
+            "not part of the frozen miniprogram typings payload",
+        ),
+        (
+            "typings-json",
+            "typings.json",
+            "not part of the frozen miniprogram typings payload",
+        ),
+        (
+            "typings-json-case",
+            "Typings.JSON",
+            "not part of the frozen miniprogram typings payload",
+        ),
+        (
+            "package-json",
+            "package.json",
+            "only `engine/package.json` metadata is allowed",
+        ),
+        (
+            "extra-type",
+            "types/extra.d.ts",
+            "not part of the frozen miniprogram typings payload",
+        ),
+    ] {
+        let root = base.path().join(label);
+        let mut manifest = build_fixture(&root, VERSION_1);
+        manifest.files.push(FileEntry {
+            path: format!("{MINIPROGRAM_TYPINGS_ROOT}/{relative}"),
+            sha256: "0".repeat(64),
+            size: 1,
+            mode: "0644".to_owned(),
+        });
+        let error = manifest.validate(expected(VERSION_1)).unwrap_err();
+        assert!(
+            error.to_string().contains(needle),
+            "{label}: expected `{needle}` in `{error}`"
+        );
+    }
+
+    for (label, path) in [
+        ("typings-parent-readme", "typings/README-en.md"),
+        ("typings-parent-json", "typings/typings.json"),
+    ] {
+        let root = base.path().join(label);
+        let mut manifest = build_fixture(&root, VERSION_1);
+        manifest.files.push(FileEntry {
+            path: path.to_owned(),
+            sha256: "0".repeat(64),
+            size: 1,
+            mode: "0644".to_owned(),
+        });
+        let error = manifest.validate(expected(VERSION_1)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("not part of the frozen miniprogram typings payload"),
+            "{label}: {error}"
+        );
+    }
+}
+
+#[test]
+fn hand_crafted_manifest_rejects_a_substituted_23_file_typings_payload() {
+    let base = TempDir::new("native-typings-substitute");
+    let mut manifest = build_fixture(&base.path().join("digest"), VERSION_1);
+    let entry = manifest
+        .files
+        .iter_mut()
+        .find(|file| file.path.ends_with("/index.d.ts"))
+        .unwrap();
+    entry.sha256 = "0".repeat(64);
+    let bundle = compute_type_asset_bundle(
+        &manifest.files,
+        MINIPROGRAM_TYPINGS_ROOT,
+        &["**".to_owned()],
+    )
+    .unwrap();
+    let asset = manifest
+        .type_assets
+        .iter_mut()
+        .find(|asset| asset.name == MINIPROGRAM_TYPINGS_ASSET)
+        .unwrap();
+    asset.sha256 = bundle.sha256;
+    asset.file_count = bundle.file_count;
+    let error = manifest.validate(expected(VERSION_1)).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("payload digest does not match the frozen bundle digest"),
+        "{error}"
+    );
+
+    let mut manifest = build_fixture(&base.path().join("bytes"), VERSION_1);
+    let license = format!("{MINIPROGRAM_TYPINGS_ROOT}/LICENSE");
+    let entry = manifest
+        .files
+        .iter_mut()
+        .find(|file| file.path == license)
+        .unwrap();
+    entry.size += 1;
+    let bundle = compute_type_asset_bundle(
+        &manifest.files,
+        MINIPROGRAM_TYPINGS_ROOT,
+        &["**".to_owned()],
+    )
+    .unwrap();
+    let asset = manifest
+        .type_assets
+        .iter_mut()
+        .find(|asset| asset.name == MINIPROGRAM_TYPINGS_ASSET)
+        .unwrap();
+    asset.sha256 = bundle.sha256;
+    asset.file_count = bundle.file_count;
+    let error = manifest.validate(expected(VERSION_1)).unwrap_err();
+    assert!(error.to_string().contains("payload total bytes"), "{error}");
+}
+
+#[test]
+fn verify_tree_rejects_a_hand_crafted_excluded_typings_entry() {
+    let base = TempDir::new("native-typings-verify-layout");
+    let mut manifest = build_fixture(base.path(), VERSION_1);
+    let path = format!("{MINIPROGRAM_TYPINGS_ROOT}/README-en.md");
+    let bytes = b"English readme\n";
+    fs::write(base.path().join(&path), bytes).unwrap();
+    set_mode(&base.path().join(&path), 0o644).unwrap();
+    manifest.files.push(FileEntry {
+        path,
+        sha256: sha256_bytes(bytes),
+        size: u64::try_from(bytes.len()).unwrap(),
+        mode: "0644".to_owned(),
+    });
+    atomic_write(
+        &base.path().join("manifest.json"),
+        &manifest.to_json().unwrap(),
+        0o644,
+    )
+    .unwrap();
+    let error = verify_tree_v2(base.path(), expected(VERSION_1)).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("not part of the frozen miniprogram typings payload"),
+        "{error}"
+    );
 }
 
 #[test]

@@ -80,8 +80,97 @@ pub const MINIPROGRAM_TYPINGS_VERSION: &str = "5.3.1";
 pub const MINIPROGRAM_TYPINGS_LICENSE: &str = "MIT";
 /// Required miniprogram typings root.
 pub const MINIPROGRAM_TYPINGS_ROOT: &str = "typings/miniprogram-api-typings";
-/// Required miniprogram typings file count.
-pub const MINIPROGRAM_TYPINGS_FILE_COUNT: u64 = 26;
+/// Required miniprogram typings payload file count.
+///
+/// The upstream `miniprogram-api-typings@5.3.1` tree has 26 files; the delivery
+/// payload keeps 23 of them and excludes `package.json` (npm metadata),
+/// `README-en.md` (English translation) and `typings.json` (legacy `typings`
+/// metadata). This is the payload count, not the 20-file runtime `.d.ts`
+/// closure pinned by the native backend.
+pub const MINIPROGRAM_TYPINGS_FILE_COUNT: u64 = 23;
+/// Upstream `miniprogram-api-typings@5.3.1` file count.
+pub const MINIPROGRAM_TYPINGS_UPSTREAM_FILE_COUNT: u64 = 26;
+/// Upstream `miniprogram-api-typings@5.3.1` unpacked byte count.
+pub const MINIPROGRAM_TYPINGS_UPSTREAM_TOTAL_BYTES: u64 = 2_552_052;
+/// Frozen delivery payload byte count (23 files, no excluded metadata).
+pub const MINIPROGRAM_TYPINGS_TOTAL_BYTES: u64 = 2_548_075;
+/// Frozen delivery payload bundle digest.
+///
+/// Algorithm: sorted `<sha256>  <root-relative path>\n` lines, then SHA-256.
+/// This is the 23-file payload identity, not the 20-file runtime `.d.ts`
+/// closure pinned by the native backend.
+pub const MINIPROGRAM_TYPINGS_BUNDLE_DIGEST: &str =
+    "ba3eb83410db79bd80727e9f38eef7cf0f0a3a3c7fde02f8d14467cf95bab46b";
+/// Files present upstream but excluded from the delivery payload.
+pub const MINIPROGRAM_TYPINGS_EXCLUDED_PATHS: &[&str] =
+    &["package.json", "README-en.md", "typings.json"];
+/// Exact root-relative allowlist of the frozen 23-file typings payload.
+///
+/// This is intentionally an exact list: a same-count substitute, a case
+/// variant or any extra file must fail the layout check even before the
+/// bundle digest is recomputed.
+pub const MINIPROGRAM_TYPINGS_PAYLOAD_PATHS: &[&str] = &[
+    "CHANGELOG.md",
+    "LICENSE",
+    "README.md",
+    "index.d.ts",
+    "types/index.d.ts",
+    "types/wx/index.d.ts",
+    "types/wx/lib.wx.api.d.ts",
+    "types/wx/lib.wx.app.d.ts",
+    "types/wx/lib.wx.behavior.d.ts",
+    "types/wx/lib.wx.canvas.d.ts",
+    "types/wx/lib.wx.cloud.d.ts",
+    "types/wx/lib.wx.component.d.ts",
+    "types/wx/lib.wx.event.d.ts",
+    "types/wx/lib.wx.glass-easel.behavior.d.ts",
+    "types/wx/lib.wx.glass-easel.component.d.ts",
+    "types/wx/lib.wx.glass-easel.d.ts",
+    "types/wx/lib.wx.glass-easel.trait-behavior.d.ts",
+    "types/wx/lib.wx.glass-easel.utils.d.ts",
+    "types/wx/lib.wx.page.d.ts",
+    "types/wx/lib.wx.phys3D.d.ts",
+    "types/wx/lib.wx.skyline.d.ts",
+    "types/wx/lib.wx.wasm.d.ts",
+    "types/wx/lib.wx.xr-frame.d.ts",
+];
+
+/// Returns whether `path` is inside the miniprogram typings root.
+#[must_use]
+pub fn is_miniprogram_typings_path(path: &str) -> bool {
+    path == MINIPROGRAM_TYPINGS_ROOT
+        || path
+            .strip_prefix(MINIPROGRAM_TYPINGS_ROOT)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Returns whether a package-relative path is allowed by the frozen typings
+/// payload layout.
+///
+/// Paths outside the `typings/` subtree return `true`; paths under `typings/`
+/// but outside the frozen 23-file root return `false` so excluded names cannot
+/// be re-introduced at a parent path. Callers that need the full package
+/// layout apply their own rules for other roots.
+#[must_use]
+pub fn is_allowed_miniprogram_typings_path(path: &str) -> bool {
+    let parent = MINIPROGRAM_TYPINGS_ROOT
+        .split_once('/')
+        .map_or(MINIPROGRAM_TYPINGS_ROOT, |(parent, _)| parent);
+    if is_miniprogram_typings_path(path) {
+        let relative = path
+            .strip_prefix(MINIPROGRAM_TYPINGS_ROOT)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .unwrap_or_default();
+        return MINIPROGRAM_TYPINGS_PAYLOAD_PATHS.contains(&relative);
+    }
+    // Anything else below `typings/` is outside the frozen layout, including
+    // `typings/README-en.md` or `typings/typings.json`.
+    !(path == parent
+        || path
+            .strip_prefix(parent)
+            .is_some_and(|rest| rest.starts_with('/')))
+}
+
 /// Native engine RPC/frame protocol versions this build supports.
 pub const SUPPORTED_NATIVE_PROTOCOL_VERSIONS: &[u64] = &[2];
 /// Executable paths allowed to carry mode `0755`.
@@ -472,6 +561,12 @@ impl ManifestV2 {
                     file.path
                 )));
             }
+            if !is_allowed_miniprogram_typings_path(&file.path) {
+                return Err(DeliveryError::InvalidPackage(format!(
+                    "payload `{}` is not part of the frozen miniprogram typings payload",
+                    file.path
+                )));
+            }
             if mode == 0o755 && !ALLOWED_EXECUTABLES.contains(&file.path.as_str()) {
                 return Err(DeliveryError::InvalidPackage(format!(
                     "payload `{}` is executable but not in the allowlist",
@@ -540,6 +635,22 @@ impl ManifestV2 {
                     asset.name
                 )));
             }
+            if asset.name == MINIPROGRAM_TYPINGS_ASSET
+                && bundle.total_bytes != MINIPROGRAM_TYPINGS_TOTAL_BYTES
+            {
+                return Err(DeliveryError::Integrity(format!(
+                    "type asset `{}` payload total bytes {} do not match the frozen {}",
+                    asset.name, bundle.total_bytes, MINIPROGRAM_TYPINGS_TOTAL_BYTES
+                )));
+            }
+            if asset.name == MINIPROGRAM_TYPINGS_ASSET
+                && bundle.sha256 != MINIPROGRAM_TYPINGS_BUNDLE_DIGEST
+            {
+                return Err(DeliveryError::Integrity(format!(
+                    "type asset `{}` payload digest does not match the frozen bundle digest",
+                    asset.name
+                )));
+            }
             if !names.insert(asset.name.as_str()) {
                 return Err(DeliveryError::InvalidPackage(format!(
                     "duplicate type asset `{}`",
@@ -585,6 +696,7 @@ impl ManifestV2 {
             || typings.root != MINIPROGRAM_TYPINGS_ROOT
             || typings.include != ["**"]
             || typings.file_count != MINIPROGRAM_TYPINGS_FILE_COUNT
+            || typings.sha256 != MINIPROGRAM_TYPINGS_BUNDLE_DIGEST
             || typings.license_files != ["typings/miniprogram-api-typings/LICENSE"]
         {
             return Err(DeliveryError::InvalidPackage(
@@ -1009,6 +1121,8 @@ mod tests {
             "yarn.lock",
             "pnpm-lock.yaml",
             "typings/package.json",
+            "typings/miniprogram-api-typings/package.json",
+            "typings/miniprogram-api-typings/Package.JSON",
         ] {
             assert!(
                 forbidden_runtime_path(path).is_some(),
@@ -1017,6 +1131,68 @@ mod tests {
         }
         assert!(forbidden_runtime_path("engine/package.json").is_none());
         assert!(forbidden_runtime_path("engine/lib/lib.d.ts").is_none());
+    }
+
+    #[test]
+    fn typings_payload_allowlist_is_exact_and_matches_upstream_arithmetic() {
+        assert_eq!(
+            u64::try_from(MINIPROGRAM_TYPINGS_PAYLOAD_PATHS.len()).unwrap(),
+            MINIPROGRAM_TYPINGS_FILE_COUNT
+        );
+        assert_eq!(
+            MINIPROGRAM_TYPINGS_UPSTREAM_FILE_COUNT,
+            MINIPROGRAM_TYPINGS_FILE_COUNT
+                + u64::try_from(MINIPROGRAM_TYPINGS_EXCLUDED_PATHS.len()).unwrap()
+        );
+        let unique: BTreeSet<&str> = MINIPROGRAM_TYPINGS_PAYLOAD_PATHS.iter().copied().collect();
+        assert_eq!(unique.len(), MINIPROGRAM_TYPINGS_PAYLOAD_PATHS.len());
+        for excluded in MINIPROGRAM_TYPINGS_EXCLUDED_PATHS {
+            assert!(!MINIPROGRAM_TYPINGS_PAYLOAD_PATHS.contains(excluded));
+        }
+        for relative in MINIPROGRAM_TYPINGS_PAYLOAD_PATHS {
+            assert!(is_allowed_miniprogram_typings_path(&format!(
+                "{MINIPROGRAM_TYPINGS_ROOT}/{relative}"
+            )));
+        }
+    }
+
+    #[test]
+    fn typings_layout_rejects_excluded_case_variants_and_siblings() {
+        for relative in [
+            "README-en.md",
+            "README-EN.MD",
+            "typings.json",
+            "Typings.JSON",
+            "types/extra.d.ts",
+            "Types/index.d.ts",
+            "package.json",
+        ] {
+            let path = format!("{MINIPROGRAM_TYPINGS_ROOT}/{relative}");
+            assert!(
+                !is_allowed_miniprogram_typings_path(&path),
+                "path must be rejected: {path}"
+            );
+        }
+        for path in [
+            "typings/README-en.md",
+            "typings/TYPINGS.JSON",
+            "typings/miniprogram-api-typings-extra/index.d.ts",
+        ] {
+            assert!(
+                !is_allowed_miniprogram_typings_path(path),
+                "sibling path must be rejected: {path}"
+            );
+        }
+        assert!(!is_allowed_miniprogram_typings_path(
+            MINIPROGRAM_TYPINGS_ROOT
+        ));
+        assert!(is_allowed_miniprogram_typings_path("engine/lib/lib.d.ts"));
+        assert!(!is_miniprogram_typings_path(
+            "typings/miniprogram-api-typings-extra/x.d.ts"
+        ));
+        assert!(is_miniprogram_typings_path(
+            "typings/miniprogram-api-typings/types/index.d.ts"
+        ));
     }
 
     #[test]

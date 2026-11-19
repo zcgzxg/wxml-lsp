@@ -18,6 +18,9 @@ use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+#[path = "../support/typings_payload.rs"]
+mod typings_payload;
+
 use serde_json::{Value, json};
 use wxml_delivery::archive::{ExtractReport, create_tar_gz, extract_tar_gz};
 use wxml_delivery::index_v2::{IndexV2, ReleaseV2};
@@ -374,14 +377,16 @@ const fn expected(version: &str) -> ExpectedManifestV2<'_> {
 /// Builds a complete schema v2 package around the real upstream engine.
 ///
 /// `bin/`, `typings/` and `zed-extension/` are test fixtures; only `engine/`
-/// comes from the pinned tarball. The provenance file records that fact.
+/// comes from the pinned tarball. The typings payload is the checked-in
+/// 5.3.1 fixture, not tarball provenance. The provenance file records the
+/// limited scope.
 pub fn build_v2_tree(tree: &Path, upstream: &Path) -> Fixture {
     let mut builder = TreeBuilder::new(tree);
     copy_engine_payload(&mut builder, upstream);
     let provenance = provenance_bytes(&builder);
     builder.file("provenance.json", &provenance, 0o644);
     write_fixture_entry_points(&mut builder);
-    write_synthetic_typings(&mut builder);
+    write_pinned_typings(&mut builder);
     write_zed_and_licenses(&mut builder);
     let manifest = manifest_for(&builder);
     write_manifest_and_checksums(tree, &manifest);
@@ -459,8 +464,9 @@ fn provenance_bytes(builder: &TreeBuilder) -> Vec<u8> {
         "packageVersion": PACKAGE_VERSION,
         "kind": "test-harness-real-engine",
         "note": "Synthetic schema v2 package built by crates/wxml-delivery/tests/real_asset.rs; \
-                 only engine/ comes from the pinned upstream tarball, bin/ and typings/ are test \
-                 fixtures, and this is not a production release.",
+                 only engine/ comes from the pinned upstream tarball, typings/ is the checked-in \
+                 5.3.1 payload fixture, bin/ is a test fixture, and this is not a production \
+                 release.",
         "engine": engine_identity_json(builder),
         "engineFiles": engine_files,
     });
@@ -484,24 +490,8 @@ fn write_fixture_entry_points(builder: &mut TreeBuilder) {
     );
 }
 
-fn write_synthetic_typings(builder: &mut TreeBuilder) {
-    builder.file(
-        "typings/miniprogram-api-typings/index.d.ts",
-        b"// synthetic miniprogram-api-typings fixture\n",
-        0o644,
-    );
-    builder.file(
-        "typings/miniprogram-api-typings/LICENSE",
-        b"MIT synthetic fixture\n",
-        0o644,
-    );
-    for index in 0..24 {
-        builder.file(
-            &format!("typings/miniprogram-api-typings/types/t{index:02}.d.ts"),
-            format!("// synthetic typings fixture {index}\n").as_bytes(),
-            0o644,
-        );
-    }
+fn write_pinned_typings(builder: &mut TreeBuilder) {
+    typings_payload::write_payload(|path, bytes| builder.file(path, bytes, 0o644));
 }
 
 fn write_zed_and_licenses(builder: &mut TreeBuilder) {
@@ -516,7 +506,7 @@ fn write_zed_and_licenses(builder: &mut TreeBuilder) {
         b"# Third-party licenses (test fixture)\n\n\
           - TypeScript native engine: Apache-2.0; see `engine/LICENSE` and `engine/NOTICE.txt`.\n\
           - miniprogram-api-typings: MIT; the files under `typings/miniprogram-api-typings/`\n\
-            are synthetic fixtures, not the published package.\n",
+            are the checked-in frozen payload fixture, not tarball provenance.\n",
         0o644,
     );
 }

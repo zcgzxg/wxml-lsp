@@ -1,9 +1,10 @@
 //! Fixture-level integration tests for the deterministic schema v2 packager.
 //!
-//! Structural and negative tests use a synthetic tree. Positive builds require
-//! an extracted pinned engine supplied through `TSGO_NATIVE_ENGINE_DIR`; the
-//! packager rejects any other `engine/lib/tsc` bytes. Nothing is downloaded and
-//! no Node-family process is executed.
+//! Structural and negative tests use a synthetic engine plus the checked-in
+//! 23-file typings payload fixture. Positive builds require an extracted pinned
+//! engine supplied through `TSGO_NATIVE_ENGINE_DIR`; the packager rejects any
+//! other `engine/lib/tsc` bytes. Nothing is downloaded and no Node-family
+//! process is executed.
 
 #![allow(
     clippy::expect_used,
@@ -15,6 +16,9 @@
 )]
 
 mod support;
+
+#[path = "support/typings_payload.rs"]
+mod typings_payload;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -154,23 +158,7 @@ impl NativeTree {
             format!("#!/bin/sh\nprintf 'wxml-lsp-install {version}\\n'\n").as_bytes(),
             0o755,
         );
-        self.write(
-            "typings/miniprogram-api-typings/index.d.ts",
-            b"// miniprogram index\n",
-            0o644,
-        );
-        self.write(
-            "typings/miniprogram-api-typings/LICENSE",
-            b"MIT fixture\n",
-            0o644,
-        );
-        for index in 0..24 {
-            self.write(
-                &format!("typings/miniprogram-api-typings/types/t{index:02}.d.ts"),
-                format!("// typings {index}\n").as_bytes(),
-                0o644,
-            );
-        }
+        typings_payload::write_payload(|path, bytes| self.write(path, bytes, 0o644));
         self.write("zed-extension/extension.wasm", b"\0asm-fixture", 0o644);
         self.write(
             "zed-extension/extension.toml",
@@ -536,6 +524,46 @@ fn rejects_node_runtime_and_unexpected_payloads() {
         ("bin/helper.JS", b"module.exports = 1;\n", "javascript"),
         ("Package.JSON", b"{}\n", "package.json"),
         (
+            "typings/miniprogram-api-typings/package.json",
+            b"{}\n",
+            "only `engine/package.json` metadata is allowed",
+        ),
+        (
+            "typings/miniprogram-api-typings/PACKAGE.JSON",
+            b"{}\n",
+            "only `engine/package.json` metadata is allowed",
+        ),
+        (
+            "typings/miniprogram-api-typings/README-en.md",
+            b"English readme\n",
+            "not part of the schema v2 package layout",
+        ),
+        (
+            "typings/miniprogram-api-typings/README-EN.MD",
+            b"English readme\n",
+            "not part of the schema v2 package layout",
+        ),
+        (
+            "typings/miniprogram-api-typings/typings.json",
+            b"{\"main\":\"index.d.ts\"}\n",
+            "not part of the schema v2 package layout",
+        ),
+        (
+            "typings/miniprogram-api-typings/Typings.JSON",
+            b"{\"main\":\"index.d.ts\"}\n",
+            "not part of the schema v2 package layout",
+        ),
+        (
+            "typings/README-en.md",
+            b"English readme\n",
+            "not part of the schema v2 package layout",
+        ),
+        (
+            "typings/typings.json",
+            b"{\"main\":\"index.d.ts\"}\n",
+            "not part of the schema v2 package layout",
+        ),
+        (
             "extra.txt",
             b"extra\n",
             "not part of the schema v2 package layout",
@@ -640,6 +668,35 @@ fn rejects_missing_required_payload() {
     };
     fs::remove_file(fixture.tree.path().join("engine/lib/lib.es2020.d.ts")).unwrap();
     build_error(&fixture.tree, fixture.base.path(), "exactly 116");
+}
+
+#[test]
+fn rejects_typings_count_and_layout_drift_in_a_pinned_tree() {
+    let Some(short) = pinned_fixture("native-package-typings-short") else {
+        return;
+    };
+    fs::remove_file(
+        short
+            .tree
+            .path()
+            .join("typings/miniprogram-api-typings/types/wx/lib.wx.page.d.ts"),
+    )
+    .unwrap();
+    build_error(&short.tree, short.base.path(), "exactly 23 files");
+
+    let Some(long) = pinned_fixture("native-package-typings-long") else {
+        return;
+    };
+    long.tree.write(
+        "typings/miniprogram-api-typings/types/wx/extra.d.ts",
+        b"// typings 21\n",
+        0o644,
+    );
+    build_error(
+        &long.tree,
+        long.base.path(),
+        "not part of the schema v2 package layout",
+    );
 }
 
 #[test]

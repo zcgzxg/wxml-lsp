@@ -14,6 +14,8 @@ pub const MAX_GLOB_WILDCARDS: usize = 64;
 pub struct TypeAssetBundle {
     /// Number of matched files.
     pub file_count: u64,
+    /// Total bytes of matched files.
+    pub total_bytes: u64,
     /// Bundle digest.
     pub sha256: String,
 }
@@ -209,6 +211,7 @@ pub fn compute_type_asset_bundle(
     }
     let prefix = format!("{root}/");
     let mut matched = Vec::new();
+    let mut total_bytes = 0_u64;
     for file in files {
         let Some(relative) = file.path.strip_prefix(&prefix) else {
             continue;
@@ -217,6 +220,9 @@ pub fn compute_type_asset_bundle(
             .iter()
             .any(|pattern| glob_matches(pattern, relative))
         {
+            total_bytes = total_bytes
+                .checked_add(file.size)
+                .ok_or_else(|| DeliveryError::SizeLimit("type asset bytes overflow".to_owned()))?;
             matched.push((file.path.as_str(), relative, file.sha256.as_str()));
         }
     }
@@ -232,6 +238,7 @@ pub fn compute_type_asset_bundle(
         .map_err(|_| DeliveryError::SizeLimit("type asset count overflows".to_owned()))?;
     Ok(TypeAssetBundle {
         file_count,
+        total_bytes,
         sha256: sha256_bytes(lines.as_bytes()),
     })
 }
@@ -280,4 +287,141 @@ mod tests {
     }
 
     const MAX_COMPONENTS: usize = MAX_PATH_COMPONENTS;
+
+    const TYPINGS_ROOT: &str = "typings/miniprogram-api-typings";
+
+    fn typings_entry(relative: &str) -> FileEntry {
+        let path = format!("{TYPINGS_ROOT}/{relative}");
+        FileEntry {
+            sha256: sha256_bytes(path.as_bytes()),
+            size: u64::try_from(path.len()).unwrap(),
+            path,
+            mode: "0644".to_owned(),
+        }
+    }
+
+    /// Synthetic entries for algorithm self-consistency only.
+    ///
+    /// The real frozen 23-file payload identity (`2_548_075` B and
+    /// `ba3eb83…`) is asserted in `tests/typings_payload.rs` and in the
+    /// packager/manifest unit tests that read the checked-in fixture. This
+    /// helper must not be mistaken for real payload evidence.
+    fn synthetic_typings_files() -> Vec<FileEntry> {
+        let mut files: Vec<FileEntry> = ["index.d.ts", "LICENSE", "README.md", "CHANGELOG.md"]
+            .into_iter()
+            .map(typings_entry)
+            .collect();
+        files.extend((0..19).map(|index| typings_entry(&format!("types/t{index:02}.d.ts"))));
+        files
+    }
+
+    fn standard_lib_files() -> Vec<FileEntry> {
+        let mut files: Vec<FileEntry> = ["lib.d.ts", "lib.es5.d.ts", "lib.es2020.d.ts"]
+            .into_iter()
+            .map(|relative| {
+                let path = format!("engine/lib/{relative}");
+                FileEntry {
+                    sha256: sha256_bytes(path.as_bytes()),
+                    size: u64::try_from(path.len()).unwrap(),
+                    path,
+                    mode: "0644".to_owned(),
+                }
+            })
+            .collect();
+        files.extend((0..113).map(|index| {
+            let path = format!("engine/lib/lib.f{index:03}.d.ts");
+            FileEntry {
+                sha256: sha256_bytes(path.as_bytes()),
+                size: u64::try_from(path.len()).unwrap(),
+                path,
+                mode: "0644".to_owned(),
+            }
+        }));
+        files
+    }
+
+    #[test]
+    fn typings_bundle_digest_is_stable_and_order_independent() {
+        let files = synthetic_typings_files();
+        let first = compute_type_asset_bundle(&files, TYPINGS_ROOT, &["**".to_owned()]).unwrap();
+        assert_eq!(first.file_count, 23);
+        // Synthetic algorithm golden, recomputed externally with byte-order
+        // (`LC_ALL=C`) sorting. It is not the real `ba3eb83…` payload digest.
+        assert_eq!(
+            first.sha256,
+            "55629c23ec43af0dc06565430fbb0968d94ac5e399597bfef923a77d6cdd77f6"
+        );
+
+        let mut reversed = files;
+        reversed.reverse();
+        let second =
+            compute_type_asset_bundle(&reversed, TYPINGS_ROOT, &["**".to_owned()]).unwrap();
+        assert_eq!(second, first);
+
+        let mut with_engine = reversed;
+        with_engine.push(FileEntry {
+            path: "engine/lib/lib.d.ts".to_owned(),
+            sha256: sha256_bytes(b"engine/lib/lib.d.ts"),
+            size: 19,
+            mode: "0644".to_owned(),
+        });
+        let third =
+            compute_type_asset_bundle(&with_engine, TYPINGS_ROOT, &["**".to_owned()]).unwrap();
+        assert_eq!(
+            third, first,
+            "engine files must not enter the typings bundle"
+        );
+    }
+
+    #[test]
+    fn bundle_digests_keep_stdlib_typings_and_runtime_spaces_distinct() {
+        let payload = synthetic_typings_files();
+        let payload_bundle =
+            compute_type_asset_bundle(&payload, TYPINGS_ROOT, &["**".to_owned()]).unwrap();
+        let runtime_bundle =
+            compute_type_asset_bundle(&payload, TYPINGS_ROOT, &["**/*.d.ts".to_owned()]).unwrap();
+
+        let mut upstream = payload;
+        upstream.extend(
+            ["package.json", "README-en.md", "typings.json"]
+                .into_iter()
+                .map(typings_entry),
+        );
+        let upstream_bundle =
+            compute_type_asset_bundle(&upstream, TYPINGS_ROOT, &["**".to_owned()]).unwrap();
+
+        let stdlib = compute_type_asset_bundle(
+            &standard_lib_files(),
+            "engine/lib",
+            &["lib*.d.ts".to_owned()],
+        )
+        .unwrap();
+
+        assert_eq!(payload_bundle.file_count, 23);
+        assert_eq!(runtime_bundle.file_count, 20);
+        assert_eq!(upstream_bundle.file_count, 26);
+        assert_eq!(stdlib.file_count, 116);
+
+        assert_eq!(
+            payload_bundle.sha256,
+            "55629c23ec43af0dc06565430fbb0968d94ac5e399597bfef923a77d6cdd77f6"
+        );
+        assert_eq!(
+            runtime_bundle.sha256,
+            "0ac21115f52ea45a3ad2c6d4eb68cb878096c076d235937bbc6a84e31a2ecf33"
+        );
+        assert_eq!(
+            upstream_bundle.sha256,
+            "04eb38244a06699ab21d92bb4c45ebeb16bf3f8f621c73c426de2a36287b087a"
+        );
+        assert_eq!(
+            stdlib.sha256,
+            "af8fa0a17ee6945322dee9b6e098c315f17dd09afd5f08829cad2cf079a45655"
+        );
+
+        assert_ne!(stdlib.sha256, payload_bundle.sha256);
+        assert_ne!(payload_bundle.sha256, runtime_bundle.sha256);
+        assert_ne!(payload_bundle.sha256, upstream_bundle.sha256);
+        assert_ne!(runtime_bundle.sha256, upstream_bundle.sha256);
+    }
 }

@@ -20,11 +20,13 @@ use crate::manifest_v2::{
     ENGINE_DISTRIBUTION_SIZE, ENGINE_DISTRIBUTION_UNPACKED_SIZE, ENGINE_DISTRIBUTION_URL,
     ENGINE_LICENSE, ENGINE_NAME, ENGINE_PROBE_PREFIX, ENGINE_SOURCE_COMMIT, ENGINE_VERSION,
     EngineInfo, EngineProbe, ExpectedManifestV2, MANIFEST_SCHEMA_V2, MAX_INSTALLER_SCHEMA,
-    MINIPROGRAM_TYPINGS_ASSET, MINIPROGRAM_TYPINGS_FILE_COUNT, MINIPROGRAM_TYPINGS_LICENSE,
-    MINIPROGRAM_TYPINGS_ROOT, MINIPROGRAM_TYPINGS_VERSION, ManifestV2, NATIVE_PACKAGE_PLATFORM,
-    NativeArtifactKind, NativeBinaryArtifact, REQUIRED_ENGINE_LICENSE_FILES, STANDARD_LIB_ASSET,
+    MINIPROGRAM_TYPINGS_ASSET, MINIPROGRAM_TYPINGS_BUNDLE_DIGEST, MINIPROGRAM_TYPINGS_FILE_COUNT,
+    MINIPROGRAM_TYPINGS_LICENSE, MINIPROGRAM_TYPINGS_ROOT, MINIPROGRAM_TYPINGS_TOTAL_BYTES,
+    MINIPROGRAM_TYPINGS_VERSION, ManifestV2, NATIVE_PACKAGE_PLATFORM, NativeArtifactKind,
+    NativeBinaryArtifact, REQUIRED_ENGINE_LICENSE_FILES, STANDARD_LIB_ASSET,
     STANDARD_LIB_FILE_COUNT, STANDARD_LIB_INCLUDE, SUPPORTED_NATIVE_PROTOCOL_VERSIONS, TypeAsset,
     TypeAssetBundle, compute_type_asset_bundle, forbidden_runtime_path,
+    is_allowed_miniprogram_typings_path, is_miniprogram_typings_path,
 };
 use crate::paths::{validate_platform, validate_relative_path, validate_version};
 use crate::semver::validate_strict;
@@ -1092,12 +1094,8 @@ fn is_allowed_native_path(path: &str) -> bool {
     if let Some(name) = path.strip_prefix("engine/lib/") {
         return !name.contains('/') && name.starts_with("lib") && name.ends_with(".d.ts");
     }
-    if let Some(relative) = path.strip_prefix("typings/miniprogram-api-typings/") {
-        return relative == "index.d.ts"
-            || relative == "LICENSE"
-            || relative == "README.md"
-            || relative == "CHANGELOG.md"
-            || relative.starts_with("types/");
+    if is_miniprogram_typings_path(path) {
+        return is_allowed_miniprogram_typings_path(path);
     }
     path.strip_prefix("zed-extension/languages/")
         .is_some_and(|relative| !relative.is_empty())
@@ -1329,6 +1327,16 @@ fn native_typings(entries: &[FileEntry]) -> Result<TypeAssetBundle> {
         return Err(DeliveryError::InvalidPackage(format!(
             "`{MINIPROGRAM_TYPINGS_ROOT}` must contain exactly {MINIPROGRAM_TYPINGS_FILE_COUNT} files, found {}",
             bundle.file_count
+        )));
+    }
+    if bundle.total_bytes != MINIPROGRAM_TYPINGS_TOTAL_BYTES
+        || bundle.sha256 != MINIPROGRAM_TYPINGS_BUNDLE_DIGEST
+    {
+        return Err(DeliveryError::InvalidPackage(format!(
+            "`{MINIPROGRAM_TYPINGS_ROOT}` payload does not match the frozen contract: \
+             expected {MINIPROGRAM_TYPINGS_FILE_COUNT} files/{MINIPROGRAM_TYPINGS_TOTAL_BYTES} B/\
+             {MINIPROGRAM_TYPINGS_BUNDLE_DIGEST}, found {} files/{} B/{}",
+            bundle.file_count, bundle.total_bytes, bundle.sha256
         )));
     }
     Ok(bundle)
@@ -1966,5 +1974,100 @@ mod tests {
             assert!(!leftovers, "staging directory was not cleaned");
             let _ = std::fs::remove_dir_all(&base);
         }
+    }
+
+    fn fixture_typings_entries() -> Vec<FileEntry> {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/miniprogram-api-typings-5.3.1");
+        crate::manifest_v2::MINIPROGRAM_TYPINGS_PAYLOAD_PATHS
+            .iter()
+            .map(|relative| {
+                let relative = *relative;
+                let bytes = std::fs::read(root.join(relative)).unwrap();
+                FileEntry {
+                    path: format!("{MINIPROGRAM_TYPINGS_ROOT}/{relative}"),
+                    sha256: sha256_bytes(&bytes),
+                    size: u64::try_from(bytes.len()).unwrap(),
+                    mode: "0644".to_owned(),
+                }
+            })
+            .collect()
+    }
+
+    fn refreshed_typings_asset(entries: &[FileEntry]) -> TypeAssetBundle {
+        compute_type_asset_bundle(entries, MINIPROGRAM_TYPINGS_ROOT, &["**".to_owned()]).unwrap()
+    }
+
+    #[test]
+    fn typings_bundle_accepts_the_frozen_payload() {
+        let entries = fixture_typings_entries();
+        let bundle = native_typings(&entries).unwrap();
+        assert_eq!(bundle.file_count, MINIPROGRAM_TYPINGS_FILE_COUNT);
+        assert_eq!(bundle.file_count, 23);
+        assert_eq!(bundle.total_bytes, MINIPROGRAM_TYPINGS_TOTAL_BYTES);
+        assert_eq!(bundle.sha256, MINIPROGRAM_TYPINGS_BUNDLE_DIGEST);
+    }
+
+    #[test]
+    fn typings_bundle_rejects_count_drift() {
+        let entries = fixture_typings_entries();
+        let mut short = entries.clone();
+        short.remove(0);
+        let error = native_typings(&short).unwrap_err();
+        assert!(
+            error.to_string().contains("must contain exactly 23 files"),
+            "{error}"
+        );
+
+        let mut long = entries;
+        long.push(FileEntry {
+            path: format!("{MINIPROGRAM_TYPINGS_ROOT}/types/extra.d.ts"),
+            sha256: sha256_bytes(b"extra"),
+            size: 5,
+            mode: "0644".to_owned(),
+        });
+        let error = native_typings(&long).unwrap_err();
+        assert!(
+            error.to_string().contains("must contain exactly 23 files"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn typings_bundle_rejects_a_substituted_23_file_set() {
+        let mut entries = fixture_typings_entries();
+        let target = entries
+            .iter_mut()
+            .find(|entry| entry.path.ends_with("/index.d.ts"))
+            .unwrap();
+        target.sha256 = "0".repeat(64);
+        let error = native_typings(&entries).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("payload does not match the frozen contract"),
+            "{error}"
+        );
+        assert_eq!(
+            refreshed_typings_asset(&entries).file_count,
+            MINIPROGRAM_TYPINGS_FILE_COUNT
+        );
+    }
+
+    #[test]
+    fn typings_bundle_rejects_payload_byte_drift() {
+        let mut entries = fixture_typings_entries();
+        let target = entries
+            .iter_mut()
+            .find(|entry| entry.path.ends_with("/LICENSE"))
+            .unwrap();
+        target.size += 1;
+        let error = native_typings(&entries).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("payload does not match the frozen contract"),
+            "{error}"
+        );
     }
 }

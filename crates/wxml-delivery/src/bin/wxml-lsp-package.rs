@@ -60,7 +60,7 @@ Node-free tree. Accepted payload (required unless marked optional):
   engine/LICENSE                      0644
   engine/NOTICE.txt                   0644
   engine/package.json                 0644 (pinned engine name/version)
-  typings/miniprogram-api-typings/**  0644 (26 files, including LICENSE)
+  typings/miniprogram-api-typings/**  0644 (23 files, including LICENSE)
   zed-extension/extension.wasm        0644
   zed-extension/extension.toml        0644 (top-level version required)
   zed-extension/languages/**          0644 (optional)

@@ -246,11 +246,11 @@ F3-03 计划已给出同一形状，见 ( /home/zxg/.local/share/opencode/worktr
 | T8 | 摘要稳定性 | 同一 23 文件两次计算 | `ba3eb83…` 稳定；字节序排序；与 locale 无关 | ( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-delivery/src/type_assets.rs:223 ) |
 | T9 | 三个摘要空间隔离 | 26 / 23 / 20 文件 | 分别得到 `2141aac…`/`ba3eb83…`/`821c93…`；互不替代 | §1.2 |
 | T10 | 运行时只挂载 `.d.ts` | 含 metadata 的完整安装树 | `TypeAssetFile` 拒绝非 `.d.ts`；`snapshot_files` 只含 20 个 `.d.ts`；`source_paths` 不含资产 | ( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-backend-tsgo/src/input.rs:306 )、( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-backend-tsgo/src/native/vfs.rs:888 ) |
-| T11 | 真实引擎（opt-in） | `TSGO_BIN` + 20 个 `.d.ts` | `types:["miniprogram-api-typings"]` 无 `package.json` 仍能解析 `wx`/`Page`/`Component`/`getApp`；无 2304 | ( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-backend-tsgo/tests/type_assets.rs:518 ) |
+| T11 | 真实引擎（opt-in） | `TSGO_BIN` + 20 个 `.d.ts` | `types:["miniprogram-api-typings"]` 无 `package.json` 仍能解析 `wx`/`Page`/`Component`/`getApp`；无 2304 | ( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-backend-tsgo/tests/type_assets.rs:788 )；无 `TSGO_BIN` 时显式跳过，不是门禁证据 |
 | T12 | 真实包（opt-in，BLOCKED） | provisioning cache 中的 23 文件 payload | 打包/安装/校验全绿；两次构建归档同哈希 | ( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-delivery/tests/native_package.rs:345 ) |
 | T13 | 无 Node | PATH 仅构建工具 + tripwire shim | 打包/安装/校验不触发 node/npm；marker 未创建 | ( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-delivery/tests/no_node_guard.rs:769 ) |
 
-现有负向用例只覆盖了 `Package.JSON`、`extra.txt`、`node_modules/...` 等，见 ( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-delivery/tests/native_package.rs:517 )；**没有逐项覆盖本次 3 个文件**，需要新增 T1–T3。`type_assets.rs` 的单元测试目前只覆盖 JS 扩展名与 glob 预算，见 ( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-delivery/src/type_assets.rs:243 )，需要补 `package.json` 精确路径用例。
+T1–T3 已由 `native_package.rs` 的 packager 用例和 `native_delivery.rs` 的 hand-crafted manifest 用例覆盖；T5/T6/T7 同时覆盖 manifest/安装树/计数漂移。`typings_payload.rs` 仍是 opt-in 的真实树一致性检查。T10/T11 依赖未跟踪的后端 WIP 测试，**不是本交付变更的门禁证据**；本轮只更新引用，不据此关闭任何 F3 ID。
 
 补充：工作树里未跟踪的 ( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-backend-tsgo/tests/type_assets.rs:60 ) 仍按旧的 10 参数 `TypeAssets::new` 调用，而当前签名是 4 参数（( /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-backend-tsgo/src/input.rs:562 )），属于其它会话的 WIP，不能作为门禁证据。
 

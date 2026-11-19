@@ -15,8 +15,9 @@ use crate::manifest::{
     sha256_file,
 };
 use crate::manifest_v2::{
-    ExpectedManifestV2, ManifestV2, compute_type_asset_bundle, forbidden_runtime_path,
-    read_manifest_v2,
+    ExpectedManifestV2, MINIPROGRAM_TYPINGS_ASSET, MINIPROGRAM_TYPINGS_BUNDLE_DIGEST,
+    MINIPROGRAM_TYPINGS_TOTAL_BYTES, ManifestV2, compute_type_asset_bundle, forbidden_runtime_path,
+    is_allowed_miniprogram_typings_path, read_manifest_v2,
 };
 use crate::paths::validate_relative_path;
 use crate::state::expected_directories;
@@ -113,6 +114,11 @@ pub fn verify_tree_v2(root: &Path, expected: ExpectedManifestV2<'_>) -> Result<N
                 "package tree contains `{path}`: {reason}"
             )));
         }
+        if !is_allowed_miniprogram_typings_path(path) {
+            return Err(DeliveryError::InvalidPackage(format!(
+                "package tree contains `{path}` outside the frozen miniprogram typings payload"
+            )));
+        }
     }
 
     // Recompute bundle digests from the verified payload entries so the
@@ -124,6 +130,14 @@ pub fn verify_tree_v2(root: &Path, expected: ExpectedManifestV2<'_>) -> Result<N
                 "type asset `{}` does not match its bundle digest",
                 asset.name
             )));
+        }
+        if asset.name == MINIPROGRAM_TYPINGS_ASSET
+            && (bundle.total_bytes != MINIPROGRAM_TYPINGS_TOTAL_BYTES
+                || bundle.sha256 != MINIPROGRAM_TYPINGS_BUNDLE_DIGEST)
+        {
+            return Err(DeliveryError::Integrity(
+                "miniprogram typings payload does not match the frozen identity".to_owned(),
+            ));
         }
     }
 

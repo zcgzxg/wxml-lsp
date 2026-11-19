@@ -23,6 +23,9 @@
 
 mod support;
 
+#[path = "support/typings_payload.rs"]
+mod typings_payload;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -209,23 +212,7 @@ fn build_fixture(root: &Path, version: &str) -> ManifestV2 {
             0o644,
         );
     }
-    builder.file(
-        "typings/miniprogram-api-typings/index.d.ts",
-        b"// miniprogram index\n",
-        0o644,
-    );
-    builder.file(
-        "typings/miniprogram-api-typings/LICENSE",
-        b"MIT fixture\n",
-        0o644,
-    );
-    for index in 0..24 {
-        builder.file(
-            &format!("typings/miniprogram-api-typings/types/t{index:02}.d.ts"),
-            format!("// typings {index}\n").as_bytes(),
-            0o644,
-        );
-    }
+    typings_payload::write_payload(|path, bytes| builder.file(path, bytes, 0o644));
     builder.file("zed-extension/extension.wasm", b"\0asm-fixture", 0o644);
     builder.file(
         "zed-extension/extension.toml",
