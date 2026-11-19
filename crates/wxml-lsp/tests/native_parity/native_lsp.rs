@@ -39,6 +39,17 @@ const SCRUBBED_ENV: &[&str] = &[
     "TSGO_TYPINGS_ROOT",
 ];
 
+/// Evidence captured after a clean LSP shutdown.
+#[derive(Debug)]
+pub(crate) struct ShutdownEvidence {
+    /// Server child PID before it exited.
+    pub(crate) pid: u32,
+    /// Full captured stderr.
+    pub(crate) stderr: String,
+    /// Wall time from `shutdown` request to a reaped child.
+    pub(crate) elapsed: Duration,
+}
+
 /// One live native server process.
 pub(crate) struct Session {
     child: Child,
@@ -190,7 +201,22 @@ impl Session {
     }
 
     /// Sends `shutdown`/`exit` and asserts a clean process exit.
-    pub(crate) fn shutdown(mut self) {
+    pub(crate) fn shutdown(self) {
+        let evidence = self.shutdown_with_evidence();
+        assert!(
+            !evidence.stderr.contains("detaching it"),
+            "server detached a worker during shutdown; stderr:\n{}",
+            evidence.stderr
+        );
+    }
+
+    /// Sends `shutdown`/`exit`, asserts a clean exit and returns the evidence.
+    ///
+    /// The caller can additionally check that the PID and every descendant are
+    /// gone after shutdown; a leaked engine process must fail the gate.
+    pub(crate) fn shutdown_with_evidence(mut self) -> ShutdownEvidence {
+        let pid = self.child.id();
+        let started = Instant::now();
         let id = self.request("shutdown", Value::Null);
         let response = self.response(id);
         assert_eq!(
@@ -230,6 +256,21 @@ impl Session {
         if let Some(handle) = self.stderr_thread.take() {
             let _ = handle.join();
         }
+        ShutdownEvidence {
+            pid,
+            stderr: self.stderr_text(),
+            elapsed: started.elapsed(),
+        }
+    }
+
+    /// Returns the server child PID.
+    pub(crate) fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
+    /// Returns every descendant PID of the server.
+    pub(crate) fn descendant_pids(&self) -> Vec<u32> {
+        descendants(self.child.id())
     }
 
     /// Opens a WXML document and waits for its current diagnostics.
@@ -487,8 +528,13 @@ pub(crate) fn read_project_file(gate: &NativeGate, relative: &str) -> String {
 }
 
 /// Returns every descendant PID of `root` using `/proc` (Linux only).
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn descendants(_root: u32) -> Vec<u32> {
+    Vec::new()
+}
+
 #[cfg(target_os = "linux")]
-fn descendants(root: u32) -> Vec<u32> {
+pub(crate) fn descendants(root: u32) -> Vec<u32> {
     let mut found = Vec::new();
     let mut seen = BTreeSet::new();
     let mut queue = vec![root];

@@ -19,6 +19,8 @@
 //! - `G-P5-E2E-17` / `ac008_alias_project_hover_and_definition`
 //! - `G-P5-E2E-18` / `ac008_multi_view_fixture_isolation`
 //! - `G-P5-E2E-19` / `ac008_simultaneous_views_do_not_pollute_each_other`
+//! - `G-P5-PERF-01` / `q2_performance_benchmark`
+//! - `G-P5-STABILITY-01` / `ten_round_lifecycle_stability`
 //!
 //! Every test is `#[ignore]`: the default workspace job reports it ignored,
 //! never passed. The required native job runs them with `--ignored` and
@@ -30,7 +32,19 @@
 
 use serde_json::{Value, json};
 
+#[cfg(target_os = "linux")]
+use std::time::Instant;
+#[cfg(target_os = "linux")]
+use wxml_backend_tsgo::config::{AST_PROTOCOL_VERSION, ENGINE_VERSION, PinnedEngine};
+
+#[cfg(target_os = "linux")]
+use crate::ledger;
 use crate::native_lsp::{self, Session};
+#[cfg(target_os = "linux")]
+use crate::native_measure::{
+    MAX_POINTS, Stats, check_p95, elapsed_ms, engine_children, git_head, growth_percent,
+    kill_process, median, rss_kib, sample_tree, u64_to_f64, wait_gone, write_report,
+};
 use crate::native_package::NativeGate;
 
 /// Workspace-relative file that declares the ignored native gates.
@@ -39,7 +53,7 @@ pub(crate) const NATIVE_GATE_FILE: &str =
 
 /// Ledger gate id -> native replacement test.
 ///
-/// All sixteen are `gate_green` in the ledger with recorded opt-in evidence;
+/// All eighteen are `gate_green` in the ledger with recorded opt-in evidence;
 /// this map keeps the exact gate/replacement link checked by `native_gates.rs`.
 pub(crate) const GATE_REPLACEMENTS: &[(&str, &str)] = &[
     (
@@ -85,6 +99,8 @@ pub(crate) const GATE_REPLACEMENTS: &[(&str, &str)] = &[
         "G-P5-E2E-19",
         "native_ac008_simultaneous_views_do_not_pollute_each_other",
     ),
+    ("G-P5-PERF-01", "native_q2_performance_benchmark"),
+    ("G-P5-STABILITY-01", "native_ten_round_lifecycle_stability"),
 ];
 
 /// The exact ignored-native-gate set.
@@ -139,6 +155,8 @@ pub(crate) const IGNORED_GATE_TESTS: &[(&str, &str)] = &[
         NATIVE_GATE_FILE,
         "native_ac008_simultaneous_views_do_not_pollute_each_other",
     ),
+    (NATIVE_GATE_FILE, "native_q2_performance_benchmark"),
+    (NATIVE_GATE_FILE, "native_ten_round_lifecycle_stability"),
 ];
 
 fn write_page_fixture(gate: &NativeGate, wxml: &str) {
@@ -1767,4 +1785,779 @@ fn native_ac006_conditional_union_narrowing() {
     session.assert_no_node_exec();
     session.shutdown();
     gate.tripwire().assert_absent();
+}
+
+// ---------------------------------------------------------------------------
+// G-P5-PERF-01 / G-P5-STABILITY-01 native baselines.
+//
+// Both gates drive the real `--stdio --backend native` package binary over
+// JSON-RPC with the pinned 7.1.0-beta engine. Latency is measured around the
+// client call, so diagnostics include the server's 120 ms debounce and the real
+// engine update. `G-P5-PERF-01` is a release-only baseline; a debug build is
+// rejected instead of being compared with plan section 9.5 budgets. Resource
+// sampling reads only `/proc` and never starts `ps`, `top` or Node.
+// ---------------------------------------------------------------------------
+
+/// Measured samples per performance metric (plan section 9.5 minimum).
+#[cfg(target_os = "linux")]
+const PERF_SAMPLES: usize = 200;
+/// Untimed warm-up calls per performance metric.
+#[cfg(target_os = "linux")]
+const PERF_WARMUP: usize = 5;
+/// Hot type-hover budget from plan section 9.5.
+#[cfg(target_os = "linux")]
+const HOVER_P95_MS: f64 = 200.0;
+/// Hot expression-member completion budget from plan section 9.5.
+#[cfg(target_os = "linux")]
+const COMPLETION_P95_MS: f64 = 200.0;
+/// Stop-typing diagnostics budget from plan section 9.5.
+#[cfg(target_os = "linux")]
+const DIAGNOSTICS_P95_MS: f64 = 500.0;
+/// Steady RSS growth cap from plan section 9.5.
+#[cfg(target_os = "linux")]
+const RSS_GROWTH_PERCENT_MAX: f64 = 15.0;
+
+/// Open/update/release/restart cycles for the stability gate (10 minimum).
+#[cfg(target_os = "linux")]
+const STABILITY_CYCLES: usize = 12;
+/// Bounded hover burst after the cycles.
+#[cfg(target_os = "linux")]
+const STABILITY_BURST: usize = 16;
+
+#[cfg(target_os = "linux")]
+const PERF_WXML: &str = "{{ user.name }} {{ title }}";
+#[cfg(target_os = "linux")]
+const PERF_COMPLETE_WXML: &str = "<view>{{ user. }}</view>";
+#[cfg(target_os = "linux")]
+const PERF_SCRIPT: &str = "Page({ data: { user: { name: 'Ada', age: 36 }, title: 'Hello' } });";
+
+#[cfg(target_os = "linux")]
+fn perf_page_text(iteration: usize) -> String {
+    format!("{PERF_WXML}\n<!-- perf sample {iteration} -->\n")
+}
+
+#[cfg(target_os = "linux")]
+fn write_perf_fixture(gate: &NativeGate) {
+    gate.write(
+        "app.json",
+        r#"{"pages":["pages/index/index","pages/complete/complete"],"usingComponents":{}}"#,
+    );
+    gate.write("pages/index/index.wxml", PERF_WXML);
+    gate.write("pages/index/index.ts", PERF_SCRIPT);
+    gate.write("pages/complete/complete.wxml", PERF_COMPLETE_WXML);
+    gate.write("pages/complete/complete.ts", PERF_SCRIPT);
+    gate.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+}
+
+#[cfg(target_os = "linux")]
+fn require_hover_type(
+    session: &mut Session,
+    uri: &str,
+    position: (u32, u32),
+    expected: &str,
+    context: &str,
+) {
+    let response = session.hover(uri, position);
+    let text = native_lsp::hover_markdown("native hover", context, &response);
+    assert!(
+        text.contains(expected),
+        "{context}: hover must contain {expected:?}: {}",
+        session.describe(&response)
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn require_completion(
+    session: &mut Session,
+    uri: &str,
+    position: (u32, u32),
+    expected: &str,
+    context: &str,
+) {
+    let response = session.completion(uri, position);
+    assert!(
+        completion_labels(&response).contains(&expected),
+        "{context}: completion must contain {expected:?}: {}",
+        session.describe(&response)
+    );
+}
+
+/// G-P5-PERF-01: native cold start, hover, diagnostics and completion budgets.
+#[cfg(target_os = "linux")]
+#[test]
+#[allow(
+    clippy::assertions_on_constants,
+    reason = "the release profile is a constant prerequisite of the baseline"
+)]
+#[ignore = "native gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
+fn native_q2_performance_benchmark() {
+    let Some(gate) = NativeGate::require("G-P5-PERF-01") else {
+        return;
+    };
+    assert!(
+        !cfg!(debug_assertions),
+        "G-P5-PERF-01 is a release baseline: run `cargo test -p wxml-lsp --test native_parity --release ... --ignored`; \
+         a debug build cannot be compared with the plan section 9.5 budgets"
+    );
+    write_perf_fixture(&gate);
+
+    let index_uri = gate.uri("pages/index/index.wxml");
+    let complete_uri = gate.uri("pages/complete/complete.wxml");
+    let name_position = native_lsp::lsp_position(PERF_WXML, "name");
+    let member = native_lsp::lsp_position(PERF_COMPLETE_WXML, "user.");
+    let member_position = (member.0, member.1 + 5);
+
+    let started = Instant::now();
+    let mut session = Session::start(&gate);
+    let initialize_ms = elapsed_ms(started);
+
+    let open_started = Instant::now();
+    let diagnostics = session.open_wxml(&index_uri, PERF_WXML, 1);
+    let first_page_ms = elapsed_ms(open_started);
+    assert_eq!(
+        diagnostics,
+        json!([]),
+        "the performance page must start clean: {diagnostics}"
+    );
+    let cold_open_total_ms = elapsed_ms(started);
+
+    let first_hover_started = Instant::now();
+    require_hover_type(
+        &mut session,
+        &index_uri,
+        name_position,
+        "string",
+        "cold first hover",
+    );
+    let first_engine_hover_ms = elapsed_ms(first_hover_started);
+
+    session.open_wxml(&complete_uri, PERF_COMPLETE_WXML, 1);
+
+    let mut version = 1_u64;
+    for iteration in 0..PERF_WARMUP {
+        require_hover_type(
+            &mut session,
+            &index_uri,
+            name_position,
+            "string",
+            "hover warm-up",
+        );
+        require_completion(
+            &mut session,
+            &complete_uri,
+            member_position,
+            "name",
+            "completion warm-up",
+        );
+        version += 1;
+        let text = perf_page_text(iteration);
+        let diagnostics = session.change_wxml(&index_uri, &text, version);
+        assert_eq!(
+            diagnostics,
+            json!([]),
+            "diagnostics warm-up must stay clean: {diagnostics}"
+        );
+    }
+
+    let baseline = sample_tree(session.pid());
+    assert!(
+        baseline.rss_kib > 0,
+        "the native server tree must expose a non-zero RSS baseline"
+    );
+    let mut points = vec![baseline.to_json("baseline")];
+    let parent_rss_start = rss_kib(std::process::id()).unwrap_or(0);
+
+    let mut hover_samples = Vec::with_capacity(PERF_SAMPLES);
+    for sample in 0..PERF_SAMPLES {
+        let started = Instant::now();
+        require_hover_type(
+            &mut session,
+            &index_uri,
+            name_position,
+            "string",
+            "hot hover",
+        );
+        hover_samples.push(elapsed_ms(started));
+        if sample % 50 == 0 {
+            push_point(&mut points, &session, "hover");
+        }
+    }
+
+    let mut completion_samples = Vec::with_capacity(PERF_SAMPLES);
+    for sample in 0..PERF_SAMPLES {
+        let started = Instant::now();
+        require_completion(
+            &mut session,
+            &complete_uri,
+            member_position,
+            "name",
+            "hot completion",
+        );
+        completion_samples.push(elapsed_ms(started));
+        if sample % 50 == 0 {
+            push_point(&mut points, &session, "completion");
+        }
+    }
+
+    let mut diagnostics_samples = Vec::with_capacity(PERF_SAMPLES);
+    for sample in 0..PERF_SAMPLES {
+        version += 1;
+        let text = perf_page_text(PERF_WARMUP + sample);
+        let started = Instant::now();
+        let diagnostics = session.change_wxml(&index_uri, &text, version);
+        diagnostics_samples.push(elapsed_ms(started));
+        assert_eq!(
+            diagnostics,
+            json!([]),
+            "a clean edit must publish no diagnostics: {diagnostics}"
+        );
+        if sample % 25 == 0 {
+            push_point(&mut points, &session, "diagnostics");
+        }
+    }
+
+    let final_sample = sample_tree(session.pid());
+    points.push(final_sample.to_json("final"));
+    let parent_rss_end = rss_kib(std::process::id()).unwrap_or(0);
+
+    let engines = engine_children(session.pid(), gate.package_root());
+    assert_eq!(
+        engines.len(),
+        1,
+        "the performance run must keep exactly one engine child: {engines:?}"
+    );
+    assert!(
+        session.descendant_pids().len() <= 1,
+        "the performance run leaked child processes: {:?}",
+        session.descendant_pids()
+    );
+    session.assert_no_node_exec();
+
+    let hover = Stats::from_samples(&hover_samples);
+    let completion = Stats::from_samples(&completion_samples);
+    let diagnostics = Stats::from_samples(&diagnostics_samples);
+    let mut failures = Vec::new();
+    check_p95(&mut failures, "hover", &hover, HOVER_P95_MS);
+    check_p95(&mut failures, "completion", &completion, COMPLETION_P95_MS);
+    check_p95(
+        &mut failures,
+        "diagnostics",
+        &diagnostics,
+        DIAGNOSTICS_P95_MS,
+    );
+    let rss_growth = growth_percent(baseline.rss_kib, final_sample.rss_kib);
+    println!(
+        "server tree RSS: baseline {} KiB, final {} KiB, growth {rss_growth:.2}%",
+        baseline.rss_kib, final_sample.rss_kib
+    );
+    if !rss_growth.is_finite() {
+        failures.push("server tree RSS baseline is zero".to_owned());
+    } else if rss_growth > RSS_GROWTH_PERCENT_MAX {
+        failures.push(format!(
+            "server tree RSS grew {rss_growth:.2}% (cap {RSS_GROWTH_PERCENT_MAX:.0}%)"
+        ));
+    }
+
+    let cpu_seconds = u64_to_f64(final_sample.cpu_ticks.saturating_sub(baseline.cpu_ticks)) / 100.0;
+    let report = json!({
+        "gate": "G-P5-PERF-01",
+        "harness": "native-stdio-perf",
+        "git_head": git_head(&ledger::workspace_root()),
+        "engine": {
+            "version": ENGINE_VERSION,
+            "git_head": PinnedEngine::pinned().git_head(),
+            "ast_protocol": AST_PROTOCOL_VERSION,
+            "executable_sha256": PinnedEngine::pinned().executable_sha256(),
+        },
+        "environment": {
+            "transport": "--stdio --backend native",
+            "profile": "release (debug is rejected by the gate)",
+            "samples_per_metric": PERF_SAMPLES,
+            "warmup_per_metric": PERF_WARMUP,
+            "diagnostics_debounce_included_ms": 120,
+            "cpus": std::thread::available_parallelism().map_or(0, std::num::NonZeroUsize::get),
+        },
+        "cold_start": {
+            "spawn_initialize_ms": round_ms(initialize_ms),
+            "open_and_first_diagnostics_ms": round_ms(first_page_ms),
+            "first_page_total_ms": round_ms(cold_open_total_ms),
+            "first_engine_hover_ms": round_ms(first_engine_hover_ms),
+            "budget": "recorded only; plan section 9.5 defines no cold-start p95",
+        },
+        "metrics": {
+            "hover": hover.to_json(),
+            "completion": completion.to_json(),
+            "diagnostics": diagnostics.to_json(),
+        },
+        "budgets": {
+            "hover_p95_ms": HOVER_P95_MS,
+            "completion_p95_ms": COMPLETION_P95_MS,
+            "diagnostics_p95_ms": DIAGNOSTICS_P95_MS,
+            "rss_growth_percent_max": RSS_GROWTH_PERCENT_MAX,
+        },
+        "resources": {
+            "parent_rss_kib_start": parent_rss_start,
+            "parent_rss_kib_end": parent_rss_end,
+            "server_tree_rss_kib_baseline": baseline.rss_kib,
+            "server_tree_rss_kib_final": final_sample.rss_kib,
+            "server_tree_rss_growth_percent": round_ms(rss_growth),
+            "server_tree_cpu_ticks_delta": final_sample.cpu_ticks.saturating_sub(baseline.cpu_ticks),
+            "server_tree_cpu_seconds_at_100hz": round_ms(cpu_seconds),
+            "engine_processes": engines.len(),
+            "timeline": points,
+        },
+        "thresholds": {
+            "pass": failures.is_empty(),
+            "failures": failures,
+        },
+        "notes": [
+            "Latency is measured around the JSON-RPC client call and includes serialization and server queueing.",
+            "Diagnostics samples include the default 120 ms stop-typing debounce and one real engine update.",
+            "Cold start is recorded, not asserted; only plan section 9.5 p95 and growth caps are enforced.",
+            "RSS is the summed VmRSS of the server tree sampled from /proc with a hard process cap.",
+            "No Node process, Node shim or external sampler is used.",
+        ],
+    });
+    let path = write_report("WXML_NATIVE_PERF_OUT", "perf", &report);
+    println!("native performance report: {}", path.display());
+    println!(
+        "hover {} | completion {} | diagnostics {}",
+        hover.to_json(),
+        completion.to_json(),
+        diagnostics.to_json()
+    );
+    assert!(
+        report["thresholds"]["pass"].as_bool() == Some(true),
+        "native performance budgets failed: {}\nreport: {}",
+        report["thresholds"]["failures"],
+        path.display()
+    );
+
+    let pid = session.pid();
+    let descendants_before = session.descendant_pids();
+    let evidence = session.shutdown_with_evidence();
+    assert!(
+        !evidence.stderr.contains("detaching it"),
+        "server detached a worker on shutdown; stderr:\n{}",
+        evidence.stderr
+    );
+    wait_gone(&[pid], "server after perf shutdown");
+    wait_gone(&descendants_before, "engine after perf shutdown");
+    gate.assert_no_native_sandbox();
+    gate.tripwire().assert_absent();
+}
+
+#[cfg(target_os = "linux")]
+fn push_point(points: &mut Vec<Value>, session: &Session, label: &str) {
+    let sample = sample_tree(session.pid());
+    if points.len() < MAX_POINTS {
+        points.push(sample.to_json(label));
+    } else {
+        *points.last_mut().expect("timeline") = sample.to_json(label);
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn round_ms(value: f64) -> f64 {
+    (value * 1000.0).round() / 1000.0
+}
+
+#[cfg(target_os = "linux")]
+fn stability_page_text(round: usize, stage: &str) -> String {
+    format!("{{{{ user.name }}}} <!-- cycle {round} {stage} -->\n")
+}
+
+#[cfg(target_os = "linux")]
+fn write_stability_fixture(gate: &NativeGate) {
+    gate.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    gate.write("pages/index/index.wxml", &stability_page_text(0, "initial"));
+    gate.write(
+        "pages/index/index.ts",
+        "Page({ data: { user: { name: 'Ada' } } });",
+    );
+    gate.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
+}
+
+#[cfg(target_os = "linux")]
+fn hover_class(response: &Value) -> String {
+    response.get("error").map_or_else(
+        || {
+            if native_lsp::hover_is_empty(response) {
+                "empty".to_owned()
+            } else {
+                "contents".to_owned()
+            }
+        },
+        |error| {
+            format!(
+                "error: {}",
+                error["message"].as_str().unwrap_or("unknown error")
+            )
+        },
+    )
+}
+
+/// Requests hover until it contains `expected` or the attempts are exhausted.
+#[cfg(target_os = "linux")]
+fn hover_until_type(
+    session: &mut Session,
+    uri: &str,
+    position: (u32, u32),
+    expected: &str,
+    attempts: usize,
+) -> Value {
+    let mut last = Value::Null;
+    for _ in 0..attempts {
+        last = session.hover(uri, position);
+        if last["result"]["contents"]["value"]
+            .as_str()
+            .is_some_and(|text| text.contains(expected))
+        {
+            return last;
+        }
+    }
+    last
+}
+
+/// G-P5-STABILITY-01: 12 update/release/restart cycles over native stdio.
+#[cfg(target_os = "linux")]
+#[test]
+#[ignore = "native gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
+fn native_ten_round_lifecycle_stability() {
+    let Some(gate) = NativeGate::require("G-P5-STABILITY-01") else {
+        return;
+    };
+    write_stability_fixture(&gate);
+
+    let uri = gate.uri("pages/index/index.wxml");
+    let script_uri = gate.uri("pages/index/index.ts");
+    let mut initial_text = stability_page_text(0, "initial");
+    let name_position = native_lsp::lsp_position(&initial_text, "name");
+
+    let mut session = Session::start(&gate);
+    let mut version = 1_u64;
+    let diagnostics = session.open_wxml(&uri, &initial_text, version);
+    assert_eq!(
+        diagnostics,
+        json!([]),
+        "the stability page must start clean: {diagnostics}"
+    );
+    require_hover_type(
+        &mut session,
+        &uri,
+        name_position,
+        "string",
+        "initial disk hover",
+    );
+
+    let cpu_start = sample_tree(session.pid()).cpu_ticks;
+    let mut rounds = Vec::new();
+    let mut points = Vec::new();
+    let mut baseline_rss = 0_u64;
+    let mut cycle_final_rss = 0_u64;
+    let mut first_request_classes = Vec::new();
+
+    for round in 0..STABILITY_CYCLES {
+        let round_started = Instant::now();
+
+        // Three real template updates; every diagnostics answer must be for the
+        // requested version and must stay clean.
+        for step in 0..3 {
+            version += 1;
+            initial_text = stability_page_text(round, &format!("update {step}"));
+            let diagnostics = session.change_wxml(&uri, &initial_text, version);
+            assert_eq!(
+                diagnostics,
+                json!([]),
+                "round {round}: update {step} must stay clean: {diagnostics}"
+            );
+        }
+
+        // Unsaved script overlay: `name` becomes a number. The overlay must be
+        // visible immediately and must survive the forced engine restart.
+        let overlay = format!("Page({{ data: {{ user: {{ name: {round} }} }} }});");
+        session.notify(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": script_uri,
+                    "languageId": "typescript",
+                    "version": u64::try_from(round).expect("round fits u64") + 1,
+                    "text": overlay,
+                }
+            }),
+        );
+        version += 1;
+        initial_text = stability_page_text(round, "overlay");
+        let diagnostics = session.change_wxml(&uri, &initial_text, version);
+        assert_eq!(
+            diagnostics,
+            json!([]),
+            "round {round}: overlay diagnostics must stay clean: {diagnostics}"
+        );
+        require_hover_type(
+            &mut session,
+            &uri,
+            name_position,
+            "number",
+            "overlay hover before restart",
+        );
+
+        // Force a native restart by killing the engine child. The first request
+        // after the crash is recorded, not forced: E2E-01 replay is not a
+        // committed guarantee yet. The second request must start a new session
+        // and replay the open overlay.
+        let engines = engine_children(session.pid(), gate.package_root());
+        assert_eq!(
+            engines.len(),
+            1,
+            "round {round}: expected one engine before restart: {engines:?}"
+        );
+        let old_engine = engines[0];
+        kill_process(old_engine);
+        wait_gone(&[old_engine], "killed engine");
+        let first = session.hover(&uri, name_position);
+        let first_class = hover_class(&first);
+        first_request_classes.push(first_class.clone());
+        let replay = hover_until_type(&mut session, &uri, name_position, "number", 3);
+        let replay_text =
+            native_lsp::hover_markdown("G-P5-STABILITY-01", "restart replay", &replay);
+        assert!(
+            replay_text.contains("number"),
+            "round {round}: overlay was not replayed after restart (first request: {first_class}): {}",
+            session.describe(&replay)
+        );
+        let new_engines = engine_children(session.pid(), gate.package_root());
+        assert_eq!(
+            new_engines.len(),
+            1,
+            "round {round}: restart did not leave one live engine: {new_engines:?}"
+        );
+        assert_ne!(
+            new_engines[0], old_engine,
+            "round {round}: restart reused the killed engine process"
+        );
+
+        // Release the overlay: disk `name` is a string again.
+        session.notify(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": script_uri}}),
+        );
+        version += 1;
+        initial_text = stability_page_text(round, "released");
+        let diagnostics = session.change_wxml(&uri, &initial_text, version);
+        assert_eq!(
+            diagnostics,
+            json!([]),
+            "round {round}: release diagnostics must stay clean: {diagnostics}"
+        );
+        require_hover_type(
+            &mut session,
+            &uri,
+            name_position,
+            "string",
+            "disk hover after release",
+        );
+
+        // Live snapshot / process accounting: one engine child, no growth in
+        // process count, and a bounded timeline sample.
+        let children = session.descendant_pids();
+        assert!(
+            children.len() <= 1,
+            "round {round}: leaked child processes: {children:?}"
+        );
+        let sample = sample_tree(session.pid());
+        assert!(
+            sample.rss_kib > 0,
+            "round {round}: server tree RSS must be non-zero"
+        );
+        if round == 0 {
+            baseline_rss = sample.rss_kib;
+        }
+        cycle_final_rss = sample.rss_kib;
+        let growth = growth_percent(baseline_rss, sample.rss_kib);
+        rounds.push(json!({
+            "round": round,
+            "version": version,
+            "wall_ms": round_ms(elapsed_ms(round_started)),
+            "restart_first_request": first_class,
+            "rss_kib": sample.rss_kib,
+            "rss_growth_from_round0_percent": round_ms(growth),
+            "threads": sample.threads,
+            "processes": sample.pids.len(),
+            "engine_pids": new_engines,
+        }));
+        if points.len() < MAX_POINTS {
+            points.push(sample.to_json("cycle"));
+        }
+        println!(
+            "stability round {round}: v{version} rss={} KiB growth={growth:.2}% first={first_class} wall={:.1} ms",
+            sample.rss_kib,
+            elapsed_ms(round_started)
+        );
+    }
+
+    // Bounded burst: the queue must not reject a normal hover burst after all
+    // restarts, and every answer must still see the disk string.
+    for _ in 0..STABILITY_BURST {
+        require_hover_type(
+            &mut session,
+            &uri,
+            name_position,
+            "string",
+            "post-cycle hover burst",
+        );
+    }
+
+    version += 1;
+    let final_text = stability_page_text(STABILITY_CYCLES, "final");
+    let diagnostics = session.change_wxml(&uri, &final_text, version);
+    assert_eq!(
+        diagnostics,
+        json!([]),
+        "the final diagnostics answer must be clean: {diagnostics}"
+    );
+
+    // Settle the allocator with more real updates before the steady-state
+    // sample. The burst above is a queue check; sampling every update shows
+    // whether memory plateaus (allocator retention) or grows per edit (leak).
+    let mut settle_samples = Vec::new();
+    let mut settle_rss = Vec::new();
+    for settle in 0..8 {
+        version += 1;
+        let text = stability_page_text(STABILITY_CYCLES, &format!("settle {settle}"));
+        let diagnostics = session.change_wxml(&uri, &text, version);
+        assert_eq!(
+            diagnostics,
+            json!([]),
+            "settle {settle} diagnostics must stay clean: {diagnostics}"
+        );
+        let sample = sample_tree(session.pid());
+        println!(
+            "settle {settle}: rss={} KiB threads={}",
+            sample.rss_kib, sample.threads
+        );
+        settle_rss.push(sample.rss_kib);
+        settle_samples.push(json!({
+            "settle": settle,
+            "rss_kib": sample.rss_kib,
+            "threads": sample.threads,
+        }));
+    }
+
+    let final_sample = sample_tree(session.pid());
+    let final_engines = engine_children(session.pid(), gate.package_root());
+    assert_eq!(
+        final_engines.len(),
+        1,
+        "the final cycle must keep exactly one engine: {final_engines:?}"
+    );
+    points.push(final_sample.to_json("final"));
+
+    let cycle_growth = growth_percent(baseline_rss, cycle_final_rss);
+    let steady_baseline = settle_rss.get(1).copied().unwrap_or(0);
+    let steady_tail = median(&settle_rss.iter().rev().take(3).copied().collect::<Vec<_>>());
+    let steady_growth = growth_percent(steady_baseline, steady_tail);
+    let cold_to_steady_growth = growth_percent(baseline_rss, steady_tail);
+    let cpu_ticks = final_sample.cpu_ticks.saturating_sub(cpu_start);
+    let mut failures = Vec::new();
+    if baseline_rss == 0 {
+        failures.push("round-0 RSS baseline is zero".to_owned());
+    } else if cycle_growth > RSS_GROWTH_PERCENT_MAX {
+        failures.push(format!(
+            "cycle RSS grew {cycle_growth:.2}% across {STABILITY_CYCLES} cycles (cap {RSS_GROWTH_PERCENT_MAX:.0}%)"
+        ));
+    }
+    if steady_baseline == 0 {
+        failures.push("steady RSS baseline is zero".to_owned());
+    } else if steady_growth > RSS_GROWTH_PERCENT_MAX {
+        failures.push(format!(
+            "steady RSS grew {steady_growth:.2}% across 8 edits after warm-up (cap {RSS_GROWTH_PERCENT_MAX:.0}%)"
+        ));
+    }
+
+    let pid = session.pid();
+    let descendants_before = session.descendant_pids();
+    let evidence = session.shutdown_with_evidence();
+    let detached = evidence.stderr.contains("detaching it");
+    if detached {
+        failures.push("server detached a scheduler worker on shutdown".to_owned());
+    }
+    wait_gone(&[pid], "server after stability shutdown");
+    wait_gone(&descendants_before, "engine after stability shutdown");
+    gate.assert_no_native_sandbox();
+    gate.tripwire().assert_absent();
+
+    let report = json!({
+        "gate": "G-P5-STABILITY-01",
+        "harness": "native-stdio-stability",
+        "git_head": git_head(&ledger::workspace_root()),
+        "engine": {
+            "version": ENGINE_VERSION,
+            "git_head": PinnedEngine::pinned().git_head(),
+            "ast_protocol": AST_PROTOCOL_VERSION,
+            "executable_sha256": PinnedEngine::pinned().executable_sha256(),
+        },
+        "environment": {
+            "transport": "--stdio --backend native",
+            "cycles": STABILITY_CYCLES,
+            "updates_per_cycle": 3,
+            "burst_hovers": STABILITY_BURST,
+            "restart": "SIGKILL the engine child; first request recorded, replay required by the second",
+        },
+        "restart": {
+            "first_request_classes": first_request_classes,
+            "e2e_01_status": "required_not_migrated: transparent first-request replay is not claimed; this gate requires the second request to replay the open overlay",
+        },
+        "rounds": rounds,
+        "resources": {
+            "rss_kib_round0": baseline_rss,
+            "rss_kib_cycle11": cycle_final_rss,
+            "cycle_rss_growth_percent": round_ms(cycle_growth),
+            "rss_kib_steady_baseline": steady_baseline,
+            "rss_kib_steady_tail_median": steady_tail,
+            "steady_rss_growth_percent": round_ms(steady_growth),
+            "cold_to_steady_rss_growth_percent": round_ms(cold_to_steady_growth),
+            "rss_kib_final": final_sample.rss_kib,
+            "cpu_ticks": cpu_ticks,
+            "cpu_seconds_at_100hz": round_ms(u64_to_f64(cpu_ticks) / 100.0),
+            "engine_processes": final_engines.len(),
+            "settle_samples": settle_samples,
+            "timeline": points,
+        },
+        "shutdown": {
+            "server_pid": evidence.pid,
+            "elapsed_ms": round_ms(evidence.elapsed.as_secs_f64() * 1000.0),
+            "detached_worker": detached,
+            "stderr_bytes": evidence.stderr.len(),
+            "sandbox_left": false,
+            "processes_left": 0,
+        },
+        "thresholds": {
+            "cycle_rss_growth_percent_max": RSS_GROWTH_PERCENT_MAX,
+            "steady_rss_growth_percent_max": RSS_GROWTH_PERCENT_MAX,
+            "pass": failures.is_empty(),
+            "failures": failures,
+        },
+        "notes": [
+            "Every cycle performs three template updates, an unsaved script overlay, a forced engine restart, an overlay release and a diagnostics round-trip.",
+            "The first hover after SIGKILL is observed, not forced to pass: E2E-01 transparent replay is still required_not_migrated.",
+            "The second request must open a fresh engine and replay the unsaved overlay; a reused PID fails the gate.",
+            "The steady RSS sample follows the hover burst and eight settle edits; the cap is applied to the post-warm-up steady baseline, not to the one-time cold working-set step.",
+            "The cold-to-steady step is recorded as evidence so it is visible and cannot hide a later sustained increase.",
+            "Shutdown must reap the server and engine, leave no sandbox and never log a detached scheduler worker.",
+            "RSS is the summed VmRSS of the server tree sampled from /proc with a hard process cap.",
+        ],
+    });
+    let path = write_report("WXML_NATIVE_STABILITY_OUT", "stability", &report);
+    println!("native stability report: {}", path.display());
+    assert!(
+        report["thresholds"]["pass"].as_bool() == Some(true),
+        "native stability budgets failed: {}\nreport: {}",
+        report["thresholds"]["failures"],
+        path.display()
+    );
 }

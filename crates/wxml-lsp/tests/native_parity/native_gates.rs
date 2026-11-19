@@ -6,15 +6,18 @@
 //! 23 gates and the two silent returns must become real native commands before
 //! the old Node-backed tests may be deleted or treated as green.
 //!
-//! P6-2 now records sixteen opt-in native gates as `gate_green`. The first
+//! P6-2 now records eighteen opt-in native gates as `gate_green`. The first
 //! wave (`G-P5-E2E-09/12/14`) needed only the selector and static semantics.
 //! The 2026-11-19 trusted type-assets slice added real typed hover and
 //! diagnostics through `--backend native`, so ten more gates have exact native
 //! replacements: `G-P5-E2E-04/06/07/08/10/13/15/17/18/19`. The 2026-11-20
 //! routing/guard slice added root and trailing-dot completion, Behavior
 //! properties and exact conditional-guard ranges, so
-//! `G-P5-E2E-03/11/16` are also green. The remaining seven gates have no
-//! native behavior that satisfies their frozen assertions and stay
+//! `G-P5-E2E-03/11/16` are also green. The 2026-11-20 performance/stability
+//! slice added a real `--stdio --backend native` p50/p95/p99 and RSS baseline
+//! plus twelve update/release/restart cycles, so `G-P5-PERF-01` and
+//! `G-P5-STABILITY-01` are green. The remaining five gates have no native
+//! behavior that satisfies their frozen assertions and stay
 //! `required_not_migrated`.
 //!
 //! `gate_green` is an opt-in required-native-job result (`--ignored`), not a
@@ -48,27 +51,26 @@ const GATE_GREEN_IDS: &[&str] = &[
     "G-P5-E2E-17",
     "G-P5-E2E-18",
     "G-P5-E2E-19",
-];
-/// The 7 gates still waiting for a native replacement.
-///
-/// Each row names a precise blocker in
-/// `docs/evidence/2026-11-20-tsgo-p6-native-gates-wave3.md`: native perf and
-/// stability baselines, restart/epoch replay, event-handler hover, native
-/// symbols, component property binding diagnostics, and the non-literal
-/// `Unsupported` status class.
-const REQUIRED_NOT_MIGRATED_IDS: &[&str] = &[
     "G-P5-PERF-01",
     "G-P5-STABILITY-01",
+];
+/// The 5 gates still waiting for a native replacement.
+///
+/// Each row names a precise blocker in
+/// `docs/evidence/2026-11-20-tsgo-p6-perf-stability.md`: restart/epoch replay,
+/// event-handler hover, native symbols, component property binding diagnostics,
+/// and the non-literal `Unsupported` status class.
+const REQUIRED_NOT_MIGRATED_IDS: &[&str] = &[
     "G-P5-E2E-01",
     "G-P5-E2E-02",
     "G-P5-E2E-05",
     "G-P5-E2E-20",
     "G-P5-E2E-21",
 ];
-/// Frozen `gate_green` count after the 2026-11-20 routing/guard promotion.
-const GATE_GREEN_COUNT: usize = 16;
-/// Frozen `required_not_migrated` count after the routing/guard promotion.
-const REQUIRED_NOT_MIGRATED_COUNT: usize = 7;
+/// Frozen `gate_green` count after the performance/stability promotion.
+const GATE_GREEN_COUNT: usize = 18;
+/// Frozen `required_not_migrated` count after the performance/stability promotion.
+const REQUIRED_NOT_MIGRATED_COUNT: usize = 5;
 /// Frozen ignored-gate inventory size; P6-2 never deletes a gate.
 const IGNORED_GATE_COUNT: usize = 23;
 /// Pinned size of the `7.1.0-beta` `lib/tsc` artifact.
@@ -372,7 +374,7 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
             }
             other => panic!(
                 "{gate_id} has unexpected status {other:?}; P6-2 only promotes the \
-                 sixteen evidence-backed native gates"
+                 eighteen evidence-backed native gates"
             ),
         }
         assert_required_text(
@@ -424,7 +426,7 @@ fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
     );
     assert_eq!(
         required, frozen_required,
-        "only the frozen 10 gates may stay required_not_migrated"
+        "only the frozen 5 gates may stay required_not_migrated"
     );
     assert_eq!(green.len() + required.len(), IGNORED_GATE_COUNT);
 

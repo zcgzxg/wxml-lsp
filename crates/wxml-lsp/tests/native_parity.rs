@@ -48,6 +48,9 @@ mod native_gate_env;
 mod native_gates;
 #[path = "native_parity/native_lsp.rs"]
 mod native_lsp;
+#[cfg(target_os = "linux")]
+#[path = "native_parity/native_measure.rs"]
+mod native_measure;
 #[path = "native_parity/native_package.rs"]
 mod native_package;
 #[path = "native_parity/perf_budget.rs"]
