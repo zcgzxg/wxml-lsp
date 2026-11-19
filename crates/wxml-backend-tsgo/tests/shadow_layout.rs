@@ -13,7 +13,7 @@
 //! in [`BLOCKED_CASES`] and are not claimed as migrated.
 
 use wxml_backend_tsgo::input::{DocumentRevision, SourceFile};
-use wxml_backend_tsgo::native::strings::Utf16Offset;
+use wxml_backend_tsgo::native::strings::{Utf16Offset, utf16_len};
 use wxml_backend_tsgo::shadow::ShadowError;
 use wxml_backend_tsgo::shadow::expression::MAX_SCRIPT_DEPTH;
 use wxml_backend_tsgo::shadow::layout::{
@@ -22,7 +22,7 @@ use wxml_backend_tsgo::shadow::layout::{
 };
 use wxml_backend_tsgo::shadow::locals::{DEFAULT_LOCAL_BUDGET, LocalBinding, LocalRole};
 use wxml_backend_tsgo::shadow::mapping::SourceRange;
-use wxml_backend_tsgo::shadow::rewrite::{RewriteOptions, rewrite_expression};
+use wxml_backend_tsgo::shadow::rewrite::{MountedSegment, RewriteOptions, rewrite_expression};
 
 const BLOCKED_CASES: &[(&str, &str)] = &[
     ("TS-LAYOUTS-0062", "diagnostic 2353 requires the checker"),
@@ -267,6 +267,114 @@ fn case_layouts_0206_non_literal_properties_is_reported_never_narrowed_silently(
             .any(|problem| problem.contains("not an object literal"))
     );
     assert!(built.properties.properties.is_empty());
+}
+
+#[test]
+fn case_analysis_0332_one_expression_may_appear_under_two_fragment_ids() {
+    // Oracle: `analysis.test.ts:332` keeps one mount per fragment id even when
+    // both fragments carry the same expression. The native layout has no
+    // expression-level dedup: each fragment keeps its own mount, target and
+    // WXML byte mapping.
+    let text = "Page({ data: { title: 'x' } });";
+    let range = SourceRange::new(0, 5);
+    let fragments = [
+        FragmentSpec::new("f0", "title", range),
+        FragmentSpec::new("f1", "title", range),
+    ];
+    let built = build(
+        "index.ts",
+        text,
+        RootKind::Page,
+        &fragments,
+        JsCheckPolicy::Inherit,
+        false,
+    )
+    .expect("layout");
+    assert_eq!(built.status, BuildStatus::Supported);
+    assert_eq!(built.data_root, DataRootKind::Object);
+
+    assert_eq!(
+        built.view.mounts.len(),
+        2,
+        "one expression under two fragment ids must produce two mounts"
+    );
+    assert_eq!(
+        built
+            .view
+            .mounts
+            .iter()
+            .map(|mount| mount.fragment_id.as_str())
+            .collect::<Vec<_>>(),
+        ["f0", "f1"],
+        "mounts keep the request fragment order"
+    );
+    assert_eq!(
+        built
+            .view
+            .mounts
+            .iter()
+            .map(|mount| mount.mount_id.as_str())
+            .collect::<Vec<_>>(),
+        ["f0#0", "f1#0"],
+        "each fragment owns its own mount id"
+    );
+
+    let mut previous_end = None;
+    for mount in &built.view.mounts {
+        assert_eq!(mount.text, "__wxml_root.title");
+        assert_eq!(mount.insertion_id, "probe");
+        assert_eq!(
+            utf16_slice(&built.view.text, mount.start_utf16, utf16_len(&mount.text)),
+            mount.text,
+            "{} derived range covers exactly the mounted text",
+            mount.mount_id
+        );
+        let end = mount.end_utf16().expect("checked mount end");
+        if let Some(previous_end) = previous_end {
+            assert!(
+                mount.start_utf16 >= previous_end,
+                "{} starts after the previous mount",
+                mount.mount_id
+            );
+        }
+        assert_eq!(
+            mount.target_length_utf16, 5,
+            "{} targets the template identifier",
+            mount.mount_id
+        );
+        assert_eq!(
+            utf16_slice(
+                &built.view.text,
+                mount.target_start_utf16,
+                mount.target_length_utf16
+            ),
+            "title",
+            "{} target range is the template identifier",
+            mount.mount_id
+        );
+        assert_eq!(
+            mount.segments,
+            [
+                MountedSegment {
+                    start_utf16: mount.start_utf16,
+                    length_utf16: 12,
+                    source: None,
+                },
+                MountedSegment {
+                    start_utf16: mount.start_utf16 + 12,
+                    length_utf16: 5,
+                    source: Some(range),
+                },
+            ],
+            "{} has one synthetic prefix and one source segment",
+            mount.mount_id
+        );
+        previous_end = Some(end);
+    }
+    assert!(
+        built.view.mounts[0].start_utf16 < built.view.mounts[1].start_utf16,
+        "the duplicate expression is not folded onto the first mount"
+    );
 }
 
 #[test]

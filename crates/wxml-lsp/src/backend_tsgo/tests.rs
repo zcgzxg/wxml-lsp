@@ -2801,6 +2801,91 @@ fn a_definition_target_in_generated_shadow_text_is_partial_and_dropped() {
 }
 
 #[test]
+fn case_analysis_0315_a_partial_definition_does_not_degrade_later_hover_or_completion() {
+    // Oracle: `analysis.test.ts:315` drops one definition target and asserts
+    // only `definition` becomes partial; hover and diagnostics stay supported.
+    // The adapter keeps no run-wide capability state, so a definition request
+    // that drops a target must not leak `Partial` into the next request.
+    let wxml = "<view>{{ user.na }}</view>";
+    let behavior = FakeBehavior {
+        definition: FakeDefinitionOutcome::TargetInScript {
+            needle: "__wxml_check_0",
+        },
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(wxml, SCRIPT, "user.na"))),
+        behavior,
+    );
+
+    let definition = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "na"),
+        })
+        .expect("definition");
+    assert_eq!(definition.locations, Vec::new());
+    assert_eq!(
+        definition.status,
+        CapabilityStatus::Partial {
+            reason: "some definition targets could not be represented".to_owned(),
+        },
+        "a generated-only target is dropped and reported on this request only"
+    );
+
+    let hover = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "na"),
+        })
+        .expect("hover");
+    assert_eq!(hover.status, CapabilityStatus::Supported);
+    assert_eq!(hover.quality, wxml_types::TypeQuality::Known);
+    assert_eq!(hover.contents, "```ts\nstring\n```");
+    let range = hover.range.expect("hover range");
+    assert_eq!(range.start(), offset_of(wxml, "na"));
+    assert_eq!(range.end(), offset_of(wxml, "na") + 2);
+
+    let completion = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "na") + 2,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("completion");
+    assert_eq!(completion.status, CapabilityStatus::Supported);
+    assert!(completion.items.is_empty());
+    assert!(!completion.truncated);
+
+    let diagnostics = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, wxml),
+        })
+        .expect("diagnostics");
+    assert_eq!(diagnostics.status, CapabilityStatus::Supported);
+    assert!(diagnostics.diagnostics.is_empty());
+
+    let second = adapter
+        .definition(DefinitionRequest {
+            context: context(&adapter, wxml),
+            offset: offset_of(wxml, "na"),
+        })
+        .expect("second definition");
+    assert_eq!(second.status, definition.status);
+    assert_eq!(second.locations, Vec::new());
+
+    let log = log.lock().expect("log");
+    assert_eq!(
+        log.starts, 1,
+        "the partial definition must not restart or replace the session"
+    );
+    assert_eq!(log.shutdowns, 0);
+    assert_eq!(log.definition_calls.len(), 2);
+    assert_eq!(log.hover_evidence_calls.len(), 1);
+    assert_eq!(log.completion_calls.len(), 1);
+}
+
+#[test]
 fn definition_with_no_native_symbol_is_a_checked_empty_success() {
     let (adapter, log) = adapter_with(
         Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
