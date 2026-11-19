@@ -25,7 +25,9 @@ use crate::shadow::expression::TokenKind;
 use crate::shadow::mapping::SourceRange;
 
 use super::behavior::BehaviorMethod;
-use super::registration::{ParsedRegistration, RegistrationKind, RegistrationScan};
+use super::registration::{
+    ParsedRegistration, RegistrationKind, RegistrationScan, selection_integrity,
+};
 use super::scanner::{
     Member, MemberKind, Script, doc_before, object_bounds, scan_members, signature_of,
 };
@@ -126,7 +128,8 @@ pub struct EventMethod {
 /// Page/component method table used by event resolution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MethodTable {
-    /// Supported only when no ambiguity was found.
+    /// Supported only for one unambiguous top-level registration with a
+    /// complete literal table.
     pub status: CapabilityStatus,
     /// Owner label used in missing-handler messages (`page`/`component`).
     pub owner: &'static str,
@@ -232,22 +235,15 @@ pub(crate) fn build_table(
     let mut opaque = BTreeSet::new();
     let mut methods: BTreeMap<String, EventMethod> = BTreeMap::new();
 
-    let same_kind: Vec<_> = scan
-        .registrations
-        .iter()
-        .filter(|candidate| candidate.kind == kind)
-        .collect();
-    let top_level = same_kind
-        .iter()
-        .filter(|candidate| candidate.top_level)
-        .count();
-    let ambiguous = if top_level > 0 {
-        top_level > 1
-    } else {
-        same_kind.len() > 1
-    };
-    if ambiguous {
+    let integrity = selection_integrity(scan, &registration.fact);
+    if integrity.ambiguous {
         problems.push(format!("multiple {} registrations", kind.registrar()));
+    }
+    if integrity.not_top_level {
+        problems.push(format!(
+            "the selected {} registration is not top-level",
+            kind.registrar()
+        ));
     }
     if scan
         .unsupported

@@ -7,6 +7,12 @@
 //! argument are reported as [`UnsupportedRegistration`] instead of being
 //! guessed.
 //!
+//! Selection prefers a top-level canonical call over a top-level alias call,
+//! over a nested call, over any remaining candidate. A nested registration
+//! is still parsed so callers can show honest facts, but only a single
+//! top-level call can support a complete owner table (see
+//! `selection_integrity`).
+//!
 //! Static `const page = Page;` aliases are resolved when the alias is declared
 //! exactly once with `const`, the initializer is the unqualified registrar, and
 //! neither the registrar nor the alias is shadowed. Shadow checks are
@@ -484,8 +490,11 @@ fn method_name_before(script: &Script<'_>, open: usize) -> bool {
 /// Selects the registration for a requested root with the shadow fallback rules.
 ///
 /// `Page` prefers a `Page` registration and falls back to `Component`; other
-/// roots require their exact kind. The first registration is selected when
-/// several exist; callers must downgrade the result to `Partial`.
+/// roots require their exact kind. Within one kind the preference order is:
+/// top-level canonical call, any top-level call, any canonical call, then the
+/// first remaining candidate. Source order breaks ties, so the choice is
+/// deterministic. Callers must consult [`selection_integrity`] before claiming
+/// a complete owner table.
 pub(crate) fn select(
     file: &SourceFile,
     scan: &RegistrationScan,
@@ -495,22 +504,10 @@ pub(crate) fn select(
         RegistrationKind::Page => &[RegistrationKind::Page, RegistrationKind::Component],
         RegistrationKind::Component | RegistrationKind::Behavior => &[kind],
     };
-    let mut selected = None;
-    for wanted_kind in wanted {
-        if let Some(fact) = scan
-            .registrations
-            .iter()
-            .find(|registration| registration.kind == *wanted_kind && registration.alias.is_none())
-            .or_else(|| {
-                scan.registrations
-                    .iter()
-                    .find(|registration| registration.kind == *wanted_kind)
-            })
-        {
-            selected = Some(fact.clone());
-            break;
-        }
-    }
+    let selected = wanted
+        .iter()
+        .find_map(|wanted_kind| preferred(scan, *wanted_kind))
+        .cloned();
     let Some(fact) = selected else {
         return Ok(None);
     };
@@ -519,6 +516,73 @@ pub(crate) fn select(
     let close = script.close_of(open)?;
     let members = scan_members(&script, open + 1, close);
     Ok(Some(ParsedRegistration { fact, members }))
+}
+
+/// Picks the best same-kind candidate in tier order, source order within a tier.
+fn preferred(scan: &RegistrationScan, kind: RegistrationKind) -> Option<&RegistrationFact> {
+    let same = || {
+        scan.registrations
+            .iter()
+            .filter(move |candidate| candidate.kind == kind)
+    };
+    same()
+        .find(|candidate| candidate.top_level && candidate.alias.is_none())
+        .or_else(|| same().find(|candidate| candidate.top_level))
+        .or_else(|| same().find(|candidate| candidate.alias.is_none()))
+        .or_else(|| same().next())
+}
+
+/// Whether a selected registration can support a complete owner table.
+///
+/// Only one top-level call is authoritative: a nested call may be a factory or
+/// helper, and two top-level calls cannot be ordered by source position alone.
+/// The selected candidate is still used for facts in both cases, but callers
+/// must report `Partial`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SelectionIntegrity {
+    /// More than one same-kind candidate can claim the owner: multiple
+    /// top-level calls, or multiple candidates when none is top-level.
+    pub(crate) ambiguous: bool,
+    /// The selected call is not top-level.
+    pub(crate) not_top_level: bool,
+}
+
+impl SelectionIntegrity {
+    /// True only for one unambiguous top-level selection.
+    pub(crate) const fn is_complete(self) -> bool {
+        !self.ambiguous && !self.not_top_level
+    }
+}
+
+/// Computes the ambiguity/top-level state for `selected` among same-kind calls.
+///
+/// Ambiguity keeps the historical rule: several top-level candidates are
+/// ambiguous, and without any top-level candidate several nested ones are.
+pub(crate) fn selection_integrity(
+    scan: &RegistrationScan,
+    selected: &RegistrationFact,
+) -> SelectionIntegrity {
+    let mut same_kind = 0_usize;
+    let mut top_level = 0_usize;
+    for candidate in scan
+        .registrations
+        .iter()
+        .filter(|candidate| candidate.kind == selected.kind)
+    {
+        same_kind += 1;
+        if candidate.top_level {
+            top_level += 1;
+        }
+    }
+    let ambiguous = if top_level > 0 {
+        top_level > 1
+    } else {
+        same_kind > 1
+    };
+    SelectionIntegrity {
+        ambiguous,
+        not_top_level: !selected.top_level,
+    }
 }
 
 fn find_options_open(script: &Script<'_>, fact: &RegistrationFact) -> Result<usize, ScriptError> {

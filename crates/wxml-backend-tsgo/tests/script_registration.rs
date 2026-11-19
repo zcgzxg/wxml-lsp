@@ -326,3 +326,192 @@ fn h1_alias_target_shadowing_invalidates_the_alias() {
     assert!(result.registration.selected.is_none());
     assert!(result.data.fields.is_empty());
 }
+
+/// S1: a nested `Page` must not beat the real top-level registration.
+#[test]
+fn s1_nested_page_does_not_win_over_the_top_level_page() {
+    let result = analyze(
+        "function defineNested() { Page({ data: { nested: 1 }, onNested() {} }); }\nPage({ data: { real: 1 }, onReal() {} });",
+        RegistrationKind::Page,
+    );
+    let selected = result.registration.selected.expect("top-level Page");
+    assert!(selected.top_level);
+    assert!(selected.alias.is_none());
+    assert!(result.registration.complete, "{:?}", result.reasons);
+    assert!(result.data.fields.iter().any(|field| field.name == "real"));
+    assert!(
+        result
+            .data
+            .fields
+            .iter()
+            .all(|field| field.name != "nested")
+    );
+    let methods = result
+        .methods
+        .methods
+        .iter()
+        .map(|method| method.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(methods.contains(&"onReal"));
+    assert!(!methods.contains(&"onNested"));
+    assert!(
+        result.methods.status.is_supported(),
+        "{:?}",
+        result.methods.problems
+    );
+}
+
+/// S1: a nested-only registration is parsed but can never be `Supported`.
+#[test]
+fn s1_nested_only_page_is_recognized_but_partial() {
+    let result = analyze(
+        "function load() { Page({ data: { inner: 1 }, onInner() {} }); }",
+        RegistrationKind::Page,
+    );
+    let selected = result.registration.selected.expect("nested Page");
+    assert!(!selected.top_level);
+    assert!(!result.registration.complete);
+    assert!(result.data.fields.iter().any(|field| field.name == "inner"));
+    assert!(
+        result
+            .methods
+            .methods
+            .iter()
+            .any(|method| method.name == "onInner")
+    );
+    assert!(!result.methods.status.is_supported());
+    assert!(!result.status.is_supported());
+    assert!(
+        result
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("not top-level"))
+    );
+}
+
+/// S1: two top-level registrations are ambiguous even when one is selected.
+#[test]
+fn s1_two_top_level_pages_are_ambiguous_and_partial() {
+    let result = analyze(
+        "Page({ data: { first: 1 }, onFirst() {} });\nPage({ data: { second: 2 }, onSecond() {} });",
+        RegistrationKind::Page,
+    );
+    let selected = result.registration.selected.expect("first Page");
+    assert!(selected.top_level);
+    assert_eq!(result.registration.candidates.len(), 2);
+    assert!(!result.registration.complete);
+    assert!(
+        result
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("multiple Page"))
+    );
+    assert!(
+        result
+            .methods
+            .problems
+            .iter()
+            .any(|problem| problem.contains("multiple Page registrations"))
+    );
+    assert!(!result.methods.status.is_supported());
+    assert!(!result.status.is_supported());
+}
+
+/// S1: kind selection stays correct when only one registrar is top-level.
+#[test]
+fn s1_top_level_component_wins_when_a_nested_page_also_exists() {
+    let component = analyze(
+        "function makePage() { Page({ data: { inner: 1 }, onInner() {} }); }\nComponent({ data: { outer: 1 }, methods: { onSave() {} } });",
+        RegistrationKind::Component,
+    );
+    let selected = component
+        .registration
+        .selected
+        .as_ref()
+        .expect("top-level Component");
+    assert_eq!(selected.kind, RegistrationKind::Component);
+    assert!(selected.top_level);
+    assert!(component.registration.complete);
+    assert!(component.methods.status.is_supported());
+    let methods = component
+        .methods
+        .methods
+        .iter()
+        .map(|method| method.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(methods.contains(&"onSave"));
+    assert!(!methods.contains(&"onInner"));
+    assert!(
+        component
+            .data
+            .fields
+            .iter()
+            .all(|field| field.name != "inner")
+    );
+}
+
+/// S1: the Page root keeps its own kind, but a nested match stays `Partial`.
+#[test]
+fn s1_page_root_with_only_a_nested_page_stays_partial() {
+    let page = analyze(
+        "function makePage() { Page({ data: { inner: 1 }, onInner() {} }); }\nComponent({ data: { outer: 1 }, methods: { onSave() {} } });",
+        RegistrationKind::Page,
+    );
+    let selected = page
+        .registration
+        .selected
+        .as_ref()
+        .expect("nested Page is still recognized");
+    assert_eq!(selected.kind, RegistrationKind::Page);
+    assert!(!selected.top_level);
+    assert!(!page.registration.complete);
+    assert!(!page.methods.status.is_supported());
+    assert!(
+        page.methods
+            .methods
+            .iter()
+            .any(|method| method.name == "onInner")
+    );
+    assert!(
+        page.methods
+            .methods
+            .iter()
+            .all(|method| method.name != "onSave")
+    );
+}
+
+/// S1: a top-level alias still loses to the top-level canonical call.
+#[test]
+fn s1_top_level_alias_loses_to_the_top_level_canonical_call() {
+    let result = analyze(
+        "const p = Page;\np({ data: { fromAlias: 1 }, onAlias() {} });\nPage({ data: { fromDirect: 2 }, onDirect() {} });",
+        RegistrationKind::Page,
+    );
+    let selected = result.registration.selected.expect("canonical Page");
+    assert!(selected.alias.is_none());
+    assert!(selected.top_level);
+    let methods = result
+        .methods
+        .methods
+        .iter()
+        .map(|method| method.name.as_str())
+        .collect::<Vec<_>>();
+    assert!(methods.contains(&"onDirect"));
+    assert!(!methods.contains(&"onAlias"));
+    assert!(
+        result
+            .data
+            .fields
+            .iter()
+            .any(|field| field.name == "fromDirect")
+    );
+    assert!(
+        result
+            .data
+            .fields
+            .iter()
+            .all(|field| field.name != "fromAlias")
+    );
+    // Two top-level same-kind calls stay ambiguous even when one is an alias.
+    assert!(!result.methods.status.is_supported());
+}

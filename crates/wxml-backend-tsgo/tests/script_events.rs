@@ -663,3 +663,47 @@ fn h4_own_method_processing_is_capped_and_partial() {
     ));
     assert!(missing.diagnostic.is_none());
 }
+
+/// S1: the event table is authoritative only for the top-level registration.
+#[test]
+fn s1_event_table_comes_from_the_top_level_registration() {
+    let result = analysis(
+        &[(
+            "index.ts",
+            "function defineNested() { Page({ onNested() {} }); }\nPage({ onReal() {} });",
+        )],
+        "index.ts",
+        RegistrationKind::Page,
+    );
+    let collection = result.resolve_events(&[binding("onReal"), binding("onNested")]);
+    assert!(collection.results[0].status.is_supported());
+    assert!(collection.results[0].definition.is_some());
+    // The nested table is not the page table, so its handler is really missing.
+    assert!(collection.results[1].status.is_supported());
+    assert!(collection.results[1].definition.is_none());
+    assert_eq!(
+        collection.results[1]
+            .diagnostic
+            .as_ref()
+            .map(|diagnostic| diagnostic.severity),
+        Some("error")
+    );
+}
+
+/// S1: a nested-only registration keeps known handlers but never reports missing.
+#[test]
+fn s1_nested_only_registration_never_reports_missing_handlers() {
+    let result = analysis(
+        &[("index.ts", "function load() { Page({ onInner() {} }); }")],
+        "index.ts",
+        RegistrationKind::Page,
+    );
+    let collection = result.resolve_events(&[binding("onInner"), binding("noSuchHandler")]);
+    assert!(collection.results[0].definition.is_some());
+    assert!(matches!(
+        collection.results[0].status,
+        wxml_types::CapabilityStatus::Partial { .. }
+    ));
+    assert!(collection.results[1].definition.is_none());
+    assert!(collection.results[1].diagnostic.is_none());
+}

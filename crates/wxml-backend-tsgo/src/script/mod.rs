@@ -131,7 +131,9 @@ pub struct RegistrationSelection {
     pub candidates: Vec<RegistrationFact>,
     /// Rejected registration-shaped calls.
     pub unsupported: Vec<UnsupportedRegistration>,
-    /// False when multiple/rejected registrations make the owner ambiguous.
+    /// False when multiple top-level same-kind candidates (or multiple
+    /// same-kind candidates and no top-level one), a non-top-level selection
+    /// or rejected calls make the owner ambiguous.
     pub complete: bool,
 }
 
@@ -237,12 +239,21 @@ pub fn analyze_script(request: &ScriptRequest<'_>) -> Result<ScriptAnalysis, Scr
         .map_or(request.kind, |selected| selected.fact.kind);
     // A Page and a Component in one file are a normal fallback pair, not two
     // Page registrations. Count ambiguity only within the selected kind.
-    let ambiguous = selected.is_some() && selection_is_ambiguous(&scan, selected_kind);
+    let integrity = selected
+        .as_ref()
+        .map(|selected| registration::selection_integrity(&scan, &selected.fact));
+    let ambiguous = integrity.is_some_and(|integrity| integrity.ambiguous);
     let mut reasons = Vec::new();
     let mut notes = Vec::new();
     if ambiguous {
         reasons.push(format!(
-            "multiple {} registrations; the first literal one is selected",
+            "multiple {} registrations; the preferred candidate is selected",
+            selected_kind.registrar()
+        ));
+    }
+    if integrity.is_some_and(|integrity| integrity.not_top_level) {
+        reasons.push(format!(
+            "the selected {} registration is not top-level",
             selected_kind.registrar()
         ));
     }
@@ -298,7 +309,7 @@ pub fn analyze_script(request: &ScriptRequest<'_>) -> Result<ScriptAnalysis, Scr
         &methods,
         ambiguous,
     );
-    let complete = !ambiguous
+    let complete = integrity.is_some_and(registration::SelectionIntegrity::is_complete)
         && scan
             .unsupported
             .iter()
@@ -323,20 +334,6 @@ pub fn analyze_script(request: &ScriptRequest<'_>) -> Result<ScriptAnalysis, Scr
         methods,
         symbols,
     })
-}
-
-fn selection_is_ambiguous(scan: &registration::RegistrationScan, kind: RegistrationKind) -> bool {
-    let same: Vec<_> = scan
-        .registrations
-        .iter()
-        .filter(|candidate| candidate.kind == kind)
-        .collect();
-    let top_level = same.iter().filter(|candidate| candidate.top_level).count();
-    if top_level > 0 {
-        top_level > 1
-    } else {
-        same.len() > 1
-    }
 }
 
 fn missing_registration(
