@@ -36,6 +36,7 @@ use wxml_backend_tsgo::native::session::{SessionOptions, TypeQuery};
 use wxml_backend_tsgo::native::strings::Utf16Position;
 use wxml_backend_tsgo::native::wire::{RawCompletionList, RawDiagnostic};
 use wxml_backend_tsgo::query::definition::DefinitionResult as NativeDefinitionResult;
+use wxml_backend_tsgo::query::hover::HoverEvidence;
 
 use crate::backend_tsgo::session::{
     HoverDocumentation, NativeSessionFactory, QuerySession, SessionFactory,
@@ -380,6 +381,14 @@ impl QuerySession for SandboxedSession {
         self.inner.hover_documentation(path, position)
     }
 
+    fn hover_evidence(
+        &mut self,
+        path: &str,
+        position: Utf16Position,
+    ) -> Result<HoverEvidence, NativeError> {
+        self.inner.hover_evidence(path, position)
+    }
+
     fn completions(
         &mut self,
         path: &str,
@@ -475,7 +484,12 @@ mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
 
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+
+    use wxml_backend_tsgo::query::hover::HoverGap;
+    use wxml_backend_tsgo::query::type_info::{TypeInfo, TypeQuality};
+    use wxml_types::CapabilityStatus;
 
     use super::*;
 
@@ -528,6 +542,145 @@ mod tests {
         }
         entries.sort();
         entries
+    }
+
+    /// Inner session that only answers `hover_evidence`.
+    ///
+    /// Every legacy query fails, so a wrapper that forwards the wrong method
+    /// fails the test instead of silently producing hover evidence.
+    struct HoverEvidenceSession {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl QuerySession for HoverEvidenceSession {
+        fn open_project(&mut self, _input: &AnalysisInput) -> Result<(), NativeError> {
+            Err(test_unsupported())
+        }
+
+        fn update_project(&mut self, _input: &AnalysisInput) -> Result<(), NativeError> {
+            Err(test_unsupported())
+        }
+
+        fn semantic_diagnostics(&mut self, _path: &str) -> Result<Vec<RawDiagnostic>, NativeError> {
+            Err(test_unsupported())
+        }
+
+        fn syntactic_diagnostics(
+            &mut self,
+            _path: &str,
+        ) -> Result<Vec<RawDiagnostic>, NativeError> {
+            Err(test_unsupported())
+        }
+
+        fn type_query(
+            &mut self,
+            _path: &str,
+            _position: Utf16Position,
+        ) -> Result<TypeQuery, NativeError> {
+            Err(test_unsupported())
+        }
+
+        fn hover_documentation(
+            &mut self,
+            _path: &str,
+            _position: Utf16Position,
+        ) -> Result<HoverDocumentation, NativeError> {
+            Err(test_unsupported())
+        }
+
+        fn hover_evidence(
+            &mut self,
+            _path: &str,
+            _position: Utf16Position,
+        ) -> Result<HoverEvidence, NativeError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(gap_evidence())
+        }
+
+        fn completions(
+            &mut self,
+            _path: &str,
+            _position: Utf16Position,
+        ) -> Result<Option<RawCompletionList>, NativeError> {
+            Err(test_unsupported())
+        }
+
+        fn definition(
+            &mut self,
+            _path: &str,
+            _position: Utf16Position,
+        ) -> Result<NativeDefinitionResult, NativeError> {
+            Err(test_unsupported())
+        }
+
+        fn document_symbols(
+            &mut self,
+            _path: &str,
+        ) -> Result<DocumentSymbolsEvidence, NativeError> {
+            Err(test_unsupported())
+        }
+
+        fn shutdown(self: Box<Self>) {}
+    }
+
+    const fn test_unsupported() -> NativeError {
+        NativeError::Unsupported {
+            method: "sandbox hover forwarding test",
+        }
+    }
+
+    /// Evidence with a typed declaration gap, which must survive forwarding.
+    fn gap_evidence() -> HoverEvidence {
+        let mut evidence = HoverEvidence {
+            type_info: Some(TypeInfo {
+                text: "string".to_owned(),
+                handle: 1,
+                flags: 0,
+            }),
+            type_quality: TypeQuality::Known,
+            symbol: None,
+            documentation: None,
+            declarations: Vec::new(),
+            status: CapabilityStatus::Supported,
+            gaps: vec![HoverGap::ExternalDeclaration {
+                path: Some("lib.d.ts".to_owned()),
+            }],
+        };
+        evidence.finalize_status();
+        evidence
+    }
+
+    #[test]
+    fn sandboxed_session_forwards_hover_evidence() {
+        let test = TestRoot::new("hover-forward");
+        let root = SandboxRoot::at(&test.path).expect("root");
+        let sandbox = root.create().expect("sandbox");
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut session = SandboxedSession {
+            inner: Box::new(HoverEvidenceSession {
+                calls: Arc::clone(&calls),
+            }),
+            sandbox,
+        };
+
+        let evidence = session
+            .hover_evidence(
+                "main.ts",
+                Utf16Position {
+                    line: 3,
+                    character: 4,
+                },
+            )
+            .expect("forwarded hover evidence");
+
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(evidence, gap_evidence());
+        assert_eq!(
+            evidence.status,
+            CapabilityStatus::Partial {
+                reason: "declaration `lib.d.ts` is outside the project snapshot".to_owned(),
+            }
+        );
     }
 
     #[test]

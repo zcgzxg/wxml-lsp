@@ -14,6 +14,7 @@ use wxml_backend_tsgo::query::definition::{
     DefinitionResult as NativeDefinitionResult, map_definition,
 };
 use wxml_backend_tsgo::query::documentation::{DocumentationResult, map_documentation};
+use wxml_backend_tsgo::query::hover::HoverEvidence;
 use wxml_types::CapabilityStatus;
 
 /// Documentation evidence for one hover position.
@@ -69,16 +70,35 @@ pub(crate) trait QuerySession: Send {
     /// Returns syntactic diagnostics for one project-relative script path.
     fn syntactic_diagnostics(&mut self, path: &str) -> Result<Vec<RawDiagnostic>, NativeError>;
 
-    /// Returns the type evidence at one UTF-16 position.
+    /// Legacy: returns the type evidence at one UTF-16 position.
+    ///
+    /// The hover adapter uses [`Self::hover_evidence`]; this individual query
+    /// remains for session decorators and test fakes that mirror the native
+    /// surface.
     fn type_query(&mut self, path: &str, position: Utf16Position)
     -> Result<TypeQuery, NativeError>;
 
-    /// Returns bound documentation evidence for one UTF-16 position.
+    /// Legacy: returns bound documentation evidence for one UTF-16 position.
+    ///
+    /// The hover adapter uses [`Self::hover_evidence`]; this individual query
+    /// remains for session decorators and test fakes that mirror the native
+    /// surface.
     fn hover_documentation(
         &mut self,
         path: &str,
         position: Utf16Position,
     ) -> Result<HoverDocumentation, NativeError>;
+
+    /// Returns composed hover evidence for one UTF-16 position.
+    ///
+    /// Required: every session must return the backend's type, documentation,
+    /// declaration and typed-gap evidence. There is deliberately no fallback
+    /// that could report `Supported` without declaration evidence.
+    fn hover_evidence(
+        &mut self,
+        path: &str,
+        position: Utf16Position,
+    ) -> Result<HoverEvidence, NativeError>;
 
     /// Returns native completions at one UTF-16 position.
     fn completions(
@@ -176,6 +196,14 @@ impl QuerySession for LiveQuerySession {
             symbol: true,
             result: map_documentation(&raw),
         })
+    }
+
+    fn hover_evidence(
+        &mut self,
+        path: &str,
+        position: Utf16Position,
+    ) -> Result<HoverEvidence, NativeError> {
+        self.session.hover_evidence(path, position)
     }
 
     fn completions(

@@ -618,6 +618,13 @@ Hover 由三部分组成，顺序固定：
 - 文档可选：类型成功、文档缺失 → type-only hover，`Supported`；类型失败但文档可用 → `Partial`；两者都不可用 → `Unsupported`，不得返回空字符串 + `Supported`。
 - 旧 QuickInfo 的 display parts、参数名/类型分段、每 overload 独立文档在原生 API 中不存在；F1 必须把旧断言映射到本模型，无法等价时标记为阻塞并修订 ADR/合同，不能悄悄降级。
 
+状态合成（`HoverEvidence`）：
+
+- `HoverEvidence` 的 `type_info`/`type_quality`、`documentation`、`symbol`、`declarations` 与 `gaps` 共同决定 `status`：没有可渲染的类型或文档 → `Unsupported`；声明目标落在项目外、声明句柄不可解码、声明列表/扫描被截断，或 `Missing` 类型仍有符号/声明证据（`Blocked`）→ 至少 `Partial`，且 `reason` 保留后端原文，不得省略或改写。
+- 空 Markdown（`compose_hover_markdown` 返回空串）与 `Supported` 同时出现是契约违反：LSP adapter 必须发布 `Unsupported` 并保留可读原因，绝不能发布空内容 + `Supported` 或空内容 + `Partial`。
+- `Unsupported` + 非空 Markdown 同样是契约违反：adapter 必须降级为 `Partial` 并明确说明矛盾，不得假 `Supported`，也不得丢弃已渲染内容。
+- host degradation（shadow/源文件列表不完整等）与 hover range 映射失败都是追加原因：`Supported` → `Partial`；已有 `Partial`/`Unsupported` 保留原 `reason` 并追加（去重），不得覆盖后端原因；`Disabled`/`Unavailable`/`Unknown` 不因追加原因被提升。
+
 ### 9.9 Rename：保守编辑规则 [F1-23][F1-27]
 
 `getRenameInfo`/`getEditsForRename`/`rename` 不存在；Rust 只能基于符号 + 引用 + AST 证据构造编辑。**只有同时满足以下全部条件才允许生成编辑：**

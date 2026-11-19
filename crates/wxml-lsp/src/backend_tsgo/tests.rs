@@ -41,7 +41,13 @@ use wxml_backend_tsgo::native::wire::{
 use wxml_backend_tsgo::query::definition::{
     DefinitionResult as NativeDefinitionResult, DefinitionTarget as NativeDefinitionTarget,
 };
-use wxml_backend_tsgo::query::documentation::map_documentation;
+use wxml_backend_tsgo::query::documentation::{
+    DocumentationResult as NativeDocumentationResult, map_documentation,
+};
+use wxml_backend_tsgo::query::hover::{HoverEvidence, HoverGap};
+use wxml_backend_tsgo::query::type_info::{
+    TypeInfo as NativeTypeInfo, TypeQuality as NativeTypeQuality, map_type_query,
+};
 use wxml_backend_tsgo::script::symbols::Utf16Range;
 use wxml_backend_tsgo::shadow::mapping::SourceRange as NativeSourceRange;
 use wxml_project::ProjectPath;
@@ -50,10 +56,11 @@ use wxml_types::{
     Backend, BackendEpoch, BackendError, BackendId, CapabilityStatus, CheckFragment,
     CompletionItemKind, CompletionKind, CompletionRequest, CompletionResult, DefinitionRequest,
     Diagnostic, DiagnosticSeverity, DiagnosticsRequest, DocumentSymbolKind, DocumentSymbolsRequest,
-    FileId, HoverRequest, ProjectId, ProjectRevision, RequestContext, RootKind, SnapshotId,
-    SourceRevision, SourceSnapshot, SymbolQuery, SymbolRequest, ViewRevision,
+    FileId, HoverRequest, MarkupKind, ProjectId, ProjectRevision, RequestContext, RootKind,
+    SnapshotId, SourceRevision, SourceSnapshot, SymbolQuery, SymbolRequest, ViewRevision,
 };
 
+use super::hover::resolved_status;
 use super::input::ViewProvider;
 use super::session::{HoverDocumentation, QuerySession};
 use super::{BACKEND_ID, TsgoBackendAdapter};
@@ -233,6 +240,47 @@ enum FakeDocsOutcome {
 }
 
 #[derive(Clone, Debug)]
+enum FakeHoverOutcome {
+    /// Derives evidence from `type_outcome` and `docs_outcome` the way the
+    /// native session composes its facts.
+    Derived,
+    /// Returns hand-built evidence, including backend contract violations.
+    Evidence(FakeHoverEvidence),
+    Failure(FakeFailure),
+}
+
+#[derive(Clone, Debug)]
+struct FakeHoverEvidence {
+    type_text: Option<&'static str>,
+    quality: NativeTypeQuality,
+    documentation: Option<DocumentationQuery>,
+    gaps: Vec<HoverGap>,
+    status: Option<CapabilityStatus>,
+}
+
+impl FakeHoverEvidence {
+    fn evidence(&self) -> HoverEvidence {
+        let mut evidence = HoverEvidence {
+            type_info: self.type_text.map(|text| NativeTypeInfo {
+                text: text.to_owned(),
+                handle: 1,
+                flags: 0,
+            }),
+            type_quality: self.quality,
+            symbol: None,
+            documentation: self.documentation.as_ref().map(map_documentation),
+            declarations: Vec::new(),
+            status: self.status.clone().unwrap_or(CapabilityStatus::Supported),
+            gaps: self.gaps.clone(),
+        };
+        if self.status.is_none() {
+            evidence.finalize_status();
+        }
+        evidence
+    }
+}
+
+#[derive(Clone, Debug)]
 enum FakeDiagnosticOutcome {
     Empty,
     Diagnostics(Vec<FakeDiagnostic>),
@@ -366,6 +414,7 @@ impl SlowGate {
 
 #[derive(Clone, Debug)]
 struct FakeBehavior {
+    hover_outcome: FakeHoverOutcome,
     type_outcome: FakeTypeOutcome,
     docs_outcome: FakeDocsOutcome,
     semantic: FakeDiagnosticOutcome,
@@ -381,6 +430,7 @@ struct FakeBehavior {
 impl Default for FakeBehavior {
     fn default() -> Self {
         Self {
+            hover_outcome: FakeHoverOutcome::Derived,
             type_outcome: FakeTypeOutcome::Known("string".to_owned()),
             docs_outcome: FakeDocsOutcome::NoSymbol,
             semantic: FakeDiagnosticOutcome::Empty,
@@ -419,6 +469,8 @@ struct FakeLog {
     semantic_calls: usize,
     syntactic_calls: usize,
     type_calls: Vec<(String, Utf16Position)>,
+    hover_evidence_calls: Vec<(String, Utf16Position)>,
+    hover_documentation_calls: usize,
     completion_calls: Vec<(String, Utf16Position)>,
     definition_calls: Vec<(String, Utf16Position)>,
     document_symbol_calls: Vec<String>,
@@ -465,6 +517,75 @@ struct FakeSession {
 impl FakeSession {
     fn text(&self, path: &str) -> Option<&str> {
         self.input.as_ref()?.file(path).map(InputSourceFile::text)
+    }
+
+    fn type_query_value(&self) -> Result<TypeQuery, NativeError> {
+        match &self.behavior.type_outcome {
+            FakeTypeOutcome::Null => Ok(TypeQuery {
+                info: None,
+                text: None,
+            }),
+            FakeTypeOutcome::Known(text) | FakeTypeOutcome::Any(text) => Ok(TypeQuery {
+                info: Some(RawType {
+                    id: 1,
+                    flags: 0,
+                    intrinsic_name: (text == "any").then(|| "any".to_owned()),
+                }),
+                text: Some(text.clone()),
+            }),
+            FakeTypeOutcome::Failure(failure) => Err(failure.native()),
+        }
+    }
+
+    fn hover_documentation_value(&self) -> Result<HoverDocumentation, NativeError> {
+        match &self.behavior.docs_outcome {
+            FakeDocsOutcome::NoSymbol => Ok(HoverDocumentation::no_symbol()),
+            FakeDocsOutcome::Documented(query) => Ok(HoverDocumentation {
+                symbol: true,
+                result: map_documentation(query),
+            }),
+            FakeDocsOutcome::Failure(failure) => Err(failure.native()),
+        }
+    }
+
+    /// Mirrors the native session's composed evidence for the fake facts.
+    ///
+    /// An unsupported documentation query stays a documentation gap instead of
+    /// failing the whole hover, matching the backend contract that
+    /// documentation gaps live in the evidence status.
+    fn derived_hover_evidence(&self) -> Result<HoverEvidence, NativeError> {
+        let type_result = map_type_query(&self.type_query_value()?);
+        let documentation = match self.hover_documentation_value() {
+            Ok(documentation) => documentation,
+            Err(NativeError::Unsupported { .. }) => HoverDocumentation {
+                symbol: true,
+                result: NativeDocumentationResult {
+                    comment: None,
+                    tags: Vec::new(),
+                    status: CapabilityStatus::Unsupported {
+                        reason: "native documentation queries are unavailable".to_owned(),
+                    },
+                },
+            },
+            Err(error) => return Err(error),
+        };
+        let mut gaps = Vec::new();
+        if let Some(reason) = type_result.status.reason() {
+            gaps.push(HoverGap::Unsupported {
+                reason: format!("type query is incomplete: {reason}"),
+            });
+        }
+        let mut evidence = HoverEvidence {
+            type_info: type_result.info,
+            type_quality: type_result.quality,
+            symbol: None,
+            documentation: documentation.symbol.then_some(documentation.result),
+            declarations: Vec::new(),
+            status: CapabilityStatus::Supported,
+            gaps,
+        };
+        evidence.finalize_status();
+        Ok(evidence)
     }
 
     fn raw_diagnostics(
@@ -554,24 +675,7 @@ impl QuerySession for FakeSession {
             .expect("log")
             .type_calls
             .push((path.to_owned(), position));
-        if let Some(gate) = &self.behavior.type_gate {
-            gate.enter_and_wait();
-        }
-        match &self.behavior.type_outcome {
-            FakeTypeOutcome::Null => Ok(TypeQuery {
-                info: None,
-                text: None,
-            }),
-            FakeTypeOutcome::Known(text) | FakeTypeOutcome::Any(text) => Ok(TypeQuery {
-                info: Some(RawType {
-                    id: 1,
-                    flags: 0,
-                    intrinsic_name: (text == "any").then(|| "any".to_owned()),
-                }),
-                text: Some(text.clone()),
-            }),
-            FakeTypeOutcome::Failure(failure) => Err(failure.native()),
-        }
+        self.type_query_value()
     }
 
     fn hover_documentation(
@@ -579,13 +683,27 @@ impl QuerySession for FakeSession {
         _path: &str,
         _position: Utf16Position,
     ) -> Result<HoverDocumentation, NativeError> {
-        match &self.behavior.docs_outcome {
-            FakeDocsOutcome::NoSymbol => Ok(HoverDocumentation::no_symbol()),
-            FakeDocsOutcome::Documented(query) => Ok(HoverDocumentation {
-                symbol: true,
-                result: map_documentation(query),
-            }),
-            FakeDocsOutcome::Failure(failure) => Err(failure.native()),
+        self.log.lock().expect("log").hover_documentation_calls += 1;
+        self.hover_documentation_value()
+    }
+
+    fn hover_evidence(
+        &mut self,
+        path: &str,
+        position: Utf16Position,
+    ) -> Result<HoverEvidence, NativeError> {
+        self.log
+            .lock()
+            .expect("log")
+            .hover_evidence_calls
+            .push((path.to_owned(), position));
+        if let Some(gate) = &self.behavior.type_gate {
+            gate.enter_and_wait();
+        }
+        match &self.behavior.hover_outcome {
+            FakeHoverOutcome::Derived => self.derived_hover_evidence(),
+            FakeHoverOutcome::Evidence(evidence) => Ok(evidence.evidence()),
+            FakeHoverOutcome::Failure(failure) => Err(failure.native()),
         }
     }
 
@@ -828,7 +946,7 @@ fn derived_position(log: &Arc<Mutex<FakeLog>>, needle: &str, token: Option<&str>
 
 #[test]
 fn hover_composes_type_documentation_and_jsdoc() {
-    let (adapter, _log) = adapter_with(
+    let (adapter, log) = adapter_with(
         Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
         documented_behavior(),
     );
@@ -841,15 +959,21 @@ fn hover_composes_type_documentation_and_jsdoc() {
         .expect("hover");
     assert_eq!(result.status, CapabilityStatus::Supported);
     assert_eq!(result.quality, wxml_types::TypeQuality::Known);
-    assert!(result.contents.contains("```ts\nstring\n```"));
-    assert!(result.contents.contains(COMMENT));
-    assert!(result.contents.contains("@deprecated use title"));
+    // The exact backend composition order: type fence, comment, JSDoc tags.
+    assert_eq!(
+        result.contents,
+        format!("```ts\nstring\n```\n\n{COMMENT}\n\n@deprecated use title")
+    );
     let range = result.range.expect("hover range");
     assert_eq!(
         range.range(),
         wxml_text::TextRange::new(offset_of(WXML, "name"), offset_of(WXML, "name") + 4)
             .expect("range")
     );
+    let log = log.lock().expect("log");
+    assert_eq!(log.hover_evidence_calls.len(), 1);
+    assert!(log.type_calls.is_empty());
+    assert_eq!(log.hover_documentation_calls, 0);
 }
 
 #[test]
@@ -870,7 +994,37 @@ fn hover_any_preserves_quality_but_not_a_concrete_type() {
         .expect("hover");
     assert_eq!(result.quality, wxml_types::TypeQuality::Any);
     assert_eq!(result.status, CapabilityStatus::Supported);
-    assert!(result.contents.contains("any"));
+    assert_eq!(result.contents, "```ts\nany\n```");
+}
+
+#[test]
+fn hover_unknown_quality_keeps_backend_partial_without_a_type_fence() {
+    let behavior = FakeBehavior {
+        type_outcome: FakeTypeOutcome::Known("unknown".to_owned()),
+        docs_outcome: documented_behavior().docs_outcome,
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let result = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("hover");
+    assert_eq!(result.quality, wxml_types::TypeQuality::Unknown);
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Partial {
+            reason: "the hover type is unknown".to_owned(),
+        }
+    );
+    assert_eq!(
+        result.contents,
+        format!("{COMMENT}\n\n@deprecated use title")
+    );
 }
 
 #[test]
@@ -891,11 +1045,18 @@ fn hover_without_type_or_documentation_is_unsupported_not_empty_success() {
         })
         .expect("hover");
     assert_eq!(result.contents, "");
-    assert!(matches!(
+    assert_eq!(
         result.status,
-        CapabilityStatus::Unsupported { .. }
-    ));
+        CapabilityStatus::Unsupported {
+            reason: "no type or documentation evidence is available at the position".to_owned(),
+        }
+    );
     assert_eq!(result.quality, wxml_types::TypeQuality::Missing);
+    // The range still comes from the template token, not from the backend.
+    assert_eq!(
+        result.range.expect("hover range").start(),
+        offset_of(WXML, "name")
+    );
 }
 
 #[test]
@@ -920,9 +1081,14 @@ fn hover_documentation_failure_is_partial_not_fake_known_docs() {
             offset: offset_of(WXML, "name"),
         })
         .expect("hover");
-    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Partial {
+            reason: "documentation: one documentation method failed".to_owned(),
+        }
+    );
     assert_eq!(result.quality, wxml_types::TypeQuality::Known);
-    assert!(result.contents.contains("string"));
+    assert_eq!(result.contents, "```ts\nstring\n```");
     assert!(!result.contents.contains(COMMENT));
 }
 
@@ -942,9 +1108,14 @@ fn an_unsupported_documentation_query_is_partial_type_only() {
             offset: offset_of(WXML, "name"),
         })
         .expect("hover");
-    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Partial {
+            reason: "documentation: native documentation queries are unavailable".to_owned(),
+        }
+    );
     assert_eq!(result.quality, wxml_types::TypeQuality::Known);
-    assert!(result.contents.contains("string"));
+    assert_eq!(result.contents, "```ts\nstring\n```");
 }
 
 #[test]
@@ -980,8 +1151,259 @@ fn hover_degrades_when_the_prepared_source_list_is_incomplete() {
             offset: offset_of(WXML, "name"),
         })
         .expect("hover");
-    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
-    assert!(result.contents.contains("string"));
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Partial {
+            reason: "the prepared source file list is incomplete".to_owned(),
+        }
+    );
+    assert_eq!(result.contents, "```ts\nstring\n```");
+}
+
+#[test]
+fn hover_declaration_gap_keeps_the_backend_partial_reason() {
+    let behavior = FakeBehavior {
+        hover_outcome: FakeHoverOutcome::Evidence(FakeHoverEvidence {
+            type_text: Some("string"),
+            quality: NativeTypeQuality::Known,
+            documentation: None,
+            gaps: vec![HoverGap::ExternalDeclaration {
+                path: Some("lib.d.ts".to_owned()),
+            }],
+            status: None,
+        }),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let result = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("hover");
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Partial {
+            reason: "declaration `lib.d.ts` is outside the project snapshot".to_owned(),
+        }
+    );
+    assert_eq!(result.quality, wxml_types::TypeQuality::Known);
+    assert_eq!(result.contents, "```ts\nstring\n```");
+}
+
+#[test]
+fn a_fatal_hover_evidence_query_drops_the_session_and_returns_the_error() {
+    let behavior = FakeBehavior {
+        hover_outcome: FakeHoverOutcome::Failure(FakeFailure::Timeout),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let before = adapter.epoch();
+    let error = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect_err("fatal hover evidence failure");
+    assert!(matches!(error, BackendError::Timeout));
+    assert_eq!(log.lock().expect("log").shutdowns, 1);
+    assert!(adapter.epoch().get() > before.get());
+}
+
+#[test]
+fn hover_evidence_that_contradicts_its_markdown_is_partial_not_supported() {
+    let behavior = FakeBehavior {
+        hover_outcome: FakeHoverOutcome::Evidence(FakeHoverEvidence {
+            type_text: Some("string"),
+            quality: NativeTypeQuality::Known,
+            documentation: None,
+            gaps: Vec::new(),
+            status: Some(CapabilityStatus::Unsupported {
+                reason: "the backend refused this position".to_owned(),
+            }),
+        }),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let result = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("hover");
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Partial {
+            reason: "native hover evidence is unsupported despite rendered content: \
+                     the backend refused this position"
+                .to_owned(),
+        }
+    );
+    assert_eq!(result.quality, wxml_types::TypeQuality::Known);
+    assert_eq!(result.contents, "```ts\nstring\n```");
+}
+
+#[test]
+fn backend_partial_keeps_the_host_degradation_reason() {
+    let mut view = prepared_view(WXML, SCRIPT, "user.name");
+    view.source_complete = false;
+    let behavior = FakeBehavior {
+        hover_outcome: FakeHoverOutcome::Evidence(FakeHoverEvidence {
+            type_text: Some("string"),
+            quality: NativeTypeQuality::Known,
+            documentation: None,
+            gaps: vec![HoverGap::ExternalDeclaration {
+                path: Some("lib.d.ts".to_owned()),
+            }],
+            status: None,
+        }),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("hover");
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Partial {
+            reason: "declaration `lib.d.ts` is outside the project snapshot; \
+                     the prepared source file list is incomplete"
+                .to_owned(),
+        }
+    );
+    assert_eq!(result.contents, "```ts\nstring\n```");
+}
+
+#[test]
+fn backend_partial_and_range_failure_keep_both_reasons() {
+    let status = resolved_status(
+        &CapabilityStatus::Partial {
+            reason: "declaration `lib.d.ts` is outside the project snapshot".to_owned(),
+        },
+        "```ts\nstring\n```",
+        None,
+        true,
+    );
+    assert_eq!(
+        status,
+        CapabilityStatus::Partial {
+            reason: "declaration `lib.d.ts` is outside the project snapshot; \
+                     the hover range could not be mapped"
+                .to_owned(),
+        }
+    );
+}
+
+#[test]
+fn an_empty_partial_hover_is_normalized_to_unsupported_with_reasons() {
+    let mut view = prepared_view(WXML, SCRIPT, "user.name");
+    view.source_complete = false;
+    let behavior = FakeBehavior {
+        hover_outcome: FakeHoverOutcome::Evidence(FakeHoverEvidence {
+            type_text: None,
+            quality: NativeTypeQuality::Missing,
+            documentation: None,
+            gaps: Vec::new(),
+            status: Some(CapabilityStatus::Partial {
+                reason: "the backend had no renderable facts".to_owned(),
+            }),
+        }),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("hover");
+    assert_eq!(result.contents, "");
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Unsupported {
+            reason: "the backend had no renderable facts; \
+                     the prepared source file list is incomplete"
+                .to_owned(),
+        }
+    );
+    assert_eq!(result.quality, wxml_types::TypeQuality::Missing);
+}
+
+#[test]
+fn an_empty_supported_hover_is_a_contract_violation_not_success() {
+    let behavior = FakeBehavior {
+        hover_outcome: FakeHoverOutcome::Evidence(FakeHoverEvidence {
+            type_text: None,
+            quality: NativeTypeQuality::Missing,
+            documentation: None,
+            gaps: Vec::new(),
+            status: Some(CapabilityStatus::Supported),
+        }),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let result = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("hover");
+    assert_eq!(result.contents, "");
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Unsupported {
+            reason: "native hover evidence is empty but the backend reported it as supported"
+                .to_owned(),
+        }
+    );
+    assert_eq!(result.quality, wxml_types::TypeQuality::Missing);
+}
+
+#[test]
+fn an_unsupported_hover_evidence_query_exits_before_composition() {
+    let behavior = FakeBehavior {
+        hover_outcome: FakeHoverOutcome::Failure(FakeFailure::Unsupported("hoverEvidence")),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let result = adapter
+        .hover(HoverRequest {
+            context: context(&adapter, WXML),
+            offset: offset_of(WXML, "name"),
+        })
+        .expect("hover");
+    assert_eq!(result.contents, "");
+    assert_eq!(result.markup, MarkupKind::Markdown);
+    assert_eq!(result.range, None);
+    assert_eq!(result.quality, wxml_types::TypeQuality::Unknown);
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Unsupported {
+            reason: "native hover evidence is unavailable".to_owned(),
+        }
+    );
+    let log = log.lock().expect("log");
+    assert_eq!(log.hover_evidence_calls.len(), 1);
+    assert!(log.type_calls.is_empty());
+    assert_eq!(log.hover_documentation_calls, 0);
 }
 
 #[test]
@@ -1000,7 +1422,10 @@ fn hover_rejects_a_non_character_boundary_offset() {
         })
         .expect_err("non-boundary offset");
     assert!(matches!(error, BackendError::Protocol(_)));
-    assert_eq!(log.lock().expect("log").type_calls.len(), 0);
+    let log = log.lock().expect("log");
+    assert!(log.hover_evidence_calls.is_empty());
+    assert!(log.type_calls.is_empty());
+    assert_eq!(log.hover_documentation_calls, 0);
 }
 
 #[test]
@@ -2620,7 +3045,7 @@ fn fake_session_sees_exact_derived_positions() {
         })
         .expect("hover");
     let expected = derived_position(&log, "__wxml_root.user.name", Some("name"));
-    let calls = &log.lock().expect("log").type_calls;
+    let calls = &log.lock().expect("log").hover_evidence_calls;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].0, SCRIPT_PATH);
     assert_eq!(calls[0].1, expected);
@@ -2642,7 +3067,7 @@ fn fake_session_sees_exact_derived_positions() {
         })
         .expect("cjk hover");
     let expected = derived_position(&cjk_log, "__wxml_root.用户.名字", Some("名字"));
-    let calls = &cjk_log.lock().expect("log").type_calls;
+    let calls = &cjk_log.lock().expect("log").hover_evidence_calls;
     assert_eq!(calls.len(), 1);
     assert_eq!(calls[0].1, expected);
 
