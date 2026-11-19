@@ -54,6 +54,8 @@ mod native_lsp;
 mod native_measure;
 #[path = "native_parity/native_package.rs"]
 mod native_package;
+#[path = "native_parity/oracle_manifest.rs"]
+mod oracle_manifest;
 #[path = "native_parity/perf_budget.rs"]
 mod perf_budget;
 #[path = "native_parity/project_overlay.rs"]

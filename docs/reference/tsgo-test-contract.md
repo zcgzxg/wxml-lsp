@@ -19,21 +19,23 @@
 | `split` | 11 |
 | `obsolete` | 36（Candidate B/symbol-bridge 内部布局） |
 | `blocked-decision` | 0 |
-| `green` | 48（真实 Rust 测试证据，未独立 review） |
-| `planned` | 255 |
+| `green` | 55（真实 Rust 测试证据，未独立 review） |
+| `planned` | 248 |
 | `retired-with-decision` | 36 |
-| `assessed_cases` | 154 |
-| `exact` | 48 |
+| `assessed_cases` | 160 |
+| `exact` | 55 |
 | `near_exact` | 3 |
-| `weaker` | 74 |
+| `weaker` | 73 |
 | `structural` | 7 |
 | `blocked` | 22 |
 
-计数在 wave-6 组件绑定跟进（2026-11-20）后为 `green` 48 / `planned` 255 /
-`assessed_cases` 154（`exact` 48、`near_exact` 3、`weaker` 74、`structural` 7、
-`blocked` 22）；wave-6 回填结束时为 44/259/154（`weaker` 80、`blocked` 20），
-wave-5 后为 44/259/145，P6 回填（2026-11-19）后为 36/267，
-P5/P5.1 的历史快照见台账 §14，wave-5/wave-6 见 §15/§16，组件绑定跟进见 §17。
+计数在 wave-8 断言补齐回填（2026-11-20）后为 `green` 55 / `planned` 248 /
+`assessed_cases` 160（`exact` 55、`near_exact` 3、`weaker` 73、`structural` 7、
+`blocked` 22），无证据 planned 143；wave-7 台账回填结束时为 48/255/160
+（`weaker` 80），wave-6 组件绑定跟进结束时为 48/255/154
+（`weaker` 74、`blocked` 22），wave-6 回填结束时为 44/259/154（`weaker` 80、
+`blocked` 20），wave-5 后为 44/259/145，P6 回填（2026-11-19）后为 36/267，
+P5/P5.1 的历史快照见台账 §14，wave-5/wave-6/组件绑定/wave-7/wave-8 见 §15/§16/§17/§19/§21。
 
 `obsolete` 不等于“未迁移的通过项”。36 个 Candidate B 用例只作为历史 A/B 证据保留；生产 LSP
 不传 `layoutId`，原位 shadow 用例仍全部强制。`TS-META-0027` 由 F0 引擎/类型资产 pin 测试替代。
@@ -51,6 +53,29 @@ P5/P5.1 的历史快照见台账 §14，wave-5/wave-6 见 §15/§16，组件绑�
 
 行尾（M5）：v1 hash 基于 LF checkout 的原始字节；CRLF checkout 会改变 hash。本地和 CI 必须保持 LF
 （`git config core.autocrlf false`，仓库 `.gitattributes` 约束），不得通过改 hash 掩盖行尾变化。
+
+### 2.1 P7-2 预删除 oracle 清单
+
+`backends/typescript/test` 在 P7-4 删除后，台账里的旧 TS 锚点不能再从 live 源重算。P7-2 增加只读冻结
+清单 [`docs/plans/tsgo-legacy-oracle-manifest.json`](../plans/tsgo-legacy-oracle-manifest.json)：
+
+- schema `wxml-tsgo-legacy-oracle-manifest/1`；`baseline.head = 807a1578173992ad16f15e22b45f8dd62b024df3`
+  （生成时的 HEAD，不是当前 checkout）。
+- 21 个测试文件的 `sha256`、`lines` 与声明计数；`support.ts` 的 `sha256`/`lines`；339 个 case 的
+  `case_id`/`file`/`line`/`body_sha256`；4 棵树的 `files`/`bytes`/`sha256`/`archived_ok`。
+- 排序：case 按 `case_id`、文件与树按路径的 UTF-8 字节序（`LC_ALL=C`），数组必须严格递增；
+  重复、未排序、缺字段、数量不符都是失败。
+- 完整性：`projection_sha256` 是语义投影的 SHA-256；Rust 侧
+  `FROZEN_MANIFEST_SHA256 = 14cd870e8ce7d15294285fe9205bb98bb121164e44f8c67ee3c433aa43508123`
+  再钉一次。改任何字段必须同时改清单与 Rust 常量，不能只改清单。
+- 双源校验：live 树存在时仍按 v1 从字节重算文件 hash、行数和每个 case 的 `body_sha256`，
+  并要求 live、台账、清单三者一致（防止删除前漂移）；live 树不存在时逐项对照台账
+  （文件 hash、case 行/body、support、4 棵树），绝不降级为 skip 或“无验证”。
+- 只有 `backends/typescript/test` 与 `backends/typescript/samples` 允许在清单标记
+  `archived_ok=true` 后缺席；`tests/fixtures` 与 `crates/wxml-lsp/tests/fixtures` 必须始终存在。
+
+清单不是第二台账：case 状态、disposition、Rust 证据仍以 `tsgo-test-ledger.json` 为唯一事实源；
+清单只冻结旧 TS 的字节锚点，供删除后审计。
 
 ## 3. 逐用例记录
 

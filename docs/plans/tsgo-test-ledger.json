@@ -164,18 +164,18 @@
     },
     "migration_evidence": {
       "assessed_at": "2026-11-20",
-      "implementation_head": "0bf666b994163d2a44a4b87b0b8bb5d4e9101bf1",
+      "implementation_head": "807a1578173992ad16f15e22b45f8dd62b024df3",
       "rust_test_command": "cargo test -p wxml-lsp --lib; cargo test -p wxml-lsp --test native_parity; WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 cargo test -p wxml-lsp --test native_parity native_engine_real -- --ignored; cargo test -p wxml-delivery --test assets_lock_root",
-      "rust_test_result": "wave-6 component-binding follow-up: cargo test -p wxml-lsp --lib backend_tsgo::component_bindings 22 passed/0 failed; cargo test -p wxml-lsp --test native_parity 37 passed/0 failed/26 ignored. Four cases promoted to exact/green; two remain blocked.",
-      "assessed_cases": 154,
-      "exact": 48,
+      "rust_test_result": "wave-8 ledger backfill: seven planned cases with complete Rust assertion coverage promoted to exact green (TS-EVENTS-0301/0322/0461, TS-LOCALS-0063/0089/0144, TS-GUARDS-0075). cargo test -p wxml-lsp --test native_parity 68 passed/0 failed/26 ignored (includes the parallel oracle-manifest suite).",
+      "assessed_cases": 160,
+      "exact": 55,
       "near_exact": 3,
-      "weaker": 74,
+      "weaker": 73,
       "structural": 7,
       "blocked": 22,
-      "green_eligible": 48,
-      "promoted_to_green": 48,
-      "remaining_planned_without_evidence": 149,
+      "green_eligible": 55,
+      "promoted_to_green": 55,
+      "remaining_planned_without_evidence": 143,
       "by_partition": {
         "behaviors": {
           "routed_cases": 22,
@@ -228,48 +228,48 @@
         "events": {
           "routed_cases": 24,
           "evidence_cases": 21,
-          "green_cases": 10,
-          "planned_evidence_cases": 11,
+          "green_cases": 13,
+          "planned_evidence_cases": 8,
           "unassessed_cases": 3,
-          "exact": 10,
+          "exact": 13,
           "near_exact": 0,
-          "weaker": 10,
+          "weaker": 7,
           "structural": 0,
           "blocked": 1
         },
         "guards_js": {
           "routed_cases": 25,
-          "evidence_cases": 11,
-          "green_cases": 5,
-          "planned_evidence_cases": 6,
-          "unassessed_cases": 14,
-          "exact": 5,
+          "evidence_cases": 13,
+          "green_cases": 6,
+          "planned_evidence_cases": 7,
+          "unassessed_cases": 12,
+          "exact": 6,
           "near_exact": 0,
-          "weaker": 1,
+          "weaker": 2,
           "structural": 0,
           "blocked": 5
         },
         "hover_docs": {
           "routed_cases": 10,
-          "evidence_cases": 3,
+          "evidence_cases": 7,
           "green_cases": 0,
-          "planned_evidence_cases": 3,
-          "unassessed_cases": 7,
+          "planned_evidence_cases": 7,
+          "unassessed_cases": 3,
           "exact": 0,
           "near_exact": 0,
-          "weaker": 3,
+          "weaker": 7,
           "structural": 0,
           "blocked": 0
         },
         "loops": {
           "routed_cases": 16,
           "evidence_cases": 9,
-          "green_cases": 5,
-          "planned_evidence_cases": 4,
+          "green_cases": 8,
+          "planned_evidence_cases": 1,
           "unassessed_cases": 7,
-          "exact": 5,
+          "exact": 8,
           "near_exact": 0,
-          "weaker": 3,
+          "weaker": 0,
           "structural": 0,
           "blocked": 1
         },
@@ -374,15 +374,15 @@
       "rust_unit_test_result": "wxml-lsp lib 789 passed, 0 failed, 0 ignored",
       "near_exact_recommendations": 3,
       "statuses": {
-        "planned": 255,
-        "green": 48,
+        "planned": 248,
+        "green": 55,
         "retired-with-decision": 36
       },
       "status_policy": "Only parity=exact cases are green. near_exact, weaker, structural and blocked cases stay planned with status_recommendation recorded; no empty evidence is accepted."
     },
     "statuses": {
-      "planned": 255,
-      "green": 48,
+      "planned": 248,
+      "green": 55,
       "retired-with-decision": 36
     }
   },
@@ -2916,7 +2916,33 @@
       "capabilities": [
         "compiler",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0078",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "94c8a668b3903904a00343459563181c265925f8",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The generated tsconfig keeps the requested `lib`/`target` spellings and the standard lib files are mounted as virtual assets, but no test runs the engine over that environment: the TS `hover.typeOnly == \"string\"` and the absence of 2693/2304 are not asserted.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/native/vfs.rs",
+            "line": 1704,
+            "test": "environment_tsconfig_uses_project_options_without_forcing_defaults",
+            "fully_qualified": "wxml_backend_tsgo::native::vfs::tests::environment_tsconfig_uses_project_options_without_forcing_defaults",
+            "note": "Asserts the target/lib/module options survive into the generated tsconfig without default substitution."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/src/native/vfs.rs",
+            "line": 1670,
+            "test": "mounts_standard_lib_and_typings_as_virtual_files",
+            "fully_qualified": "wxml_backend_tsgo::native::vfs::tests::mounts_standard_lib_and_typings_as_virtual_files",
+            "note": "Asserts core lib files and the pinned typings are mounted as virtual assets rather than host reads."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0093",
@@ -2982,7 +3008,26 @@
         "compiler",
         "hover",
         "project"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0093",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "94c8a668b3903904a00343459563181c265925f8",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The VFS keeps `typeRoots`/`types` and exposes the project `types/local/index.d.ts` from the snapshot without a host read, but the analyze hover (`\"from-type-root\"`) and the absence of 2304 are not asserted.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/native/vfs.rs",
+            "line": 1922,
+            "test": "types_resolve_under_a_local_virtual_type_root",
+            "fully_qualified": "wxml_backend_tsgo::native::vfs::tests::types_resolve_under_a_local_virtual_type_root",
+            "note": "Asserts typeRoots/types survive into the generated tsconfig, the local d.ts is a snapshot file, and `types` is not degraded."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0123",
@@ -3123,7 +3168,26 @@
       "status": "planned",
       "capabilities": [
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0139",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "94c8a668b3903904a00343459563181c265925f8",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The script property fact keeps the declared `number` type text when the default value is a mismatched literal, but the case's unresolved enum default and the hover `typeOnly == \"number\"` are not asserted.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/script_properties.rs",
+            "line": 72,
+            "test": "case_component_0292_only_optional_types_and_defaults_are_preserved",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/script_properties.rs::case_component_0292_only_optional_types_and_defaults_are_preserved",
+            "note": "Asserts `defaulted` keeps `type_text == \"number\"` with the mismatched literal default `\"not-a-number\"`."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0161",
@@ -3244,7 +3308,33 @@
         "compiler",
         "hover",
         "project"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-ANALYSIS-0174",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "94c8a668b3903904a00343459563181c265925f8",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The native VFS only answers snapshot files and the startup canary fails when the engine touches a host file, but no test analyzes over a nonexistent project root and asserts the hover.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/native/vfs.rs",
+            "line": 1385,
+            "test": "reads_only_virtual_files_and_never_host_files",
+            "fully_qualified": "wxml_backend_tsgo::native::vfs::tests::reads_only_virtual_files_and_never_host_files",
+            "note": "Asserts file/stat/read callbacks answer only snapshot paths and never fall back to the host."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/src/native/vfs.rs",
+            "line": 1600,
+            "test": "startup_canary_rejects_a_real_host_file_outside_the_root",
+            "fully_qualified": "wxml_backend_tsgo::native::vfs::tests::startup_canary_rejects_a_real_host_file_outside_the_root",
+            "note": "Asserts a real host read outside the project root fails the startup canary instead of serving disk content."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-ANALYSIS-0184",
@@ -4746,7 +4836,7 @@
         "rust_tests": [
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
-            "line": 4594,
+            "line": 4793,
             "test": "trailing_dot_completion_mounts_a_synthetic_query_and_keeps_the_range",
             "fully_qualified": "wxml_lsp::backend_tsgo::tests::trailing_dot_completion_mounts_a_synthetic_query_and_keeps_the_range",
             "note": "Asserts name/age member labels and exact prefix range, but returns Partial rather than TS Supported."
@@ -4828,7 +4918,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "The adapter replaces only the typed member prefix and sets insertText to the label, but deliberately reports Partial where the TS case requires supported.",
+        "note": "Unclosed `{{ user.na` now mounts the bare root `user` and queries after a synthetic dot; the published replace range is exactly the typed `na`, including CJK/CRLF/emoji. The native result still reports Partial because the pinned completion API exposes no per-entry documentation and no auto-import origin/edit, while the TS case asserts supported; kept weaker.",
         "rust_tests": [
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
@@ -4842,7 +4932,21 @@
             "line": 4418,
             "test": "completion_in_an_unclosed_expression_completes_the_typed_prefix",
             "fully_qualified": "wxml_lsp::backend_tsgo::tests::completion_in_an_unclosed_expression_completes_the_typed_prefix",
-            "note": "An unclosed member expression still completes the typed prefix with the exact replace range, but the status stays Partial."
+            "note": "An unclosed trailing dot still completes the typed prefix with the exact replace range, but the status stays Partial."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 4457,
+            "test": "completion_in_an_unclosed_partial_member_replaces_only_the_typed_prefix",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::completion_in_an_unclosed_partial_member_replaces_only_the_typed_prefix",
+            "note": "Asserts the unclosed `user.na` mount is the bare root, the native query is after the synthetic dot, and only `na` is replaced; status stays Partial."
+          },
+          {
+            "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
+            "line": 4531,
+            "test": "unclosed_partial_member_completion_is_utf16_exact_with_cjk_crlf_and_emoji",
+            "fully_qualified": "wxml_lsp::backend_tsgo::tests::unclosed_partial_member_completion_is_utf16_exact_with_cjk_crlf_and_emoji",
+            "note": "Asserts the exact UTF-16 query position and byte replace range for a CJK/CRLF/emoji unclosed member prefix; status stays Partial."
           }
         ]
       }
@@ -8725,7 +8829,7 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "planned",
-        "note": "Wave 5 now resolves inline and imported behavior handler locations, but TS also asserts the behavior signature and documentation from the stub view; those remain unasserted, so the case stays blocked.",
+        "note": "Native resolves the inline behavior method and asserts its Chinese documentation, but the TS stub-view case additionally asserts the behavior fileId (`src/behaviors/base.ts`) and the handler signature; the inline fixture models neither, so the case stays blocked.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
@@ -9160,10 +9264,10 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "definition",
         "diagnostics",
@@ -9171,20 +9275,20 @@
       ],
       "migration_evidence": {
         "case_id": "TS-EVENTS-0301",
-        "assessed_at": "2026-11-18",
-        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "Rust checks Supported, error severity and the component message; TS also asserts an absent definition. Wave 5 also records a_component_without_methods_reports_a_real_missing_handler; the remaining gap above is unchanged.",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "807a1578173992ad16f15e22b45f8dd62b024df3",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Rust asserts Supported status, an absent definition, error severity and the component message for a component without methods; together these cover every TS assertion.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
             "line": 305,
             "test": "case_events_0301_component_without_methods_reports_a_real_missing_handler",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0301_component_without_methods_reports_a_real_missing_handler",
-            "note": "Rust checks Supported, error severity and the component message; TS also asserts an absent definition."
+            "note": "Asserts Supported status, an absent definition, error severity and the component message at the handler token."
           },
           {
             "path": "crates/wxml-lsp/src/semantics/event_diagnostics.rs",
@@ -9328,30 +9432,30 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "definition",
         "diagnostics"
       ],
       "migration_evidence": {
         "case_id": "TS-EVENTS-0322",
-        "assessed_at": "2026-11-18",
-        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "Rust checks error severity for the three reserved/probe keys and a definition for onTap; TS also asserts Supported status.",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "807a1578173992ad16f15e22b45f8dd62b024df3",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Rust asserts Supported status for all four queried keys, error severity for the three reserved/probe keys and a definition for onTap; every TS assertion is covered.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
-            "line": 362,
+            "line": 363,
             "test": "case_events_0322_reserved_page_keys_and_probe_members_are_ignored",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0322_reserved_page_keys_and_probe_members_are_ignored",
-            "note": "Rust checks error severity for the three reserved/probe keys and a definition for onTap; TS also asserts Supported status."
+            "note": "Asserts Supported status for all four results, error severity for the three reserved/probe keys and a definition for onTap."
           }
         ]
       }
@@ -9926,29 +10030,29 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "assertion",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [
         "definition"
       ],
       "migration_evidence": {
         "case_id": "TS-EVENTS-0461",
-        "assessed_at": "2026-11-18",
-        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "Rust checks the component file, Chinese docs and signature; TS also asserts Supported status.",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "807a1578173992ad16f15e22b45f8dd62b024df3",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Rust asserts Supported status, the component's own file, the Chinese documentation and the overridden detail: number signature; every TS assertion is covered.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/script_events.rs",
-            "line": 502,
+            "line": 505,
             "test": "case_events_0461_component_method_overrides_the_same_named_behavior_method",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/script_events.rs::case_events_0461_component_method_overrides_the_same_named_behavior_method",
-            "note": "Rust checks the component file, Chinese docs and signature; TS also asserts Supported status."
+            "note": "Asserts Supported status, the component file index.ts, the Chinese documentation and the detail: number signature."
           }
         ]
       }
@@ -10497,27 +10601,27 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [],
       "migration_evidence": {
         "case_id": "TS-GUARDS-0075",
-        "assessed_at": "2026-11-18",
-        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "Rust checks the open text and unresolved=false but omits the close text from TS's deepEqual.",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "807a1578173992ad16f15e22b45f8dd62b024df3",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Rust asserts the exact open text, close text and unresolved=false, covering every field of the TS deepEqual.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
-            "line": 384,
+            "line": 394,
             "test": "case_guards_0075_plain_value_level_or_guards_are_not_degraded",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_guards_0075_plain_value_level_or_guards_are_not_degraded",
-            "note": "Rust checks the open text and unresolved=false but omits the close text from TS's deepEqual."
+            "note": "Asserts the exact if(flagA || flagB) open text, the closing brace and unresolved=false."
           }
         ]
       }
@@ -11172,7 +11276,33 @@
         "config",
         "diagnostics",
         "hover"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-GUARDS-0302",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "94c8a668b3903904a00343459563181c265925f8",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The layout maps `JsCheckPolicy::Off`/`Inherit` and neutralises a source `@ts-check` with a shadow-only `@ts-nocheck`, but the case's hover still answering and template diagnostics becoming `disabled` are not asserted.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
+            "line": 581,
+            "test": "js_check_policy_values_match_the_oracle_without_publishing_diagnostics",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::js_check_policy_values_match_the_oracle_without_publishing_diagnostics",
+            "note": "Asserts `JsCheckApplied::Off` and `Inherit` are recorded from the policy and checkJs flag."
+          },
+          {
+            "path": "crates/wxml-backend-tsgo/tests/shadow_layout.rs",
+            "line": 550,
+            "test": "source_ts_check_is_neutralised_when_the_policy_is_off",
+            "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_layout.rs::source_ts_check_is_neutralised_when_the_policy_is_off",
+            "note": "Asserts an `// @ts-check` source is neutralised by a shadow-only `// @ts-nocheck` when the policy is off."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-GUARDS-0312",
@@ -12372,27 +12502,27 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [],
       "migration_evidence": {
         "case_id": "TS-LOCALS-0063",
-        "assessed_at": "2026-11-18",
-        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "Rust matches the nested text and closers but omits the unresolved=false assertion.",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "807a1578173992ad16f15e22b45f8dd62b024df3",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Rust asserts unresolved=false, the exact two-level text and the innermost-first closer for the same three bindings.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
             "line": 170,
             "test": "case_locals_0063_nested_levels_indent_and_closers_are_innermost_first",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_locals_0063_nested_levels_indent_and_closers_are_innermost_first",
-            "note": "Rust matches the nested text and closers but omits the unresolved=false assertion."
+            "note": "Asserts unresolved=false, the exact two-level declaration text and the innermost-first close text."
           }
         ]
       }
@@ -12449,27 +12579,27 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [],
       "migration_evidence": {
         "case_id": "TS-LOCALS-0089",
-        "assessed_at": "2026-11-18",
-        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "Rust checks the capture declaration and absence of self-reference; TS also asserts unresolved=false and the exact text/close.",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "807a1578173992ad16f15e22b45f8dd62b024df3",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Rust asserts unresolved=false, the exact same-name chain text including __wxml_capture_item_0, the exact closer and the absence of a self-reference.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
-            "line": 196,
+            "line": 197,
             "test": "case_locals_0089_a_same_name_nested_chain_captures_the_outer_binding_no_tdz",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_locals_0089_a_same_name_nested_chain_captures_the_outer_binding_no_tdz",
-            "note": "Rust checks the capture declaration and absence of self-reference; TS also asserts unresolved=false and the exact text/close."
+            "note": "Asserts unresolved=false, the full capture text, the exact closer and no self-referencing item declaration."
           }
         ]
       }
@@ -12752,27 +12882,27 @@
       "disposition": "direct",
       "disposition_reason": "Same behavioral assertion is expressible against the selected native architecture; port without weakening.",
       "requires_decision": false,
-      "target_rust_test_status": "proposed",
+      "target_rust_test_status": "migrated_green",
       "oracle_type": "unit",
       "comparison_type": "semantic_exact",
-      "status": "planned",
+      "status": "green",
       "capabilities": [],
       "migration_evidence": {
         "case_id": "TS-LOCALS-0144",
-        "assessed_at": "2026-11-18",
-        "implementation_head": "47947da4878212cb8bef7d1505c313b9b51b0f48",
-        "parity": "weaker",
-        "green_eligible": false,
-        "status_recommendation": "planned",
-        "status_applied": "planned",
-        "note": "Rust checks the level count and item names; TS also checks the index name.",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "807a1578173992ad16f15e22b45f8dd62b024df3",
+        "parity": "exact",
+        "green_eligible": true,
+        "status_recommendation": "green",
+        "status_applied": "green",
+        "note": "Rust asserts two levels plus the exact item and index names for both levels, matching the TS array-order grouping.",
         "rust_tests": [
           {
             "path": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs",
-            "line": 268,
+            "line": 274,
             "test": "case_locals_0144_levels_are_grouped_by_array_order_not_source_expression",
             "fully_qualified": "crates/wxml-backend-tsgo/tests/shadow_locals_guards.rs::case_locals_0144_levels_are_grouped_by_array_order_not_source_expression",
-            "note": "Rust checks the level count and item names; TS also checks the index name."
+            "note": "Asserts two levels and the exact item/index names for levels[0] and levels[1]."
           }
         ]
       }
@@ -21280,7 +21410,26 @@
       "capabilities": [
         "config",
         "mapping"
-      ]
+      ],
+      "migration_evidence": {
+        "case_id": "TS-PROBES-0027",
+        "assessed_at": "2026-11-20",
+        "implementation_head": "94c8a668b3903904a00343459563181c265925f8",
+        "parity": "weaker",
+        "green_eligible": false,
+        "status_recommendation": "planned",
+        "status_applied": "planned",
+        "note": "The layout applies a shadow-only `@ts-check` after a BOM and hashbang and records the BOM/pragma insertions, but the TS `scanPragmas` tuple (check/noCheck, injectionOffset, neutralizeOffset, dropBom) and the standalone plain/BOM variants are not asserted.",
+        "rust_tests": [
+          {
+            "path": "crates/wxml-backend-tsgo/src/shadow/layout.rs",
+            "line": 2415,
+            "test": "js_pragma_and_bom_edits_are_recorded",
+            "fully_qualified": "wxml_backend_tsgo::shadow::layout::tests::js_pragma_and_bom_edits_are_recorded",
+            "note": "Asserts the BOM replacement and pragma insertion are recorded for a BOM+hashbang script under `JsCheckPolicy::Pragma`."
+          }
+        ]
+      }
     },
     {
       "case_id": "TS-PROBES-0048",

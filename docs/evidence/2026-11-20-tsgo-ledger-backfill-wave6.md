@@ -132,7 +132,7 @@
   bindtap/catchtap/capture-bind/capture-catch/mut-bind 和 CJK handler 的精确
   WXML range；原 definition exact 证据仍是主证据。
 - `TS-COMPLETION-0078` 仅修正既有测试行号到
-   crates/wxml-lsp/src/backend_tsgo/tests.rs:4594 和
+   crates/wxml-lsp/src/backend_tsgo/tests.rs:4793 和
    crates/wxml-lsp/src/backend_tsgo/tests.rs:4418，不改变强度。
 
 ---

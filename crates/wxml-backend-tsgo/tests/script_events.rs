@@ -314,6 +314,7 @@ fn case_events_0301_component_without_methods_reports_a_real_missing_handler() {
         .results
         .remove(0);
     assert!(resolution.status.is_supported());
+    assert!(resolution.definition.is_none());
     assert_eq!(
         resolution
             .diagnostic
@@ -376,6 +377,7 @@ fn case_events_0322_reserved_page_keys_and_probe_members_are_ignored() {
         binding("onTap"),
     ]);
     for resolution in &collection.results[..3] {
+        assert!(resolution.status.is_supported());
         assert_eq!(
             resolution
                 .diagnostic
@@ -384,6 +386,7 @@ fn case_events_0322_reserved_page_keys_and_probe_members_are_ignored() {
             Some("error")
         );
     }
+    assert!(collection.results[3].status.is_supported());
     assert!(collection.results[3].definition.is_some());
 }
 
@@ -520,6 +523,7 @@ fn case_events_0461_component_method_overrides_the_same_named_behavior_method() 
         .resolve_events(&[binding("onBack")])
         .results
         .remove(0);
+    assert!(resolution.status.is_supported());
     let definition = resolution.definition.expect("definition");
     assert_eq!(definition.path, "index.ts");
     assert_eq!(resolution.documentation.as_deref(), Some("页面自己的实现"));

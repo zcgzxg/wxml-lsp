@@ -16,9 +16,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 use crate::ledger;
+use crate::oracle_manifest::{self, OracleManifest};
 
 /// Summary of one hashed tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,11 +42,28 @@ pub(crate) struct TreeFile {
     pub(crate) absolute_path: PathBuf,
 }
 
-struct FrozenTree {
-    path: &'static str,
-    files: usize,
-    bytes: u64,
-    sha256: &'static str,
+/// Frozen expectation for one fixture tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FrozenTree {
+    /// Repository-relative tree path.
+    pub(crate) path: &'static str,
+    /// Expected regular-file count.
+    pub(crate) files: usize,
+    /// Expected total raw bytes.
+    pub(crate) bytes: u64,
+    /// Expected v1 SHA-256.
+    pub(crate) sha256: &'static str,
+    /// True when the tree may be absent after P7 deletion.
+    pub(crate) legacy_archived: bool,
+}
+
+/// Outcome of checking one frozen tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TreeStatus {
+    /// The tree exists and its bytes were re-hashed.
+    Live(TreeSummary),
+    /// The legacy tree is gone; the frozen records were cross-checked.
+    Archived,
 }
 
 const FROZEN_TREES: &[FrozenTree] = &[
@@ -53,24 +72,28 @@ const FROZEN_TREES: &[FrozenTree] = &[
         files: 22,
         bytes: 253_965,
         sha256: "630a16af41623c78f19f47bcaba1a7f1282201ac27b4414115ac0b3764afc32e",
+        legacy_archived: true,
     },
     FrozenTree {
         path: "backends/typescript/samples",
         files: 35,
         bytes: 6_069,
         sha256: "00a7fa3d6962da50581c396f73c13f7ffb043efae060a0801b373928726e5c1f",
+        legacy_archived: true,
     },
     FrozenTree {
         path: "tests/fixtures",
         files: 136,
         bytes: 61_928,
         sha256: "7c9ddedda18c70bc217af6b3bbd23dd22a33be9c885276cbd587adc0596f04a9",
+        legacy_archived: false,
     },
     FrozenTree {
         path: "crates/wxml-lsp/tests/fixtures",
         files: 43,
         bytes: 6_456,
         sha256: "834eea4defcb7565c4b84e91a173079cf3be85201d44fb4a7a6d0a32af3da073",
+        legacy_archived: false,
     },
 ];
 
@@ -166,95 +189,257 @@ fn walk(root: &Path, directory: &Path, files: &mut Vec<TreeFile>) -> Result<(), 
     Ok(())
 }
 
-#[test]
-fn fixture_tree_hashes_match_frozen_contract() {
-    let workspace = ledger::workspace_root();
-    for tree in FROZEN_TREES {
-        let summary = hash_tree(&workspace.join(tree.path))
-            .unwrap_or_else(|error| panic!("hash {}: {error}", tree.path));
-        assert_eq!(
-            summary.files, tree.files,
-            "file count drift in {}; a fixture change requires a deliberate ledger update",
-            tree.path
-        );
-        assert_eq!(
-            summary.bytes, tree.bytes,
-            "byte count drift in {}; a fixture change requires a deliberate ledger update",
-            tree.path
-        );
-        assert_eq!(
-            summary.sha256, tree.sha256,
-            "v1 SHA-256 drift in {}; never update the hash just to mask content changes",
-            tree.path
-        );
+fn required_object<'a>(
+    object: &'a Map<String, Value>,
+    key: &str,
+    context: &str,
+) -> Result<&'a Map<String, Value>, String> {
+    object
+        .get(key)
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("{context}.{key} must be a JSON object"))
+}
+
+fn required_array<'a>(
+    object: &'a Map<String, Value>,
+    key: &str,
+    context: &str,
+) -> Result<&'a [Value], String> {
+    object
+        .get(key)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .ok_or_else(|| format!("{context}.{key} must be an array"))
+}
+
+fn required_str<'a>(
+    object: &'a Map<String, Value>,
+    key: &str,
+    context: &str,
+) -> Result<&'a str, String> {
+    object
+        .get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("{context}.{key} must be a string"))
+}
+
+fn required_u64(object: &Map<String, Value>, key: &str, context: &str) -> Result<u64, String> {
+    object
+        .get(key)
+        .and_then(Value::as_u64)
+        .ok_or_else(|| format!("{context}.{key} must be an unsigned integer"))
+}
+
+/// Verifies the four frozen fixture trees against the live bytes (when
+/// present), the ledger, and the legacy oracle manifest.
+///
+/// A legacy tree may be absent after P7 deletion only when the manifest and the
+/// ledger agree on its frozen record. A retained tree (`tests/fixtures`,
+/// `crates/wxml-lsp/tests/fixtures`) is always required.
+pub(crate) fn verify_fixture_trees(
+    workspace: &Path,
+    ledger_value: &Value,
+    manifest: &OracleManifest,
+    expected: &[FrozenTree],
+) -> Result<BTreeMap<String, TreeStatus>, String> {
+    let root = ledger_value
+        .as_object()
+        .ok_or_else(|| "ledger root must be a JSON object".to_owned())?;
+    let fixture_trees = required_object(root, "fixture_trees", "ledger")?;
+    let algorithm = required_object(fixture_trees, "algorithm", "ledger.fixture_trees")?;
+    if required_str(algorithm, "name", "ledger.fixture_trees.algorithm")? != "v1" {
+        return Err("ledger.fixture_trees.algorithm.name must be v1".to_owned());
+    }
+    if required_u64(
+        algorithm,
+        "deterministic_runs",
+        "ledger.fixture_trees.algorithm",
+    )? != 2
+    {
+        return Err("ledger.fixture_trees.algorithm.deterministic_runs must be 2".to_owned());
+    }
+    if required_u64(algorithm, "symlinks", "ledger.fixture_trees.algorithm")? != 0 {
+        return Err("ledger.fixture_trees.algorithm.symlinks must be 0".to_owned());
     }
 
-    let ledger_value = ledger::load_ledger();
-    let root = ledger::object(&ledger_value, "ledger root");
-    let fixture_trees = ledger::required_object(root, "fixture_trees", "ledger root");
-    let algorithm = ledger::required_object(fixture_trees, "algorithm", "ledger.fixture_trees");
-    assert_eq!(
-        ledger::required_str(algorithm, "name", "ledger.fixture_trees.algorithm"),
-        "v1"
-    );
-    assert_eq!(
-        ledger::required_u64(
-            algorithm,
-            "deterministic_runs",
-            "ledger.fixture_trees.algorithm"
-        ),
-        2
-    );
-    assert_eq!(
-        ledger::required_u64(algorithm, "symlinks", "ledger.fixture_trees.algorithm"),
-        0
-    );
-
-    let declared_trees = ledger::required_array(fixture_trees, "trees", "ledger.fixture_trees");
-    assert_eq!(declared_trees.len(), FROZEN_TREES.len());
-    let mut declared: BTreeMap<&str, (u64, u64, &str)> = BTreeMap::new();
-    for entry in declared_trees {
-        let entry = ledger::object(entry, "ledger.fixture_trees.trees[]");
-        let path = ledger::required_str(entry, "tree", "fixture tree");
-        let files = ledger::required_u64(entry, "files", path);
-        let bytes = ledger::required_u64(entry, "bytes", path);
-        let sha256 = ledger::required_str(entry, "sha256", path);
-        assert!(
-            declared.insert(path, (files, bytes, sha256)).is_none(),
-            "duplicate fixture tree {path}"
+    let declared = required_array(fixture_trees, "trees", "ledger.fixture_trees")?;
+    if declared.len() != expected.len() {
+        return Err(format!(
+            "ledger.fixture_trees.trees has {} entries, expected {}",
+            declared.len(),
+            expected.len()
+        ));
+    }
+    let mut declared_by_path = BTreeMap::new();
+    for entry in declared {
+        let entry = entry
+            .as_object()
+            .ok_or_else(|| "ledger.fixture_trees.trees[] must be an object".to_owned())?;
+        let path = required_str(entry, "tree", "ledger.fixture_trees.trees[]")?;
+        let record = (
+            required_u64(entry, "files", path)?,
+            required_u64(entry, "bytes", path)?,
+            required_str(entry, "sha256", path)?,
         );
+        if declared_by_path.insert(path.to_owned(), record).is_some() {
+            return Err(format!(
+                "ledger.fixture_trees contains duplicate tree {path}"
+            ));
+        }
     }
 
-    for tree in FROZEN_TREES {
-        let (files, bytes, sha256) = declared
-            .get(tree.path)
-            .unwrap_or_else(|| panic!("ledger is missing fixture tree {}", tree.path));
-        assert_eq!(
-            *files,
-            u64::try_from(tree.files).expect("file count fits u64")
-        );
-        assert_eq!(*bytes, tree.bytes);
-        assert_eq!(*sha256, tree.sha256);
+    for tree in expected {
+        let Some((files, bytes, sha256)) = declared_by_path.get(tree.path) else {
+            return Err(format!("ledger.fixture_trees is missing {}", tree.path));
+        };
+        if *files
+            != u64::try_from(tree.files).map_err(|_| "file count overflowed u64".to_owned())?
+            || *bytes != tree.bytes
+            || *sha256 != tree.sha256
+        {
+            return Err(format!(
+                "ledger tree record drift for {}: ledger ({files}, {bytes}, {sha256}) \
+                 != expected ({}, {}, {})",
+                tree.path, tree.files, tree.bytes, tree.sha256
+            ));
+        }
+
+        let manifest_tree = manifest
+            .trees
+            .iter()
+            .find(|entry| entry.tree == tree.path)
+            .ok_or_else(|| format!("legacy oracle manifest is missing tree {}", tree.path))?;
+        if manifest_tree.files
+            != u64::try_from(tree.files).map_err(|_| "file count overflowed u64".to_owned())?
+            || manifest_tree.bytes != tree.bytes
+            || manifest_tree.sha256 != tree.sha256
+        {
+            return Err(format!(
+                "manifest tree hash drift for {}: manifest ({}, {}, {}) \
+                 != expected ({}, {}, {})",
+                tree.path,
+                manifest_tree.files,
+                manifest_tree.bytes,
+                manifest_tree.sha256,
+                tree.files,
+                tree.bytes,
+                tree.sha256
+            ));
+        }
+        if manifest_tree.archived_ok != tree.legacy_archived {
+            return Err(format!(
+                "manifest archive policy drift for {}: archived_ok is {}, expected {}",
+                tree.path, manifest_tree.archived_ok, tree.legacy_archived
+            ));
+        }
     }
 
-    let reconciliation = ledger::required_object(root, "plan_reconciliation", "ledger root");
-    let fixture_counts = ledger::required_object(
+    let reconciliation = required_object(root, "plan_reconciliation", "ledger")?;
+    let fixture_counts = required_object(
         reconciliation,
         "fixture_counts",
         "ledger.plan_reconciliation",
-    );
-    assert_eq!(fixture_counts.len(), FROZEN_TREES.len());
+    )?;
+    if fixture_counts.len() != expected.len() {
+        return Err(format!(
+            "ledger.plan_reconciliation.fixture_counts has {} entries, expected {}",
+            fixture_counts.len(),
+            expected.len()
+        ));
+    }
+    for tree in expected {
+        let declared = required_u64(
+            fixture_counts,
+            tree.path,
+            "ledger.plan_reconciliation.fixture_counts",
+        )?;
+        if declared
+            != u64::try_from(tree.files).map_err(|_| "file count overflowed u64".to_owned())?
+        {
+            return Err(format!(
+                "plan_reconciliation.fixture_counts drifted for {}: {declared} != {}",
+                tree.path, tree.files
+            ));
+        }
+    }
+
+    let mut statuses = BTreeMap::new();
+    for tree in expected {
+        let path = workspace.join(tree.path);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => {
+                let summary =
+                    hash_tree(&path).map_err(|error| format!("hash {}: {error}", tree.path))?;
+                if summary.files != tree.files {
+                    return Err(format!(
+                        "file count drift in {}: live {} != frozen {}",
+                        tree.path, summary.files, tree.files
+                    ));
+                }
+                if summary.bytes != tree.bytes {
+                    return Err(format!(
+                        "byte count drift in {}: live {} != frozen {}",
+                        tree.path, summary.bytes, tree.bytes
+                    ));
+                }
+                if summary.sha256 != tree.sha256 {
+                    return Err(format!(
+                        "v1 SHA-256 drift in {}: live {} != frozen {}",
+                        tree.path, summary.sha256, tree.sha256
+                    ));
+                }
+                statuses.insert(tree.path.to_owned(), TreeStatus::Live(summary));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                if !tree.legacy_archived {
+                    return Err(format!(
+                        "required fixture tree is missing: {} (only archived legacy trees may be absent)",
+                        tree.path
+                    ));
+                }
+                statuses.insert(tree.path.to_owned(), TreeStatus::Archived);
+            }
+            Err(error) => {
+                return Err(format!("stat fixture tree {}: {error}", path.display()));
+            }
+        }
+    }
+    Ok(statuses)
+}
+
+#[test]
+fn fixture_tree_hashes_match_frozen_contract() {
+    let workspace = ledger::workspace_root();
+    let ledger_value = ledger::load_ledger();
+    let manifest = oracle_manifest::load_manifest(&workspace);
+    let statuses = verify_fixture_trees(&workspace, &ledger_value, &manifest, FROZEN_TREES)
+        .unwrap_or_else(|error| panic!("fixture tree gate: {error}"));
     for tree in FROZEN_TREES {
-        assert_eq!(
-            ledger::required_u64(
-                fixture_counts,
-                tree.path,
-                "ledger.plan_reconciliation.fixture_counts"
-            ),
-            u64::try_from(tree.files).expect("file count fits u64"),
-            "plan_reconciliation.fixture_counts drifted for {}",
-            tree.path
-        );
+        let live = workspace.join(tree.path).is_dir();
+        match statuses.get(tree.path).expect("tree status") {
+            TreeStatus::Live(summary) => {
+                assert!(
+                    live,
+                    "{} reported live but the directory is absent",
+                    tree.path
+                );
+                assert_eq!(summary.files, tree.files);
+                assert_eq!(summary.bytes, tree.bytes);
+                assert_eq!(summary.sha256, tree.sha256);
+            }
+            TreeStatus::Archived => {
+                assert!(
+                    !live,
+                    "{} is live but the gate reported it archived",
+                    tree.path
+                );
+                assert!(
+                    tree.legacy_archived,
+                    "{} is not allowed to be archived",
+                    tree.path
+                );
+            }
+        }
     }
 }
 
@@ -273,4 +458,265 @@ fn symlinked_fixture_root_is_rejected() {
     assert!(error.contains("symlink"), "{error}");
 
     fs::remove_dir_all(&base).expect("cleanup");
+}
+
+mod synthetic_tests {
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::oracle_manifest::{ManifestSupport, ManifestTree, OracleManifest};
+
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    struct TempTree {
+        root: PathBuf,
+    }
+
+    impl TempTree {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "wxml-fixture-gate-{}-{}",
+                std::process::id(),
+                COUNTER.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir_all(&root).expect("temporary tree");
+            Self { root }
+        }
+
+        fn write(&self, relative: &str, text: &str) {
+            let path = self.root.join(relative);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("temporary parent");
+            }
+            fs::write(path, text).expect("temporary file");
+        }
+    }
+
+    impl Drop for TempTree {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn static_sha(value: &str) -> &'static str {
+        Box::leak(value.to_owned().into_boxed_str())
+    }
+
+    fn expected_tree(
+        path: &'static str,
+        summary: &TreeSummary,
+        legacy_archived: bool,
+    ) -> FrozenTree {
+        FrozenTree {
+            path,
+            files: summary.files,
+            bytes: summary.bytes,
+            sha256: static_sha(&summary.sha256),
+            legacy_archived,
+        }
+    }
+
+    fn manifest_with(tree: &FrozenTree) -> OracleManifest {
+        OracleManifest {
+            schema: oracle_manifest::MANIFEST_SCHEMA.to_owned(),
+            generated_at: "2026-11-20T00:00:00+08:00".to_owned(),
+            head: oracle_manifest::ORACLE_BASELINE_HEAD.to_owned(),
+            branch: "tsgo/migration".to_owned(),
+            source_root: "backends/typescript/test".to_owned(),
+            ledger_schema: "wxml-tsgo-test-ledger/1".to_owned(),
+            support: ManifestSupport {
+                path: "backends/typescript/test/support.ts".to_owned(),
+                sha256: "0".repeat(64),
+                lines: 1,
+            },
+            files: Vec::new(),
+            trees: vec![ManifestTree {
+                tree: tree.path.to_owned(),
+                files: u64::try_from(tree.files).expect("file count"),
+                bytes: tree.bytes,
+                sha256: tree.sha256.to_owned(),
+                archived_ok: tree.legacy_archived,
+            }],
+            cases: Vec::new(),
+            projection_sha256: String::new(),
+        }
+    }
+
+    fn ledger_with(tree: &FrozenTree) -> Value {
+        let mut counts = Map::new();
+        counts.insert(
+            tree.path.to_owned(),
+            Value::from(u64::try_from(tree.files).expect("file count")),
+        );
+        json!({
+            "fixture_trees": {
+                "algorithm": {
+                    "name": "v1",
+                    "deterministic_runs": 2,
+                    "symlinks": 0,
+                },
+                "trees": [{
+                    "tree": tree.path,
+                    "files": u64::try_from(tree.files).expect("file count"),
+                    "bytes": tree.bytes,
+                    "sha256": tree.sha256,
+                }],
+            },
+            "plan_reconciliation": {
+                "fixture_counts": Value::Object(counts),
+            },
+        })
+    }
+
+    #[test]
+    fn live_tree_is_rehashed_and_matches() {
+        let temp = TempTree::new();
+        temp.write("legacy/tree/a.txt", "x");
+        let summary = hash_tree(&temp.root.join("legacy/tree")).expect("tree hash");
+        let expected = [expected_tree("legacy/tree", &summary, true)];
+        let statuses = verify_fixture_trees(
+            &temp.root,
+            &ledger_with(&expected[0]),
+            &manifest_with(&expected[0]),
+            &expected,
+        )
+        .expect("live tree gate");
+        assert!(matches!(
+            statuses.get("legacy/tree"),
+            Some(TreeStatus::Live(_))
+        ));
+    }
+
+    #[test]
+    fn archived_legacy_tree_passes_without_live_bytes() {
+        let summary = TreeSummary {
+            files: 1,
+            bytes: 1,
+            sha256: "0".repeat(64),
+        };
+        let expected = [expected_tree("backends/typescript/test", &summary, true)];
+        let temp = TempTree::new();
+        let statuses = verify_fixture_trees(
+            &temp.root,
+            &ledger_with(&expected[0]),
+            &manifest_with(&expected[0]),
+            &expected,
+        )
+        .expect("archived legacy tree");
+        assert_eq!(
+            statuses.get("backends/typescript/test"),
+            Some(&TreeStatus::Archived)
+        );
+    }
+
+    #[test]
+    fn missing_retained_tree_fails() {
+        let summary = TreeSummary {
+            files: 1,
+            bytes: 1,
+            sha256: "0".repeat(64),
+        };
+        let expected = [expected_tree("tests/fixtures", &summary, false)];
+        let temp = TempTree::new();
+        let error = verify_fixture_trees(
+            &temp.root,
+            &ledger_with(&expected[0]),
+            &manifest_with(&expected[0]),
+            &expected,
+        )
+        .expect_err("a retained tree is required");
+        assert!(
+            error.contains("required fixture tree is missing"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn tampered_manifest_tree_hash_fails() {
+        let temp = TempTree::new();
+        temp.write("legacy/tree/a.txt", "x");
+        let summary = hash_tree(&temp.root.join("legacy/tree")).expect("tree hash");
+        let expected = [expected_tree("legacy/tree", &summary, true)];
+        let mut manifest = manifest_with(&expected[0]);
+        manifest.trees[0].sha256 = "f".repeat(64);
+        let error =
+            verify_fixture_trees(&temp.root, &ledger_with(&expected[0]), &manifest, &expected)
+                .expect_err("manifest tamper must fail");
+        assert!(error.contains("manifest tree hash drift"), "{error}");
+    }
+
+    #[test]
+    fn tampered_ledger_tree_count_fails() {
+        let temp = TempTree::new();
+        temp.write("legacy/tree/a.txt", "x");
+        let summary = hash_tree(&temp.root.join("legacy/tree")).expect("tree hash");
+        let expected = [expected_tree("legacy/tree", &summary, true)];
+        let mut ledger = ledger_with(&expected[0]);
+        ledger["fixture_trees"]["trees"][0]["files"] = Value::from(999_u64);
+        let error =
+            verify_fixture_trees(&temp.root, &ledger, &manifest_with(&expected[0]), &expected)
+                .expect_err("ledger tamper must fail");
+        assert!(error.contains("ledger tree record drift"), "{error}");
+    }
+
+    #[test]
+    fn live_tree_drift_fails() {
+        let temp = TempTree::new();
+        temp.write("legacy/tree/a.txt", "x");
+        let summary = hash_tree(&temp.root.join("legacy/tree")).expect("tree hash");
+        let expected = [expected_tree("legacy/tree", &summary, true)];
+        temp.write("legacy/tree/a.txt", "y");
+        let error = verify_fixture_trees(
+            &temp.root,
+            &ledger_with(&expected[0]),
+            &manifest_with(&expected[0]),
+            &expected,
+        )
+        .expect_err("live drift must fail");
+        assert!(error.contains("v1 SHA-256 drift"), "{error}");
+    }
+
+    fn copy_tree(source: &Path, target: &Path) {
+        fs::create_dir_all(target).expect("copied fixture directory");
+        let entries = fs::read_dir(source).expect("source fixture directory");
+        for entry in entries {
+            let entry = entry.expect("source fixture entry");
+            let path = entry.path();
+            let metadata = fs::symlink_metadata(&path).expect("source fixture metadata");
+            let destination = target.join(entry.file_name());
+            if metadata.is_dir() {
+                copy_tree(&path, &destination);
+            } else if metadata.is_file() {
+                fs::copy(&path, &destination).expect("copied fixture file");
+            } else {
+                panic!("unexpected non-regular fixture: {}", path.display());
+            }
+        }
+    }
+
+    #[test]
+    fn fixture_gate_passes_after_legacy_trees_are_deleted() {
+        let workspace = ledger::workspace_root();
+        let ledger_value = ledger::load_ledger();
+        let manifest = oracle_manifest::load_manifest(&workspace);
+        let temp = TempTree::new();
+        for tree in FROZEN_TREES.iter().filter(|tree| !tree.legacy_archived) {
+            copy_tree(&workspace.join(tree.path), &temp.root.join(tree.path));
+        }
+        let statuses = verify_fixture_trees(&temp.root, &ledger_value, &manifest, FROZEN_TREES)
+            .expect("frozen fixture gate must pass after the legacy trees are deleted");
+        for tree in FROZEN_TREES {
+            match statuses.get(tree.path).expect("tree status") {
+                TreeStatus::Archived => {
+                    assert!(tree.legacy_archived, "{} may not be archived", tree.path);
+                }
+                TreeStatus::Live(_) => {
+                    assert!(!tree.legacy_archived, "{} must be archived", tree.path);
+                }
+            }
+        }
+    }
 }

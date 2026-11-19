@@ -12,25 +12,25 @@ use std::path::{Component, Path, PathBuf};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use crate::source_scan;
+use crate::oracle_manifest;
 
 /// Repository-relative ledger path.
 pub(crate) const LEDGER_RELATIVE_PATH: &str = "docs/plans/tsgo-test-ledger.json";
 
 /// Frozen expanded registration count.
 pub(crate) const TOTAL_CASES: usize = 339;
-/// Exact-parity cases promoted to `green`; the wave-6 component-binding
-/// follow-up promoted four more.
-pub(crate) const GREEN_CASES: usize = 48;
-/// Cases still `planned` after the 2026-11-20 wave-6 component-binding follow-up.
-pub(crate) const PLANNED_CASES: usize = 255;
+/// Exact-parity cases promoted to `green`; the wave-8 assertion backfill
+/// promoted seven more.
+pub(crate) const GREEN_CASES: usize = 55;
+/// Cases still `planned` after the 2026-11-20 wave-8 assertion backfill.
+pub(crate) const PLANNED_CASES: usize = 248;
 /// Frozen retired-with-decision count.
 pub(crate) const RETIRED_CASES: usize = 36;
 /// Near-exact cases intentionally left `planned` with a green recommendation.
 pub(crate) const NEAR_EXACT_CASES: usize = 3;
-/// Weaker evidence cases left `planned` after the wave-6 component-binding
-/// follow-up.
-pub(crate) const WEAKER_CASES: usize = 74;
+/// Weaker evidence cases left `planned` after the 2026-11-20 wave-8 assertion
+/// backfill, which promoted seven previously weaker cases to exact.
+pub(crate) const WEAKER_CASES: usize = 73;
 /// Structural evidence cases left `planned` after the wave-6 component-binding
 /// follow-up.
 pub(crate) const STRUCTURAL_CASES: usize = 7;
@@ -1416,9 +1416,38 @@ fn ledger_old_test_sources_and_lines_exist() {
     let files = required_array(root, "files", "ledger root");
     assert_eq!(files.len(), 21, "the old test-file inventory drifted");
 
+    // P7-2: the archive manifest is required whether or not the live legacy
+    // tree still exists. When live bytes are present they are re-hashed; when
+    // the tree is deleted, the frozen manifest is verified against this ledger.
+    let manifest = oracle_manifest::load_manifest(&workspace);
+    let report = oracle_manifest::verify_legacy_oracle(
+        &ledger,
+        &manifest,
+        &workspace.join(oracle_manifest::LEGACY_TEST_SOURCE_ROOT),
+    )
+    .unwrap_or_else(|error| panic!("legacy oracle gate: {error}"));
+    assert_eq!(
+        report.files,
+        files.len(),
+        "legacy oracle file count drifted"
+    );
+    assert_eq!(
+        report.cases, TOTAL_CASES,
+        "legacy oracle case count drifted"
+    );
+    let live_root = workspace.join(oracle_manifest::LEGACY_TEST_SOURCE_ROOT);
+    let expected_mode = if live_root.is_dir() {
+        oracle_manifest::LegacySourceMode::Live
+    } else {
+        oracle_manifest::LegacySourceMode::Frozen
+    };
+    assert_eq!(
+        report.mode, expected_mode,
+        "legacy oracle gate used the wrong source authority"
+    );
+
     let mut file_names = BTreeSet::new();
-    let mut file_lines: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut file_sources: BTreeMap<String, String> = BTreeMap::new();
+    let mut file_line_limits: BTreeMap<String, u64> = BTreeMap::new();
     let mut file_partitions: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut routing_union = BTreeSet::new();
     let mut declaration_sum = 0_u64;
@@ -1444,24 +1473,21 @@ fn ledger_old_test_sources_and_lines_exist() {
             "duplicate old test {name}"
         );
 
-        let path = workspace.join(name);
-        let bytes = std::fs::read(&path)
-            .unwrap_or_else(|error| panic!("old test file missing at {}: {error}", path.display()));
-        let text = String::from_utf8(bytes.clone()).unwrap_or_else(|error| {
-            panic!("old test file is not UTF-8 {}: {error}", path.display())
-        });
         let declared_sha = required_str(file, "sha256", name);
         assert!(
             is_lowercase_sha256(declared_sha),
             "{name} has an invalid source hash"
         );
+        let manifest_file = manifest
+            .files
+            .iter()
+            .find(|entry| entry.file == name)
+            .unwrap_or_else(|| panic!("legacy oracle manifest is missing {name}"));
         assert_eq!(
-            sha256_hex(&bytes),
-            declared_sha,
-            "old test source hash drifted for {name}; update the ledger deliberately"
+            manifest_file.sha256, declared_sha,
+            "manifest/ledger source hash drift for {name}"
         );
-        file_lines.insert(name.to_owned(), text.lines().map(str::to_owned).collect());
-        file_sources.insert(name.to_owned(), text);
+        file_line_limits.insert(name.to_owned(), manifest_file.lines);
 
         let declarations = required_u64(file, "test_declarations", name);
         let literals = required_u64(file, "literal_declarations", name);
@@ -1579,17 +1605,14 @@ fn ledger_old_test_sources_and_lines_exist() {
     let support = required_object(root, "support_file", "ledger root");
     let support_path = required_str(support, "path", "ledger.support_file");
     assert_eq!(support_path, "backends/typescript/test/support.ts");
-    let support_absolute = workspace.join(support_path);
-    let support_bytes = std::fs::read(&support_absolute).unwrap_or_else(|error| {
-        panic!(
-            "support file missing at {}: {error}",
-            support_absolute.display()
-        )
-    });
     assert_eq!(
-        sha256_hex(&support_bytes),
         required_str(support, "sha256", "ledger.support_file"),
-        "support source hash drifted; update the ledger deliberately"
+        manifest.support.sha256,
+        "support source hash drifted from the legacy oracle manifest"
+    );
+    assert_eq!(
+        support_path, manifest.support.path,
+        "support path drifted from the legacy oracle manifest"
     );
     assert!(!required_array(support, "exports", "ledger.support_file").is_empty());
     let used_by = required_string_array(support, "used_by", "ledger.support_file");
@@ -1617,30 +1640,26 @@ fn ledger_old_test_sources_and_lines_exist() {
         );
         source_files.insert(file.to_owned());
 
-        let line =
-            usize::try_from(required_u64(source, "line", case_id)).expect("case line fits usize");
+        let line = required_u64(source, "line", case_id);
         assert!(line > 0, "{case_id} has line 0");
-        let lines = file_lines
+        let line_limit = file_line_limits
             .get(file)
-            .unwrap_or_else(|| panic!("{case_id} references unread file {file}"));
-        let source_line = lines
-            .get(line - 1)
-            .unwrap_or_else(|| panic!("{case_id} points past the end of {file}:{line}"));
+            .unwrap_or_else(|| panic!("{case_id} references unknown file {file}"));
         assert!(
-            source_scan::is_test_declaration(source_line),
-            "{case_id} points at {file}:{line}, which is not a test declaration: {source_line:?}"
+            line <= *line_limit,
+            "{case_id} points past the frozen end of {file}:{line} > {line_limit}"
         );
-        let source_text = file_sources
-            .get(file)
-            .unwrap_or_else(|| panic!("{case_id} references unread source {file}"));
-        let call_range = source_scan::test_call_range(source_text, line)
-            .unwrap_or_else(|| panic!("{case_id} test call range was not found at {file}:{line}"));
-        // The ledger hashes the exact TypeScript CallExpression text:
-        // `test("...", () => { ... })`, excluding the trailing semicolon.
+        let manifest_case = manifest
+            .cases
+            .iter()
+            .find(|entry| entry.case_id == case_id)
+            .unwrap_or_else(|| panic!("{case_id} is missing from the legacy oracle manifest"));
+        assert_eq!(manifest_case.file, file, "{case_id} manifest file drifted");
+        assert_eq!(manifest_case.line, line, "{case_id} manifest line drifted");
         assert_eq!(
-            sha256_hex(source_text[call_range].as_bytes()),
+            manifest_case.body_sha256,
             required_str(source, "body_sha256", case_id),
-            "{case_id} body_sha256 drifted at {file}:{line}"
+            "{case_id} body_sha256 drifted from the legacy oracle manifest"
         );
         let target = required_str(case, "target_rust_test", case_id);
         let target_module = validate_target_module(target, case_id);
@@ -1667,4 +1686,59 @@ fn ledger_old_test_sources_and_lines_exist() {
         file_names.len(),
         "some old test files have no ledger case"
     );
+}
+
+#[test]
+fn frozen_oracle_manifest_matches_the_ledger() {
+    let workspace = workspace_root();
+    let ledger = load_ledger();
+    let manifest = oracle_manifest::load_manifest(&workspace);
+    oracle_manifest::verify_frozen_projection(&ledger, &manifest)
+        .unwrap_or_else(|error| panic!("legacy oracle manifest cross-check: {error}"));
+
+    assert_eq!(
+        manifest.head,
+        oracle_manifest::ORACLE_BASELINE_HEAD,
+        "the frozen oracle manifest was regenerated at a different HEAD"
+    );
+    assert_eq!(
+        manifest.cases.len(),
+        TOTAL_CASES,
+        "the manifest must archive all 339 cases"
+    );
+    assert_eq!(
+        manifest.files.len(),
+        21,
+        "the manifest must archive 21 files"
+    );
+    assert_eq!(
+        manifest.trees.len(),
+        4,
+        "the manifest must archive four fixture trees"
+    );
+    assert_eq!(
+        manifest.projection_sha256,
+        oracle_manifest::FROZEN_MANIFEST_SHA256,
+        "the manifest projection digest drifted"
+    );
+}
+
+#[test]
+fn frozen_oracle_gate_passes_when_legacy_tree_is_absent() {
+    let workspace = workspace_root();
+    let ledger = load_ledger();
+    let manifest = oracle_manifest::load_manifest(&workspace);
+    // Simulate the P7-2 deletion without touching the live checkout: the gate
+    // receives a root that does not exist and must use the frozen manifest.
+    let absent = workspace.join("backends/typescript/test.__simulated_deleted__");
+    assert!(
+        !absent.exists(),
+        "the simulated deletion path must not exist: {}",
+        absent.display()
+    );
+    let report = oracle_manifest::verify_legacy_oracle(&ledger, &manifest, &absent)
+        .unwrap_or_else(|error| panic!("frozen oracle gate must pass without live bytes: {error}"));
+    assert_eq!(report.mode, oracle_manifest::LegacySourceMode::Frozen);
+    assert_eq!(report.files, 21);
+    assert_eq!(report.cases, TOTAL_CASES);
 }

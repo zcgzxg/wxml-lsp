@@ -177,6 +177,7 @@ fn case_locals_0063_nested_levels_indent_and_closers_are_innermost_first() {
         "  ",
         Syntax::TypeScript,
     );
+    assert!(!rendered.unresolved);
     assert_eq!(
         rendered.text,
         [
@@ -205,16 +206,21 @@ fn case_locals_0089_a_same_name_nested_chain_captures_the_outer_binding_no_tdz()
         Syntax::TypeScript,
     );
     assert!(!rendered.unresolved);
-    assert!(
-        rendered
-            .text
-            .contains("const __wxml_capture_item_0 = item;")
+    assert_eq!(
+        rendered.text,
+        [
+            "{",
+            "  const item = __wxml_item(__wxml_root.groups);",
+            "  const index = __wxml_index(__wxml_root.groups);",
+            "  const __wxml_capture_item_0 = item;",
+            "  {",
+            "    const item = __wxml_item(__wxml_capture_item_0.members);",
+            "    const index = __wxml_index(__wxml_capture_item_0.members);",
+            "",
+        ]
+        .join("\n")
     );
-    assert!(
-        rendered
-            .text
-            .contains("const item = __wxml_item(__wxml_capture_item_0.members);")
-    );
+    assert_eq!(rendered.close, "  }\n}\n");
     assert!(
         !rendered
             .text
@@ -280,6 +286,10 @@ fn case_locals_0144_levels_are_grouped_by_array_order_not_source_expression() {
     assert_eq!(
         levels[0].item.as_ref().map(|item| item.name.as_str()),
         Some("item")
+    );
+    assert_eq!(
+        levels[0].index.as_ref().map(|index| index.name.as_str()),
+        Some("index")
     );
     assert_eq!(
         levels[1].item.as_ref().map(|item| item.name.as_str()),
@@ -391,6 +401,7 @@ fn case_guards_0075_plain_value_level_or_guards_are_not_degraded() {
         &mut |expr| Some(expr.to_owned()),
     );
     assert_eq!(rendered.open, "if (flagA || flagB) {\n");
+    assert_eq!(rendered.close, "}\n");
     assert!(!rendered.unresolved);
 }
 
