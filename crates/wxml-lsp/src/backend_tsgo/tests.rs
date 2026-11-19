@@ -3898,3 +3898,238 @@ impl Drop for Cleanup {
         let _ = std::fs::remove_dir_all(&self.0);
     }
 }
+
+// Event-handler completion: pure script facts, no native session.
+
+const EVENT_WXML: &str = "<view bindtap=\"on\" />";
+
+fn prepared_file_at(path: &str, text: &str, revision: u64) -> PreparedFile {
+    let mut prepared = prepared_file(path, text);
+    prepared.source_revision = revision;
+    prepared
+}
+
+fn event_completion_view(owner: RootKind, script: &str) -> PreparedView {
+    let mut view = empty_view(EVENT_WXML, vec![prepared_file(SCRIPT_PATH, script)]);
+    view.target.as_mut().expect("target").owner = owner;
+    view
+}
+
+fn event_completion_offset() -> u32 {
+    offset_of(EVENT_WXML, "on") + 2
+}
+
+fn event_completion_request(adapter: &TsgoBackendAdapter, offset: u32) -> CompletionRequest {
+    CompletionRequest {
+        context: context(adapter, EVENT_WXML),
+        offset,
+        kind: CompletionKind::EventHandler,
+    }
+}
+
+struct MutableViews {
+    view: Mutex<PreparedView>,
+}
+
+impl MutableViews {
+    fn set_script(&self, text: &str, revision: u64) {
+        let mut view = self.view.lock().expect("view");
+        view.files = Arc::from(vec![prepared_file_at(SCRIPT_PATH, text, revision)]);
+    }
+}
+
+impl ViewProvider for MutableViews {
+    fn prepare(&self, _snapshot: &SourceSnapshot) -> Result<PreparedView, HostError> {
+        Ok(self.view.lock().expect("view").clone())
+    }
+}
+
+#[test]
+fn event_completion_uses_script_methods_without_starting_a_native_session() {
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(event_completion_view(
+            RootKind::Page,
+            "Page({ data: { onTap: 1 }, onTap() {}, onLoad: function () {} });",
+        ))),
+        FakeBehavior::default(),
+    );
+    let offset = event_completion_offset();
+    let result = adapter
+        .completion(event_completion_request(&adapter, offset))
+        .expect("event completion");
+    let labels: Vec<&str> = result
+        .items
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect();
+    assert_eq!(labels, vec!["onLoad", "onTap"]);
+    assert!(result.status.is_supported(), "{:?}", result.status);
+    assert!(!result.truncated);
+    for item in &result.items {
+        assert_eq!(item.kind, CompletionItemKind::Method);
+        assert_eq!(item.replace.start(), offset - 2);
+        assert_eq!(item.replace.end(), offset);
+        assert_eq!(item.insert_text, item.label);
+    }
+    let log = log.lock().expect("log");
+    assert_eq!(log.starts, 0, "event completion must not start a session");
+    assert_eq!(log.opens, 0);
+    assert!(log.completion_calls.is_empty());
+    assert_eq!(log.hover_documentation_calls, 0);
+}
+
+#[test]
+fn event_completion_returns_unavailable_when_the_view_is_unavailable() {
+    let (adapter, log) = adapter_with(Arc::new(FailingViews), FakeBehavior::default());
+    let error = adapter
+        .completion(event_completion_request(
+            &adapter,
+            event_completion_offset(),
+        ))
+        .expect_err("host view failure");
+    assert!(matches!(error, BackendError::Unavailable(_)), "{error:?}");
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn event_completion_rejects_a_stale_epoch_before_any_view_prepare() {
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(event_completion_view(
+            RootKind::Page,
+            "Page({ onTap() {} });",
+        ))),
+        FakeBehavior::default(),
+    );
+    let stale = BackendEpoch::new(BackendId::new(BACKEND_ID), 99);
+    let request = CompletionRequest {
+        context: context_with_epoch(&adapter, EVENT_WXML, stale),
+        offset: event_completion_offset(),
+        kind: CompletionKind::EventHandler,
+    };
+    assert!(matches!(
+        adapter.completion(request).expect_err("stale epoch"),
+        BackendError::Cancelled
+    ));
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn event_completion_serves_component_methods() {
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(event_completion_view(
+            RootKind::Component,
+            "Component({ attached() {}, methods: { save() {} } });",
+        ))),
+        FakeBehavior::default(),
+    );
+    let result = adapter
+        .completion(event_completion_request(
+            &adapter,
+            event_completion_offset(),
+        ))
+        .expect("event completion");
+    let labels: Vec<&str> = result
+        .items
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect();
+    assert_eq!(labels, vec!["save"]);
+    assert!(result.status.is_supported(), "{:?}", result.status);
+}
+
+#[test]
+fn event_completion_without_an_owning_script_is_unsupported_and_empty() {
+    let mut view = event_completion_view(RootKind::Page, "Page({ onTap() {} });");
+    view.target = None;
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let result = adapter
+        .completion(event_completion_request(
+            &adapter,
+            event_completion_offset(),
+        ))
+        .expect("event completion");
+    assert!(result.items.is_empty());
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Unsupported { .. }
+    ));
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn event_completion_reports_a_missing_owning_script_as_unavailable() {
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(empty_view(EVENT_WXML, Vec::new()))),
+        FakeBehavior::default(),
+    );
+    let error = adapter
+        .completion(event_completion_request(
+            &adapter,
+            event_completion_offset(),
+        ))
+        .expect_err("missing owning script");
+    assert!(matches!(error, BackendError::Unavailable(_)), "{error:?}");
+}
+
+#[test]
+fn event_completion_cache_hits_until_a_script_revision_changes() {
+    let views = Arc::new(MutableViews {
+        view: Mutex::new(event_completion_view(
+            RootKind::Page,
+            "Page({ first() {} });",
+        )),
+    });
+    let (adapter, log) = adapter_with(views.clone(), FakeBehavior::default());
+    let offset = event_completion_offset();
+    let labels = |result: &CompletionResult| {
+        result
+            .items
+            .iter()
+            .map(|item| item.label.clone())
+            .collect::<Vec<_>>()
+    };
+    let first = adapter
+        .completion(event_completion_request(&adapter, offset))
+        .expect("first");
+    assert_eq!(labels(&first), vec!["first"]);
+
+    // Same revisions with different text: the candidate list is cached.
+    views.set_script("Page({ second() {} });", 1);
+    let cached = adapter
+        .completion(event_completion_request(&adapter, offset))
+        .expect("cached");
+    assert_eq!(labels(&cached), vec!["first"]);
+
+    // A revision change invalidates the entry.
+    views.set_script("Page({ second() {} });", 2);
+    let refreshed = adapter
+        .completion(event_completion_request(&adapter, offset))
+        .expect("refreshed");
+    assert_eq!(labels(&refreshed), vec!["second"]);
+    assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn event_completion_rejected_value_is_unsupported_not_supported_empty() {
+    let wxml = "<view bindtap=\"onTap\"";
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(event_completion_view(
+            RootKind::Page,
+            "Page({ onTap() {} });",
+        ))),
+        FakeBehavior::default(),
+    );
+    let offset = u32::try_from(wxml.find('"').expect("quote")).expect("offset");
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset,
+            kind: CompletionKind::EventHandler,
+        })
+        .expect("event completion");
+    assert!(result.items.is_empty());
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Unsupported { .. }
+    ));
+}

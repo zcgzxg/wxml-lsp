@@ -69,6 +69,7 @@ pub(crate) mod diagnostics;
 pub(crate) mod document_symbol;
 pub(crate) mod engine;
 pub(crate) mod environment;
+pub(crate) mod event_completion;
 pub(crate) mod hover;
 pub(crate) mod input;
 pub(crate) mod mapping;
@@ -100,6 +101,7 @@ use wxml_types::{
 
 use self::engine::DiscoveredInstall;
 use self::environment::Environment;
+use self::event_completion::EventCandidateCache;
 use self::input::{RequestIdentity, RequestPlan, ViewProvider, build_request_plan, merge_reason};
 use self::sandbox::SandboxSessionFactory;
 use self::session::{NativeSessionFactory, QuerySession, SessionFactory};
@@ -163,6 +165,14 @@ pub(crate) struct TsgoBackendAdapter {
     sessions: Arc<dyn SessionFactory>,
     environment: Environment,
     state: Mutex<AdapterState>,
+    /// Last script-method candidate list used by event-handler completion.
+    ///
+    /// This cache is independent of the native session and its epoch: event
+    /// candidates are syntactic script facts. The entry is replaced whenever
+    /// the project, owning script/owner, prepared-source completeness or the
+    /// sorted script revision set changes; template revisions and cursor
+    /// offsets are not part of the key.
+    event_cache: Mutex<Option<EventCandidateCache>>,
     epoch: AtomicU64,
 }
 
@@ -260,6 +270,7 @@ impl TsgoBackendAdapter {
             sessions,
             environment,
             state: Mutex::new(AdapterState::new(1)),
+            event_cache: Mutex::new(None),
             epoch: AtomicU64::new(1),
         }
     }
@@ -554,12 +565,16 @@ impl Backend for TsgoBackendAdapter {
         if !self.epoch_matches(&request.context) {
             return Err(BackendError::Cancelled);
         }
+        if request.kind == CompletionKind::EventHandler {
+            // Pure script facts: no shadow, no native session, no environment.
+            return event_completion::completion(self.views.as_ref(), &request, &self.event_cache);
+        }
         if request.kind != CompletionKind::ExpressionMember {
             return Ok(CompletionResult {
                 items: Vec::new(),
                 status: CapabilityStatus::Unsupported {
                     reason:
-                        "only expression-member completion is implemented for the native backend"
+                        "only expression-member and event-handler completion are implemented for the native backend"
                             .to_owned(),
                 },
                 truncated: false,
@@ -656,7 +671,7 @@ impl Backend for TsgoBackendAdapter {
             },
             completion: CapabilityStatus::Partial {
                 reason:
-                    "expression-member completion is native; the pinned API has no per-entry documentation and auto-imports need prepareAutoImports at snapshot creation, so non-empty results stay Partial; event-handler completion and unclosed expressions are not implemented"
+                    "expression-member completion is native; the pinned API has no per-entry documentation and auto-imports need prepareAutoImports at snapshot creation, so non-empty native results stay Partial; event-handler completion is served from the Rust script method table without a native session and can be Supported; `this.`/method-body completion, custom component event signatures and handler signature help are not implemented"
                         .to_owned(),
             },
         }

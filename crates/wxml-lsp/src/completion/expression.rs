@@ -99,7 +99,6 @@ pub(crate) enum EventValueRejection {
 /// The quote is authoritative only when [`crate::styles::value_bounds`]
 /// reports one: `bindtap=|"onTap"` is an unquoted value containing quotes and
 /// is rejected as a handler token, even though the cursor follows an `=`.
-#[allow(dead_code)] // S0 routing contract; the S2 event-handler branch consumes it.
 pub(crate) fn event_value_route(text: &str, offset: u32, context: &Context) -> EventValueRoute {
     let Site::AttributeValue {
         attribute, quoted, ..

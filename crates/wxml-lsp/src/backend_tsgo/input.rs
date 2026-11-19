@@ -41,6 +41,19 @@ pub(crate) trait ViewProvider: Send + Sync {
     fn prepare(&self, snapshot: &SourceSnapshot) -> Result<PreparedView, HostError>;
 }
 
+/// Prepares one host view, mapping host failures to a typed backend error.
+///
+/// Shared by the shadow plan and the event-handler fast path so the
+/// `HostError -> BackendError` mapping has one owner.
+pub(crate) fn prepare_view(
+    provider: &dyn ViewProvider,
+    snapshot: &SourceSnapshot,
+) -> Result<PreparedView, BackendError> {
+    provider
+        .prepare(snapshot)
+        .map_err(|error| host_error(&error))
+}
+
 /// [`ViewProvider`] backed by the LSP [`ProjectHost`].
 pub(crate) struct HostViewProvider {
     host: Arc<dyn ProjectHost>,
@@ -176,9 +189,7 @@ pub(crate) fn build_request_plan(
     environment: &Environment,
 ) -> Result<RequestPlan, BackendError> {
     let snapshot = context.source();
-    let view = provider
-        .prepare(snapshot)
-        .map_err(|error| host_error(&error))?;
+    let view = prepare_view(provider, snapshot)?;
     let target = view.target.as_ref().ok_or_else(|| {
         BackendError::Unavailable(
             "project view has no page or component script for this template".to_owned(),
@@ -612,7 +623,7 @@ fn host_error(error: &HostError) -> BackendError {
     BackendError::Unavailable(format!("project view is unavailable: {error}"))
 }
 
-fn input_error(error: &wxml_backend_tsgo::input::InputError) -> BackendError {
+pub(crate) fn input_error(error: &wxml_backend_tsgo::input::InputError) -> BackendError {
     BackendError::Unavailable(format!("native input is unavailable: {error}"))
 }
 

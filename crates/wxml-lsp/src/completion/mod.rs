@@ -139,15 +139,28 @@ fn item_value(document: &crate::workspace::Document, item: &CompletionItem) -> O
 }
 
 /// Builds a `CompletionList` from a C0 result.
+///
+/// `isIncomplete` is true whenever the backend truncated the list, whenever
+/// this edge caps an over-long list itself, or when one item cannot be mapped
+/// to a valid source range. A `Partial` status alone is semantic degradation,
+/// not a reason to retrigger the client.
 fn completion_list(document: &crate::workspace::Document, result: &CompletionResult) -> Value {
     let mut items = Vec::new();
+    let mut dropped = false;
     for item in result.items.iter().take(MAX_COMPLETION_ITEMS) {
         if let Some(value) = item_value(document, item) {
             items.push(value);
+        } else {
+            dropped = true;
+            log(format_args!(
+                "a completion item was dropped because its range is not representable"
+            ));
         }
     }
+    let capped = result.items.len() > MAX_COMPLETION_ITEMS;
+    let is_incomplete = result.truncated || capped || dropped;
     json!({
-        "isIncomplete": false,
+        "isIncomplete": is_incomplete,
         "items": items,
     })
 }
@@ -398,5 +411,92 @@ mod tests {
 
         let text = "<view>text";
         assert!(detect(text, u32::try_from(text.len()).unwrap_or(0)).is_none());
+    }
+
+    use crate::workspace::Workspace;
+    use wxml_text::SourceRange;
+
+    fn completion_document(text: &str) -> crate::workspace::Document {
+        let mut workspace = Workspace::new();
+        workspace
+            .open("file:///test.wxml", text.to_owned(), Some(1))
+            .expect("open");
+        workspace
+            .get("file:///test.wxml")
+            .expect("document")
+            .clone()
+    }
+
+    fn method_item(start: u32, end: u32) -> CompletionItem {
+        CompletionItem {
+            label: "onTap".to_owned(),
+            kind: CompletionItemKind::Method,
+            detail: None,
+            documentation: None,
+            insert_text: "onTap".to_owned(),
+            insert_text_format: InsertTextFormat::PlainText,
+            replace: SourceRange::from_bounds(start, end).expect("range"),
+            sort_text: Some("0_onTap".to_owned()),
+            filter_text: Some("onTap".to_owned()),
+        }
+    }
+
+    #[test]
+    fn truncated_completion_sets_lsp_is_incomplete() {
+        let document = completion_document("<view bindtap=\"on\" />");
+        let result = CompletionResult {
+            items: vec![method_item(15, 17)],
+            status: CapabilityStatus::Supported,
+            truncated: true,
+        };
+        let value = completion_list(&document, &result);
+        assert_eq!(value["isIncomplete"], Value::Bool(true));
+        assert_eq!(value["items"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn over_cap_completion_is_capped_and_incomplete() {
+        let document = completion_document("abc");
+        let result = CompletionResult {
+            items: (0..=MAX_COMPLETION_ITEMS)
+                .map(|_| method_item(0, 1))
+                .collect(),
+            status: CapabilityStatus::Supported,
+            truncated: false,
+        };
+        let value = completion_list(&document, &result);
+        assert_eq!(value["isIncomplete"], Value::Bool(true));
+        assert_eq!(
+            value["items"].as_array().map(Vec::len),
+            Some(MAX_COMPLETION_ITEMS)
+        );
+    }
+
+    #[test]
+    fn semantic_partial_without_truncation_keeps_is_incomplete_false() {
+        let document = completion_document("abc");
+        let result = CompletionResult {
+            items: vec![method_item(0, 1)],
+            status: CapabilityStatus::Partial {
+                reason: "the method table is partial".to_owned(),
+            },
+            truncated: false,
+        };
+        let value = completion_list(&document, &result);
+        assert_eq!(value["isIncomplete"], Value::Bool(false));
+        assert_eq!(value["items"].as_array().map(Vec::len), Some(1));
+    }
+
+    #[test]
+    fn an_unrepresentable_item_range_marks_is_incomplete() {
+        let document = completion_document("abc");
+        let result = CompletionResult {
+            items: vec![method_item(10, 11)],
+            status: CapabilityStatus::Supported,
+            truncated: false,
+        };
+        let value = completion_list(&document, &result);
+        assert_eq!(value["isIncomplete"], Value::Bool(true));
+        assert_eq!(value["items"].as_array().map(Vec::len), Some(0));
     }
 }
