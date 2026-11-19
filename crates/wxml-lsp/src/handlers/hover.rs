@@ -11,12 +11,13 @@ use wxml_types::{
 };
 
 use super::{
-    hover_target, line_index_range_value, markdown_escape, quality_label, sanitized_reason,
-    source_range_value, status_label, template_document,
+    code_text, hover_target, line_index_range_value, markdown_escape, quality_label,
+    sanitized_reason, source_range_value, status_label, template_document,
 };
 use crate::jsonrpc::{self, Outgoing, RequestKey};
 use crate::metadata::{self, DefinitionAnswer, HoverAnswer, StaticLocation};
 use crate::scheduler::{Job, JobKind, Outcome, SubmitError, WorkDone};
+use crate::semantics::event_definition::{EventValueSite, event_site, resolve_handler};
 use crate::server::{Inflight, Server, log};
 use crate::workspace::AnalysisStamp;
 use wxml_types::BackendEpoch;
@@ -312,6 +313,56 @@ fn event_location_value(server: &Server, location: &SourceLocation) -> Option<Va
     Some(json!({"uri": uri, "range": range}))
 }
 
+/// Maximum signature characters shown in one event-handler hover.
+const MAX_EVENT_HOVER_SIGNATURE_CHARS: usize = 512;
+/// Maximum documentation characters shown in one event-handler hover.
+const MAX_EVENT_HOVER_DOC_CHARS: usize = 1_024;
+
+/// Chooses a code fence longer than any backtick run in `text`.
+fn fence_for(text: &str) -> String {
+    let mut longest = 0_usize;
+    let mut run = 0_usize;
+    for character in text.chars() {
+        if character == '`' {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+    }
+    let length = if longest >= 3 { longest + 1 } else { 3 };
+    "`".repeat(length)
+}
+
+/// Builds event-handler hover Markdown from one declaration.
+///
+/// The shape matches the retired Node path: a fenced one-line signature and an
+/// optional escaped `JSDoc` paragraph. An empty result means the declaration
+/// has no facts to show, so the caller answers `null` instead of a fake hover.
+fn event_hover_contents(signature: &str, documentation: &str) -> String {
+    let signature = code_text(signature.trim(), MAX_EVENT_HOVER_SIGNATURE_CHARS);
+    let documentation = {
+        let joined = documentation
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let capped = code_text(&joined, MAX_EVENT_HOVER_DOC_CHARS);
+        markdown_escape(&capped)
+    };
+    if signature.is_empty() {
+        return documentation;
+    }
+    let fence = fence_for(&signature);
+    let mut contents = format!("{fence}ts\n{signature}\n{fence}");
+    if !documentation.is_empty() {
+        contents.push_str("\n\n");
+        contents.push_str(&documentation);
+    }
+    contents
+}
+
 /// Short message for a full or stopped dispatch queue.
 const fn submit_message(error: SubmitError) -> &'static str {
     match error {
@@ -352,6 +403,64 @@ impl Server {
             id.clone(),
             json!({
                 "contents": {"kind": "markdown", "value": markdown},
+                "range": range,
+            }),
+        )])
+    }
+
+    /// Answers a static event-handler hover from Rust script facts.
+    ///
+    /// This only fills the gap when the backend does not claim a complete
+    /// hover capability; a `Supported` backend keeps native type hovers for
+    /// mustaches and data fields. Inside an event-binding value, a single
+    /// identifier handler resolves to its exact declaration signature and
+    /// `JSDoc`. Mustaches and member expressions keep the backend path because
+    /// the type backend may still describe the data field, while a missing,
+    /// opaque or ambiguously registered handler returns `null` instead of a
+    /// signature from another table.
+    fn local_event_hover(&self, id: &Value, params: Option<&Value>) -> Option<Vec<Outgoing>> {
+        if self.capabilities.hover.is_supported() {
+            return None;
+        }
+        let params = params?;
+        let (uri, position) = hover_target(params)?;
+        if !template_document(self, uri) {
+            return None;
+        }
+        let document = self.workspace.get(uri)?;
+        let offset = document.offset_at(position)?;
+        let site = event_site(document.text(), offset)?;
+        let EventValueSite::Handler { handler, token } = site else {
+            // `{{ dynamic }}` / `this.onTap` may still be a typed data access.
+            return None;
+        };
+        // A synthetic or project-less document has no prepared script view;
+        // keep the backend fallback instead of claiming a checked empty.
+        let Ok(view) = self.host.analysis(document.snapshot()) else {
+            return None;
+        };
+        let answer = resolve_handler(&view, &handler);
+        let Some(facts) = answer.facts.as_ref() else {
+            log(format_args!(
+                "event handler hover is {}: {handler}",
+                status_label(&answer.status)
+            ));
+            return Some(vec![Outgoing::success(id.clone(), Value::Null)]);
+        };
+        let contents = event_hover_contents(&facts.signature, &facts.documentation);
+        if contents.is_empty() {
+            return Some(vec![Outgoing::success(id.clone(), Value::Null)]);
+        }
+        let Some(range) = source_range_value(document, token) else {
+            log(format_args!(
+                "event handler hover token could not be mapped to a client range"
+            ));
+            return Some(vec![Outgoing::success(id.clone(), Value::Null)]);
+        };
+        Some(vec![Outgoing::success(
+            id.clone(),
+            json!({
+                "contents": {"kind": "markdown", "value": contents},
                 "range": range,
             }),
         )])
@@ -405,6 +514,9 @@ impl Server {
         if let Some(outgoing) = self.static_hover(&id, params.as_ref()) {
             return outgoing;
         }
+        if let Some(response) = self.local_event_hover(&id, params.as_ref()) {
+            return response;
+        }
         if let Some(response) = self.local_hover_response(&id, params.as_ref()) {
             return response;
         }
@@ -438,10 +550,10 @@ impl Server {
         }
         let document = self.workspace.get(uri)?;
         let offset = document.offset_at(position)?;
-        let site = crate::semantics::event_definition::event_site(document.text(), offset)?;
+        let site = event_site(document.text(), offset)?;
         let handler = match site {
-            crate::semantics::event_definition::EventValueSite::Handler { handler, .. } => handler,
-            crate::semantics::event_definition::EventValueSite::NotStatic => {
+            EventValueSite::Handler { handler, .. } => handler,
+            EventValueSite::NotStatic => {
                 return Some(vec![Outgoing::success(id.clone(), Value::Null)]);
             }
         };
@@ -801,6 +913,39 @@ mod tests {
             failure_message(&BackendError::Timeout),
             "type checking timed out"
         );
+    }
+
+    #[test]
+    fn event_hover_markdown_matches_the_node_shape() {
+        let contents =
+            event_hover_contents("onTap(event: { detail: { x: number } })", "Taps the card.");
+        assert!(contents.starts_with("```ts\n"), "{contents}");
+        assert!(
+            contents.contains("onTap(event: { detail: { x: number } })"),
+            "{contents}"
+        );
+        assert!(contents.ends_with("\n\nTaps the card."), "{contents}");
+    }
+
+    #[test]
+    fn event_hover_documentation_is_escaped_and_can_stand_alone() {
+        let contents = event_hover_contents("", "x](command:y) ![i](https://x)");
+        assert!(!contents.contains("](command:"), "{contents}");
+        assert!(!contents.contains("![i]("), "{contents}");
+        assert!(!contents.contains("```"), "{contents}");
+    }
+
+    #[test]
+    fn event_hover_fence_grows_past_backticks() {
+        let contents = event_hover_contents("onTap(value: \"```\")", "");
+        assert!(contents.starts_with("````ts\n"), "{contents}");
+        assert!(contents.ends_with("\n````"), "{contents}");
+    }
+
+    #[test]
+    fn empty_event_facts_produce_no_hover() {
+        assert_eq!(event_hover_contents("", ""), "");
+        assert_eq!(event_hover_contents("  ", " \n "), "");
     }
 
     #[test]

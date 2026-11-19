@@ -24,7 +24,10 @@ use support::{
     Session, TempProject, apply_completion_item, apply_edits, assert_parses_cleanly,
     definition_uris, diagnostic_codes, item, labels, link_targets, offset_at, position_at,
 };
-use wxml_types::{Backend, BackendCapabilities, CapabilityStatus, MockBackend};
+use wxml_types::{
+    Backend, BackendCapabilities, CapabilityStatus, HoverResult, MarkupKind, MockBackend,
+    TypeQuality,
+};
 
 fn hover_text(hover: &Value) -> String {
     hover["contents"]["value"]
@@ -857,5 +860,166 @@ fn it_14b_synthetic_templates_do_not_crash_event_diagnostics() {
             ),
         "{published}"
     );
+    session.finish();
+}
+
+/// Starts a session whose backend reports a degraded hover capability.
+///
+/// Event-handler hover only fills that gap, so this is the real dispatch path a
+/// native/absent backend takes.
+fn start_with_partial_hover(project: &TempProject) -> Session {
+    Session::start_with(project, json!({}), json!({}), |_| {
+        let backend = MockBackend::new();
+        let capabilities = BackendCapabilities {
+            hover: CapabilityStatus::Partial {
+                reason: "native expression hover only".to_owned(),
+            },
+            ..backend.capabilities()
+        };
+        backend.set_capabilities(capabilities);
+        Arc::new(backend) as Arc<dyn Backend>
+    })
+}
+
+/// IT-15: event-handler hover is answered from Rust script facts.
+///
+/// The mock backend reports `hover` as partial, so a signature here proves the
+/// event path never depends on Node or a complete type hover. The WXML range is
+/// the exact handler token, while the signature and `JSDoc` come from the
+/// declaring method.
+#[test]
+fn it_15_event_handler_hover_uses_script_facts_without_a_type_backend() {
+    let project = TempProject::new("wxml-it15");
+    project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
+    let script = concat!(
+        "Page({\n",
+        "  /** 点击卡片 😀 */\n",
+        "  onTap(event: { detail: { x: number } }) { void event; },\n",
+        "  onShorthandTap() {},\n",
+        "  onArrowTap: (event: { detail: { y: number } }) => { void event; },\n",
+        "  保存() {},\n",
+        "});\n",
+    );
+    project.write("pages/index/index.ts", script);
+    project.write("pages/index/index.wxml", "<view />");
+    let mut session = start_with_partial_hover(&project);
+    let uri = project.uri("pages/index/index.wxml");
+    let template = concat!(
+        "🙂<view bindtap=\"onTap\" />\n",
+        "<button catchtap=\"onShorthandTap\" />\n",
+        "<button bind:tap=\"onArrowTap\" />\n",
+        "<button capture-bind:tap=\"onTap\" />\n",
+        "<button capture-catch:tap=\"onShorthandTap\" />\n",
+        "<button mut-bind:tap=\"onArrowTap\" />\n",
+        "<button catch:tap=\"保存\" />\n",
+        "<view bindtap=\"missing\" />\n",
+        "<view bindtap=\"{{ dynamicHandler }}\" />\n",
+        "<view bindtap=\"this.onTap\" />",
+    );
+    session.open_wxml(&uri, template, 1);
+
+    let request_hover = |session: &mut Session, offset: usize| {
+        let id = session.request(
+            "textDocument/hover",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": position_at(template, offset),
+            }),
+        );
+        session.result(id)
+    };
+
+    for (binding, handler) in [
+        ("bindtap=\"onTap\"", "onTap"),
+        ("catchtap=\"onShorthandTap\"", "onShorthandTap"),
+        ("bind:tap=\"onArrowTap\"", "onArrowTap"),
+        ("capture-bind:tap=\"onTap\"", "onTap"),
+        ("capture-catch:tap=\"onShorthandTap\"", "onShorthandTap"),
+        ("mut-bind:tap=\"onArrowTap\"", "onArrowTap"),
+        ("catch:tap=\"保存\"", "保存"),
+    ] {
+        let line = template.find(binding).expect("binding line");
+        let start = line + binding.find(handler).expect("handler in binding");
+        // The token start is inside the handler and is always a char boundary,
+        // including the multi-byte CJK handler.
+        let hover = request_hover(&mut session, start);
+        assert!(!hover.is_null(), "{binding}: {hover}");
+        let contents = hover_text(&hover);
+        assert!(contents.contains(handler), "{binding}: {contents}");
+        let (start_byte, end_byte) = byte_range(template, &hover["range"]);
+        assert_eq!(
+            (start_byte, end_byte),
+            (start, start + handler.len()),
+            "{binding}: {hover}"
+        );
+        assert_eq!(&template[start_byte..end_byte], handler, "{binding}");
+    }
+
+    let on_tap = request_hover(&mut session, template.find("onTap").expect("onTap") + 1);
+    let contents = hover_text(&on_tap);
+    assert!(
+        contents.contains("onTap(event: { detail: { x: number } })"),
+        "{contents}"
+    );
+    assert!(contents.contains("点击卡片 😀"), "{contents}");
+
+    let shorthand = request_hover(
+        &mut session,
+        template.find("onShorthandTap").expect("shorthand"),
+    );
+    let shorthand = hover_text(&shorthand);
+    assert!(shorthand.contains("onShorthandTap()"), "{shorthand}");
+    assert!(!shorthand.contains("\n\n"), "{shorthand}");
+
+    let saved = request_hover(&mut session, template.find("保存").expect("保存"));
+    assert!(hover_text(&saved).contains("保存"), "{saved}");
+    let (start, end) = byte_range(template, &saved["range"]);
+    assert_eq!(&template[start..end], "保存");
+
+    for offset in [
+        template.find("missing").expect("missing"),
+        template.find("dynamicHandler").expect("dynamic") + 1,
+        template.find("this.onTap").expect("member") + 1,
+    ] {
+        let hover = request_hover(&mut session, offset);
+        assert!(hover.is_null(), "{offset}: {hover}");
+    }
+
+    session.finish();
+}
+
+/// IT-15b: a complete backend hover keeps ownership of event values.
+///
+/// Local event facts only fill a degraded capability; with `hover` supported,
+/// the backend answer must win instead of being replaced by a script signature.
+#[test]
+fn it_15b_supported_hover_is_not_overridden_by_event_facts() {
+    let project = TempProject::new("wxml-it15b");
+    project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
+    project.write("pages/index/index.ts", "Page({ onTap() {} });");
+    project.write("pages/index/index.wxml", "<view />");
+    let mut session = Session::start_with(&project, json!({}), json!({}), |_| {
+        let backend = MockBackend::new().with_hover(HoverResult {
+            contents: "backend event hover".to_owned(),
+            markup: MarkupKind::Markdown,
+            range: None,
+            status: CapabilityStatus::Supported,
+            quality: TypeQuality::Known,
+        });
+        Arc::new(backend) as Arc<dyn Backend>
+    });
+    let uri = project.uri("pages/index/index.wxml");
+    let template = "<view bindtap=\"onTap\" />";
+    session.open_wxml(&uri, template, 1);
+    let id = session.request(
+        "textDocument/hover",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": position_at(template, template.find("onTap").expect("handler") + 1),
+        }),
+    );
+    let hover = session.result(id);
+    assert_eq!(hover_text(&hover), "backend event hover");
+
     session.finish();
 }

@@ -1,11 +1,11 @@
-//! Exact event-handler definitions from Rust script facts.
+//! Exact event-handler definitions and hover facts from Rust script facts.
 //!
 //! `bindtap="onTap"` and the other WXML event-binding forms resolve to the
 //! literal method declaration in the view's owning `Page`/`Component` script,
 //! including statically resolved `Behavior` methods. The method table comes
 //! from [`ScriptAnalysis::methods`](wxml_backend_tsgo::script::ScriptAnalysis),
 //! so this path never builds the in-place shadow, never opens a native session
-//! and never sends a definition query to the type backend.
+//! and never sends a definition or hover query to the type backend.
 //!
 //! Honesty rules:
 //!
@@ -73,11 +73,35 @@ pub(crate) struct EventDefinitionAnswer {
     pub(crate) status: CapabilityStatus,
 }
 
-impl EventDefinitionAnswer {
+/// Script facts for one proven handler declaration.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct EventHandlerFacts {
+    /// Exact declaration location in the declaring script.
+    pub(crate) location: SourceLocation,
+    /// One-line signature already capped by the script layer.
+    pub(crate) signature: String,
+    /// `JSDoc` text kept by the script layer; empty when there is none.
+    pub(crate) documentation: String,
+}
+
+/// One checked handler lookup shared by definition and hover.
+///
+/// Definition uses the location, hover uses the signature and documentation;
+/// both consume the same status so the two features cannot disagree about
+/// whether a handler was proven.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct EventHandlerResolution {
+    /// Declaration facts, only when the method is proven.
+    pub(crate) facts: Option<EventHandlerFacts>,
+    /// Coverage of the script facts behind the answer.
+    pub(crate) status: CapabilityStatus,
+}
+
+impl EventHandlerResolution {
     /// Creates a checked empty answer.
     const fn empty(status: CapabilityStatus) -> Self {
         Self {
-            location: None,
+            facts: None,
             status,
         }
     }
@@ -204,18 +228,32 @@ fn handler_range(
 
 /// Resolves one static handler to its exact declaration in `view`.
 pub(crate) fn resolve(view: &PreparedView, handler: &str) -> EventDefinitionAnswer {
+    let resolution = resolve_handler(view, handler);
+    EventDefinitionAnswer {
+        location: resolution.facts.map(|facts| facts.location),
+        status: resolution.status,
+    }
+}
+
+/// Resolves one static handler to the declaration facts used by hover.
+///
+/// Every honesty rule lives here so `textDocument/definition` and
+/// `textDocument/hover` cannot disagree: an ambiguous registration, a missing
+/// method, an opaque value or a declaration without an exact name token yields
+/// no facts at all.
+pub(crate) fn resolve_handler(view: &PreparedView, handler: &str) -> EventHandlerResolution {
     let Some(target) = view.target.as_ref() else {
-        return EventDefinitionAnswer::empty(unsupported(NO_TARGET_REASON));
+        return EventHandlerResolution::empty(unsupported(NO_TARGET_REASON));
     };
     let analysis = match analyze(view, target.script.as_str(), target.owner) {
         Ok(analysis) => analysis,
-        Err(status) => return EventDefinitionAnswer::empty(status),
+        Err(status) => return EventHandlerResolution::empty(status),
     };
     if analysis.analysis.registration.selected.is_none() {
-        return EventDefinitionAnswer::empty(unsupported(NO_REGISTRATION_REASON));
+        return EventHandlerResolution::empty(unsupported(NO_REGISTRATION_REASON));
     }
     if !analysis.analysis.registration.complete {
-        return EventDefinitionAnswer::empty(partial(INCOMPLETE_REGISTRATION_REASON));
+        return EventHandlerResolution::empty(partial(INCOMPLETE_REGISTRATION_REASON));
     }
     let Some(method) = analysis
         .analysis
@@ -224,7 +262,7 @@ pub(crate) fn resolve(view: &PreparedView, handler: &str) -> EventDefinitionAnsw
         .iter()
         .find(|method| method.name == handler)
     else {
-        return EventDefinitionAnswer::empty(missing_status(&analysis, handler));
+        return EventHandlerResolution::empty(missing_status(&analysis, handler));
     };
     let Some(file) = analysis
         .view
@@ -232,7 +270,7 @@ pub(crate) fn resolve(view: &PreparedView, handler: &str) -> EventDefinitionAnsw
         .iter()
         .find(|file| file.path.as_str() == method.path)
     else {
-        return EventDefinitionAnswer::empty(partial(MISSING_FILE_REASON));
+        return EventHandlerResolution::empty(partial(MISSING_FILE_REASON));
     };
     let Some((start, end)) = name_token(
         file,
@@ -240,20 +278,24 @@ pub(crate) fn resolve(view: &PreparedView, handler: &str) -> EventDefinitionAnsw
         method.range.utf8.end.get(),
         handler,
     ) else {
-        return EventDefinitionAnswer::empty(partial(INVALID_RANGE_REASON));
+        return EventHandlerResolution::empty(partial(INVALID_RANGE_REASON));
     };
     let Some(range) = SourceRange::from_bounds(start, end).ok() else {
-        return EventDefinitionAnswer::empty(partial(INVALID_RANGE_REASON));
+        return EventHandlerResolution::empty(partial(INVALID_RANGE_REASON));
     };
     let status = if analysis.dropped > 0 || !view.source_complete {
         partial(INCOMPLETE_SOURCE_REASON)
     } else {
         analysis.analysis.methods.status.clone()
     };
-    EventDefinitionAnswer {
-        location: Some(SourceLocation {
-            file: file.file.clone(),
-            range,
+    EventHandlerResolution {
+        facts: Some(EventHandlerFacts {
+            location: SourceLocation {
+                file: file.file.clone(),
+                range,
+            },
+            signature: method.signature.clone(),
+            documentation: method.documentation.clone(),
         }),
         status,
     }
@@ -492,6 +534,10 @@ mod tests {
 
     fn assert_location(answer: &EventDefinitionAnswer, path: &str, script: &str, name: &str) {
         let location = answer.location.as_ref().expect("definition location");
+        assert_source_location(location, path, script, name);
+    }
+
+    fn assert_source_location(location: &SourceLocation, path: &str, script: &str, name: &str) {
         assert_eq!(location.file, file_id(path));
         let start = u32::try_from(script.find(name).expect("name in script")).expect("start");
         assert_eq!(
@@ -502,6 +548,32 @@ mod tests {
             )
         );
         assert_eq!(&script[start as usize..location.range.end() as usize], name);
+    }
+
+    /// Resolves the handler under the marker and keeps the template text and
+    /// its exact WXML token so hover tests can assert both sides.
+    fn hover_facts(
+        owner: RootKind,
+        files: &[(&str, &str)],
+        template: &str,
+    ) -> (EventHandlerResolution, String, SourceRange) {
+        let (text, offset) = cursor(template);
+        let site = event_site(&text, offset).expect("event value site");
+        let EventValueSite::Handler { handler, token } = site else {
+            panic!("expected a static handler site: {template}");
+        };
+        let files = files
+            .iter()
+            .map(|(path, text)| prepared(path, text))
+            .collect();
+        (resolve_handler(&view(owner, files), &handler), text, token)
+    }
+
+    fn facts(resolution: &EventHandlerResolution) -> &EventHandlerFacts {
+        resolution
+            .facts
+            .as_ref()
+            .unwrap_or_else(|| panic!("expected handler facts: {resolution:?}"))
     }
 
     #[test]
@@ -779,5 +851,213 @@ mod tests {
             &script[location.range.start() as usize..location.range.end() as usize],
             "onTap"
         );
+    }
+
+    #[test]
+    fn every_event_binding_form_hovers_the_exact_handler_token() {
+        let script = "Page({\n  /** Taps the card. */\n  onTap(event: { detail: { x: number } }) { void event; },\n});";
+        for attribute in [
+            "bindtap",
+            "catchtap",
+            "bind:tap",
+            "catch:tap",
+            "capture-bind:tap",
+            "capture-catch:tap",
+            "mut-bind:tap",
+            "bind:my-event",
+        ] {
+            let template = format!("<view {attribute}=\"onTa|p\" />");
+            let (resolution, text, token) =
+                hover_facts(RootKind::Page, &[(SCRIPT, script)], &template);
+            assert!(
+                resolution.status.is_supported(),
+                "{attribute}: {resolution:?}"
+            );
+            let facts = facts(&resolution);
+            assert_eq!(&text[token.start() as usize..token.end() as usize], "onTap");
+            assert!(facts.signature.contains("onTap"), "{attribute}: {facts:?}");
+            assert!(
+                facts.documentation.contains("Taps the card."),
+                "{attribute}: {facts:?}"
+            );
+            assert_source_location(&facts.location, SCRIPT, script, "onTap");
+        }
+
+        let template = "<view bindtap=on|Tap />";
+        let (resolution, text, token) = hover_facts(RootKind::Page, &[(SCRIPT, script)], template);
+        assert!(resolution.status.is_supported(), "{resolution:?}");
+        assert_eq!(&text[token.start() as usize..token.end() as usize], "onTap");
+        assert!(facts(&resolution).signature.contains("onTap"));
+    }
+
+    #[test]
+    fn shorthand_function_and_arrow_handlers_expose_hover_facts() {
+        let script = "Page({\n  /** Shorthand. */\n  onShorthandTap() {},\n  onFunctionTap: function (event: unknown) { void event; },\n  onArrowTap: (event: unknown) => { void event; },\n  onAsyncTap: async () => {},\n});";
+        for (marked, name) in [
+            ("onShort|handTap", "onShorthandTap"),
+            ("onFunc|tionTap", "onFunctionTap"),
+            ("onAr|rowTap", "onArrowTap"),
+            ("onAs|yncTap", "onAsyncTap"),
+        ] {
+            let template = format!("<view bindtap=\"{marked}\" />");
+            let (resolution, _, _) = hover_facts(RootKind::Page, &[(SCRIPT, script)], &template);
+            let facts = facts(&resolution);
+            assert!(facts.signature.contains(name), "{name}: {facts:?}");
+        }
+    }
+
+    #[test]
+    fn component_behavior_alias_and_top_level_handlers_expose_hover_facts() {
+        let component = "Component({\n  behaviors: [Behavior({ methods: { onBack() {} } })],\n  methods: { onTap() {} },\n});";
+        for (marked, name) in [("onTa|p", "onTap"), ("onBa|ck", "onBack")] {
+            let template = format!("<view bindtap=\"{marked}\" />");
+            let (resolution, _, _) =
+                hover_facts(RootKind::Component, &[(SCRIPT, component)], &template);
+            assert_source_location(&facts(&resolution).location, SCRIPT, component, name);
+        }
+
+        let owner = "import base from \"./base\";\nComponent({ behaviors: [base], methods: {} });";
+        let behavior = "export default Behavior({ methods: { onBack() {} } });";
+        let (resolution, _, _) = hover_facts(
+            RootKind::Component,
+            &[(SCRIPT, owner), ("pages/index/base.ts", behavior)],
+            "<view bindtap=\"onBa|ck\" />",
+        );
+        assert_source_location(
+            &facts(&resolution).location,
+            "pages/index/base.ts",
+            behavior,
+            "onBack",
+        );
+
+        let alias = "const page = Page;\npage({\n  onAlias() {},\n});";
+        let (resolution, _, _) = hover_facts(
+            RootKind::Page,
+            &[(SCRIPT, alias)],
+            "<view bindtap=\"onAli|as\" />",
+        );
+        assert_source_location(&facts(&resolution).location, SCRIPT, alias, "onAlias");
+
+        // S1: a unique top-level registration wins over a nested one.
+        let top_level = "function factory() { Page({ nested() {} }); }\nPage({ top() {} });";
+        let (top, _, _) = hover_facts(
+            RootKind::Page,
+            &[(SCRIPT, top_level)],
+            "<view bindtap=\"to|p\" />",
+        );
+        assert!(facts(&top).signature.contains("top"), "{top:?}");
+        let (nested, _, _) = hover_facts(
+            RootKind::Page,
+            &[(SCRIPT, top_level)],
+            "<view bindtap=\"nest|ed\" />",
+        );
+        assert!(nested.facts.is_none(), "{nested:?}");
+        assert!(nested.status.is_supported(), "{nested:?}");
+    }
+
+    #[test]
+    fn unproven_handlers_never_produce_hover_facts() {
+        let missing_script = "Page({ onTap() {} });";
+        let (missing, _, _) = hover_facts(
+            RootKind::Page,
+            &[(SCRIPT, missing_script)],
+            "<view bindtap=\"onMis|sing\" />",
+        );
+        assert!(missing.facts.is_none(), "{missing:?}");
+        assert!(missing.status.is_supported(), "{missing:?}");
+
+        for (label, owner, script, template) in [
+            (
+                "ambiguous",
+                RootKind::Page,
+                "Page({ onFirst() {} });\nPage({ onSecond() {} });",
+                "<view bindtap=\"onFir|st\" />",
+            ),
+            (
+                "opaque",
+                RootKind::Page,
+                "Page({ onTap: handlerRef });",
+                "<view bindtap=\"onTa|p\" />",
+            ),
+            (
+                "spread",
+                RootKind::Page,
+                "const base = {};\nPage({ ...base });",
+                "<view bindtap=\"onMis|sing\" />",
+            ),
+            (
+                "nested",
+                RootKind::Page,
+                "function factory() { Page({ nested() {} }); }",
+                "<view bindtap=\"nest|ed\" />",
+            ),
+            (
+                "non-literal methods",
+                RootKind::Component,
+                "Component({ methods: getMethods() });",
+                "<view bindtap=\"onTa|p\" />",
+            ),
+        ] {
+            let (resolution, _, _) = hover_facts(owner, &[(SCRIPT, script)], template);
+            assert!(resolution.facts.is_none(), "{label}: {resolution:?}");
+            assert!(
+                matches!(resolution.status, CapabilityStatus::Partial { .. }),
+                "{label}: {resolution:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_literal_method_survives_an_incomplete_table() {
+        let script = "const base = {};\nPage({ ...base, onTap() {} });";
+        let (resolution, _, _) = hover_facts(
+            RootKind::Page,
+            &[(SCRIPT, script)],
+            "<view bindtap=\"onTa|p\" />",
+        );
+        assert!(
+            matches!(resolution.status, CapabilityStatus::Partial { .. }),
+            "{resolution:?}"
+        );
+        assert!(facts(&resolution).signature.contains("onTap"));
+    }
+
+    #[test]
+    fn hover_facts_keep_cjk_docs_and_exact_tokens() {
+        let script = "// 🙂 页面\nPage({\n  /** 保存当前页面 😀 */\n  保存(event: { detail: { 值: string } }) { void event; },\n});";
+        let (resolution, text, token) = hover_facts(
+            RootKind::Page,
+            &[(SCRIPT, script)],
+            "🙂<view bind:tap=\"保|存\" />",
+        );
+        let facts = facts(&resolution);
+        assert_eq!(&text[token.start() as usize..token.end() as usize], "保存");
+        assert_eq!(token.end() - token.start(), 6);
+        assert!(facts.signature.contains("保存"), "{facts:?}");
+        assert!(facts.documentation.contains("保存当前页面 😀"), "{facts:?}");
+        assert_eq!(facts.location.file, file_id(SCRIPT));
+        // The doc comment also mentions `保存`; the definition must be the
+        // declaration token, not the first occurrence in the file.
+        let start = u32::try_from(script.rfind("保存").expect("declaration")).expect("start");
+        assert_eq!(
+            (facts.location.range.start(), facts.location.range.end()),
+            (start, start + 6)
+        );
+    }
+
+    #[test]
+    fn mustache_and_member_values_have_no_handler_hover_site() {
+        for template in [
+            "<view bindtap=\"{{ dynamic|Handler }}\" />",
+            "<view bindtap=\"this.on|Tap\" />",
+            "<view bindtap=\"item.on|Tap\" />",
+        ] {
+            let (text, offset) = cursor(template);
+            assert_eq!(
+                event_site(&text, offset),
+                Some(EventValueSite::NotStatic),
+                "{template}"
+            );
+        }
     }
 }
