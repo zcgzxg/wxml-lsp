@@ -31,6 +31,7 @@ use thiserror::Error;
 use wxml_backend_tsgo::input::AnalysisInput;
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::UnavailableReason;
+use wxml_backend_tsgo::native::document_symbol::DocumentSymbolsEvidence;
 use wxml_backend_tsgo::native::session::{SessionOptions, TypeQuery};
 use wxml_backend_tsgo::native::strings::Utf16Position;
 use wxml_backend_tsgo::native::wire::{RawCompletionList, RawDiagnostic};
@@ -393,6 +394,10 @@ impl QuerySession for SandboxedSession {
         position: Utf16Position,
     ) -> Result<NativeDefinitionResult, NativeError> {
         self.inner.definition(path, position)
+    }
+
+    fn document_symbols(&mut self, path: &str) -> Result<DocumentSymbolsEvidence, NativeError> {
+        self.inner.document_symbols(path)
     }
 
     fn shutdown(self: Box<Self>) {

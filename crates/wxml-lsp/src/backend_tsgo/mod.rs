@@ -26,21 +26,22 @@
 //!
 //! # Blocked capabilities
 //!
-//! Rename edits and script symbols remain explicitly `Unsupported`. The native
-//! API has no `getRenameInfo` or `getEditsForRename`, and script symbol
+//! Rename edits and script symbol facts remain explicitly `Unsupported`. The
+//! native API has no `getRenameInfo` or `getEditsForRename`, and script symbol
 //! extraction is not wired into this adapter. Definition is limited to
 //! expression-member targets that the native referenced-symbol path can decode
 //! and map back to original text; the cursor must be inside a mounted template
 //! expression. The adapter does not fake locations or edits and does not call a
 //! Node fallback.
 //!
-//! Native document symbols are implemented in `wxml-backend-tsgo`
-//! (`NativeSession::document_symbols` + `query::document_symbol`), but they are
-//! not wired here: the C0 [`wxml_types::SymbolRequest`] models data-root,
-//! data-path and event-handler script facts, and [`wxml_types::SymbolResult`]
-//! has no document-symbol tree, range or kind field. Mapping a document-symbol
-//! tree into those DTOs would fabricate a different feature, so the adapter
-//! keeps returning `Unsupported`.
+//! Native document symbols are wired for the prepared view's **owning script**
+//! only. `NativeSession::document_symbols` returns hierarchical symbols with
+//! verified name tokens; [`Backend::document_symbols`] maps their shadow ranges
+//! back to original script bytes and drops anything that only exists in a
+//! mounted template fragment or generated probe text. The WXML outline stays
+//! static and is never merged with script symbols. Truncation, skipped
+//! candidates and mapping drops are reported as `Partial`; native `Unsupported`
+//! stays `Unsupported` rather than an empty success.
 //!
 //! # Platform limits
 //!
@@ -66,6 +67,7 @@
 pub(crate) mod completion;
 pub(crate) mod definition;
 pub(crate) mod diagnostics;
+pub(crate) mod document_symbol;
 pub(crate) mod engine;
 pub(crate) mod hover;
 pub(crate) mod input;
@@ -91,7 +93,8 @@ use wxml_backend_tsgo::native::session::SessionOptions;
 use wxml_types::{
     Backend, BackendCapabilities, BackendEpoch, BackendError, BackendId, CapabilityStatus,
     CompletionKind, CompletionRequest, CompletionResult, DefinitionRequest, DefinitionResult,
-    DiagnosticsRequest, DiagnosticsResult, HoverRequest, HoverResult, SymbolRequest, SymbolResult,
+    DiagnosticsRequest, DiagnosticsResult, DocumentSymbolsRequest, DocumentSymbolsResult,
+    HoverRequest, HoverResult, SymbolRequest, SymbolResult,
 };
 
 use self::engine::DiscoveredInstall;
@@ -139,9 +142,8 @@ pub fn run_stdio_native() -> Result<crate::ServerOutcome, NativeStartupError> {
 
 /// Reason returned for symbols until script symbol facts are wired.
 ///
-/// Native document symbols are implemented in `wxml-backend-tsgo`, but the C0
-/// request/result DTOs model data-root/event-handler script facts rather than a
-/// document-symbol tree, so they cannot carry that result without faking it.
+/// Document symbols have their own [`Backend::document_symbols`] method; this
+/// reason only covers the C0 data-root/event-handler script facts.
 pub(crate) const SYMBOLS_UNSUPPORTED: &str = "native script symbol facts are not wired; document symbols are not representable by the C0 SymbolRequest/SymbolResult DTOs";
 
 /// Opt-in adapter between the LSP project host and the native session.
@@ -498,6 +500,30 @@ impl Backend for TsgoBackendAdapter {
         Ok(SymbolResult::unsupported(SYMBOLS_UNSUPPORTED))
     }
 
+    fn document_symbols(
+        &self,
+        request: DocumentSymbolsRequest,
+    ) -> Result<DocumentSymbolsResult, BackendError> {
+        if !self.epoch_matches(&request.context) {
+            return Err(BackendError::Cancelled);
+        }
+        let plan = self.prepare(&request.context)?;
+        if plan.file_id(&plan.identity.script_path).as_ref() != Some(&request.subject) {
+            return Ok(DocumentSymbolsResult::unsupported(
+                document_symbol::OWNING_SCRIPT_ONLY,
+            ));
+        }
+        let degradation = plan.degradation.clone();
+        self.with_session(&plan, |session| {
+            document_symbol::document_symbols(
+                session,
+                &plan,
+                &request.subject,
+                degradation.as_deref(),
+            )
+        })
+    }
+
     fn invalidate(&self) {
         let next = self.advance_epoch();
         // Never block the protocol loop on an in-flight native query. If the
@@ -518,6 +544,13 @@ impl Backend for TsgoBackendAdapter {
         }
     }
 
+    /// Reports the wired template-type features.
+    ///
+    /// Document symbols are intentionally absent from
+    /// [`BackendCapabilities`]: the LSP `documentSymbolProvider` already covers
+    /// the static WXML outline, and a script outline reports its own
+    /// `Supported`/`Partial`/`Unsupported` status per request. No capability
+    /// entry here claims a complete script outline.
     fn capabilities(&self) -> BackendCapabilities {
         BackendCapabilities {
             hover: CapabilityStatus::Partial {

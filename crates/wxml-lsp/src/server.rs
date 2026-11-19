@@ -655,16 +655,23 @@ mod tests {
     use wxml_types::{
         BackendCapabilities, BackendError, BackendId, CapabilityStatus, CompletionItem,
         CompletionItemKind, CompletionKind, CompletionResult, DefinitionResult, Diagnostic,
-        DiagnosticSeverity, DiagnosticsResult, FileId, HoverResult, InsertTextFormat, MarkupKind,
-        MockBackend, ProjectId, SourceLocation, TypeQuality,
+        DiagnosticSeverity, DiagnosticsResult, DocumentSymbol, DocumentSymbolKind,
+        DocumentSymbolsResult, FileId, HoverResult, InsertTextFormat, MarkupKind, MockBackend,
+        ProjectId, ProjectRevision, RootKind, SnapshotId, SourceLocation, SourceRevision,
+        SourceSnapshot, TypeQuality, ViewRevision,
     };
 
     use super::*;
     use crate::jsonrpc::ResponseOutcome;
-    use crate::project_host::ProjectState;
+    use crate::project_host::{
+        ChangeDocument, DocumentRoute, HostError, HostUpdate, OpenDocument, ProjectHost,
+        ProjectState, ViewTarget,
+    };
     use crate::scheduler::{JobKind, Outcome};
 
     const URI: &str = "file:///pages/index/index.wxml";
+    const SCRIPT_URI: &str = "file:///pages/index/index.ts";
+    const SCRIPT_OUTLINE_TEXT: &str = "class 用户 {\n  name: string;\n}\n";
 
     #[derive(Default)]
     struct ManualDispatch {
@@ -718,6 +725,302 @@ mod tests {
                 .push(job);
             Ok(())
         }
+    }
+
+    /// Host with one template/script view and an open owning template.
+    struct ScriptHost {
+        project: ProjectId,
+        wxml: FileId,
+        script: FileId,
+        snapshot: Arc<SourceSnapshot>,
+        script_text: Arc<str>,
+        view: ViewTarget,
+        template_open: bool,
+    }
+
+    impl ScriptHost {
+        fn new(script_text: &str) -> Self {
+            Self::with_template(script_text, true)
+        }
+
+        fn with_template(script_text: &str, template_open: bool) -> Self {
+            let project = ProjectId::new("script-outline");
+            let wxml = FileId::new(project.clone(), "pages/index/index.wxml").expect("wxml");
+            let script = FileId::new(project.clone(), "pages/index/index.ts").expect("script");
+            let snapshot = Arc::new(SourceSnapshot::new(
+                wxml.clone(),
+                SourceRevision::new(1),
+                SnapshotId::new(1),
+                "<view>{{ user.name }}</view>",
+            ));
+            let view = ViewTarget {
+                wxml: wxml_project::ProjectPath::new("pages/index/index.wxml").expect("wxml path"),
+                owner: RootKind::Page,
+                script: wxml_project::ProjectPath::new("pages/index/index.ts")
+                    .expect("script path"),
+                script_file: script.clone(),
+                view_revision: ViewRevision::new(2),
+            };
+            Self {
+                project,
+                wxml,
+                script,
+                snapshot,
+                script_text: Arc::from(script_text),
+                view,
+                template_open,
+            }
+        }
+    }
+
+    impl ProjectHost for ScriptHost {
+        fn open_root(&self, _root_uri: Option<&str>) -> Result<(), HostError> {
+            Ok(())
+        }
+
+        fn project_id(&self) -> ProjectId {
+            self.project.clone()
+        }
+
+        fn project_revision(&self) -> ProjectRevision {
+            ProjectRevision::new(self.project.clone(), 1)
+        }
+
+        fn path_for_uri(&self, uri: &str) -> Result<wxml_project::ProjectPath, HostError> {
+            let path = uri.strip_prefix("file:///").ok_or(HostError::InvalidUri)?;
+            wxml_project::ProjectPath::new(path).map_err(|_| HostError::InvalidUri)
+        }
+
+        fn uri_for(&self, file: &FileId) -> Option<String> {
+            Some(format!("file:///{}", file.path()))
+        }
+
+        fn file_id(&self, path: &wxml_project::ProjectPath) -> Result<FileId, HostError> {
+            FileId::new(self.project.clone(), path.as_str()).map_err(|_| HostError::InvalidUri)
+        }
+
+        fn route(&self, uri: &str) -> DocumentRoute {
+            let Ok(path) = self.path_for_uri(uri) else {
+                return DocumentRoute::Unknown;
+            };
+            match path.extension().map(str::to_ascii_lowercase).as_deref() {
+                Some("wxml") => DocumentRoute::Wxml(path),
+                Some("ts") => DocumentRoute::Script(path),
+                _ => DocumentRoute::Unknown,
+            }
+        }
+
+        fn view_for(&self, wxml: &wxml_project::ProjectPath) -> Result<ViewTarget, HostError> {
+            if *wxml == self.view.wxml {
+                Ok(self.view.clone())
+            } else {
+                Err(HostError::Unsupported {
+                    reason: "unknown template",
+                })
+            }
+        }
+
+        fn view_for_script(&self, file: &FileId) -> Result<ViewTarget, HostError> {
+            if *file == self.script {
+                Ok(self.view.clone())
+            } else {
+                Err(HostError::Unsupported {
+                    reason: "script is not an owning page or component script",
+                })
+            }
+        }
+
+        fn open_document(&self, _open: OpenDocument) -> Result<HostUpdate, HostError> {
+            Ok(HostUpdate::default())
+        }
+
+        fn change_document(&self, _change: ChangeDocument) -> Result<HostUpdate, HostError> {
+            Ok(HostUpdate::default())
+        }
+
+        fn close_document(&self, _uri: &str) -> Result<HostUpdate, HostError> {
+            Ok(HostUpdate::default())
+        }
+
+        fn set_wxml_snapshot(&self, _file: FileId, _snapshot: Arc<SourceSnapshot>) {}
+
+        fn remove_wxml_snapshot(&self, _file: &FileId) {}
+
+        fn source(&self, file: &FileId) -> Option<Arc<SourceSnapshot>> {
+            (*file == self.wxml && self.template_open).then(|| Arc::clone(&self.snapshot))
+        }
+
+        fn file_text(&self, file: &FileId) -> Option<Arc<str>> {
+            (*file == self.script).then(|| Arc::clone(&self.script_text))
+        }
+
+        fn analysis(
+            &self,
+            _snapshot: &SourceSnapshot,
+        ) -> Result<crate::project_host::PreparedView, HostError> {
+            Err(HostError::Unsupported {
+                reason: "test host has no analysis",
+            })
+        }
+    }
+
+    /// Backend wrapper that records document-symbol calls and returns one answer.
+    struct ScriptSymbolsBackend {
+        inner: MockBackend,
+        calls: AtomicUsize,
+        answer: Mutex<Option<DocumentSymbolsResult>>,
+        fail: bool,
+    }
+
+    impl ScriptSymbolsBackend {
+        fn new(answer: DocumentSymbolsResult) -> Self {
+            Self {
+                inner: MockBackend::new(),
+                calls: AtomicUsize::new(0),
+                answer: Mutex::new(Some(answer)),
+                fail: false,
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                inner: MockBackend::new(),
+                calls: AtomicUsize::new(0),
+                answer: Mutex::new(None),
+                fail: true,
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl Backend for ScriptSymbolsBackend {
+        fn epoch(&self) -> BackendEpoch {
+            self.inner.epoch()
+        }
+
+        fn hover(&self, request: wxml_types::HoverRequest) -> Result<HoverResult, BackendError> {
+            self.inner.hover(request)
+        }
+
+        fn diagnostics(
+            &self,
+            request: wxml_types::DiagnosticsRequest,
+        ) -> Result<DiagnosticsResult, BackendError> {
+            self.inner.diagnostics(request)
+        }
+
+        fn document_symbols(
+            &self,
+            _request: wxml_types::DocumentSymbolsRequest,
+        ) -> Result<DocumentSymbolsResult, BackendError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                return Err(BackendError::Unavailable(
+                    "document symbols failed".to_owned(),
+                ));
+            }
+            self.answer
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+                .ok_or_else(|| BackendError::Internal("missing answer".to_owned()))
+        }
+
+        fn capabilities(&self) -> BackendCapabilities {
+            self.inner.capabilities()
+        }
+    }
+
+    fn script_outline(truncated: bool, skipped: usize) -> DocumentSymbolsResult {
+        let text = SCRIPT_OUTLINE_TEXT;
+        let class_start = text.find("class").expect("class");
+        let class_end = text.rfind('}').expect("class end") + 1;
+        let name_start = text.find("name:").expect("name");
+        DocumentSymbolsResult {
+            symbols: vec![DocumentSymbol {
+                name: "用户".to_owned(),
+                kind: DocumentSymbolKind::Class,
+                range: SourceRange::from_bounds(
+                    u32::try_from(class_start).expect("start"),
+                    u32::try_from(class_end).expect("end"),
+                )
+                .expect("range"),
+                selection_range: SourceRange::from_bounds(
+                    u32::try_from(text.find("用户").expect("name")).expect("name start"),
+                    u32::try_from(text.find("用户").expect("name") + "用户".len())
+                        .expect("name end"),
+                )
+                .expect("selection"),
+                children: vec![DocumentSymbol {
+                    name: "name".to_owned(),
+                    kind: DocumentSymbolKind::Property,
+                    range: SourceRange::from_bounds(
+                        u32::try_from(name_start).expect("prop start"),
+                        u32::try_from(name_start + "name: string;".len()).expect("prop end"),
+                    )
+                    .expect("prop range"),
+                    selection_range: SourceRange::from_bounds(
+                        u32::try_from(name_start).expect("prop name start"),
+                        u32::try_from(name_start + "name".len()).expect("prop name end"),
+                    )
+                    .expect("prop selection"),
+                    children: Vec::new(),
+                }],
+            }],
+            status: if truncated || skipped > 0 {
+                CapabilityStatus::Partial {
+                    reason: "the document symbol evidence is incomplete".to_owned(),
+                }
+            } else {
+                CapabilityStatus::Supported
+            },
+            truncated,
+            skipped,
+            gaps: Vec::new(),
+        }
+    }
+
+    fn initialize_with_hierarchy(server: &mut Server, hierarchical: bool) {
+        let outgoing = server.handle_incoming(request(
+            json!(1),
+            "initialize",
+            json!({
+                "capabilities": {
+                    "textDocument": {
+                        "documentSymbol": {
+                            "hierarchicalDocumentSymbolSupport": hierarchical,
+                        }
+                    }
+                }
+            }),
+        ));
+        assert_eq!(outgoing.len(), 1);
+    }
+
+    fn open_script_document(server: &mut Server, text: &str) {
+        let outgoing = server.handle_incoming(notification(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": SCRIPT_URI,
+                    "languageId": "typescript",
+                    "version": 1,
+                    "text": text,
+                }
+            }),
+        ));
+        assert!(outgoing.is_empty());
+    }
+
+    fn document_symbol_request(id: u64, uri: &str) -> Incoming {
+        request(
+            json!(id),
+            "textDocument/documentSymbol",
+            json!({"textDocument": {"uri": uri}}),
+        )
     }
 
     fn epoch() -> BackendEpoch {
@@ -2949,5 +3252,191 @@ mod tests {
         assert_eq!(document.offset_at(Position::new(0, 1)), Some(1));
         assert_eq!(document.offset_at(Position::new(0, 3)), Some(5));
         assert_eq!(document.offset_at(Position::new(0, 2)), None);
+    }
+
+    #[test]
+    fn script_document_symbol_request_routes_to_the_backend() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend.clone(),
+            MockBackend::new().capabilities(),
+            dispatch,
+            host,
+        );
+        initialize_with_hierarchy(&mut server, true);
+        open_script_document(&mut server, SCRIPT_OUTLINE_TEXT);
+
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, SCRIPT_URI)));
+        let values = result(&outgoing).as_array().expect("outline array");
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0]["name"], json!("用户"));
+        assert_eq!(values[0]["kind"], json!(5));
+        assert_eq!(
+            values[0]["range"]["start"],
+            json!({"line": 0, "character": 0})
+        );
+        assert_eq!(
+            values[0]["selectionRange"]["start"],
+            json!({"line": 0, "character": 6})
+        );
+        assert_eq!(
+            values[0]["selectionRange"]["end"],
+            json!({"line": 0, "character": 8})
+        );
+        let children = values[0]["children"].as_array().expect("children");
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0]["name"], json!("name"));
+        assert_eq!(children[0]["kind"], json!(7));
+        assert_eq!(backend.calls(), 1);
+    }
+
+    #[test]
+    fn script_document_symbols_flatten_without_hierarchical_support() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(true, 2)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend.clone(),
+            MockBackend::new().capabilities(),
+            dispatch,
+            host,
+        );
+        initialize_with_hierarchy(&mut server, false);
+        open_script_document(&mut server, SCRIPT_OUTLINE_TEXT);
+
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, SCRIPT_URI)));
+        let values = result(&outgoing).as_array().expect("outline array");
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0]["name"], json!("用户"));
+        assert_eq!(values[0]["location"]["uri"], json!(SCRIPT_URI));
+        assert_eq!(
+            values[0]["location"]["range"]["start"],
+            json!({"line": 0, "character": 0})
+        );
+        assert!(values[0].get("selectionRange").is_none());
+        assert_eq!(values[1]["name"], json!("name"));
+        assert_eq!(values[1]["containerName"], json!("用户"));
+        assert!(values[1].get("selectionRange").is_none());
+        assert_eq!(backend.calls(), 1);
+    }
+
+    #[test]
+    fn script_document_symbols_are_empty_when_the_backend_does_not_answer() {
+        let mut unsupported = script_outline(false, 0);
+        unsupported.symbols.clear();
+        unsupported.status = CapabilityStatus::Unsupported {
+            reason: "document symbols are not implemented".to_owned(),
+        };
+        let backend = Arc::new(ScriptSymbolsBackend::new(unsupported));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend.clone(),
+            MockBackend::new().capabilities(),
+            dispatch,
+            host,
+        );
+        initialize_with_hierarchy(&mut server, true);
+        open_script_document(&mut server, SCRIPT_OUTLINE_TEXT);
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, SCRIPT_URI)));
+        assert_eq!(result(&outgoing), &json!([]));
+        assert_eq!(backend.calls(), 1);
+
+        let backend = Arc::new(ScriptSymbolsBackend::failing());
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend.clone(),
+            MockBackend::new().capabilities(),
+            dispatch,
+            host,
+        );
+        initialize_with_hierarchy(&mut server, true);
+        open_script_document(&mut server, SCRIPT_OUTLINE_TEXT);
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, SCRIPT_URI)));
+        assert_eq!(result(&outgoing), &json!([]));
+        assert_eq!(backend.calls(), 1);
+    }
+
+    #[test]
+    fn wxml_document_symbols_stay_static_and_never_call_the_backend() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new(
+            backend.clone(),
+            MockBackend::new().capabilities(),
+            dispatch.clone(),
+        );
+        initialize_with_hierarchy(&mut server, true);
+        open_document(&mut server, "<view id=\"a\"><text>x</text></view>", 1);
+        dispatch.take();
+
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, URI)));
+        let values = result(&outgoing).as_array().expect("outline array");
+        assert_eq!(values[0]["name"], json!("view"));
+        assert_eq!(values[0]["kind"], json!(5));
+        assert_eq!(backend.calls(), 0);
+    }
+
+    #[test]
+    fn script_document_symbols_require_the_owning_template_to_be_open() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::with_template(SCRIPT_OUTLINE_TEXT, false));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend.clone(),
+            MockBackend::new().capabilities(),
+            dispatch,
+            host,
+        );
+        initialize_with_hierarchy(&mut server, true);
+        open_script_document(&mut server, SCRIPT_OUTLINE_TEXT);
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, SCRIPT_URI)));
+        assert_eq!(result(&outgoing), &json!([]));
+        assert_eq!(backend.calls(), 0);
+    }
+
+    #[test]
+    fn script_document_symbols_for_a_non_owning_script_are_empty() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend.clone(),
+            MockBackend::new().capabilities(),
+            dispatch,
+            host,
+        );
+        initialize_with_hierarchy(&mut server, true);
+        let other_uri = "file:///pages/index/other.ts";
+        let outgoing = server.handle_incoming(notification(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": other_uri,
+                    "languageId": "typescript",
+                    "version": 1,
+                    "text": "const other = 1;\n",
+                }
+            }),
+        ));
+        assert!(outgoing.is_empty());
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, other_uri)));
+        assert_eq!(result(&outgoing), &json!([]));
+        assert_eq!(backend.calls(), 0);
+    }
+
+    #[test]
+    fn script_document_symbols_without_a_host_stay_empty_and_start_no_backend() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new(backend.clone(), MockBackend::new().capabilities(), dispatch);
+        initialize_with_hierarchy(&mut server, true);
+        open_script_document(&mut server, SCRIPT_OUTLINE_TEXT);
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, SCRIPT_URI)));
+        assert_eq!(result(&outgoing), &json!([]));
+        assert_eq!(backend.calls(), 0);
     }
 }

@@ -63,6 +63,15 @@ impl ShadowLayout {
         &self.derived
     }
 
+    /// Returns the original owning-script text before fragment insertion.
+    ///
+    /// Native ranges in the derived text map back to this text; a range that
+    /// cannot be attributed here is dropped instead of clamped.
+    #[must_use]
+    pub(crate) fn original_script(&self) -> &str {
+        self.script_map.original()
+    }
+
     /// Returns the number of mounted template fragments.
     #[must_use]
     pub(crate) fn fragment_count(&self) -> usize {

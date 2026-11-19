@@ -4,7 +4,13 @@
 //! construction and coordinate mapping; they do not require a native binary.
 //! The real-engine smoke test at the end is opt-in through `TSGO_BIN`.
 
-#![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
+#![allow(
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unwrap_used,
+    clippy::assert_is_empty,
+    clippy::too_many_lines
+)]
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,10 +22,17 @@ use wxml_backend_tsgo::config::PinnedEngine;
 use wxml_backend_tsgo::input::{AnalysisInput, SourceFile as InputSourceFile};
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::UnavailableReason;
+use wxml_backend_tsgo::native::ast::{
+    CLASS_DECLARATION_KIND, FUNCTION_DECLARATION_KIND, METHOD_DECLARATION_KIND,
+    PROPERTY_DECLARATION_KIND, TYPE_ALIAS_DECLARATION_KIND, VARIABLE_DECLARATION_KIND,
+};
+use wxml_backend_tsgo::native::document_symbol::{
+    DocumentSymbolEvidence, DocumentSymbolGap as NativeDocumentSymbolGap, DocumentSymbolsEvidence,
+};
 use wxml_backend_tsgo::native::session::DocumentationQuery;
 use wxml_backend_tsgo::native::session::{SessionOptions, TypeQuery};
 use wxml_backend_tsgo::native::strings::{
-    Utf16Offset, Utf16Position, offset_to_position, utf16_len,
+    Utf8Offset, Utf16Offset, Utf16Position, offset_to_position, utf16_len,
 };
 use wxml_backend_tsgo::native::wire::{
     RawCompletionEntry, RawCompletionLabelDetails, RawCompletionList, RawDiagnostic, RawJsDocTag,
@@ -36,9 +49,9 @@ use wxml_text::SourceRange;
 use wxml_types::{
     Backend, BackendEpoch, BackendError, BackendId, CapabilityStatus, CheckFragment,
     CompletionItemKind, CompletionKind, CompletionRequest, CompletionResult, DefinitionRequest,
-    Diagnostic, DiagnosticSeverity, DiagnosticsRequest, FileId, HoverRequest, ProjectId,
-    ProjectRevision, RequestContext, RootKind, SnapshotId, SourceRevision, SourceSnapshot,
-    SymbolQuery, SymbolRequest, ViewRevision,
+    Diagnostic, DiagnosticSeverity, DiagnosticsRequest, DocumentSymbolKind, DocumentSymbolsRequest,
+    FileId, HoverRequest, ProjectId, ProjectRevision, RequestContext, RootKind, SnapshotId,
+    SourceRevision, SourceSnapshot, SymbolQuery, SymbolRequest, ViewRevision,
 };
 
 use super::input::ViewProvider;
@@ -259,6 +272,65 @@ enum FakeDefinitionOutcome {
     Failure(FakeFailure),
 }
 
+/// One fake document-symbol declaration, resolved against the session text.
+#[derive(Clone, Debug)]
+struct FakeSymbolSpec {
+    node_kind: u32,
+    name: &'static str,
+    declaration: &'static str,
+    declaration_end: Option<&'static str>,
+    selection: &'static str,
+    children: Vec<Self>,
+}
+
+impl FakeSymbolSpec {
+    fn new(node_kind: u32, name: &'static str, declaration: &'static str) -> Self {
+        Self {
+            node_kind,
+            name,
+            declaration,
+            declaration_end: None,
+            selection: name,
+            children: Vec::new(),
+        }
+    }
+
+    fn with_children(
+        node_kind: u32,
+        name: &'static str,
+        declaration: &'static str,
+        children: Vec<Self>,
+    ) -> Self {
+        Self {
+            node_kind,
+            name,
+            declaration,
+            declaration_end: None,
+            selection: name,
+            children,
+        }
+    }
+}
+
+/// One fake skipped declaration candidate, resolved against the session text.
+#[derive(Clone, Debug)]
+struct FakeGapSpec {
+    start: &'static str,
+    reason: &'static str,
+}
+
+#[derive(Clone, Debug)]
+enum FakeDocumentSymbolOutcome {
+    CheckedEmpty,
+    Script {
+        symbols: Vec<FakeSymbolSpec>,
+        gaps: Vec<FakeGapSpec>,
+        skipped: usize,
+        truncated: bool,
+    },
+    Failure(FakeFailure),
+}
+
 #[derive(Debug, Default)]
 struct SlowGate {
     state: Mutex<(bool, bool)>,
@@ -300,6 +372,7 @@ struct FakeBehavior {
     syntactic: FakeDiagnosticOutcome,
     completions: FakeCompletionOutcome,
     definition: FakeDefinitionOutcome,
+    document_symbols: FakeDocumentSymbolOutcome,
     update_failure: Option<FakeFailure>,
     type_gate: Option<Arc<SlowGate>>,
     definition_gate: Option<Arc<SlowGate>>,
@@ -314,6 +387,7 @@ impl Default for FakeBehavior {
             syntactic: FakeDiagnosticOutcome::Empty,
             completions: FakeCompletionOutcome::EmptyList,
             definition: FakeDefinitionOutcome::CheckedEmpty,
+            document_symbols: FakeDocumentSymbolOutcome::CheckedEmpty,
             update_failure: None,
             type_gate: None,
             definition_gate: None,
@@ -347,6 +421,7 @@ struct FakeLog {
     type_calls: Vec<(String, Utf16Position)>,
     completion_calls: Vec<(String, Utf16Position)>,
     definition_calls: Vec<(String, Utf16Position)>,
+    document_symbol_calls: Vec<String>,
     opened_inputs: Vec<AnalysisInput>,
     updated_inputs: Vec<AnalysisInput>,
 }
@@ -583,8 +658,106 @@ impl QuerySession for FakeSession {
         }
     }
 
+    fn document_symbols(&mut self, path: &str) -> Result<DocumentSymbolsEvidence, NativeError> {
+        self.log
+            .lock()
+            .expect("log")
+            .document_symbol_calls
+            .push(path.to_owned());
+        match &self.behavior.document_symbols {
+            FakeDocumentSymbolOutcome::CheckedEmpty => Ok(DocumentSymbolsEvidence {
+                symbols: Vec::new(),
+                gaps: Vec::new(),
+                skipped: 0,
+                truncated: false,
+            }),
+            FakeDocumentSymbolOutcome::Script {
+                symbols,
+                gaps,
+                skipped,
+                truncated,
+            } => {
+                let text = self.text(path).ok_or(NativeError::InvalidParams {
+                    reason: "file is not in the open snapshot",
+                })?;
+                Ok(fake_document_symbols(
+                    text, symbols, gaps, *skipped, *truncated,
+                ))
+            }
+            FakeDocumentSymbolOutcome::Failure(failure) => Err(failure.native()),
+        }
+    }
+
     fn shutdown(self: Box<Self>) {
         self.log.lock().expect("log").shutdowns += 1;
+    }
+}
+
+fn fake_document_symbols(
+    text: &str,
+    symbols: &[FakeSymbolSpec],
+    gaps: &[FakeGapSpec],
+    skipped: usize,
+    truncated: bool,
+) -> DocumentSymbolsEvidence {
+    DocumentSymbolsEvidence {
+        symbols: symbols
+            .iter()
+            .map(|symbol| fake_document_symbol(text, symbol))
+            .collect(),
+        gaps: gaps
+            .iter()
+            .map(|gap| {
+                let start = text
+                    .find(gap.start)
+                    .expect("fake document symbol gap needle");
+                NativeDocumentSymbolGap {
+                    node_kind: VARIABLE_DECLARATION_KIND,
+                    name_kind: None,
+                    start_utf16: utf16_len(&text[..start]),
+                    reason: gap.reason,
+                }
+            })
+            .collect(),
+        skipped,
+        truncated,
+    }
+}
+
+fn fake_document_symbol(text: &str, spec: &FakeSymbolSpec) -> DocumentSymbolEvidence {
+    let start = text
+        .find(spec.declaration)
+        .expect("fake document symbol declaration needle");
+    let end = spec
+        .declaration_end
+        .map_or(start + spec.declaration.len(), |end| {
+            text.find(end).expect("fake document symbol end needle") + end.len()
+        });
+    let selection_start = spec
+        .declaration
+        .find(spec.selection)
+        .map(|offset| start + offset)
+        .or_else(|| text.find(spec.selection))
+        .expect("fake document symbol selection");
+    let selection_end = selection_start + spec.selection.len();
+    DocumentSymbolEvidence {
+        name: spec.name.to_owned(),
+        node_kind: spec.node_kind,
+        start_utf16: Utf16Offset::new(utf16_len(&text[..start])),
+        end_utf16: Utf16Offset::new(utf16_len(&text[..end])),
+        start_utf8: Utf8Offset::new(u32::try_from(start).expect("start")),
+        end_utf8: Utf8Offset::new(u32::try_from(end).expect("end")),
+        selection_start_utf16: Utf16Offset::new(utf16_len(&text[..selection_start])),
+        selection_end_utf16: Utf16Offset::new(utf16_len(&text[..selection_end])),
+        selection_start_utf8: Utf8Offset::new(
+            u32::try_from(selection_start).expect("selection start"),
+        ),
+        selection_end_utf8: Utf8Offset::new(u32::try_from(selection_end).expect("selection end")),
+        children: spec
+            .children
+            .iter()
+            .map(|child| fake_document_symbol(text, child))
+            .collect(),
     }
 }
 
@@ -1872,6 +2045,399 @@ fn a_slow_definition_is_cancelled_by_invalidation_and_drops_the_session() {
     assert_eq!(log.lock().expect("log").starts, 1);
 }
 
+const SYMBOL_SCRIPT: &str = "// 😀 文档\nclass 用户 { // 😀\n  name: string = \"😀\";\n  greet(): void {}\n}\ntype Shape = { area(): number };\nPage({\n  data: { user: { name: \"Ada\", age: 42 } },\n});\nfunction after(): number {\n  return 1;\n}\n";
+const SYMBOL_CLASS: &str = "class 用户 { // 😀\n  name: string = \"😀\";\n  greet(): void {}\n}";
+const SYMBOL_PROPERTY: &str = "name: string = \"😀\";";
+const SYMBOL_ALIAS: &str = "type Shape = { area(): number };";
+const SYMBOL_AFTER: &str = "function after(): number {\n  return 1;\n}";
+
+fn symbol_span(text: &str, needle: &str) -> (u32, u32) {
+    let start = u32::try_from(text.find(needle).expect("needle in text")).expect("offset");
+    let length = u32::try_from(needle.len()).expect("needle length");
+    (start, start + length)
+}
+
+fn document_symbols_request(
+    adapter: &TsgoBackendAdapter,
+    subject: FileId,
+) -> DocumentSymbolsRequest {
+    DocumentSymbolsRequest {
+        context: context(adapter, WXML),
+        subject,
+    }
+}
+
+#[test]
+fn document_symbols_map_shadow_ranges_back_to_original_script() {
+    let behavior = FakeBehavior {
+        document_symbols: FakeDocumentSymbolOutcome::Script {
+            symbols: vec![
+                FakeSymbolSpec::with_children(
+                    CLASS_DECLARATION_KIND,
+                    "用户",
+                    SYMBOL_CLASS,
+                    vec![
+                        FakeSymbolSpec::new(PROPERTY_DECLARATION_KIND, "name", SYMBOL_PROPERTY),
+                        FakeSymbolSpec::new(METHOD_DECLARATION_KIND, "greet", "greet(): void {}"),
+                    ],
+                ),
+                FakeSymbolSpec::new(TYPE_ALIAS_DECLARATION_KIND, "Shape", SYMBOL_ALIAS),
+                FakeSymbolSpec::new(FUNCTION_DECLARATION_KIND, "after", SYMBOL_AFTER),
+            ],
+            gaps: Vec::new(),
+            skipped: 0,
+            truncated: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(
+            WXML,
+            SYMBOL_SCRIPT,
+            "user.name",
+        ))),
+        behavior,
+    );
+    let result = adapter
+        .document_symbols(document_symbols_request(&adapter, script_file()))
+        .expect("document symbols");
+    assert_eq!(
+        log.lock().expect("log").document_symbol_calls,
+        vec![SCRIPT_PATH.to_owned()]
+    );
+    assert_eq!(
+        result.status,
+        CapabilityStatus::Supported,
+        "{:?}",
+        result.status
+    );
+    assert!(!result.truncated);
+    assert_eq!(result.skipped, 0);
+    assert!(result.gaps.is_empty());
+    assert_eq!(
+        result
+            .symbols
+            .iter()
+            .map(|symbol| (symbol.name.as_str(), symbol.kind))
+            .collect::<Vec<_>>(),
+        vec![
+            ("用户", DocumentSymbolKind::Class),
+            ("Shape", DocumentSymbolKind::TypeAlias),
+            ("after", DocumentSymbolKind::Function),
+        ]
+    );
+
+    let class = &result.symbols[0];
+    assert_eq!(
+        (class.range.start(), class.range.end()),
+        symbol_span(SYMBOL_SCRIPT, SYMBOL_CLASS)
+    );
+    assert_eq!(
+        (class.selection_range.start(), class.selection_range.end()),
+        symbol_span(SYMBOL_SCRIPT, "用户")
+    );
+    assert_eq!(class.children.len(), 2);
+    assert_eq!(class.children[0].name, "name");
+    assert_eq!(class.children[0].kind, DocumentSymbolKind::Property);
+    assert_eq!(
+        (
+            class.children[0].range.start(),
+            class.children[0].range.end()
+        ),
+        symbol_span(SYMBOL_SCRIPT, SYMBOL_PROPERTY)
+    );
+    assert_eq!(
+        (
+            class.children[0].selection_range.start(),
+            class.children[0].selection_range.end()
+        ),
+        symbol_span(SYMBOL_SCRIPT, "name")
+    );
+    assert_eq!(class.children[1].name, "greet");
+    assert_eq!(class.children[1].kind, DocumentSymbolKind::Method);
+    assert_eq!(
+        (
+            class.children[1].selection_range.start(),
+            class.children[1].selection_range.end()
+        ),
+        symbol_span(SYMBOL_SCRIPT, "greet")
+    );
+    for child in &class.children {
+        assert!(class.range.start() <= child.range.start());
+        assert!(child.range.end() <= class.range.end());
+        assert!(child.range.start() <= child.selection_range.start());
+        assert!(child.selection_range.end() <= child.range.end());
+    }
+
+    let alias = &result.symbols[1];
+    assert_eq!(
+        (alias.range.start(), alias.range.end()),
+        symbol_span(SYMBOL_SCRIPT, SYMBOL_ALIAS)
+    );
+    assert_eq!(
+        (alias.selection_range.start(), alias.selection_range.end()),
+        symbol_span(SYMBOL_SCRIPT, "Shape")
+    );
+
+    // `function after` follows the generated probe mount, so its derived
+    // offset differs from the original script; the mapped range must be the
+    // original one.
+    let after = &result.symbols[2];
+    assert_eq!(
+        (after.range.start(), after.range.end()),
+        symbol_span(SYMBOL_SCRIPT, SYMBOL_AFTER)
+    );
+    assert_eq!(
+        (after.selection_range.start(), after.selection_range.end()),
+        symbol_span(SYMBOL_SCRIPT, "after")
+    );
+    assert!(
+        after.range.start() <= after.selection_range.start()
+            && after.selection_range.end() <= after.range.end()
+    );
+}
+
+#[test]
+fn document_symbols_in_a_template_fragment_are_dropped_and_partial() {
+    let behavior = FakeBehavior {
+        document_symbols: FakeDocumentSymbolOutcome::Script {
+            symbols: vec![
+                FakeSymbolSpec::new(CLASS_DECLARATION_KIND, "user", "user.name"),
+                FakeSymbolSpec::new(TYPE_ALIAS_DECLARATION_KIND, "Shape", SYMBOL_ALIAS),
+            ],
+            gaps: Vec::new(),
+            skipped: 0,
+            truncated: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(
+            WXML,
+            SYMBOL_SCRIPT,
+            "user.name",
+        ))),
+        behavior,
+    );
+    let result = adapter
+        .document_symbols(document_symbols_request(&adapter, script_file()))
+        .expect("document symbols");
+    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    let reason = result.status.reason().expect("partial reason");
+    assert!(reason.contains("template fragment"), "{reason}");
+    assert_eq!(result.symbols.len(), 1);
+    assert_eq!(result.symbols[0].name, "Shape");
+    assert_eq!(result.symbols[0].kind, DocumentSymbolKind::TypeAlias);
+}
+
+#[test]
+fn document_symbols_keep_gaps_truncation_and_skip_counts() {
+    let mut gaps = vec![FakeGapSpec {
+        start: "user.name",
+        reason: "name slot is not an Identifier",
+    }];
+    for _ in 0..wxml_types::MAX_DOCUMENT_SYMBOL_GAPS {
+        gaps.push(FakeGapSpec {
+            start: "type Shape",
+            reason: "name slot is not an Identifier",
+        });
+    }
+    let behavior = FakeBehavior {
+        document_symbols: FakeDocumentSymbolOutcome::Script {
+            symbols: vec![FakeSymbolSpec::new(
+                FUNCTION_DECLARATION_KIND,
+                "after",
+                SYMBOL_AFTER,
+            )],
+            gaps,
+            skipped: wxml_types::MAX_DOCUMENT_SYMBOL_GAPS + 1,
+            truncated: true,
+        },
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(
+            WXML,
+            SYMBOL_SCRIPT,
+            "user.name",
+        ))),
+        behavior,
+    );
+    let result = adapter
+        .document_symbols(document_symbols_request(&adapter, script_file()))
+        .expect("document symbols");
+    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    assert!(result.truncated);
+    assert_eq!(result.skipped, wxml_types::MAX_DOCUMENT_SYMBOL_GAPS + 1);
+    assert_eq!(result.symbols.len(), 1);
+    assert_eq!(result.gaps.len(), wxml_types::MAX_DOCUMENT_SYMBOL_GAPS);
+    // The first gap is inside the mounted template expression; a template
+    // fragment has no original-script offset and must stay `None`.
+    assert_eq!(result.gaps[0].start, None);
+    assert_eq!(
+        result.gaps[1].start,
+        Some(symbol_span(SYMBOL_SCRIPT, "type Shape").0)
+    );
+    assert_eq!(result.gaps[1].reason, "name slot is not an Identifier");
+}
+
+#[test]
+fn document_symbols_with_an_outside_selection_are_dropped_not_clamped() {
+    let mut invalid = FakeSymbolSpec::new(FUNCTION_DECLARATION_KIND, "after", SYMBOL_AFTER);
+    invalid.selection = "用户";
+    let behavior = FakeBehavior {
+        document_symbols: FakeDocumentSymbolOutcome::Script {
+            symbols: vec![invalid],
+            gaps: Vec::new(),
+            skipped: 0,
+            truncated: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(
+            WXML,
+            SYMBOL_SCRIPT,
+            "user.name",
+        ))),
+        behavior,
+    );
+    let result = adapter
+        .document_symbols(document_symbols_request(&adapter, script_file()))
+        .expect("document symbols");
+    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    let reason = result.status.reason().expect("partial reason");
+    assert!(reason.contains("outside the declaration range"), "{reason}");
+    assert!(result.symbols.is_empty());
+}
+
+#[test]
+fn document_symbols_crossing_generated_text_are_dropped_and_partial() {
+    let mut crossing = FakeSymbolSpec::new(FUNCTION_DECLARATION_KIND, "Page", "Page(");
+    crossing.declaration_end = Some("data:");
+    let behavior = FakeBehavior {
+        document_symbols: FakeDocumentSymbolOutcome::Script {
+            symbols: vec![crossing],
+            gaps: Vec::new(),
+            skipped: 0,
+            truncated: false,
+        },
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(
+            WXML,
+            SYMBOL_SCRIPT,
+            "user.name",
+        ))),
+        behavior,
+    );
+    let result = adapter
+        .document_symbols(document_symbols_request(&adapter, script_file()))
+        .expect("document symbols");
+    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    let reason = result.status.reason().expect("partial reason");
+    assert!(reason.contains("crossed generated shadow text"), "{reason}");
+    assert!(result.symbols.is_empty());
+}
+
+#[test]
+fn document_symbols_merge_host_degradation_into_the_status() {
+    let mut view = prepared_view(WXML, SYMBOL_SCRIPT, "user.name");
+    view.source_complete = false;
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let result = adapter
+        .document_symbols(document_symbols_request(&adapter, script_file()))
+        .expect("document symbols");
+    assert!(result.symbols.is_empty());
+    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
+    let reason = result.status.reason().expect("partial reason");
+    assert!(
+        reason.contains("prepared source file list is incomplete"),
+        "{reason}"
+    );
+}
+
+#[test]
+fn document_symbols_reject_a_subject_outside_the_prepared_view() {
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        FakeBehavior::default(),
+    );
+    let other = FileId::new(project(), MODEL_PATH).expect("other file");
+    let result = adapter
+        .document_symbols(document_symbols_request(&adapter, other))
+        .expect("document symbols");
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Unsupported { .. }
+    ));
+    assert!(result.symbols.is_empty());
+    assert_eq!(log.lock().expect("log").starts, 0);
+    assert!(log.lock().expect("log").document_symbol_calls.is_empty());
+}
+
+#[test]
+fn an_unsupported_native_document_symbol_query_is_explicitly_unsupported() {
+    let behavior = FakeBehavior {
+        document_symbols: FakeDocumentSymbolOutcome::Failure(FakeFailure::Unsupported(
+            "getSourceFile document symbols",
+        )),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let result = adapter
+        .document_symbols(document_symbols_request(&adapter, script_file()))
+        .expect("document symbols");
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Unsupported { .. }
+    ));
+    assert!(result.symbols.is_empty());
+    assert!(result.gaps.is_empty());
+    assert_eq!(log.lock().expect("log").starts, 1);
+    assert_eq!(log.lock().expect("log").shutdowns, 0);
+}
+
+#[test]
+fn a_failed_document_symbol_query_is_an_error_not_a_supported_empty_result() {
+    let behavior = FakeBehavior {
+        document_symbols: FakeDocumentSymbolOutcome::Failure(FakeFailure::Timeout),
+        ..FakeBehavior::default()
+    };
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        behavior,
+    );
+    let before = adapter.epoch();
+    let error = adapter
+        .document_symbols(document_symbols_request(&adapter, script_file()))
+        .expect_err("fatal document-symbol failure");
+    assert!(matches!(error, BackendError::Timeout));
+    assert_eq!(log.lock().expect("log").starts, 1);
+    assert_eq!(log.lock().expect("log").shutdowns, 1);
+    assert!(adapter.epoch().get() > before.get());
+}
+
+#[test]
+fn an_empty_native_document_symbol_answer_is_a_checked_empty_success() {
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        FakeBehavior::default(),
+    );
+    let result = adapter
+        .document_symbols(document_symbols_request(&adapter, script_file()))
+        .expect("document symbols");
+    assert!(result.symbols.is_empty());
+    assert!(result.gaps.is_empty());
+    assert!(!result.truncated);
+    assert_eq!(result.skipped, 0);
+    assert_eq!(result.status, CapabilityStatus::Supported);
+}
+
 #[test]
 fn capabilities_advertise_only_implemented_features() {
     let (adapter, _log) = adapter_with(
@@ -2729,6 +3295,118 @@ export {};
             .expect("real engine completion");
         assert_real_engine_completion(&result, cursor, prefix_len);
     }
+}
+
+#[test]
+fn optional_real_engine_document_symbols_smoke() {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let Ok(bin) = std::env::var("TSGO_BIN") else {
+        let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
+        assert!(
+            !required,
+            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
+        );
+        eprintln!(
+            "optional real-engine adapter document-symbol test skipped: set TSGO_BIN to the \
+             pinned 7.1.0-beta lib/tsc"
+        );
+        return;
+    };
+    let executable = PathBuf::from(&bin);
+    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let sandbox = std::env::temp_dir().join(format!(
+        "wxml-tsgo-adapter-document-symbols-{}-{count}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&sandbox).expect("sandbox");
+    let _cleanup = Cleanup(sandbox.clone());
+
+    let script = "interface User {\n  name: string;\n}\ntype Alias = User;\nclass Demo {\n  value: number = 1;\n  method(): void {}\n}\nfunction helper(): number {\n  return 1;\n}\nconst answer = 42;\nPage({\n  data: { user: { name: \"Ada\" } },\n});\n";
+    let wxml = "<view>{{ user.name }}</view>";
+    let views = Arc::new(FakeViews::new(prepared_view(wxml, script, "user.name")));
+    let adapter = TsgoBackendAdapter::new(
+        PinnedEngine::pinned(),
+        views,
+        Arc::new(super::session::NativeSessionFactory::new(
+            SessionOptions::new(executable, sandbox),
+        )),
+    );
+    let result = adapter
+        .document_symbols(document_symbols_request(&adapter, script_file()))
+        .expect("real engine document symbols");
+    eprintln!(
+        "real engine adapter document symbols: status={:?} symbols={:?}",
+        result.status,
+        result
+            .symbols
+            .iter()
+            .map(|symbol| (
+                symbol.name.as_str(),
+                symbol.kind,
+                symbol.range.start(),
+                symbol.range.end(),
+            ))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(result.status, CapabilityStatus::Partial { .. }),
+        "the registration call is an explicit walker gap: {:?}",
+        result.status
+    );
+    assert_eq!(
+        result
+            .symbols
+            .iter()
+            .map(|symbol| (symbol.name.as_str(), symbol.kind))
+            .collect::<Vec<_>>(),
+        vec![
+            ("User", DocumentSymbolKind::Interface),
+            ("Alias", DocumentSymbolKind::TypeAlias),
+            ("Demo", DocumentSymbolKind::Class),
+            ("helper", DocumentSymbolKind::Function),
+            ("answer", DocumentSymbolKind::Variable),
+        ]
+    );
+    let user = &result.symbols[0];
+    assert_eq!(user.children.len(), 1);
+    assert_eq!(user.children[0].name, "name");
+    assert_eq!(user.children[0].kind, DocumentSymbolKind::Property);
+    let demo = &result.symbols[2];
+    assert_eq!(
+        demo.children
+            .iter()
+            .map(|symbol| (symbol.name.as_str(), symbol.kind))
+            .collect::<Vec<_>>(),
+        vec![
+            ("value", DocumentSymbolKind::Property),
+            ("method", DocumentSymbolKind::Method),
+        ]
+    );
+
+    let expected = [
+        ("User", DocumentSymbolKind::Interface, 0, 34),
+        ("Alias", DocumentSymbolKind::TypeAlias, 34, 53),
+        ("Demo", DocumentSymbolKind::Class, 53, 109),
+        ("helper", DocumentSymbolKind::Function, 109, 151),
+        ("answer", DocumentSymbolKind::Variable, 157, 169),
+    ];
+    for (symbol, (name, kind, range_start, range_end)) in result.symbols.iter().zip(expected) {
+        assert_eq!(symbol.name, name);
+        assert_eq!(symbol.kind, kind);
+        assert_eq!(
+            (symbol.range.start(), symbol.range.end()),
+            (range_start, range_end),
+            "{name} must keep the pinned engine's full-start declaration range"
+        );
+        let (selection_start, selection_end) = symbol_span(script, name);
+        assert_eq!(symbol.selection_range.start(), selection_start, "{name}");
+        assert_eq!(symbol.selection_range.end(), selection_end, "{name}");
+        assert!(symbol.range.start() <= symbol.selection_range.start());
+        assert!(symbol.selection_range.end() <= symbol.range.end());
+    }
+    assert!(result.skipped >= 1);
+    assert!(!result.gaps.is_empty());
 }
 
 fn assert_real_engine_completion(result: &CompletionResult, cursor: u32, prefix_len: u32) {

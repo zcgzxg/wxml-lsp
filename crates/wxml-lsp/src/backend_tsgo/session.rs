@@ -6,6 +6,7 @@
 
 use wxml_backend_tsgo::input::AnalysisInput;
 use wxml_backend_tsgo::native::NativeError;
+use wxml_backend_tsgo::native::document_symbol::DocumentSymbolsEvidence;
 use wxml_backend_tsgo::native::session::{NativeSession, SessionOptions, TypeQuery};
 use wxml_backend_tsgo::native::strings::Utf16Position;
 use wxml_backend_tsgo::native::wire::{RawCompletionList, RawDiagnostic};
@@ -92,6 +93,12 @@ pub(crate) trait QuerySession: Send {
         path: &str,
         position: Utf16Position,
     ) -> Result<NativeDefinitionResult, NativeError>;
+
+    /// Returns raw document-symbol evidence for one project-relative path.
+    ///
+    /// The ranges are in the exact text sent for `path`; the caller owns the
+    /// shadow-to-original mapping.
+    fn document_symbols(&mut self, path: &str) -> Result<DocumentSymbolsEvidence, NativeError>;
 
     /// Releases the snapshot and stops the process.
     fn shutdown(self: Box<Self>);
@@ -186,6 +193,10 @@ impl QuerySession for LiveQuerySession {
     ) -> Result<NativeDefinitionResult, NativeError> {
         let evidence = self.session.definition(path, position)?;
         Ok(map_definition(&evidence))
+    }
+
+    fn document_symbols(&mut self, path: &str) -> Result<DocumentSymbolsEvidence, NativeError> {
+        self.session.document_symbols(path)
     }
 
     fn shutdown(self: Box<Self>) {

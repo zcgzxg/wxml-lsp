@@ -425,6 +425,16 @@ pub trait ProjectHost: Send + Sync {
         let path = ProjectPath::new(file.path()).map_err(|_| HostError::InvalidUri)?;
         self.view_for(&path)
     }
+    /// Returns the discovered view that owns `file` as its script.
+    ///
+    /// A script may belong to at most one page/component view; a script shared
+    /// by several views has no unambiguous outline context and is rejected.
+    /// Hosts without a project return [`HostError::Unsupported`].
+    fn view_for_script(&self, _file: &FileId) -> Result<ViewTarget, HostError> {
+        Err(HostError::Unsupported {
+            reason: "script is not an owning page or component script",
+        })
+    }
     /// Records an opened script/JSON document overlay.
     fn open_document(&self, open: OpenDocument) -> Result<HostUpdate, HostError>;
     /// Records a changed script/JSON document overlay.
@@ -1229,6 +1239,40 @@ impl ProjectHost for ProjectState {
         let state = self.read();
         let path = ProjectPath::new(file.path()).map_err(|_| HostError::InvalidUri)?;
         view_in_slot(&state, file.project(), &path)
+    }
+
+    fn view_for_script(&self, file: &FileId) -> Result<ViewTarget, HostError> {
+        let state = self.read();
+        let slot = state
+            .projects
+            .get(file.project())
+            .ok_or(HostError::Unsupported {
+                reason: "project is not loaded",
+            })?;
+        let mut owners = slot
+            .views
+            .iter()
+            .filter(|(_, view)| view.script_file.as_ref() == Some(file));
+        let Some((wxml, view)) = owners.next() else {
+            return Err(HostError::Unsupported {
+                reason: "script is not an owning page or component script",
+            });
+        };
+        if owners.next().is_some() {
+            return Err(HostError::Unsupported {
+                reason: "script is shared by several views",
+            });
+        }
+        let script = view.script.clone().ok_or(HostError::Unsupported {
+            reason: "page or component has no script",
+        })?;
+        Ok(ViewTarget {
+            wxml: wxml.clone(),
+            owner: view.owner,
+            script,
+            script_file: file.clone(),
+            view_revision: view.view_revision,
+        })
     }
 
     fn open_document(&self, open: OpenDocument) -> Result<HostUpdate, HostError> {
@@ -3819,6 +3863,29 @@ mod tests {
         assert_eq!(usage.attributes[0].name, "title");
         let component_file = usage.component_file.as_ref().expect("component file");
         assert_eq!(component_file.path(), "components/card/card.ts");
+    }
+
+    #[test]
+    fn view_for_script_resolves_the_unique_owning_view() {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/component-basic");
+        let root = std::fs::canonicalize(root).expect("fixture root");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open project");
+        let script = ProjectPath::new("pages/index/index.ts").expect("script");
+        let file = host.file_id(&script).expect("script file");
+        let view = host.view_for_script(&file).expect("owning view");
+        assert_eq!(view.wxml.as_str(), "pages/index/index.wxml");
+        assert_eq!(view.script, script);
+        assert_eq!(view.script_file, file);
+
+        let wxml = ProjectPath::new("pages/index/index.wxml").expect("wxml");
+        let wxml_file = host.file_id(&wxml).expect("wxml file");
+        assert!(matches!(
+            host.view_for_script(&wxml_file),
+            Err(HostError::Unsupported { .. })
+        ));
     }
 
     #[test]
