@@ -708,42 +708,26 @@ fn it_12_closing_tag_completion_linked_editing_and_rename_prep() {
     session.finish();
 }
 
-/// IT-13: event-handler definition is answered from Rust script facts.
+/// IT-13: event-handler definition requires the native shadow.
 ///
-/// The mock backend reports `definition` as unsupported; a location here proves
-/// the event path never depends on Node or the type backend. The declaration
-/// range is the exact method name token, including after CJK/emoji prefixes.
+/// Static event facts no longer answer definition, so without a type backend
+/// every event value is an explicit empty result. `dynamic` and `missing` stay
+/// `null` too; no location is fabricated from the static method table.
 #[test]
-fn it_13_event_handler_definition_uses_script_facts_without_a_type_backend() {
+fn it_13_event_handler_definition_requires_the_native_shadow() {
     let project = TempProject::new("wxml-it13");
     project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
-    let script = "Page({\n  onTap() {},\n  保存() {},\n});";
-    project.write("pages/index/index.ts", script);
+    project.write(
+        "pages/index/index.ts",
+        "Page({\n  onTap() {},\n  保存() {},\n});",
+    );
     project.write("pages/index/index.wxml", "<view />");
-    let mut session = Session::start(&project, json!({}));
+    let mut session = start_without_type_backend(&project);
     let uri = project.uri("pages/index/index.wxml");
     let template = "🙂<view bindtap=\"onTap\" />\n<view catch:tap=\"保存\" />\n<view bindtap=\"{{dynamic}}\" />\n<view bindtap=\"missing\" />";
     session.open_wxml(&uri, template, 1);
 
-    for (needle, name) in [("onTap", "onTap"), ("保存", "保存")] {
-        let offset = template.find(needle).expect("handler token");
-        let id = session.request(
-            "textDocument/definition",
-            json!({
-                "textDocument": {"uri": uri},
-                "position": position_at(template, offset),
-            }),
-        );
-        let definition = session.result(id);
-        let locations = definition.as_array().expect("definition locations");
-        assert_eq!(locations.len(), 1, "{name}: {definition}");
-        let target = locations[0]["uri"].as_str().expect("target uri");
-        assert!(target.ends_with("pages/index/index.ts"), "{name}: {target}");
-        let (start, end) = byte_range(script, &locations[0]["range"]);
-        assert_eq!(&script[start..end], name, "{name}: {definition}");
-    }
-
-    for needle in ["dynamic", "missing"] {
+    for needle in ["onTap", "保存", "dynamic", "missing"] {
         let offset = template.find(needle).expect("value token");
         let id = session.request(
             "textDocument/definition",
@@ -856,17 +840,20 @@ fn it_14b_synthetic_templates_do_not_crash_event_diagnostics() {
     session.finish();
 }
 
-/// Starts a session whose backend reports a degraded hover capability.
+/// Starts a session whose backend advertises the `HostOnly` gap.
 ///
-/// Event-handler hover only fills that gap, so this is the real dispatch path a
-/// native/absent backend takes.
-fn start_with_partial_hover(project: &TempProject) -> Session {
+/// Hover and definition stay `Partial` with an engine-missing reason, so the
+/// server still dispatches the request and every answer degrades to an empty
+/// result. Static event-handler facts are not a fallback behind it.
+fn start_without_type_backend(project: &TempProject) -> Session {
     Session::start_with(project, json!({}), json!({}), |_| {
         let backend = MockBackend::new();
+        let unavailable = || CapabilityStatus::Partial {
+            reason: "native engine is not installed".to_owned(),
+        };
         let capabilities = BackendCapabilities {
-            hover: CapabilityStatus::Partial {
-                reason: "native expression hover only".to_owned(),
-            },
+            hover: unavailable(),
+            definition: unavailable(),
             ..backend.capabilities()
         };
         backend.set_capabilities(capabilities);
@@ -874,14 +861,14 @@ fn start_with_partial_hover(project: &TempProject) -> Session {
     })
 }
 
-/// IT-15: event-handler hover is answered from Rust script facts.
+/// IT-15: event-handler hover requires the native shadow.
 ///
-/// The mock backend reports `hover` as partial, so a signature here proves the
-/// event path never depends on Node or a complete type hover. The WXML range is
-/// the exact handler token, while the signature and `JSDoc` come from the
-/// declaring method.
+/// Every static handler value, including CJK names and the shorthand/capture
+/// binding forms, is answered by the type backend only. Without one, hover is
+/// an explicit empty result; missing, dynamic and member values stay `null`
+/// and no script signature is fabricated.
 #[test]
-fn it_15_event_handler_hover_uses_script_facts_without_a_type_backend() {
+fn it_15_event_handler_hover_requires_the_native_shadow() {
     let project = TempProject::new("wxml-it15");
     project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
     let script = concat!(
@@ -895,7 +882,7 @@ fn it_15_event_handler_hover_uses_script_facts_without_a_type_backend() {
     );
     project.write("pages/index/index.ts", script);
     project.write("pages/index/index.wxml", "<view />");
-    let mut session = start_with_partial_hover(&project);
+    let mut session = start_without_type_backend(&project);
     let uri = project.uri("pages/index/index.wxml");
     let template = concat!(
         "🙂<view bindtap=\"onTap\" />\n",
@@ -936,57 +923,24 @@ fn it_15_event_handler_hover_uses_script_facts_without_a_type_backend() {
         // The token start is inside the handler and is always a char boundary,
         // including the multi-byte CJK handler.
         let hover = request_hover(&mut session, start);
-        assert!(!hover.is_null(), "{binding}: {hover}");
-        let contents = hover_text(&hover);
-        assert!(contents.contains(handler), "{binding}: {contents}");
-        let (start_byte, end_byte) = byte_range(template, &hover["range"]);
-        assert_eq!(
-            (start_byte, end_byte),
-            (start, start + handler.len()),
-            "{binding}: {hover}"
-        );
-        assert_eq!(&template[start_byte..end_byte], handler, "{binding}");
+        assert!(hover.is_null(), "{binding}: {hover}");
     }
 
-    let on_tap = request_hover(&mut session, template.find("onTap").expect("onTap") + 1);
-    let contents = hover_text(&on_tap);
-    assert!(
-        contents.contains("onTap(event: { detail: { x: number } })"),
-        "{contents}"
-    );
-    assert!(contents.contains("点击卡片 😀"), "{contents}");
-
-    let shorthand = request_hover(
-        &mut session,
-        template.find("onShorthandTap").expect("shorthand"),
-    );
-    let shorthand = hover_text(&shorthand);
-    assert!(shorthand.contains("onShorthandTap()"), "{shorthand}");
-    assert!(!shorthand.contains("\n\n"), "{shorthand}");
-
-    let saved = request_hover(&mut session, template.find("保存").expect("保存"));
-    assert!(hover_text(&saved).contains("保存"), "{saved}");
-    let (start, end) = byte_range(template, &saved["range"]);
-    assert_eq!(&template[start..end], "保存");
-
-    for offset in [
-        template.find("missing").expect("missing"),
-        template.find("dynamicHandler").expect("dynamic") + 1,
-        template.find("this.onTap").expect("member") + 1,
-    ] {
+    for (needle, shift) in [("missing", 0), ("dynamicHandler", 1), ("this.onTap", 1)] {
+        let offset = template.find(needle).expect("value token") + shift;
         let hover = request_hover(&mut session, offset);
-        assert!(hover.is_null(), "{offset}: {hover}");
+        assert!(hover.is_null(), "{needle}: {hover}");
     }
 
     session.finish();
 }
 
-/// IT-15b: a complete backend hover keeps ownership of event values.
+/// IT-15b: the backend owns event-value hover.
 ///
-/// Local event facts only fill a degraded capability; with `hover` supported,
-/// the backend answer must win instead of being replaced by a script signature.
+/// Event handlers are answered by the native shadow query, so a supported
+/// backend hover is returned verbatim; no local script facts may replace it.
 #[test]
-fn it_15b_supported_hover_is_not_overridden_by_event_facts() {
+fn it_15b_supported_hover_keeps_backend_ownership() {
     let project = TempProject::new("wxml-it15b");
     project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
     project.write("pages/index/index.ts", "Page({ onTap() {} });");

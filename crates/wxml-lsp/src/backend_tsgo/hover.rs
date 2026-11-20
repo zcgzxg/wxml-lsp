@@ -31,6 +31,7 @@ use wxml_types::{
     BackendError, CapabilityStatus, HoverRequest, HoverResult, MarkupKind, TypeQuality,
 };
 
+use crate::backend_tsgo::input::EVENT_POINT_FRAGMENT_ID;
 use crate::backend_tsgo::map_native_error;
 use crate::backend_tsgo::mapping::{MappingError, ShadowLayout};
 use crate::backend_tsgo::session::QuerySession;
@@ -89,8 +90,81 @@ pub(crate) fn hover(
         declared,
         hovered_root(layout, request, derived).as_deref(),
     );
+    if event_point_member(layout, request.offset)
+        && (is_unproven_any(&evidence) || !has_renderable_event_content(&evidence))
+    {
+        // `this.<handler>` only resolves when the handler is a member of the
+        // registration instance's own type. `Page.Instance` does not merge
+        // behavior methods, so a handler that only a behavior provides comes
+        // back as `any` without any symbol or declaration, or as a bare
+        // unsupported answer with no type and no documentation. Publishing
+        // that would claim a contract the engine never proved.
+        return Ok(unsupported_hover(
+            "the event handler is not a member of the template owner instance type",
+        ));
+    }
 
     compose(layout, request, &evidence, degradation)
+}
+
+/// Returns whether the cursor selects the event-handler point fragment.
+///
+/// The check is deliberately structural: only the member fragment added by
+/// [`crate::backend_tsgo::input::build_point_request_plan`] can match, so an
+/// ordinary mustache expression is never treated as an event handler.
+fn event_point_member(layout: &ShadowLayout, offset: u32) -> bool {
+    let Ok(Some(range)) = layout.token_range(offset) else {
+        return false;
+    };
+    layout
+        .mount_for_range(range)
+        .is_some_and(|mount| mount.fragment_id == EVENT_POINT_FRAGMENT_ID)
+}
+
+/// Returns whether the evidence is an unproven `any` answer.
+///
+/// The native checker reports an unresolved `this.<name>` as type `any` with
+/// `Any` quality. That is only a fabrication risk when no symbol and no
+/// declaration backs it; a proven `any` value keeps its own hover.
+fn is_unproven_any(evidence: &HoverEvidence) -> bool {
+    evidence.type_quality == NativeTypeQuality::Any
+        && evidence
+            .type_info
+            .as_ref()
+            .is_some_and(|info| info.text.trim() == "any")
+        && evidence.symbol.is_none()
+        && evidence.declarations.is_empty()
+}
+
+/// Returns whether the hover answer renders a type or documentation.
+///
+/// Mirrors the backend composer's renderability rules: only a `Known` type or
+/// the literal `any` reaches the `ts` fence, while documentation renders when
+/// its comment or any tag is non-empty. An event handler whose answer has
+/// neither is treated as unresolved instead of publishing a degradation note
+/// as if it were hover content.
+fn has_renderable_event_content(evidence: &HoverEvidence) -> bool {
+    let type_rendered = evidence.type_info.as_ref().is_some_and(|info| {
+        if info.text.is_empty() {
+            return false;
+        }
+        match evidence.type_quality {
+            NativeTypeQuality::Known => true,
+            NativeTypeQuality::Any => info.text == "any",
+            NativeTypeQuality::Unknown | NativeTypeQuality::Missing => false,
+        }
+    });
+    let documentation_rendered = evidence
+        .documentation
+        .as_ref()
+        .is_some_and(|documentation| {
+            documentation
+                .comment
+                .as_deref()
+                .is_some_and(|comment| !comment.trim().is_empty())
+                || !documentation.tags.is_empty()
+        });
+    type_rendered || documentation_rendered
 }
 
 /// Replaces the native type with a declared property union.

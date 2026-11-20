@@ -35,8 +35,8 @@ use wxml_backend_tsgo::shadow::mapping::SourceRange as ShadowSourceRange;
 use wxml_backend_tsgo::shadow::mapping::utf16_to_byte;
 use wxml_syntax::{Expr, ExprKind};
 use wxml_types::{
-    BackendError, CapabilityStatus, CheckFragment, Diagnostic, FileId, GuardBranch, GuardChain,
-    LocalRole, ProjectRevision, RequestContext, RootKind, SnapshotId, SourceRevision,
+    BackendError, CapabilityStatus, CheckFragment, Diagnostic, EventHandler, FileId, GuardBranch,
+    GuardChain, LocalRole, ProjectRevision, RequestContext, RootKind, SnapshotId, SourceRevision,
     SourceSnapshot, ViewRevision,
 };
 
@@ -101,7 +101,7 @@ pub(crate) trait ViewProvider: Send + Sync {
 
 /// Prepares one host view, mapping host failures to a typed backend error.
 ///
-/// Shared by the shadow plan and the event-handler fast path so the
+/// Shared by the shadow plan and every derived request plan so the
 /// `HostError -> BackendError` mapping has one owner.
 pub(crate) fn prepare_view(
     provider: &dyn ViewProvider,
@@ -244,6 +244,17 @@ pub(crate) struct RequestIdentity {
 
 /// Synthetic fragment id used by an incomplete-member completion plan.
 pub(crate) const COMPLETION_FRAGMENT_ID: &str = "completion#0";
+/// Synthetic fragment id used by an event-handler point plan.
+///
+/// A point plan mounts at most this one member fragment, and only for the
+/// handler token under the cursor. It never appears in diagnostics or
+/// completion plans.
+pub(crate) const EVENT_POINT_FRAGMENT_ID: &str = "event-point#0";
+/// Maximum handler-name byte length mounted as a point member fragment.
+///
+/// The template analyzer only emits plain method names, so this is a defensive
+/// bound against a stale or hand-built view rather than a language rule.
+const MAX_EVENT_POINT_HANDLER_BYTES: usize = 256;
 /// Synthetic suffix inserted after the mounted completion prefix.
 ///
 /// Only the inserted `.` is queried: the engine sees a member-access position
@@ -268,6 +279,21 @@ pub(crate) struct CompletionFragment {
     /// back to a `data` root. Completion carries no guards, so the declarations
     /// only affect types and never narrow the expression.
     pub(crate) bindings: Vec<wxml_types::LocalBinding>,
+}
+
+/// One static event handler under a point-query cursor.
+///
+/// The member fragment mounts `this.<handler>`; only the handler name maps
+/// back to the original WXML token, and the synthetic `this.` prefix has no
+/// source range. The fragment is added only when the cursor is inside the
+/// handler token, so attribute names, whitespace, mustaches and dynamic
+/// handlers never grow the shadow.
+#[derive(Debug, Clone)]
+struct EventPointFragment {
+    /// Static handler name exactly as written in the template.
+    handler: String,
+    /// Byte range of the handler token in the original WXML.
+    wxml_range: wxml_types::SourceRange,
 }
 
 /// One request plan before a native snapshot revision is assigned.
@@ -640,7 +666,23 @@ pub(crate) fn build_request_plan(
     context: &RequestContext,
     environment: &Environment,
 ) -> Result<RequestPlan, PlanError> {
-    build_request_plan_with_completion(provider, context, environment, None)
+    build_request_plan_with_completion(provider, context, environment, None, None)
+}
+
+/// Builds one point-query plan for the event handler under `offset`.
+///
+/// When the offset is inside a static handler token of the prepared view, the
+/// shadow mounts exactly one member fragment (`this.<handler>`) and maps the
+/// name back to the original WXML token. Every other offset plan is identical
+/// to [`build_request_plan`], so hover/definition outside an event value keeps
+/// the existing expression behavior.
+pub(crate) fn build_point_request_plan(
+    provider: &dyn ViewProvider,
+    context: &RequestContext,
+    environment: &Environment,
+    offset: u32,
+) -> Result<RequestPlan, PlanError> {
+    build_request_plan_with_completion(provider, context, environment, None, Some(offset))
 }
 
 /// Builds one completion-only plan for an incomplete trailing-dot expression.
@@ -655,19 +697,25 @@ pub(crate) fn build_completion_request_plan(
     environment: &Environment,
     fragment: &CompletionFragment,
 ) -> Result<RequestPlan, PlanError> {
-    build_request_plan_with_completion(provider, context, environment, Some(fragment))
+    build_request_plan_with_completion(provider, context, environment, Some(fragment), None)
 }
 
-/// Builds one request plan with an optional synthetic completion fragment.
+/// Builds one request plan with an optional completion fragment or point offset.
+///
+/// `completion` and `point` are mutually exclusive: completion is an incomplete
+/// expression plan, while `point` may append one event-handler member fragment
+/// when the cursor is inside a static handler token.
 #[allow(clippy::too_many_lines, reason = "one linear input/shadow pipeline")]
 fn build_request_plan_with_completion(
     provider: &dyn ViewProvider,
     context: &RequestContext,
     environment: &Environment,
     completion: Option<&CompletionFragment>,
+    point: Option<u32>,
 ) -> Result<RequestPlan, PlanError> {
     let snapshot = context.source();
     let view = prepare_view(provider, snapshot)?;
+    let event_point = point.and_then(|offset| event_point_fragment(&view, snapshot.text(), offset));
     let target = view.target.as_ref().ok_or_else(|| {
         BackendError::Unavailable(
             "project view has no page or component script for this template".to_owned(),
@@ -703,6 +751,9 @@ fn build_request_plan_with_completion(
     if let Some(fragment) = completion {
         let spec = completion_fragment_spec(fragment);
         fragments.push(spec);
+    }
+    if let Some(fragment) = &event_point {
+        fragments.push(event_point_fragment_spec(fragment));
     }
     let shadow_root = match target.owner {
         RootKind::Page => ShadowRootKind::Page,
@@ -837,6 +888,24 @@ fn build_request_plan_with_completion(
                 wxml_range: fragment.wxml_range,
                 mount: mount.clone(),
             });
+        }
+    }
+    if let Some(fragment) = &event_point {
+        if let Some(mount) = built
+            .view
+            .mounts
+            .iter()
+            .find(|mount| mount.fragment_id == EVENT_POINT_FRAGMENT_ID)
+        {
+            fragment_maps.push(FragmentMap {
+                wxml_range: fragment.wxml_range,
+                mount: mount.clone(),
+            });
+        } else {
+            merge_reason(
+                &mut degradation,
+                Some("the event-handler point fragment was not mounted in the shadow".to_owned()),
+            );
         }
     }
 
@@ -1301,6 +1370,76 @@ fn completion_fragment_spec(fragment: &CompletionFragment) -> FragmentSpec {
             .collect(),
         bindings: fragment.bindings.iter().map(local_binding).collect(),
         guards: Vec::new(),
+        member: false,
+    }
+}
+
+/// Finds the static event handler whose token contains `offset`.
+///
+/// Only a static handler already present in the prepared view can match, so a
+/// mustache value, an empty value and a member expression never append a
+/// fragment. The text slice and the length check re-validate the host range
+/// against the request snapshot before it becomes a shadow mount; a stale or
+/// inconsistent range is skipped instead of failing the whole request.
+fn event_point_fragment(
+    view: &PreparedView,
+    text: &str,
+    offset: u32,
+) -> Option<EventPointFragment> {
+    let event = matching_event(&view.events, offset)?;
+    let range = event.handler_range;
+    let handler = &event.handler;
+    if handler.is_empty()
+        || handler.len() > MAX_EVENT_POINT_HANDLER_BYTES
+        || !is_member_name(handler)
+    {
+        return None;
+    }
+    let length = range.end().checked_sub(range.start())?;
+    if usize::try_from(length).ok()? != handler.len() {
+        return None;
+    }
+    let start = usize::try_from(range.start()).ok()?;
+    let end = usize::try_from(range.end()).ok()?;
+    if text.get(start..end) != Some(handler) {
+        return None;
+    }
+    Some(EventPointFragment {
+        handler: handler.clone(),
+        wxml_range: range,
+    })
+}
+
+/// Returns the event whose handler token contains `offset`, if any.
+fn matching_event(events: &[EventHandler], offset: u32) -> Option<&EventHandler> {
+    events
+        .iter()
+        .find(|event| event.handler_range.start() <= offset && offset < event.handler_range.end())
+}
+
+/// Returns whether `name` can be mounted after a `this.` member prefix.
+fn is_member_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    let Some(first) = characters.next() else {
+        return false;
+    };
+    if !(first.is_alphabetic() || matches!(first, '_' | '$')) {
+        return false;
+    }
+    characters.all(|character| character.is_alphanumeric() || matches!(character, '_' | '$'))
+}
+
+/// Builds the member fragment spec for one event-handler point query.
+fn event_point_fragment_spec(fragment: &EventPointFragment) -> FragmentSpec {
+    FragmentSpec {
+        id: EVENT_POINT_FRAGMENT_ID.to_owned(),
+        expr: fragment.handler.clone(),
+        wxml_range: ShadowSourceRange::new(fragment.wxml_range.start(), fragment.wxml_range.end()),
+        target: None,
+        locals: Vec::new(),
+        bindings: Vec::new(),
+        guards: Vec::new(),
+        member: true,
     }
 }
 
@@ -1317,6 +1456,7 @@ fn fragment_spec(fragment: &CheckFragment) -> FragmentSpec {
             .collect(),
         bindings: fragment.bindings.iter().map(local_binding).collect(),
         guards: fragment.guards.iter().map(guard_chain).collect(),
+        member: false,
     }
 }
 
@@ -1521,6 +1661,155 @@ mod tests {
                 .iter()
                 .map(|binding| binding.name.clone())
                 .collect::<Vec<_>>()
+        );
+    }
+
+    use wxml_types::{BackendEpoch, BackendId, EventBindingKind, ProjectId, ProjectRevision};
+
+    use crate::backend_tsgo::tests::{SCRIPT_PATH, empty_view, prepared_file};
+    use crate::project_host::PreparedView;
+
+    const POINT_WXML: &str = "<view bindtap=\"onBackTap\" />";
+    const POINT_SCRIPT: &str = "Page({ data: {}, onBackTap() {} });";
+
+    struct PointViews(PreparedView);
+
+    impl ViewProvider for PointViews {
+        fn prepare(&self, _snapshot: &SourceSnapshot) -> Result<PreparedView, HostError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    fn point_project() -> ProjectId {
+        ProjectId::new("demo")
+    }
+
+    fn event_view(wxml: &str, handler: Option<&str>) -> PreparedView {
+        let mut view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, POINT_SCRIPT)]);
+        if let Some(handler) = handler {
+            let start = u32::try_from(wxml.find(handler).expect("handler in template"))
+                .expect("handler start");
+            let end = start + u32::try_from(handler.len()).expect("handler length");
+            let range = range(start, end);
+            view.events = Arc::from(vec![EventHandler {
+                attribute: "bindtap".to_owned(),
+                binding: EventBindingKind::Bind,
+                event: "tap".to_owned(),
+                handler: handler.to_owned(),
+                range,
+                attribute_range: range,
+                handler_range: range,
+            }]);
+        }
+        view
+    }
+
+    fn point_context(wxml: &str) -> RequestContext {
+        RequestContext::new(
+            ProjectRevision::new(point_project(), 1),
+            ViewRevision::new(1),
+            BackendEpoch::new(BackendId::new("test"), 1),
+            Arc::new(SourceSnapshot::new(
+                FileId::new(point_project(), "pages/index/index.wxml").expect("wxml file"),
+                SourceRevision::new(1),
+                SnapshotId::new(1),
+                wxml,
+            )),
+        )
+        .expect("context")
+    }
+
+    fn point_plan(wxml: &str, view: PreparedView, offset: u32) -> RequestPlan {
+        build_point_request_plan(
+            &PointViews(view),
+            &point_context(wxml),
+            &Environment::Legacy,
+            offset,
+        )
+        .expect("point plan")
+    }
+
+    #[test]
+    fn a_cursor_inside_an_event_token_mounts_one_member_fragment() {
+        let view = event_view(POINT_WXML, Some("onBackTap"));
+        let start = u32::try_from(POINT_WXML.find("onBackTap").expect("handler")).expect("start");
+        let plan = point_plan(POINT_WXML, view, start + 2);
+
+        assert!(
+            plan.layout.derived().contains("this.onBackTap"),
+            "{}",
+            plan.layout.derived()
+        );
+        assert_eq!(plan.layout.fragment_count(), 1);
+        let mount = plan
+            .layout
+            .mount_for_range(range(
+                start,
+                start + u32::try_from("onBackTap".len()).expect("handler length"),
+            ))
+            .expect("member mount");
+        assert_eq!(mount.fragment_id, EVENT_POINT_FRAGMENT_ID);
+        assert!(mount.text.starts_with("this.onBackTap"), "{:?}", mount.text);
+        assert_eq!(mount.target_start_utf16 - mount.start_utf16, 5);
+        let derived = plan
+            .layout
+            .derived_offset(start + 2, true)
+            .expect("derived");
+        assert_eq!(
+            derived - mount.start_utf16,
+            7,
+            "the handler name maps behind the synthetic `this.` prefix"
+        );
+    }
+
+    #[test]
+    fn a_cursor_outside_the_event_token_never_mounts_a_member_fragment() {
+        let view = event_view(POINT_WXML, Some("onBackTap"));
+        let handler_start =
+            u32::try_from(POINT_WXML.find("onBackTap").expect("handler")).expect("start");
+        let attribute_start =
+            u32::try_from(POINT_WXML.find("bindtap").expect("attribute")).expect("attribute");
+        for offset in [
+            attribute_start,
+            attribute_start + 1,
+            handler_start - 1,
+            handler_start - 2,
+        ] {
+            let plan = point_plan(POINT_WXML, view.clone(), offset);
+            assert_eq!(
+                plan.layout.fragment_count(),
+                0,
+                "offset {offset} must not mount the handler"
+            );
+            assert!(
+                !plan.layout.derived().contains("this.onBackTap"),
+                "{offset}"
+            );
+            assert!(
+                plan.layout
+                    .mount_for_range(range(handler_start, handler_start + 9))
+                    .is_none(),
+                "{offset}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_dynamic_handler_never_mounts_a_member_fragment() {
+        let wxml = "<view bindtap=\"{{ handler }}\" />";
+        let view = event_view(wxml, None);
+        let offset = u32::try_from(wxml.find("handler").expect("handler token")).expect("offset");
+        let plan = point_plan(wxml, view, offset);
+
+        assert_eq!(plan.layout.fragment_count(), 0);
+        assert!(!plan.layout.derived().contains("this.handler"));
+        assert!(
+            plan.layout
+                .mount_for_range(range(
+                    offset,
+                    offset + u32::try_from("handler".len()).expect("handler length")
+                ))
+                .is_none()
         );
     }
 }

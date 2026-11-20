@@ -6,18 +6,15 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::{Value, json};
 use wxml_text::SourceRange;
-use wxml_types::{
-    BackendError, CapabilityStatus, HoverResult, MarkupKind, SourceLocation, TypeQuality,
-};
+use wxml_types::{BackendError, CapabilityStatus, HoverResult, MarkupKind, TypeQuality};
 
 use super::{
-    code_text, hover_target, line_index_range_value, markdown_escape, quality_label,
-    sanitized_reason, source_range_value, status_label, template_document,
+    hover_target, line_index_range_value, markdown_escape, quality_label, sanitized_reason,
+    source_range_value, status_label, template_document,
 };
 use crate::jsonrpc::{self, Outgoing, RequestKey};
 use crate::metadata::{self, DefinitionAnswer, HoverAnswer, StaticLocation};
 use crate::scheduler::{Job, JobKind, Outcome, SubmitError, WorkDone};
-use crate::semantics::event_definition::{EventValueSite, event_site, resolve_handler};
 use crate::server::{Inflight, Server, log};
 use crate::workspace::AnalysisStamp;
 use wxml_types::BackendEpoch;
@@ -300,69 +297,6 @@ fn static_location_value(
     Some(json!({"uri": uri, "range": range}))
 }
 
-/// Maps one exact script declaration through the host line index.
-///
-/// Event-handler declarations are name tokens, not element starts, so this
-/// never widens an empty range. A missing URI, text or range stays `None` and
-/// the caller answers with a checked empty result.
-fn event_location_value(server: &Server, location: &SourceLocation) -> Option<Value> {
-    let uri = server.host.uri_for(&location.file)?;
-    let text = server.host.file_text(&location.file)?;
-    let line_index = wxml_text::LineIndex::new(&*text);
-    let range = line_index_range_value(&line_index, location.range)?;
-    Some(json!({"uri": uri, "range": range}))
-}
-
-/// Maximum signature characters shown in one event-handler hover.
-const MAX_EVENT_HOVER_SIGNATURE_CHARS: usize = 512;
-/// Maximum documentation characters shown in one event-handler hover.
-const MAX_EVENT_HOVER_DOC_CHARS: usize = 1_024;
-
-/// Chooses a code fence longer than any backtick run in `text`.
-fn fence_for(text: &str) -> String {
-    let mut longest = 0_usize;
-    let mut run = 0_usize;
-    for character in text.chars() {
-        if character == '`' {
-            run += 1;
-            longest = longest.max(run);
-        } else {
-            run = 0;
-        }
-    }
-    let length = if longest >= 3 { longest + 1 } else { 3 };
-    "`".repeat(length)
-}
-
-/// Builds event-handler hover Markdown from one declaration.
-///
-/// The shape matches the retired Node path: a fenced one-line signature and an
-/// optional escaped `JSDoc` paragraph. An empty result means the declaration
-/// has no facts to show, so the caller answers `null` instead of a fake hover.
-fn event_hover_contents(signature: &str, documentation: &str) -> String {
-    let signature = code_text(signature.trim(), MAX_EVENT_HOVER_SIGNATURE_CHARS);
-    let documentation = {
-        let joined = documentation
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let capped = code_text(&joined, MAX_EVENT_HOVER_DOC_CHARS);
-        markdown_escape(&capped)
-    };
-    if signature.is_empty() {
-        return documentation;
-    }
-    let fence = fence_for(&signature);
-    let mut contents = format!("{fence}ts\n{signature}\n{fence}");
-    if !documentation.is_empty() {
-        contents.push_str("\n\n");
-        contents.push_str(&documentation);
-    }
-    contents
-}
-
 /// Short message for a full or stopped dispatch queue.
 const fn submit_message(error: SubmitError) -> &'static str {
     match error {
@@ -441,64 +375,6 @@ impl Server {
         )])
     }
 
-    /// Answers a static event-handler hover from Rust script facts.
-    ///
-    /// This only fills the gap when the backend does not claim a complete
-    /// hover capability; a `Supported` backend keeps native type hovers for
-    /// mustaches and data fields. Inside an event-binding value, a single
-    /// identifier handler resolves to its exact declaration signature and
-    /// `JSDoc`. Mustaches and member expressions keep the backend path because
-    /// the type backend may still describe the data field, while a missing,
-    /// opaque or ambiguously registered handler returns `null` instead of a
-    /// signature from another table.
-    fn local_event_hover(&self, id: &Value, params: Option<&Value>) -> Option<Vec<Outgoing>> {
-        if self.capabilities.hover.is_supported() {
-            return None;
-        }
-        let params = params?;
-        let (uri, position) = hover_target(params)?;
-        if !template_document(self, uri) {
-            return None;
-        }
-        let document = self.workspace.get(uri)?;
-        let offset = document.offset_at(position)?;
-        let site = event_site(document.text(), offset)?;
-        let EventValueSite::Handler { handler, token } = site else {
-            // `{{ dynamic }}` / `this.onTap` may still be a typed data access.
-            return None;
-        };
-        // A synthetic or project-less document has no prepared script view;
-        // keep the backend fallback instead of claiming a checked empty.
-        let Ok(view) = self.host.analysis(document.snapshot()) else {
-            return None;
-        };
-        let answer = resolve_handler(&view, &handler);
-        let Some(facts) = answer.facts.as_ref() else {
-            log(format_args!(
-                "event handler hover is {}: {handler}",
-                status_label(&answer.status)
-            ));
-            return Some(vec![Outgoing::success(id.clone(), Value::Null)]);
-        };
-        let contents = event_hover_contents(&facts.signature, &facts.documentation);
-        if contents.is_empty() {
-            return Some(vec![Outgoing::success(id.clone(), Value::Null)]);
-        }
-        let Some(range) = source_range_value(document, token) else {
-            log(format_args!(
-                "event handler hover token could not be mapped to a client range"
-            ));
-            return Some(vec![Outgoing::success(id.clone(), Value::Null)]);
-        };
-        Some(vec![Outgoing::success(
-            id.clone(),
-            json!({
-                "contents": {"kind": "markdown", "value": contents},
-                "range": range,
-            }),
-        )])
-    }
-
     /// Answers a component definition statically when one is provable.
     ///
     /// An unresolved component or undeclared property returns `null` instead
@@ -550,9 +426,6 @@ impl Server {
         if let Some(outgoing) = self.static_hover(&id, params.as_ref()) {
             return outgoing;
         }
-        if let Some(response) = self.local_event_hover(&id, params.as_ref()) {
-            return response;
-        }
         if let Some(response) = self.local_hover_response(&id, params.as_ref()) {
             return response;
         }
@@ -565,65 +438,8 @@ impl Server {
         self.schedule_point(id, JobKind::Hover, params)
     }
 
-    /// Answers an event-handler definition from Rust script facts.
-    ///
-    /// This runs before the static component and backend definition paths and
-    /// never schedules a native session. `None` means the cursor is not inside
-    /// an event-binding value, so the caller keeps the existing routing; an
-    /// event value that cannot name a static handler returns `null` instead of
-    /// falling through to a backend that could fabricate a target.
-    fn local_event_definition(&self, id: &Value, params: Option<&Value>) -> Option<Vec<Outgoing>> {
-        // The Node backend already answers event definitions with its own
-        // oracle; only fill the gap for a degraded/unsupported definition
-        // capability so the default backend behavior stays unchanged.
-        if self.capabilities.definition.is_supported() {
-            return None;
-        }
-        let params = params?;
-        let (uri, position) = hover_target(params)?;
-        if !template_document(self, uri) {
-            return None;
-        }
-        let document = self.workspace.get(uri)?;
-        let offset = document.offset_at(position)?;
-        let site = event_site(document.text(), offset)?;
-        let handler = match site {
-            EventValueSite::Handler { handler, .. } => handler,
-            EventValueSite::NotStatic => {
-                return Some(vec![Outgoing::success(id.clone(), Value::Null)]);
-            }
-        };
-        // A synthetic or project-less document has no prepared script view;
-        // keep the backend fallback instead of claiming a checked empty.
-        let Ok(view) = self.host.analysis(document.snapshot()) else {
-            return None;
-        };
-        let answer = crate::semantics::event_definition::resolve(&view, &handler);
-        if let Some(location) = answer.location {
-            let value = event_location_value(self, &location).unwrap_or(Value::Null);
-            if value.is_null() {
-                log(format_args!(
-                    "event handler declaration could not be mapped to a client location"
-                ));
-                return Some(vec![Outgoing::success(id.clone(), Value::Null)]);
-            }
-            return Some(vec![Outgoing::success(
-                id.clone(),
-                Value::Array(vec![value]),
-            )]);
-        }
-        log(format_args!(
-            "event handler definition is {}: {handler}",
-            status_label(&answer.status)
-        ));
-        Some(vec![Outgoing::success(id.clone(), Value::Null)])
-    }
-
     /// Handles `textDocument/definition`.
     pub(crate) fn definition(&mut self, id: Value, params: Option<Value>) -> Vec<Outgoing> {
-        if let Some(outgoing) = self.local_event_definition(&id, params.as_ref()) {
-            return outgoing;
-        }
         if let Some(outgoing) = self.static_definition(&id, params.as_ref()) {
             return outgoing;
         }
@@ -949,39 +765,6 @@ mod tests {
             failure_message(&BackendError::Timeout),
             "type checking timed out"
         );
-    }
-
-    #[test]
-    fn event_hover_markdown_matches_the_node_shape() {
-        let contents =
-            event_hover_contents("onTap(event: { detail: { x: number } })", "Taps the card.");
-        assert!(contents.starts_with("```ts\n"), "{contents}");
-        assert!(
-            contents.contains("onTap(event: { detail: { x: number } })"),
-            "{contents}"
-        );
-        assert!(contents.ends_with("\n\nTaps the card."), "{contents}");
-    }
-
-    #[test]
-    fn event_hover_documentation_is_escaped_and_can_stand_alone() {
-        let contents = event_hover_contents("", "x](command:y) ![i](https://x)");
-        assert!(!contents.contains("](command:"), "{contents}");
-        assert!(!contents.contains("![i]("), "{contents}");
-        assert!(!contents.contains("```"), "{contents}");
-    }
-
-    #[test]
-    fn event_hover_fence_grows_past_backticks() {
-        let contents = event_hover_contents("onTap(value: \"```\")", "");
-        assert!(contents.starts_with("````ts\n"), "{contents}");
-        assert!(contents.ends_with("\n````"), "{contents}");
-    }
-
-    #[test]
-    fn empty_event_facts_produce_no_hover() {
-        assert_eq!(event_hover_contents("", ""), "");
-        assert_eq!(event_hover_contents("  ", " \n "), "");
     }
 
     #[test]

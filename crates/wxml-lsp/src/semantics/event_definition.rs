@@ -1,56 +1,43 @@
-//! Exact event-handler definitions and hover facts from Rust script facts.
+//! Static event-handler facts from Rust script facts.
 //!
-//! `bindtap="onTap"` and the other WXML event-binding forms resolve to the
-//! literal method declaration in the view's owning `Page`/`Component` script,
-//! including statically resolved `Behavior` methods. The method table comes
+//! `bindtap="onTap"` and the other WXML event-binding forms are matched
+//! against the literal method table of the view's owning `Page`/`Component`
+//! script, including statically resolved `Behavior` methods. The table comes
 //! from [`ScriptAnalysis::methods`](wxml_backend_tsgo::script::ScriptAnalysis),
-//! so this path never builds the in-place shadow, never opens a native session
-//! and never sends a definition or hover query to the type backend.
+//! so this module never builds the in-place shadow, never opens a native
+//! session and never queries the type backend.
 //!
-//! Honesty rules:
+//! This module only produces static analysis facts for two consumers:
 //!
-//! - only a single identifier handler token resolves; mustaches, empty values,
-//!   member expressions and cursors outside the token are checked empty;
-//! - a missing method is a checked empty only when the selected registration
-//!   is complete and the method table is `Supported`;
-//! - multiple same-kind registrations, a non-top-level selection, a rejected
-//!   registration call or a script that cannot be scanned stay `Partial` and
-//!   return no location, because another registration may own the handler;
-//! - a method that is present in a literal table keeps its exact declaration
-//!   even when unrelated members made the table `Partial` (for example a
-//!   spread member or an incomplete behavior graph).
+//! - [`event_handler_sites`] gives the missing-handler diagnostics the exact
+//!   handler tokens of a document, so a dynamic value can never be reported;
+//! - [`analyze`] builds the method table used by those diagnostics and by
+//!   handler-name completion.
 //!
-//! LSP `textDocument/definition` has no status field, so an unproven answer is
-//! `null`, never a location from an ambiguous registration.
+//! Event-handler hover and definition are no longer answered here: the native
+//! backend answers them from the in-place shadow, so there is a single source
+//! of types, `JSDoc` and declaration positions.
+
+use std::path::Path;
 
 use wxml_backend_tsgo::input::{
     AnalysisInput, DocumentRevision, ProjectKey, ProjectRoot, SnapshotRevision, SourceFile,
 };
 use wxml_backend_tsgo::script::registration::RegistrationKind;
-use wxml_backend_tsgo::script::{ScriptAnalysis, ScriptRequest, analyze_script};
+use wxml_backend_tsgo::script::{ModuleResolver, ScriptAnalysis, ScriptRequest, analyze_script};
 use wxml_backend_tsgo::shadow::expression::is_identifier_name;
 use wxml_text::SourceRange;
-use wxml_types::{CapabilityStatus, RootKind, SourceLocation};
+use wxml_types::{CapabilityStatus, RootKind};
 
 use crate::completion::catalog::{self, EventAttributeClass};
 use crate::project_host::{PreparedFile, PreparedView};
 
 /// Maximum byte length of a static handler name, matching the template layer.
 const MAX_HANDLER_NAME_BYTES: usize = 256;
-/// Stable reason for a template without an owning script.
-const NO_TARGET_REASON: &str = "the template has no page or component script";
-/// Stable reason for an analysis that found no literal registration.
-const NO_REGISTRATION_REASON: &str = "no statically readable page or component registration";
-/// Stable reason for a failed registration selection.
-const INCOMPLETE_REGISTRATION_REASON: &str = "the page or component registration is ambiguous";
 /// Stable reason for a missing declaration file.
 const MISSING_FILE_REASON: &str = "the declaring script is not part of the prepared view";
-/// Stable reason for an unusable declaration range.
-const INVALID_RANGE_REASON: &str = "the script declaration range is not an exact name token";
-/// Stable reason for an incomplete prepared source list.
-const INCOMPLETE_SOURCE_REASON: &str = "the prepared source file list is incomplete";
 
-/// The event attribute value under the cursor.
+/// One event attribute value that either names a static handler or does not.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum EventValueSite {
     /// A single static handler name and its exact token.
@@ -64,89 +51,12 @@ pub(crate) enum EventValueSite {
     NotStatic,
 }
 
-/// One checked event-handler definition answer.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct EventDefinitionAnswer {
-    /// Exact declaration location, only when the method is proven.
-    pub(crate) location: Option<SourceLocation>,
-    /// Coverage of the script facts behind the answer.
-    pub(crate) status: CapabilityStatus,
-}
-
-/// Script facts for one proven handler declaration.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct EventHandlerFacts {
-    /// Exact declaration location in the declaring script.
-    pub(crate) location: SourceLocation,
-    /// One-line signature already capped by the script layer.
-    pub(crate) signature: String,
-    /// `JSDoc` text kept by the script layer; empty when there is none.
-    pub(crate) documentation: String,
-}
-
-/// One checked handler lookup shared by definition and hover.
-///
-/// Definition uses the location, hover uses the signature and documentation;
-/// both consume the same status so the two features cannot disagree about
-/// whether a handler was proven.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct EventHandlerResolution {
-    /// Declaration facts, only when the method is proven.
-    pub(crate) facts: Option<EventHandlerFacts>,
-    /// Coverage of the script facts behind the answer.
-    pub(crate) status: CapabilityStatus,
-}
-
-impl EventHandlerResolution {
-    /// Creates a checked empty answer.
-    const fn empty(status: CapabilityStatus) -> Self {
-        Self {
-            facts: None,
-            status,
-        }
-    }
-}
-
-/// Classifies the event attribute value at one byte offset.
-///
-/// Returns `None` when the cursor is not inside an event-binding value, so the
-/// caller can keep the static and backend definition paths. A binding-shaped
-/// value that cannot name a handler is an explicit [`EventValueSite::NotStatic`]
-/// instead of a silent fallback.
-pub(crate) fn event_site(text: &str, offset: u32) -> Option<EventValueSite> {
-    let tree = wxml_syntax::parse(text).tree;
-    for element in tree.document().elements() {
-        for attribute in element.attributes() {
-            let Some(name) = attribute.name() else {
-                continue;
-            };
-            let class = catalog::classify_event_attribute(name);
-            if class == EventAttributeClass::Other {
-                continue;
-            }
-            let Some(value) = attribute.value() else {
-                continue;
-            };
-            let range = value.text_range();
-            if offset < range.start() || offset > range.end() {
-                continue;
-            }
-            return Some(match class {
-                EventAttributeClass::Handler => static_handler(text, value, Some(offset)),
-                EventAttributeClass::Rejected(_) | EventAttributeClass::Other => {
-                    EventValueSite::NotStatic
-                }
-            });
-        }
-    }
-    None
-}
-
 /// Returns every static handler value of one document in source order.
 ///
-/// This is the document-wide form of [`event_site`]: both share
-/// [`static_handler`], so a missing-handler diagnostic, a hover and a
-/// definition cannot disagree about which values are static handler tokens.
+/// All consumers share [`static_handler`], so a missing-handler diagnostic and
+/// handler completion cannot disagree about which values are static handler
+/// tokens. Dynamic values (mustaches, empty values, member expressions) never
+/// appear in the result.
 pub(crate) fn event_handler_sites(text: &str) -> Vec<EventValueSite> {
     let tree = wxml_syntax::parse(text).tree;
     let mut sites = Vec::new();
@@ -161,7 +71,7 @@ pub(crate) fn event_handler_sites(text: &str) -> Vec<EventValueSite> {
             let Some(value) = attribute.value() else {
                 continue;
             };
-            let site = static_handler(text, value, None);
+            let site = static_handler(text, value);
             if matches!(site, EventValueSite::Handler { .. }) {
                 sites.push(site);
             }
@@ -171,14 +81,7 @@ pub(crate) fn event_handler_sites(text: &str) -> Vec<EventValueSite> {
 }
 
 /// Returns the exact handler token for one event value, or `NotStatic`.
-///
-/// `offset` restricts the answer to a cursor inside the handler token; the
-/// document-wide scan passes `None` because it is not answering a point query.
-fn static_handler(
-    text: &str,
-    value: wxml_syntax::AttributeValue<'_>,
-    offset: Option<u32>,
-) -> EventValueSite {
+fn static_handler(text: &str, value: wxml_syntax::AttributeValue<'_>) -> EventValueSite {
     if value.mustaches().next().is_some() {
         return EventValueSite::NotStatic;
     }
@@ -190,7 +93,7 @@ fn static_handler(
     {
         return EventValueSite::NotStatic;
     }
-    let Some(range) = handler_range(value, literal, handler, offset) else {
+    let Some(range) = handler_range(value, literal, handler) else {
         return EventValueSite::NotStatic;
     };
     if text.get(range.start() as usize..range.end() as usize) != Some(handler) {
@@ -207,7 +110,6 @@ fn handler_range(
     value: wxml_syntax::AttributeValue<'_>,
     literal: &str,
     handler: &str,
-    offset: Option<u32>,
 ) -> Option<SourceRange> {
     let range = value.text_range();
     let quote = u32::from(value.is_quoted());
@@ -220,85 +122,7 @@ fn handler_range(
     if end > range.end() {
         return None;
     }
-    if offset.is_some_and(|offset| offset < start || offset > end) {
-        return None;
-    }
     SourceRange::from_bounds(start, end).ok()
-}
-
-/// Resolves one static handler to its exact declaration in `view`.
-pub(crate) fn resolve(view: &PreparedView, handler: &str) -> EventDefinitionAnswer {
-    let resolution = resolve_handler(view, handler);
-    EventDefinitionAnswer {
-        location: resolution.facts.map(|facts| facts.location),
-        status: resolution.status,
-    }
-}
-
-/// Resolves one static handler to the declaration facts used by hover.
-///
-/// Every honesty rule lives here so `textDocument/definition` and
-/// `textDocument/hover` cannot disagree: an ambiguous registration, a missing
-/// method, an opaque value or a declaration without an exact name token yields
-/// no facts at all.
-pub(crate) fn resolve_handler(view: &PreparedView, handler: &str) -> EventHandlerResolution {
-    let Some(target) = view.target.as_ref() else {
-        return EventHandlerResolution::empty(unsupported(NO_TARGET_REASON));
-    };
-    let analysis = match analyze(view, target.script.as_str(), target.owner) {
-        Ok(analysis) => analysis,
-        Err(status) => return EventHandlerResolution::empty(status),
-    };
-    if analysis.analysis.registration.selected.is_none() {
-        return EventHandlerResolution::empty(unsupported(NO_REGISTRATION_REASON));
-    }
-    if !analysis.analysis.registration.complete {
-        return EventHandlerResolution::empty(partial(INCOMPLETE_REGISTRATION_REASON));
-    }
-    let Some(method) = analysis
-        .analysis
-        .methods
-        .methods
-        .iter()
-        .find(|method| method.name == handler)
-    else {
-        return EventHandlerResolution::empty(missing_status(&analysis, handler));
-    };
-    let Some(file) = analysis
-        .view
-        .files
-        .iter()
-        .find(|file| file.path.as_str() == method.path)
-    else {
-        return EventHandlerResolution::empty(partial(MISSING_FILE_REASON));
-    };
-    let Some((start, end)) = name_token(
-        file,
-        method.range.utf8.start.get(),
-        method.range.utf8.end.get(),
-        handler,
-    ) else {
-        return EventHandlerResolution::empty(partial(INVALID_RANGE_REASON));
-    };
-    let Some(range) = SourceRange::from_bounds(start, end).ok() else {
-        return EventHandlerResolution::empty(partial(INVALID_RANGE_REASON));
-    };
-    let status = if analysis.dropped > 0 || !view.source_complete {
-        partial(INCOMPLETE_SOURCE_REASON)
-    } else {
-        analysis.analysis.methods.status.clone()
-    };
-    EventHandlerResolution {
-        facts: Some(EventHandlerFacts {
-            location: SourceLocation {
-                file: file.file.clone(),
-                range,
-            },
-            signature: method.signature.clone(),
-            documentation: method.documentation.clone(),
-        }),
-        status,
-    }
 }
 
 /// One analyzed view plus the files that could not be represented.
@@ -309,6 +133,204 @@ pub(crate) struct ViewAnalysis<'a> {
     pub(crate) analysis: ScriptAnalysis,
     /// Prepared files that could not be represented.
     pub(crate) dropped: usize,
+}
+
+/// Resolves non-relative specifiers through the view's tsconfig `paths`.
+///
+/// `baseUrl` is already absolute and inside the project, so mapping it back to
+/// a project-relative directory keeps alias candidates comparable with the
+/// prepared script list. A candidate only resolves when the mapped script is
+/// part of the view, using the same extension and `index` probing as relative
+/// imports.
+struct TsconfigPaths<'a> {
+    /// Project-relative `baseUrl` directory, empty for the project root.
+    base: String,
+    /// Sorted alias patterns; earlier entries win.
+    mappings: Vec<PathMapping>,
+    /// Prepared scripts that can satisfy a mapping.
+    files: &'a [PreparedFile],
+}
+
+/// One tsconfig `paths` pattern and its replacement targets.
+struct PathMapping {
+    /// Pattern text before the optional `*`.
+    prefix: String,
+    /// Pattern text after the optional `*`.
+    suffix: String,
+    /// Whether the pattern contains a `*`.
+    wildcard: bool,
+    /// Replacement targets as written in tsconfig.
+    targets: Vec<String>,
+}
+
+impl<'a> TsconfigPaths<'a> {
+    /// Builds a resolver from the prepared view, `None` without usable paths.
+    fn from_view(view: &'a PreparedView) -> Option<Self> {
+        let mappings = view.compiler_options.get("paths")?.as_object()?;
+        let base = match view
+            .compiler_options
+            .get("baseUrl")
+            .and_then(serde_json::Value::as_str)
+        {
+            Some(base_url) => project_relative(&view.project_root, base_url)?,
+            None => String::new(),
+        };
+        let mut parsed = Vec::with_capacity(mappings.len());
+        for (pattern, targets) in mappings {
+            let Some((prefix, suffix, wildcard)) = split_pattern(pattern) else {
+                continue;
+            };
+            let targets: Vec<String> = targets
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|target| {
+                    !target.starts_with('/') && !target.contains('\\') && !target.contains('\0')
+                })
+                .map(str::to_owned)
+                .collect();
+            if targets.is_empty() {
+                continue;
+            }
+            parsed.push(PathMapping {
+                prefix: prefix.to_owned(),
+                suffix: suffix.to_owned(),
+                wildcard,
+                targets,
+            });
+        }
+        if parsed.is_empty() {
+            return None;
+        }
+        // Exact patterns win over wildcards; longer prefixes win among
+        // wildcards, matching TypeScript's most-specific-pattern rule.
+        parsed.sort_by(|left, right| {
+            left.wildcard
+                .cmp(&right.wildcard)
+                .then_with(|| right.prefix.len().cmp(&left.prefix.len()))
+                .then_with(|| right.suffix.len().cmp(&left.suffix.len()))
+        });
+        Some(Self {
+            base,
+            mappings: parsed,
+            files: view.files.as_ref(),
+        })
+    }
+
+    /// Returns the first mapped script present in the view.
+    fn probe(&self, base: &str) -> Option<String> {
+        candidate_paths(base).into_iter().find(|candidate| {
+            self.files
+                .iter()
+                .any(|file| file.path.as_str() == candidate.as_str())
+        })
+    }
+}
+
+impl PathMapping {
+    /// Returns the text captured by the pattern's `*`, if it matches.
+    fn capture<'s>(&self, specifier: &'s str) -> Option<&'s str> {
+        if self.wildcard {
+            let rest = specifier.strip_prefix(self.prefix.as_str())?;
+            rest.strip_suffix(self.suffix.as_str())
+        } else if specifier == self.prefix {
+            Some("")
+        } else {
+            None
+        }
+    }
+}
+
+impl ModuleResolver for TsconfigPaths<'_> {
+    fn resolve(&self, specifier: &str, _from_path: &str) -> Option<String> {
+        if specifier.is_empty() || specifier.contains('\\') || specifier.contains('\0') {
+            return None;
+        }
+        let (mapping, capture) = self
+            .mappings
+            .iter()
+            .find_map(|mapping| mapping.capture(specifier).map(|capture| (mapping, capture)))?;
+        for target in &mapping.targets {
+            let Some(base) = join_project_path(&self.base, &target.replace('*', capture)) else {
+                continue;
+            };
+            if let Some(path) = self.probe(&base) {
+                return Some(path);
+            }
+        }
+        None
+    }
+}
+
+/// Splits a `paths` pattern into prefix, suffix and wildcard state.
+fn split_pattern(pattern: &str) -> Option<(&str, &str, bool)> {
+    match pattern.split_once('*') {
+        None => Some((pattern, "", false)),
+        Some((prefix, suffix)) if !suffix.contains('*') => Some((prefix, suffix, true)),
+        Some(_) => None,
+    }
+}
+
+/// Maps an absolute `baseUrl` back to a project-relative directory.
+fn project_relative(root: &Path, base_url: &str) -> Option<String> {
+    let relative = Path::new(base_url).strip_prefix(root).ok()?;
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(part) => parts.push(part.to_str()?),
+            std::path::Component::CurDir => {}
+            _ => return None,
+        }
+    }
+    Some(parts.join("/"))
+}
+
+/// Joins a project-relative base with one alias target, rejecting escapes.
+fn join_project_path(base: &str, target: &str) -> Option<String> {
+    if target.starts_with('/') || target.contains('\\') || target.contains('\0') {
+        return None;
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for part in base.split('/').chain(target.split('/')) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other),
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    Some(parts.join("/"))
+}
+
+/// Returns the same candidate order as a relative script import.
+fn candidate_paths(base: &str) -> Vec<String> {
+    if has_script_extension(base) {
+        return vec![base.to_owned()];
+    }
+    vec![
+        base.to_owned(),
+        format!("{base}.ts"),
+        format!("{base}.js"),
+        format!("{base}.mts"),
+        format!("{base}.cts"),
+        format!("{base}/index.ts"),
+        format!("{base}/index.js"),
+        format!("{base}/index.mts"),
+        format!("{base}/index.cts"),
+    ]
+}
+
+/// Returns whether the final path segment already carries an extension.
+fn has_script_extension(path: &str) -> bool {
+    path.rsplit('/')
+        .next()
+        .and_then(|name| name.rsplit_once('.'))
+        .is_some_and(|(stem, extension)| !stem.is_empty() && !extension.is_empty())
 }
 
 /// Builds the event method table from the prepared script files.
@@ -353,7 +375,12 @@ pub(crate) fn analyze<'a>(
         RootKind::Page => RegistrationKind::Page,
         RootKind::Component => RegistrationKind::Component,
     };
-    let Ok(analysis) = analyze_script(&ScriptRequest::new(&input, script_path, kind)) else {
+    let resolver = TsconfigPaths::from_view(view);
+    let request = ScriptRequest::new(&input, script_path, kind);
+    let request = resolver
+        .as_ref()
+        .map_or(request, |resolver| request.with_resolver(resolver));
+    let Ok(analysis) = analyze_script(&request) else {
         return Err(unsupported("the owning script could not be analyzed"));
     };
     Ok(ViewAnalysis {
@@ -371,56 +398,6 @@ fn source_file(prepared: &PreparedFile) -> Result<SourceFile, ()> {
         DocumentRevision::new(prepared.source_revision),
     )
     .map_err(|_| ())
-}
-
-/// Returns the exact name token, shrinking one pair of string quotes.
-fn name_token(file: &PreparedFile, start: u32, end: u32, handler: &str) -> Option<(u32, u32)> {
-    let slice = file.text.get(start as usize..end as usize)?;
-    if slice == handler {
-        return Some((start, end));
-    }
-    let quote = slice.chars().next()?;
-    if !matches!(quote, '"' | '\'') || !slice.ends_with(quote) {
-        return None;
-    }
-    let width = u32::try_from(quote.len_utf8()).ok()?;
-    let inner = slice.get(quote.len_utf8()..slice.len().checked_sub(quote.len_utf8())?)?;
-    if inner != handler {
-        return None;
-    }
-    Some((start.checked_add(width)?, end.checked_sub(width)?))
-}
-
-/// Returns the status for a method that is not in the table.
-fn missing_status(analysis: &ViewAnalysis<'_>, handler: &str) -> CapabilityStatus {
-    if analysis
-        .analysis
-        .methods
-        .opaque
-        .iter()
-        .any(|name| name == handler)
-    {
-        return partial("the handler is not statically known to be a function");
-    }
-    if analysis.dropped > 0 || !analysis.view.source_complete {
-        return partial(INCOMPLETE_SOURCE_REASON);
-    }
-    if analysis.analysis.methods.status.is_supported() {
-        return CapabilityStatus::Supported;
-    }
-    partial(table_reason(&analysis.analysis))
-}
-
-/// Returns the most specific bounded reason for an incomplete table.
-fn table_reason(analysis: &ScriptAnalysis) -> String {
-    analysis
-        .methods
-        .problems
-        .first()
-        .cloned()
-        .or_else(|| analysis.methods.status.reason().map(str::to_owned))
-        .or_else(|| analysis.reasons.first().cloned())
-        .unwrap_or_else(|| INCOMPLETE_REGISTRATION_REASON.to_owned())
 }
 
 fn partial(reason: impl Into<String>) -> CapabilityStatus {
@@ -447,6 +424,7 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
+    use wxml_backend_tsgo::script::events::EventMethod;
     use wxml_project::ProjectPath;
     use wxml_types::{FileId, ProjectId, ViewRevision};
 
@@ -479,22 +457,15 @@ mod tests {
     }
 
     fn view(owner: RootKind, files: Vec<PreparedFile>) -> PreparedView {
-        view_with_target(
-            Some(ViewTarget {
+        PreparedView {
+            view_id: format!("{WXML}:1"),
+            target: Some(ViewTarget {
                 wxml: project_path(WXML),
                 owner,
                 script: project_path(SCRIPT),
                 script_file: file_id(SCRIPT),
                 view_revision: ViewRevision::new(1),
             }),
-            files,
-        )
-    }
-
-    fn view_with_target(target: Option<ViewTarget>, files: Vec<PreparedFile>) -> PreparedView {
-        PreparedView {
-            view_id: format!("{WXML}:1"),
-            target,
             files: Arc::from(files),
             compiler_options: serde_json::Map::new(),
             fragments: Arc::from(Vec::new()),
@@ -508,78 +479,52 @@ mod tests {
         }
     }
 
-    fn cursor(template: &str) -> (String, u32) {
-        let offset = template.find('|').expect("cursor marker");
-        (
-            template.replacen('|', "", 1),
-            u32::try_from(offset).expect("small offset"),
-        )
-    }
-
-    fn site(template: &str) -> EventValueSite {
-        let (text, offset) = cursor(template);
-        event_site(&text, offset).expect("event value site")
-    }
-
-    fn answer(owner: RootKind, files: &[(&str, &str)], template: &str) -> EventDefinitionAnswer {
-        let site = site(template);
-        let EventValueSite::Handler { handler, .. } = site else {
-            panic!("expected a static handler site");
+    fn with_compiler_options(mut view: PreparedView, options: serde_json::Value) -> PreparedView {
+        let serde_json::Value::Object(options) = options else {
+            panic!("compiler options must be an object");
         };
-        let files = files
+        view.compiler_options = options;
+        view
+    }
+
+    /// Returns `(handler, token)` for every static handler of one document.
+    fn handler_sites(template: &str) -> Vec<(String, SourceRange)> {
+        event_handler_sites(template)
+            .into_iter()
+            .map(|site| match site {
+                EventValueSite::Handler { handler, token } => (handler, token),
+                EventValueSite::NotStatic => {
+                    panic!("the document scan must never return a dynamic value")
+                }
+            })
+            .collect()
+    }
+
+    /// Returns the table entry for `name`, failing when it was not merged.
+    fn method<'a>(analysis: &'a ViewAnalysis<'_>, name: &str) -> &'a EventMethod {
+        analysis
+            .analysis
+            .methods
+            .methods
             .iter()
-            .map(|(path, text)| prepared(path, text))
-            .collect();
-        resolve(&view(owner, files), &handler)
+            .find(|method| method.name == name)
+            .unwrap_or_else(|| panic!("expected a {name} method in the table"))
     }
 
-    fn assert_location(answer: &EventDefinitionAnswer, path: &str, script: &str, name: &str) {
-        let location = answer.location.as_ref().expect("definition location");
-        assert_source_location(location, path, script, name);
-    }
-
-    fn assert_source_location(location: &SourceLocation, path: &str, script: &str, name: &str) {
-        assert_eq!(location.file, file_id(path));
+    /// Asserts the table entry carries the exact declaration name token.
+    fn assert_method(method: &EventMethod, path: &str, script: &str, name: &str) {
+        assert_eq!(method.path, path);
         let start = u32::try_from(script.find(name).expect("name in script")).expect("start");
+        let end = start + u32::try_from(name.len()).expect("name length");
         assert_eq!(
-            (location.range.start(), location.range.end()),
-            (
-                start,
-                start + u32::try_from(name.len()).expect("name length")
-            )
+            (method.range.utf8.start.get(), method.range.utf8.end.get()),
+            (start, end)
         );
-        assert_eq!(&script[start as usize..location.range.end() as usize], name);
-    }
-
-    /// Resolves the handler under the marker and keeps the template text and
-    /// its exact WXML token so hover tests can assert both sides.
-    fn hover_facts(
-        owner: RootKind,
-        files: &[(&str, &str)],
-        template: &str,
-    ) -> (EventHandlerResolution, String, SourceRange) {
-        let (text, offset) = cursor(template);
-        let site = event_site(&text, offset).expect("event value site");
-        let EventValueSite::Handler { handler, token } = site else {
-            panic!("expected a static handler site: {template}");
-        };
-        let files = files
-            .iter()
-            .map(|(path, text)| prepared(path, text))
-            .collect();
-        (resolve_handler(&view(owner, files), &handler), text, token)
-    }
-
-    fn facts(resolution: &EventHandlerResolution) -> &EventHandlerFacts {
-        resolution
-            .facts
-            .as_ref()
-            .unwrap_or_else(|| panic!("expected handler facts: {resolution:?}"))
+        assert_eq!(&script[start as usize..end as usize], name);
     }
 
     #[test]
-    fn every_event_binding_form_resolves_to_the_exact_page_method() {
-        let script = "Page({\n  onTap() {},\n});";
+    fn every_event_binding_form_is_a_document_wide_handler_site() {
         for attribute in [
             "bindtap",
             "catchtap",
@@ -590,187 +535,36 @@ mod tests {
             "mut-bind:tap",
             "bind:my-event",
         ] {
-            let template = format!("<view {attribute}=\"onTa|p\" />");
-            let answer = answer(RootKind::Page, &[(SCRIPT, script)], &template);
-            assert!(answer.status.is_supported(), "{attribute}: {answer:?}");
-            assert_location(&answer, SCRIPT, script, "onTap");
+            let template = format!("<view {attribute}=\"onTap\" />");
+            let sites = handler_sites(&template);
+            assert_eq!(sites.len(), 1, "{attribute}: {sites:?}");
+            assert_eq!(sites[0].0, "onTap", "{attribute}");
         }
+        // An unquoted value is still an exact handler token.
+        assert_eq!(handler_sites("<view bindtap=onTap />").len(), 1);
+        // A compact camel event name is a real handler, not a member value.
+        assert_eq!(handler_sites("<view bindTap=\"onTap\" />").len(), 1);
     }
 
     #[test]
-    fn an_unquoted_event_value_resolves() {
-        let script = "Page({ onTap() {} });";
-        let answer = answer(
-            RootKind::Page,
-            &[(SCRIPT, script)],
-            "<view bindtap=on|Tap />",
-        );
-        assert_location(&answer, SCRIPT, script, "onTap");
-    }
-
-    #[test]
-    fn component_methods_and_behavior_methods_resolve() {
-        let script = "Component({\n  behaviors: [Behavior({ methods: { onBack() {} } })],\n  methods: {\n    onTap() {},\n  },\n});";
-        for (handler, offset_marker) in [("onTa|p", "onTap"), ("onBa|ck", "onBack")] {
-            let template = format!("<view bindtap=\"{handler}\" />");
-            let answer = answer(RootKind::Component, &[(SCRIPT, script)], &template);
-            assert_location(&answer, SCRIPT, script, offset_marker);
-        }
-    }
-
-    #[test]
-    fn an_unreferenced_behavior_method_is_not_merged() {
-        let script =
-            "Behavior({ methods: { orphan() {} } });\nComponent({ methods: { onTap() {} } });";
-        let answer = answer(
-            RootKind::Component,
-            &[(SCRIPT, script)],
-            "<view bindtap=\"orp|han\" />",
-        );
-        assert!(answer.location.is_none(), "{answer:?}");
-        assert!(answer.status.is_supported(), "{answer:?}");
-    }
-
-    #[test]
-    fn imported_behavior_declaration_points_at_the_behavior_file() {
-        let owner = "import base from \"./base\";\nComponent({ behaviors: [base], methods: {} });";
-        let behavior = "export default Behavior({\n  methods: {\n    onBack() {},\n  },\n});";
-        let answer = answer(
-            RootKind::Component,
-            &[(SCRIPT, owner), ("pages/index/base.ts", behavior)],
-            "<view bindtap=\"onBa|ck\" />",
-        );
-        assert_location(&answer, "pages/index/base.ts", behavior, "onBack");
-    }
-
-    #[test]
-    fn a_page_template_falls_back_to_a_component_registration() {
-        let script = "Component({ methods: { onTap() {} } });";
-        let answer = answer(
-            RootKind::Page,
-            &[(SCRIPT, script)],
-            "<view bindtap=\"onTa|p\" />",
-        );
-        assert_location(&answer, SCRIPT, script, "onTap");
-    }
-
-    #[test]
-    fn a_static_registrar_alias_is_followed() {
-        let script = "const page = Page;\npage({\n  onAlias() {},\n});";
-        let answer = answer(
-            RootKind::Page,
-            &[(SCRIPT, script)],
-            "<view bindtap=\"onAli|as\" />",
-        );
-        assert_location(&answer, SCRIPT, script, "onAlias");
-    }
-
-    #[test]
-    fn literal_function_and_arrow_values_are_static_methods() {
-        let script = "Page({\n  onShorthand() {},\n  onFunction: function () {},\n  onArrow: () => {},\n  onAsync: async () => {},\n});";
-        for handler in ["onShorthand", "onFunction", "onArrow", "onAsync"] {
-            let marked = handler.replacen("on", "on|", 1);
-            let template = format!("<view bindtap=\"{marked}\" />");
-            let answer = answer(RootKind::Page, &[(SCRIPT, script)], &template);
-            assert_location(&answer, SCRIPT, script, handler);
-        }
-    }
-
-    #[test]
-    fn a_unique_top_level_registration_wins_over_a_nested_one() {
-        let script = "function factory() { Page({ nested() {} }); }\nPage({ top() {} });";
-        let top = answer(
-            RootKind::Page,
-            &[(SCRIPT, script)],
-            "<view bindtap=\"to|p\" />",
-        );
-        assert_location(&top, SCRIPT, script, "top");
-        let nested = answer(
-            RootKind::Page,
-            &[(SCRIPT, script)],
-            "<view bindtap=\"nest|ed\" />",
-        );
-        assert!(nested.location.is_none(), "{nested:?}");
-        assert!(nested.status.is_supported(), "{nested:?}");
-    }
-
-    #[test]
-    fn a_nested_registration_alone_stays_partial_and_empty() {
-        let script = "function factory() { Page({ nested() {} }); }";
-        let answer = answer(
-            RootKind::Page,
-            &[(SCRIPT, script)],
-            "<view bindtap=\"nest|ed\" />",
-        );
-        assert!(answer.location.is_none(), "{answer:?}");
-        assert!(
-            matches!(answer.status, CapabilityStatus::Partial { .. }),
-            "{answer:?}"
-        );
-    }
-
-    #[test]
-    fn multiple_top_level_registrations_stay_partial_and_empty() {
-        let script = "Page({ onFirst() {} });\nPage({ onSecond() {} });";
-        let answer = answer(
-            RootKind::Page,
-            &[(SCRIPT, script)],
-            "<view bindtap=\"onFir|st\" />",
-        );
-        assert!(answer.location.is_none(), "{answer:?}");
-        assert!(
-            matches!(answer.status, CapabilityStatus::Partial { .. }),
-            "{answer:?}"
-        );
-    }
-
-    #[test]
-    fn a_missing_method_is_a_checked_empty_only_for_a_complete_table() {
-        let script = "Page({ onTap() {} });";
-        let missing = answer(
-            RootKind::Page,
-            &[(SCRIPT, script)],
-            "<view bindtap=\"onMis|sing\" />",
-        );
-        assert!(missing.location.is_none(), "{missing:?}");
-        assert!(missing.status.is_supported(), "{missing:?}");
-
-        let opaque = "Page({ onTap: handlerRef });";
-        let opaque_answer = answer(
-            RootKind::Page,
-            &[(SCRIPT, opaque)],
-            "<view bindtap=\"onTa|p\" />",
-        );
-        assert!(opaque_answer.location.is_none(), "{opaque_answer:?}");
-        assert!(
-            matches!(opaque_answer.status, CapabilityStatus::Partial { .. }),
-            "{opaque_answer:?}"
-        );
-    }
-
-    #[test]
-    fn dynamic_empty_and_member_values_are_not_static() {
+    fn dynamic_empty_and_member_values_are_never_handler_sites() {
         for template in [
-            "<view bindtap=\"{{ dynamic|Handler }}\" />",
-            "<view bindtap=\"|\" />",
-            "<view bindtap=\"this.on|Tap\" />",
-            "<view bindtap=\"onTap\"| />",
-            "<view bindtap=\"onTap |\" />",
-            "<view bindex=\"on|Tap\" />",
-            "<view bind:=\"on|Tap\" />",
+            "<view bindtap=\"{{ dynamicHandler }}\" />",
+            "<view bindtap=\"\" />",
+            "<view bindtap=\"this.onTap\" />",
+            "<view bindtap=\"item.onTap\" />",
+            "<view bindtap=\"onTap()\" />",
+            "<view bindtap=\"1onTap\" />",
+            "<view bindex=\"onTap\" />",
+            "<view bind:=\"onTap\" />",
+            "<view class=\"onTap\" />",
         ] {
-            assert_eq!(site(template), EventValueSite::NotStatic, "{template}");
+            assert!(handler_sites(template).is_empty(), "{template}");
         }
-        // A compact bind with a camel event name is a real handler, not a member value.
-        assert!(matches!(
-            site("<view bindTap=\"on|Tap\" />"),
-            EventValueSite::Handler { .. }
-        ));
-        assert_eq!(event_site("<view class=\"on|Tap\" />", 12), None);
     }
 
     #[test]
-    fn the_document_wide_scan_matches_the_point_query_tokens() {
+    fn the_document_wide_scan_finds_static_tokens_in_source_order() {
         let text = concat!(
             "🙂<view bindtap=\"onTap\" />\n",
             "<view catch:tap=\"保存\" />\n",
@@ -780,289 +574,275 @@ mod tests {
             "<view bindtap=\"onTap()\" />\n",
             "<view class=\"onTap\" />",
         );
-        let sites = event_handler_sites(text);
+        let sites = handler_sites(text);
         assert_eq!(sites.len(), 2, "{sites:?}");
-        for (site, (needle, token)) in sites.iter().zip([("onTap", "onTap"), ("保存", "保存")])
+        for ((handler, token), (needle, expected)) in
+            sites.iter().zip([("onTap", "onTap"), ("保存", "保存")])
         {
-            let EventValueSite::Handler {
-                handler,
-                token: range,
-            } = site
-            else {
-                panic!("expected a static handler site: {site:?}");
-            };
             let start = u32::try_from(text.find(needle).expect("token")).expect("start");
-            assert_eq!(handler, token);
+            assert_eq!(handler, expected);
             assert_eq!(
-                (range.start(), range.end()),
+                (token.start(), token.end()),
                 (start, start + u32::try_from(needle.len()).expect("len"))
             );
         }
     }
 
     #[test]
-    fn a_handler_token_resolves_with_cjk_and_emoji_prefixes() {
-        let script = "// 🙂 页面\nPage({\n  保存() {},\n});";
-        let template = "🙂<view>中文</view><view bind:tap=\"保|存\" />";
-        let (text, offset) = cursor(template);
-        let site = event_site(&text, offset).expect("event site");
-        let EventValueSite::Handler { handler, token } = site else {
-            panic!("expected a static handler site");
-        };
-        assert_eq!(handler, "保存");
+    fn a_handler_token_keeps_utf8_bounds_with_cjk_and_emoji_prefixes() {
+        let text = "🙂<view>中文</view><view bind:tap=\"保存\" />";
+        let sites = handler_sites(text);
+        assert_eq!(sites.len(), 1, "{sites:?}");
+        assert_eq!(sites[0].0, "保存");
         let expected = u32::try_from(text.find("保存").expect("handler")).expect("offset");
-        assert_eq!((token.start(), token.end()), (expected, expected + 6));
-        let answer = resolve(
-            &view(RootKind::Page, vec![prepared(SCRIPT, script)]),
-            &handler,
-        );
-        assert_location(&answer, SCRIPT, script, "保存");
-    }
-
-    #[test]
-    fn a_template_without_an_owning_script_is_empty() {
-        let files = vec![prepared(SCRIPT, "Page({ onTap() {} });")];
-        let view = view_with_target(None, files);
-        let answer = resolve(&view, "onTap");
-        assert!(answer.location.is_none(), "{answer:?}");
-        assert!(
-            matches!(answer.status, CapabilityStatus::Unsupported { .. }),
-            "{answer:?}"
-        );
-    }
-
-    #[test]
-    fn an_owning_script_missing_from_the_view_is_empty() {
-        let view = view(RootKind::Page, Vec::new());
-        let answer = resolve(&view, "onTap");
-        assert!(answer.location.is_none(), "{answer:?}");
-        assert!(
-            matches!(answer.status, CapabilityStatus::Partial { .. }),
-            "{answer:?}"
-        );
-    }
-
-    #[test]
-    fn a_quoted_method_key_keeps_the_exact_name_token() {
-        let script = "Page({ \"onTap\"() {} });";
-        let answer = answer(
-            RootKind::Page,
-            &[(SCRIPT, script)],
-            "<view bindtap=\"onTa|p\" />",
-        );
-        assert_location(&answer, SCRIPT, script, "onTap");
-        let location = answer.location.as_ref().expect("location");
         assert_eq!(
-            &script[location.range.start() as usize..location.range.end() as usize],
-            "onTap"
+            (sites[0].1.start(), sites[0].1.end()),
+            (expected, expected + 6)
         );
     }
 
     #[test]
-    fn every_event_binding_form_hovers_the_exact_handler_token() {
-        let script = "Page({\n  /** Taps the card. */\n  onTap(event: { detail: { x: number } }) { void event; },\n});";
-        for attribute in [
-            "bindtap",
-            "catchtap",
-            "bind:tap",
-            "catch:tap",
-            "capture-bind:tap",
-            "capture-catch:tap",
-            "mut-bind:tap",
-            "bind:my-event",
-        ] {
-            let template = format!("<view {attribute}=\"onTa|p\" />");
-            let (resolution, text, token) =
-                hover_facts(RootKind::Page, &[(SCRIPT, script)], &template);
-            assert!(
-                resolution.status.is_supported(),
-                "{attribute}: {resolution:?}"
-            );
-            let facts = facts(&resolution);
-            assert_eq!(&text[token.start() as usize..token.end() as usize], "onTap");
-            assert!(facts.signature.contains("onTap"), "{attribute}: {facts:?}");
-            assert!(
-                facts.documentation.contains("Taps the card."),
-                "{attribute}: {facts:?}"
-            );
-            assert_source_location(&facts.location, SCRIPT, script, "onTap");
-        }
-
-        let template = "<view bindtap=on|Tap />";
-        let (resolution, text, token) = hover_facts(RootKind::Page, &[(SCRIPT, script)], template);
-        assert!(resolution.status.is_supported(), "{resolution:?}");
-        assert_eq!(&text[token.start() as usize..token.end() as usize], "onTap");
-        assert!(facts(&resolution).signature.contains("onTap"));
+    fn component_and_behavior_methods_are_in_the_table() {
+        let script = "Component({\n  behaviors: [Behavior({ methods: { onBack() {} } })],\n  methods: {\n    onTap() {},\n  },\n});";
+        let prepared_view = view(RootKind::Component, vec![prepared(SCRIPT, script)]);
+        let analysis = analyze(&prepared_view, SCRIPT, RootKind::Component).expect("analysis");
+        assert_method(method(&analysis, "onTap"), SCRIPT, script, "onTap");
+        assert_method(method(&analysis, "onBack"), SCRIPT, script, "onBack");
+        assert!(analysis.analysis.methods.status.is_supported());
     }
 
     #[test]
-    fn shorthand_function_and_arrow_handlers_expose_hover_facts() {
-        let script = "Page({\n  /** Shorthand. */\n  onShorthandTap() {},\n  onFunctionTap: function (event: unknown) { void event; },\n  onArrowTap: (event: unknown) => { void event; },\n  onAsyncTap: async () => {},\n});";
-        for (marked, name) in [
-            ("onShort|handTap", "onShorthandTap"),
-            ("onFunc|tionTap", "onFunctionTap"),
-            ("onAr|rowTap", "onArrowTap"),
-            ("onAs|yncTap", "onAsyncTap"),
-        ] {
-            let template = format!("<view bindtap=\"{marked}\" />");
-            let (resolution, _, _) = hover_facts(RootKind::Page, &[(SCRIPT, script)], &template);
-            let facts = facts(&resolution);
-            assert!(facts.signature.contains(name), "{name}: {facts:?}");
-        }
+    fn an_unreferenced_behavior_method_is_not_merged() {
+        let script =
+            "Behavior({ methods: { orphan() {} } });\nComponent({ methods: { onTap() {} } });";
+        let prepared_view = view(RootKind::Component, vec![prepared(SCRIPT, script)]);
+        let analysis = analyze(&prepared_view, SCRIPT, RootKind::Component).expect("analysis");
+        assert_method(method(&analysis, "onTap"), SCRIPT, script, "onTap");
+        assert!(
+            !analysis
+                .analysis
+                .methods
+                .methods
+                .iter()
+                .any(|method| method.name == "orphan"),
+            "an unrelated behavior must not contribute methods"
+        );
     }
 
     #[test]
-    fn component_behavior_alias_and_top_level_handlers_expose_hover_facts() {
-        let component = "Component({\n  behaviors: [Behavior({ methods: { onBack() {} } })],\n  methods: { onTap() {} },\n});";
-        for (marked, name) in [("onTa|p", "onTap"), ("onBa|ck", "onBack")] {
-            let template = format!("<view bindtap=\"{marked}\" />");
-            let (resolution, _, _) =
-                hover_facts(RootKind::Component, &[(SCRIPT, component)], &template);
-            assert_source_location(&facts(&resolution).location, SCRIPT, component, name);
-        }
-
+    fn imported_behavior_declaration_lands_in_the_behavior_file() {
         let owner = "import base from \"./base\";\nComponent({ behaviors: [base], methods: {} });";
-        let behavior = "export default Behavior({ methods: { onBack() {} } });";
-        let (resolution, _, _) = hover_facts(
+        let behavior = "export default Behavior({\n  methods: {\n    onBack() {},\n  },\n});";
+        let prepared_view = view(
             RootKind::Component,
-            &[(SCRIPT, owner), ("pages/index/base.ts", behavior)],
-            "<view bindtap=\"onBa|ck\" />",
+            vec![
+                prepared(SCRIPT, owner),
+                prepared("pages/index/base.ts", behavior),
+            ],
         );
-        assert_source_location(
-            &facts(&resolution).location,
+        let analysis = analyze(&prepared_view, SCRIPT, RootKind::Component).expect("analysis");
+        assert_method(
+            method(&analysis, "onBack"),
             "pages/index/base.ts",
             behavior,
             "onBack",
         );
-
-        let alias = "const page = Page;\npage({\n  onAlias() {},\n});";
-        let (resolution, _, _) = hover_facts(
-            RootKind::Page,
-            &[(SCRIPT, alias)],
-            "<view bindtap=\"onAli|as\" />",
-        );
-        assert_source_location(&facts(&resolution).location, SCRIPT, alias, "onAlias");
-
-        // S1: a unique top-level registration wins over a nested one.
-        let top_level = "function factory() { Page({ nested() {} }); }\nPage({ top() {} });";
-        let (top, _, _) = hover_facts(
-            RootKind::Page,
-            &[(SCRIPT, top_level)],
-            "<view bindtap=\"to|p\" />",
-        );
-        assert!(facts(&top).signature.contains("top"), "{top:?}");
-        let (nested, _, _) = hover_facts(
-            RootKind::Page,
-            &[(SCRIPT, top_level)],
-            "<view bindtap=\"nest|ed\" />",
-        );
-        assert!(nested.facts.is_none(), "{nested:?}");
-        assert!(nested.status.is_supported(), "{nested:?}");
     }
 
     #[test]
-    fn unproven_handlers_never_produce_hover_facts() {
-        let missing_script = "Page({ onTap() {} });";
-        let (missing, _, _) = hover_facts(
-            RootKind::Page,
-            &[(SCRIPT, missing_script)],
-            "<view bindtap=\"onMis|sing\" />",
-        );
-        assert!(missing.facts.is_none(), "{missing:?}");
-        assert!(missing.status.is_supported(), "{missing:?}");
-
-        for (label, owner, script, template) in [
-            (
-                "ambiguous",
-                RootKind::Page,
-                "Page({ onFirst() {} });\nPage({ onSecond() {} });",
-                "<view bindtap=\"onFir|st\" />",
-            ),
-            (
-                "opaque",
-                RootKind::Page,
-                "Page({ onTap: handlerRef });",
-                "<view bindtap=\"onTa|p\" />",
-            ),
-            (
-                "spread",
-                RootKind::Page,
-                "const base = {};\nPage({ ...base });",
-                "<view bindtap=\"onMis|sing\" />",
-            ),
-            (
-                "nested",
-                RootKind::Page,
-                "function factory() { Page({ nested() {} }); }",
-                "<view bindtap=\"nest|ed\" />",
-            ),
-            (
-                "non-literal methods",
+    fn a_tsconfig_alias_behavior_lands_in_the_behavior_file() {
+        let owner = "import base from \"@/behaviors/base\";\nComponent({ behaviors: [base], methods: {} });";
+        let behavior = "export default Behavior({\n  methods: {\n    onBack() {},\n  },\n});";
+        let prepared_view = with_compiler_options(
+            view(
                 RootKind::Component,
-                "Component({ methods: getMethods() });",
-                "<view bindtap=\"onTa|p\" />",
+                vec![
+                    prepared(SCRIPT, owner),
+                    prepared("src/behaviors/base.ts", behavior),
+                ],
             ),
-        ] {
-            let (resolution, _, _) = hover_facts(owner, &[(SCRIPT, script)], template);
-            assert!(resolution.facts.is_none(), "{label}: {resolution:?}");
-            assert!(
-                matches!(resolution.status, CapabilityStatus::Partial { .. }),
-                "{label}: {resolution:?}"
-            );
+            serde_json::json!({
+                "baseUrl": "/work/demo",
+                "paths": { "@/*": ["./src/*"] },
+            }),
+        );
+        let analysis = analyze(&prepared_view, SCRIPT, RootKind::Component).expect("analysis");
+        assert_method(
+            method(&analysis, "onBack"),
+            "src/behaviors/base.ts",
+            behavior,
+            "onBack",
+        );
+    }
+
+    #[test]
+    fn alias_mappings_prefer_the_longest_prefix_and_probe_extensions() {
+        let owner = "Component({ methods: {} });";
+        let prepared_view = with_compiler_options(
+            view(
+                RootKind::Component,
+                vec![
+                    prepared(SCRIPT, owner),
+                    prepared("src/behaviors/base.ts", "export default Behavior({});"),
+                    prepared("behaviors/base.ts", "export default Behavior({});"),
+                    prepared("behaviors/dir/base.ts", "export default Behavior({});"),
+                ],
+            ),
+            serde_json::json!({
+                "baseUrl": "/work/demo",
+                "paths": {
+                    "@/*": ["./src/*"],
+                    "@/behaviors/*": ["./behaviors/*"],
+                    "@/dir/*": ["./behaviors/dir/*"],
+                },
+            }),
+        );
+        let resolver = TsconfigPaths::from_view(&prepared_view).expect("alias resolver");
+        assert_eq!(
+            resolver.resolve("@/behaviors/base", SCRIPT).as_deref(),
+            Some("behaviors/base.ts"),
+            "the longest prefix must win over the shorter one"
+        );
+        assert_eq!(
+            resolver.resolve("@/dir/base", SCRIPT).as_deref(),
+            Some("behaviors/dir/base.ts")
+        );
+    }
+
+    #[test]
+    fn alias_mappings_probe_index_files() {
+        let prepared_view = with_compiler_options(
+            view(
+                RootKind::Component,
+                vec![
+                    prepared(SCRIPT, "Component({ methods: {} });"),
+                    prepared("src/base/index.ts", "export default Behavior({});"),
+                ],
+            ),
+            serde_json::json!({
+                "baseUrl": "/work/demo",
+                "paths": { "@/*": ["./src/*"] },
+            }),
+        );
+        let resolver = TsconfigPaths::from_view(&prepared_view).expect("alias resolver");
+        assert_eq!(
+            resolver.resolve("@/base", SCRIPT).as_deref(),
+            Some("src/base/index.ts")
+        );
+    }
+
+    #[test]
+    fn alias_targets_cannot_escape_the_project() {
+        let prepared_view = with_compiler_options(
+            view(
+                RootKind::Component,
+                vec![prepared(SCRIPT, "Component({ methods: {} });")],
+            ),
+            serde_json::json!({
+                "baseUrl": "/work/demo",
+                "paths": { "@/*": ["../../outside/*"] },
+            }),
+        );
+        let resolver = TsconfigPaths::from_view(&prepared_view).expect("alias resolver");
+        assert!(resolver.resolve("@/base", SCRIPT).is_none());
+    }
+
+    #[test]
+    fn a_page_template_falls_back_to_a_component_registration() {
+        let script = "Component({ methods: { onTap() {} } });";
+        let prepared_view = view(RootKind::Page, vec![prepared(SCRIPT, script)]);
+        let analysis = analyze(&prepared_view, SCRIPT, RootKind::Page).expect("analysis");
+        assert!(analysis.analysis.registration.selected.is_some());
+        assert_method(method(&analysis, "onTap"), SCRIPT, script, "onTap");
+    }
+
+    #[test]
+    fn a_static_registrar_alias_is_followed() {
+        let script = "const page = Page;\npage({\n  onAlias() {},\n});";
+        let prepared_view = view(RootKind::Page, vec![prepared(SCRIPT, script)]);
+        let analysis = analyze(&prepared_view, SCRIPT, RootKind::Page).expect("analysis");
+        assert_method(method(&analysis, "onAlias"), SCRIPT, script, "onAlias");
+    }
+
+    #[test]
+    fn literal_function_and_arrow_values_are_methods() {
+        let script = "Page({\n  onShorthand() {},\n  onFunction: function () {},\n  onArrow: () => {},\n  onAsync: async () => {},\n});";
+        let prepared_view = view(RootKind::Page, vec![prepared(SCRIPT, script)]);
+        let analysis = analyze(&prepared_view, SCRIPT, RootKind::Page).expect("analysis");
+        for handler in ["onShorthand", "onFunction", "onArrow", "onAsync"] {
+            assert_method(method(&analysis, handler), SCRIPT, script, handler);
         }
     }
 
     #[test]
-    fn a_literal_method_survives_an_incomplete_table() {
-        let script = "const base = {};\nPage({ ...base, onTap() {} });";
-        let (resolution, _, _) = hover_facts(
-            RootKind::Page,
-            &[(SCRIPT, script)],
-            "<view bindtap=\"onTa|p\" />",
+    fn a_unique_top_level_registration_wins_over_a_nested_one() {
+        let script = "function factory() { Page({ nested() {} }); }\nPage({ top() {} });";
+        let prepared_view = view(RootKind::Page, vec![prepared(SCRIPT, script)]);
+        let analysis = analyze(&prepared_view, SCRIPT, RootKind::Page).expect("analysis");
+        assert!(analysis.analysis.methods.status.is_supported());
+        assert!(analysis.analysis.registration.selected.is_some());
+        assert_method(method(&analysis, "top"), SCRIPT, script, "top");
+        assert!(
+            !analysis
+                .analysis
+                .methods
+                .methods
+                .iter()
+                .any(|method| method.name == "nested"),
+            "a nested registration must not contribute methods"
+        );
+    }
+
+    #[test]
+    fn a_nested_registration_alone_is_not_complete() {
+        let script = "function factory() { Page({ nested() {} }); }";
+        let prepared_view = view(RootKind::Page, vec![prepared(SCRIPT, script)]);
+        let analysis = analyze(&prepared_view, SCRIPT, RootKind::Page).expect("analysis");
+        assert!(!analysis.analysis.registration.complete);
+        assert!(!analysis.analysis.methods.status.is_supported());
+    }
+
+    #[test]
+    fn multiple_top_level_registrations_are_ambiguous() {
+        let script = "Page({ onFirst() {} });\nPage({ onSecond() {} });";
+        let prepared_view = view(RootKind::Page, vec![prepared(SCRIPT, script)]);
+        let analysis = analyze(&prepared_view, SCRIPT, RootKind::Page).expect("analysis");
+        assert!(!analysis.analysis.registration.complete);
+        assert!(!analysis.analysis.methods.status.is_supported());
+    }
+
+    #[test]
+    fn an_opaque_member_stays_named_but_is_not_a_literal_method() {
+        let script = "Page({ onTap: handlerRef });";
+        let prepared_view = view(RootKind::Page, vec![prepared(SCRIPT, script)]);
+        let analysis = analyze(&prepared_view, SCRIPT, RootKind::Page).expect("analysis");
+        assert!(
+            analysis
+                .analysis
+                .methods
+                .opaque
+                .iter()
+                .any(|name| name == "onTap")
         );
         assert!(
-            matches!(resolution.status, CapabilityStatus::Partial { .. }),
-            "{resolution:?}"
-        );
-        assert!(facts(&resolution).signature.contains("onTap"));
-    }
-
-    #[test]
-    fn hover_facts_keep_cjk_docs_and_exact_tokens() {
-        let script = "// 🙂 页面\nPage({\n  /** 保存当前页面 😀 */\n  保存(event: { detail: { 值: string } }) { void event; },\n});";
-        let (resolution, text, token) = hover_facts(
-            RootKind::Page,
-            &[(SCRIPT, script)],
-            "🙂<view bind:tap=\"保|存\" />",
-        );
-        let facts = facts(&resolution);
-        assert_eq!(&text[token.start() as usize..token.end() as usize], "保存");
-        assert_eq!(token.end() - token.start(), 6);
-        assert!(facts.signature.contains("保存"), "{facts:?}");
-        assert!(facts.documentation.contains("保存当前页面 😀"), "{facts:?}");
-        assert_eq!(facts.location.file, file_id(SCRIPT));
-        // The doc comment also mentions `保存`; the definition must be the
-        // declaration token, not the first occurrence in the file.
-        let start = u32::try_from(script.rfind("保存").expect("declaration")).expect("start");
-        assert_eq!(
-            (facts.location.range.start(), facts.location.range.end()),
-            (start, start + 6)
+            !analysis
+                .analysis
+                .methods
+                .methods
+                .iter()
+                .any(|method| method.name == "onTap")
         );
     }
 
     #[test]
-    fn mustache_and_member_values_have_no_handler_hover_site() {
-        for template in [
-            "<view bindtap=\"{{ dynamic|Handler }}\" />",
-            "<view bindtap=\"this.on|Tap\" />",
-            "<view bindtap=\"item.on|Tap\" />",
-        ] {
-            let (text, offset) = cursor(template);
-            assert_eq!(
-                event_site(&text, offset),
-                Some(EventValueSite::NotStatic),
-                "{template}"
-            );
-        }
+    fn a_missing_owning_script_is_an_analysis_error() {
+        let prepared_view = view(RootKind::Page, Vec::new());
+        let Err(status) = analyze(&prepared_view, SCRIPT, RootKind::Page) else {
+            panic!("a missing owning script must not analyze");
+        };
+        assert!(
+            matches!(status, CapabilityStatus::Partial { .. }),
+            "{status:?}"
+        );
     }
 }

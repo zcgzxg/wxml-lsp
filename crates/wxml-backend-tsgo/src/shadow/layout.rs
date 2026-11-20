@@ -31,6 +31,20 @@
 //! generated `__WxmlProps_0` keeps behavior-declared unions. A dynamic or
 //! unresolved behavior graph stays `Partial`; the shadow never invents a
 //! property.
+//!
+//! # Fragment modes
+//!
+//! An ordinary fragment is a WXML expression: free roots are rewritten to
+//! `__wxml_root`, declared properties or probe locals, and every rewritten
+//! segment keeps the byte range it was copied from.
+//!
+//! A *member* fragment ([`FragmentSpec::member`]) is a bare event-handler or
+//! method name. It is mounted as `this.<name>` inside the probe, so `this`
+//! resolves to the page/component instance type. Only the name is real source
+//! text and maps back to the WXML token; the leading `this.` is synthetic and
+//! therefore unattributable when a span lies entirely inside it. Member
+//! fragments are otherwise ordinary fragments: placement, guards and the mount
+//! record are built by the same code path.
 
 #![allow(clippy::format_push_string)] // generated probe text is tiny; format! stays readable
 
@@ -53,8 +67,8 @@ use crate::shadow::mapping::{
     MountRecord, ShadowMap, SourceRange, byte_to_utf16, utf16_len, utf16_to_byte,
 };
 use crate::shadow::rewrite::{
-    AppliedEdit, EditKind, MountedSegment, RewriteOptions, RewrittenExpression, ShadowEdit,
-    apply_edits, rewrite_expression,
+    AppliedEdit, EditKind, HoverTarget, MountedSegment, RewriteOptions, RewrittenExpression,
+    ShadowEdit, apply_edits, rewrite_expression,
 };
 
 /// Probe member name inserted into the registration options.
@@ -175,6 +189,16 @@ pub struct FragmentSpec {
     pub bindings: Vec<LocalBinding>,
     /// Enclosing guard chains, outermost first.
     pub guards: Vec<GuardChain>,
+    /// Mount `expr` as a member of the registration instance instead of
+    /// rewriting it as a WXML expression.
+    ///
+    /// In member mode `expr` is a bare event-handler or method name whose UTF-8
+    /// byte length equals `wxml_range`'s length, exactly like an ordinary
+    /// fragment. The mounted text is `this.<expr>`: the `this.` prefix is
+    /// synthetic and the name segment maps back to `wxml_range`. Free-root
+    /// rewriting is skipped because the name is read as a member of `this`, not
+    /// as template data.
+    pub member: bool,
 }
 
 impl FragmentSpec {
@@ -192,6 +216,7 @@ impl FragmentSpec {
             locals: Vec::new(),
             bindings: Vec::new(),
             guards: Vec::new(),
+            member: false,
         }
     }
 }
@@ -1216,6 +1241,11 @@ fn plan_fragment(
     property_names: &BTreeSet<String>,
     syntax: Syntax,
 ) -> Result<PlannedFragment, ShadowError> {
+    if fragment.member {
+        return Ok(PlannedFragment {
+            rewritten: member_expression(fragment),
+        });
+    }
     let options = RewriteOptions {
         root_prefix: ROOT_PREFIX.to_owned(),
         props_prefix: PROPS_PREFIX.to_owned(),
@@ -1226,6 +1256,43 @@ fn plan_fragment(
     let rewritten = rewrite_expression(&fragment.expr, fragment.target.as_deref(), &options)?;
     let _ = syntax;
     Ok(PlannedFragment { rewritten })
+}
+
+/// Prefix that turns a handler name into a member of the registration instance.
+const MEMBER_PREFIX: &str = "this.";
+
+/// Plans a member fragment as `this.<expr>` with a synthetic prefix.
+///
+/// This bypasses [`rewrite_expression`] on purpose: `expr` is a method name, so
+/// prefixing it as a free data root would mount `this.__wxml_root.<name>`. The
+/// name segment keeps `wxml_range`'s exact bytes; the `this.` prefix has no
+/// source. `validate_fragment_range` guarantees the byte lengths agree.
+fn member_expression(fragment: &FragmentSpec) -> RewrittenExpression {
+    let prefix_len = utf16_len(MEMBER_PREFIX);
+    let name_len = utf16_len(&fragment.expr);
+    let name_source = SourceRange::new(0, fragment.wxml_range.len());
+    RewrittenExpression {
+        text: format!("{MEMBER_PREFIX}{}", fragment.expr),
+        segments: vec![
+            MountedSegment {
+                start_utf16: 0,
+                length_utf16: prefix_len,
+                source: None,
+            },
+            MountedSegment {
+                start_utf16: prefix_len,
+                length_utf16: name_len,
+                source: Some(name_source),
+            },
+        ],
+        target_offset_utf16: prefix_len,
+        hover_targets: vec![HoverTarget {
+            offset_utf16: prefix_len,
+            source: name_source,
+        }],
+        roots: Vec::new(),
+        local_root: false,
+    }
 }
 
 fn rewrite_source(
@@ -2544,6 +2611,76 @@ mod tests {
         )
         .expect("mapped");
         assert_eq!(mapped.range, Some(SourceRange::new(134 + 5, 134 + 9)));
+    }
+
+    #[test]
+    fn member_fragments_mount_the_handler_as_this_dot_name() {
+        // A member fragment is a bare handler name mounted as `this.<name>`:
+        // the `this.` prefix is synthetic, the name maps to the WXML token and
+        // the target offset points at the name, not at the prefix.
+        let text = "Page({ data: { title: 'x' }, onBackTap() {} });";
+        let script = source_file("index.ts", text);
+        let wxml = "<view bindtap=\"onBackTap\">back</view>";
+        let handler = "onBackTap";
+        let start = wxml.find(handler).expect("handler in wxml");
+        let handler_range = SourceRange::new(
+            u32::try_from(start).expect("offset"),
+            u32::try_from(start + handler.len()).expect("offset"),
+        );
+        let mut fragment = FragmentSpec::new("event#0", handler, handler_range);
+        fragment.member = true;
+        let request = ShadowRequest {
+            script: &script,
+            root: RootKind::Page,
+            fragments: &[fragment],
+            js_check: JsCheckPolicy::Inherit,
+            check_js: false,
+        };
+        let built = build_in_place_shadow(&request).expect("layout");
+        assert_eq!(built.status, BuildStatus::Supported);
+        assert!(
+            built.view.text.contains("this.onBackTap;"),
+            "the member is mounted against the instance: {}",
+            built.view.text
+        );
+        assert_eq!(built.view.mounts.len(), 1);
+        let mount = &built.view.mounts[0];
+        assert_eq!(mount.text, "this.onBackTap");
+        assert_eq!(
+            mount.target_start_utf16 - mount.start_utf16,
+            5,
+            "the target offset points just past `this.`"
+        );
+        assert_eq!(mount.target_length_utf16, 9);
+        assert_eq!(mount.segments.len(), 2);
+        assert_eq!(mount.segments[0].source, None, "`this.` is synthetic");
+        assert_eq!(mount.segments[0].length_utf16, 5);
+        assert_eq!(
+            mount.segments[1].source,
+            Some(handler_range),
+            "the name segment carries the handler bytes"
+        );
+
+        let name = crate::shadow::mapping::map_span_to_source(
+            mount,
+            crate::native::strings::Utf16Offset::new(mount.start_utf16 + 5),
+            9,
+        )
+        .expect("mapped name");
+        assert_eq!(name.range, Some(handler_range));
+        assert!(
+            !name.trimmed_synthetic_prefix,
+            "the name starts after `this.`"
+        );
+
+        let prefix = crate::shadow::mapping::map_span_to_source(
+            mount,
+            crate::native::strings::Utf16Offset::new(mount.start_utf16),
+            5,
+        )
+        .expect("mapped prefix");
+        assert_eq!(prefix.range, None, "`this.` has no WXML bytes");
+        assert!(prefix.unattributable);
     }
 
     #[test]

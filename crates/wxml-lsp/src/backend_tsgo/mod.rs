@@ -59,9 +59,13 @@
 //! overlay through [`Backend::symbols`] and do not open a native
 //! session; they are conservative and report `Partial` whenever a dynamic or
 //! cross-file shape is not proven. Definition is limited to expression-member
-//! targets that the native referenced-symbol path can decode and map back to
-//! original text; the cursor must be inside a mounted template expression. The
-//! adapter does not fake locations or edits and does not call a Node fallback.
+//! and static event-handler targets that the native referenced-symbol path can
+//! decode and map back to original text; the cursor must be inside a mounted
+//! template expression or handler token. Event-handler hover/definition mount
+//! one `this.<handler>` member fragment for the point query, so `Page`
+//! behavior-provided handlers degrade to an empty result instead of a
+//! fabricated type. The adapter does not fake locations or edits and does not
+//! call a Node fallback.
 //!
 //! Standalone script diagnostics are implemented at the adapter seam
 //! ([`TsgoBackendAdapter::script_diagnostics`]) without a shadow or template
@@ -136,7 +140,7 @@ use self::environment::Environment;
 use self::event_completion::EventCandidateCache;
 use self::input::{
     OpenPlan, PlanError, PlanIdentity, RequestPlan, ScriptViewError, ViewProvider,
-    build_request_plan, build_script_request_plan, merge_reason,
+    build_point_request_plan, build_request_plan, build_script_request_plan, merge_reason,
 };
 use self::sandbox::SandboxSessionFactory;
 use self::session::{HostOnlySessionFactory, NativeSessionFactory, QuerySession, SessionFactory};
@@ -409,6 +413,21 @@ impl TsgoBackendAdapter {
 
     fn prepare(&self, context: &wxml_types::RequestContext) -> Result<RequestPlan, PlanError> {
         build_request_plan(self.views.as_ref(), context, &self.environment)
+    }
+
+    /// Prepares a point query at `offset`.
+    ///
+    /// Only hover and definition use this plan: when the cursor is inside a
+    /// static event-handler token, the shadow mounts one extra
+    /// `this.<handler>` member fragment. Diagnostics, completion, document
+    /// symbols and script diagnostics keep [`Self::prepare`] so their shadow
+    /// never depends on a cursor.
+    fn prepare_at(
+        &self,
+        context: &wxml_types::RequestContext,
+        offset: u32,
+    ) -> Result<RequestPlan, PlanError> {
+        build_point_request_plan(self.views.as_ref(), context, &self.environment, offset)
     }
 
     fn prepare_script(
@@ -875,7 +894,7 @@ impl Backend for TsgoBackendAdapter {
         if !self.epoch_matches(&request.context) {
             return Err(BackendError::Cancelled);
         }
-        let plan = match self.prepare(&request.context) {
+        let plan = match self.prepare_at(&request.context, request.offset) {
             Ok(plan) => plan,
             Err(PlanError::Unsupported(reason)) => return Ok(unsupported_hover(&reason)),
             Err(PlanError::Backend(error)) => return Err(error),
@@ -951,7 +970,7 @@ impl Backend for TsgoBackendAdapter {
         if !self.epoch_matches(&request.context) {
             return Err(BackendError::Cancelled);
         }
-        let plan = match self.prepare(&request.context) {
+        let plan = match self.prepare_at(&request.context, request.offset) {
             Ok(plan) => plan,
             Err(PlanError::Unsupported(reason)) => return Ok(unsupported_definition(&reason)),
             Err(PlanError::Backend(error)) => return Err(error),
@@ -1113,7 +1132,7 @@ impl Backend for TsgoBackendAdapter {
         BackendCapabilities {
             hover: CapabilityStatus::Partial {
                 reason:
-                    "native expression-member hover is wired; event-handler and component semantics are served by the static layer"
+                    "native expression-member and event-handler hover are wired through the shadow; component semantics are served by the static layer"
                         .to_owned(),
             },
             diagnostics: CapabilityStatus::Partial {
@@ -1123,7 +1142,7 @@ impl Backend for TsgoBackendAdapter {
             },
             definition: CapabilityStatus::Partial {
                 reason:
-                    "native expression-member definition is wired; event-handler definitions are served by host static semantics; component and non-expression targets are not covered"
+                    "native expression-member and event-handler definition are wired through the shadow; component and non-expression targets are not covered"
                         .to_owned(),
             },
             completion: CapabilityStatus::Partial {

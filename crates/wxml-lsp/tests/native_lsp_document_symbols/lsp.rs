@@ -7,6 +7,8 @@
     clippy::too_many_lines,
     clippy::needless_pass_by_value,
     clippy::redundant_pub_crate,
+    // The client is shared by several test binaries; each uses a subset.
+    dead_code,
     missing_docs
 )]
 
@@ -118,6 +120,28 @@ impl Session {
         self.request(
             "textDocument/documentSymbol",
             json!({"textDocument": {"uri": uri}}),
+        )
+    }
+
+    /// Sends one `textDocument/hover` request at a UTF-16 position.
+    pub(crate) fn hover(&mut self, uri: &str, line: u64, character: u64) -> Value {
+        self.request(
+            "textDocument/hover",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character}
+            }),
+        )
+    }
+
+    /// Sends one `textDocument/definition` request at a UTF-16 position.
+    pub(crate) fn definition(&mut self, uri: &str, line: u64, character: u64) -> Value {
+        self.request(
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": {"line": line, "character": character}
+            }),
         )
     }
 

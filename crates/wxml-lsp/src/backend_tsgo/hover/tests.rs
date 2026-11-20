@@ -18,7 +18,7 @@ use wxml_types::{
     RequestContext, SnapshotId, SourceRevision, SourceSnapshot, ViewRevision,
 };
 
-use super::{DeclaredPropertyType, apply_declared_property_type, hovered_root};
+use super::{DeclaredPropertyType, apply_declared_property_type, event_point_member, hovered_root};
 use crate::backend_tsgo::mapping::{FragmentMap, ShadowLayout, TemplateRange};
 
 fn project() -> ProjectId {
@@ -107,6 +107,109 @@ fn name_segment() -> MountedSegment {
         length_utf16: 9,
         source: Some(ShadowSourceRange::new(3, 12)),
     }
+}
+
+/// One event-handler member fragment mounted as `this.<handler>`.
+fn member_layout(wxml: &str, start: u32, end: u32) -> ShadowLayout {
+    let handler = wxml
+        .get(start as usize..end as usize)
+        .expect("handler token slice");
+    let mount_text = format!("this.{handler}");
+    let assembled = Assembled {
+        text: mount_text.clone(),
+        edits: Vec::new(),
+    };
+    let map = ShadowMap::new(&mount_text, &assembled);
+    let length = u32::try_from(handler.len()).expect("handler length");
+    ShadowLayout::new(
+        wxml,
+        mount_text.clone(),
+        map,
+        vec![FragmentMap {
+            wxml_range: TemplateRange::from_bounds(start, end).expect("handler range"),
+            mount: wxml_backend_tsgo::shadow::mapping::MountRecord {
+                mount_id: "event#0".to_owned(),
+                fragment_id: crate::backend_tsgo::input::EVENT_POINT_FRAGMENT_ID.to_owned(),
+                insertion_id: "probe".to_owned(),
+                text: mount_text,
+                start_utf16: 0,
+                target_start_utf16: 5,
+                target_length_utf16: length,
+                segments: vec![
+                    MountedSegment {
+                        start_utf16: 0,
+                        length_utf16: 5,
+                        source: None,
+                    },
+                    MountedSegment {
+                        start_utf16: 5,
+                        length_utf16: length,
+                        source: Some(ShadowSourceRange::new(start, end)),
+                    },
+                ],
+            },
+        }],
+    )
+}
+
+#[test]
+fn an_event_member_cursor_is_distinguished_from_an_expression() {
+    let wxml = "<view bindtap=\"onBackTap\" />";
+    let start = u32::try_from(wxml.find("onBackTap").expect("handler")).expect("start");
+    let member = member_layout(wxml, start, start + 9);
+    assert!(event_point_member(&member, start + 1));
+    assert!(!event_point_member(&member, start - 1));
+
+    let ordinary = layout(
+        "{{ user.name }}",
+        "__wxml_root.user.name",
+        vec![MountedSegment {
+            start_utf16: 16,
+            length_utf16: 4,
+            source: Some(ShadowSourceRange::new(8, 12)),
+        }],
+    );
+    assert!(!event_point_member(&ordinary, 11));
+}
+
+#[test]
+fn only_an_unbacked_any_counts_as_unproven() {
+    assert!(super::is_unproven_any(&evidence(
+        Some("any"),
+        TypeQuality::Any
+    )));
+    assert!(!super::is_unproven_any(&evidence(
+        Some("string"),
+        TypeQuality::Known
+    )));
+
+    let mut with_symbol = evidence(Some("any"), TypeQuality::Any);
+    with_symbol.symbol = Some(HoverSymbolFacts {
+        name: "onBackTap".to_owned(),
+        flags: 1,
+        declarations: Vec::<BoundNodeHandle>::new(),
+    });
+    assert!(!super::is_unproven_any(&with_symbol));
+}
+
+#[test]
+fn event_content_requires_a_renderable_type_or_documentation() {
+    assert!(!super::has_renderable_event_content(&evidence(
+        None,
+        TypeQuality::Missing
+    )));
+    assert!(!super::has_renderable_event_content(&evidence(
+        Some("error"),
+        TypeQuality::Unknown
+    )));
+    assert!(super::has_renderable_event_content(&evidence(
+        Some("any"),
+        TypeQuality::Any
+    )));
+    assert!(super::has_renderable_event_content(&evidence(
+        Some("string"),
+        TypeQuality::Known
+    )));
 }
 
 #[test]
@@ -545,6 +648,180 @@ mod adapter {
         )
         .expect("hover");
         assert_eq!(result.contents, "```ts\nstring\n```");
+    }
+
+    #[test]
+    fn an_unbacked_any_event_member_hover_is_empty_through_the_adapter() {
+        let wxml = "<view bindtap=\"onBackTap\" />";
+        let source = "Page({ data: {}, onBackTap() {} });";
+        let start = u32::try_from(wxml.find("onBackTap").expect("handler")).expect("start");
+        let end = start + u32::try_from("onBackTap".len()).expect("handler length");
+        let script = SourceFile::new("pages/index/index.ts", source, DocumentRevision::new(1))
+            .expect("script");
+        let fragment = FragmentSpec {
+            id: crate::backend_tsgo::input::EVENT_POINT_FRAGMENT_ID.to_owned(),
+            expr: "onBackTap".to_owned(),
+            wxml_range: wxml_backend_tsgo::shadow::mapping::SourceRange::new(start, end),
+            target: None,
+            locals: Vec::new(),
+            bindings: Vec::new(),
+            guards: Vec::new(),
+            member: true,
+        };
+        let built = build_in_place_shadow_with_behavior(
+            &ShadowRequest {
+                script: &script,
+                root: RootKind::Page,
+                fragments: std::slice::from_ref(&fragment),
+                js_check: JsCheckPolicy::Inherit,
+                check_js: false,
+            },
+            None,
+        )
+        .expect("shadow");
+        let mount = built
+            .view
+            .mounts
+            .iter()
+            .find(|mount| mount.fragment_id == crate::backend_tsgo::input::EVENT_POINT_FRAGMENT_ID)
+            .expect("member mount")
+            .clone();
+        let layout = ShadowLayout::new(
+            wxml,
+            built.view.text,
+            built.view.map,
+            vec![FragmentMap {
+                wxml_range: TemplateRange::from_bounds(start, end).expect("range"),
+                mount,
+            }],
+        );
+        let request = HoverRequest {
+            context: RequestContext::new(
+                ProjectRevision::new(project(), 1),
+                ViewRevision::new(1),
+                BackendEpoch::new(BackendId::new("test"), 1),
+                Arc::new(SourceSnapshot::new(
+                    wxml_file(),
+                    SourceRevision::new(1),
+                    SnapshotId::new(1),
+                    wxml,
+                )),
+            )
+            .expect("context"),
+            offset: start + 2,
+        };
+        let mut session = FakeSession {
+            evidence: HoverEvidence {
+                type_info: Some(TypeInfo {
+                    text: "any".to_owned(),
+                    handle: 1,
+                    flags: 0,
+                }),
+                type_quality: TypeQuality::Any,
+                symbol: None,
+                documentation: None,
+                declarations: Vec::new(),
+                status: CapabilityStatus::Supported,
+                gaps: Vec::new(),
+            },
+        };
+        let result = hover(
+            &mut session,
+            &layout,
+            "pages/index/index.ts",
+            &BTreeMap::new(),
+            None,
+            &request,
+        )
+        .expect("hover");
+        assert!(result.contents.is_empty(), "{result:?}");
+        assert!(result.range.is_none(), "{result:?}");
+        assert_eq!(result.quality, wxml_types::TypeQuality::Unknown);
+        assert!(
+            matches!(result.status, CapabilityStatus::Unsupported { .. }),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_expression_any_is_still_published() {
+        let wxml = "{{ user.name }}";
+        let source = "Page({ data: { user: { name: \"Ada\" } } });";
+        let script = SourceFile::new("pages/index/index.ts", source, DocumentRevision::new(1))
+            .expect("script");
+        let fragment = FragmentSpec::new(
+            "f0",
+            "user.name",
+            wxml_backend_tsgo::shadow::mapping::SourceRange::new(3, 12),
+        );
+        let built = build_in_place_shadow_with_behavior(
+            &ShadowRequest {
+                script: &script,
+                root: RootKind::Page,
+                fragments: std::slice::from_ref(&fragment),
+                js_check: JsCheckPolicy::Inherit,
+                check_js: false,
+            },
+            None,
+        )
+        .expect("shadow");
+        let mount = built
+            .view
+            .mounts
+            .iter()
+            .find(|mount| mount.fragment_id == "f0")
+            .expect("mount")
+            .clone();
+        let layout = ShadowLayout::new(
+            wxml,
+            built.view.text,
+            built.view.map,
+            vec![FragmentMap {
+                wxml_range: TemplateRange::from_bounds(3, 12).expect("range"),
+                mount,
+            }],
+        );
+        let request = HoverRequest {
+            context: RequestContext::new(
+                ProjectRevision::new(project(), 1),
+                ViewRevision::new(1),
+                BackendEpoch::new(BackendId::new("test"), 1),
+                Arc::new(SourceSnapshot::new(
+                    wxml_file(),
+                    SourceRevision::new(1),
+                    SnapshotId::new(1),
+                    wxml,
+                )),
+            )
+            .expect("context"),
+            offset: 11,
+        };
+        let mut session = FakeSession {
+            evidence: HoverEvidence {
+                type_info: Some(TypeInfo {
+                    text: "any".to_owned(),
+                    handle: 1,
+                    flags: 0,
+                }),
+                type_quality: TypeQuality::Any,
+                symbol: None,
+                documentation: None,
+                declarations: Vec::new(),
+                status: CapabilityStatus::Supported,
+                gaps: Vec::new(),
+            },
+        };
+        let result = hover(
+            &mut session,
+            &layout,
+            "pages/index/index.ts",
+            &BTreeMap::new(),
+            None,
+            &request,
+        )
+        .expect("hover");
+        assert_eq!(result.contents, "```ts\nany\n```");
+        assert_eq!(result.quality, wxml_types::TypeQuality::Any);
     }
 }
 

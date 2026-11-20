@@ -947,6 +947,68 @@ fn shadow_map_round_trips_unchanged_offsets_and_rejects_ambiguous_ones() {
 }
 
 #[test]
+fn member_fragments_map_every_handler_offset_back_to_the_wxml_token() {
+    let text = "Page({ data: { title: 'x' }, onBackTap() {} });";
+    let wxml = "<view bindtap=\"onBackTap\">back</view>";
+    let handler = "onBackTap";
+    let handler_start =
+        u32::try_from(wxml.find(handler).expect("handler in wxml")).expect("offset");
+    let handler_end = handler_start + u32::try_from(handler.len()).expect("length");
+
+    let mut fragment = FragmentSpec::new(
+        "event#0",
+        handler,
+        SourceRange::new(handler_start, handler_end),
+    );
+    fragment.member = true;
+    let fragments = [fragment];
+    let built = build(
+        "index.ts",
+        text,
+        RootKind::Page,
+        &fragments,
+        JsCheckPolicy::Inherit,
+        false,
+    );
+    assert_eq!(built.view.mounts.len(), 1);
+    let record = &built.view.mounts[0];
+    assert_eq!(record.text, "this.onBackTap");
+    assert_eq!(record.target_start_utf16 - record.start_utf16, 5);
+    assert_eq!(record.target_length_utf16, 9);
+
+    // Every UTF-16 position inside the mounted name maps to the corresponding
+    // WXML byte; the handler name is ASCII, so units and bytes line up.
+    let name_start = record.start_utf16 + 5;
+    for offset in 0..9_u32 {
+        let mapped = map_span_to_source(record, Utf16Offset::new(name_start + offset), 1)
+            .expect("valid name offset");
+        assert_eq!(
+            mapped.range,
+            Some(SourceRange::new(
+                handler_start + offset,
+                handler_start + offset + 1
+            )),
+            "handler offset {offset}"
+        );
+        assert!(!mapped.trimmed_synthetic_prefix);
+        assert!(!mapped.unattributable);
+    }
+
+    // The synthetic `this.` prefix has no source bytes, including the position
+    // exactly at its start and the whole-prefix span.
+    for offset in 0..5_u32 {
+        let mapped = map_span_to_source(record, Utf16Offset::new(record.start_utf16 + offset), 1)
+            .expect("valid prefix offset");
+        assert_eq!(mapped.range, None, "`this.` offset {offset} is synthetic");
+        assert!(mapped.unattributable);
+    }
+    let whole_prefix =
+        map_span_to_source(record, Utf16Offset::new(record.start_utf16), 5).expect("valid prefix");
+    assert_eq!(whole_prefix.range, None);
+    assert!(whole_prefix.unattributable);
+}
+
+#[test]
 fn blocked_cases_are_documented_and_not_claimed() {
     assert!(
         BLOCKED_CASES

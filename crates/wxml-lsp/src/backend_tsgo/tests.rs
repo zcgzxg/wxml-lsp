@@ -76,7 +76,7 @@ const WXML: &str = "<view>{{ user.name }}</view>";
 const SCRIPT: &str = "Page({\n  data: { user: { name: \"Ada\", age: 42 } },\n});\n";
 const UNICODE_SCRIPT: &str =
     "// 😀 中文\nconst prefix = 1;\nPage({\n  data: { user: { name: \"Ada\", age: 42 } },\n});\n";
-const SCRIPT_PATH: &str = "pages/index/index.ts";
+pub(super) const SCRIPT_PATH: &str = "pages/index/index.ts";
 const WXML_PATH: &str = "pages/index/index.wxml";
 const MODEL_PATH: &str = "model.ts";
 const MODEL: &str = "// 😀 模型\nexport interface User {\n  name: string;\n}\n";
@@ -190,7 +190,7 @@ fn page_basic_fragment(
     }
 }
 
-fn prepared_file(path: &str, text: &str) -> PreparedFile {
+pub(super) fn prepared_file(path: &str, text: &str) -> PreparedFile {
     PreparedFile {
         file: FileId::new(project(), path).expect("file"),
         path: project_path(path),
@@ -222,7 +222,7 @@ fn prepared_view_with_fragments(
     view
 }
 
-fn empty_view(wxml: &str, files: Vec<PreparedFile>) -> PreparedView {
+pub(super) fn empty_view(wxml: &str, files: Vec<PreparedFile>) -> PreparedView {
     let _ = wxml;
     PreparedView {
         view_id: format!("{WXML_PATH}:1"),
@@ -3857,6 +3857,33 @@ fn capabilities_advertise_only_implemented_features() {
         capabilities.completion,
         CapabilityStatus::Partial { .. }
     ));
+}
+
+#[test]
+fn capabilities_wire_event_handler_hover_and_definition() {
+    let (adapter, _log) = adapter_with(
+        Arc::new(FakeViews::new(prepared_view(WXML, SCRIPT, "user.name"))),
+        FakeBehavior::default(),
+    );
+    let capabilities = adapter.capabilities();
+    let CapabilityStatus::Partial { reason } = &capabilities.hover else {
+        panic!("hover capability must stay Partial");
+    };
+    assert!(
+        reason.contains("event-handler hover are wired through the shadow"),
+        "{reason}"
+    );
+    let CapabilityStatus::Partial { reason } = &capabilities.definition else {
+        panic!("definition capability must stay Partial");
+    };
+    assert!(
+        reason.contains("event-handler definition are wired through the shadow"),
+        "{reason}"
+    );
+    assert!(
+        !reason.contains("event-handler definitions are served by"),
+        "{reason}"
+    );
 }
 
 #[test]
