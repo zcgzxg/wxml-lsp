@@ -1257,6 +1257,103 @@ mod tests {
         }
     }
 
+    /// Every binding family must be recognized in both spellings, and the
+    /// stripped event name must keep its kebab/camel spelling byte-for-byte.
+    #[test]
+    fn event_attributes_cover_every_family_and_name_spelling() {
+        for (binding, colon, compact) in [
+            (EventBindingKind::Bind, "bind:", "bind"),
+            (EventBindingKind::Catch, "catch:", "catch"),
+            (
+                EventBindingKind::CaptureBind,
+                "capture-bind:",
+                "capture-bind",
+            ),
+            (
+                EventBindingKind::CaptureCatch,
+                "capture-catch:",
+                "capture-catch",
+            ),
+            (EventBindingKind::MutBind, "mut-bind:", "mut-bind"),
+        ] {
+            for event in ["some-event", "someEvent"] {
+                for (prefix, spelling) in [(colon, "colon"), (compact, "compact")] {
+                    let name = format!("{prefix}{event}");
+                    assert_eq!(
+                        event_attribute(&name),
+                        Some((binding, event)),
+                        "{spelling} attribute {name:?}"
+                    );
+                }
+            }
+        }
+
+        // Tap spellings from the requirement, including the compact prefixes
+        // that are easy to confuse with `bind`/`catch`.
+        for (name, binding, event) in [
+            ("bindtap", EventBindingKind::Bind, "tap"),
+            ("bind:tap", EventBindingKind::Bind, "tap"),
+            ("catchtap", EventBindingKind::Catch, "tap"),
+            ("catch:tap", EventBindingKind::Catch, "tap"),
+            ("capture-bindtap", EventBindingKind::CaptureBind, "tap"),
+            (
+                "capture-catchtouchmove",
+                EventBindingKind::CaptureCatch,
+                "touchmove",
+            ),
+            ("mut-bindtap", EventBindingKind::MutBind, "tap"),
+        ] {
+            assert_eq!(
+                event_attribute(name),
+                Some((binding, event)),
+                "attribute {name:?}"
+            );
+        }
+    }
+
+    /// Malformed and unrelated names must not be classified as event bindings.
+    #[test]
+    fn event_attributes_reject_empty_malformed_and_unrelated_names() {
+        for name in [
+            "",
+            "bind",
+            "catch",
+            "capture-bind",
+            "capture-catch",
+            "mut-bind",
+            "bind:",
+            "catch:",
+            "capture-bind:",
+            "capture-catch:",
+            "mut-bind:",
+            "class",
+            "data-x",
+            "wx:if",
+        ] {
+            assert_eq!(event_attribute(name), None, "attribute {name:?}");
+        }
+
+        // `bind:tap` is the colon form: the compact `bind` prefix must not
+        // swallow the colon into the event name.
+        assert_eq!(
+            event_attribute("bind:tap"),
+            Some((EventBindingKind::Bind, "tap"))
+        );
+        assert_eq!(
+            event_attribute("catch:tap"),
+            Some((EventBindingKind::Catch, "tap"))
+        );
+
+        // Compact prefixes are matched literally (see `event_attribute`), so
+        // `binding` really is `bind` + event `ing`; it is not an unrelated
+        // attribute that happens to start with `bind`.
+        assert_eq!(
+            event_attribute("binding"),
+            Some((EventBindingKind::Bind, "ing")),
+            "compact prefixes stay literal, like `binder` -> bind + er"
+        );
+    }
+
     #[test]
     fn binding_names_follow_identifier_rules() {
         for name in ["item", "row1", "_x", "$x", "名字"] {

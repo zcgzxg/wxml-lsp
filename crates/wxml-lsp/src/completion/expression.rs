@@ -305,7 +305,26 @@ mod tests {
     }
 
     #[test]
-    fn bare_conflicting_and_hyphenated_attributes_are_rejected() {
+    fn compact_capture_mut_and_mixed_case_bindings_are_handlers() {
+        for attribute in [
+            "bind-get-phonenumber",
+            "binding-mode",
+            "catch-up",
+            "bindTap",
+            "bindSomeEvent",
+            "bindsomeEvent",
+            "bindsome-event",
+            "capture-bindtap",
+            "capture-catchSomeEvent",
+            "mut-bindtap",
+        ] {
+            assert!(catalog::is_event_value_attribute(attribute), "{attribute}");
+            assert_exact_prefix(&format!("<view {attribute}=\"on|\" />"), "on");
+        }
+    }
+
+    #[test]
+    fn bare_conflicting_and_colon_malformed_attributes_are_rejected() {
         let cases = [
             ("bind", EventAttributeRejection::MissingEventName),
             ("catch", EventAttributeRejection::MissingEventName),
@@ -317,11 +336,6 @@ mod tests {
             ("bind::tap", EventAttributeRejection::InvalidEventName),
             ("bind:foo:bar", EventAttributeRejection::InvalidEventName),
             ("bindex", EventAttributeRejection::ConflictingAttribute),
-            (
-                "bind-get-phonenumber",
-                EventAttributeRejection::InvalidDirectSuffix,
-            ),
-            ("binding-mode", EventAttributeRejection::InvalidDirectSuffix),
         ];
         for (attribute, rejection) in cases {
             assert_eq!(
@@ -519,7 +533,7 @@ mod tests {
 
     #[test]
     fn non_event_values_stay_static() {
-        for attribute in ["wx:if", "class", "data-onTap", "binding-mode", "bindex"] {
+        for attribute in ["wx:if", "class", "data-onTap", "bindex"] {
             let source = format!("<view {attribute}=\"on|\" />");
             let (text, offset) = detect_at(&source);
             let context = context::detect(&text, offset).expect("value site");

@@ -877,7 +877,7 @@ fn declared_targets(text: &str) -> Option<Vec<Target>> {
     Some(targets)
 }
 
-/// Returns the declaration for `attribute` using the `WeChat` name mapping.
+/// Returns the declaration for `attribute` using the shared kebab/camel rule.
 ///
 /// The lookup distinguishes an undeclared attribute (ignore it) from a
 /// declared but unproven one (skip it and report partial coverage).
@@ -888,19 +888,13 @@ fn declared_property<'a>(
     if let Some(found) = declarations.properties.get(attribute) {
         return lookup(found.as_ref());
     }
-    let camel = camel_case(attribute);
-    if camel != attribute {
-        if let Some(found) = declarations.properties.get(&camel) {
-            return lookup(found.as_ref());
-        }
-    }
-    let kebab = kebab_case(attribute);
-    if kebab != attribute {
-        if let Some(found) = declarations.properties.get(&kebab) {
-            return lookup(found.as_ref());
-        }
-    }
-    DeclaredLookup::Undeclared
+    declarations
+        .properties
+        .iter()
+        .find(|(name, _)| wxml_project::component_name_eq(name, attribute))
+        .map_or(DeclaredLookup::Undeclared, |(_, found)| {
+            lookup(found.as_ref())
+        })
 }
 
 /// Result of one component attribute name lookup.
@@ -1281,27 +1275,12 @@ fn constituent(text: &str, flags: u64) -> Constituent<'_> {
     Constituent::Unknown
 }
 
-/// Returns one declared member, honouring the `WeChat` camel/kebab mapping.
+/// Returns one declared member, honouring the `WeChat` kebab/camel mapping.
 fn declared_typing_property<'a>(
     typing: &'a TypingComponent,
     attribute: &str,
 ) -> Option<&'a TypingProperty> {
-    if let Some(property) = typing.prop(attribute) {
-        return Some(property);
-    }
-    let camel = camel_case(attribute);
-    if camel != attribute {
-        if let Some(property) = typing.prop(&camel) {
-            return Some(property);
-        }
-    }
-    let kebab = kebab_case(attribute);
-    if kebab != attribute {
-        if let Some(property) = typing.prop(&kebab) {
-            return Some(property);
-        }
-    }
-    None
+    typing.prop_named(attribute)
 }
 
 /// Returns whether a declared type already admits `undefined`.
@@ -1394,39 +1373,6 @@ fn is_reserved_attribute(name: &str) -> bool {
         || name.starts_with("data-")
         || name.starts_with("aria-")
         || name.starts_with("wx:")
-}
-
-/// `card-title` -> `cardTitle`.
-fn camel_case(name: &str) -> String {
-    let mut result = String::with_capacity(name.len());
-    let mut upper = false;
-    for character in name.chars() {
-        if character == '-' {
-            upper = true;
-            continue;
-        }
-        if upper {
-            result.extend(character.to_uppercase());
-            upper = false;
-        } else {
-            result.push(character);
-        }
-    }
-    result
-}
-
-/// `cardTitle` -> `card-title`.
-fn kebab_case(name: &str) -> String {
-    let mut result = String::with_capacity(name.len());
-    for character in name.chars() {
-        if character.is_ascii_uppercase() {
-            result.push('-');
-            result.extend(character.to_lowercase());
-        } else {
-            result.push(character);
-        }
-    }
-    result
 }
 
 /// Classifies every constituent of a bound type.
@@ -3807,6 +3753,109 @@ mod tests {
                 .contains("expects 'small' | 'large'"),
             "{}",
             result.diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn declared_kebab_members_accept_the_camel_spelling() {
+        let declaration = "declare global {\n  interface WxmlComponentMap {\n    item: ItemDeclaration;\n  }\n\n  interface ItemDeclaration {\n    props: {\n      'card-title'?: 'small' | 'large';\n    };\n  }\n}\n\nexport {};\n";
+        let wxml = r#"<view><item cardTitle="medium" /></view>"#;
+        let card_title = literal_attr(wxml, "cardTitle", r#"cardTitle="medium""#);
+        let layout = shadow(wxml, &[]);
+        let view = typed_view(
+            vec![prepared_declaration(DECLARATION_PATH, declaration)],
+            vec![usage("item", None, vec![card_title.clone()])],
+            declaration,
+        );
+        let (result, calls) = run(&layout, &view, Vec::new());
+        assert!(calls.is_empty());
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        assert_eq!(result.diagnostics[0].range, card_title.attribute_range);
+        assert!(
+            result.diagnostics[0]
+                .message
+                .contains("expects 'small' | 'large'"),
+            "{}",
+            result.diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn declared_members_keep_case_only_variants_unresolved() {
+        let declaration = "declare global {\n  interface WxmlComponentMap {\n    item: ItemDeclaration;\n  }\n\n  interface ItemDeclaration {\n    props: {\n      someProp?: 'small' | 'large';\n    };\n  }\n}\n\nexport {};\n";
+        let wxml = r#"<view><item someprop="medium" /></view>"#;
+        let written = literal_attr(wxml, "someprop", r#"someprop="medium""#);
+        let layout = shadow(wxml, &[]);
+        let view = typed_view(
+            vec![prepared_declaration(DECLARATION_PATH, declaration)],
+            vec![usage("item", None, vec![written.clone()])],
+            declaration,
+        );
+        let (result, calls) = run(&layout, &view, Vec::new());
+        assert!(calls.is_empty());
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        let diagnostic = &result.diagnostics[0];
+        assert_eq!(diagnostic.range, name_range(&written));
+        assert!(
+            diagnostic
+                .message
+                .contains("component property \"someprop\" is not declared"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn script_declared_camel_members_accept_the_kebab_spelling() {
+        const KEBAB_DECLARATION_SCRIPT: &str =
+            "Component({\n  properties: {\n    cardTitle: { type: String },\n  },\n});\n";
+        let wxml = r#"<view><card card-title="{{ total }}" /></view>"#;
+        let card_title = mustache_attr(wxml, "card-title", r#"card-title="{{ total }}""#, "total");
+        let layout = shadow(wxml, &[card_title.expr_range.expect("expr")]);
+        let files = vec![
+            prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+            prepared_file(CARD_PATH, KEBAB_DECLARATION_SCRIPT),
+        ];
+        let view = build_view(
+            files,
+            vec![usage("card", Some(CARD_PATH), vec![card_title.clone()])],
+        );
+        let (result, calls) = run(&layout, &view, vec![Some(("number", 0))]);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        assert_eq!(
+            result.diagnostics[0].range,
+            card_title.expr_range.expect("expr")
+        );
+        assert!(
+            result.diagnostics[0].message.contains("expects string")
+                && result.diagnostics[0].message.contains("got number"),
+            "{}",
+            result.diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn script_declared_members_stay_resolved_only_for_equivalent_spelling() {
+        const KEBAB_DECLARATION_SCRIPT: &str =
+            "Component({\n  properties: {\n    someProp: { type: String },\n  },\n});\n";
+        let wxml = r#"<view><card someprop="{{ total }}" /></view>"#;
+        let written = mustache_attr(wxml, "someprop", r#"someprop="{{ total }}""#, "total");
+        let layout = shadow(wxml, &[written.expr_range.expect("expr")]);
+        let files = vec![
+            prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+            prepared_file(CARD_PATH, KEBAB_DECLARATION_SCRIPT),
+        ];
+        let view = build_view(files, vec![usage("card", Some(CARD_PATH), vec![written])]);
+        let (result, calls) = run(&layout, &view, Vec::new());
+        assert!(
+            calls.is_empty(),
+            "a case-only variant must not be looked up as the declared property: {calls:?}"
+        );
+        assert!(
+            result.diagnostics.is_empty(),
+            "undeclared script attributes stay ignored: {:?}",
+            result.diagnostics
         );
     }
 

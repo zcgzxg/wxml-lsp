@@ -1357,13 +1357,15 @@ pub(crate) fn is_event_value_attribute(name: &str) -> bool {
 /// Classifies one complete attribute name against the value-routing rules.
 ///
 /// Colon forms accept any non-empty event name made of ASCII letters, digits,
-/// `_` and `-`. Direct forms keep the historical loose shape: only `bind` and
-/// `catch` take a non-empty all-ASCII-lowercase suffix. `EVENT_NAMES` is not
-/// consulted: custom events such as `bindgetphonenumber` stay handlers.
+/// `_` and `-`. Direct forms accept the compact `capture-bind`, `capture-catch`,
+/// `mut-bind`, `bind` and `catch` prefixes followed by a non-empty event name.
+/// `EVENT_NAMES` is not consulted: custom events such as `bindgetphonenumber`
+/// and `bindSomeEvent` stay handlers.
 pub(crate) fn classify_event_attribute(name: &str) -> EventAttributeClass {
     const COLON_PREFIXES: [&str; 5] =
         ["capture-bind", "capture-catch", "mut-bind", "bind", "catch"];
-    const DIRECT_PREFIXES: [&str; 2] = ["bind", "catch"];
+    const DIRECT_PREFIXES: [&str; 5] =
+        ["capture-bind", "capture-catch", "mut-bind", "bind", "catch"];
     if name == "bindex" {
         return EventAttributeClass::Rejected(EventAttributeRejection::ConflictingAttribute);
     }
@@ -1384,10 +1386,9 @@ pub(crate) fn classify_event_attribute(name: &str) -> EventAttributeClass {
                 EventAttributeClass::Rejected(EventAttributeRejection::InvalidEventName)
             };
         }
-        // `capture-bind`/`capture-catch`/`mut-bind` only exist in colon form.
-        return if DIRECT_PREFIXES.contains(&prefix)
-            && rest.bytes().all(|byte| byte.is_ascii_lowercase())
-        {
+        // `capture-bind`/`capture-catch`/`mut-bind` accept both colon and compact
+        // forms; every direct family takes a non-empty event-name suffix.
+        return if DIRECT_PREFIXES.contains(&prefix) && rest.bytes().all(is_event_name_byte) {
             EventAttributeClass::Handler
         } else {
             EventAttributeClass::Rejected(EventAttributeRejection::InvalidDirectSuffix)
@@ -1523,18 +1524,6 @@ mod tests {
             ("catch:", EventAttributeRejection::EmptyEventName),
             ("bind::tap", EventAttributeRejection::InvalidEventName),
             ("bind:foo:bar", EventAttributeRejection::InvalidEventName),
-            (
-                "bind-get-phonenumber",
-                EventAttributeRejection::InvalidDirectSuffix,
-            ),
-            ("binding-mode", EventAttributeRejection::InvalidDirectSuffix),
-            ("catch-up", EventAttributeRejection::InvalidDirectSuffix),
-            ("bindTap", EventAttributeRejection::InvalidDirectSuffix),
-            (
-                "capture-bindtap",
-                EventAttributeRejection::InvalidDirectSuffix,
-            ),
-            ("mut-bindtap", EventAttributeRejection::InvalidDirectSuffix),
             ("bindex", EventAttributeRejection::ConflictingAttribute),
         ] {
             assert_eq!(
@@ -1543,6 +1532,24 @@ mod tests {
                 "{attribute}"
             );
             assert!(!is_event_value_attribute(attribute), "{attribute}");
+        }
+        // Compact forms accept kebab and camel event names, like the template layer.
+        for attribute in [
+            "bind-get-phonenumber",
+            "binding-mode",
+            "catch-up",
+            "bindTap",
+            "bindSomeEvent",
+            "bindsome-event",
+            "capture-bindtap",
+            "capture-catchSomeEvent",
+            "mut-bindtap",
+        ] {
+            assert_eq!(
+                classify_event_attribute(attribute),
+                EventAttributeClass::Handler,
+                "{attribute}"
+            );
         }
         for ordinary in ["", "bi", "class", "wx:if", "data-onTap"] {
             assert_eq!(

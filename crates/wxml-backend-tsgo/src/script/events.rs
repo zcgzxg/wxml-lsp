@@ -206,8 +206,9 @@ pub struct EventCollection {
 /// Parses a WXML event attribute name.
 ///
 /// The recognized prefixes are `capture-bind:`, `capture-catch:`, `mut-bind:`,
-/// `bind:`, `catch:`, `bind` and `catch`. The event name may contain letters,
-/// digits, `-`, `_` and `:` but must be non-empty.
+/// `bind:`, `catch:` and the compact `capture-bind`, `capture-catch`,
+/// `mut-bind`, `bind`, `catch`. The event name may contain letters, digits,
+/// `-`, `_` and `:` but must be non-empty.
 #[must_use]
 pub fn parse_event_attribute(attribute: &str) -> Option<(EventBindingForm, String)> {
     const PREFIXES: &[(&str, EventBindingForm)] = &[
@@ -216,6 +217,9 @@ pub fn parse_event_attribute(attribute: &str) -> Option<(EventBindingForm, Strin
         ("mut-bind:", EventBindingForm::MutBind),
         ("bind:", EventBindingForm::BindColon),
         ("catch:", EventBindingForm::CatchColon),
+        ("capture-bind", EventBindingForm::CaptureBind),
+        ("capture-catch", EventBindingForm::CaptureCatch),
+        ("mut-bind", EventBindingForm::MutBind),
         ("bind", EventBindingForm::Bind),
         ("catch", EventBindingForm::Catch),
     ];
@@ -816,11 +820,235 @@ fn push_reason(problems: &mut Vec<String>, reason: &str) {
 mod tests {
     #![allow(clippy::expect_used)]
 
-    use super::handler_parameters;
+    use super::{
+        CapabilityStatus, EventBinding, EventBindingForm, MethodTable, SourceRange,
+        handler_parameters, parse_event_attribute, resolve_events,
+    };
 
     /// Splits `signature` into the annotation and arity a caller would see.
     fn shape(signature: &str) -> (Option<String>, usize) {
         handler_parameters(signature)
+    }
+
+    fn page_table() -> MethodTable {
+        MethodTable {
+            status: CapabilityStatus::Supported,
+            owner: "page",
+            methods: Vec::new(),
+            opaque: Vec::new(),
+            problems: Vec::new(),
+        }
+    }
+
+    fn binding_from(attribute: &str, handler: &str) -> EventBinding {
+        let (_, event) = parse_event_attribute(attribute).expect("recognized attribute");
+        EventBinding::new("e0", attribute, event, handler, SourceRange::new(10, 16))
+    }
+
+    #[test]
+    fn every_colon_form_keeps_its_exact_label_and_event_name() {
+        for (attribute, form) in [
+            ("bind:tap", EventBindingForm::BindColon),
+            ("catch:tap", EventBindingForm::CatchColon),
+            ("capture-bind:tap", EventBindingForm::CaptureBind),
+            ("capture-catch:tap", EventBindingForm::CaptureCatch),
+            ("mut-bind:tap", EventBindingForm::MutBind),
+        ] {
+            assert_eq!(
+                parse_event_attribute(attribute),
+                Some((form, "tap".to_owned())),
+                "attribute {attribute:?}"
+            );
+        }
+        for (form, label, debug) in [
+            (EventBindingForm::Bind, "bind", "Bind"),
+            (EventBindingForm::BindColon, "bind-colon", "BindColon"),
+            (EventBindingForm::Catch, "catch", "Catch"),
+            (EventBindingForm::CatchColon, "catch-colon", "CatchColon"),
+            (EventBindingForm::CaptureBind, "capture-bind", "CaptureBind"),
+            (
+                EventBindingForm::CaptureCatch,
+                "capture-catch",
+                "CaptureCatch",
+            ),
+            (EventBindingForm::MutBind, "mut-bind", "MutBind"),
+        ] {
+            assert_eq!(form.as_str(), label, "form {form:?}");
+            assert_eq!(format!("{form:?}"), debug, "form {form:?}");
+        }
+    }
+
+    #[test]
+    fn compact_bind_and_catch_keep_kebab_and_camel_event_names() {
+        for (attribute, form, event) in [
+            ("bindtap", EventBindingForm::Bind, "tap"),
+            ("bind:some-event", EventBindingForm::BindColon, "some-event"),
+            ("bindsome-event", EventBindingForm::Bind, "some-event"),
+            ("bind:someEvent", EventBindingForm::BindColon, "someEvent"),
+            ("bindsomeEvent", EventBindingForm::Bind, "someEvent"),
+            (
+                "catch:some-event",
+                EventBindingForm::CatchColon,
+                "some-event",
+            ),
+            ("catchsome-event", EventBindingForm::Catch, "some-event"),
+            ("catch:someEvent", EventBindingForm::CatchColon, "someEvent"),
+            ("catchsomeEvent", EventBindingForm::Catch, "someEvent"),
+        ] {
+            assert_eq!(
+                parse_event_attribute(attribute),
+                Some((form, event.to_owned())),
+                "attribute {attribute:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn colon_families_keep_kebab_and_camel_event_names() {
+        for (attribute, form, event) in [
+            (
+                "capture-bind:some-event",
+                EventBindingForm::CaptureBind,
+                "some-event",
+            ),
+            (
+                "capture-bind:someEvent",
+                EventBindingForm::CaptureBind,
+                "someEvent",
+            ),
+            (
+                "capture-catch:some-event",
+                EventBindingForm::CaptureCatch,
+                "some-event",
+            ),
+            (
+                "capture-catch:someEvent",
+                EventBindingForm::CaptureCatch,
+                "someEvent",
+            ),
+            (
+                "mut-bind:some-event",
+                EventBindingForm::MutBind,
+                "some-event",
+            ),
+            ("mut-bind:someEvent", EventBindingForm::MutBind, "someEvent"),
+        ] {
+            assert_eq!(
+                parse_event_attribute(attribute),
+                Some((form, event.to_owned())),
+                "attribute {attribute:?}"
+            );
+        }
+        // Underscores stay part of the event name.
+        assert_eq!(
+            parse_event_attribute("bind:my_event2"),
+            Some((EventBindingForm::BindColon, "my_event2".to_owned()))
+        );
+    }
+
+    #[test]
+    fn compact_capture_and_mut_prefixes_parse_like_the_template_layer() {
+        for (attribute, form, event) in [
+            ("capture-bindtap", EventBindingForm::CaptureBind, "tap"),
+            (
+                "capture-bindsome-event",
+                EventBindingForm::CaptureBind,
+                "some-event",
+            ),
+            (
+                "capture-bindsomeEvent",
+                EventBindingForm::CaptureBind,
+                "someEvent",
+            ),
+            ("capture-catchtap", EventBindingForm::CaptureCatch, "tap"),
+            (
+                "capture-catchsomeEvent",
+                EventBindingForm::CaptureCatch,
+                "someEvent",
+            ),
+            ("mut-bindtap", EventBindingForm::MutBind, "tap"),
+            ("mut-bindsomeEvent", EventBindingForm::MutBind, "someEvent"),
+        ] {
+            assert_eq!(
+                parse_event_attribute(attribute),
+                Some((form, event.to_owned())),
+                "{attribute}"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_event_attributes_stay_unparsed() {
+        for attribute in [
+            "",
+            "tap",
+            "class",
+            "bind",
+            "catch",
+            "bind:",
+            "catch:",
+            "capture-bind:",
+            "capture-catch:",
+            "mut-bind:",
+            "bind:my event",
+            "bind:my.event",
+            "bind:my/path",
+        ] {
+            assert_eq!(parse_event_attribute(attribute), None, "{attribute}");
+        }
+        // `bind:tap` is the colon form, not compact `bind` plus `:tap`.
+        assert_eq!(
+            parse_event_attribute("bind:tap"),
+            Some((EventBindingForm::BindColon, "tap".to_owned()))
+        );
+    }
+
+    #[test]
+    fn handler_extraction_trims_and_reports_the_exact_wxml_range() {
+        let table = page_table();
+        for attribute in [
+            "bind:some-event",
+            "bindsome-event",
+            "bind:someEvent",
+            "bindsomeEvent",
+            "catch:some-event",
+            "catchsomeEvent",
+            "capture-bind:some-event",
+            "capture-catch:someEvent",
+            "mut-bind:some-event",
+        ] {
+            let (_, event) = parse_event_attribute(attribute).expect("recognized attribute");
+            let binding = binding_from(attribute, " onTap ");
+            let result = resolve_events(&table, &[binding]).results.remove(0);
+            assert_eq!(result.status, CapabilityStatus::Supported, "{attribute}");
+            let diagnostic = result.diagnostic.expect("missing handler");
+            assert_eq!(diagnostic.range, SourceRange::new(10, 16));
+            assert_eq!(diagnostic.severity, "error");
+            assert_eq!(
+                diagnostic.message,
+                format!("Event handler \"onTap\" for \"{event}\" is not defined on this page"),
+                "attribute {attribute:?}"
+            );
+        }
+
+        // A non-identifier handler is `Partial` and never a diagnostic, so the
+        // extracted handler text must not be rewritten to look resolvable.
+        let binding = binding_from("bindtap", "item.onTap");
+        let result = resolve_events(&table, &[binding]).results.remove(0);
+        assert!(result.diagnostic.is_none());
+        assert_eq!(
+            result.reason.as_deref(),
+            Some("event handler is not a static identifier")
+        );
+
+        // An empty handler is not an identifier either.
+        let binding = binding_from("bindtap", "   ");
+        let result = resolve_events(&table, &[binding]).results.remove(0);
+        assert!(result.diagnostic.is_none());
+        assert_eq!(
+            result.reason.as_deref(),
+            Some("event handler is not a static identifier")
+        );
     }
 
     #[test]

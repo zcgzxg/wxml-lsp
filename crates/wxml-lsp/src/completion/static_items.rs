@@ -209,10 +209,26 @@ fn is_editing_attribute(context: &Context) -> bool {
 
 /// Returns whether a unique attribute is already present elsewhere in the tag.
 fn already_declared(context: &Context, name: &str) -> bool {
+    is_declared_elsewhere(context, |written| written.eq_ignore_ascii_case(name))
+}
+
+/// Returns whether a declared component property is already present in another
+/// spelling of the same name.
+///
+/// Declared camelCase and written kebab-case names refer to the same member in
+/// both directions; see [`wxml_project::component_name_eq`].
+fn component_attribute_declared(context: &Context, declared: &str) -> bool {
+    is_declared_elsewhere(context, |written| {
+        wxml_project::component_name_eq(declared, written)
+    })
+}
+
+/// Returns whether one matching attribute is declared outside the edited token.
+fn is_declared_elsewhere(context: &Context, same: impl Fn(&str) -> bool) -> bool {
     let mut current = false;
     let mut other = false;
     for occurrence in &context.attributes {
-        if !occurrence.name.eq_ignore_ascii_case(name) {
+        if !same(&occurrence.name) {
             continue;
         }
         if is_current(occurrence, context.replace) {
@@ -222,6 +238,31 @@ fn already_declared(context: &Context, name: &str) -> bool {
         }
     }
     other && !current
+}
+
+/// Returns whether a declared component property continues the typed prefix.
+///
+/// Both sides are canonicalized first, so `card-` matches a declared
+/// `cardTitle` and `cardT` matches a declared `card-title`.
+fn component_property_matches(declared: &str, prefix: &str) -> bool {
+    matches(declared, prefix)
+        || matches(
+            &wxml_project::canonical_component_name(declared),
+            &wxml_project::canonical_component_name(prefix),
+        )
+}
+
+/// Returns the spelling to insert for one declared component property.
+///
+/// A typed prefix that already contains `-` keeps the kebab style; any other
+/// prefix uses the declaration's camelCase style.
+fn component_property_insert(declared: &str, prefix: &str) -> String {
+    let camel = wxml_project::canonical_component_name(declared);
+    if prefix.contains('-') {
+        crate::semantics::target::kebab_case(&camel)
+    } else {
+        camel
+    }
 }
 
 /// Adds one catalog attribute unless it is filtered out.
@@ -272,9 +313,11 @@ fn push_component_properties(
     replace: SourceRange,
 ) {
     for property in &component.property_facts.properties {
-        if !matches(&property.name, context.prefix.as_str())
-            || seen.contains(&property.name)
-            || already_declared(context, &property.name)
+        let prefix = context.prefix.as_str();
+        let insert = component_property_insert(&property.name, prefix);
+        if !component_property_matches(&property.name, prefix)
+            || seen.contains(&insert)
+            || component_attribute_declared(context, &property.name)
         {
             continue;
         }
@@ -282,7 +325,7 @@ fn push_component_properties(
         if hidden && !is_editing_attribute(context) {
             continue;
         }
-        seen.insert(property.name.clone());
+        seen.insert(insert.clone());
         let mut candidate = item(
             &property.name,
             CompletionItemKind::Property,
@@ -292,9 +335,13 @@ fn push_component_properties(
             } else {
                 property.type_text.clone()
             }),
-            property.name.clone(),
+            insert.clone(),
             replace,
         );
+        if insert != property.name {
+            // Keeps client-side filtering aligned with the spelling we insert.
+            candidate.filter_text = Some(insert);
+        }
         candidate.documentation = property
             .documentation
             .as_ref()
@@ -1002,5 +1049,130 @@ mod tests {
             &[],
         );
         assert_eq!(items[0].insert_text, "\"default\"");
+    }
+
+    fn property_component(properties: &[&str]) -> ViewComponent {
+        ViewComponent {
+            name: "item".to_owned(),
+            specifier: "../../components/item/item".to_owned(),
+            kind: ComponentTargetKind::Local,
+            component: None,
+            wxml: None,
+            json: None,
+            property_facts: wxml_project::ComponentPropertyFacts {
+                properties: properties
+                    .iter()
+                    .map(|name| wxml_project::ComponentProperty {
+                        name: (*name).to_owned(),
+                        type_text: "string".to_owned(),
+                        default_text: None,
+                        documentation: None,
+                        script: wxml_project::ProjectPath::new("components/item/item.ts")
+                            .expect("path"),
+                        range: TextRange::new(0, 0).expect("range"),
+                    })
+                    .collect(),
+                complete: true,
+                reason: None,
+                source: wxml_project::PropertySource::Script,
+            },
+            typing: None,
+            origin: crate::project_host::ComponentOrigin::Local { file: None },
+        }
+    }
+
+    fn property_context(
+        prefix: &str,
+        start: u32,
+        end: u32,
+        attributes: Vec<AttributeOccurrence>,
+    ) -> Context {
+        Context {
+            site: Site::AttributeName {
+                tag: "item".to_owned(),
+                name: prefix.to_owned(),
+            },
+            replace: TextRange::new(start, end).expect("range"),
+            prefix: prefix.to_owned(),
+            open_tags: Vec::new(),
+            attributes,
+        }
+    }
+
+    fn property_item<'a>(items: &'a [CompletionItem], label: &str) -> Option<&'a CompletionItem> {
+        items.iter().find(|item| item.label == label)
+    }
+
+    #[test]
+    fn component_property_completion_follows_the_typed_spelling() {
+        let camel = [property_component(&["cardTitle"])];
+        let kebab_prefix = property_context("card-", 0, 5, Vec::new());
+        let (listed, _) = items(&kebab_prefix, &camel);
+        let item = property_item(&listed, "cardTitle").expect("kebab prefix item");
+        assert_eq!(item.insert_text, "card-title");
+        assert_eq!(item.filter_text.as_deref(), Some("card-title"));
+
+        let camel_prefix = property_context("cardT", 0, 5, Vec::new());
+        let (listed, _) = items(&camel_prefix, &camel);
+        let item = property_item(&listed, "cardTitle").expect("camel prefix item");
+        assert_eq!(item.insert_text, "cardTitle");
+        assert_eq!(item.filter_text, None);
+
+        let kebab = [property_component(&["card-title"])];
+        let camel_prefix = property_context("cardT", 0, 5, Vec::new());
+        let (listed, _) = items(&camel_prefix, &kebab);
+        let item = property_item(&listed, "card-title").expect("camel item");
+        assert_eq!(item.insert_text, "cardTitle");
+
+        let kebab_prefix = property_context("card-", 0, 5, Vec::new());
+        let (listed, _) = items(&kebab_prefix, &kebab);
+        let item = property_item(&listed, "card-title").expect("kebab item");
+        assert_eq!(item.insert_text, "card-title");
+    }
+
+    #[test]
+    fn component_property_completion_hides_any_declared_spelling() {
+        let camel = [property_component(&["cardTitle"])];
+        let context = property_context(
+            "cardT",
+            20,
+            25,
+            vec![
+                AttributeOccurrence {
+                    name: "card-title".to_owned(),
+                    value: None,
+                    range: TextRange::new(0, 10).expect("range"),
+                },
+                AttributeOccurrence {
+                    name: "cardT".to_owned(),
+                    value: None,
+                    range: TextRange::new(20, 25).expect("range"),
+                },
+            ],
+        );
+        let (listed, _) = items(&context, &camel);
+        assert!(property_item(&listed, "cardTitle").is_none());
+
+        let editing = property_context(
+            "card-",
+            20,
+            25,
+            vec![AttributeOccurrence {
+                name: "card-".to_owned(),
+                value: None,
+                range: TextRange::new(20, 25).expect("range"),
+            }],
+        );
+        let (listed, _) = items(&editing, &camel);
+        let item = property_item(&listed, "cardTitle").expect("the edited token stays");
+        assert_eq!(item.insert_text, "card-title");
+    }
+
+    #[test]
+    fn component_property_completion_keeps_non_equivalent_spellings_distinct() {
+        let components = [property_component(&["someProp"])];
+        let snake = property_context("some_", 0, 5, Vec::new());
+        let (listed, _) = items(&snake, &components);
+        assert!(property_item(&listed, "someProp").is_none());
     }
 }

@@ -53,7 +53,8 @@ pub use styles::{
 };
 pub use typing::{
     ComponentTypingFacts, ObjectTypeMember, PrimitiveType, TypeText, TypingComponent, TypingEvent,
-    TypingIssue, TypingIssueKind, TypingProperty, parse_component_typing_facts,
+    TypingIssue, TypingIssueKind, TypingProperty, canonical_component_name, component_name_eq,
+    parse_component_typing_facts,
 };
 
 /// A copy of the host paths and overlay needed for lock-free style/resource

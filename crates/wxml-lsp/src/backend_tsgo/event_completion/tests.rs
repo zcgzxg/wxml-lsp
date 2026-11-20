@@ -821,6 +821,112 @@ fn capture_catch_and_mut_prefixes_keep_their_own_prefix() {
 }
 
 #[test]
+fn colon_and_compact_prefixes_both_suggest_declared_events() {
+    let component = declared_component(vec![declared_event("someEvent", None, true)], true);
+    for typed in [
+        "bind:",
+        "bind",
+        "catch:",
+        "catch",
+        "capture-bind:",
+        "capture-bind",
+        "capture-catch:",
+        "capture-catch",
+        "mut-bind:",
+        "mut-bind",
+    ] {
+        let items = declared_event_items(&component, typed, 0).expect(typed);
+        assert_eq!(items.len(), 1, "{typed}");
+        let end = u32::try_from(typed.len()).expect("len");
+        // Only the (empty) event-name fragment is replaced after the prefix.
+        assert_eq!(
+            (items[0].replace.start(), items[0].replace.end()),
+            (end, end),
+            "{typed}"
+        );
+        assert_eq!(items[0].label, "someEvent", "{typed}");
+        assert_eq!(items[0].insert_text, "someEvent", "{typed}");
+    }
+}
+
+#[test]
+fn a_kebab_fragment_inserts_the_kebab_spelling_of_a_camel_declaration() {
+    let component = declared_component(vec![declared_event("someEvent", None, true)], true);
+    for (typed, prefix_len) in [("bind:some-", 5), ("bindsome-", 4)] {
+        let items = declared_event_items(&component, typed, 0).expect(typed);
+        assert_eq!(items.len(), 1, "{typed}");
+        let item = &items[0];
+        assert_eq!(item.label, "someEvent", "{typed}");
+        assert_eq!(item.insert_text, "some-event", "{typed}");
+        assert_eq!(
+            u32::try_from(prefix_len).expect("len"),
+            item.replace.start(),
+            "{typed}"
+        );
+        assert_eq!(
+            u32::try_from(typed.len()).expect("len"),
+            item.replace.end(),
+            "{typed}"
+        );
+    }
+}
+
+#[test]
+fn a_camel_fragment_inserts_the_camel_spelling_of_a_kebab_declaration() {
+    let component = declared_component(vec![declared_event("some-event", None, true)], true);
+    for (typed, prefix_len) in [("bind:someE", 5), ("bindsomeE", 4)] {
+        let items = declared_event_items(&component, typed, 0).expect(typed);
+        assert_eq!(items.len(), 1, "{typed}");
+        let item = &items[0];
+        assert_eq!(item.label, "some-event", "{typed}");
+        assert_eq!(item.insert_text, "someEvent", "{typed}");
+        assert_eq!(
+            u32::try_from(prefix_len).expect("len"),
+            item.replace.start(),
+            "{typed}"
+        );
+        assert_eq!(
+            u32::try_from(typed.len()).expect("len"),
+            item.replace.end(),
+            "{typed}"
+        );
+    }
+}
+
+#[test]
+fn fragment_filtering_follows_the_kebab_and_camel_equivalence() {
+    let camel = declared_component(vec![declared_event("someEvent", None, true)], true);
+    assert!(declared_event_items(&camel, "bind:some-", 0).is_some());
+    assert!(declared_event_items(&camel, "bindsomeE", 0).is_some());
+    // `someevnt` is neither spelling of `someEvent`.
+    assert!(declared_event_items(&camel, "bind:someevnt", 0).is_some_and(|items| items.is_empty()));
+
+    let kebab = declared_component(vec![declared_event("some-event", None, true)], true);
+    assert!(declared_event_items(&kebab, "bind:some", 0).is_some());
+    assert!(declared_event_items(&kebab, "bind:someE", 0).is_some());
+}
+
+#[test]
+fn the_replacement_range_starts_at_the_fragment_for_every_prefix() {
+    let component = declared_component(vec![declared_event("someEvent", None, true)], true);
+    for (typed, fragment) in [
+        ("capture-bind:some", "some"),
+        ("capture-bindsome", "some"),
+        ("mut-bind:some", "some"),
+        ("mut-bindsome", "some"),
+    ] {
+        let name_start = 7;
+        let items = declared_event_items(&component, typed, name_start).expect(typed);
+        let start = name_start + u32::try_from(typed.len() - fragment.len()).expect("len");
+        assert_eq!(
+            (items[0].replace.start(), items[0].replace.end()),
+            (start, name_start + u32::try_from(typed.len()).expect("len")),
+            "{typed}"
+        );
+    }
+}
+
+#[test]
 fn incomplete_eventless_and_undeclared_components_have_no_declared_items() {
     let template = "bind:";
     assert!(declared_event_items(&declared_component(Vec::new(), true), template, 11).is_none());
@@ -839,13 +945,23 @@ fn incomplete_eventless_and_undeclared_components_have_no_declared_items() {
 }
 
 #[test]
-fn non_colon_and_malformed_names_never_use_declared_events() {
+fn non_prefix_and_malformed_names_never_use_declared_events() {
     let component = declared_component(vec![declared_event("change", None, true)], true);
-    for typed in ["bindt", "bind", "binding", "bind:ch ang", "bind:cha!"] {
-        assert!(
-            declared_event_items(&component, typed, 0).is_none(),
-            "{typed}"
-        );
+    for typed in [
+        "tap",
+        "data-bind",
+        "class",
+        "bind:ch ang",
+        "bind:cha!",
+        "bind::cha",
+        "bind:",
+    ] {
+        let allowed = declared_event_items(&component, typed, 0);
+        if typed == "bind:" {
+            assert!(allowed.is_some(), "{typed}");
+            continue;
+        }
+        assert!(allowed.is_none(), "{typed}");
     }
 }
 

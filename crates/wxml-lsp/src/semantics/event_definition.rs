@@ -757,11 +757,15 @@ mod tests {
             "<view bindtap=\"onTap\"| />",
             "<view bindtap=\"onTap |\" />",
             "<view bindex=\"on|Tap\" />",
-            "<view bindTap=\"on|Tap\" />",
             "<view bind:=\"on|Tap\" />",
         ] {
             assert_eq!(site(template), EventValueSite::NotStatic, "{template}");
         }
+        // A compact bind with a camel event name is a real handler, not a member value.
+        assert!(matches!(
+            site("<view bindTap=\"on|Tap\" />"),
+            EventValueSite::Handler { .. }
+        ));
         assert_eq!(event_site("<view class=\"on|Tap\" />", 12), None);
     }
 

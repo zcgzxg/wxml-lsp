@@ -232,9 +232,12 @@ pub(crate) fn camel_case(name: &str) -> Option<String> {
     (!output.is_empty()).then_some(output)
 }
 
-/// Returns `true` when `text` is the component property's kebab or camel form.
+/// Returns `true` when `text` refers to the declared component property.
+///
+/// The kebab and camel spelling of the same name match in both directions; see
+/// [`wxml_project::component_name_eq`].
 fn property_spelling(declared: &str, text: &str) -> bool {
-    text == declared || (text.contains('-') && text == kebab_case(declared))
+    wxml_project::component_name_eq(declared, text)
 }
 
 /// Resolves the symbol target under one byte offset.
@@ -1566,7 +1569,7 @@ pub(crate) fn collect_property_refs(
                 .property_facts
                 .properties
                 .iter()
-                .any(|property| property.name == declared)
+                .any(|property| wxml_project::component_name_eq(&property.name, declared))
             {
                 tokens.reject("the component property is missing in one view");
                 continue;
@@ -1869,5 +1872,27 @@ pub(crate) fn collect_loop_refs(
         complete: reasons.is_empty(),
         reason: reasons.first().copied(),
         needs_attribute: binding.declaration.is_none(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::property_spelling;
+
+    #[test]
+    fn property_spelling_accepts_both_declaration_directions() {
+        assert!(property_spelling("cardTitle", "cardTitle"));
+        assert!(property_spelling("cardTitle", "card-title"));
+        assert!(property_spelling("card-title", "cardTitle"));
+        assert!(property_spelling("card-title", "card-title"));
+    }
+
+    #[test]
+    fn property_spelling_keeps_non_equivalent_spellings_distinct() {
+        assert!(!property_spelling("someProp", "someprop"));
+        assert!(!property_spelling("someProp", "some_prop"));
+        assert!(!property_spelling("cardTitle", "cardtitle"));
+        assert!(!property_spelling("cardTitle", "other"));
+        assert!(!property_spelling("card-title", "cardtitle"));
     }
 }

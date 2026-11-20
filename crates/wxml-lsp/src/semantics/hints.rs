@@ -270,6 +270,19 @@ fn first_tag_range(doc: &super::facts::QueryDoc, tag: &str) -> Option<TextRange>
     found
 }
 
+/// Returns one declared property by its WXML spelling.
+///
+/// Declared camelCase and written kebab-case names match in both directions;
+/// see [`wxml_project::component_name_eq`].
+fn declared_property<'a>(
+    properties: &'a [wxml_project::ComponentProperty],
+    written: &str,
+) -> Option<&'a wxml_project::ComponentProperty> {
+    properties
+        .iter()
+        .find(|property| wxml_project::component_name_eq(&property.name, written))
+}
+
 /// Builds `textDocument/inlayHint` for one view.
 pub(crate) fn inlay_hints(
     server: &Server,
@@ -336,11 +349,9 @@ pub(crate) fn inlay_hints(
             {
                 continue;
             }
-            let Some(property) = component.property_facts.properties.iter().find(|property| {
-                attribute_name == property.name
-                    || (attribute_name.contains('-')
-                        && attribute_name == super::target::kebab_case(&property.name))
-            }) else {
+            let Some(property) =
+                declared_property(&component.property_facts.properties, attribute_name)
+            else {
                 continue;
             };
             if property.type_text.trim().is_empty() {
@@ -556,4 +567,51 @@ pub(crate) fn code_lens(server: &Server, document: &Document) -> Value {
 
 const fn plural(count: usize) -> &'static str {
     if count == 1 { "" } else { "s" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::declared_property;
+
+    fn property(name: &str) -> wxml_project::ComponentProperty {
+        wxml_project::ComponentProperty {
+            name: name.to_owned(),
+            type_text: "string".to_owned(),
+            default_text: None,
+            documentation: None,
+            script: wxml_project::ProjectPath::new("components/item/index.ts").expect("path"),
+            range: wxml_text::TextRange::new(0, 0).expect("range"),
+        }
+    }
+
+    #[test]
+    fn declared_property_matches_both_spelling_directions() {
+        let camel = [property("cardTitle")];
+        assert_eq!(
+            declared_property(&camel, "card-title").map(|property| property.name.as_str()),
+            Some("cardTitle")
+        );
+        assert_eq!(
+            declared_property(&camel, "cardTitle").map(|property| property.name.as_str()),
+            Some("cardTitle")
+        );
+        let kebab = [property("card-title")];
+        assert_eq!(
+            declared_property(&kebab, "cardTitle").map(|property| property.name.as_str()),
+            Some("card-title")
+        );
+        assert_eq!(
+            declared_property(&kebab, "card-title").map(|property| property.name.as_str()),
+            Some("card-title")
+        );
+    }
+
+    #[test]
+    fn declared_property_keeps_non_equivalent_spellings_distinct() {
+        let properties = [property("someProp")];
+        assert!(declared_property(&properties, "someprop").is_none());
+        assert!(declared_property(&properties, "some_prop").is_none());
+        assert!(declared_property(&properties, "card-title").is_none());
+        assert!(declared_property(&[], "cardTitle").is_none());
+    }
 }

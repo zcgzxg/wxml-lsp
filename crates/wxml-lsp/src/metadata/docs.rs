@@ -3,6 +3,7 @@
 use std::fmt::Write as _;
 
 use wxml_project::ComponentTargetKind;
+use wxml_project::typing::component_name_eq;
 use wxml_project::typing_contract::expected_signature;
 
 use super::component;
@@ -100,7 +101,7 @@ pub(super) fn attribute_document(
             .property_facts
             .properties
             .iter()
-            .find(|property| property.name.eq_ignore_ascii_case(name))
+            .find(|property| component_name_eq(&property.name, name))
         {
             return Some(property_document(tag, property));
         }
@@ -179,13 +180,16 @@ fn event_document(name: &str, detail: &str) -> String {
 
 /// Builds documentation for a declared component event attribute.
 ///
-/// Only a declared event produces a signature. The detail text is the
+/// Only a declared event produces a signature. The declaration is found through
+/// [`TypingComponent::event_named`](wxml_project::typing::TypingComponent::event_named),
+/// so `bind:some-event` and `bindsomeEvent` both reach a declared `someEvent`
+/// while the hover keeps the attribute as written. The detail text is the
 /// declaration's own text (never a guessed type); an unproven detail keeps it
 /// and says so explicitly.
 fn declared_event_document(component: &ViewComponent, name: &str) -> Option<String> {
     let (_, event) = wxml_backend_tsgo::script::events::parse_event_attribute(name)?;
     let typing = component.typing.as_deref()?;
-    let declared = typing.event(&event)?;
+    let declared = typing.event_named(&event)?;
     let signature = expected_signature(declared.detail_text.as_deref());
     // The signature is shown verbatim inside a fenced block: escaping it would
     // render `&lt;` instead of the declared generic arguments. Backticks and
@@ -234,7 +238,7 @@ pub(super) fn value_document(
                 .property_facts
                 .properties
                 .iter()
-                .find(|property| property.name.eq_ignore_ascii_case(attribute))
+                .find(|property| component_name_eq(&property.name, attribute))
             {
                 let mut document = format!("### {}\n\n", escape(value));
                 if let Some(documentation) = property.documentation.as_ref() {
@@ -378,6 +382,33 @@ mod tests {
         }
     }
 
+    /// Builds one component property.
+    fn property(name: &str, type_text: &str) -> wxml_project::ComponentProperty {
+        wxml_project::ComponentProperty {
+            name: name.to_owned(),
+            type_text: type_text.to_owned(),
+            default_text: None,
+            documentation: None,
+            script: ProjectPath::new("components/field.js").expect("path"),
+            range: wxml_text::TextRange::new(0, 0).expect("range"),
+        }
+    }
+
+    /// Builds one component with declared properties and no events.
+    fn component_with_properties(
+        properties: Vec<wxml_project::ComponentProperty>,
+    ) -> ViewComponent {
+        let mut component = component(Vec::new());
+        component.wxml = Some(ProjectPath::new("components/field.wxml").expect("path"));
+        component.property_facts = wxml_project::ComponentPropertyFacts {
+            properties,
+            complete: true,
+            reason: None,
+            source: wxml_project::PropertySource::Script,
+        };
+        component
+    }
+
     #[test]
     fn a_declared_event_attribute_hovers_the_expected_signature() {
         let text = "<van-field bind:change=\"onChange\" />";
@@ -426,6 +457,88 @@ mod tests {
         undeclared.typing = None;
         let (markdown, _) = hover_at(text, &[undeclared], "bind:change");
         assert!(markdown.contains("bind:change"), "{markdown}");
+        assert!(!markdown.contains("CustomEvent"), "{markdown}");
+    }
+
+    #[test]
+    fn a_kebab_event_spelling_hovers_the_camel_declaration() {
+        let components = vec![component(vec![event(
+            "someEvent",
+            Some("{ index: number }"),
+            true,
+        )])];
+        for attribute in ["bind:some-event", "bindsome-event"] {
+            let text = format!("<van-field {attribute}=\"onSome\" />");
+            let (markdown, range) = hover_at(&text, &components, attribute);
+            assert!(
+                markdown.contains("(e: WechatMiniprogram.CustomEvent<{ index: number }>) => void"),
+                "{attribute}: {markdown}"
+            );
+            let start = u32::try_from(text.find(attribute).expect("attribute")).expect("start");
+            let end = start + u32::try_from(attribute.len()).expect("len");
+            assert_eq!((range.start(), range.end()), (start, end), "{attribute}");
+        }
+    }
+
+    #[test]
+    fn a_camel_event_spelling_hovers_the_kebab_declaration() {
+        let text = "<van-field bind:someEvent=\"onSome\" />";
+        let components = vec![component(vec![event(
+            "some-event",
+            Some("{ index: number }"),
+            true,
+        )])];
+        let (markdown, _) = hover_at(text, &components, "bind:someEvent");
+        assert!(
+            markdown.contains("CustomEvent<{ index: number }>"),
+            "{markdown}"
+        );
+    }
+
+    #[test]
+    fn a_compact_camel_event_spelling_hovers_the_camel_declaration() {
+        let text = "<van-field bindsomeEvent=\"onSome\" />";
+        let components = vec![component(vec![event("someEvent", None, true)])];
+        let (markdown, range) = hover_at(text, &components, "bindsomeEvent");
+        assert!(
+            markdown.contains("(e: WechatMiniprogram.CustomEvent<void>) => void"),
+            "{markdown}"
+        );
+        let start = u32::try_from(text.find("bindsomeEvent").expect("attribute")).expect("start");
+        let end = start + u32::try_from("bindsomeEvent".len()).expect("len");
+        assert_eq!((range.start(), range.end()), (start, end));
+    }
+
+    #[test]
+    fn a_kebab_property_spelling_hovers_the_camel_declaration() {
+        let text = "<van-field some-prop=\"x\" />";
+        let components = vec![component_with_properties(vec![property(
+            "someProp", "string",
+        )])];
+        let (markdown, range) = hover_at(text, &components, "some-prop");
+        assert!(markdown.contains("### someProp"), "{markdown}");
+        assert!(markdown.contains("`string`"), "{markdown}");
+        let start = u32::try_from(text.find("some-prop").expect("attribute")).expect("start");
+        let end = start + u32::try_from("some-prop".len()).expect("len");
+        assert_eq!((range.start(), range.end()), (start, end));
+    }
+
+    #[test]
+    fn an_unknown_property_stays_undocumented() {
+        let text = "<van-field other-prop=\"x\" />";
+        let components = vec![component_with_properties(vec![property(
+            "someProp", "string",
+        )])];
+        let offset = u32::try_from(text.find("other-prop").expect("attribute")).expect("offset");
+        let target = target_at(text, offset).expect("target");
+        assert_eq!(hover(&components, &target), HoverAnswer::NotStatic);
+    }
+
+    #[test]
+    fn an_unknown_event_stays_generic() {
+        let text = "<van-field bind:someevnt=\"onSome\" />";
+        let components = vec![component(vec![event("someEvent", None, true)])];
+        let (markdown, _) = hover_at(text, &components, "bind:someevnt");
         assert!(!markdown.contains("CustomEvent"), "{markdown}");
     }
 }

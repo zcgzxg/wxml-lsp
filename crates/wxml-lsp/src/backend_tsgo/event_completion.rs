@@ -35,6 +35,7 @@ use wxml_backend_tsgo::script::events::{EventMethod, MethodTable};
 use wxml_backend_tsgo::script::registration::RegistrationKind;
 use wxml_backend_tsgo::script::{ScriptRequest, analyze_script};
 use wxml_backend_tsgo::shadow::expression::is_identifier_name;
+use wxml_project::typing::canonical_component_name;
 use wxml_project::typing_contract::expected_signature;
 use wxml_text::SourceRange;
 use wxml_types::{
@@ -394,7 +395,10 @@ fn detail_of(signature: &str) -> Option<String> {
 
 /// Colon-form event prefixes whose event-name fragment can be completed from a
 /// component declaration.
-const DECLARED_EVENT_PREFIXES: [&str; 5] = [
+///
+/// Checked before the compact forms so `bind:` is never read as compact `bind`
+/// plus a leading `:`.
+const DECLARED_EVENT_COLON_PREFIXES: [&str; 5] = [
     "capture-bind:",
     "capture-catch:",
     "mut-bind:",
@@ -402,16 +406,73 @@ const DECLARED_EVENT_PREFIXES: [&str; 5] = [
     "catch:",
 ];
 
+/// Compact event prefixes. They keep the same literal-prefix semantics as
+/// [`wxml_types`](wxml_types::TemplateAnalyzer): `binder` is `bind` + event
+/// `er`, and a compact prefix never swallows a leading `:`.
+const DECLARED_EVENT_COMPACT_PREFIXES: [&str; 5] =
+    ["capture-bind", "capture-catch", "mut-bind", "bind", "catch"];
+
+/// Returns the binding prefix that `typed_name` starts with, if any.
+fn declared_event_prefix(typed_name: &str) -> Option<&'static str> {
+    if let Some(prefix) = DECLARED_EVENT_COLON_PREFIXES
+        .iter()
+        .find(|prefix| typed_name.starts_with(**prefix))
+    {
+        return Some(*prefix);
+    }
+    DECLARED_EVENT_COMPACT_PREFIXES
+        .iter()
+        .find(|prefix| {
+            typed_name
+                .strip_prefix(**prefix)
+                .is_some_and(|rest| !rest.starts_with(':'))
+        })
+        .copied()
+}
+
+/// Returns whether a typed fragment may still name the declared event.
+///
+/// Both sides are compared through
+/// [`canonical_component_name`](wxml_project::typing::canonical_component_name),
+/// so `some-` matches a declared `someEvent` and `someE` matches a declared
+/// `'some-event'`; the raw prefix is accepted as well.
+fn fragment_matches(name: &str, fragment: &str) -> bool {
+    name.starts_with(fragment) || {
+        let canonical = canonical_component_name(name);
+        canonical.starts_with(&canonical_component_name(fragment))
+    }
+}
+
+/// `someEvent` -> `some-event`.
+fn kebab_form(name: &str) -> String {
+    let mut result = String::with_capacity(name.len());
+    for character in name.chars() {
+        if character.is_ascii_uppercase() {
+            result.push('-');
+            result.extend(character.to_lowercase());
+        } else {
+            result.push(character);
+        }
+    }
+    result
+}
+
 /// Event-name completion from a component's declared events.
 ///
 /// `typed_name` is the attribute-name text up to the cursor and
 /// `name_start` its byte start. The replacement covers only the event-name
 /// fragment after the binding prefix, so `bind:cha` becomes `bind:change` and
-/// the prefix is never rewritten.
+/// the prefix is never rewritten. Every legal binding form (colon and compact)
+/// is recognised.
+///
+/// The inserted text follows the typed fragment: a fragment containing `-`
+/// inserts the declaration's kebab spelling, anything else the camel spelling,
+/// so `bind:some-` becomes `bind:some-event` while the label keeps the declared
+/// name.
 ///
 /// Returns `None` for an undeclared, incomplete or event-less component, for a
-/// name that is not a colon-form binding prefix, and for a fragment that is not
-/// an event-name prefix. Callers keep the pre-declaration candidates in every
+/// name that is not a binding prefix, and for a fragment that is not an
+/// event-name prefix. Callers keep the pre-declaration candidates in every
 /// such case.
 pub(crate) fn declared_event_items(
     component: &ViewComponent,
@@ -422,9 +483,7 @@ pub(crate) fn declared_event_items(
     if !typing.complete || typing.events.is_empty() {
         return None;
     }
-    let prefix = DECLARED_EVENT_PREFIXES
-        .iter()
-        .find(|prefix| typed_name.starts_with(**prefix))?;
+    let prefix = declared_event_prefix(typed_name)?;
     let fragment = typed_name.get(prefix.len()..)?;
     if !fragment
         .bytes()
@@ -435,11 +494,17 @@ pub(crate) fn declared_event_items(
     let start = name_start.checked_add(u32::try_from(prefix.len()).ok()?)?;
     let end = name_start.checked_add(u32::try_from(typed_name.len()).ok()?)?;
     let replace = SourceRange::from_bounds(start, end).ok()?;
+    let kebab_style = fragment.contains('-');
     let mut items = Vec::new();
     for event in &typing.events {
-        if !event.name.starts_with(fragment) {
+        if !fragment_matches(&event.name, fragment) {
             continue;
         }
+        let insert_text = if kebab_style {
+            kebab_form(&event.name)
+        } else {
+            canonical_component_name(&event.name)
+        };
         let signature = expected_signature(event.detail_text.as_deref());
         let detail = if event.proven {
             signature.clone()
@@ -454,7 +519,7 @@ pub(crate) fn declared_event_items(
                 "组件 `{}` 声明的事件处理函数签名：`{}`",
                 component.name, signature
             )),
-            insert_text: event.name.clone(),
+            insert_text,
             insert_text_format: InsertTextFormat::PlainText,
             replace,
             sort_text: Some(format!("0_{}", event.name)),

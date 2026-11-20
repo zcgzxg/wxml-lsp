@@ -9,7 +9,7 @@
 //! host; definition targets stay project-relative until the LSP layer maps them
 //! through the host.
 
-use wxml_project::{ComponentTargetKind, ProjectPath};
+use wxml_project::{ComponentTargetKind, ProjectPath, component_name_eq};
 use wxml_text::{SourceRange, TextRange};
 
 use crate::completion::catalog;
@@ -468,7 +468,7 @@ pub(crate) fn definition(components: &[ViewComponent], target: &Target) -> Defin
                 .property_facts
                 .properties
                 .iter()
-                .find(|property| property.name.eq_ignore_ascii_case(name))
+                .find(|property| component_name_eq(&property.name, name))
             {
                 return DefinitionAnswer::Location(StaticLocation {
                     path: property.script.clone(),
@@ -500,3 +500,115 @@ fn start_of_file(path: ProjectPath) -> Option<StaticLocation> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod spelling_tests {
+    use wxml_project::{ComponentProperty, ComponentPropertyFacts, ProjectPath, PropertySource};
+    use wxml_text::{SourceRange, TextRange};
+
+    use super::*;
+
+    fn property(name: &str) -> ComponentProperty {
+        ComponentProperty {
+            name: name.to_owned(),
+            type_text: "string".to_owned(),
+            default_text: None,
+            documentation: None,
+            script: ProjectPath::new("components/item/item.ts").expect("path"),
+            range: TextRange::new(40, 55).expect("range"),
+        }
+    }
+
+    fn component(properties: Vec<ComponentProperty>, complete: bool) -> ViewComponent {
+        ViewComponent {
+            name: "item".to_owned(),
+            specifier: "../../components/item/item".to_owned(),
+            kind: ComponentTargetKind::Local,
+            component: Some(ProjectPath::new("components/item/item").expect("path")),
+            wxml: Some(ProjectPath::new("components/item/item.wxml").expect("path")),
+            json: Some(ProjectPath::new("components/item/item.json").expect("path")),
+            property_facts: ComponentPropertyFacts {
+                properties,
+                complete,
+                reason: None,
+                source: PropertySource::Typing,
+            },
+            typing: None,
+            origin: crate::project_host::ComponentOrigin::Local { file: None },
+        }
+    }
+
+    fn attribute(name: &str) -> Target {
+        Target::Attribute {
+            tag: "item".to_owned(),
+            name: name.to_owned(),
+            range: SourceRange::new(TextRange::new(0, 3).expect("range")),
+        }
+    }
+
+    fn location() -> DefinitionAnswer {
+        DefinitionAnswer::Location(StaticLocation {
+            path: ProjectPath::new("components/item/item.ts").expect("path"),
+            range: TextRange::new(40, 55).expect("range"),
+        })
+    }
+
+    #[test]
+    fn property_definition_accepts_camel_and_kebab_in_both_directions() {
+        let camel = component(vec![property("cardTitle")], true);
+        assert_eq!(
+            definition(std::slice::from_ref(&camel), &attribute("card-title")),
+            location()
+        );
+        assert_eq!(definition(&[camel], &attribute("cardTitle")), location());
+
+        let kebab = component(vec![property("card-title")], true);
+        assert_eq!(
+            definition(std::slice::from_ref(&kebab), &attribute("cardTitle")),
+            location()
+        );
+        assert_eq!(definition(&[kebab], &attribute("card-title")), location());
+    }
+
+    #[test]
+    fn property_definition_keeps_case_and_underscore_variants_unresolved() {
+        let components = [component(vec![property("someProp")], true)];
+        for written in ["someprop", "some_prop", "other"] {
+            assert_eq!(
+                definition(&components, &attribute(written)),
+                DefinitionAnswer::None,
+                "{written}"
+            );
+        }
+    }
+
+    #[test]
+    fn event_attributes_stay_non_static() {
+        let components = [component(vec![property("someProp")], true)];
+        for written in ["bindtap", "bind:tap", "catch:tap"] {
+            assert_eq!(
+                definition(&components, &attribute(written)),
+                DefinitionAnswer::NotStatic,
+                "{written}"
+            );
+        }
+    }
+
+    #[test]
+    fn missing_or_incomplete_declarations_keep_the_existing_answer() {
+        assert_eq!(
+            definition(&[], &attribute("card-title")),
+            DefinitionAnswer::NotStatic
+        );
+        let incomplete = [component(Vec::new(), false)];
+        assert_eq!(
+            definition(&incomplete, &attribute("card-title")),
+            DefinitionAnswer::NotStatic
+        );
+        let complete = [component(Vec::new(), true)];
+        assert_eq!(
+            definition(&complete, &attribute("card-title")),
+            DefinitionAnswer::None
+        );
+    }
+}

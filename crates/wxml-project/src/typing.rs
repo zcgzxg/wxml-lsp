@@ -257,17 +257,74 @@ pub struct TypingComponent {
 }
 
 impl TypingComponent {
-    /// Returns one declared attribute by name.
+    /// Returns one declared attribute by exact name.
     #[must_use]
     pub fn prop(&self, name: &str) -> Option<&TypingProperty> {
         self.props.iter().find(|property| property.name == name)
     }
 
-    /// Returns one declared event by name.
+    /// Returns one declared event by exact name.
     #[must_use]
     pub fn event(&self, name: &str) -> Option<&TypingEvent> {
         self.events.iter().find(|event| event.name == name)
     }
+
+    /// Returns one declared attribute by its WXML spelling.
+    ///
+    /// WXML accepts both `some-prop` and `someProp` for the same declared
+    /// member, in either direction; see [`component_name_eq`].
+    #[must_use]
+    pub fn prop_named(&self, name: &str) -> Option<&TypingProperty> {
+        self.props
+            .iter()
+            .find(|property| component_name_eq(&property.name, name))
+    }
+
+    /// Returns one declared event by its WXML spelling.
+    ///
+    /// WXML accepts both `some-event` and `someEvent` for the same declared
+    /// event, in either direction; see [`component_name_eq`].
+    #[must_use]
+    pub fn event_named(&self, name: &str) -> Option<&TypingEvent> {
+        self.events
+            .iter()
+            .find(|event| component_name_eq(&event.name, name))
+    }
+}
+
+/// Folds a component member name into its canonical camelCase key.
+///
+/// Every `-x` pair becomes `X`; other characters are kept as written. This is
+/// the kebab↔camel equivalence WXML applies to custom component properties and
+/// events. It deliberately does not lowercase or treat `_` as a separator.
+#[must_use]
+pub fn canonical_component_name(name: &str) -> String {
+    let mut output = String::with_capacity(name.len());
+    let mut uppercase = false;
+    for character in name.chars() {
+        if character == '-' {
+            uppercase = true;
+            continue;
+        }
+        if uppercase {
+            output.extend(character.to_uppercase());
+            uppercase = false;
+        } else {
+            output.push(character);
+        }
+    }
+    output
+}
+
+/// Returns whether `written` refers to the declared component member `declared`.
+///
+/// The comparison accepts the kebab and camel spelling of the same name in both
+/// directions: `someProp` matches `some-prop` and `some-prop` matches
+/// `someProp`. Names that differ in more than hyphen placement (case-only or
+/// `_` variants) stay distinct.
+#[must_use]
+pub fn component_name_eq(declared: &str, written: &str) -> bool {
+    declared == written || canonical_component_name(declared) == canonical_component_name(written)
 }
 
 /// Why a declaration could not be used exactly as written.
@@ -1710,6 +1767,65 @@ mod tests {
     /// Parses facts from declaration files.
     fn facts(files: &[(&str, &str)]) -> ComponentTypingFacts {
         parse_component_typing_facts(&source_set(files))
+    }
+
+    #[test]
+    fn component_names_fold_kebab_and_camel_both_ways() {
+        assert_eq!(canonical_component_name("some-prop"), "someProp");
+        assert_eq!(canonical_component_name("someProp"), "someProp");
+        assert_eq!(canonical_component_name("some-event"), "someEvent");
+        for (declared, written) in [
+            ("someProp", "some-prop"),
+            ("some-prop", "someProp"),
+            ("someEvent", "some-event"),
+            ("some-event", "someEvent"),
+            ("plain", "plain"),
+        ] {
+            assert!(
+                component_name_eq(declared, written),
+                "{declared} vs {written}"
+            );
+        }
+        for (declared, written) in [
+            ("someProp", "someprop"),
+            ("someProp", "some_prop"),
+            ("someProp", "some-other"),
+        ] {
+            assert!(
+                !component_name_eq(declared, written),
+                "{declared} vs {written}"
+            );
+        }
+    }
+
+    #[test]
+    fn declared_members_are_found_by_either_spelling() {
+        let facts = facts(&[(
+            "types/components.d.ts",
+            r"
+            interface WxmlComponentMap {
+              'demo-box': DemoBox;
+            }
+            interface DemoBox {
+              props: {
+                cardTitle: string;
+                'kebab-only': number;
+              };
+              events: {
+                someEvent: { detail: { index: number } };
+                'other-event': void;
+              };
+            }
+            ",
+        )]);
+        assert!(facts.complete, "{:?}", facts.issues);
+        let component = facts.component("demo-box").expect("component");
+        assert!(component.prop_named("card-title").is_some());
+        assert!(component.prop_named("kebabOnly").is_some());
+        assert!(component.event_named("some-event").is_some());
+        assert!(component.event_named("otherEvent").is_some());
+        assert!(component.prop_named("cardtitle").is_none());
+        assert!(component.event_named("someevnt").is_none());
     }
 
     #[test]

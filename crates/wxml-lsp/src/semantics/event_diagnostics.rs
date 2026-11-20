@@ -207,6 +207,10 @@ pub(crate) fn diagnostics(
 /// (`Warning` on the event token) or a handler parameter that is proven
 /// incompatible (`Error` on the handler token). A zero-argument handler accepts
 /// any detail, and an unannotated or unproven side produces no diagnostic.
+///
+/// The lookup uses [`TypingComponent::event_named`], so a kebab binding and a
+/// camel declaration (in either direction) are the same event. The raw binding
+/// text is kept for the diagnostic message and the token range.
 fn event_contract_diagnostic(
     text: &str,
     binding: &EventBinding,
@@ -216,7 +220,7 @@ fn event_contract_diagnostic(
     methods: &[wxml_backend_tsgo::script::events::EventMethod],
 ) -> Option<Diagnostic> {
     let declared_events_complete = typing.complete && !typing.events.is_empty();
-    if declared_events_complete && typing.event(&binding.event).is_none() {
+    if declared_events_complete && typing.event_named(&binding.event).is_none() {
         return Some(Diagnostic {
             range: event_name_range(text, source, &binding.event)?,
             severity: DiagnosticSeverity::Warning,
@@ -231,7 +235,7 @@ fn event_contract_diagnostic(
     if method.arity == 0 {
         return None;
     }
-    let declared = typing.event(&binding.event)?;
+    let declared = typing.event_named(&binding.event)?;
     // An unproven declaration is never compared: the declared side cannot be
     // trusted, so the binding stays undecided instead of guessed at.
     if !declared.proven {
@@ -295,7 +299,7 @@ pub(crate) fn unannotated_handler_reason(
         let Some(typing) = facts.component(tag) else {
             continue;
         };
-        if !typing.complete || typing.event(&event.event).is_none() {
+        if !typing.complete || typing.event_named(&event.event).is_none() {
             continue;
         }
         bindings.push((tag, event.handler.trim()));
@@ -1165,5 +1169,146 @@ mod tests {
         assert!(with_empty.diagnostics.is_empty(), "{with_empty:?}");
         assert_eq!(with_empty.diagnostics, with_undeclared.diagnostics);
         assert_eq!(with_empty.status, with_undeclared.status);
+    }
+
+    // ---- kebab/camel event-name equivalence (change 6.1) ----
+
+    /// Builds the sole static event fact of one template.
+    fn template_event(template: &str) -> EventHandler {
+        let analysis = wxml_types::TemplateAnalyzer::new(RootKind::Page, SourceRevision::new(1))
+            .analyze(&wxml_syntax::parse(template).tree);
+        let mut events = analysis.events;
+        assert_eq!(events.len(), 1, "{template}");
+        events.pop().expect("one event")
+    }
+
+    /// Asserts one spelling of a declared event produces no contract diagnostic.
+    fn assert_declared_spelling(declared: &[&str], attribute: &str) {
+        let template = format!("<card {attribute}=\"onSome\" />");
+        let source = template_event(&template);
+        let view_component = component(
+            "card",
+            declared
+                .iter()
+                .map(|name| event(name, None, true))
+                .collect(),
+            true,
+        );
+        let typing = view_component.typing.as_deref().expect("typing");
+        let binding = EventBinding::new(
+            "e0",
+            source.attribute.clone(),
+            source.event.clone(),
+            source.handler.clone(),
+            wxml_backend_tsgo::shadow::mapping::SourceRange::new(
+                source.handler_range.start(),
+                source.handler_range.end(),
+            ),
+        );
+        let diagnostic =
+            event_contract_diagnostic(&template, &binding, &source, "card", typing, &[]);
+        assert!(
+            diagnostic.is_none(),
+            "{declared:?} {attribute}: {diagnostic:?}"
+        );
+    }
+
+    #[test]
+    fn every_binding_spelling_resolves_a_camel_and_kebab_declaration() {
+        for declared in [&["someEvent"][..], &["some-event"][..]] {
+            for family in ["bind", "catch", "capture-bind", "capture-catch", "mut-bind"] {
+                for (separator, name) in [
+                    ("", "someEvent"),
+                    (":", "someEvent"),
+                    ("", "some-event"),
+                    (":", "some-event"),
+                ] {
+                    assert_declared_spelling(declared, &format!("{family}{separator}{name}"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_kebab_binding_is_quiet_for_a_camel_declaration() {
+        // Full path: every compact/colon and kebab/camel spelling of the same
+        // declared camel event must be checked and stay quiet.
+        let script = "Page({ onSome() {} });";
+        let components = vec![component(
+            "card",
+            vec![event("someEvent", None, true)],
+            true,
+        )];
+        for template in [
+            "<card bindsome-event=\"onSome\" />",
+            "<card bind:some-event=\"onSome\" />",
+            "<card bindsomeEvent=\"onSome\" />",
+            "<card bind:someEvent=\"onSome\" />",
+        ] {
+            let result = check_with_components(RootKind::Page, script, template, &components);
+            assert!(result.diagnostics.is_empty(), "{template}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn a_camel_binding_is_quiet_for_a_kebab_declaration() {
+        let script = "Page({ onSome() {} });";
+        let components = vec![component(
+            "card",
+            vec![event("some-event", None, true)],
+            true,
+        )];
+        for template in [
+            "<card bind:someEvent=\"onSome\" />",
+            "<card catch:someEvent=\"onSome\" />",
+        ] {
+            let result = check_with_components(RootKind::Page, script, template, &components);
+            assert!(result.diagnostics.is_empty(), "{template}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn an_undeclared_kebab_spelling_still_warns_on_the_event_token() {
+        let script = "Page({ onSome() {} });";
+        let components = vec![component(
+            "card",
+            vec![event("someEvent", None, true)],
+            true,
+        )];
+        for (template, needle) in [
+            ("<card bind:someevnt=\"onSome\" />", "someevnt"),
+            ("<card bindsomeevnt=\"onSome\" />", "someevnt"),
+        ] {
+            let result = check_with_components(RootKind::Page, script, template, &components);
+            assert_eq!(result.diagnostics.len(), 1, "{template}: {result:?}");
+            assert_at(
+                &result,
+                template,
+                needle,
+                DiagnosticSeverity::Warning,
+                "Event \"someevnt\" is not declared by component \"card\"",
+            );
+        }
+    }
+
+    #[test]
+    fn an_incompatible_handler_uses_the_declared_detail_through_a_kebab_binding() {
+        let script = "Page({ onSome(event: WechatMiniprogram.CustomEvent<{ name: string }>) {} });";
+        let template = "<card bind:some-event=\"onSome\" />";
+        let components = vec![component(
+            "card",
+            vec![event("someEvent", Some("{ index: number }"), true)],
+            true,
+        )];
+        let result = check_with_components(RootKind::Page, script, template, &components);
+        assert_eq!(result.diagnostics.len(), 1, "{result:?}");
+        assert_at(
+            &result,
+            template,
+            "onSome",
+            DiagnosticSeverity::Error,
+            "Event handler \"onSome\" parameter does not match event \"some-event\" detail: \
+             expected { index: number }, found { name: string }",
+        );
     }
 }
