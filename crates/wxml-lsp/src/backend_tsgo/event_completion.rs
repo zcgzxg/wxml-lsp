@@ -31,10 +31,11 @@ use std::sync::{Mutex, PoisonError};
 use wxml_backend_tsgo::input::{
     AnalysisInput, DocumentRevision, ProjectKey, ProjectRoot, SnapshotRevision, SourceFile,
 };
-use wxml_backend_tsgo::script::events::EventMethod;
+use wxml_backend_tsgo::script::events::{EventMethod, MethodTable};
 use wxml_backend_tsgo::script::registration::RegistrationKind;
 use wxml_backend_tsgo::script::{ScriptRequest, analyze_script};
 use wxml_backend_tsgo::shadow::expression::is_identifier_name;
+use wxml_project::typing_contract::expected_signature;
 use wxml_text::SourceRange;
 use wxml_types::{
     BackendError, CapabilityStatus, CompletionItem, CompletionItemKind, CompletionRequest,
@@ -44,7 +45,7 @@ use wxml_types::{
 use crate::backend_tsgo::input::{ViewProvider, input_error, prepare_view};
 use crate::completion::context;
 use crate::completion::expression::{EventValueRejection, EventValueRoute, event_value_route};
-use crate::project_host::{PreparedFile, PreparedView, ViewTarget};
+use crate::project_host::{PreparedFile, PreparedView, ViewComponent, ViewTarget};
 
 /// Maximum characters kept in one item `detail`.
 const MAX_DETAIL_CHARS: usize = 120;
@@ -161,6 +162,57 @@ pub(crate) fn completion(
     Ok(result)
 }
 
+/// Builds the owning registration's method table without a prepared view.
+///
+/// This is the script-only seam used by view preparation to decide whether a
+/// declared event handler has an unannotated parameter. It runs the same
+/// analysis as [`completion`] but keeps no cache, maps no replacement range and
+/// never touches the native engine. Files that cannot be represented are
+/// skipped: the table is only ever used to prove an already-existing method's
+/// parameter shape, never to prove a handler missing.
+pub(crate) fn owner_methods(
+    files: &[PreparedFile],
+    project_root: &str,
+    project: &str,
+    script: &str,
+    owner: RootKind,
+) -> Option<MethodTable> {
+    let mut sources = Vec::with_capacity(files.len());
+    for prepared in files {
+        let Ok(file) = SourceFile::new(
+            prepared.path.as_str(),
+            prepared.text.to_string(),
+            DocumentRevision::new(prepared.source_revision),
+        ) else {
+            continue;
+        };
+        sources.push(file);
+    }
+    let root = ProjectRoot::new(project_root.to_owned()).ok()?;
+    let input = AnalysisInput::new(
+        ProjectKey::new(project),
+        root,
+        SnapshotRevision::new(1),
+        sources,
+    )
+    .ok()?;
+    analyze_script(&ScriptRequest::new(
+        &input,
+        script,
+        registration_kind(owner),
+    ))
+    .ok()
+    .map(|analysis| analysis.methods)
+}
+
+/// Maps a view owner to the registration kind whose method table it uses.
+const fn registration_kind(owner: RootKind) -> RegistrationKind {
+    match owner {
+        RootKind::Page => RegistrationKind::Page,
+        RootKind::Component => RegistrationKind::Component,
+    }
+}
+
 /// Rebuilds one candidate list from the original effective script files.
 ///
 /// The prepared files carry overlay-first text; the owning script must be
@@ -210,10 +262,7 @@ fn build_candidates(
         files,
     )
     .map_err(|error| input_error(&error))?;
-    let kind = match target.owner {
-        RootKind::Page => RegistrationKind::Page,
-        RootKind::Component => RegistrationKind::Component,
-    };
+    let kind = registration_kind(target.owner);
     let Ok(analysis) = analyze_script(&ScriptRequest::new(&input, script_path, kind)) else {
         return Ok(EventCandidateCache {
             key,
@@ -341,6 +390,78 @@ fn detail_of(signature: &str) -> Option<String> {
         return None;
     }
     Some(cap_chars(&collapsed, MAX_DETAIL_CHARS))
+}
+
+/// Colon-form event prefixes whose event-name fragment can be completed from a
+/// component declaration.
+const DECLARED_EVENT_PREFIXES: [&str; 5] = [
+    "capture-bind:",
+    "capture-catch:",
+    "mut-bind:",
+    "bind:",
+    "catch:",
+];
+
+/// Event-name completion from a component's declared events.
+///
+/// `typed_name` is the attribute-name text up to the cursor and
+/// `name_start` its byte start. The replacement covers only the event-name
+/// fragment after the binding prefix, so `bind:cha` becomes `bind:change` and
+/// the prefix is never rewritten.
+///
+/// Returns `None` for an undeclared, incomplete or event-less component, for a
+/// name that is not a colon-form binding prefix, and for a fragment that is not
+/// an event-name prefix. Callers keep the pre-declaration candidates in every
+/// such case.
+pub(crate) fn declared_event_items(
+    component: &ViewComponent,
+    typed_name: &str,
+    name_start: u32,
+) -> Option<Vec<CompletionItem>> {
+    let typing = component.typing.as_deref()?;
+    if !typing.complete || typing.events.is_empty() {
+        return None;
+    }
+    let prefix = DECLARED_EVENT_PREFIXES
+        .iter()
+        .find(|prefix| typed_name.starts_with(**prefix))?;
+    let fragment = typed_name.get(prefix.len()..)?;
+    if !fragment
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return None;
+    }
+    let start = name_start.checked_add(u32::try_from(prefix.len()).ok()?)?;
+    let end = name_start.checked_add(u32::try_from(typed_name.len()).ok()?)?;
+    let replace = SourceRange::from_bounds(start, end).ok()?;
+    let mut items = Vec::new();
+    for event in &typing.events {
+        if !event.name.starts_with(fragment) {
+            continue;
+        }
+        let signature = expected_signature(event.detail_text.as_deref());
+        let detail = if event.proven {
+            signature.clone()
+        } else {
+            format!("{signature}（detail 类型未证明）")
+        };
+        items.push(CompletionItem {
+            label: event.name.clone(),
+            kind: CompletionItemKind::Event,
+            detail: Some(cap_chars(&detail, MAX_DETAIL_CHARS)),
+            documentation: Some(format!(
+                "组件 `{}` 声明的事件处理函数签名：`{}`",
+                component.name, signature
+            )),
+            insert_text: event.name.clone(),
+            insert_text_format: InsertTextFormat::PlainText,
+            replace,
+            sort_text: Some(format!("0_{}", event.name)),
+            filter_text: Some(event.name.clone()),
+        });
+    }
+    Some(items)
 }
 
 /// Returns bounded script `JSDoc`; empty documentation stays absent.

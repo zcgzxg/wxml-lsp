@@ -330,3 +330,45 @@ bench 按**唯一字面量子串**定位（与 §3.1 的 marker 规则一致）�
 `class="card"` 同时是内置标签锚点；`.card` 在 `app.wxss` 与 `pages/index/index.wxss` 各声明一次（带注释），`query/class/definition` 期望命中页面 WXSS。`card`、`card-title`、`card-footer`、`card-body`、`card-header`、`card-kicker`、`card-meta`、`card-highlight`、`card-caption`、`card-extra` 共享 `car` 前缀，供补全用例在光标前缀处取值。样式索引合计 33 个不同类名（含 partial；`app.wxss`/`index.wxss`/`theme.wxss` 本体为 31 个），`styles/theme.wxss` 与 `pages/index/index-extra.wxss` 用于覆盖 `@import` 链。
 
 修改该样本时必须同步 bench 锚点；本目录不提供 `expected/`，正确性断言写在 bench 场景内。
+
+## 11. 组件类型声明样本（components-typings）
+
+`components-typings/` 是一棵自包含的小程序工程，专门覆盖「第三方组件类型声明」这条链路：与 `tsconfig.json` 同级的 `components.d.ts` 被发现 → 声明事实覆盖脚本推断 → 属性绑定、事件名与 hover 使用声明。它不使用 `node_modules`，也不携带第三方代码：`app.json` 里的 `van-button` 指向 `/miniprogram_npm/@vant/weapp/button/index`，该目录在样本中**故意不存在**，因此该组件没有任何本地脚本，属性与事件事实只能来自声明文件。
+
+```text
+components-typings/
+├── app.json                          # pages + 全局 usingComponents（van-button → /miniprogram_npm/...）
+├── tsconfig.json                     # 常规 include（**/*.ts），不参与声明发现
+├── components.d.ts                   # 与 tsconfig.json 同级：WxmlComponentMap → VanButtonProps
+└── pages/index/index.{json,ts,wxml}  # Page + 人工样例
+```
+
+启用与关闭只靠文件本身：
+
+- **启用**：在项目 `tsconfig.json` 同级新增 `components.d.ts`。
+- **关闭**：删除该文件；不需要改 tsconfig，也不需要在 tsconfig 里写 `files`/`include`/`paths` 指向它。
+- 其他位置（如 `types/components.d.ts`）的同名文件不生效，这也是本样本把声明放在根目录的原因。
+
+`components.d.ts` 的约定：
+
+- 入口为 `declare global { interface WxmlComponentMap { 'van-button': VanButtonProps } }`，文件以 `export {}` 结束，保持模块写法。
+- `VanButtonProps.props` 含字符串字面量联合 `type?: 'primary' | 'default' | 'warning'`、可选 boolean `loading?: boolean`、必填 `text: string`。
+- `VanButtonProps.events` 含 `change: { detail: { index: number } }` 与 `input: { detail: { value: string } }`（后者用于事件名补全）。
+- 文件末尾的 `interface OrphanButtonProps` 未被 `WxmlComponentMap` 引用，是「未被引用的接口不生效」的人工样例。
+
+`pages/index/index.wxml` 的人工样例（每个片段是唯一字面量，可直接作 marker）：
+
+| 位置 | 片段 | 期望 |
+| --- | --- | --- |
+| 正例 | `type="primary" text="{{ buttonText }}" loading="{{ loading }}" bind:change="onButtonChange"` | 无诊断；`buttonText` 为 string、`loading` 为 boolean，与声明兼容；`change` 是已声明事件 |
+| 反例 1（未声明属性） | `round="{{ true }}"` | 在 `round` 上报未声明属性；声明里没有该属性 |
+| 反例 2（绑定类型不匹配） | `text="{{ loading }}"` | 在绑定表达式 `{{ loading }}` 上报类型不匹配（`string` ← `boolean`），范围落在表达式而非属性名 |
+| 反例 3（未声明事件名） | `bind:chaneg="onButtonChange"` | 在 `chaneg` token 上报 `Warning`；声明只有 `change`/`input` |
+
+`pages/index/index.ts` 的 `onButtonChange` 形参显式标注 `WechatMiniprogram.CustomEvent<{ index: number }>`，与 `change` 的 detail 结构一致，因此不产生「handler 参数不兼容」诊断；事件名拼写错误的片段复用它，避免同时触发「处理函数缺失」。
+
+约定与限制：
+
+- 全部文件为 LF，无尾随空格；`.wxml` 由 `.gitattributes` 的 `tests/fixtures/**/*.wxml text eol=lf` 保护。
+- 本样本不提供 `expected/`，也尚未登记到 `manifest.json`；期望行为以 crate 内的组件声明/事件测试断言为准，人工核对时按上表执行。
+- 不要为它添加 `node_modules`、`miniprogram_npm` 或其它第三方代码；需要新的声明样例时直接扩充同级 `components.d.ts`（一个映射表可以登记多个标签）。

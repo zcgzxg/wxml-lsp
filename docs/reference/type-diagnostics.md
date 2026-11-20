@@ -1,6 +1,6 @@
 # 模板类型诊断策略
 
-更新日期：2026-11-16。
+更新日期：2026-11-21。
 
 本文件规定 WXML 模板在什么情况下产生诊断、什么情况下必须降级、hover 的类型与说明如何取舍，以及诊断落在哪个 token 上。它是实现目标，不代表功能已实现；实际进度与证据仍由[项目 README](../../README.md) 维护。契约定义见 [C0 基础契约](contracts.md)。
 
@@ -57,14 +57,19 @@
 
 fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是整段表达式；运行器断言 `Diagnostic.range` **精确等于** target 的字节范围，不能用 `contains` 放宽：
 
-| 错误种类 | target |
-| --- | --- |
-| 属性不存在 | 属性名（`nmae`、`age`、`subtitle`） |
-| 可空错误（`possibly null`） | 可空对象表达式（`maybeUser`） |
-| `unknown` 上的访问 | `unknown` 表达式（`external`） |
-| 组件属性类型不匹配 | 绑定的表达式（`total`、`cardObject`） |
-| 事件 handler 缺失 | handler 名（`missingHandler`） |
-| hover | 用户悬停的标识符/表达式（`user.name`、`state.user.name`） |
+| 错误种类 | 级别 | target |
+| --- | --- | --- |
+| 属性不存在 | `Error` | 属性名（`nmae`、`age`、`subtitle`） |
+| 可空错误（`possibly null`） | `Error` | 可空对象表达式（`maybeUser`） |
+| `unknown` 上的访问 | `Error` | `unknown` 表达式（`external`） |
+| 组件属性类型不匹配 | `Error` | 绑定的表达式（`total`、`cardObject`） |
+| 组件未声明属性 | `Error` | 属性名（`round`） |
+| 组件事件名未声明 | `Warning` | 事件名 token（`chaneg`） |
+| 事件 handler 缺失 | `Error` | handler 名（`missingHandler`） |
+| 组件事件 handler 参数不兼容 | `Error` | 绑定值的方法名 token |
+| hover | — | 用户悬停的标识符/表达式（`user.name`、`state.user.name`） |
+
+组件声明引入的诊断只有“事件名未声明”是 `Warning`，其余模板可归因诊断均为 `Error`；`Warning` 仅在组件 `events` 声明完整时发布。
 
 如果实现只能返回更宽的范围，必须调整 fixture 并明确记录；不能通过放宽运行器断言掩盖。
 
@@ -106,14 +111,28 @@ fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是
 
 ### 7.1 自定义组件属性
 
-- 目标类型来自组件 `properties` 的实际声明：`type` 与 `optionalTypes` 共同构成允许类型。
-- 纯表达式绑定（`count="{{ total }}"`）按可赋值性检查；`number → Number` 通过，`number → String` 报错。
+组件属性的类型来源有两条，按优先级取第一条可用的：
+
+| 优先级 | 来源 | 生效条件 |
+| --- | --- | --- |
+| 1 | 组件类型声明 | 项目 `tsconfig.json` 同级的 `components.d.ts`（见 [§7.4](#74-组件类型声明)）把该标签映射到组件接口，且该属性类型可证明 |
+| 2 | 脚本 `properties` | 标签没有声明映射，或声明把该属性标为不完整/未证明 |
+
+- 声明覆盖脚本：同一标签同时有声明与脚本 `properties` 时，属性检查与 hover 使用声明；两份事实不合并，冲突按声明处理。
+- 未保存改动不改变声明来源：组件已使用声明事实时，脚本 `properties` 的 overlay 改动不影响组件事实；只有声明文件自身的 overlay 改动会触发重算。
+- 声明缺失或不完整时回落到脚本 `properties`，行为与本次改动前一致。两条来源的未知属性处理不同：声明映射生效时，组件的 `props` 就是完整属性面，声明未包含的属性报未声明属性（`class`/`style`/`id`/`hidden`/`slot`/`data-*`/`aria-*`/`wx:*` 等通用属性豁免）；只有脚本 `properties` 时沿用既有行为，不把未知属性当作错误（保留 `custom-class` 一类透传写法）。
+- 声明成员类型未证明时，该成员不参与类型诊断，状态 `Partial` 并给出原因，其他成员照常生效。
+- 可选属性（`?` 或类型含 `undefined`）允许缺省和 `undefined`；hover 展示声明中的类型原文，不重排 union 顺序。
+- 脚本来源下，`type` 与 `optionalTypes` 共同构成允许类型。
+- 纯表达式绑定（`count="{{ total }}"`）按可赋值性检查；`number → Number` 通过，`number → String` 报错；范围落在绑定表达式而非属性名。
 - 混合文本绑定（`title="共 {{ n }} 个"`）第一版只做 `Partial` 覆盖。
 - 未声明属性访问（组件 WXML 使用 `subtitle` 但 `data`/`properties` 都没有）必须报错。
 - 页面/组件根数据只来自脚本 `data`（组件另加 `properties`）；独立 `interface`/`type` 只有被字段引用时才参与，不能作为模板根。`Page({ data: User })` 这类把 interface 当值的写法必须返回 `Unknown`，不得伪造字段类型。
-- 同一项目中多个组件可以各自声明同名 `title` 且类型不同；hover 必须解析到当前组件自己的 `properties`，不能串到页面或另一个组件。
+- 同一项目中多个组件可以各自声明同名 `title` 且类型不同；hover 必须解析到当前组件自己的声明或 `properties`，不能串到页面或另一个组件。
 
 ### 7.2 事件绑定
+
+绑定形式与既有检查不因声明改变：
 
 | 形式 | 行为 |
 | --- | --- |
@@ -127,13 +146,107 @@ fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是
 | 组件 `behaviors` | behavior 可能提供 handler，状态 `Partial`，不伪造缺失错误 |
 | 非字面量根（如 `Page(options)`） | 沿用既有视图策略，`Unsupported`，不伪造方法或诊断 |
 
+组件拥有事件声明（`events`）时，额外提供以下能力；没有声明的项目保持原有行为：
+
+| 能力 | 来源 | 行为与级别 |
+| --- | --- | --- |
+| 事件名补全 | 声明 `events`，仅当 `events` 声明完整 | `bind:`/`catch:`/`capture-bind:`/`capture-catch:`/`mut-bind:` 之后返回声明中的事件名；只替换已输入的事件名片段，不改写绑定前缀；声明缺失或不完整时沿用静态目录候选 |
+| 未声明事件名 | 声明 `events`，仅当 `events` 声明完整 | 事件名不在声明中：在事件名 token 上发布 `Warning`；动态绑定（`bind:change="{{ name }}"`）、声明缺失或不完整时不发布 |
+| 事件属性 hover | 声明 `events` 的 `detail` | 展示 `(e: WechatMiniprogram.CustomEvent<T>) => void`，`T` 为声明中 `detail` 的类型原文；`detail` 未证明时明确标注未证明，不展示猜测类型 |
+| handler 签名校验 | 声明 `detail` + 脚本形参标注 | 处理函数无参数（`arity == 0`）视为兼容；有参数时仅在已显式标注类型时比较：可证明不兼容时在 handler 名 token 上发布 `Error`；兼容时不发布诊断；参数未标注或任一侧未证明时不发布诊断，状态 `Partial` 并给出原因 |
+| handler hover / 补全 / definition | 脚本 | 保持既有行为，见下文 |
+
+说明：
+
+- 事件属性 hover 的展示形态固定为 `(e: WechatMiniprogram.CustomEvent<T>) => void`；例如 `detail` 为 `{ index: number }` 时展示 `(e: WechatMiniprogram.CustomEvent<{ index: number }>) => void`。
+- 未声明事件名是唯一由声明引入的 `Warning`：仅在 `events` 完整时启用，因为库可能 `triggerEvent` 未声明的事件；补齐声明或删除映射即可关闭。
+- 处理函数缺失优先：发布缺失 `Error` 后不再叠加参数类型诊断。
+- 参数未标注导致的 `Partial` 原因固定形如 `组件 'card' 的事件处理函数参数未标注类型，事件参数类型未校验`；与其他降级原因（声明不可读、声明不完整、类型未证明）共存时保留先到者，不叠加展示。
+- 事件名补全与事件属性值补全互不替代：属性名候选来自声明（仅完整声明），属性值候选仍来自脚本方法。
+
 hover：悬停在 handler token 上返回后端提供的脚本方法签名，范围精确到 handler token。
 
-补全：事件属性值（`bindtap="on"`）返回当前 Page 顶层方法或 Component `methods`，由 native 后端脚本查询提供事件处理函数候选（对应原 Node `complete` 的 `eventHandler` kind）；事件属性名补全仍属于静态目录，不在此链路重复。
+补全：事件属性值（`bindtap="on"`）返回当前 Page 顶层方法或 Component `methods`，由 native 后端脚本查询提供事件处理函数候选（对应原 Node `complete` 的 `eventHandler` kind）；事件属性名补全见上表，不在该链路重复。
 
 ### 7.3 特殊属性
 
 `wx:key` 使用专用语义，不按自由表达式检查；第一版不发布其成员诊断。
+
+### 7.4 组件类型声明
+
+组件声明是可选的事实来源，入口只有一个文件：项目 `tsconfig.json` 同级的 `components.d.ts`；完整决策见 [ADR-0011](../adr/0011-component-type-declarations.md)。
+
+#### 7.4.1 发现规则
+
+| 情况 | 行为 |
+| --- | --- |
+| `tsconfig.json` 同级存在 `components.d.ts` | 读取并参与属性与事件检查；使用编辑器缓冲区内容，未保存改动立即生效 |
+| 文件缺失 | 不产生组件事实、不发布诊断，能力状态不变 |
+| 文件为空或没有 `WxmlComponentMap` | 不产生组件事实、不发布诊断，能力状态不变 |
+| 项目没有 `tsconfig.json` | 不寻找声明文件，行为与本次改动前一致 |
+| 声明放在更深层目录（如 `types/components.d.ts`） | 不生效，只读取与 `tsconfig.json` 同级的那一个文件 |
+| 声明文件是目录、逃逸项目根、不可读或超出单文件大小预算 | 记录一条可读的降级说明，能力状态 `Partial`；不产生组件事实，不崩溃 |
+| 声明组件数或成员数超出上限 | 按声明顺序截断，记录降级说明，状态 `Partial` |
+
+- 不读 tsconfig 的 `files`/`include`/`exclude`/`paths`，不做 glob，不扫描 `node_modules`。
+- 一个 tsconfig 目录只对应一份声明；需要不同声明时，把声明放到各自 app 的 tsconfig 目录。
+
+#### 7.4.2 声明格式
+
+入口是 `WxmlComponentMap`，把 WXML 标签名映射到同文件内的组件接口；接口用 `props` 与 `events` 两段描述契约。`WxmlComponentMap` 位于 `declare global` 内或文件顶层时同样生效；未被映射表引用的接口不产生事实。
+
+```ts
+// 与 tsconfig.json 同级
+declare global {
+  interface WxmlComponentMap {
+    'van-button': VanButtonProps;
+  }
+
+  interface VanButtonProps {
+    props: {
+      /** 按钮类型，字符串字面量联合 */
+      type?: 'primary' | 'default' | 'warning';
+      /** 是否显示加载中，可选 boolean */
+      loading?: boolean;
+      /** 按钮文案，必填字符串 */
+      text: string;
+    };
+    events: {
+      /** 点击确认后触发，detail 携带列表下标 */
+      change: { detail: { index: number } };
+      /** 输入时触发 */
+      input: { detail: { value: string } };
+    };
+  }
+}
+
+export {};
+```
+
+- `events` 的事件值用 `{ detail: T }` 声明 detail；`T` 直接决定 hover 签名中的 `CustomEvent<T>`。
+- 映射表内重复映射同一标签时取第一个，并记录冲突说明；只影响重复项与截断项，其他组件照常生效。
+- 真实样例见 [`components-typings` 样本](../../tests/fixtures/README.md)：`round` 未声明、`text="{{ loading }}"` 类型不匹配、`bind:chaneg` 未声明事件名。
+
+#### 7.4.3 可证明的类型子集
+
+| 接受 | 示例 |
+| --- | --- |
+| 基础类型 | `string`、`number`、`boolean` |
+| 字符串/数字/布尔字面量与联合 | `'primary' \| 'default'`、`1 \| 2`、`true` |
+| 数组 | `string[]`、`{ id: number }[]` |
+| `Record` | `Record<string, string>` |
+| 嵌套对象字面量 | `{ index: number; tags?: string[] }` |
+| 同文件 `interface`/`type` 别名 | 先声明 `interface Options { ... }`，再引用 `Options` |
+
+超出子集的成员标记为“未证明”：不参与类型诊断，hover 明确标注未证明，状态 `Partial`。包括但不限于：外部导入类型、跨文件标识符（如 `SomeLib.Options`）、泛型、条件/映射类型、`typeof import(...)`、`node_modules` 内的类型。
+
+#### 7.4.4 非目标
+
+- 不给处理函数形参注入类型，也不改写用户脚本；签名校验只读静态标注。
+- 不为未标注参数的处理函数补全 `e.detail`。
+- 不检查内置组件（`view`、`input` 等）的事件；声明只影响 `WxmlComponentMap` 映射到的自定义组件。
+- 不生成 `components.d.ts`，也不从组件源码推导声明。
+- 不把 tsconfig 的 `include`/`paths` 语义引入声明发现。
 
 ## 8. 定义（Definition）边界
 
@@ -147,6 +260,8 @@ hover：悬停在 handler token 上返回后端提供的脚本方法签名，范
 | 情况 | hover | 诊断 | 状态 |
 | --- | --- | --- | --- |
 | 已知具体类型 | 实际类型 + 说明 | 正常检查 | `Supported` / `Known` |
+| 声明中可证明的属性/事件类型 | 声明中的类型原文 | 按声明检查 | `Supported` / `Known` |
+| 声明的成员类型未证明 | 标注“未证明”，不展示猜测类型 | 不发布该成员诊断 | `Partial` |
 | 显式 `any` | `any` | 成员访问不报错 | `Supported` / `Any` |
 | `unknown` | `unknown` | 成员访问报错，target 为 unknown 表达式 | `Supported` / `Unknown` |
 | 裸 `Object` / `{}` | 实际类型文本 | 按 TS 可访问性检查 | `Partial` |
@@ -170,6 +285,10 @@ hover：悬停在 handler token 上返回后端提供的脚本方法签名，范
 | `template` / `import` / `include` | `Partial`/`Unsupported` | 调用上下文未解析时不发布猜测诊断 |
 | Behavior / 封装注册 / 闭包内注册 | `Partial` | 识别失败报告原因，不静默取第一个候选 |
 | 多候选注册或类型来源不明 | `Partial` + 候选计数 | 使用首个注册、不合并；reason 必须包含候选数，见 [ADR-0008](../adr/0008-rust-tsgo-no-node-backend.md) 与[原生合同](tsgo-native-contract.md) |
+| 组件声明文件不可读（目录、越界、超限） | `Partial` | 不产生组件事实，不发布猜测诊断，原因不含绝对路径 |
+| 组件声明不完整（截断、重复映射、解析失败） | `Partial` | 受影响的组件或成员不参与检查，其他组件照常生效 |
+| handler 参数未标注（或标注未证明） | `Partial` | 不发布签名诊断，原因可读 |
+| 事件 `detail` 未证明 | `Partial` | 不发布签名诊断；hover 标注未证明 |
 | 动态事件绑定 | `Unsupported` | 不发布存在性诊断 |
 | 复杂窄化守卫 | `Partial` | 不产生猜测性空值错误 |
 | 可选链等未覆盖表达式 | `Partial` | 记录支持范围，不把整段模板当字符串 |
@@ -197,6 +316,7 @@ hover：悬停在 handler token 上返回后端提供的脚本方法签名，范
 | 路径别名 | `alias-project` | `tsconfig.base.json` + `extends` 的 `@models` 解析到实际类型 |
 | 组件绑定 | `component-bindings` | 属性类型不匹配 target 为绑定表达式；缺失事件 target 为 handler；definition 正反例 |
 | 组件 properties | `component-properties` | `type`/`optionalTypes`/JSDoc 生效；`cardObject` 与 `subtitle` 各自报错 |
+| 组件类型声明 | `components-typings` | 声明覆盖脚本：`round` 报未声明属性、`{{ loading }}` 报绑定不匹配、`chaneg` 报 `Warning`；补全与 hover 来自声明 |
 | 事件处理函数 | `events-basic` | 7 种绑定形式解析到 Page/Component 方法；缺失 handler 精确报错；definition 正反例；动态/空/非标识符静默；多注册 `Partial`；非字面量 `Unsupported`；事件值补全 |
 | 多视图与组件隔离 | `multi-view` | `card.title` 为 string、`badge.title` 为 number，两个 WXML 各自解析 |
 | any/unknown | `any-unknown` | `any` 不伪造说明；`external.anything` 的 target 为 `external` |

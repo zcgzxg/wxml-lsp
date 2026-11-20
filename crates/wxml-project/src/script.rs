@@ -88,6 +88,32 @@ pub struct ComponentProperty {
     pub range: TextRange,
 }
 
+/// Where a set of component property facts came from.
+///
+/// Facts parsed from a component type declaration replace facts inferred from
+/// the script. The source marker is what keeps later script overlays from
+/// overwriting a declaration: see [`ComponentPropertyFacts::source`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum PropertySource {
+    /// Statically inferred from `Component({ properties })`.
+    #[default]
+    Script,
+    /// Declared in the project component type declaration file.
+    Typing,
+}
+
+impl PropertySource {
+    /// Returns the stable lower-case name of the source.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Script => "script",
+            Self::Typing => "typing",
+        }
+    }
+}
+
 /// Statically extracted component property declarations and their coverage.
 ///
 /// `complete` is `false` when the `properties` value is not a direct object
@@ -102,6 +128,27 @@ pub struct ComponentPropertyFacts {
     pub complete: bool,
     /// Stable reason shown when `complete` is `false`.
     pub reason: Option<&'static str>,
+    /// Whether the facts came from the script or from component declarations.
+    pub source: PropertySource,
+}
+
+impl ComponentPropertyFacts {
+    /// Creates an empty fact set attributed to the given source.
+    #[must_use]
+    pub const fn empty(source: PropertySource, reason: Option<&'static str>) -> Self {
+        Self {
+            properties: Vec::new(),
+            complete: false,
+            reason,
+            source,
+        }
+    }
+
+    /// Returns whether the facts come from component type declarations.
+    #[must_use]
+    pub const fn is_typing(&self) -> bool {
+        matches!(self.source, PropertySource::Typing)
+    }
 }
 
 /// Maximum component properties kept from one project discovery.
@@ -875,6 +922,7 @@ pub fn extract_component_property_facts(roots: &[DataRoot]) -> ComponentProperty
         properties: Vec::new(),
         complete: true,
         reason: None,
+        source: PropertySource::Script,
     };
     let mut found_root = false;
     for root in roots {
@@ -902,6 +950,58 @@ const fn mark_incomplete(facts: &mut ComponentPropertyFacts, reason: &'static st
     if facts.complete {
         facts.complete = false;
         facts.reason = Some(reason);
+    }
+}
+
+/// Merges declaration facts into script facts for one component tag.
+///
+/// A tag mapped by `WxmlComponentMap` uses the declared `props` verbatim: the
+/// declaration wins over `Component({ properties })`, and the returned
+/// [`PropertySource::Typing`] marker keeps later script overlays from replacing
+/// it. An undeclared tag, or one whose declaration is structurally incomplete,
+/// keeps the script facts unchanged, so behaviour falls back to what it was
+/// before declarations existed. Member-level gaps keep the declaration but mark
+/// the facts incomplete, because a known attribute with an unproven type is
+/// still a declaration.
+///
+/// Declared properties carry no source position, so their definition target is
+/// the declaration file itself.
+#[must_use]
+pub fn merge_declared_properties(
+    script: ComponentPropertyFacts,
+    declared: Option<&crate::typing::TypingComponent>,
+) -> ComponentPropertyFacts {
+    let Some(component) = declared else {
+        return script;
+    };
+    if !component.complete {
+        return script;
+    }
+    let Ok(anchor) = TextRange::new(0, 0) else {
+        return script;
+    };
+    let properties = component
+        .props
+        .iter()
+        .map(|property| ComponentProperty {
+            name: property.name.clone(),
+            type_text: property.type_text.clone(),
+            default_text: None,
+            documentation: None,
+            script: component.source.clone(),
+            range: anchor,
+        })
+        .collect();
+    let proven = component.props.iter().all(|property| property.proven);
+    ComponentPropertyFacts {
+        properties,
+        complete: proven,
+        reason: if proven {
+            None
+        } else {
+            Some("component declaration is not fully proven")
+        },
+        source: PropertySource::Typing,
     }
 }
 
@@ -1574,6 +1674,99 @@ mod tests {
             "quoted-key"
         );
         assert_eq!(property.documentation.as_deref(), Some("文档"));
+    }
+
+    fn typing_property(name: &str, type_text: &str, proven: bool) -> crate::typing::TypingProperty {
+        crate::typing::TypingProperty {
+            name: name.to_owned(),
+            type_text: type_text.to_owned(),
+            optional: true,
+            proven,
+            ty: crate::typing::TypeText::parse(type_text),
+        }
+    }
+
+    fn typing_component(
+        props: Vec<crate::typing::TypingProperty>,
+        complete: bool,
+    ) -> crate::typing::TypingComponent {
+        crate::typing::TypingComponent {
+            props,
+            events: Vec::new(),
+            complete,
+            source: path("components.d.ts"),
+        }
+    }
+
+    #[test]
+    fn declarations_replace_script_properties_for_the_same_tag() {
+        let script = path("components/card/card.ts");
+        let roots = extract_data_roots(
+            &script,
+            "Component({ properties: { type: { type: Boolean } } });",
+        );
+        let facts = extract_component_property_facts(&roots);
+        assert_eq!(facts.source, PropertySource::Script);
+        assert_eq!(facts.properties[0].type_text, "boolean");
+
+        let component = typing_component(vec![typing_property("type", "string", true)], true);
+        let merged = merge_declared_properties(facts, Some(&component));
+
+        assert_eq!(merged.source, PropertySource::Typing);
+        assert!(merged.is_typing());
+        assert!(merged.complete, "{:?}", merged.reason);
+        assert_eq!(merged.properties.len(), 1);
+        assert_eq!(merged.properties[0].name, "type");
+        assert_eq!(merged.properties[0].type_text, "string");
+        assert_eq!(merged.properties[0].script, path("components.d.ts"));
+    }
+
+    #[test]
+    fn undeclared_tags_keep_script_properties() {
+        let script = path("components/card/card.ts");
+        let roots = extract_data_roots(
+            &script,
+            "Component({ properties: { title: { type: String } } });",
+        );
+        let facts = extract_component_property_facts(&roots);
+        let merged = merge_declared_properties(facts.clone(), None);
+
+        assert_eq!(merged, facts);
+        assert_eq!(merged.source, PropertySource::Script);
+        assert_eq!(merged.properties[0].name, "title");
+    }
+
+    #[test]
+    fn unproven_declaration_members_mark_typing_facts_incomplete() {
+        let script = path("components/card/card.ts");
+        let roots = extract_data_roots(&script, "Component({ properties: {} });");
+        let facts = extract_component_property_facts(&roots);
+
+        let component =
+            typing_component(vec![typing_property("ref", "SomeLib.Options", false)], true);
+        let merged = merge_declared_properties(facts, Some(&component));
+
+        assert!(merged.is_typing());
+        assert!(!merged.complete);
+        assert!(merged.reason.is_some());
+        assert_eq!(merged.properties[0].type_text, "SomeLib.Options");
+    }
+
+    #[test]
+    fn structurally_incomplete_declarations_fall_back_to_script() {
+        let script = path("components/card/card.ts");
+        let roots = extract_data_roots(
+            &script,
+            "Component({ properties: { title: { type: String } } });",
+        );
+        let facts = extract_component_property_facts(&roots);
+
+        let component = typing_component(vec![typing_property("title", "number", true)], false);
+        let merged = merge_declared_properties(facts.clone(), Some(&component));
+
+        assert_eq!(merged, facts);
+        assert_eq!(merged.source, PropertySource::Script);
+        assert_eq!(merged.properties[0].type_text, "string");
     }
 }
 

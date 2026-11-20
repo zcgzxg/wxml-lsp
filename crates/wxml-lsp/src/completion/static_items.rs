@@ -330,6 +330,16 @@ fn attribute_items(
     if let Some(component) = components.iter().find(|component| component.name == tag) {
         push_component_properties(context, tag, component, &mut items, &mut seen, replace);
     }
+    let declared_events = components
+        .iter()
+        .find(|component| component.name == tag)
+        .and_then(|component| {
+            crate::backend_tsgo::event_completion::declared_event_items(
+                component,
+                context.prefix.as_str(),
+                replace.start(),
+            )
+        });
     for attribute in catalog::GLOBAL_ATTRIBUTES {
         push_attribute(
             &mut items,
@@ -366,25 +376,32 @@ fn attribute_items(
             4,
         );
     }
-    for name in catalog::EVENT_NAMES {
-        // Only expose generated event names when the user is already typing an
-        // event prefix; otherwise the list is dominated by noise.
-        if catalog::is_event_prefix(prefix) {
-            let attribute = format!("bind{name}");
-            let detail = format!("绑定 `{name}` 事件");
-            push_attribute(
-                &mut items, &mut seen, context, tag, replace, &attribute, &detail, 4,
-            );
-            let attribute = format!("catch{name}");
-            let detail = format!("绑定 `{name}` 事件并阻止冒泡");
-            push_attribute(
-                &mut items, &mut seen, context, tag, replace, &attribute, &detail, 4,
-            );
-            let attribute = format!("bind:{name}");
-            let detail = format!("绑定 `{name}` 事件（另一种写法）");
-            push_attribute(
-                &mut items, &mut seen, context, tag, replace, &attribute, &detail, 4,
-            );
+    match declared_events {
+        // A declared component's event list replaces the generic generated
+        // names: the declaration is the authoritative source for this tag.
+        Some(events) => items.extend(events),
+        None => {
+            for name in catalog::EVENT_NAMES {
+                // Only expose generated event names when the user is already typing an
+                // event prefix; otherwise the list is dominated by noise.
+                if catalog::is_event_prefix(prefix) {
+                    let attribute = format!("bind{name}");
+                    let detail = format!("绑定 `{name}` 事件");
+                    push_attribute(
+                        &mut items, &mut seen, context, tag, replace, &attribute, &detail, 4,
+                    );
+                    let attribute = format!("catch{name}");
+                    let detail = format!("绑定 `{name}` 事件并阻止冒泡");
+                    push_attribute(
+                        &mut items, &mut seen, context, tag, replace, &attribute, &detail, 4,
+                    );
+                    let attribute = format!("bind:{name}");
+                    let detail = format!("绑定 `{name}` 事件（另一种写法）");
+                    push_attribute(
+                        &mut items, &mut seen, context, tag, replace, &attribute, &detail, 4,
+                    );
+                }
+            }
         }
     }
     items
@@ -470,7 +487,9 @@ mod tests {
                 properties: Vec::new(),
                 complete: true,
                 reason: None,
+                source: wxml_project::PropertySource::Script,
             },
+            typing: None,
             origin: crate::project_host::ComponentOrigin::App {
                 file: wxml_project::ProjectPath::new("app.json").expect("path"),
             },
@@ -527,6 +546,134 @@ mod tests {
         assert!(labels.contains(&"type"));
         assert!(labels.contains(&"id"));
         assert!(labels.contains(&"bindtap"));
+    }
+
+    /// Builds one declared component used by the event-name tests.
+    fn declared_component(
+        events: Vec<wxml_project::typing::TypingEvent>,
+        complete: bool,
+    ) -> ViewComponent {
+        ViewComponent {
+            name: "van-field".to_owned(),
+            specifier: "/components/field".to_owned(),
+            kind: ComponentTargetKind::Local,
+            component: None,
+            wxml: None,
+            json: None,
+            property_facts: wxml_project::ComponentPropertyFacts {
+                properties: Vec::new(),
+                complete: true,
+                reason: None,
+                source: wxml_project::PropertySource::Script,
+            },
+            typing: Some(std::sync::Arc::new(wxml_project::typing::TypingComponent {
+                props: Vec::new(),
+                events,
+                complete,
+                source: wxml_project::ProjectPath::new("components.d.ts").expect("path"),
+            })),
+            origin: crate::project_host::ComponentOrigin::Local { file: None },
+        }
+    }
+
+    /// Builds one declared event.
+    fn declared_event(name: &str, detail: Option<&str>) -> wxml_project::typing::TypingEvent {
+        wxml_project::typing::TypingEvent {
+            name: name.to_owned(),
+            detail_text: detail.map(str::to_owned),
+            detail: detail.map(wxml_project::typing::TypeText::parse),
+            proven: true,
+        }
+    }
+
+    #[test]
+    fn declared_events_are_suggested_and_replace_only_the_typed_fragment() {
+        let components = vec![declared_component(
+            vec![
+                declared_event("change", Some("{ index: number }")),
+                declared_event("input", None),
+            ],
+            true,
+        )];
+        // `<van-field bind:cha|>`: the name starts at 11, `bind:` is 5 bytes.
+        let (items, _) = items(
+            &context(
+                Site::AttributeName {
+                    tag: "van-field".to_owned(),
+                    name: "bind:cha".to_owned(),
+                },
+                "bind:cha",
+                11,
+                19,
+            ),
+            &components,
+        );
+        let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+        assert_eq!(labels, vec!["change"], "{labels:?}");
+        let change = items
+            .iter()
+            .find(|item| item.label == "change")
+            .expect("change item");
+        assert_eq!(change.insert_text, "change");
+        assert_eq!(change.kind, CompletionItemKind::Event);
+        assert_eq!((change.replace.start(), change.replace.end()), (16, 19));
+        assert_eq!(
+            change.detail.as_deref(),
+            Some("(e: WechatMiniprogram.CustomEvent<{ index: number }>) => void")
+        );
+        // The generic generated full-name candidates are replaced by the
+        // declaration, so no duplicate `bind:change` item appears.
+        assert!(!labels.contains(&"bind:change"), "{labels:?}");
+    }
+
+    #[test]
+    fn an_empty_event_name_fragment_yields_a_zero_width_replacement() {
+        let components = vec![declared_component(
+            vec![declared_event("input", None)],
+            true,
+        )];
+        let (items, _) = items(
+            &context(
+                Site::AttributeName {
+                    tag: "van-field".to_owned(),
+                    name: "bind:".to_owned(),
+                },
+                "bind:",
+                7,
+                12,
+            ),
+            &components,
+        );
+        let item = items
+            .iter()
+            .find(|item| item.label == "input")
+            .expect("declared event item");
+        assert_eq!((item.replace.start(), item.replace.end()), (12, 12));
+    }
+
+    #[test]
+    fn undeclared_and_incomplete_components_keep_the_generic_candidates() {
+        let incomplete = vec![declared_component(
+            vec![declared_event("change", None)],
+            false,
+        )];
+        for components in [Vec::new(), incomplete] {
+            let (items, _) = items(
+                &context(
+                    Site::AttributeName {
+                        tag: "van-field".to_owned(),
+                        name: "bind:".to_owned(),
+                    },
+                    "bind:",
+                    7,
+                    12,
+                ),
+                &components,
+            );
+            let labels: Vec<_> = items.iter().map(|item| item.label.as_str()).collect();
+            assert!(labels.contains(&"bind:change"), "{labels:?}");
+            assert!(!labels.contains(&"change"), "{labels:?}");
+        }
     }
 
     fn picker_context(
@@ -747,7 +894,9 @@ mod tests {
                 }],
                 complete: true,
                 reason: None,
+                source: wxml_project::PropertySource::Script,
             },
+            typing: None,
             origin: crate::project_host::ComponentOrigin::Local { file: None },
         }];
         let context = context(

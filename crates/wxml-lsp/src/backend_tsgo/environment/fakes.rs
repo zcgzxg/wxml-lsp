@@ -141,6 +141,7 @@ pub(super) fn prepared_view_with_files(
         compiler_options: options,
         fragments: Arc::from(vec![fragment()]),
         components: Arc::from(Vec::new()),
+        typing: None,
         events: Arc::from(Vec::new()),
         project_root: PathBuf::from("/work/demo"),
         syntax_diagnostics: Vec::new(),

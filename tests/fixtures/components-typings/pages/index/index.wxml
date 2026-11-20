@@ -1,0 +1,14 @@
+<!-- components-typings：组件属性与事件的人工样例，期望行为见 tests/fixtures/README.md §11 -->
+<view class="page">
+  <!-- 正例：已声明属性 + 已声明事件 change -->
+  <van-button type="primary" text="{{ buttonText }}" loading="{{ loading }}" bind:change="onButtonChange" />
+
+  <!-- 反例 1：round 未在 props 中声明，期望在 round 上报未声明属性 -->
+  <van-button type="primary" text="{{ buttonText }}" round="{{ true }}" />
+
+  <!-- 反例 2：text 声明为 string，绑定 boolean 数据，期望在绑定表达式上报类型不匹配 -->
+  <van-button type="primary" text="{{ loading }}" />
+
+  <!-- 反例 3：事件名拼写错误，期望在 chaneg 上报未声明事件名 Warning -->
+  <van-button type="primary" text="{{ buttonText }}" bind:chaneg="onButtonChange" />
+</view>

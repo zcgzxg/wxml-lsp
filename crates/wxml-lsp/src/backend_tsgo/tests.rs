@@ -237,6 +237,7 @@ fn empty_view(wxml: &str, files: Vec<PreparedFile>) -> PreparedView {
         compiler_options: serde_json::Map::new(),
         fragments: Arc::from(Vec::new()),
         components: Arc::from(Vec::new()),
+        typing: None,
         events: Arc::from(Vec::new()),
         project_root: PathBuf::from("/work/demo"),
         syntax_diagnostics: Vec::new(),

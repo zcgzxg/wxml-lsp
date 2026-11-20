@@ -28,9 +28,11 @@
 //! capability.
 
 use wxml_backend_tsgo::script::events::EventBinding;
-use wxml_types::{CapabilityStatus, Diagnostic, DiagnosticSeverity};
+use wxml_project::typing::{ComponentTypingFacts, TypingComponent};
+use wxml_project::typing_contract::{HandlerTypeCheck, check_handler};
+use wxml_types::{CapabilityStatus, Diagnostic, DiagnosticSeverity, EventHandler, RootKind};
 
-use crate::project_host::PreparedView;
+use crate::project_host::{PreparedFile, PreparedView, ViewComponent};
 use crate::semantics::event_definition::{EventValueSite, analyze, event_handler_sites};
 
 /// Stable reason for a prepared source list that hid a behavior/script file.
@@ -60,12 +62,25 @@ impl EventDiagnostics {
     }
 }
 
-/// Checks every static handler binding of `view` against its script table.
+/// Checks every static handler binding of `view` against its script table and
+/// its declared component event contracts.
 ///
 /// `text` must be the template text the prepared view was built from; the
 /// handler token is re-validated against it so a stale or synthetic document
 /// can never produce a diagnostic at a range it does not own.
-pub(crate) fn diagnostics(view: &PreparedView, text: &str) -> EventDiagnostics {
+///
+/// Declared event facts come from `components`; a tag without a declaration
+/// (`typing == None`) keeps exactly the pre-declaration diagnostics, which is
+/// what makes a project without `components.d.ts` behave unchanged.
+#[allow(
+    clippy::too_many_lines,
+    reason = "one linear token scan plus one per-binding contract pass"
+)]
+pub(crate) fn diagnostics(
+    view: &PreparedView,
+    text: &str,
+    components: &[ViewComponent],
+) -> EventDiagnostics {
     let Some(target) = view.target.as_ref() else {
         return EventDiagnostics::empty();
     };
@@ -91,25 +106,25 @@ pub(crate) fn diagnostics(view: &PreparedView, text: &str) -> EventDiagnostics {
             sites.insert((token.start(), token.end()), handler);
         }
     }
-    let bindings: Vec<EventBinding> = view
-        .events
-        .iter()
-        .enumerate()
-        .filter_map(|(index, event)| {
-            let range = event.handler_range;
-            let handler = sites.get(&(range.start(), range.end()))?;
-            if handler != &event.handler {
-                return None;
-            }
-            Some(EventBinding::new(
-                format!("e{index}"),
-                event.attribute.clone(),
-                event.event.clone(),
-                event.handler.clone(),
-                wxml_backend_tsgo::shadow::mapping::SourceRange::new(range.start(), range.end()),
-            ))
-        })
-        .collect();
+    let mut bindings = Vec::new();
+    let mut origins = Vec::new();
+    for (index, event) in view.events.iter().enumerate() {
+        let range = event.handler_range;
+        let Some(handler) = sites.get(&(range.start(), range.end())) else {
+            continue;
+        };
+        if handler != &event.handler {
+            continue;
+        }
+        bindings.push(EventBinding::new(
+            format!("e{index}"),
+            event.attribute.clone(),
+            event.event.clone(),
+            event.handler.clone(),
+            wxml_backend_tsgo::shadow::mapping::SourceRange::new(range.start(), range.end()),
+        ));
+        origins.push(index);
+    }
     if bindings.is_empty() {
         return EventDiagnostics::empty();
     }
@@ -127,28 +142,50 @@ pub(crate) fn diagnostics(view: &PreparedView, text: &str) -> EventDiagnostics {
     }
 
     let mut diagnostics = Vec::new();
-    for result in &collection.results {
+    for ((binding, index), result) in bindings
+        .iter()
+        .zip(origins.iter())
+        .zip(collection.results.iter())
+    {
         note_status(&mut status, &result.status);
-        let Some(diagnostic) = result.diagnostic.as_ref() else {
-            continue;
-        };
+        let source = view.events.get(*index);
+        let declared = source.and_then(|event| typing_of_event(text, event, components));
         // A dropped behavior/script file may own the missing method; an
         // incomplete source list can never prove a handler missing.
-        if analysis.dropped > 0 || !analysis.view.source_complete {
+        let proven_missing = analysis.dropped == 0 && analysis.view.source_complete;
+        if let Some(diagnostic) = result.diagnostic.as_ref() {
+            if !proven_missing {
+                continue;
+            }
+            let Ok(range) = wxml_text::SourceRange::from_bounds(
+                diagnostic.range.start.get(),
+                diagnostic.range.end.get(),
+            ) else {
+                continue;
+            };
+            diagnostics.push(Diagnostic {
+                range,
+                severity: DiagnosticSeverity::Error,
+                message: diagnostic.message.clone(),
+                code: None,
+            });
+            // A missing handler is the only error for this binding: no
+            // parameter type check is layered on top of it.
             continue;
         }
-        let Ok(range) = wxml_text::SourceRange::from_bounds(
-            diagnostic.range.start.get(),
-            diagnostic.range.end.get(),
-        ) else {
+        let (Some((tag, typing)), Some(source)) = (declared, source) else {
             continue;
         };
-        diagnostics.push(Diagnostic {
-            range,
-            severity: DiagnosticSeverity::Error,
-            message: diagnostic.message.clone(),
-            code: None,
-        });
+        if let Some(diagnostic) = event_contract_diagnostic(
+            text,
+            binding,
+            source,
+            tag,
+            typing,
+            &analysis.analysis.methods.methods,
+        ) {
+            diagnostics.push(diagnostic);
+        }
     }
     diagnostics.sort_by(|left, right| {
         (left.range.start(), left.range.end(), &left.message).cmp(&(
@@ -162,6 +199,219 @@ pub(crate) fn diagnostics(view: &PreparedView, text: &str) -> EventDiagnostics {
         diagnostics,
         status,
     }
+}
+
+/// Returns the diagnostic for one binding's declared event contract.
+///
+/// Only one diagnostic is possible per binding: an undeclared event name
+/// (`Warning` on the event token) or a handler parameter that is proven
+/// incompatible (`Error` on the handler token). A zero-argument handler accepts
+/// any detail, and an unannotated or unproven side produces no diagnostic.
+fn event_contract_diagnostic(
+    text: &str,
+    binding: &EventBinding,
+    source: &EventHandler,
+    tag: &str,
+    typing: &TypingComponent,
+    methods: &[wxml_backend_tsgo::script::events::EventMethod],
+) -> Option<Diagnostic> {
+    let declared_events_complete = typing.complete && !typing.events.is_empty();
+    if declared_events_complete && typing.event(&binding.event).is_none() {
+        return Some(Diagnostic {
+            range: event_name_range(text, source, &binding.event)?,
+            severity: DiagnosticSeverity::Warning,
+            message: unknown_event_message(&binding.event, tag),
+            code: None,
+        });
+    }
+    let method = methods
+        .iter()
+        .find(|method| method.name == binding.handler)?;
+    // A handler that declares no parameters accepts any detail.
+    if method.arity == 0 {
+        return None;
+    }
+    let declared = typing.event(&binding.event)?;
+    // An unproven declaration is never compared: the declared side cannot be
+    // trusted, so the binding stays undecided instead of guessed at.
+    if !declared.proven {
+        return None;
+    }
+    let HandlerTypeCheck::Incompatible { expected, found } =
+        check_handler(method.parameter.as_deref(), declared.detail_text.as_deref())
+    else {
+        return None;
+    };
+    Some(Diagnostic {
+        range: wxml_text::SourceRange::from_bounds(
+            source.handler_range.start(),
+            source.handler_range.end(),
+        )
+        .ok()?,
+        severity: DiagnosticSeverity::Error,
+        message: incompatible_handler_message(&binding.handler, &binding.event, &expected, &found),
+        code: None,
+    })
+}
+
+/// Returns the degradation reason for unannotated declared-event handlers.
+///
+/// The check is the status-side counterpart of
+/// [`event_contract_diagnostic`]: a binding whose owning component declares the
+/// event and whose handler exists with `arity > 0` but no parameter annotation
+/// makes the event parameter type unverified. The caller turns this into one
+/// `Partial` hint; it never produces a diagnostic.
+///
+/// Only views that actually bind a declared event pay for the script analysis,
+/// and a project without declarations returns before any table is built.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the caller already has every script/view fact; grouping them would only move the fields"
+)]
+pub(crate) fn unannotated_handler_reason(
+    files: &[PreparedFile],
+    project_root: &str,
+    project: &str,
+    script: &str,
+    owner: RootKind,
+    text: &str,
+    events: &[EventHandler],
+    facts: &ComponentTypingFacts,
+) -> Option<String> {
+    // Cheap gate: only a component with a complete, non-empty event declaration
+    // can make a handler parameter unverified.
+    let declares_events = facts
+        .components
+        .values()
+        .any(|component| component.complete && !component.events.is_empty());
+    if !declares_events {
+        return None;
+    }
+    let mut bindings = Vec::new();
+    for event in events {
+        let Some(tag) = owning_tag(text, event.attribute_range.start()) else {
+            continue;
+        };
+        let Some(typing) = facts.component(tag) else {
+            continue;
+        };
+        if !typing.complete || typing.event(&event.event).is_none() {
+            continue;
+        }
+        bindings.push((tag, event.handler.trim()));
+    }
+    if bindings.is_empty() {
+        return None;
+    }
+    let methods = crate::backend_tsgo::event_completion::owner_methods(
+        files,
+        project_root,
+        project,
+        script,
+        owner,
+    )?;
+    for (tag, handler) in bindings {
+        let Some(method) = methods.methods.iter().find(|method| method.name == handler) else {
+            // A missing handler has its own diagnostic and must not add this
+            // reason.
+            continue;
+        };
+        if method.arity > 0 && method.parameter.is_none() {
+            return Some(format!(
+                "组件 '{tag}' 的事件处理函数参数未标注类型，事件参数类型未校验"
+            ));
+        }
+    }
+    None
+}
+
+/// Returns the declared component facts that own one event binding.
+///
+/// The owning tag is read from the template text at the binding's attribute
+/// range; only a tag with `ViewComponent.typing` exposes declared events, so a
+/// built-in element or an undeclared custom component returns `None`.
+fn typing_of_event<'a>(
+    text: &'a str,
+    event: &EventHandler,
+    components: &'a [ViewComponent],
+) -> Option<(&'a str, &'a TypingComponent)> {
+    let tag = owning_tag(text, event.attribute_range.start())?;
+    let component = components.iter().find(|component| component.name == tag)?;
+    Some((tag, component.typing.as_deref()?))
+}
+
+/// Returns the start-tag name that contains `offset`.
+///
+/// Scanning backwards from the attribute token avoids any shadow mapping: the
+/// answer is the literal `<tag` that opens the element, and a `>` before the
+/// nearest `<` means the offset is not inside a start tag.
+fn owning_tag(text: &str, offset: u32) -> Option<&str> {
+    let offset = usize::try_from(offset).ok()?;
+    if offset > text.len() {
+        return None;
+    }
+    let bytes = text.as_bytes();
+    let mut index = offset;
+    while index > 0 {
+        index -= 1;
+        match bytes.get(index) {
+            Some(b'<') => {
+                let mut end = index + 1;
+                while end < bytes.len()
+                    && bytes.get(end).is_some_and(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.')
+                    })
+                {
+                    end += 1;
+                }
+                if end == index + 1 {
+                    return None;
+                }
+                return text.get(index + 1..end);
+            }
+            Some(b'>') => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Returns the exact event-name token range inside one attribute name.
+fn event_name_range(
+    text: &str,
+    event: &EventHandler,
+    name: &str,
+) -> Option<wxml_text::SourceRange> {
+    let attribute = event.attribute.as_str();
+    let prefix_len = attribute.len().checked_sub(name.len())?;
+    if !attribute.ends_with(name) {
+        return None;
+    }
+    let start = event
+        .attribute_range
+        .start()
+        .checked_add(u32::try_from(prefix_len).ok()?)?;
+    let end = start.checked_add(u32::try_from(name.len()).ok()?)?;
+    if end > event.attribute_range.end() {
+        return None;
+    }
+    let slice = text.get(usize::try_from(start).ok()?..usize::try_from(end).ok()?)?;
+    if slice != name {
+        return None;
+    }
+    wxml_text::SourceRange::from_bounds(start, end).ok()
+}
+
+/// Stable message for one undeclared event name.
+fn unknown_event_message(event: &str, tag: &str) -> String {
+    format!("Event \"{event}\" is not declared by component \"{tag}\"")
+}
+
+/// Stable message for one incompatible handler parameter.
+fn incompatible_handler_message(handler: &str, event: &str, expected: &str, found: &str) -> String {
+    format!(
+        "Event handler \"{handler}\" parameter does not match event \"{event}\" detail: expected {expected}, found {found}"
+    )
 }
 
 /// Returns the coverage status for a truncated event batch.
@@ -243,7 +493,7 @@ mod tests {
     fn prepared_view(
         owner: RootKind,
         files: Vec<PreparedFile>,
-        events: Vec<wxml_types::EventHandler>,
+        events: Vec<EventHandler>,
     ) -> PreparedView {
         PreparedView {
             view_id: format!("{WXML}:1"),
@@ -258,6 +508,7 @@ mod tests {
             compiler_options: serde_json::Map::new(),
             fragments: Arc::from(Vec::new()),
             components: Arc::from(Vec::new()),
+            typing: None,
             events: Arc::from(events),
             project_root: PathBuf::from("/work/demo"),
             syntax_diagnostics: Vec::new(),
@@ -270,7 +521,84 @@ mod tests {
         diagnostics(
             &view(owner, vec![prepared(SCRIPT, script)], template),
             template,
+            &[],
         )
+    }
+
+    /// Builds one declared component used by the event-contract tests.
+    fn component(
+        name: &str,
+        events: Vec<wxml_project::typing::TypingEvent>,
+        complete: bool,
+    ) -> ViewComponent {
+        ViewComponent {
+            name: name.to_owned(),
+            specifier: format!("/components/{name}"),
+            kind: wxml_project::ComponentTargetKind::Local,
+            component: None,
+            wxml: None,
+            json: None,
+            property_facts: wxml_project::ComponentPropertyFacts {
+                properties: Vec::new(),
+                complete: true,
+                reason: None,
+                source: wxml_project::PropertySource::Script,
+            },
+            typing: Some(Arc::new(TypingComponent {
+                props: Vec::new(),
+                events,
+                complete,
+                source: project_path("components.d.ts"),
+            })),
+            origin: crate::project_host::ComponentOrigin::Local { file: None },
+        }
+    }
+
+    /// Builds one declared event.
+    fn event(name: &str, detail: Option<&str>, proven: bool) -> wxml_project::typing::TypingEvent {
+        wxml_project::typing::TypingEvent {
+            name: name.to_owned(),
+            detail_text: detail.map(str::to_owned),
+            detail: detail.map(wxml_project::typing::TypeText::parse),
+            proven,
+        }
+    }
+
+    fn check_with_components(
+        owner: RootKind,
+        script: &str,
+        template: &str,
+        components: &[ViewComponent],
+    ) -> EventDiagnostics {
+        diagnostics(
+            &view(owner, vec![prepared(SCRIPT, script)], template),
+            template,
+            components,
+        )
+    }
+
+    /// Asserts one diagnostic at the exact `needle` token.
+    fn assert_at(
+        result: &EventDiagnostics,
+        template: &str,
+        needle: &str,
+        severity: DiagnosticSeverity,
+        message: &str,
+    ) {
+        let (start, end) = token(template, needle);
+        let diagnostic = result
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.range.start() == start && diagnostic.range.end() == end)
+            .unwrap_or_else(|| panic!("no diagnostic at {start}..{end}: {result:?}"));
+        assert_eq!(diagnostic.severity, severity);
+        assert_eq!(diagnostic.code, None);
+        assert_eq!(diagnostic.message, message);
+        assert_eq!(
+            &template[start as usize..end as usize],
+            needle,
+            "range must cover the token"
+        );
     }
 
     fn token(template: &str, needle: &str) -> (u32, u32) {
@@ -409,6 +737,7 @@ mod tests {
                 template,
             ),
             template,
+            &[],
         );
         assert_eq!(result.diagnostics.len(), 1, "{result:?}");
         assert_missing(
@@ -604,7 +933,7 @@ mod tests {
         let template = "<view bindtap=\"onMissing\" />";
         let mut prepared = view(RootKind::Page, vec![prepared(SCRIPT, script)], template);
         prepared.source_complete = false;
-        let result = diagnostics(&prepared, template);
+        let result = diagnostics(&prepared, template, &[]);
         assert!(result.diagnostics.is_empty(), "{result:?}");
         assert!(
             matches!(result.status, Some(CapabilityStatus::Partial { .. })),
@@ -616,7 +945,7 @@ mod tests {
     fn a_missing_owning_script_is_quiet() {
         let template = "<view bindtap=\"onMissing\" />";
         let prepared = view(RootKind::Page, Vec::new(), template);
-        let result = diagnostics(&prepared, template);
+        let result = diagnostics(&prepared, template, &[]);
         assert!(result.diagnostics.is_empty(), "{result:?}");
         assert!(result.status.is_some(), "{result:?}");
     }
@@ -630,7 +959,7 @@ mod tests {
             template,
         );
         prepared.target = None;
-        let result = diagnostics(&prepared, template);
+        let result = diagnostics(&prepared, template, &[]);
         assert_eq!(result, EventDiagnostics::empty());
     }
 
@@ -648,8 +977,193 @@ mod tests {
             vec![prepared(SCRIPT, script)],
             analysis.events,
         );
-        let result = diagnostics(&prepared, template);
+        let result = diagnostics(&prepared, template, &[]);
         assert!(result.diagnostics.is_empty(), "{result:?}");
         assert_eq!(result.status, None);
+    }
+
+    // ---- declared component events (task 5.4) ----
+
+    #[test]
+    fn an_undeclared_event_name_is_a_warning_at_the_event_token() {
+        let script = "Page({ onTap() {} });";
+        let template = "<van-field bind:chaneg=\"onTap\" />";
+        let components = vec![component(
+            "van-field",
+            vec![event("change", Some("{ index: number }"), true)],
+            true,
+        )];
+        let result = check_with_components(RootKind::Page, script, template, &components);
+        assert_eq!(result.diagnostics.len(), 1, "{result:?}");
+        assert_at(
+            &result,
+            template,
+            "chaneg",
+            DiagnosticSeverity::Warning,
+            "Event \"chaneg\" is not declared by component \"van-field\"",
+        );
+    }
+
+    #[test]
+    fn a_declared_event_name_is_quiet() {
+        let script = "Page({ onTap() {} });";
+        let template = "<van-field bind:change=\"onTap\" />";
+        let components = vec![component(
+            "van-field",
+            vec![event("change", None, true)],
+            true,
+        )];
+        let result = check_with_components(RootKind::Page, script, template, &components);
+        assert!(result.diagnostics.is_empty(), "{result:?}");
+    }
+
+    #[test]
+    fn an_incomplete_declaration_never_warns_about_event_names() {
+        let script = "Page({ onTap() {} });";
+        let template = "<van-field bind:chaneg=\"onTap\" />";
+        let components = vec![component(
+            "van-field",
+            vec![event("change", None, true)],
+            false,
+        )];
+        let result = check_with_components(RootKind::Page, script, template, &components);
+        assert!(result.diagnostics.is_empty(), "{result:?}");
+    }
+
+    #[test]
+    fn a_component_without_events_keeps_the_previous_behaviour() {
+        let script = "Page({ onTap() {} });";
+        let template = "<van-field bind:chaneg=\"onTap\" />";
+        let components = vec![component("van-field", Vec::new(), true)];
+        let result = check_with_components(RootKind::Page, script, template, &components);
+        assert!(result.diagnostics.is_empty(), "{result:?}");
+    }
+
+    #[test]
+    fn a_dynamic_event_binding_is_never_warned() {
+        let script = "Page({ onTap() {} });";
+        for template in [
+            "<van-field bind:change=\"{{ name }}\" />",
+            "<van-field bind:chaneg=\"{{ name }}\" />",
+        ] {
+            let components = vec![component(
+                "van-field",
+                vec![event("change", None, true)],
+                true,
+            )];
+            let result = check_with_components(RootKind::Page, script, template, &components);
+            assert!(result.diagnostics.is_empty(), "{template}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn an_incompatible_handler_parameter_is_an_error_at_the_handler_token() {
+        let script =
+            "Page({ onChange(event: WechatMiniprogram.CustomEvent<{ name: string }>) {} });";
+        let template = "<van-field bind:change=\"onChange\" />";
+        let components = vec![component(
+            "van-field",
+            vec![event("change", Some("{ index: number }"), true)],
+            true,
+        )];
+        let result = check_with_components(RootKind::Page, script, template, &components);
+        assert_eq!(result.diagnostics.len(), 1, "{result:?}");
+        assert_at(
+            &result,
+            template,
+            "onChange",
+            DiagnosticSeverity::Error,
+            "Event handler \"onChange\" parameter does not match event \"change\" detail: \
+             expected { index: number }, found { name: string }",
+        );
+    }
+
+    #[test]
+    fn a_compatible_or_unannotated_handler_parameter_is_quiet() {
+        let components = vec![component(
+            "van-field",
+            vec![event("change", Some("{ index: number }"), true)],
+            true,
+        )];
+        let template = "<van-field bind:change=\"onChange\" />";
+        for script in [
+            "Page({ onChange(event: WechatMiniprogram.CustomEvent<{ index: number }>) {} });",
+            "Page({ onChange(event: CustomEvent<{ index: number }>) {} });",
+            "Page({ onChange(event) {} });",
+            "Page({ onChange: function (event) {} });",
+            "Page({ onChange: (event) => {} });",
+        ] {
+            let result = check_with_components(RootKind::Page, script, template, &components);
+            assert!(result.diagnostics.is_empty(), "{script}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn a_zero_argument_handler_accepts_any_detail() {
+        let components = vec![component(
+            "van-field",
+            vec![event("change", Some("{ index: number }"), true)],
+            true,
+        )];
+        let template = "<van-field bind:change=\"onChange\" />";
+        for script in [
+            "Page({ onChange() {} });",
+            "Page({ onChange: function () {} });",
+            "Page({ onChange: () => {} });",
+        ] {
+            let result = check_with_components(RootKind::Page, script, template, &components);
+            assert!(result.diagnostics.is_empty(), "{script}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn an_unproven_detail_never_reports_a_mismatch() {
+        let components = vec![component(
+            "van-field",
+            vec![event("change", Some("SomeLib.Options"), false)],
+            true,
+        )];
+        let template = "<van-field bind:change=\"onChange\" />";
+        let script =
+            "Page({ onChange(event: WechatMiniprogram.CustomEvent<{ index: number }>) {} });";
+        let result = check_with_components(RootKind::Page, script, template, &components);
+        assert!(result.diagnostics.is_empty(), "{result:?}");
+    }
+
+    #[test]
+    fn a_missing_handler_reports_only_the_missing_error() {
+        let script = "Page({ onTap() {} });";
+        let template = "<van-field bind:change=\"onMissing\" />";
+        let components = vec![component(
+            "van-field",
+            vec![event("change", Some("{ index: number }"), true)],
+            true,
+        )];
+        let result = check_with_components(RootKind::Page, script, template, &components);
+        assert_eq!(result.diagnostics.len(), 1, "{result:?}");
+        assert_eq!(result.diagnostics[0].severity, DiagnosticSeverity::Error);
+        assert!(
+            result.diagnostics[0].message.contains("is not defined"),
+            "{result:?}"
+        );
+    }
+
+    #[test]
+    fn no_declaration_keeps_the_previous_diagnostics() {
+        let script = "Page({ onTap() {} });";
+        let template = "<van-field bind:chaneg=\"onTap\" />";
+        let with_empty = check_with_components(RootKind::Page, script, template, &[]);
+        let with_undeclared = check_with_components(
+            RootKind::Page,
+            script,
+            template,
+            &[ViewComponent {
+                typing: None,
+                ..component("van-field", Vec::new(), true)
+            }],
+        );
+        assert!(with_empty.diagnostics.is_empty(), "{with_empty:?}");
+        assert_eq!(with_empty.diagnostics, with_undeclared.diagnostics);
+        assert_eq!(with_empty.status, with_undeclared.status);
     }
 }

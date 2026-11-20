@@ -123,6 +123,18 @@ pub struct EventMethod {
     pub path: String,
     /// Exact original name-token range.
     pub range: ScriptRange,
+    /// Type annotation of the first parameter, exactly as written.
+    ///
+    /// `None` means the handler has no annotated first parameter, either
+    /// because it has no parameters at all (see [`Self::arity`]) or because the
+    /// parameter is unannotated. Callers must not infer a parameter type.
+    pub parameter: Option<String>,
+    /// Number of declared parameters.
+    ///
+    /// `0` means the handler takes no argument, so any event detail is
+    /// acceptable. Shapes that cannot be read keep `1`, which suppresses a
+    /// type-match claim instead of inventing a zero-argument handler.
+    pub arity: usize,
 }
 
 /// Page/component method table used by event resolution.
@@ -289,6 +301,7 @@ pub(crate) fn build_table(
         if methods.contains_key(&method.name) || opaque.contains(&method.name) {
             continue;
         }
+        let (parameter, arity) = handler_parameters(&method.signature);
         methods.insert(
             method.name.clone(),
             EventMethod {
@@ -297,6 +310,8 @@ pub(crate) fn build_table(
                 documentation: method.documentation.clone(),
                 path: method.path.clone(),
                 range: method.range,
+                parameter,
+                arity,
             },
         );
     }
@@ -460,14 +475,18 @@ fn add_member(
         opaque.insert(name.to_owned());
         return;
     };
+    let signature = signature_of(script, member);
+    let (parameter, arity) = handler_parameters(&signature);
     methods.insert(
         name.to_owned(),
         EventMethod {
             name: name.to_owned(),
-            signature: cap_signature(&signature_of(script, member)),
+            signature: cap_signature(&signature),
             documentation: doc_before(script.text, member.key_start),
             path: file.path().to_owned(),
             range,
+            parameter,
+            arity,
         },
     );
 }
@@ -632,6 +651,143 @@ fn cap_signature(text: &str) -> String {
     capped
 }
 
+/// Extracts the first parameter annotation and the parameter count.
+///
+/// The input is a normalized one-line signature from
+/// [`signature_of`](super::scanner::signature_of), so method shorthand,
+/// `name: function (...)`, parenthesized arrows and bare arrows all arrive in
+/// the same shape. Anything that cannot be read is reported as one unknown
+/// parameter: `arity == 0` is only returned when an empty parameter list was
+/// actually found, because callers use it to accept any event detail.
+pub(crate) fn handler_parameters(signature: &str) -> (Option<String>, usize) {
+    if let Some(open) = signature.find('(') {
+        if let Some(close) = matching_paren(signature, open) {
+            let inner = signature.get(open + 1..close).unwrap_or("");
+            let parameters = split_top_level(inner);
+            let arity = parameters
+                .iter()
+                .filter(|parameter| !parameter.trim().is_empty())
+                .count();
+            let first = parameters
+                .iter()
+                .map(|parameter| parameter.trim())
+                .find(|parameter| !parameter.is_empty());
+            let parameter = first.and_then(first_parameter_type);
+            return (parameter, arity);
+        }
+        return (None, 1);
+    }
+    // A bare arrow parameter (`onTap: e => ...`) is one unannotated parameter.
+    if signature.contains("=>") {
+        return (None, 1);
+    }
+    (None, 1)
+}
+
+/// Returns the index of the `)` matching the `(` at `open`.
+fn matching_paren(text: &str, open: usize) -> Option<usize> {
+    let bytes = text.as_bytes();
+    let mut depth = 0_usize;
+    let mut index = open;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' | b'"' | b'`' => {
+                index = string_end(bytes, index);
+                continue;
+            }
+            b'(' => depth += 1,
+            b')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    None
+}
+
+/// Splits a parameter list on top-level commas.
+fn split_top_level(inner: &str) -> Vec<&str> {
+    let bytes = inner.as_bytes();
+    let mut parts = Vec::new();
+    let mut depth = 0_usize;
+    let mut start = 0_usize;
+    let mut index = 0_usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' | b'"' | b'`' => {
+                index = string_end(bytes, index);
+                continue;
+            }
+            b'(' | b'[' | b'{' | b'<' => depth += 1,
+            b')' | b']' | b'}' | b'>' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(inner.get(start..index).unwrap_or(""));
+                start = index + 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    parts.push(inner.get(start..).unwrap_or(""));
+    parts
+}
+
+/// Returns the type annotation of one parameter, or `None` when unannotated.
+///
+/// A top-level default value is dropped so `e: T = value` still yields `T`;
+/// `=>` is kept because it belongs to a function type.
+fn first_parameter_type(parameter: &str) -> Option<String> {
+    let bytes = parameter.as_bytes();
+    let mut depth = 0_usize;
+    let mut colon = None;
+    let mut default = None;
+    let mut index = 0_usize;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'\'' | b'"' | b'`' => {
+                index = string_end(bytes, index);
+                continue;
+            }
+            b'(' | b'[' | b'{' | b'<' => depth += 1,
+            b')' | b']' | b'}' | b'>' => depth = depth.saturating_sub(1),
+            b':' if depth == 0 && colon.is_none() => colon = Some(index),
+            b'=' if depth == 0
+                && bytes.get(index + 1) != Some(&b'>')
+                && bytes.get(index.wrapping_sub(1)) != Some(&b'=') =>
+            {
+                default = Some(index);
+                break;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    let colon = colon?;
+    let end = default.filter(|end| *end > colon).unwrap_or(bytes.len());
+    let annotation = parameter.get(colon + 1..end)?.trim();
+    (!annotation.is_empty()).then(|| annotation.to_owned())
+}
+
+/// Returns the byte after the string literal starting at `index`.
+fn string_end(bytes: &[u8], index: usize) -> usize {
+    let Some(&quote) = bytes.get(index) else {
+        return index;
+    };
+    let mut cursor = index + 1;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => cursor = cursor.saturating_add(2),
+            byte if byte == quote => return cursor + 1,
+            _ => cursor += 1,
+        }
+    }
+    bytes.len()
+}
+
 fn bounded_utf8(text: &str, max_bytes: usize) -> String {
     if text.len() <= max_bytes {
         return text.to_owned();
@@ -653,5 +809,83 @@ fn script_range(
 fn push_reason(problems: &mut Vec<String>, reason: &str) {
     if !problems.iter().any(|existing| existing == reason) {
         problems.push(reason.to_owned());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used)]
+
+    use super::handler_parameters;
+
+    /// Splits `signature` into the annotation and arity a caller would see.
+    fn shape(signature: &str) -> (Option<String>, usize) {
+        handler_parameters(signature)
+    }
+
+    #[test]
+    fn method_shorthand_records_the_annotation_and_arity() {
+        assert_eq!(
+            shape("onChange(e: WechatMiniprogram.CustomEvent<{ index: number }>)"),
+            (
+                Some("WechatMiniprogram.CustomEvent<{ index: number }>".to_owned()),
+                1
+            )
+        );
+        assert_eq!(
+            shape("onTap(a: string, b: number)"),
+            (Some("string".to_owned()), 2)
+        );
+        assert_eq!(shape("onTap()"), (None, 0));
+        assert_eq!(shape("onTap(e)"), (None, 1));
+    }
+
+    #[test]
+    fn function_and_arrow_properties_record_the_annotation() {
+        assert_eq!(
+            shape("onChange: function (e: CustomEvent<{ index: number }>) ..."),
+            (Some("CustomEvent<{ index: number }>".to_owned()), 1)
+        );
+        assert_eq!(
+            shape("onChange: (e: CustomEvent<{ index: number }>) =>..."),
+            (Some("CustomEvent<{ index: number }>".to_owned()), 1)
+        );
+        assert_eq!(
+            shape("onChange: async (e: CustomEvent<string>) =>..."),
+            (Some("CustomEvent<string>".to_owned()), 1)
+        );
+        assert_eq!(shape("onTap: () =>..."), (None, 0));
+        assert_eq!(shape("onTap: e =>..."), (None, 1));
+        assert_eq!(
+            shape("onTap: (event: WechatMiniprogram.TouchEvent) =>..."),
+            (Some("WechatMiniprogram.TouchEvent".to_owned()), 1)
+        );
+    }
+
+    #[test]
+    fn optional_destructured_and_defaulted_parameters_are_handled() {
+        assert_eq!(
+            shape("onChange(e?: CustomEvent<{ index: number }>)"),
+            (Some("CustomEvent<{ index: number }>".to_owned()), 1)
+        );
+        assert_eq!(
+            shape("onChange({ detail }: CustomEvent<{ index: number }>)"),
+            (Some("CustomEvent<{ index: number }>".to_owned()), 1)
+        );
+        assert_eq!(
+            shape("onChange(e: CustomEvent<{ index: number }> = fallback)"),
+            (Some("CustomEvent<{ index: number }>".to_owned()), 1)
+        );
+        assert_eq!(
+            shape("onChange(e: (value: string) => void)"),
+            (Some("(value: string) => void".to_owned()), 1)
+        );
+    }
+
+    #[test]
+    fn unreadable_shapes_never_claim_a_zero_argument_handler() {
+        assert_eq!(shape("onChange: function"), (None, 1));
+        assert_eq!(shape("onChange: handlerRef"), (None, 1));
+        assert_eq!(shape(""), (None, 1));
     }
 }

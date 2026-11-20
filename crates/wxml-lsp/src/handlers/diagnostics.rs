@@ -253,7 +253,10 @@ fn local_event_diagnostics(server: &Server, document: &Document) -> EventDiagnos
     let Ok(view) = server.host.analysis(document.snapshot()) else {
         return EventDiagnostics::empty();
     };
-    crate::semantics::event_diagnostics::diagnostics(&view, document.text())
+    // Declared event contracts are host facts, not backend facts: they must be
+    // available even when the type backend is degraded.
+    let components = server.host.view_components_for(document.file());
+    crate::semantics::event_diagnostics::diagnostics(&view, document.text(), &components)
 }
 
 impl Server {

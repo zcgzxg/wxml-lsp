@@ -25,6 +25,9 @@ pub mod resources;
 pub mod script;
 pub mod sources;
 pub mod styles;
+pub mod typing;
+pub mod typing_contract;
+pub mod typings;
 
 pub use config::{ConfigError, TsConfig, load_ts_config};
 pub use discovery::{
@@ -37,15 +40,20 @@ pub use files::{
 pub use overlay::{Overlay, OverlayError};
 pub use resources::{ResourceCandidate, ResourceCandidates, ResourceKind, ResourceResolution};
 pub use script::{
-    ComponentProperty, ComponentPropertyFacts, DataRoot, DataRootKind, RegistrationKind,
-    ScriptResolution, ScriptStyleHints, extract_component_properties,
-    extract_component_property_facts, extract_data_roots, registration_style_hints, resolve_script,
+    ComponentProperty, ComponentPropertyFacts, DataRoot, DataRootKind, PropertySource,
+    RegistrationKind, ScriptResolution, ScriptStyleHints, extract_component_properties,
+    extract_component_property_facts, extract_data_roots, merge_declared_properties,
+    registration_style_hints, resolve_script,
 };
 pub use sources::{SourceFile, SourceIssue, SourceIssueKind, SourceKind, SourceLimits, SourceSet};
 pub use styles::{
     ClassDefinition, ClassToken, StyleConfig, StyleDiagnosticsPolicy, StyleFileInfo, StyleFileKind,
     StyleImport, StyleImportKind, StyleIndex, StyleIsolation, StyleIssue, StyleIssueKind,
     StyleLimits, StyleScope, StyleSheet, StyleViewFacts,
+};
+pub use typing::{
+    ComponentTypingFacts, ObjectTypeMember, PrimitiveType, TypeText, TypingComponent, TypingEvent,
+    TypingIssue, TypingIssueKind, TypingProperty, parse_component_typing_facts,
 };
 
 /// A copy of the host paths and overlay needed for lock-free style/resource
@@ -147,6 +155,8 @@ pub struct Project {
     overlay: Arc<Overlay>,
     discovery: Discovery,
     tsconfig: Option<TsConfig>,
+    /// Component facts parsed from the fixed declaration file, when present.
+    typing: Arc<ComponentTypingFacts>,
 }
 
 #[allow(clippy::missing_fields_in_debug)]
@@ -286,8 +296,10 @@ impl Project {
             overlay,
             discovery,
             tsconfig: None,
+            typing: Arc::new(ComponentTypingFacts::default()),
         };
         project.reload_tsconfig();
+        project.refresh_typing_facts();
         Ok(project)
     }
 
@@ -427,6 +439,16 @@ impl Project {
             .map(|config| &config.compiler_options)
     }
 
+    /// Returns component type declarations parsed from project `.d.ts` files.
+    ///
+    /// Facts are recomputed by [`Project::rediscover`]; they stay empty when no
+    /// declaration file maps a tag. Clone the `Arc` to keep one snapshot of the
+    /// facts across a later rediscovery.
+    #[must_use]
+    pub const fn typing_facts(&self) -> &Arc<ComponentTypingFacts> {
+        &self.typing
+    }
+
     /// Returns the overlay.
     #[must_use]
     pub fn overlay(&self) -> &Overlay {
@@ -558,6 +580,7 @@ impl Project {
                     properties: Vec::new(),
                     complete: false,
                     reason: Some("component script is unavailable"),
+                    source: PropertySource::Script,
                 },
             ),
         };
@@ -592,6 +615,29 @@ impl Project {
     pub fn rediscover(&mut self) {
         self.discovery = discover(&self.root, &self.overlay, &self.app_json);
         self.reload_tsconfig();
+        self.refresh_typing_facts();
+    }
+
+    /// Recomputes component typing facts from the fixed declaration file.
+    ///
+    /// The declaration file is always `components.d.ts` next to the loaded
+    /// `tsconfig.json`, so this reads at most one bounded file instead of
+    /// collecting every project source. Overlay text wins over disk.
+    ///
+    /// A project without a `tsconfig.json`, or one that does not have the
+    /// declaration file, has no facts and stays `complete = true`: "no
+    /// declarations" is not a degraded state. A declaration file that exists but
+    /// cannot be read yields an incomplete, empty fact set; the LSP layer turns
+    /// the same [`typings::DeclarationIssue`] into a readable partial status.
+    fn refresh_typing_facts(&mut self) {
+        self.typing = Arc::new(match typings::resolve_declaration(self) {
+            Ok(Some(source)) => parse_component_typing_facts(&declaration_sources(&source)),
+            Ok(None) => ComponentTypingFacts {
+                complete: true,
+                ..ComponentTypingFacts::default()
+            },
+            Err(_) => ComponentTypingFacts::default(),
+        });
     }
 
     /// Loads the root tsconfig, recording failures as discovery issues.
@@ -617,6 +663,23 @@ impl Project {
                 None
             }
         };
+    }
+}
+
+/// Wraps one declaration file as the source set the typing parser accepts.
+///
+/// Only the declaration file participates, so the parser never filters or walks
+/// the project source tree.
+fn declaration_sources(source: &typings::DeclarationSource) -> SourceSet {
+    SourceSet {
+        files: vec![SourceFile {
+            path: source.path.clone(),
+            kind: SourceKind::Dts,
+            text: source.text.clone(),
+            source_revision: 1,
+        }],
+        truncated: false,
+        issues: Vec::new(),
     }
 }
 
@@ -792,5 +855,118 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn recomputes_typing_facts_when_declarations_change() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let dir = tempfile::Builder::new()
+            .prefix("wxml-typing-facts-")
+            .tempdir_in(base)
+            .expect("create temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("app.json"), r#"{"pages":[]}"#).expect("write app.json");
+        std::fs::write(root.join("tsconfig.json"), "{}").expect("write tsconfig");
+        std::fs::write(
+            root.join("components.d.ts"),
+            "interface WxmlComponentMap { 'demo-box': DemoBox; }\n\
+             interface DemoBox { props: { size?: 'small' | 'large' } }\n",
+        )
+        .expect("write declaration");
+
+        let mut project = Project::open(root).expect("open");
+        let declaration = ProjectPath::new("components.d.ts").expect("declaration path");
+        assert_eq!(project.typing_facts().sources, vec![declaration.clone()]);
+        let component = project
+            .typing_facts()
+            .component("demo-box")
+            .expect("declared component")
+            .clone();
+        assert!(component.complete);
+        assert_eq!(
+            component.prop("size").expect("size").type_text,
+            "'small' | 'large'"
+        );
+
+        project
+            .set_overlay(
+                &declaration,
+                "interface WxmlComponentMap { 'other-box': OtherBox; }\n\
+                 interface OtherBox { props: { count: number } }\n",
+                2,
+            )
+            .expect("declaration overlay");
+        project.rediscover();
+        assert!(project.typing_facts().component("demo-box").is_none());
+        let component = project
+            .typing_facts()
+            .component("other-box")
+            .expect("overlay component")
+            .clone();
+        assert_eq!(component.prop("count").expect("count").type_text, "number");
+
+        project.remove_overlay(&declaration);
+        project.rediscover();
+        assert!(project.typing_facts().component("other-box").is_none());
+        assert!(project.typing_facts().component("demo-box").is_some());
+    }
+
+    #[test]
+    fn ignores_declarations_that_are_not_next_to_the_tsconfig() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let dir = tempfile::Builder::new()
+            .prefix("wxml-typing-sibling-")
+            .tempdir_in(base)
+            .expect("create temp dir");
+        let root = dir.path();
+        std::fs::write(root.join("app.json"), r#"{"pages":[]}"#).expect("write app.json");
+        std::fs::write(root.join("tsconfig.json"), "{}").expect("write tsconfig");
+        std::fs::create_dir_all(root.join("types")).expect("create types");
+        std::fs::write(
+            root.join("types/components.d.ts"),
+            "interface WxmlComponentMap { 'demo-box': DemoBox; }\n\
+             interface DemoBox { props: { size?: string } }\n",
+        )
+        .expect("write declaration");
+
+        let project = Project::open(root).expect("open");
+        assert!(project.typing_facts().components.is_empty());
+        assert!(project.typing_facts().complete);
+    }
+
+    #[test]
+    fn no_declaration_file_leaves_typing_complete() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+
+        let without_config = tempfile::Builder::new()
+            .prefix("wxml-typing-no-config-")
+            .tempdir_in(&base)
+            .expect("create temp dir");
+        std::fs::write(without_config.path().join("app.json"), r#"{"pages":[]}"#)
+            .expect("write app.json");
+        std::fs::write(
+            without_config.path().join("components.d.ts"),
+            "interface WxmlComponentMap { 'demo-box': DemoBox; }\n\
+             interface DemoBox { props: { size?: string } }\n",
+        )
+        .expect("write declaration");
+        let project = Project::open(without_config.path()).expect("open");
+        assert!(project.tsconfig().is_none());
+        assert!(project.typing_facts().components.is_empty());
+        assert!(project.typing_facts().complete);
+
+        let missing = tempfile::Builder::new()
+            .prefix("wxml-typing-missing-")
+            .tempdir_in(&base)
+            .expect("create temp dir");
+        std::fs::write(missing.path().join("app.json"), r#"{"pages":[]}"#).expect("write app.json");
+        std::fs::write(missing.path().join("tsconfig.json"), "{}").expect("write tsconfig");
+        let project = Project::open(missing.path()).expect("open");
+        assert!(project.tsconfig().is_some());
+        assert!(project.typing_facts().components.is_empty());
+        assert!(project.typing_facts().complete);
     }
 }

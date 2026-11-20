@@ -1,0 +1,9 @@
+{
+  "pages": ["pages/index/index"],
+  "usingComponents": {
+    "van-button": "/miniprogram_npm/@vant/weapp/button/index"
+  },
+  "window": {
+    "navigationBarTitleText": "组件类型声明样本"
+  }
+}

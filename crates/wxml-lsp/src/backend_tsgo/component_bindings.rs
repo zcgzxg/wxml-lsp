@@ -18,6 +18,7 @@
 //! `capture-*`/`mut-bind`/`slot`/`wx:*` cannot become property diagnostics.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use crate::backend_tsgo::query::type_info::{TypeQuality, TypeResult, map_type_query};
 use wxml_backend_tsgo::input::{
@@ -31,11 +32,13 @@ use wxml_backend_tsgo::native::strings::{
 use wxml_backend_tsgo::script::properties::PropertyFact;
 use wxml_backend_tsgo::script::registration::RegistrationKind;
 use wxml_backend_tsgo::script::{ScriptRequest, analyze_script};
+use wxml_project::ComponentTypingFacts;
+use wxml_project::typing::{PrimitiveType, TypeText, TypingComponent, TypingProperty};
 use wxml_syntax::{Expr, ExprKind, parse_expression};
 use wxml_text::TextRange;
 use wxml_types::{
-    AttributeValueKind, CapabilityStatus, ComponentAttribute, Diagnostic, DiagnosticSeverity,
-    SourceRange,
+    AttributeValueKind, CapabilityStatus, ComponentAttribute, ComponentUsage, Diagnostic,
+    DiagnosticSeverity, SourceRange,
 };
 
 use crate::backend_tsgo::mapping::ShadowLayout;
@@ -218,6 +221,11 @@ struct Pass<'a, Q> {
     view: &'a PreparedView,
     script_path: &'a str,
     input: Option<AnalysisInput>,
+    /// Declaration facts attached to the view by the project host.
+    ///
+    /// `None` means the project has no usable `components.d.ts`; consumers then
+    /// keep the script-derived behaviour unchanged.
+    typing: Option<Arc<ComponentTypingFacts>>,
     declarations: BTreeMap<String, Option<ComponentDeclarations>>,
     tags: BTreeSet<String>,
     diagnostics: Vec<Diagnostic>,
@@ -245,6 +253,7 @@ where
             view,
             script_path,
             input: component_input(view),
+            typing: view.typing.clone(),
             declarations: BTreeMap::new(),
             tags: BTreeSet::new(),
             diagnostics: Vec::new(),
@@ -260,18 +269,6 @@ where
 
     #[allow(clippy::too_many_lines, reason = "one linear usage check pipeline")]
     fn run(&mut self) {
-        if self.input.is_none() {
-            // No project root or no representable file set: every usage is
-            // unproven, but an empty attribute list still needs no reason.
-            for usage in self.view.components.iter() {
-                if usage.attributes.is_empty() {
-                    continue;
-                }
-                self.skip(&usage.tag);
-            }
-            self.partial = true;
-            return;
-        }
         for usage in self.view.components.iter() {
             if self.stopped {
                 break;
@@ -286,6 +283,28 @@ where
                     continue;
                 }
                 self.tags.insert(usage.tag.clone());
+            }
+            // A structurally complete declaration is the whole attribute
+            // surface: the script `properties` object is never consulted, so
+            // `analyze_component` is skipped for this tag.
+            let declared = self
+                .typing
+                .as_ref()
+                .and_then(|facts| facts.component(&usage.tag))
+                .cloned();
+            if let Some(typing) = declared {
+                if typing.complete {
+                    self.check_declared_usage(usage, &typing);
+                    continue;
+                }
+            }
+            if self.input.is_none() {
+                // No project root or no representable file set: every script
+                // derived usage is unproven, but an empty attribute list still
+                // needs no reason.
+                self.partial = true;
+                self.skip(&usage.tag);
+                continue;
             }
             let Some(component_file) = usage.component_file.as_ref() else {
                 self.skip(&usage.tag);
@@ -344,6 +363,173 @@ where
         parsed
     }
 
+    /// Checks one attribute of a component that has declaration facts.
+    ///
+    /// Each member is judged on its own `proven` flag: an unproven member is a
+    /// coverage gap, while the remaining declared members are still checked.
+    fn check_declared_usage(&mut self, usage: &ComponentUsage, typing: &TypingComponent) {
+        for attribute in &usage.attributes {
+            if self.stopped {
+                break;
+            }
+            match declared_typing_property(typing, &attribute.name) {
+                // The declared `props` set is the whole attribute surface, so
+                // an attribute it does not mention is an error except for the
+                // universal WXML attributes.
+                None => {
+                    if !is_reserved_attribute(&attribute.name) {
+                        self.publish_undeclared(&usage.tag, attribute);
+                    }
+                }
+                Some(property) => self.check_declared_attribute(&usage.tag, attribute, property),
+            }
+        }
+    }
+
+    /// Checks one declared attribute against its contract.
+    fn check_declared_attribute(
+        &mut self,
+        tag: &str,
+        attribute: &ComponentAttribute,
+        property: &TypingProperty,
+    ) {
+        let contract = PropertyContract::from_property(property);
+        if matches!(contract, PropertyContract::Unknown) {
+            // An unproven member, or a type the contract cannot represent, is
+            // never guessed: it is a coverage gap instead of a diagnostic.
+            self.partial = true;
+            self.skip(&format!("{tag}.{}", attribute.name));
+            return;
+        }
+        if matches!(contract, PropertyContract::Any) {
+            // `any` accepts every value, so no query is needed and the result
+            // is proven clean.
+            return;
+        }
+        let allows_undefined = property.optional || contains_undefined(&property.ty);
+        match attribute.value_kind {
+            AttributeValueKind::Literal => {
+                let value =
+                    literal_value(self.layout.original_wxml(), attribute).map(str::to_owned);
+                let Some(value) = value else {
+                    self.partial = true;
+                    self.skip(&format!("{tag}.{}", attribute.name));
+                    return;
+                };
+                self.check_declared_literal(
+                    tag,
+                    attribute,
+                    &contract,
+                    &property.type_text,
+                    LiteralValue::String(&value),
+                );
+            }
+            AttributeValueKind::Boolean => {
+                self.check_declared_literal(
+                    tag,
+                    attribute,
+                    &contract,
+                    &property.type_text,
+                    LiteralValue::Boolean,
+                );
+            }
+            AttributeValueKind::Mustache => self.check_declared_mustache(
+                tag,
+                attribute,
+                &contract,
+                allows_undefined,
+                &property.type_text,
+            ),
+            // `Mixed` needs a string conversion and a future value kind is
+            // unknown: both are coverage gaps, never errors.
+            _ => {
+                self.partial = true;
+                self.skip(&format!("{tag}.{}", attribute.name));
+            }
+        }
+    }
+
+    /// Checks one literal attribute value against a declared contract.
+    fn check_declared_literal(
+        &mut self,
+        tag: &str,
+        attribute: &ComponentAttribute,
+        contract: &PropertyContract,
+        type_text: &str,
+        value: LiteralValue<'_>,
+    ) {
+        match contract.judge_literal(value) {
+            Verdict::Accept => {}
+            Verdict::Unknown => {
+                self.partial = true;
+                self.skip(&format!("{tag}.{}", attribute.name));
+            }
+            Verdict::Reject => {
+                let got = match value {
+                    LiteralValue::String(_) => "string literal",
+                    LiteralValue::Boolean => "boolean literal",
+                };
+                let message = format!(
+                    "component property \"{}\" expects {type_text}, got {got}",
+                    attribute.name,
+                );
+                self.publish(tag, &attribute.name, attribute.attribute_range, &message);
+            }
+        }
+    }
+
+    /// Checks one bound expression against a declared contract.
+    fn check_declared_mustache(
+        &mut self,
+        tag: &str,
+        attribute: &ComponentAttribute,
+        contract: &PropertyContract,
+        allows_undefined: bool,
+        type_text: &str,
+    ) {
+        let Some((result, expr_range)) = self.query_bound_type(tag, attribute) else {
+            return;
+        };
+        match compare_contract(contract, allows_undefined, &result) {
+            Verdict::Accept => {}
+            Verdict::Unknown => {
+                self.partial = true;
+                self.skip(&format!("{tag}.{}", attribute.name));
+            }
+            Verdict::Reject => {
+                let got = result
+                    .info
+                    .as_ref()
+                    .map(|info| info.text.trim())
+                    .filter(|text| !text.is_empty())
+                    .unwrap_or("unknown");
+                let expr_text = attribute.expr_text.as_deref().unwrap_or_default();
+                let message = format!(
+                    "component property \"{}\" expects {}, got {} (bound expression \"{}\")",
+                    attribute.name,
+                    type_text,
+                    truncate(got, MAX_EXPRESSION_TEXT),
+                    truncate(expr_text, MAX_EXPRESSION_TEXT),
+                );
+                self.publish(tag, &attribute.name, expr_range, &message);
+            }
+        }
+    }
+
+    /// Publishes the diagnostic for an attribute the declaration omits.
+    fn publish_undeclared(&mut self, tag: &str, attribute: &ComponentAttribute) {
+        let message = format!(
+            "component property \"{}\" is not declared by the component declaration",
+            attribute.name,
+        );
+        self.publish(
+            tag,
+            &attribute.name,
+            attribute_name_range(attribute),
+            &message,
+        );
+    }
+
     fn check_attribute(
         &mut self,
         tag: &str,
@@ -384,102 +570,17 @@ where
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "one linear bound expression check")]
     fn check_mustache(
         &mut self,
         tag: &str,
         attribute: &ComponentAttribute,
         declared: &DeclaredBinding,
     ) {
-        let (Some(expr_text), Some(expr_range)) =
-            (attribute.expr_text.as_deref(), attribute.expr_range)
-        else {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
+        let Some((result, expr_range)) = self.query_bound_type(tag, attribute) else {
             return;
         };
-        if !self.expr_matches(expr_range, expr_text) {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return;
-        }
-        if self.layout.mount_for_range(expr_range).is_none() {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return;
-        }
-        let parsed = parse_expression(expr_text, expr_range.start());
-        if !parsed.errors.is_empty() {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return;
-        }
-        let Some(target) = chain_target(&parsed.expr) else {
-            // Only a free-root identifier or a member chain can be queried at
-            // one position. Calls, operators, indexes and conditionals would
-            // make the queried token's type differ from the expression type.
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return;
-        };
-        if target.start() < expr_range.start() || target.end() > expr_range.end() {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return;
-        }
-        let Ok(derived) = self.layout.derived_offset(target.start(), false) else {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return;
-        };
-        let Some(mount) = self.layout.mount_for_range(expr_range) else {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return;
-        };
-        let Some(mount_end) = mount.start_utf16.checked_add(utf16_len(&mount.text)) else {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return;
-        };
-        if derived < mount.start_utf16 || derived >= mount_end {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return;
-        }
-        let Ok(position) = offset_to_position(self.layout.derived(), Utf16Offset::new(derived))
-        else {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return;
-        };
-        if self.queries >= MAX_QUERIES {
-            self.partial = true;
-            self.stopped = true;
-            self.skip(&format!("{tag}.{}", attribute.name));
-            return;
-        }
-        self.queries += 1;
-        let raw = match (self.query)(self.script_path, position) {
-            Ok(raw) => raw,
-            Err(NativeError::Unsupported { .. }) => {
-                self.partial = true;
-                self.stopped = true;
-                self.skip(&format!("{tag}.{}", attribute.name));
-                return;
-            }
-            Err(_) => {
-                // A hard query failure keeps the already-mapped backend
-                // diagnostics and is a coverage gap, never a fake error.
-                self.partial = true;
-                self.skip(&format!("{tag}.{}", attribute.name));
-                return;
-            }
-        };
-        let result = map_type_query(&raw);
         let actual = classify_type(&result);
-        let verdict = compare(&declared.targets, &actual);
-        match verdict {
+        match compare(&declared.targets, &actual) {
             Verdict::Accept => {}
             Verdict::Unknown => {
                 self.partial = true;
@@ -492,6 +593,7 @@ where
                     .map(|info| info.text.trim())
                     .filter(|text| !text.is_empty())
                     .unwrap_or("unknown");
+                let expr_text = attribute.expr_text.as_deref().unwrap_or_default();
                 let message = format!(
                     "component property \"{}\" expects {}, got {} (bound expression \"{}\")",
                     attribute.name,
@@ -502,6 +604,104 @@ where
                 self.publish(tag, &attribute.name, expr_range, &message);
             }
         }
+    }
+
+    /// Queries the type of the single bound expression of one attribute.
+    ///
+    /// Every unprovable step records a coverage gap and returns `None`, so the
+    /// caller never fabricates a diagnostic from a missing answer.
+    #[allow(clippy::too_many_lines, reason = "one linear bound expression query")]
+    fn query_bound_type(
+        &mut self,
+        tag: &str,
+        attribute: &ComponentAttribute,
+    ) -> Option<(TypeResult, SourceRange)> {
+        let (Some(expr_text), Some(expr_range)) =
+            (attribute.expr_text.as_deref(), attribute.expr_range)
+        else {
+            self.skip(&format!("{tag}.{}", attribute.name));
+            self.partial = true;
+            return None;
+        };
+        if !self.expr_matches(expr_range, expr_text) {
+            self.skip(&format!("{tag}.{}", attribute.name));
+            self.partial = true;
+            return None;
+        }
+        if self.layout.mount_for_range(expr_range).is_none() {
+            self.skip(&format!("{tag}.{}", attribute.name));
+            self.partial = true;
+            return None;
+        }
+        let parsed = parse_expression(expr_text, expr_range.start());
+        if !parsed.errors.is_empty() {
+            self.skip(&format!("{tag}.{}", attribute.name));
+            self.partial = true;
+            return None;
+        }
+        let Some(target) = chain_target(&parsed.expr) else {
+            // Only a free-root identifier or a member chain can be queried at
+            // one position. Calls, operators, indexes and conditionals would
+            // make the queried token's type differ from the expression type.
+            self.skip(&format!("{tag}.{}", attribute.name));
+            self.partial = true;
+            return None;
+        };
+        if target.start() < expr_range.start() || target.end() > expr_range.end() {
+            self.skip(&format!("{tag}.{}", attribute.name));
+            self.partial = true;
+            return None;
+        }
+        let Ok(derived) = self.layout.derived_offset(target.start(), false) else {
+            self.skip(&format!("{tag}.{}", attribute.name));
+            self.partial = true;
+            return None;
+        };
+        let Some(mount) = self.layout.mount_for_range(expr_range) else {
+            self.skip(&format!("{tag}.{}", attribute.name));
+            self.partial = true;
+            return None;
+        };
+        let Some(mount_end) = mount.start_utf16.checked_add(utf16_len(&mount.text)) else {
+            self.skip(&format!("{tag}.{}", attribute.name));
+            self.partial = true;
+            return None;
+        };
+        if derived < mount.start_utf16 || derived >= mount_end {
+            self.skip(&format!("{tag}.{}", attribute.name));
+            self.partial = true;
+            return None;
+        }
+        let Ok(position) = offset_to_position(self.layout.derived(), Utf16Offset::new(derived))
+        else {
+            self.skip(&format!("{tag}.{}", attribute.name));
+            self.partial = true;
+            return None;
+        };
+        if self.queries >= MAX_QUERIES {
+            self.partial = true;
+            self.stopped = true;
+            self.skip(&format!("{tag}.{}", attribute.name));
+            return None;
+        }
+        self.queries += 1;
+        let raw = match (self.query)(self.script_path, position) {
+            Ok(raw) => raw,
+            Err(NativeError::Unsupported { .. }) => {
+                self.partial = true;
+                self.stopped = true;
+                self.skip(&format!("{tag}.{}", attribute.name));
+                return None;
+            }
+            Err(_) => {
+                // A hard query failure keeps the already-mapped backend
+                // diagnostics and is a coverage gap, never a fake error.
+                self.partial = true;
+                self.skip(&format!("{tag}.{}", attribute.name));
+                return None;
+            }
+        };
+        Some((map_type_query(&raw), expr_range))
     }
 
     fn publish_literal_rejection(
@@ -718,6 +918,482 @@ const fn lookup(found: Option<&DeclaredBinding>) -> DeclaredLookup<'_> {
         Some(binding) => DeclaredLookup::Checkable(binding),
         None => DeclaredLookup::Unproven,
     }
+}
+
+/// What one declared component attribute accepts.
+///
+/// The contract keeps only what the pinned engine can prove through
+/// `getTypeAtPosition`: a primitive or structural target, or a finite literal
+/// set. Every other type expression stays [`PropertyContract::Unknown`] and is
+/// never diagnosed.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum PropertyContract {
+    /// The member type is unproven or cannot be represented exactly.
+    Unknown,
+    /// `any` accepts every bound value.
+    Any,
+    /// One primitive or structural target.
+    Kind(Target),
+    /// A union of string literals; only the listed values are accepted.
+    StringLiterals(Vec<String>),
+    /// A union of numeric literals; only the listed values are accepted.
+    NumberLiterals(Vec<String>),
+}
+
+impl PropertyContract {
+    /// Maps one declared member to a checkable contract.
+    ///
+    /// `proven == false` always yields [`PropertyContract::Unknown`]: the
+    /// declaration parser did not understand the whole expression.
+    fn from_property(property: &TypingProperty) -> Self {
+        if !property.proven {
+            return Self::Unknown;
+        }
+        Self::from_type(&property.ty)
+    }
+
+    /// Maps one parsed type expression to a contract.
+    fn from_type(ty: &TypeText) -> Self {
+        match ty {
+            TypeText::Primitive(primitive) => Self::from_primitive(*primitive),
+            TypeText::StringLiteral(value) => Self::StringLiterals(vec![value.clone()]),
+            TypeText::NumberLiteral(value) => Self::NumberLiterals(vec![value.clone()]),
+            // Boolean literals have no literal contract variant; a plain
+            // boolean target accepts every boolean without a false positive.
+            TypeText::BooleanLiteral(_) => Self::Kind(Target::Boolean),
+            TypeText::Array(_) => Self::Kind(Target::Array),
+            TypeText::Record(_) | TypeText::Object(_) => Self::Kind(Target::Object),
+            TypeText::Union(parts) => Self::from_union(parts),
+            TypeText::Unproven => Self::Unknown,
+        }
+    }
+
+    /// Maps one primitive type to a contract.
+    const fn from_primitive(primitive: PrimitiveType) -> Self {
+        match primitive {
+            PrimitiveType::String => Self::Kind(Target::String),
+            PrimitiveType::Number => Self::Kind(Target::Number),
+            PrimitiveType::Boolean => Self::Kind(Target::Boolean),
+            PrimitiveType::Object => Self::Kind(Target::Object),
+            PrimitiveType::Any => Self::Any,
+            // `null`/`undefined`/`void` alone admit no bound value, and
+            // `unknown`/`never` cannot be narrowed into a target.
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Maps a union to a contract, treating nullish alternatives as absence.
+    fn from_union(parts: &[TypeText]) -> Self {
+        let mut alternatives = Vec::new();
+        for part in parts {
+            flatten_union(part, &mut alternatives);
+        }
+        let mut targets = Vec::new();
+        let mut strings: Vec<String> = Vec::new();
+        let mut numbers: Vec<String> = Vec::new();
+        for part in alternatives {
+            match part {
+                // Nullish alternatives only widen optionality; `never`
+                // contributes no value.
+                TypeText::Primitive(
+                    PrimitiveType::Null
+                    | PrimitiveType::Undefined
+                    | PrimitiveType::Void
+                    | PrimitiveType::Never,
+                ) => {}
+                TypeText::Primitive(PrimitiveType::String) => {
+                    push_target(&mut targets, Target::String);
+                }
+                TypeText::Primitive(PrimitiveType::Number) => {
+                    push_target(&mut targets, Target::Number);
+                }
+                TypeText::Primitive(PrimitiveType::Boolean) | TypeText::BooleanLiteral(_) => {
+                    push_target(&mut targets, Target::Boolean);
+                }
+                TypeText::Primitive(PrimitiveType::Any) => return Self::Any,
+                TypeText::StringLiteral(value) => push_unique(&mut strings, value),
+                TypeText::NumberLiteral(value) => push_unique(&mut numbers, value),
+                TypeText::Array(_) => push_target(&mut targets, Target::Array),
+                TypeText::Primitive(PrimitiveType::Object)
+                | TypeText::Record(_)
+                | TypeText::Object(_) => push_target(&mut targets, Target::Object),
+                // An empty nested union, an unsupported primitive or an
+                // unproven part cannot be narrowed into a contract.
+                TypeText::Primitive(_) | TypeText::Union(_) | TypeText::Unproven => {
+                    return Self::Unknown;
+                }
+            }
+        }
+        match targets.as_slice() {
+            // `string | 'a' | 'b'` still accepts the whole string domain.
+            [Target::String] if numbers.is_empty() => Self::Kind(Target::String),
+            [Target::Number] if strings.is_empty() => Self::Kind(Target::Number),
+            [target] if strings.is_empty() && numbers.is_empty() => Self::Kind(*target),
+            [] if !strings.is_empty() && numbers.is_empty() => Self::StringLiterals(strings),
+            [] if strings.is_empty() && !numbers.is_empty() => Self::NumberLiterals(numbers),
+            // Mixed primitive kinds or literals of several kinds cannot be
+            // expressed as one contract.
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Judges one proven literal attribute value.
+    fn judge_literal(&self, value: LiteralValue<'_>) -> Verdict {
+        match self {
+            Self::Unknown => Verdict::Unknown,
+            Self::Any => Verdict::Accept,
+            Self::Kind(target) => {
+                let actual = match value {
+                    LiteralValue::String(_) => Actual::String,
+                    LiteralValue::Boolean => Actual::Boolean,
+                };
+                if target.accepts(actual) {
+                    Verdict::Accept
+                } else {
+                    Verdict::Reject
+                }
+            }
+            Self::StringLiterals(allowed) => match value {
+                LiteralValue::String(text) => {
+                    if allowed.iter().any(|allowed| allowed == text) {
+                        Verdict::Accept
+                    } else {
+                        Verdict::Reject
+                    }
+                }
+                LiteralValue::Boolean => Verdict::Reject,
+            },
+            // A WXML literal attribute is always a string, never a number.
+            Self::NumberLiterals(_) => Verdict::Reject,
+        }
+    }
+
+    /// Judges one classified constituent of a queried bound type.
+    fn judge(&self, part: Constituent<'_>) -> Verdict {
+        match self {
+            Self::Unknown => Verdict::Unknown,
+            Self::Any => Verdict::Accept,
+            Self::Kind(target) => {
+                let actual = part.actual();
+                if target.accepts(actual) {
+                    return Verdict::Accept;
+                }
+                // An object that is not textually an array may still be
+                // array-like. The pinned API has no `isArrayLikeType`, so an
+                // `Array` declaration cannot prove a rejection here.
+                if matches!(actual, Actual::Object) && *target == Target::Array {
+                    return Verdict::Unknown;
+                }
+                Verdict::Reject
+            }
+            Self::StringLiterals(allowed) => match part {
+                Constituent::String(Some(value)) => {
+                    if allowed.iter().any(|allowed| allowed == value) {
+                        Verdict::Accept
+                    } else {
+                        Verdict::Reject
+                    }
+                }
+                // A plain `string` may hold any value: unprovable, not clean.
+                Constituent::String(None) => Verdict::Unknown,
+                _ => Verdict::Reject,
+            },
+            Self::NumberLiterals(allowed) => match part {
+                Constituent::Number(Some(value)) => {
+                    if allowed.iter().any(|allowed| number_eq(allowed, value)) {
+                        Verdict::Accept
+                    } else {
+                        Verdict::Reject
+                    }
+                }
+                Constituent::Number(None) => Verdict::Unknown,
+                _ => Verdict::Reject,
+            },
+        }
+    }
+}
+
+/// One proven literal attribute value.
+#[derive(Clone, Copy, Debug)]
+enum LiteralValue<'a> {
+    /// A quoted attribute value, for example `type="primary"`.
+    String(&'a str),
+    /// A valueless attribute, for example `disabled`.
+    Boolean,
+}
+
+/// One classified constituent of a queried bound type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Constituent<'a> {
+    /// A string value; the inner text is present for a literal type.
+    String(Option<&'a str>),
+    /// A number value; the inner text is present for a literal type.
+    Number(Option<&'a str>),
+    /// A boolean value.
+    Boolean,
+    /// An array value.
+    Array,
+    /// An object value.
+    Object,
+    /// `undefined`/`void`; allowed only when the declaration says so.
+    Undefined,
+    /// `null` is rendered as empty, like the script-derived path.
+    Null,
+    /// `never` is assignable to every declared target.
+    Never,
+    /// `any`, `unknown` or an unsupported shape.
+    Unknown,
+}
+
+impl Constituent<'_> {
+    /// Maps the constituent to the script path's coarse classification.
+    const fn actual(self) -> Actual {
+        match self {
+            Self::String(_) => Actual::String,
+            Self::Number(_) => Actual::Number,
+            Self::Boolean => Actual::Boolean,
+            Self::Array => Actual::Array,
+            Self::Object => Actual::Object,
+            Self::Undefined | Self::Null => Actual::Unset,
+            Self::Never => Actual::Never,
+            Self::Unknown => Actual::Unknown,
+        }
+    }
+}
+
+/// Compares one queried bound type with a declared contract.
+///
+/// `allows_undefined` is `true` for optional members and for types that already
+/// include `undefined`/`void`; every other `undefined` constituent is a proven
+/// mismatch.
+fn compare_contract(
+    contract: &PropertyContract,
+    allows_undefined: bool,
+    result: &TypeResult,
+) -> Verdict {
+    if matches!(contract, PropertyContract::Unknown) {
+        return Verdict::Unknown;
+    }
+    if matches!(contract, PropertyContract::Any) {
+        return Verdict::Accept;
+    }
+    let Some(parts) = constituents(result) else {
+        return Verdict::Unknown;
+    };
+    let mut unknown = false;
+    for part in parts {
+        match part {
+            Constituent::Never | Constituent::Null => {}
+            Constituent::Undefined if allows_undefined => {}
+            Constituent::Undefined => return Verdict::Reject,
+            Constituent::Unknown => unknown = true,
+            defined => match contract.judge(defined) {
+                Verdict::Accept => {}
+                Verdict::Reject => return Verdict::Reject,
+                Verdict::Unknown => unknown = true,
+            },
+        }
+    }
+    if unknown {
+        Verdict::Unknown
+    } else {
+        Verdict::Accept
+    }
+}
+
+/// Classifies every constituent of a queried bound type.
+///
+/// Returns `None` when the answer is not known, so the caller can report a
+/// coverage gap instead of a type.
+fn constituents(result: &TypeResult) -> Option<Vec<Constituent<'_>>> {
+    if result.quality != TypeQuality::Known {
+        return None;
+    }
+    let info = result.info.as_ref()?;
+    let parts = split_union(&info.text);
+    if parts.len() > 1 {
+        return Some(parts.iter().map(|part| constituent(part, 0)).collect());
+    }
+    Some(vec![constituent(info.text.trim(), info.flags)])
+}
+
+/// Classifies one type text with optional pinned-engine flags.
+fn constituent(text: &str, flags: u64) -> Constituent<'_> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Constituent::Unknown;
+    }
+    match text {
+        "any" | "unknown" => return Constituent::Unknown,
+        "undefined" | "void" => return Constituent::Undefined,
+        "null" => return Constituent::Null,
+        "never" => return Constituent::Never,
+        "string" => return Constituent::String(None),
+        "number" => return Constituent::Number(None),
+        "boolean" => return Constituent::Boolean,
+        _ => {}
+    }
+    if flags & (type_flags::ANY | type_flags::UNKNOWN) != 0 {
+        return Constituent::Unknown;
+    }
+    if flags & type_flags::UNDEFINED != 0 {
+        return Constituent::Undefined;
+    }
+    if flags & type_flags::NULL != 0 {
+        return Constituent::Null;
+    }
+    if flags & type_flags::NEVER != 0 {
+        return Constituent::Never;
+    }
+    if is_quoted(text) {
+        return Constituent::String(string_literal(text));
+    }
+    if text == "true" || text == "false" {
+        return Constituent::Boolean;
+    }
+    if is_number_literal(text) {
+        return Constituent::Number(Some(text));
+    }
+    if is_array_text(text) {
+        return Constituent::Array;
+    }
+    if text.starts_with('{') || text.starts_with("Record<") {
+        return Constituent::Object;
+    }
+    if flags & type_flags::STRING_LITERAL != 0 {
+        return Constituent::String(string_literal(text));
+    }
+    if flags & type_flags::STRING != 0 {
+        return Constituent::String(None);
+    }
+    if flags & type_flags::NUMBER_LITERAL != 0 {
+        return Constituent::Number(Some(text));
+    }
+    if flags & type_flags::NUMBER != 0 {
+        return Constituent::Number(None);
+    }
+    if flags & (type_flags::BOOLEAN | type_flags::BOOLEAN_LITERAL) != 0 {
+        return Constituent::Boolean;
+    }
+    if flags & type_flags::OBJECT != 0 {
+        return Constituent::Object;
+    }
+    Constituent::Unknown
+}
+
+/// Returns one declared member, honouring the `WeChat` camel/kebab mapping.
+fn declared_typing_property<'a>(
+    typing: &'a TypingComponent,
+    attribute: &str,
+) -> Option<&'a TypingProperty> {
+    if let Some(property) = typing.prop(attribute) {
+        return Some(property);
+    }
+    let camel = camel_case(attribute);
+    if camel != attribute {
+        if let Some(property) = typing.prop(&camel) {
+            return Some(property);
+        }
+    }
+    let kebab = kebab_case(attribute);
+    if kebab != attribute {
+        if let Some(property) = typing.prop(&kebab) {
+            return Some(property);
+        }
+    }
+    None
+}
+
+/// Returns whether a declared type already admits `undefined`.
+fn contains_undefined(ty: &TypeText) -> bool {
+    match ty {
+        TypeText::Primitive(primitive) => {
+            matches!(primitive, PrimitiveType::Undefined | PrimitiveType::Void)
+        }
+        TypeText::Union(parts) => parts.iter().any(contains_undefined),
+        _ => false,
+    }
+}
+
+/// Flattens a possibly nested union into its alternatives.
+fn flatten_union<'a>(ty: &'a TypeText, out: &mut Vec<&'a TypeText>) {
+    match ty {
+        TypeText::Union(parts) => {
+            for part in parts {
+                flatten_union(part, out);
+            }
+        }
+        other => out.push(other),
+    }
+}
+
+/// Pushes a target once, preserving declaration order.
+fn push_target(targets: &mut Vec<Target>, target: Target) {
+    if !targets.contains(&target) {
+        targets.push(target);
+    }
+}
+
+/// Pushes a literal value once, preserving declaration order.
+fn push_unique(values: &mut Vec<String>, value: &str) {
+    if !values.iter().any(|kept| kept == value) {
+        values.push(value.to_owned());
+    }
+}
+
+/// Compares two numeric literal spellings by value when both parse.
+fn number_eq(expected: &str, actual: &str) -> bool {
+    match (expected.trim().parse::<f64>(), actual.trim().parse::<f64>()) {
+        (Ok(expected), Ok(actual)) => expected == actual,
+        _ => expected.trim() == actual.trim(),
+    }
+}
+
+/// Returns the inner text of a quoted string literal type.
+fn string_literal(text: &str) -> Option<&str> {
+    if !is_quoted(text) {
+        return None;
+    }
+    text.get(1..text.len().checked_sub(1)?)
+}
+
+/// Returns the literal value of one `name="value"` attribute.
+///
+/// `document` is the original template, so the slice is exactly what the
+/// analyzer recorded; an unquoted value is returned verbatim.
+fn literal_value<'a>(document: &'a str, attribute: &ComponentAttribute) -> Option<&'a str> {
+    let start = usize::try_from(attribute.attribute_range.start()).ok()?;
+    let end = usize::try_from(attribute.attribute_range.end()).ok()?;
+    let text = document.get(start..end)?;
+    let (_, raw) = text.split_once('=')?;
+    let raw = raw.trim();
+    for quote in ['"', '\''] {
+        if let Some(inner) = raw
+            .strip_prefix(quote)
+            .and_then(|rest| rest.strip_suffix(quote))
+        {
+            return Some(inner);
+        }
+    }
+    Some(raw)
+}
+
+/// Returns the byte range of one attribute name inside its attribute range.
+fn attribute_name_range(attribute: &ComponentAttribute) -> SourceRange {
+    let start = attribute.attribute_range.start();
+    let length = u32::try_from(attribute.name.len()).unwrap_or(u32::MAX);
+    let end = start
+        .saturating_add(length)
+        .min(attribute.attribute_range.end());
+    SourceRange::from_bounds(start, end).unwrap_or(attribute.attribute_range)
+}
+
+/// Returns whether an attribute is a universal WXML attribute, never a property.
+fn is_reserved_attribute(name: &str) -> bool {
+    matches!(name, "class" | "style" | "id" | "hidden" | "slot" | "role")
+        || name.starts_with("data-")
+        || name.starts_with("aria-")
+        || name.starts_with("wx:")
 }
 
 /// `card-title` -> `cardTitle`.
@@ -958,7 +1634,10 @@ mod tests {
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
+    use wxml_backend_tsgo::config::PinnedEngine;
+    use wxml_backend_tsgo::native::session::SessionOptions;
     use wxml_backend_tsgo::native::strings::position_to_offset;
     use wxml_backend_tsgo::native::wire::RawType;
     use wxml_backend_tsgo::shadow::mapping::{
@@ -967,12 +1646,16 @@ mod tests {
     use wxml_backend_tsgo::shadow::rewrite::{Assembled, MountedSegment};
     use wxml_project::ProjectPath;
     use wxml_types::{
-        ComponentUsage, FileId, ProjectId, RootKind, SnapshotId, SourceRevision, SourceSnapshot,
+        Backend, CheckFragment, ComponentUsage, DiagnosticsRequest, FileId, ProjectId,
+        ProjectRevision, RequestContext, RootKind, SnapshotId, SourceRevision, SourceSnapshot,
         ViewRevision,
     };
 
     use super::*;
-    use crate::project_host::{PreparedFile, ProjectHost, ProjectState, ViewTarget};
+    use crate::backend_tsgo::TsgoBackendAdapter;
+    use crate::backend_tsgo::input::{ScriptViewError, ViewProvider};
+    use crate::backend_tsgo::session::NativeSessionFactory;
+    use crate::project_host::{HostError, PreparedFile, ProjectHost, ProjectState, ViewTarget};
 
     const SCRIPT_PATH: &str = "pages/index/index.ts";
     const CARD_PATH: &str = "components/card/card.ts";
@@ -981,6 +1664,8 @@ mod tests {
     const PLAIN_PATH: &str = "plain.ts";
     const SPREAD_PATH: &str = "spread.ts";
     const BEHAVIOR_CARD_PATH: &str = "behavior-card.ts";
+    /// Fixed declaration file next to the project `tsconfig.json`.
+    const DECLARATION_PATH: &str = "components.d.ts";
     const PAGE_SCRIPT: &str =
         "Page({\n  data: { pageTitle: '首页', total: 3, user: { name: 'Ada' } },\n});\n";
     const BEHAVIOR_PAGE_SCRIPT: &str = "Page({\n  data: { pageTitle: 'hello', total: 3, flag: true, list: [] as string[] },\n});\n";
@@ -1018,6 +1703,46 @@ mod tests {
         }
     }
 
+    /// Builds one declaration file the way `collect_sources` reports it.
+    fn prepared_declaration(path: &str, text: &str) -> PreparedFile {
+        PreparedFile {
+            file: file_id(path),
+            path: ProjectPath::new(path).expect("project path"),
+            kind: "d.ts",
+            text: Arc::from(text),
+            source_revision: 1,
+        }
+    }
+
+    /// Builds one proven declared property from its type text.
+    fn typing_property(name: &str, type_text: &str, optional: bool) -> TypingProperty {
+        let ty = TypeText::parse(type_text);
+        TypingProperty {
+            name: name.to_owned(),
+            type_text: type_text.to_owned(),
+            optional,
+            proven: ty.is_proven(),
+            ty,
+        }
+    }
+
+    /// Builds one declared property whose type the subset cannot prove.
+    fn unproven_property(name: &str, type_text: &str) -> TypingProperty {
+        TypingProperty {
+            name: name.to_owned(),
+            type_text: type_text.to_owned(),
+            optional: false,
+            proven: false,
+            ty: TypeText::Unproven,
+        }
+    }
+
+    /// Returns the byte range of one attribute name.
+    fn name_range(attribute: &ComponentAttribute) -> SourceRange {
+        let start = usize::try_from(attribute.attribute_range.start()).expect("start");
+        source_range(start, start + attribute.name.len())
+    }
+
     fn build_view(files: Vec<PreparedFile>, components: Vec<ComponentUsage>) -> PreparedView {
         PreparedView {
             view_id: "pages/index/index.wxml:1".to_owned(),
@@ -1032,12 +1757,49 @@ mod tests {
             compiler_options: serde_json::Map::new(),
             fragments: Arc::from(Vec::new()),
             components: Arc::from(components),
+            typing: None,
             events: Arc::from(Vec::new()),
             project_root: PathBuf::from("/work/demo"),
             syntax_diagnostics: Vec::new(),
             status_hint: None,
             source_complete: true,
         }
+    }
+
+    /// Attaches declaration facts parsed from one declaration text.
+    ///
+    /// Production fills `PreparedView::typing` from the project host; this
+    /// helper keeps the unit tests focused on the binding comparison.
+    fn typing_facts(declaration: &str) -> Arc<ComponentTypingFacts> {
+        let source = wxml_project::SourceFile {
+            path: ProjectPath::new(DECLARATION_PATH).expect("declaration path"),
+            kind: wxml_project::SourceKind::Dts,
+            text: declaration.to_owned(),
+            source_revision: 1,
+        };
+        Arc::new(wxml_project::parse_component_typing_facts(
+            &wxml_project::SourceSet {
+                files: vec![source],
+                truncated: false,
+                issues: Vec::new(),
+            },
+        ))
+    }
+
+    /// Builds one view carrying declaration facts.
+    fn typed_view(
+        files: Vec<PreparedFile>,
+        components: Vec<ComponentUsage>,
+        declaration: &str,
+    ) -> PreparedView {
+        let mut view = build_view(files, components);
+        view.typing = Some(typing_facts(declaration));
+        view
+    }
+
+    /// Builds one view over the shared declared `card` fixture.
+    fn declared_view(components: Vec<ComponentUsage>) -> PreparedView {
+        typed_view(declared_files(), components, DECLARATION)
     }
 
     fn usage(
@@ -2589,5 +3351,759 @@ mod tests {
         assert!(diagnostic.message.contains("component property \"title\""));
         assert!(diagnostic.message.contains("expects string, got number"));
         assert!(diagnostic.message.contains("bound expression \"total\""));
+    }
+
+    // -----------------------------------------------------------------------
+    // Declared component properties (`components.d.ts`)
+    // -----------------------------------------------------------------------
+
+    /// Declaration used by the unit tests below.
+    const DECLARATION: &str = "declare global {\n  interface WxmlComponentMap {\n    card: CardDeclaration;\n  }\n\n  interface CardDeclaration {\n    props: {\n      type?: 'primary' | 'default' | 'warning';\n      size?: 1 | 2;\n      loading?: boolean;\n      text: string;\n      plain: string | undefined;\n      loose: any;\n      ref: SomeLib.Options;\n    };\n  }\n}\n\nexport {};\n";
+
+    /// A script whose `properties` deliberately disagrees with [`DECLARATION`].
+    const DECLARED_CARD_SCRIPT: &str =
+        "Component({\n  properties: {\n    type: { type: Boolean },\n  },\n});\n";
+
+    fn declared_files() -> Vec<PreparedFile> {
+        vec![
+            prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+            prepared_file(CARD_PATH, DECLARED_CARD_SCRIPT),
+            prepared_declaration(DECLARATION_PATH, DECLARATION),
+        ]
+    }
+
+    /// Writes a temporary project with a page, one local card component and
+    /// optional canonical/nested declaration files.
+    fn declaration_project(
+        canonical: Option<&str>,
+        nested: Option<&str>,
+    ) -> (tempfile::TempDir, PathBuf) {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let dir = tempfile::Builder::new()
+            .prefix("wxml-bindings-declaration-")
+            .tempdir_in(base)
+            .expect("create temp dir");
+        let root = dir.path().to_path_buf();
+        std::fs::write(
+            root.join("app.json"),
+            r#"{"pages":["pages/index/index"],"usingComponents":{"card":"/components/card/card"}}"#,
+        )
+        .expect("write app.json");
+        std::fs::write(root.join("tsconfig.json"), "{}").expect("write tsconfig");
+        if let Some(canonical) = canonical {
+            std::fs::write(root.join("components.d.ts"), canonical).expect("canonical declaration");
+        }
+        if let Some(nested) = nested {
+            std::fs::create_dir_all(root.join("sub")).expect("nested dir");
+            std::fs::write(root.join("sub/components.d.ts"), nested).expect("nested declaration");
+        }
+        std::fs::create_dir_all(root.join("components/card")).expect("component dir");
+        std::fs::write(root.join("components/card/card.wxml"), "<view />").expect("component wxml");
+        std::fs::write(root.join("components/card/card.json"), "{}").expect("component json");
+        std::fs::write(
+            root.join("components/card/card.ts"),
+            "Component({ properties: { type: { type: String } } });\n",
+        )
+        .expect("component script");
+        std::fs::create_dir_all(root.join("pages/index")).expect("page dir");
+        std::fs::write(
+            root.join("pages/index/index.wxml"),
+            r#"<card type="primary" size="small" />"#,
+        )
+        .expect("page wxml");
+        std::fs::write(root.join("pages/index/index.json"), "{}").expect("page json");
+        std::fs::write(root.join("pages/index/index.ts"), "Page({ data: {} });\n")
+            .expect("page script");
+        (dir, root)
+    }
+
+    /// Opens a temporary project and prepares its index page view.
+    fn analyze_declaration_project(root: &std::path::Path) -> (PreparedView, String) {
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open project root");
+        let path = ProjectPath::new("pages/index/index.wxml").expect("wxml path");
+        let text = std::fs::read_to_string(root.join("pages/index/index.wxml")).expect("wxml text");
+        let file = host.file_id(&path).expect("wxml file id");
+        let _target = host.view_for(&path).expect("view target");
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(1),
+            text.clone(),
+        ));
+        let view = host.analysis(&snapshot).expect("prepared view");
+        (view, text)
+    }
+
+    #[test]
+    fn nested_declaration_file_does_not_participate_in_binding_checks() {
+        const CANONICAL: &str = "declare global {\n  interface WxmlComponentMap {\n    card: CardProps;\n  }\n  interface CardProps {\n    props: {\n      type?: 'primary' | 'default';\n    };\n  }\n}\nexport {};\n";
+        // A nested declaration that would both add `size` and keep the tag
+        // resolvable. It must never reach the binding pass.
+        const NESTED: &str = "declare global {\n  interface WxmlComponentMap {\n    card: CardProps;\n  }\n  interface CardProps {\n    props: {\n      type?: 'primary' | 'default';\n      size?: string;\n    };\n  }\n}\nexport {};\n";
+        let (_dir, root) = declaration_project(Some(CANONICAL), Some(NESTED));
+        let (view, text) = analyze_declaration_project(&root);
+
+        let facts = view
+            .typing
+            .as_ref()
+            .expect("the canonical declaration must supply facts");
+        let card = facts.component("card").expect("declared tag");
+        assert!(card.prop("type").is_some());
+        assert!(
+            card.prop("size").is_none(),
+            "the nested declaration must not add members"
+        );
+
+        let ranges: Vec<SourceRange> = view.fragments.iter().map(|item| item.wxml_range).collect();
+        let layout = shadow(&text, &ranges);
+        let (result, calls) = run(&layout, &view, Vec::new());
+        assert!(calls.is_empty());
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        let size_start = text.find(r#"size="small""#).expect("size attribute");
+        assert_eq!(
+            result.diagnostics[0].range,
+            source_range(size_start, size_start + "size".len())
+        );
+        assert!(
+            result.diagnostics[0].message.contains("not declared"),
+            "{}",
+            result.diagnostics[0].message
+        );
+        assert!(result.status.is_none(), "{:?}", result.status);
+    }
+
+    #[test]
+    fn without_a_canonical_declaration_other_declaration_files_are_ignored() {
+        const NESTED: &str = "declare global {\n  interface WxmlComponentMap {\n    card: CardProps;\n  }\n  interface CardProps {\n    props: {\n      type?: 'primary' | 'default';\n      size?: string;\n    };\n  }\n}\nexport {};\n";
+        let (_dir, root) = declaration_project(None, Some(NESTED));
+        let (view, text) = analyze_declaration_project(&root);
+        assert!(
+            view.typing.is_none(),
+            "only the tsconfig-sibling file may supply facts"
+        );
+
+        let ranges: Vec<SourceRange> = view.fragments.iter().map(|item| item.wxml_range).collect();
+        let layout = shadow(&text, &ranges);
+        let (result, calls) = run(&layout, &view, Vec::new());
+        assert!(calls.is_empty());
+        // Script fallback: `type` matches `String` and an undeclared `size` is
+        // ignored exactly as before declarations existed.
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.status.is_none(), "{:?}", result.status);
+    }
+
+    #[test]
+    fn declared_property_contract_maps_each_type_expression() {
+        let cases = [
+            ("string", PropertyContract::Kind(Target::String)),
+            ("number", PropertyContract::Kind(Target::Number)),
+            ("boolean", PropertyContract::Kind(Target::Boolean)),
+            ("string[]", PropertyContract::Kind(Target::Array)),
+            (
+                "Record<string, string>",
+                PropertyContract::Kind(Target::Object),
+            ),
+            ("{ a: string }", PropertyContract::Kind(Target::Object)),
+            ("any", PropertyContract::Any),
+            ("unknown", PropertyContract::Unknown),
+            (
+                "'primary' | 'default'",
+                PropertyContract::StringLiterals(vec!["primary".to_owned(), "default".to_owned()]),
+            ),
+            (
+                "1 | 2",
+                PropertyContract::NumberLiterals(vec!["1".to_owned(), "2".to_owned()]),
+            ),
+            // Nullish alternatives only widen optionality.
+            (
+                "boolean | undefined",
+                PropertyContract::Kind(Target::Boolean),
+            ),
+            ("string | 'a'", PropertyContract::Kind(Target::String)),
+            // Mixed primitive kinds have no single contract.
+            ("string | number", PropertyContract::Unknown),
+            ("'a' | 1", PropertyContract::Unknown),
+        ];
+        for (text, expected) in cases {
+            let property = typing_property("value", text, false);
+            assert_eq!(
+                PropertyContract::from_property(&property),
+                expected,
+                "type = {text:?}"
+            );
+        }
+
+        // An unproven member is always `Unknown`, even when the text parses.
+        let unproven = unproven_property("value", "'a'");
+        assert_eq!(
+            PropertyContract::from_property(&unproven),
+            PropertyContract::Unknown
+        );
+
+        assert!(contains_undefined(&TypeText::parse("string | undefined")));
+        assert!(contains_undefined(&TypeText::parse("void")));
+        assert!(!contains_undefined(&TypeText::parse("string")));
+    }
+
+    #[test]
+    fn declared_props_replace_script_properties_and_keep_reserved_attributes() {
+        let wxml = r#"<view><card type="medium" class="x" data-id="1" aria-label="l" /></view>"#;
+        let type_attribute = literal_attr(wxml, "type", r#"type="medium""#);
+        let class_attribute = literal_attr(wxml, "class", r#"class="x""#);
+        let data_attribute = literal_attr(wxml, "data-id", r#"data-id="1""#);
+        let aria_attribute = literal_attr(wxml, "aria-label", r#"aria-label="l""#);
+        let layout = shadow(wxml, &[]);
+        let view = declared_view(vec![usage(
+            "card",
+            Some(CARD_PATH),
+            vec![
+                type_attribute.clone(),
+                class_attribute,
+                data_attribute,
+                aria_attribute,
+            ],
+        )]);
+        let (result, calls) = run(&layout, &view, Vec::new());
+        assert!(
+            calls.is_empty(),
+            "declarations must skip the script inference"
+        );
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        let diagnostic = &result.diagnostics[0];
+        assert_eq!(diagnostic.range, type_attribute.attribute_range);
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert!(
+            diagnostic
+                .message
+                .contains("expects 'primary' | 'default' | 'warning'"),
+            "{}",
+            diagnostic.message
+        );
+        assert!(
+            diagnostic.message.contains("got string literal"),
+            "{}",
+            diagnostic.message
+        );
+        assert!(result.status.is_none(), "{:?}", result.status);
+    }
+
+    #[test]
+    fn declared_component_reports_undeclared_attributes_on_the_name() {
+        let wxml = r#"<view><card round="{{ total }}" /></view>"#;
+        let round = mustache_attr(wxml, "round", r#"round="{{ total }}""#, "total");
+        let layout = shadow(wxml, &[round.expr_range.expect("expr")]);
+        let view = declared_view(
+            // The component script is absent on purpose: declarations alone are
+            // enough to check bindings.
+            vec![usage("card", None, vec![round.clone()])],
+        );
+        let (result, calls) = run(&layout, &view, Vec::new());
+        assert!(calls.is_empty());
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        let diagnostic = &result.diagnostics[0];
+        assert_eq!(diagnostic.range, name_range(&round));
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert!(
+            diagnostic.message.contains("component property \"round\""),
+            "{}",
+            diagnostic.message
+        );
+        assert!(
+            diagnostic.message.contains("not declared"),
+            "{}",
+            diagnostic.message
+        );
+        assert!(result.status.is_none(), "{:?}", result.status);
+    }
+
+    #[test]
+    fn declared_mustache_mismatch_lands_on_the_bound_expression() {
+        let wxml = r#"<view><card text="{{ loading }}" /></view>"#;
+        let text = mustache_attr(wxml, "text", r#"text="{{ loading }}""#, "loading");
+        let layout = shadow(wxml, &[text.expr_range.expect("expr")]);
+        let view = declared_view(vec![usage("card", None, vec![text.clone()])]);
+        let (result, calls) = run(&layout, &view, vec![Some(("boolean", 0))]);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        let diagnostic = &result.diagnostics[0];
+        assert_eq!(diagnostic.range, text.expr_range.expect("expr"));
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert!(diagnostic.message.contains("expects string"));
+        assert!(diagnostic.message.contains("got boolean"));
+        assert!(
+            diagnostic.message.contains("bound expression \"loading\""),
+            "{}",
+            diagnostic.message
+        );
+        assert!(result.status.is_none(), "{:?}", result.status);
+    }
+
+    #[test]
+    fn declared_number_literals_check_the_bound_literal_value() {
+        let wxml = r#"<view><card size="{{ total }}" /></view>"#;
+        let size = mustache_attr(wxml, "size", r#"size="{{ total }}""#, "total");
+        let layout = shadow(wxml, &[size.expr_range.expect("expr")]);
+        for (answer, clean) in [("3", false), ("2", true), ("1.0", true)] {
+            let view = declared_view(vec![usage("card", None, vec![size.clone()])]);
+            let (result, _) = run(
+                &layout,
+                &view,
+                vec![Some((answer, type_flags::NUMBER_LITERAL))],
+            );
+            if clean {
+                assert!(
+                    result.diagnostics.is_empty(),
+                    "{answer}: {:?}",
+                    result.diagnostics
+                );
+                assert!(result.status.is_none(), "{answer}: {:?}", result.status);
+            } else {
+                assert_eq!(result.diagnostics.len(), 1, "{answer}");
+                assert_eq!(
+                    result.diagnostics[0].range,
+                    size.expr_range.expect("expr"),
+                    "{answer}"
+                );
+                assert!(
+                    result.diagnostics[0].message.contains("expects 1 | 2"),
+                    "{}",
+                    result.diagnostics[0].message
+                );
+            }
+        }
+
+        // A WXML literal attribute is a string and cannot satisfy `1 | 2`.
+        let literal_wxml = r#"<view><card size="1" /></view>"#;
+        let literal = literal_attr(literal_wxml, "size", r#"size="1""#);
+        let layout = shadow(literal_wxml, &[]);
+        let view = declared_view(vec![usage("card", None, vec![literal.clone()])]);
+        let (result, _) = run(&layout, &view, Vec::new());
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        assert_eq!(result.diagnostics[0].range, literal.attribute_range);
+        assert!(
+            result.diagnostics[0].message.contains("got string literal"),
+            "{}",
+            result.diagnostics[0].message
+        );
+    }
+
+    #[test]
+    fn declared_optional_members_allow_absence() {
+        let wxml = r#"<view><card type="primary" /></view>"#;
+        let type_attribute = literal_attr(wxml, "type", r#"type="primary""#);
+        let layout = shadow(wxml, &[]);
+        let view = declared_view(vec![usage("card", None, vec![type_attribute])]);
+        let (result, calls) = run(&layout, &view, Vec::new());
+        assert!(calls.is_empty());
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.status.is_none(), "{:?}", result.status);
+    }
+
+    #[test]
+    fn declared_optional_and_undefined_members_accept_undefined() {
+        for (name, clean) in [("type", true), ("plain", true), ("text", false)] {
+            let wxml = format!(r#"<view><card {name}="{{{{ nothing }}}}" /></view>"#);
+            let attribute = mustache_attr(
+                &wxml,
+                name,
+                &format!(r#"{name}="{{{{ nothing }}}}""#),
+                "nothing",
+            );
+            let layout = shadow(&wxml, &[attribute.expr_range.expect("expr")]);
+            let view = declared_view(vec![usage("card", None, vec![attribute])]);
+            let (result, _) = run(&layout, &view, vec![Some(("undefined", 0))]);
+            if clean {
+                assert!(
+                    result.diagnostics.is_empty(),
+                    "{name}: {:?}",
+                    result.diagnostics
+                );
+            } else {
+                assert_eq!(result.diagnostics.len(), 1, "{name}");
+                assert!(
+                    result.diagnostics[0].message.contains("got undefined"),
+                    "{}",
+                    result.diagnostics[0].message
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn declared_unproven_member_is_skipped_while_others_are_checked() {
+        let wxml = r#"<view><card ref="{{ total }}" text="{{ loading }}" /></view>"#;
+        let reference = mustache_attr(wxml, "ref", r#"ref="{{ total }}""#, "total");
+        let text = mustache_attr(wxml, "text", r#"text="{{ loading }}""#, "loading");
+        let layout = shadow(
+            wxml,
+            &[
+                reference.expr_range.expect("ref"),
+                text.expr_range.expect("text"),
+            ],
+        );
+        let view = declared_view(vec![usage("card", None, vec![reference, text.clone()])]);
+        let (result, calls) = run(&layout, &view, vec![Some(("boolean", 0))]);
+        // The unproven `ref` member is not queried; the proven `text` member is.
+        assert_eq!(calls.len(), 1);
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        assert_eq!(result.diagnostics[0].range, text.expr_range.expect("text"));
+        let CapabilityStatus::Partial { reason } = result.status.as_ref().expect("partial") else {
+            panic!("expected Partial, got {:?}", result.status);
+        };
+        assert!(reason.contains("card.ref"), "{reason}");
+    }
+
+    #[test]
+    fn declared_any_member_accepts_every_binding_without_a_query() {
+        let wxml = r#"<view><card loose="{{ total }}" /></view>"#;
+        let loose = mustache_attr(wxml, "loose", r#"loose="{{ total }}""#, "total");
+        let layout = shadow(wxml, &[loose.expr_range.expect("expr")]);
+        let view = declared_view(vec![usage("card", None, vec![loose])]);
+        let (result, calls) = run(&layout, &view, Vec::new());
+        assert!(calls.is_empty());
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert!(result.status.is_none(), "{:?}", result.status);
+    }
+
+    #[test]
+    fn components_without_declarations_keep_the_script_behaviour() {
+        let wxml = r#"<view><card title="{{ total }}" /></view>"#;
+        let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
+        let layout = shadow(wxml, &[title.expr_range.expect("expr")]);
+        let view = build_view(
+            page_and_card(),
+            vec![usage("card", Some(CARD_PATH), vec![title.clone()])],
+        );
+        let (result, calls) = run(&layout, &view, vec![Some(("number", 0))]);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        let diagnostic = &result.diagnostics[0];
+        assert_eq!(diagnostic.range, title.expr_range.expect("expr"));
+        assert!(diagnostic.message.contains("expects string, got number"));
+        assert!(result.status.is_none(), "{:?}", result.status);
+    }
+
+    #[test]
+    fn declared_members_use_the_camel_kebab_mapping() {
+        let declaration = "declare global {\n  interface WxmlComponentMap {\n    item: ItemDeclaration;\n  }\n\n  interface ItemDeclaration {\n    props: {\n      cardTitle?: 'small' | 'large';\n    };\n  }\n}\n\nexport {};\n";
+        let wxml = r#"<view><item card-title="medium" /></view>"#;
+        let card_title = literal_attr(wxml, "card-title", r#"card-title="medium""#);
+        let layout = shadow(wxml, &[]);
+        let view = typed_view(
+            vec![prepared_declaration(DECLARATION_PATH, declaration)],
+            vec![usage("item", None, vec![card_title.clone()])],
+            declaration,
+        );
+        let (result, calls) = run(&layout, &view, Vec::new());
+        assert!(calls.is_empty());
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        assert_eq!(result.diagnostics[0].range, card_title.attribute_range);
+        assert!(
+            result.diagnostics[0]
+                .message
+                .contains("expects 'small' | 'large'"),
+            "{}",
+            result.diagnostics[0].message
+        );
+    }
+
+    /// The real fixture reaches the pass through the project host, so the
+    /// canonical declaration seam is exercised without any engine.
+    #[test]
+    fn fixture_prepared_view_carries_component_declarations() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("tests/fixtures/components-typings")
+            .canonicalize()
+            .expect("fixture root");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open fixture root");
+        let path = ProjectPath::new("pages/index/index.wxml").expect("wxml path");
+        let text = std::fs::read_to_string(root.join("pages/index/index.wxml")).expect("wxml text");
+        let file = host.file_id(&path).expect("wxml file id");
+        let _target = host.view_for(&path).expect("view target");
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(1),
+            text,
+        ));
+        let view = host.analysis(&snapshot).expect("prepared view");
+        assert!(
+            view.components
+                .iter()
+                .any(|usage| usage.tag == "van-button"),
+            "the declared tag must still be analyzed as a custom component"
+        );
+        let facts = view
+            .typing
+            .as_ref()
+            .expect("the project host must attach declaration facts");
+        let card = facts.component("van-button").expect("declared fixture tag");
+        let property = card.prop("type").expect("declared type property");
+        assert_eq!(property.type_text, "'primary' | 'default' | 'warning'");
+        assert!(property.proven);
+    }
+
+    #[test]
+    fn fixture_declared_bindings_publish_diagnostics_without_an_engine() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("tests/fixtures/components-typings")
+            .canonicalize()
+            .expect("fixture root");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open fixture root");
+        let path = ProjectPath::new("pages/index/index.wxml").expect("wxml path");
+        let text = std::fs::read_to_string(root.join("pages/index/index.wxml")).expect("wxml text");
+        let file = host.file_id(&path).expect("wxml file id");
+        let _target = host.view_for(&path).expect("view target");
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(1),
+            text.clone(),
+        ));
+        let view = host.analysis(&snapshot).expect("prepared view");
+        assert_eq!(view.components.len(), 4, "{:?}", view.components);
+
+        let ranges: Vec<SourceRange> = view.fragments.iter().map(|item| item.wxml_range).collect();
+        let layout = shadow(&text, &ranges);
+        let mut calls = 0_usize;
+        let result = diagnostics_with(&layout, &view, SCRIPT_PATH, |path, position| {
+            assert_eq!(path, SCRIPT_PATH);
+            calls += 1;
+            let offset = position_to_offset(layout.derived(), position).expect("derived offset");
+            let range = match layout
+                .map_native_range(offset.get(), offset.get() + 1)
+                .expect("identifier range")
+            {
+                crate::backend_tsgo::mapping::NativeRange::Template { range, .. } => range,
+                crate::backend_tsgo::mapping::NativeRange::Script { .. } => {
+                    panic!("component query position is not in a mount")
+                }
+            };
+            let start = usize::try_from(range.start()).expect("start");
+            let mut end = start;
+            while let Some(character) = text[end..].chars().next() {
+                if character.is_alphanumeric() || matches!(character, '_' | '$') {
+                    end += character.len_utf8();
+                } else {
+                    break;
+                }
+            }
+            let answer = match text.get(start..end).expect("identifier bytes") {
+                "buttonText" => "string",
+                "loading" => "boolean",
+                other => panic!("unexpected component query for {other}"),
+            };
+            Ok(TypeQuery {
+                info: Some(RawType {
+                    id: 1,
+                    flags: 0,
+                    intrinsic_name: None,
+                }),
+                text: Some(answer.to_owned()),
+            })
+        });
+        assert_eq!(calls, 5, "one query per proven mustache binding");
+
+        let mismatch_start =
+            text.find(r#"text="{{ loading }}""#).expect("mismatch") + r#"text="{{ "#.len();
+        let mismatch_range = source_range(mismatch_start, mismatch_start + "loading".len());
+        let round_start = text
+            .find(r#"round="{{ true }}""#)
+            .expect("undeclared attribute");
+        let round_range = source_range(round_start, round_start + "round".len());
+
+        assert_eq!(result.diagnostics.len(), 2, "{:?}", result.diagnostics);
+        let mismatch = result
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.range == mismatch_range)
+            .unwrap_or_else(|| panic!("missing mismatch: {:?}", result.diagnostics));
+        assert_eq!(mismatch.severity, DiagnosticSeverity::Error);
+        assert!(
+            mismatch.message.contains("expects string, got boolean"),
+            "{}",
+            mismatch.message
+        );
+        let undeclared = result
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.range == round_range)
+            .unwrap_or_else(|| panic!("missing undeclared: {:?}", result.diagnostics));
+        assert_eq!(undeclared.severity, DiagnosticSeverity::Error);
+        assert!(
+            undeclared
+                .message
+                .contains("component property \"round\" is not declared"),
+            "{}",
+            undeclared.message
+        );
+        assert!(result.status.is_none(), "{:?}", result.status);
+    }
+
+    #[test]
+    fn declared_components_with_a_structurally_incomplete_map_fall_back_to_scripts() {
+        // The mapped interface is missing, so the tag cannot be declared and
+        // the script facts must keep driving the check.
+        let declaration = "declare global {\n  interface WxmlComponentMap {\n    card: MissingDeclaration;\n  }\n}\n\nexport {};\n";
+        let wxml = r#"<view><card title="{{ total }}" /></view>"#;
+        let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
+        let layout = shadow(wxml, &[title.expr_range.expect("expr")]);
+        let view = typed_view(
+            vec![
+                prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+                prepared_file(CARD_PATH, CARD_SCRIPT),
+                prepared_declaration(DECLARATION_PATH, declaration),
+            ],
+            vec![usage("card", Some(CARD_PATH), vec![title.clone()])],
+            declaration,
+        );
+        let (result, calls) = run(&layout, &view, vec![Some(("number", 0))]);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        assert_eq!(result.diagnostics[0].range, title.expr_range.expect("expr"));
+        assert!(result.diagnostics[0].message.contains("expects string"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Real engine (opt-in through `TSGO_BIN`)
+    // -----------------------------------------------------------------------
+
+    /// View provider backed by one prepared view.
+    struct DeclaredViews {
+        view: PreparedView,
+    }
+
+    impl ViewProvider for DeclaredViews {
+        fn prepare(&self, _snapshot: &SourceSnapshot) -> Result<PreparedView, HostError> {
+            Ok(self.view.clone())
+        }
+
+        fn prepare_script(&self, _file: &FileId) -> Result<PreparedView, ScriptViewError> {
+            Ok(self.view.clone())
+        }
+    }
+
+    /// Removes one real-engine sandbox on drop.
+    struct SandboxCleanup(PathBuf);
+
+    impl Drop for SandboxCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn optional_real_engine_declared_property_mismatch() {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        const REAL_WXML: &str = r#"<view><card type="primary" text="{{ loading }}" /></view>"#;
+        const REAL_SCRIPT: &str = "Page({\n  data: { buttonText: 'ok', loading: true },\n});\n";
+        const REAL_GLOBALS: &str = "declare namespace WechatMiniprogram {\n  interface CustomEvent<T> {\n    detail: T;\n  }\n}\n\ndeclare function Page(options: {\n  data: { buttonText: string; loading: boolean };\n  __wxml_check_0(this: { data: { buttonText: string; loading: boolean } }): void;\n}): void;\n";
+        const REAL_DECLARATION: &str = "declare global {\n  interface WxmlComponentMap {\n    card: CardDeclaration;\n  }\n\n  interface CardDeclaration {\n    props: {\n      type?: 'primary' | 'default';\n      text: string;\n    };\n  }\n}\n\nexport {};\n";
+
+        let Ok(bin) = std::env::var("TSGO_BIN") else {
+            let required = matches!(
+                std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
+                Ok("1" | "true")
+            );
+            assert!(
+                !required,
+                "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
+            );
+            eprintln!(
+                "optional real-engine declared-property test skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc"
+            );
+            return;
+        };
+        let executable = PathBuf::from(&bin);
+        assert!(executable.is_file(), "TSGO_BIN does not point at a file");
+
+        let text = mustache_attr(REAL_WXML, "text", r#"text="{{ loading }}""#, "loading");
+        let expr_range = text.expr_range.expect("expression range");
+        let fragment = CheckFragment {
+            fragment_id: "f0".to_owned(),
+            expr_text: "loading".to_owned(),
+            target: None,
+            bindings: Vec::new(),
+            guards: Vec::new(),
+            wxml_range: expr_range,
+            fragment_revision: 1,
+            root: RootKind::Page,
+        };
+        let mut view = typed_view(
+            vec![
+                prepared_file(SCRIPT_PATH, REAL_SCRIPT),
+                prepared_file("globals.d.ts", REAL_GLOBALS),
+                prepared_declaration(DECLARATION_PATH, REAL_DECLARATION),
+            ],
+            vec![usage("card", None, vec![text])],
+            REAL_DECLARATION,
+        );
+        view.fragments = Arc::from(vec![fragment]);
+
+        let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let sandbox = std::env::temp_dir().join(format!(
+            "wxml-tsgo-declared-bindings-{}-{count}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&sandbox).expect("sandbox");
+        let _cleanup = SandboxCleanup(sandbox.clone());
+
+        let adapter = TsgoBackendAdapter::new(
+            PinnedEngine::pinned(),
+            Arc::new(DeclaredViews { view }),
+            Arc::new(NativeSessionFactory::new(SessionOptions::new(
+                executable, sandbox,
+            ))),
+        );
+        let context = RequestContext::new(
+            ProjectRevision::new(project(), 1),
+            ViewRevision::new(1),
+            adapter.epoch(),
+            Arc::new(SourceSnapshot::new(
+                file_id("pages/index/index.wxml"),
+                SourceRevision::new(1),
+                SnapshotId::new(1),
+                REAL_WXML,
+            )),
+        )
+        .expect("context");
+        let result = adapter
+            .diagnostics(DiagnosticsRequest { context })
+            .expect("declared property diagnostics");
+        let diagnostic = result
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.range == expr_range)
+            .unwrap_or_else(|| {
+                panic!(
+                    "missing declared property diagnostic: {:?}",
+                    result.diagnostics
+                )
+            });
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+        assert!(
+            diagnostic.message.contains("expects string"),
+            "{}",
+            diagnostic.message
+        );
+        assert!(
+            diagnostic.message.contains("got boolean"),
+            "{}",
+            diagnostic.message
+        );
+        assert!(
+            diagnostic.message.contains("bound expression \"loading\""),
+            "{}",
+            diagnostic.message
+        );
     }
 }

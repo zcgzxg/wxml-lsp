@@ -22,9 +22,9 @@ use wxml_types::{
     ViewRevision,
 };
 
-use super::{EventCacheKey, completion};
+use super::{EventCacheKey, completion, declared_event_items};
 use crate::backend_tsgo::input::ViewProvider;
-use crate::project_host::{HostError, PreparedFile, PreparedView, ViewTarget};
+use crate::project_host::{HostError, PreparedFile, PreparedView, ViewComponent, ViewTarget};
 
 const SCRIPT_PATH: &str = "pages/index/index.ts";
 const BEHAVIOR_PATH: &str = "pages/index/behavior.ts";
@@ -71,6 +71,7 @@ fn prepared_view(owner: RootKind, files: Vec<PreparedFile>) -> PreparedView {
         compiler_options: serde_json::Map::new(),
         fragments: Arc::from(Vec::new()),
         components: Arc::from(Vec::new()),
+        typing: None,
         events: Arc::from(Vec::new()),
         project_root: PathBuf::from("/work/demo"),
         syntax_diagnostics: Vec::new(),
@@ -716,4 +717,146 @@ fn repeated_requests_hit_the_cache_until_a_script_revision_changes() {
     )]);
     let refreshed = completion(&provider, &request, &cache).expect("refreshed");
     assert_eq!(labels(&refreshed), vec!["second"]);
+}
+
+// ---- declared event attribute names (task 5.3) ----
+
+/// Builds one declared event.
+fn declared_event(
+    name: &str,
+    detail: Option<&str>,
+    proven: bool,
+) -> wxml_project::typing::TypingEvent {
+    wxml_project::typing::TypingEvent {
+        name: name.to_owned(),
+        detail_text: detail.map(str::to_owned),
+        detail: detail.map(wxml_project::typing::TypeText::parse),
+        proven,
+    }
+}
+
+/// Builds one component with declared events.
+fn declared_component(
+    events: Vec<wxml_project::typing::TypingEvent>,
+    complete: bool,
+) -> ViewComponent {
+    ViewComponent {
+        name: "van-field".to_owned(),
+        specifier: "/components/field".to_owned(),
+        kind: wxml_project::ComponentTargetKind::Local,
+        component: None,
+        wxml: None,
+        json: None,
+        property_facts: wxml_project::ComponentPropertyFacts {
+            properties: Vec::new(),
+            complete: true,
+            reason: None,
+            source: wxml_project::PropertySource::Script,
+        },
+        typing: Some(Arc::new(wxml_project::typing::TypingComponent {
+            props: Vec::new(),
+            events,
+            complete,
+            source: project_path("components.d.ts"),
+        })),
+        origin: crate::project_host::ComponentOrigin::Local { file: None },
+    }
+}
+
+#[test]
+fn declared_event_names_are_suggested_after_a_colon_prefix() {
+    let component = declared_component(
+        vec![
+            declared_event("change", Some("{ index: number }"), true),
+            declared_event("input", None, true),
+        ],
+        true,
+    );
+    let items = declared_event_items(&component, "bind:", 11).expect("declared events");
+    let labels = items
+        .iter()
+        .map(|item| item.label.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(labels, vec!["change", "input"]);
+    for item in &items {
+        assert_eq!(item.kind, CompletionItemKind::Event);
+        assert_eq!(item.insert_text, item.label);
+        assert_eq!(item.insert_text_format, InsertTextFormat::PlainText);
+        // Only the empty event-name fragment is replaced; `bind:` survives.
+        assert_eq!((item.replace.start(), item.replace.end()), (16, 16));
+    }
+    assert_eq!(
+        items[0].detail.as_deref(),
+        Some("(e: WechatMiniprogram.CustomEvent<{ index: number }>) => void")
+    );
+}
+
+#[test]
+fn a_typed_fragment_replacement_covers_only_the_fragment() {
+    let component = declared_component(vec![declared_event("change", None, true)], true);
+    let items = declared_event_items(&component, "bind:cha", 11).expect("declared events");
+    assert_eq!(items.len(), 1);
+    let item = &items[0];
+    assert_eq!(item.label, "change");
+    assert_eq!((item.replace.start(), item.replace.end()), (16, 19));
+    assert_eq!(
+        items[0].detail.as_deref(),
+        Some("(e: WechatMiniprogram.CustomEvent<void>) => void")
+    );
+}
+
+#[test]
+fn capture_catch_and_mut_prefixes_keep_their_own_prefix() {
+    let component = declared_component(vec![declared_event("change", None, true)], true);
+    for (typed, start) in [("catch:", 11), ("capture-bind:", 11), ("mut-bind:", 11)] {
+        let items = declared_event_items(&component, typed, start).expect("declared events");
+        let expected = start + u32::try_from(typed.len()).expect("len");
+        assert_eq!(
+            (items[0].replace.start(), items[0].replace.end()),
+            (expected, expected),
+            "{typed}"
+        );
+        assert_eq!(items[0].insert_text, "change", "{typed}");
+    }
+}
+
+#[test]
+fn incomplete_eventless_and_undeclared_components_have_no_declared_items() {
+    let template = "bind:";
+    assert!(declared_event_items(&declared_component(Vec::new(), true), template, 11).is_none());
+    assert!(
+        declared_event_items(
+            &declared_component(vec![declared_event("change", None, true)], false),
+            template,
+            11
+        )
+        .is_none()
+    );
+
+    let mut component = declared_component(vec![declared_event("change", None, true)], true);
+    component.typing = None;
+    assert!(declared_event_items(&component, template, 11).is_none());
+}
+
+#[test]
+fn non_colon_and_malformed_names_never_use_declared_events() {
+    let component = declared_component(vec![declared_event("change", None, true)], true);
+    for typed in ["bindt", "bind", "binding", "bind:ch ang", "bind:cha!"] {
+        assert!(
+            declared_event_items(&component, typed, 0).is_none(),
+            "{typed}"
+        );
+    }
+}
+
+#[test]
+fn unproven_details_are_marked_in_the_completion_detail() {
+    let component = declared_component(
+        vec![declared_event("change", Some("SomeLib.Options"), false)],
+        true,
+    );
+    let items = declared_event_items(&component, "bind:", 0).expect("declared events");
+    let detail = items[0].detail.as_deref().expect("detail");
+    assert!(detail.contains("detail 类型未证明"), "{detail}");
+    assert!(detail.contains("SomeLib.Options"), "{detail}");
 }

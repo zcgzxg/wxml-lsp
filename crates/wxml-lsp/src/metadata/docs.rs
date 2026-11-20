@@ -3,6 +3,7 @@
 use std::fmt::Write as _;
 
 use wxml_project::ComponentTargetKind;
+use wxml_project::typing_contract::expected_signature;
 
 use super::component;
 use crate::completion::catalog;
@@ -103,6 +104,9 @@ pub(super) fn attribute_document(
         {
             return Some(property_document(tag, property));
         }
+        if let Some(document) = declared_event_document(component, name) {
+            return Some(document);
+        }
         if let Some(document) = shared_attribute_document(tag, name) {
             return Some(document);
         }
@@ -171,6 +175,32 @@ fn shared_attribute_document(tag: &str, name: &str) -> Option<String> {
 /// Builds documentation for an event attribute.
 fn event_document(name: &str, detail: &str) -> String {
     format!("### {}\n\n{}", escape(name), escape(detail))
+}
+
+/// Builds documentation for a declared component event attribute.
+///
+/// Only a declared event produces a signature. The detail text is the
+/// declaration's own text (never a guessed type); an unproven detail keeps it
+/// and says so explicitly.
+fn declared_event_document(component: &ViewComponent, name: &str) -> Option<String> {
+    let (_, event) = wxml_backend_tsgo::script::events::parse_event_attribute(name)?;
+    let typing = component.typing.as_deref()?;
+    let declared = typing.event(&event)?;
+    let signature = expected_signature(declared.detail_text.as_deref());
+    // The signature is shown verbatim inside a fenced block: escaping it would
+    // render `&lt;` instead of the declared generic arguments. Backticks and
+    // line breaks are removed so the fence cannot be closed early.
+    let signature = signature.replace(['\r', '\n'], " ").replace('`', "'");
+    let mut document = format!(
+        "### {}\n\n```ts\n{}\n```\n\n组件 `{}` 声明的事件处理函数签名。",
+        escape(name),
+        signature,
+        escape(&component.name)
+    );
+    if !declared.proven {
+        document.push_str("\n\n（detail 类型未证明）");
+    }
+    Some(document)
 }
 
 /// Builds documentation for one component property.
@@ -290,4 +320,112 @@ fn is_unsafe(character: char) -> bool {
                 | '\u{1d173}'..='\u{1d17a}'
                 | '\u{feff}'
         )
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::expect_used, clippy::indexing_slicing)]
+
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::metadata::{HoverAnswer, hover, target_at};
+    use wxml_project::ProjectPath;
+    use wxml_text::SourceRange;
+
+    /// Builds one declared event.
+    fn event(name: &str, detail: Option<&str>, proven: bool) -> wxml_project::typing::TypingEvent {
+        wxml_project::typing::TypingEvent {
+            name: name.to_owned(),
+            detail_text: detail.map(str::to_owned),
+            detail: detail.map(wxml_project::typing::TypeText::parse),
+            proven,
+        }
+    }
+
+    /// Builds one component with declared events.
+    fn component(events: Vec<wxml_project::typing::TypingEvent>) -> ViewComponent {
+        ViewComponent {
+            name: "van-field".to_owned(),
+            specifier: "/components/field".to_owned(),
+            kind: ComponentTargetKind::Local,
+            component: None,
+            wxml: None,
+            json: None,
+            property_facts: wxml_project::ComponentPropertyFacts {
+                properties: Vec::new(),
+                complete: true,
+                reason: None,
+                source: wxml_project::PropertySource::Script,
+            },
+            typing: Some(Arc::new(wxml_project::typing::TypingComponent {
+                props: Vec::new(),
+                events,
+                complete: true,
+                source: ProjectPath::new("components.d.ts").expect("path"),
+            })),
+            origin: crate::project_host::ComponentOrigin::Local { file: None },
+        }
+    }
+
+    /// Returns the documented markdown and range for `needle` inside `text`.
+    fn hover_at(text: &str, components: &[ViewComponent], needle: &str) -> (String, SourceRange) {
+        let offset = u32::try_from(text.find(needle).expect("needle")).expect("offset");
+        let target = target_at(text, offset).expect("target");
+        match hover(components, &target) {
+            HoverAnswer::Document { markdown, range } => (markdown, range),
+            HoverAnswer::NotStatic => panic!("expected a document hover, got NotStatic"),
+        }
+    }
+
+    #[test]
+    fn a_declared_event_attribute_hovers_the_expected_signature() {
+        let text = "<van-field bind:change=\"onChange\" />";
+        let components = vec![component(vec![event(
+            "change",
+            Some("{ index: number }"),
+            true,
+        )])];
+        let (markdown, range) = hover_at(text, &components, "bind:change");
+        assert!(
+            markdown.contains("(e: WechatMiniprogram.CustomEvent<{ index: number }>) => void"),
+            "{markdown}"
+        );
+        let start = u32::try_from(text.find("bind:change").expect("attribute")).expect("start");
+        let end = start + u32::try_from("bind:change".len()).expect("len");
+        assert_eq!((range.start(), range.end()), (start, end));
+        assert_eq!(&text[start as usize..end as usize], "bind:change");
+    }
+
+    #[test]
+    fn an_unproven_detail_is_marked_instead_of_guessed() {
+        let text = "<van-field bind:change=\"onChange\" />";
+        let components = vec![component(vec![event(
+            "change",
+            Some("SomeLib.Options"),
+            false,
+        )])];
+        let (markdown, _) = hover_at(text, &components, "bind:change");
+        assert!(markdown.contains("SomeLib.Options"), "{markdown}");
+        assert!(markdown.contains("detail 类型未证明"), "{markdown}");
+    }
+
+    #[test]
+    fn an_undeclared_event_keeps_the_generic_document() {
+        let text = "<van-field bind:chaneg=\"onChange\" />";
+        let components = vec![component(vec![event("change", None, true)])];
+        let (markdown, _) = hover_at(text, &components, "bind:chaneg");
+        assert!(markdown.contains("chaneg"), "{markdown}");
+        assert!(!markdown.contains("CustomEvent"), "{markdown}");
+    }
+
+    #[test]
+    fn a_component_without_declarations_keeps_the_generic_document() {
+        let text = "<van-field bind:change=\"onChange\" />";
+        let mut undeclared = component(vec![event("change", None, true)]);
+        undeclared.typing = None;
+        let (markdown, _) = hover_at(text, &[undeclared], "bind:change");
+        assert!(markdown.contains("bind:change"), "{markdown}");
+        assert!(!markdown.contains("CustomEvent"), "{markdown}");
+    }
 }

@@ -22,10 +22,13 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 use thiserror::Error;
 use wxml_project::script::RegistrationKind;
+use wxml_project::typings;
 use wxml_project::{
-    ComponentPropertyFacts, ComponentTargetKind, Page, Project, ProjectPath, ProjectSnapshot,
-    ResourceCandidates, ResourceResolution, SourceFile, SourceKind, SourceLimits, StyleConfig,
-    StyleDiagnosticsPolicy, StyleIndex, StyleIsolation, StyleScope, StyleViewFacts, UriError,
+    ComponentPropertyFacts, ComponentTargetKind, ComponentTypingFacts, Page, Project, ProjectPath,
+    ProjectSnapshot, PropertySource, ResourceCandidates, ResourceResolution, SourceFile,
+    SourceKind, SourceLimits, SourceSet, StyleConfig, StyleDiagnosticsPolicy, StyleIndex,
+    StyleIsolation, StyleScope, StyleViewFacts, TypingComponent, UriError,
+    merge_declared_properties,
 };
 
 use crate::workspace_packages::WorkspacePackages;
@@ -126,7 +129,16 @@ pub struct ViewComponent {
     /// Existing component JSON, when discovery found the local target.
     pub json: Option<ProjectPath>,
     /// Statically declared component properties and their coverage.
+    ///
+    /// When the project declares this tag in `components.d.ts`, these facts come
+    /// from the declaration and carry [`PropertySource::Typing`]. An undeclared
+    /// or structurally incomplete declaration keeps the script facts.
     pub property_facts: ComponentPropertyFacts,
+    /// Declaration facts for this tag, when the project declares it.
+    ///
+    /// The event chain reads declared events from here; `None` means the tag has
+    /// no declaration and keeps its script-derived behaviour.
+    pub typing: Option<Arc<TypingComponent>>,
     /// Page/component-local or global registration source.
     pub origin: ComponentOrigin,
 }
@@ -137,7 +149,13 @@ impl ViewComponent {
     /// An incomplete, empty extraction keeps the previously known declarations
     /// and records the reason; a complete result, or any result that found at
     /// least one property, replaces the snapshot.
+    ///
+    /// Declared facts ([`PropertySource::Typing`]) never change here: a script
+    /// overlay must not overwrite `components.d.ts`.
     pub(crate) fn apply_live_facts(&mut self, facts: ComponentPropertyFacts) {
+        if self.property_facts.is_typing() {
+            return;
+        }
         if !facts.complete
             && facts.properties.is_empty()
             && !self.property_facts.properties.is_empty()
@@ -358,6 +376,14 @@ pub struct PreparedView {
     pub fragments: Arc<[CheckFragment]>,
     /// Custom-component usages with resolved local component scripts.
     pub components: Arc<[ComponentUsage]>,
+    /// Component declaration facts for this view's project, when the fixed
+    /// `tsconfig.json`-sibling `components.d.ts` exists and parses.
+    ///
+    /// `None` means the project has no usable declaration file, so consumers
+    /// keep exactly the script-derived behaviour they had before declarations
+    /// existed. The facts are the project host's cached snapshot, never a
+    /// re-scan of `files`.
+    pub typing: Option<Arc<ComponentTypingFacts>>,
     /// Static event handlers in source order, capped at [`MAX_PREPARED_EVENTS`].
     pub events: Arc<[EventHandler]>,
     /// Absolute project root. Never sent to an LSP client.
@@ -694,6 +720,59 @@ struct PreparedCacheEntry {
 /// Number of recently prepared views kept per app.
 const MAX_PREPARED_CACHE: usize = 4;
 
+/// Inputs that decide which declaration facts a view uses.
+///
+/// The digest changes only when the declaration file, its effective content or
+/// the loaded `tsconfig.json` moves, so an overlay in any other file never
+/// re-parses declarations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TypingDigest {
+    /// Fixed declaration path next to the loaded `tsconfig.json`.
+    declaration: Option<ProjectPath>,
+    /// Overlay revision when overlaid, otherwise the observed disk version.
+    declaration_revision: u64,
+    /// Loaded `tsconfig.json` path, or `None` without one.
+    config: Option<ProjectPath>,
+    /// Overlay or disk version of the `tsconfig.json` chain root.
+    config_revision: u64,
+}
+
+/// One project's declaration facts plus the readable reason they are partial.
+#[derive(Debug)]
+struct TypingSnapshot {
+    facts: Arc<ComponentTypingFacts>,
+    /// Readable declaration-read failure; never contains an absolute path.
+    issue: Option<String>,
+}
+
+impl TypingSnapshot {
+    /// Returns the facts of a project without usable declarations.
+    fn empty() -> Self {
+        Self {
+            facts: Arc::new(ComponentTypingFacts {
+                complete: true,
+                ..ComponentTypingFacts::default()
+            }),
+            issue: None,
+        }
+    }
+}
+
+impl Default for TypingSnapshot {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+/// Cached declaration facts for one app, invalidated by [`TypingDigest`].
+#[derive(Debug, Default)]
+struct TypingSlotCache {
+    digest: Option<TypingDigest>,
+    snapshot: Arc<TypingSnapshot>,
+    /// Number of parses; test-only evidence that irrelevant overlays are free.
+    computed: u64,
+}
+
 /// One loaded Mini Program app and everything derived from it.
 #[derive(Debug)]
 struct ProjectSlot {
@@ -710,6 +789,8 @@ struct ProjectSlot {
     prepared: Vec<PreparedCacheEntry>,
     /// A shared `tsconfig` chain changed; reload from disk on next use.
     config_stale: bool,
+    /// Declaration facts used to build view components, kept per app.
+    typing: Mutex<TypingSlotCache>,
     /// The project boundary is the whole workspace, not one app package.
     workspace_scoped: bool,
 }
@@ -2098,10 +2179,21 @@ impl ProjectState {
             .get(&project)
             .and_then(|slot| slot.dependencies.affected(&path))
             .unwrap_or_default();
-        if dirty.is_empty() {
-            // A saved script that no view depends on has no observable effect.
-            return Ok(HostUpdate::default());
-        }
+        let dirty = if dirty.is_empty() {
+            // A saved script that no view depends on usually has no observable
+            // effect. The declaration file is the exception: it changes facts
+            // for every view even though no dependency edge points at it.
+            let affects_declarations = state
+                .projects
+                .get(&project)
+                .is_some_and(|slot| is_typing_input(slot, &path));
+            if !affects_declarations {
+                return Ok(HostUpdate::default());
+            }
+            all_slot_views(&state, &project)
+        } else {
+            dirty
+        };
         let dirty = mark_views_dirty(&mut state, &project, dirty);
         let project_revision = bump_slot_revision(&mut state, &project);
         Ok(HostUpdate {
@@ -2461,6 +2553,7 @@ fn ensure_loaded(state: &mut State, app: &AppRoot, activate: bool) -> Result<Pro
             file_versions,
             prepared: Vec::new(),
             config_stale: false,
+            typing: Mutex::new(TypingSlotCache::default()),
             workspace_scoped,
         },
     );
@@ -3221,6 +3314,104 @@ fn view_components_in_slot(
     components_from_config(slot, config, local_file.as_ref())
 }
 
+/// Returns the declaration facts of one app, recomputing them only when the
+/// declaration file or the tsconfig identity changed.
+fn typing_snapshot(slot: &ProjectSlot) -> Arc<TypingSnapshot> {
+    let digest = typing_digest(&slot.project, &slot.file_versions);
+    let mut cache = slot.typing.lock().unwrap_or_else(PoisonError::into_inner);
+    if cache.digest.as_ref() == Some(&digest) {
+        return Arc::clone(&cache.snapshot);
+    }
+    let snapshot = Arc::new(resolve_typing(&slot.project));
+    cache.digest = Some(digest);
+    cache.snapshot = Arc::clone(&snapshot);
+    cache.computed = cache.computed.saturating_add(1);
+    snapshot
+}
+
+/// Returns the declaration facts one prepared view must carry.
+///
+/// `None` means the project has no usable declaration file (no `tsconfig.json`,
+/// no fixed `components.d.ts`, or the file produced no component facts), so the
+/// view keeps exactly its pre-declaration behaviour.
+fn view_typing(slot: &ProjectSlot) -> Option<Arc<ComponentTypingFacts>> {
+    let snapshot = typing_snapshot(slot);
+    (!snapshot.facts.components.is_empty()).then(|| Arc::clone(&snapshot.facts))
+}
+
+/// Builds the cache digest from the declaration path and both content versions.
+fn typing_digest(project: &Project, versions: &BTreeMap<ProjectPath, u64>) -> TypingDigest {
+    let declaration = typings::declaration_path(project.tsconfig());
+    let config = project.tsconfig().map(|config| config.path.clone());
+    TypingDigest {
+        declaration_revision: typing_revision(project, versions, declaration.as_ref()),
+        config_revision: typing_revision(project, versions, config.as_ref()),
+        declaration,
+        config,
+    }
+}
+
+/// Returns the effective version of one path without reading it.
+fn typing_revision(
+    project: &Project,
+    versions: &BTreeMap<ProjectPath, u64>,
+    path: Option<&ProjectPath>,
+) -> u64 {
+    let Some(path) = path else {
+        return 0;
+    };
+    project
+        .overlay()
+        .revision(path)
+        .or_else(|| versions.get(path).copied())
+        .unwrap_or(0)
+}
+
+/// Returns whether `path` changes the declaration digest of `slot`.
+///
+/// The saved declaration file and the loaded `tsconfig.json` chain are the only
+/// files that can change facts for every view without a dependency edge.
+fn is_typing_input(slot: &ProjectSlot, path: &ProjectPath) -> bool {
+    let Some(config) = slot.project.tsconfig() else {
+        return false;
+    };
+    if config.path == *path || config.extends.contains(path) {
+        return true;
+    }
+    typings::declaration_path(Some(config)).as_ref() == Some(path)
+}
+
+/// Reads the fixed declaration file and parses it into facts.
+fn resolve_typing(project: &Project) -> TypingSnapshot {
+    match typings::resolve_declaration(project) {
+        Ok(Some(source)) => TypingSnapshot {
+            facts: Arc::new(wxml_project::parse_component_typing_facts(
+                &declaration_sources(&source),
+            )),
+            issue: None,
+        },
+        Ok(None) => TypingSnapshot::empty(),
+        Err(issue) => TypingSnapshot {
+            facts: Arc::new(ComponentTypingFacts::default()),
+            issue: Some(issue.message),
+        },
+    }
+}
+
+/// Wraps the declaration file as the single-entry set the typing parser reads.
+fn declaration_sources(source: &typings::DeclarationSource) -> SourceSet {
+    SourceSet {
+        files: vec![SourceFile {
+            path: source.path.clone(),
+            kind: SourceKind::Dts,
+            text: source.text.clone(),
+            source_revision: 1,
+        }],
+        truncated: false,
+        issues: Vec::new(),
+    }
+}
+
 /// Builds the LSP component list from one effective page/component config.
 fn components_from_config(
     slot: &ProjectSlot,
@@ -3228,6 +3419,7 @@ fn components_from_config(
     local_file: Option<&ProjectPath>,
 ) -> Vec<ViewComponent> {
     let app_json = slot.project.app_json().clone();
+    let typing = typing_snapshot(slot);
     let mut components: Vec<ViewComponent> = config
         .iter()
         .map(|(name, usage)| {
@@ -3244,6 +3436,16 @@ fn components_from_config(
                     file: app_json.clone(),
                 }
             };
+            let script_facts = discovered.map_or_else(
+                || {
+                    ComponentPropertyFacts::empty(
+                        PropertySource::Script,
+                        Some("component metadata is unavailable"),
+                    )
+                },
+                |component| component.property_facts.clone(),
+            );
+            let declared = typing.facts.component(name);
             ViewComponent {
                 name: name.clone(),
                 specifier: usage.specifier.clone(),
@@ -3251,14 +3453,8 @@ fn components_from_config(
                 component: usage.component.clone(),
                 wxml: discovered.map(|component| component.wxml.clone()),
                 json: discovered.and_then(|component| component.json.clone()),
-                property_facts: discovered.map_or_else(
-                    || ComponentPropertyFacts {
-                        properties: Vec::new(),
-                        complete: false,
-                        reason: Some("component metadata is unavailable"),
-                    },
-                    |component| component.property_facts.clone(),
-                ),
+                property_facts: merge_declared_properties(script_facts, declared),
+                typing: declared.map(|component| Arc::new(component.clone())),
                 origin,
             }
         })
@@ -3348,6 +3544,17 @@ fn build_prepared(
     }
 
     let events = prepared_events(analysis.events, &mut hint);
+    let typing_tags: Vec<&str> = analysis
+        .components
+        .iter()
+        .map(|usage| usage.tag.as_str())
+        .collect();
+    merge_typing_hint(&mut hint, slot, &typing_tags);
+
+    // Declaration facts come from the project host's cached snapshot, so the
+    // fixed `components.d.ts` is resolved once per app revision and never
+    // re-derived from `files`.
+    let typing = view_typing(slot);
 
     let Some(script) = view.script.as_ref() else {
         return PreparedView {
@@ -3357,6 +3564,7 @@ fn build_prepared(
             compiler_options: serde_json::Map::new(),
             fragments: Arc::from(analysis.fragments),
             components: Arc::from(Vec::new()),
+            typing,
             events,
             project_root: slot.project.root().to_path_buf(),
             syntax_diagnostics: syntax,
@@ -3447,6 +3655,27 @@ fn build_prepared(
         );
     }
 
+    // A declared event whose handler exists but has no parameter annotation is
+    // only a coverage gap, never a diagnostic. The reason is merged last so an
+    // existing declaration/typing degradation keeps its wording.
+    if script_present {
+        if let Some(root) = slot.project.root().to_str() {
+            let typing = typing_snapshot(slot);
+            if let Some(reason) = crate::semantics::event_diagnostics::unannotated_handler_reason(
+                &files,
+                root,
+                project_id.as_str(),
+                script.as_str(),
+                owner,
+                snapshot.text(),
+                &events,
+                &typing.facts,
+            ) {
+                merge_hint(&mut hint, CapabilityStatus::Partial { reason });
+            }
+        }
+    }
+
     let mut filtered_partial = false;
     let compiler_options = filter_compiler_options(
         slot.project.compiler_options(),
@@ -3489,6 +3718,7 @@ fn build_prepared(
         compiler_options,
         fragments: Arc::from(analysis.fragments),
         components: Arc::from(components),
+        typing,
         events,
         project_root: slot.project.root().to_path_buf(),
         syntax_diagnostics: syntax,
@@ -3656,6 +3886,7 @@ fn syntax_only_view(
         compiler_options: serde_json::Map::new(),
         fragments: Arc::from(Vec::new()),
         components: Arc::from(Vec::new()),
+        typing: None,
         events: Arc::from(Vec::new()),
         project_root: PathBuf::new(),
         syntax_diagnostics: syntax,
@@ -3713,6 +3944,53 @@ fn merge_hint(hint: &mut Option<CapabilityStatus>, candidate: CapabilityStatus) 
         .is_none_or(|current| rank(&candidate) > rank(current))
     {
         *hint = Some(candidate);
+    }
+}
+
+/// Degrades the capability status for declaration facts that cannot be trusted.
+///
+/// The reasons are stable Chinese strings without any host path, so they can be
+/// shown to the user. An unreadable declaration file always degrades; parsed
+/// facts degrade only for tags this view actually uses, so a declaration for
+/// another page does not make every template partial.
+fn merge_typing_hint(hint: &mut Option<CapabilityStatus>, slot: &ProjectSlot, tags: &[&str]) {
+    let snapshot = typing_snapshot(slot);
+    if let Some(issue) = snapshot.issue.as_ref() {
+        merge_hint(
+            hint,
+            CapabilityStatus::Partial {
+                reason: issue.clone(),
+            },
+        );
+        return;
+    }
+    if tags.is_empty() {
+        return;
+    }
+    let mut reason: Option<String> = None;
+    let mut declared = false;
+    for tag in tags {
+        let Some(component) = snapshot.facts.component(tag) else {
+            continue;
+        };
+        declared = true;
+        if !component.complete {
+            reason.get_or_insert_with(|| format!("组件 '{tag}' 的类型声明不完整"));
+            continue;
+        }
+        if component.props.iter().any(|property| !property.proven) {
+            reason.get_or_insert_with(|| format!("组件 '{tag}' 存在未证明的属性类型"));
+            continue;
+        }
+        if component.events.iter().any(|event| !event.proven) {
+            reason.get_or_insert_with(|| format!("组件 '{tag}' 存在未证明的事件类型"));
+        }
+    }
+    if reason.is_none() && declared && !snapshot.facts.complete {
+        reason = Some("组件类型声明未完全解析".to_owned());
+    }
+    if let Some(reason) = reason {
+        merge_hint(hint, CapabilityStatus::Partial { reason });
     }
 }
 
@@ -4987,13 +5265,16 @@ mod tests {
                 }],
                 complete: true,
                 reason: None,
+                source: PropertySource::Script,
             },
+            typing: None,
             origin: ComponentOrigin::Local { file: None },
         };
         component.apply_live_facts(ComponentPropertyFacts {
             properties: Vec::new(),
             complete: false,
             reason: Some("properties object is malformed"),
+            source: PropertySource::Script,
         });
         assert_eq!(component.property_facts.properties.len(), 1);
         assert!(!component.property_facts.complete);
@@ -5006,6 +5287,7 @@ mod tests {
             properties: Vec::new(),
             complete: true,
             reason: None,
+            source: PropertySource::Script,
         });
         assert_eq!(component.property_facts.properties.len(), 0);
         assert!(component.property_facts.complete);
@@ -5195,6 +5477,509 @@ mod tests {
         assert_ne!(project_id_for(&a_app), project_id_for(&b_app));
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// Declaration text whose `type` property disagrees with the script.
+    const CARD_DECLARATION: &str = "\
+declare global {
+  interface WxmlComponentMap {
+    'card': CardProps;
+  }
+  interface CardProps {
+    props: {
+      type?: string;
+      loading?: boolean;
+    };
+    events: {
+      change: { detail: { index: number } };
+    };
+  }
+}
+export {};
+";
+
+    /// Declaration whose `change` detail is outside the supported subset.
+    const UNPROVEN_EVENT_DECLARATION: &str = "\
+declare global {
+  interface WxmlComponentMap {
+    'card': CardProps;
+  }
+  interface CardProps {
+    props: {
+      type?: string;
+    };
+    events: {
+      change: { detail: SomeLib.Options };
+    };
+  }
+}
+export {};
+";
+
+    /// Overwrites the fixture page script before the project is opened.
+    fn write_page_script(root: &Path, script: &str) {
+        std::fs::write(root.join("pages/index/index.ts"), script).expect("page script");
+    }
+
+    /// Writes a small app whose component script and declaration file differ.
+    fn typing_host(declaration: Option<&str>) -> (tempfile::TempDir, PathBuf) {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let dir = tempfile::Builder::new()
+            .prefix("wxml-typing-host-")
+            .tempdir_in(base)
+            .expect("create temp dir");
+        let root = dir.path().to_path_buf();
+        std::fs::write(
+            root.join("app.json"),
+            r#"{"pages":["pages/index/index"],"usingComponents":{"card":"/components/card/card"}}"#,
+        )
+        .expect("write app.json");
+        std::fs::write(root.join("tsconfig.json"), "{}").expect("write tsconfig");
+        if let Some(declaration) = declaration {
+            std::fs::write(root.join("components.d.ts"), declaration).expect("write declaration");
+        }
+        std::fs::create_dir_all(root.join("components/card")).expect("component dir");
+        std::fs::write(root.join("components/card/card.wxml"), "<view />").expect("component wxml");
+        std::fs::write(root.join("components/card/card.json"), "{}").expect("component json");
+        std::fs::write(
+            root.join("components/card/card.ts"),
+            "Component({ properties: { type: { type: Boolean } } });",
+        )
+        .expect("component script");
+        std::fs::create_dir_all(root.join("pages/index")).expect("page dir");
+        std::fs::write(
+            root.join("pages/index/index.wxml"),
+            r#"<card type="primary" />"#,
+        )
+        .expect("page wxml");
+        std::fs::write(root.join("pages/index/index.json"), "{}").expect("page json");
+        std::fs::write(
+            root.join("pages/index/index.ts"),
+            "Page({ data: { title: 'ok' } });",
+        )
+        .expect("page script");
+        (dir, root)
+    }
+
+    fn open_typing_host(root: &Path) -> ProjectState {
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open project");
+        host
+    }
+
+    fn card_component(host: &ProjectState) -> ViewComponent {
+        let page = ProjectPath::new("pages/index/index.wxml").expect("page");
+        host.view_components(&page)
+            .into_iter()
+            .find(|component| component.name == "card")
+            .expect("card component")
+    }
+
+    fn analyze_page(host: &ProjectState, text: &str, snapshot: u64) -> PreparedView {
+        let path = ProjectPath::new("pages/index/index.wxml").expect("page");
+        let file = host.file_id(&path).expect("file");
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(snapshot),
+            text,
+        ));
+        host.analysis(&snapshot).expect("analysis")
+    }
+
+    /// Returns the parse counter and snapshot identity of the declaration cache.
+    fn typing_cache_state(host: &ProjectState) -> (u64, usize) {
+        let state = host.read();
+        let Some(slot) = state.projects.values().next() else {
+            return (0, 0);
+        };
+        let Ok(cache) = slot.typing.lock() else {
+            return (0, 0);
+        };
+        (cache.computed, Arc::as_ptr(&cache.snapshot) as usize)
+    }
+
+    #[test]
+    fn declared_properties_override_script_facts_and_ignore_script_overlays() {
+        let (_dir, root) = typing_host(Some(CARD_DECLARATION));
+        let host = open_typing_host(&root);
+
+        let card = card_component(&host);
+        assert_eq!(card.property_facts.source, PropertySource::Typing);
+        assert!(card.property_facts.is_typing());
+        assert!(
+            card.property_facts.complete,
+            "{:?}",
+            card.property_facts.reason
+        );
+        assert_eq!(
+            card.property_facts
+                .properties
+                .iter()
+                .find(|property| property.name == "type")
+                .expect("type property")
+                .type_text,
+            "string"
+        );
+        let typing = card.typing.as_ref().expect("declaration facts");
+        assert!(typing.prop("type").is_some());
+        assert!(typing.event("change").is_some());
+
+        // An unsaved script edit still produces live script facts ...
+        let uri = format!("file://{}", root.join("components/card/card.ts").display());
+        host.open_document(OpenDocument {
+            uri,
+            text: "Component({ properties: { size: { type: Number } } });".to_owned(),
+            version: Some(1),
+        })
+        .expect("script overlay");
+        let live = host
+            .component_properties(
+                &ProjectPath::new("pages/index/index.wxml").expect("page"),
+                "card",
+            )
+            .expect("live script facts");
+        assert_eq!(live.source, PropertySource::Script);
+        assert_eq!(live.properties[0].name, "size");
+
+        // ... but the declaration wins and the overlay cannot replace it.
+        let mut card = card_component(&host);
+        assert_eq!(card.property_facts.source, PropertySource::Typing);
+        card.apply_live_facts(live);
+        assert_eq!(card.property_facts.source, PropertySource::Typing);
+        assert!(
+            card.property_facts
+                .properties
+                .iter()
+                .all(|property| property.name != "size")
+        );
+        assert!(
+            card.property_facts
+                .properties
+                .iter()
+                .any(|property| property.name == "type")
+        );
+    }
+
+    #[test]
+    fn fixture_declarations_reach_declared_tags() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tests/fixtures/components-typings");
+        let root = std::fs::canonicalize(root).expect("fixture root");
+        let host = open_typing_host(&root);
+        let page = ProjectPath::new("pages/index/index.wxml").expect("page");
+        let components = host.view_components(&page);
+        let button = components
+            .iter()
+            .find(|component| component.name == "van-button")
+            .expect("declared tag");
+        assert_eq!(button.property_facts.source, PropertySource::Typing);
+        assert_eq!(
+            button
+                .property_facts
+                .properties
+                .iter()
+                .find(|property| property.name == "type")
+                .expect("type property")
+                .type_text,
+            "'primary' | 'default' | 'warning'"
+        );
+        let typing = button.typing.as_ref().expect("declaration facts");
+        assert!(typing.event("change").is_some());
+        assert!(typing.prop("loading").is_some());
+
+        let view = analyze_page(&host, r#"<van-button type="primary" />"#, 31);
+        assert!(
+            view.status_hint.is_none(),
+            "a complete declaration must stay clean: {:?}",
+            view.status_hint
+        );
+    }
+
+    #[test]
+    fn undeclared_components_keep_script_properties() {
+        let (_dir, root) = typing_host(None);
+        let host = open_typing_host(&root);
+
+        let card = card_component(&host);
+        assert!(card.typing.is_none());
+        assert_eq!(card.property_facts.source, PropertySource::Script);
+        assert_eq!(card.property_facts.properties[0].name, "type");
+        assert_eq!(card.property_facts.properties[0].type_text, "boolean");
+
+        let view = analyze_page(&host, r#"<card type="primary" />"#, 11);
+        assert!(
+            view.status_hint.is_none(),
+            "a project without declarations must stay clean: {:?}",
+            view.status_hint
+        );
+    }
+
+    #[test]
+    fn an_unannotated_declared_event_handler_degrades_the_status_hint() {
+        let (_dir, root) = typing_host(Some(CARD_DECLARATION));
+        write_page_script(&root, "Page({ onChange(event) {} });");
+        let host = open_typing_host(&root);
+        let view = analyze_page(&host, r#"<card bind:change="onChange" />"#, 31);
+        let Some(CapabilityStatus::Partial { reason }) = view.status_hint else {
+            panic!("expected a partial hint, got {:?}", view.status_hint);
+        };
+        assert!(reason.contains("参数未标注类型"), "{reason}");
+        assert!(reason.contains("card"), "{reason}");
+        assert!(
+            !reason.contains('/'),
+            "the reason must not contain a path: {reason}"
+        );
+    }
+
+    #[test]
+    fn a_zero_argument_declared_event_handler_keeps_the_status_clean() {
+        let (_dir, root) = typing_host(Some(CARD_DECLARATION));
+        write_page_script(&root, "Page({ onChange() {} });");
+        let host = open_typing_host(&root);
+        let view = analyze_page(&host, r#"<card bind:change="onChange" />"#, 31);
+        assert!(view.status_hint.is_none(), "{:?}", view.status_hint);
+    }
+
+    #[test]
+    fn an_annotated_compatible_declared_event_handler_keeps_the_status_clean() {
+        let (_dir, root) = typing_host(Some(CARD_DECLARATION));
+        write_page_script(
+            &root,
+            "Page({ onChange(event: WechatMiniprogram.CustomEvent<{ index: number }>) {} });",
+        );
+        let host = open_typing_host(&root);
+        let view = analyze_page(&host, r#"<card bind:change="onChange" />"#, 31);
+        assert!(view.status_hint.is_none(), "{:?}", view.status_hint);
+    }
+
+    #[test]
+    fn a_missing_declared_event_handler_does_not_add_the_unannotated_reason() {
+        let (_dir, root) = typing_host(Some(CARD_DECLARATION));
+        write_page_script(&root, "Page({ other() {} });");
+        let host = open_typing_host(&root);
+        let view = analyze_page(&host, r#"<card bind:change="onMissing" />"#, 31);
+        assert!(
+            view.status_hint.is_none(),
+            "a missing handler has its own diagnostic: {:?}",
+            view.status_hint
+        );
+    }
+
+    #[test]
+    fn an_undeclared_event_binding_does_not_add_the_unannotated_reason() {
+        let (_dir, root) = typing_host(Some(CARD_DECLARATION));
+        write_page_script(&root, "Page({ onChange(event) {} });");
+        let host = open_typing_host(&root);
+        let view = analyze_page(&host, r#"<card bind:chaneg="onChange" />"#, 31);
+        assert!(view.status_hint.is_none(), "{:?}", view.status_hint);
+    }
+
+    #[test]
+    fn a_project_without_declarations_never_degrades_for_unannotated_handlers() {
+        let (_dir, root) = typing_host(None);
+        write_page_script(&root, "Page({ onChange(event) {} });");
+        let host = open_typing_host(&root);
+        let view = analyze_page(&host, r#"<card bind:change="onChange" />"#, 31);
+        assert!(
+            view.status_hint.is_none(),
+            "a project without declarations must stay clean: {:?}",
+            view.status_hint
+        );
+    }
+
+    #[test]
+    fn an_existing_declaration_reason_wins_over_the_unannotated_handler_reason() {
+        let (_dir, root) = typing_host(Some(UNPROVEN_EVENT_DECLARATION));
+        write_page_script(&root, "Page({ onChange(event) {} });");
+        let host = open_typing_host(&root);
+        let view = analyze_page(&host, r#"<card bind:change="onChange" />"#, 31);
+        let Some(CapabilityStatus::Partial { reason }) = view.status_hint else {
+            panic!("expected a partial hint, got {:?}", view.status_hint);
+        };
+        // The existing declaration degradation keeps its more specific wording;
+        // the unannotated-handler reason is merged but loses at equal rank.
+        assert!(reason.contains("未证明的事件类型"), "{reason}");
+    }
+
+    #[test]
+    fn unrelated_overlays_do_not_reparse_declarations() {
+        let (_dir, root) = typing_host(Some(CARD_DECLARATION));
+        let host = open_typing_host(&root);
+        let _ = card_component(&host);
+        let (before_computed, before_snapshot) = typing_cache_state(&host);
+        assert_eq!(before_computed, 1);
+
+        let uri = format!("file://{}", root.join("pages/index/index.ts").display());
+        host.open_document(OpenDocument {
+            uri,
+            text: "Page({ data: { title: 'changed' } });".to_owned(),
+            version: Some(1),
+        })
+        .expect("script overlay");
+
+        let card = card_component(&host);
+        assert_eq!(card.property_facts.source, PropertySource::Typing);
+        let (after_computed, after_snapshot) = typing_cache_state(&host);
+        assert_eq!(after_computed, before_computed);
+        assert_eq!(after_snapshot, before_snapshot);
+    }
+
+    #[test]
+    fn declaration_overlays_refresh_declared_facts() {
+        let (_dir, root) = typing_host(Some(CARD_DECLARATION));
+        let host = open_typing_host(&root);
+        let _ = card_component(&host);
+        let (before_computed, before_snapshot) = typing_cache_state(&host);
+        assert_eq!(before_computed, 1);
+
+        let uri = format!("file://{}", root.join("components.d.ts").display());
+        host.open_document(OpenDocument {
+            uri,
+            text: "\
+declare global {
+  interface WxmlComponentMap {
+    'card': CardProps;
+  }
+  interface CardProps {
+    props: {
+      width: number;
+    };
+  }
+}
+export {};
+"
+            .to_owned(),
+            version: Some(1),
+        })
+        .expect("declaration overlay");
+
+        let card = card_component(&host);
+        let width = card
+            .property_facts
+            .properties
+            .iter()
+            .find(|property| property.name == "width")
+            .expect("overlaid width");
+        assert_eq!(width.type_text, "number");
+        assert_eq!(card.property_facts.source, PropertySource::Typing);
+        assert!(
+            card.typing
+                .as_ref()
+                .and_then(|typing| typing.prop("width"))
+                .is_some()
+        );
+        let (after_computed, after_snapshot) = typing_cache_state(&host);
+        assert_eq!(after_computed, before_computed + 1);
+        assert_ne!(after_snapshot, before_snapshot);
+    }
+
+    #[test]
+    fn tsconfig_overlays_reparse_declarations() {
+        let (_dir, root) = typing_host(Some(CARD_DECLARATION));
+        let host = open_typing_host(&root);
+        let _ = card_component(&host);
+        let (before_computed, before_snapshot) = typing_cache_state(&host);
+        assert_eq!(before_computed, 1);
+
+        let uri = format!("file://{}", root.join("tsconfig.json").display());
+        host.open_document(OpenDocument {
+            uri,
+            text: r#"{"compilerOptions":{"strict":true}}"#.to_owned(),
+            version: Some(2),
+        })
+        .expect("tsconfig overlay");
+
+        let card = card_component(&host);
+        assert_eq!(card.property_facts.source, PropertySource::Typing);
+        let (after_computed, after_snapshot) = typing_cache_state(&host);
+        assert_eq!(after_computed, before_computed + 1);
+        assert_ne!(after_snapshot, before_snapshot);
+    }
+
+    #[test]
+    fn saved_declarations_refresh_every_view() {
+        let (_dir, root) = typing_host(Some(CARD_DECLARATION));
+        let host = open_typing_host(&root);
+        let page = ProjectPath::new("pages/index/index.wxml").expect("page");
+        let _ = card_component(&host);
+
+        std::fs::write(
+            root.join("components.d.ts"),
+            "\
+declare global {
+  interface WxmlComponentMap {
+    'card': CardProps;
+  }
+  interface CardProps {
+    props: {
+      width: number;
+    };
+  }
+}
+export {};
+",
+        )
+        .expect("write saved declaration");
+        let uri = format!("file://{}", root.join("components.d.ts").display());
+        let update = host.save_document(&uri).expect("save declaration");
+        assert!(
+            update.dirty_views.contains(&page),
+            "a saved declaration must refresh every view: {:?}",
+            update.dirty_views
+        );
+
+        let card = card_component(&host);
+        assert_eq!(card.property_facts.source, PropertySource::Typing);
+        assert!(
+            card.property_facts
+                .properties
+                .iter()
+                .any(|property| property.name == "width")
+        );
+    }
+
+    #[test]
+    fn unreadable_declaration_degrades_the_capability_status() {
+        let (_dir, root) = typing_host(None);
+        std::fs::create_dir_all(root.join("components.d.ts")).expect("declaration directory");
+        let host = open_typing_host(&root);
+
+        let view = analyze_page(&host, r#"<card type="primary" />"#, 21);
+        let Some(CapabilityStatus::Partial { reason }) = view.status_hint else {
+            panic!("expected a partial hint, got {:?}", view.status_hint);
+        };
+        assert!(reason.contains("目录"), "{reason}");
+        assert!(!reason.contains(root.to_str().expect("root")), "{reason}");
+    }
+
+    #[test]
+    fn unproven_declaration_types_degrade_the_capability_status() {
+        let (_dir, root) = typing_host(Some(
+            "\
+declare global {
+  interface WxmlComponentMap {
+    'card': CardProps;
+  }
+  interface CardProps {
+    props: {
+      ref?: SomeLib.Options;
+    };
+  }
+}
+export {};
+",
+        ));
+        let host = open_typing_host(&root);
+
+        let view = analyze_page(&host, r#"<card ref="x" />"#, 22);
+        let Some(CapabilityStatus::Partial { reason }) = view.status_hint else {
+            panic!("expected a partial hint, got {:?}", view.status_hint);
+        };
+        assert!(reason.contains("未证明"), "{reason}");
+        assert!(reason.contains("card"), "{reason}");
     }
 
     #[test]

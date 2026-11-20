@@ -107,7 +107,9 @@ fn component_fixture() -> ViewComponent {
             }],
             complete: true,
             reason: None,
+            source: wxml_project::PropertySource::Script,
         },
+        typing: None,
         origin: crate::project_host::ComponentOrigin::Local {
             file: Some(ProjectPath::new("pages/index/index.json").expect("path")),
         },
@@ -233,6 +235,7 @@ fn incomplete_component_properties_are_not_reported_as_empty() {
         properties: Vec::new(),
         complete: false,
         reason: Some("spread properties were not statically extracted"),
+        source: wxml_project::PropertySource::Script,
     };
     let components = vec![component];
     let text = "<my-card />";
@@ -308,6 +311,7 @@ fn unresolved_component_hover_is_one_short_line() {
         properties: Vec::new(),
         complete: false,
         reason: Some("component metadata is unavailable"),
+        source: wxml_project::PropertySource::Script,
     };
     let components = vec![component];
     let text = "<my-card />";

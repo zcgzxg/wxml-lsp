@@ -625,6 +625,7 @@ Component({ behaviors: [shared], data: {} });"#;
             compiler_options: serde_json::Map::new(),
             fragments,
             components: Arc::from(Vec::new()),
+            typing: None,
             events: Arc::from(Vec::new()),
             project_root: std::path::PathBuf::from("/work/optional-types-plan"),
             syntax_diagnostics: Vec::new(),
