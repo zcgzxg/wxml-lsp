@@ -142,21 +142,18 @@ impl StructureFacts {
     /// Returns the parsed tree for structural consumers that must not parse
     /// the document again.
     #[must_use]
-    #[allow(dead_code)] // Stable crate-internal API for S/T consumers.
     pub(crate) const fn tree(&self) -> &SyntaxTree {
         &self.tree
     }
 
     /// Returns the paired tag-name ranges for linked editing.
     #[must_use]
-    #[allow(dead_code)] // Stable crate-internal API for S/T consumers.
     pub(crate) fn linked_editing_range(&self, offset: u32) -> Option<(TextRange, TextRange)> {
         linked_editing_range_in(&self.tree, offset)
     }
 
     /// Returns the selection ancestor chain for `offset`, innermost first.
     #[must_use]
-    #[allow(dead_code)] // Stable crate-internal API for S/T consumers.
     pub(crate) fn selection_chain(&self, offset: u32) -> Vec<TextRange> {
         selection_chain_in(&self.tree, offset)
     }
@@ -164,7 +161,6 @@ impl StructureFacts {
     /// Returns folding ranges for elements, multiline start tags, comments and
     /// whole WXS elements.
     #[must_use]
-    #[allow(dead_code)] // Stable crate-internal API for S/T consumers.
     pub(crate) fn folding_ranges(&self, line_index: &LineIndex) -> Vec<Fold> {
         folding_ranges_in(&self.tree, line_index)
     }
@@ -174,7 +170,6 @@ impl StructureFacts {
     /// This is the single outline implementation; the semantic package must
     /// reuse it rather than performing a second structural parse.
     #[must_use]
-    #[allow(dead_code)] // Stable crate-internal API for S/T consumers.
     pub(crate) fn document_symbols(&self) -> Vec<DocumentSymbol> {
         document_symbols_in(&self.tree)
     }
@@ -1457,41 +1452,22 @@ fn root_selection_value(document: &crate::workspace::Document) -> Value {
     )
 }
 
-/// Free wrappers kept for unit tests and crate-internal consumers.
-#[allow(dead_code)] // Stable crate-internal API for S/T consumers.
-pub(crate) fn folding_ranges(text: &str, line_index: &LineIndex) -> Vec<Fold> {
-    StructureFacts::parse(text).map_or_else(Vec::new, |facts| facts.folding_ranges(line_index))
-}
-
-/// Free wrapper for linked editing.
-#[allow(dead_code)] // Stable crate-internal API for S/T consumers.
-pub(crate) fn linked_editing_range(text: &str, offset: u32) -> Option<(TextRange, TextRange)> {
-    StructureFacts::parse(text)?.linked_editing_range(offset)
-}
-
-/// Free wrapper for selection chains.
-#[allow(dead_code)] // Stable crate-internal API for S/T consumers.
-pub(crate) fn selection_chain(text: &str, offset: u32) -> Vec<TextRange> {
-    StructureFacts::parse(text).map_or_else(Vec::new, |facts| facts.selection_chain(offset))
-}
-
-/// Free wrapper for document symbols.
-#[allow(dead_code)] // Stable crate-internal API for S/T consumers.
-pub(crate) fn document_symbols(text: &str) -> Vec<DocumentSymbol> {
-    StructureFacts::parse(text).map_or_else(Vec::new, |facts| facts.document_symbols())
-}
-
 #[cfg(test)]
 #[allow(clippy::expect_used, clippy::assert_is_empty)]
 mod tests {
     use super::*;
     use wxml_types::CapabilityStatus;
 
+    /// Parses `text` into facts; unit tests only use texts the parser accepts.
+    fn facts(text: &str) -> StructureFacts {
+        StructureFacts::parse(text).expect("structure facts")
+    }
+
     #[test]
     fn folds_elements_multiline_tags_comments_and_wxs() {
         let text = "<view\n  class=\"a\">\n  <text>x</text>\n  <!-- a\n  b -->\n  <wxs module=\"m\">\nvar x = 1;\n</wxs>\n</view>";
         let line_index = LineIndex::new(text);
-        let folds = folding_ranges(text, &line_index);
+        let folds = facts(text).folding_ranges(&line_index);
         assert_eq!(
             folds,
             vec![
@@ -1527,21 +1503,21 @@ mod tests {
     fn single_line_constructs_do_not_produce_empty_folds() {
         let text = "<view><text>x</text><!-- c --></view>";
         let line_index = LineIndex::new(text);
-        assert!(folding_ranges(text, &line_index).is_empty());
+        assert!(facts(text).folding_ranges(&line_index).is_empty());
     }
 
     #[test]
     fn unclosed_regions_do_not_swallow_siblings() {
         let text = "<view>\n<text>a\nb";
         let line_index = LineIndex::new(text);
-        assert!(folding_ranges(text, &line_index).is_empty());
+        assert!(facts(text).folding_ranges(&line_index).is_empty());
     }
 
     #[test]
     fn folds_a_multiline_self_closing_tag() {
         let text = "<image\n  src=\"x\"\n/>";
         let line_index = LineIndex::new(text);
-        let folds = folding_ranges(text, &line_index);
+        let folds = facts(text).folding_ranges(&line_index);
         assert_eq!(
             folds,
             vec![Fold {
@@ -1563,7 +1539,7 @@ mod tests {
             "<!--\na\n-->"
         );
         let line_index = LineIndex::new(text.as_str());
-        let folds = folding_ranges(&text, &line_index);
+        let folds = facts(&text).folding_ranges(&line_index);
         assert!(folds.len() <= MAX_FOLDING_RANGES);
         assert!(folds.windows(2).all(|pair| {
             pair[0].start_line < pair[1].start_line
@@ -1575,7 +1551,7 @@ mod tests {
     #[test]
     fn links_nested_same_name_tags_to_their_own_pair() {
         let text = "<view><view>x</view></view>";
-        let outer = linked_editing_range(text, 2).expect("outer pair");
+        let outer = facts(text).linked_editing_range(2).expect("outer pair");
         assert_eq!(
             &text[outer.0.start() as usize..outer.0.end() as usize],
             "view"
@@ -1583,7 +1559,7 @@ mod tests {
         assert_eq!(outer.0.start(), 1);
         assert_eq!(outer.1.start(), 22);
 
-        let inner = linked_editing_range(text, 16).expect("inner pair");
+        let inner = facts(text).linked_editing_range(16).expect("inner pair");
         assert_eq!(inner.0.start(), 7);
         assert_eq!(inner.1.start(), 15);
     }
@@ -1592,7 +1568,7 @@ mod tests {
     fn linked_editing_requires_a_complete_pair() {
         for text in ["<view/>", "<view>x", "<view></VIEW>", "plain text"] {
             assert!(
-                linked_editing_range(text, 2).is_none(),
+                facts(text).linked_editing_range(2).is_none(),
                 "{text:?} must not link"
             );
         }
@@ -1601,15 +1577,15 @@ mod tests {
     #[test]
     fn linked_editing_ignores_a_position_outside_the_name() {
         let text = "<view>x</view>";
-        assert!(linked_editing_range(text, 6).is_none());
-        assert!(linked_editing_range(text, 14).is_none());
+        assert!(facts(text).linked_editing_range(6).is_none());
+        assert!(facts(text).linked_editing_range(14).is_none());
     }
 
     #[test]
     fn selection_chain_keeps_label_tokens_and_ancestors() {
         let text = "<view class=\"a\">\n  {{ user.name }}\n</view>";
         let offset = u32::try_from(text.find("user").expect("user") + 2).expect("offset");
-        let chain = selection_chain(text, offset);
+        let chain = facts(text).selection_chain(offset);
         let names: Vec<&str> = chain
             .iter()
             .map(|range| &text[range.start() as usize..range.end() as usize])
@@ -1629,7 +1605,7 @@ mod tests {
     fn selection_chain_covers_attribute_values_and_text() {
         let text = "<view class=\"a\">text</view>";
         let value_offset = u32::try_from(text.find("\"a\"").expect("value") + 1).expect("offset");
-        let chain = selection_chain(text, value_offset);
+        let chain = facts(text).selection_chain(value_offset);
         let names: Vec<&str> = chain
             .iter()
             .map(|range| &text[range.start() as usize..range.end() as usize])
@@ -1640,7 +1616,7 @@ mod tests {
         );
 
         let text_offset = u32::try_from(text.find("text").expect("text")).expect("offset");
-        let chain = selection_chain(text, text_offset);
+        let chain = facts(text).selection_chain(text_offset);
         assert_eq!(
             &text[chain[0].start() as usize..chain[0].end() as usize],
             "text"
@@ -1652,8 +1628,12 @@ mod tests {
     #[test]
     fn selection_chain_rejects_positions_outside_the_document() {
         let text = "<view>x</view>\n";
-        assert!(selection_chain(text, u32::try_from(text.len() + 1).expect("offset")).is_empty());
-        let chain = selection_chain(text, 2);
+        assert!(
+            facts(text)
+                .selection_chain(u32::try_from(text.len() + 1).expect("offset"))
+                .is_empty()
+        );
+        let chain = facts(text).selection_chain(2);
         assert_eq!(chain.len(), 3);
         assert_eq!(
             &text[chain[0].start() as usize..chain[0].end() as usize],
@@ -1669,7 +1649,7 @@ mod tests {
     fn selection_chain_keeps_a_token_that_ends_at_the_cursor() {
         let text = "<view>x</view>";
         let offset = u32::try_from(text.find('x').expect("x") + 1).expect("offset");
-        let chain = selection_chain(text, offset);
+        let chain = facts(text).selection_chain(offset);
         assert_eq!(
             &text[chain[0].start() as usize..chain[0].end() as usize],
             "x"
@@ -1677,7 +1657,7 @@ mod tests {
 
         let text = "<view class=\"a\">x</view>";
         let offset = u32::try_from(text.rfind('"').expect("quote")).expect("offset");
-        let chain = selection_chain(text, offset);
+        let chain = facts(text).selection_chain(offset);
         assert_eq!(
             &text[chain[0].start() as usize..chain[0].end() as usize],
             "a"
@@ -1687,7 +1667,7 @@ mod tests {
     #[test]
     fn selection_chain_starts_with_a_tag_name_token() {
         let text = "<view>x</view>";
-        let chain = selection_chain(text, 2);
+        let chain = facts(text).selection_chain(2);
         assert_eq!(
             &text[chain[0].start() as usize..chain[0].end() as usize],
             "view"
@@ -1698,7 +1678,7 @@ mod tests {
     #[test]
     fn document_symbols_nest_elements_and_summarize_ids_and_classes() {
         let text = "<view id=\"page\" class=\"a b\"><text>hi</text><image src=\"x\"/></view>";
-        let symbols = document_symbols(text);
+        let symbols = facts(text).document_symbols();
         assert_eq!(symbols.len(), 1);
         let view = &symbols[0];
         assert_eq!(view.name, "view");
@@ -1724,7 +1704,7 @@ mod tests {
         for _ in 0..(MAX_DOCUMENT_SYMBOLS + 20) {
             text.push_str("<view></view>");
         }
-        let symbols = document_symbols(&text);
+        let symbols = facts(&text).document_symbols();
         assert!(symbols.len() <= MAX_DOCUMENT_SYMBOLS, "{}", symbols.len());
 
         let classes = (0..40)
@@ -1732,7 +1712,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         let text = format!("<view class=\"{classes}\"></view>");
-        let symbols = document_symbols(&text);
+        let symbols = facts(&text).document_symbols();
         let detail = symbols[0].detail.as_deref().expect("detail");
         assert!(detail.chars().count() <= MAX_DETAIL_CHARS + 1);
         assert!(detail.starts_with(".class0"));
@@ -1741,14 +1721,14 @@ mod tests {
     #[test]
     fn document_symbols_skip_dynamic_id_and_class_values() {
         let text = "<view id=\"{{ id }}\" class=\"a {{ b }}\"></view>";
-        let symbols = document_symbols(text);
+        let symbols = facts(text).document_symbols();
         assert_eq!(symbols[0].detail, None);
     }
 
     #[test]
     fn document_symbols_include_malformed_siblings_but_stay_valid() {
         let text = "<view><text>a</text><view";
-        let symbols = document_symbols(text);
+        let symbols = facts(text).document_symbols();
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "view");
         assert!(symbols[0].children.iter().any(|child| child.name == "text"));
@@ -1980,7 +1960,7 @@ mod tests {
             text.push_str("</view>");
         }
         let offset = u32::try_from(text.find('x').expect("content")).expect("offset");
-        let chain = selection_chain(&text, offset);
+        let chain = facts(&text).selection_chain(offset);
         assert!(chain.len() <= MAX_SELECTION_DEPTH, "{}", chain.len());
         assert_strictly_nested(&chain);
     }
@@ -1996,7 +1976,7 @@ mod tests {
             text.push('\n');
         }
         let line_index = LineIndex::new(text.as_str());
-        let folds = folding_ranges(&text, &line_index);
+        let folds = facts(&text).folding_ranges(&line_index);
         assert!(folds.len() <= MAX_FOLDING_RANGES, "{}", folds.len());
         assert!(!folds.is_empty());
     }

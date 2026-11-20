@@ -25,8 +25,6 @@
 
 use wxml_types::{CapabilityStatus, CompletionItemKind, MAX_COMPLETION_ITEMS};
 
-use crate::input::ProjectKey;
-use crate::native::strings::Utf16Position;
 use crate::native::wire::RawCompletionList;
 
 /// Whether the snapshot was prepared for auto-imports when the query ran.
@@ -64,23 +62,6 @@ impl CompletionQueryOptions {
     pub const SYMBOLS: Self = Self {
         include_symbol: true,
     };
-}
-
-/// Returns the shared C0 completion cap (`wxml_types::MAX_COMPLETION_ITEMS`).
-#[must_use]
-pub const fn completion_limit() -> usize {
-    MAX_COMPLETION_ITEMS
-}
-
-/// Completion request in native coordinates.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompletionQuery {
-    /// Project the document belongs to.
-    pub project: ProjectKey,
-    /// Normalized document path.
-    pub path: String,
-    /// Native UTF-16 position.
-    pub position: Utf16Position,
 }
 
 /// A reason a native completion result is not complete.
@@ -142,21 +123,6 @@ impl CompletionGap {
     }
 }
 
-/// Symbol evidence attached to one prepared completion entry.
-///
-/// This is identity/flags evidence only. The engine declaration handles and
-/// file descriptors are deliberately not carried: they contain absolute engine
-/// paths and are not an auto-import origin.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompletionSymbolEvidence {
-    /// Symbol name reported by the engine.
-    pub name: String,
-    /// Engine symbol flags.
-    pub flags: u64,
-    /// Number of declaration handles; the handles themselves are not kept.
-    pub declaration_count: usize,
-}
-
 /// One completion entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletionEntry {
@@ -179,9 +145,6 @@ pub struct CompletionEntry {
     pub insert_text: Option<String>,
     /// Native `filterText` when present.
     pub filter_text: Option<String>,
-    /// Symbol evidence, only when `includeSymbol:true` was requested on a
-    /// prepared snapshot.
-    pub symbol: Option<CompletionSymbolEvidence>,
 }
 
 /// Completion result.
@@ -270,14 +233,6 @@ pub fn map_completions_with(
                     .as_deref()
                     .filter(|text| !text.is_empty())
                     .map(str::to_owned),
-                symbol: entry
-                    .symbol
-                    .as_ref()
-                    .map(|symbol| CompletionSymbolEvidence {
-                        name: symbol.name.clone(),
-                        flags: symbol.flags,
-                        declaration_count: symbol.declarations.len(),
-                    }),
             }
         })
         .collect();
@@ -380,12 +335,6 @@ mod tests {
             label_details: None,
             symbol: None,
         }
-    }
-
-    #[test]
-    fn completion_cap_uses_the_shared_c0_limit() {
-        assert_eq!(completion_limit(), 256);
-        assert_eq!(completion_limit(), MAX_COMPLETION_ITEMS);
     }
 
     #[test]
@@ -607,42 +556,6 @@ mod tests {
     }
 
     #[test]
-    fn completion_symbol_evidence_keeps_no_engine_paths() {
-        use crate::native::wire::RawSymbolReference;
-
-        let with_symbol = RawCompletionEntry {
-            symbol: Some(crate::native::wire::RawSymbol {
-                name: "User".to_owned(),
-                flags: 5_242_880,
-                declarations: vec![
-                    "22.262./work/model.ts".to_owned(),
-                    "23.262./work/other.ts".to_owned(),
-                ],
-                value_declaration: Some("22.262./work/model.ts".to_owned()),
-                reference: Some(RawSymbolReference {
-                    id: 7,
-                    kind: 1,
-                    file: None,
-                    snapshot: Some(2),
-                    project: Some("/work/tsconfig.json".to_owned()),
-                }),
-            }),
-            ..entry("User", 7)
-        };
-        let raw = list(vec![with_symbol], false);
-        let result = map_completions_with(Some(&raw), AutoImportContext::Prepared);
-        let symbol = result.entries[0].symbol.as_ref().expect("symbol evidence");
-        assert_eq!(symbol.name, "User");
-        assert_eq!(symbol.flags, 5_242_880);
-        assert_eq!(symbol.declaration_count, 2);
-        let debug = format!("{symbol:?}");
-        assert!(
-            !debug.contains("/work") && !debug.contains("22.262"),
-            "symbol evidence must not retain engine paths or handles: {debug}"
-        );
-    }
-
-    #[test]
     fn an_entry_is_never_marked_as_an_auto_import() {
         // The DTO has no auto-import field, so this test freezes the shape:
         // only the result-level gap may mention auto-imports.
@@ -651,7 +564,6 @@ mod tests {
         assert_eq!(result.entries[0].label, "User");
         assert_eq!(result.entries[0].insert_text, None);
         assert_eq!(result.entries[0].filter_text, None);
-        assert!(result.entries[0].symbol.is_none());
         assert!(
             result
                 .gaps

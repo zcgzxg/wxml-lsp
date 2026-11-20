@@ -12,24 +12,11 @@
 
 use wxml_types::CapabilityStatus;
 
-use crate::input::ProjectKey;
 use crate::native::session::{
     DefinitionEvidence, DefinitionTargetEvidence, MAX_DEFINITION_TARGETS,
 };
-use crate::native::strings::Utf16Position;
 use crate::script::symbols::Utf16Range;
 use crate::shadow::mapping::SourceRange;
-
-/// Definition request in native coordinates.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DefinitionQuery {
-    /// Project the document belongs to.
-    pub project: ProjectKey,
-    /// Normalized document path.
-    pub path: String,
-    /// Native UTF-16 position.
-    pub position: Utf16Position,
-}
 
 /// One definition target in original coordinates.
 #[derive(Debug, Clone, PartialEq, Eq)]

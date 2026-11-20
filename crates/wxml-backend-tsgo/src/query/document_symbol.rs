@@ -86,12 +86,6 @@ impl DocumentSymbolKind {
             _ => None,
         }
     }
-
-    /// Returns the numeric LSP `SymbolKind` value.
-    #[must_use]
-    pub const fn as_u32(self) -> u32 {
-        self as u32
-    }
 }
 
 /// One publishable document symbol with exact UTF-8 and UTF-16 ranges.
@@ -575,7 +569,7 @@ mod tests {
         for (node_kind, expected, number) in cases {
             let mapped = DocumentSymbolKind::from_node_kind(node_kind).expect("mapped kind");
             assert_eq!(mapped, expected);
-            assert_eq!(mapped.as_u32(), number);
+            assert_eq!(mapped as u32, number);
         }
         assert!(DocumentSymbolKind::from_node_kind(CONSTRUCTOR_KIND).is_none());
     }

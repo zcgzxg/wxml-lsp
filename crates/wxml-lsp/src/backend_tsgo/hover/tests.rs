@@ -300,14 +300,6 @@ mod adapter {
             unimplemented!("not used")
         }
 
-        fn hover_documentation(
-            &mut self,
-            _path: &str,
-            _position: Utf16Position,
-        ) -> Result<crate::backend_tsgo::session::HoverDocumentation, NativeError> {
-            unimplemented!("not used")
-        }
-
         fn hover_evidence(
             &mut self,
             _path: &str,

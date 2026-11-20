@@ -24,9 +24,6 @@ use crate::backend_tsgo::query::completion::CompletionQueryOptions;
 use crate::backend_tsgo::query::definition::{
     DefinitionResult as NativeDefinitionResult, DefinitionTarget as NativeDefinitionTarget,
 };
-use crate::backend_tsgo::query::documentation::{
-    DocumentationResult as NativeDocumentationResult, map_documentation,
-};
 use crate::backend_tsgo::query::hover::{HoverEvidence, HoverGap};
 use crate::backend_tsgo::query::type_info::{
     TypeInfo as NativeTypeInfo, TypeQuality as NativeTypeQuality, map_type_query,
@@ -51,6 +48,9 @@ use wxml_backend_tsgo::native::wire::{
     RawCompletionEntry, RawCompletionLabelDetails, RawCompletionList, RawDiagnostic, RawJsDocTag,
     RawPosition, RawType,
 };
+use wxml_backend_tsgo::query::documentation::{
+    DocumentationResult as NativeDocumentationResult, map_documentation,
+};
 use wxml_backend_tsgo::script::symbols::Utf16Range;
 use wxml_backend_tsgo::shadow::mapping::SourceRange as NativeSourceRange;
 use wxml_project::ProjectPath;
@@ -66,7 +66,7 @@ use wxml_types::{
 
 use super::hover::resolved_status;
 use super::input::ViewProvider;
-use super::session::{HoverDocumentation, QuerySession};
+use super::session::QuerySession;
 use super::{BACKEND_ID, HOST_ONLY_REASON, TsgoBackendAdapter};
 use crate::project_host::{
     HostError, PreparedFile, PreparedView, ProjectHost, ProjectState, ViewTarget,
@@ -626,7 +626,6 @@ struct FakeLog {
     syntactic_paths: Vec<String>,
     type_calls: Vec<(String, Utf16Position)>,
     hover_evidence_calls: Vec<(String, Utf16Position)>,
-    hover_documentation_calls: usize,
     completion_calls: Vec<(String, Utf16Position)>,
     completion_options: Vec<CompletionQueryOptions>,
     prepare_auto_import_calls: Vec<String>,
@@ -734,13 +733,14 @@ impl FakeSession {
         }
     }
 
-    fn hover_documentation_value(&self) -> Result<HoverDocumentation, NativeError> {
+    /// Documentation evidence derived from the fake engine facts.
+    ///
+    /// `None` means the fake engine found no symbol at the position, so the
+    /// composed evidence carries no documentation instead of an empty comment.
+    fn documentation_evidence(&self) -> Result<Option<NativeDocumentationResult>, NativeError> {
         match &self.behavior.docs_outcome {
-            FakeDocsOutcome::NoSymbol => Ok(HoverDocumentation::no_symbol()),
-            FakeDocsOutcome::Documented(query) => Ok(HoverDocumentation {
-                symbol: true,
-                result: map_documentation(query),
-            }),
+            FakeDocsOutcome::NoSymbol => Ok(None),
+            FakeDocsOutcome::Documented(query) => Ok(Some(map_documentation(query))),
             FakeDocsOutcome::Failure(failure) => Err(failure.native()),
         }
     }
@@ -752,18 +752,15 @@ impl FakeSession {
     /// documentation gaps live in the evidence status.
     fn derived_hover_evidence(&self) -> Result<HoverEvidence, NativeError> {
         let type_result = map_type_query(&self.type_query_value()?);
-        let documentation = match self.hover_documentation_value() {
+        let documentation = match self.documentation_evidence() {
             Ok(documentation) => documentation,
-            Err(NativeError::Unsupported { .. }) => HoverDocumentation {
-                symbol: true,
-                result: NativeDocumentationResult {
-                    comment: None,
-                    tags: Vec::new(),
-                    status: CapabilityStatus::Unsupported {
-                        reason: "native documentation queries are unavailable".to_owned(),
-                    },
+            Err(NativeError::Unsupported { .. }) => Some(NativeDocumentationResult {
+                comment: None,
+                tags: Vec::new(),
+                status: CapabilityStatus::Unsupported {
+                    reason: "native documentation queries are unavailable".to_owned(),
                 },
-            },
+            }),
             Err(error) => return Err(error),
         };
         let mut gaps = Vec::new();
@@ -776,7 +773,7 @@ impl FakeSession {
             type_info: type_result.info,
             type_quality: type_result.quality,
             symbol: None,
-            documentation: documentation.symbol.then_some(documentation.result),
+            documentation,
             declarations: Vec::new(),
             status: CapabilityStatus::Supported,
             gaps,
@@ -882,15 +879,6 @@ impl QuerySession for FakeSession {
             .type_calls
             .push((path.to_owned(), position));
         self.type_query_value()
-    }
-
-    fn hover_documentation(
-        &mut self,
-        _path: &str,
-        _position: Utf16Position,
-    ) -> Result<HoverDocumentation, NativeError> {
-        self.log.lock().expect("log").hover_documentation_calls += 1;
-        self.hover_documentation_value()
     }
 
     fn hover_evidence(
@@ -1223,7 +1211,6 @@ fn hover_composes_type_documentation_and_jsdoc() {
     let log = log.lock().expect("log");
     assert_eq!(log.hover_evidence_calls.len(), 1);
     assert!(log.type_calls.is_empty());
-    assert_eq!(log.hover_documentation_calls, 0);
 }
 
 #[test]
@@ -1310,7 +1297,7 @@ fn hover_without_type_or_documentation_is_unsupported_not_empty_success() {
 }
 
 #[test]
-fn hover_documentation_failure_is_partial_not_fake_known_docs() {
+fn documentation_failure_is_partial_not_fake_known_docs() {
     let behavior = documented_behavior();
     let behavior = FakeBehavior {
         docs_outcome: FakeDocsOutcome::Documented(DocumentationQuery {
@@ -1658,7 +1645,6 @@ fn an_unsupported_hover_evidence_query_exits_before_composition() {
     let log = log.lock().expect("log");
     assert_eq!(log.hover_evidence_calls.len(), 1);
     assert!(log.type_calls.is_empty());
-    assert_eq!(log.hover_documentation_calls, 0);
 }
 
 #[test]
@@ -1680,7 +1666,6 @@ fn hover_rejects_a_non_character_boundary_offset() {
     let log = log.lock().expect("log");
     assert!(log.hover_evidence_calls.is_empty());
     assert!(log.type_calls.is_empty());
-    assert_eq!(log.hover_documentation_calls, 0);
 }
 
 #[test]
@@ -6842,7 +6827,6 @@ fn event_completion_uses_script_methods_without_starting_a_native_session() {
     assert_eq!(log.starts, 0, "event completion must not start a session");
     assert_eq!(log.opens, 0);
     assert!(log.completion_calls.is_empty());
-    assert_eq!(log.hover_documentation_calls, 0);
 }
 
 #[test]

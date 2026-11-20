@@ -37,7 +37,7 @@ use wxml_types::{
 use super::Environment;
 use crate::backend_tsgo::TsgoBackendAdapter;
 use crate::backend_tsgo::input::{RequestPlan, ViewProvider, build_request_plan};
-use crate::backend_tsgo::session::{HoverDocumentation, QuerySession, SessionFactory};
+use crate::backend_tsgo::session::{QuerySession, SessionFactory};
 use crate::project_host::{HostError, PreparedFile, PreparedView, ViewTarget};
 
 pub(super) const WXML: &str = "<view>{{ user.name }}</view>";
@@ -251,14 +251,6 @@ impl QuerySession for TestSession {
         _path: &str,
         _position: Utf16Position,
     ) -> Result<TypeQuery, NativeError> {
-        Err(unsupported())
-    }
-
-    fn hover_documentation(
-        &mut self,
-        _path: &str,
-        _position: Utf16Position,
-    ) -> Result<HoverDocumentation, NativeError> {
         Err(unsupported())
     }
 

@@ -2,19 +2,15 @@
 
 本目录保存 AC-001..AC-013 的正例、反例和运行时场景，是各 crate 共用的唯一验收样本来源。样本全部为本项目自造，不包含第三方代码。
 
-结构校验由 `crates/wxml-fixtures/tests/manifest.rs` 执行，入口：
+每个静态样本是一棵可直接打开的真实小程序工程（`app.json`、`tsconfig.json`、页面、组件、脚本）。crate 测试把这些目录当作项目根直接读取，不再经过独立的校验 crate 或 Node runner；原 `wxml-fixtures` crate 与 `wave5_acceptance` runner 已随 ADR-0009 删除。
 
-```bash
-cargo test -p wxml-fixtures
-```
-
-校验器不执行类型分析；它拒绝坏样本，保证后续 runner 拿到的是可定位、可断言的数据。
+当前被 Rust 测试直接打开的样本是 `component-basic`、`component-bindings`、`events-basic`；其余目录保留为 AC 样本目标与对照。`manifest.json` 记录样本清单与 AC 对应关系，`expected/` 保存 AC 查询与诊断锚点；两者是人工维护的样本记录，当前没有代码加载，因此改动样本时必须人工保持同步。
 
 ## 1. 目录结构
 
 ```text
 tests/fixtures/
-├── manifest.json              # 样本清单（schema v2）
+├── manifest.json              # 样本清单（schema v2，人工维护）
 ├── README.md                  # 本文件
 └── <case-id>/                 # 静态样本（kind = fixture）
     ├── app.json
@@ -32,6 +28,8 @@ tests/fixtures/
 `runtime` 场景没有目录和磁盘样本，只写在 `manifest.json`。
 
 ## 2. manifest v2
+
+以下 schema 是 C0 冻结的清单约定，保留为样本记录格式。原校验器已随 ADR-0009 删除，字段不再被机器强制；修改样本时仍按下表更新，保证清单与 `expected/` 可回溯。
 
 ```json
 {
@@ -67,7 +65,7 @@ tests/fixtures/
 
 | 字段 | 必填 | 含义 |
 | --- | --- | --- |
-| `version` | 是 | 固定为 `2`；修改 schema 必须递增并更新校验器 |
+| `version` | 是 | 固定为 `2`；修改 schema 必须递增 |
 | `cases[].id` | 是 | 全清单唯一 |
 | `cases[].kind` | 是 | `fixture` 或 `runtime` |
 | `cases[].acs` | 是 | AC-001..AC-013，且每个编号至少被一个 case 覆盖 |
@@ -83,7 +81,7 @@ tests/fixtures/
 | `cases[].scenario` | runtime | 非空、不含 TODO |
 | `cases[].steps` | runtime | 至少 2 项，每项 `action`/`expect` 非空且不含 TODO |
 
-所有 `expected` 路径必须位于该 fixture root 内；校验器拒绝绝对路径、`..` 和 symlink 逃逸。
+所有 `expected` 路径必须位于该 fixture root 内；不得使用绝对路径、`..` 或 symlink 逃逸。
 
 ## 3. marker 与 target
 
@@ -93,7 +91,7 @@ tests/fixtures/
 2. marker 必须在该 `file` 中**恰好出现一次**。
 3. 同一表达式重复出现时，用周围文字或完整属性区分（如 `外层组名：{{ item.name }}`）。
 4. marker 不得为空；中文、emoji 直接写入，不做编码转换。
-5. 同一 marker 可合法出现在两个文件（如 LF/CRLF 变体）；`positive`/`negative` 需按出现次数重复列出，校验器按多重集比较，删除任一条都会失败。
+5. 同一 marker 可合法出现在两个文件（如 LF/CRLF 变体）；`positive`/`negative` 需按出现次数重复列出，比较时按多重集处理，删除任一条都会不一致。
 
 ### 3.2 target
 
@@ -108,7 +106,7 @@ tests/fixtures/
 | 组件属性不匹配 | 绑定表达式（`total`、`cardObject`） |
 | 事件缺失 | handler 名（`missingHandler`） |
 
-runner 对诊断必须断言 `Diagnostic.range` **精确等于** target 的字节范围，不得用 `contains` 放宽。hover 查询点取 target 起点。
+断言诊断时 `Diagnostic.range` 必须**精确等于** target 的字节范围，不得用 `contains` 放宽。hover 查询点取 target 起点。
 
 ## 4. `expected/hover.json` v2
 
@@ -145,7 +143,7 @@ runner 对诊断必须断言 `Diagnostic.range` **精确等于** target 的字�
 | `expect.quality` | 可选 | `known`/`any`/`unknown`/`missing`，缺省 `known` |
 | `expect.rangeTarget` | 可选 | hover 返回范围与 target 不同时使用；本轮未使用 |
 
-`type` 是展示文本；后续 runner 以 `typeKind` 做语义比较，避免 `typeToString` 空白或顺序差异造成假失败。
+`type` 是展示文本；语义比较以 `typeKind` 为准，避免 `typeToString` 空白或顺序差异造成假失败。
 
 ## 5. `expected/diagnostics.json` v2
 
@@ -175,10 +173,10 @@ runner 对诊断必须断言 `Diagnostic.range` **精确等于** target 的字�
 | `diagnostics[].severity` | 是 | `error`/`warning`/`information`/`hint` |
 | `diagnostics[].messageContains` | 是 | 消息必须包含的片段，大小写敏感 |
 
-query、expect、diagnostic 对象只允许文档列出的字段；未知字段（如 query 级 `rangeTarget`、`diagnostics[].status`）会被校验器拒绝。结果层的检查状态由 `DiagnosticsResult.status` 表达，单条 `Diagnostic` 没有 status。
+query、expect、diagnostic 对象只应出现文档列出的字段；未知字段（如 query 级 `rangeTarget`、`diagnostics[].status`）不应出现（原校验器已删除，该约束由书写约定维持）。结果层的检查状态由 `DiagnosticsResult.status` 表达，单条 `Diagnostic` 没有 status。
 
 - 只有 `status == supported`（或缺省）且 `diagnostics` 为空才表示“干净”，配合 `expectClean: true`。
-- 未支持/未知形式使用 `diagnostics: []` + 顶层 `status: "unsupported"`/`"unknown"`，且 `negative: []`。校验器允许这种“降级空诊断”，但 `expectClean` 不能与降级状态同时使用。
+- 未支持/未知形式使用 `diagnostics: []` + 顶层 `status: "unsupported"`/`"unknown"`，且 `negative: []`。这种“降级空诊断”是允许的，但 `expectClean` 不能与降级状态同时使用。
 - 不得用空 marker 或伪造诊断表达降级。
 
 ## 6. `expected/definition.json` v2
@@ -227,14 +225,14 @@ query、expect、diagnostic 对象只允许文档列出的字段；未知字段�
 
 ### 7.1 运行时验收（WT-B 样本）
 
-§7 的编号对应描述的是样本目标；结构校验只执行 `cargo test -p wxml-fixtures`，不做类型分析。`loop-scope`、`conditional-union`、`component-bindings`、`multi-view`、`alias-project` 的类型行为由真实 Node runner 执行：
+§7 的编号对应描述的是样本目标。原 `wave5_acceptance` Node runner 与 `backends/typescript` 已随 P7 删除，下面两条命令已不可执行，仅作为历史记录保留：
 
 ```bash
 (cd backends/typescript && npm ci && npm run build)
 WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored
 ```
 
-| 样本 | runner 覆盖的行为 |
+| 样本 | 原 runner 断言的行为（样本目标） |
 | --- | --- |
 | `loop-scope` | 8 条 hover：外层 `itemIndex` 为 number，`item.name`/`item.title` 为 string；内层默认 `index` 为 number、`item.name` 为 string；退出内层后恢复 `item.title`；`groupMap` 的 `index` 为 string；循环外 `{{ item }}` 在 `item` 上报错；`itemIndex` hover 不带文档 |
 | `conditional-union` | 3 条 hover 验证 `wx:elif`/`wx:else` 与真值窄化；`state.user.age` 在 `age` 上报错；守卫外 `maybeUser` 报 null 错误，守卫内通过 |
@@ -242,7 +240,7 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored
 | `multi-view` | 7 条 hover 分别命中 card/badge/a/b 自己的声明与 JSDoc；`card.wxml` 的 `user.nmae` 只在该文件报错；同时打开两个页面、card 组件和两个脚本时互不污染 |
 | `alias-project` | `@models/*` 别名下 `user.name` hover 为 string；`user.nmae` 在 `nmae` 报错；definition 跨别名解析到 `models/user.ts` 的 `name` |
 
-该 runner 被 `#[ignore]` 保护，默认门禁只编译不执行；它覆盖 WT-B 的 AC-005/006/008/012，以及 WT-C 在 `component-bindings` 与 `events-basic` 中的事件诊断、definition 和事件值补全。
+该 runner 当时被 `#[ignore]` 保护，默认门禁只编译不执行；它覆盖 WT-B 的 AC-005/006/008/012，以及 WT-C 在 `component-bindings` 与 `events-basic` 中的事件诊断、definition 和事件值补全。这些行为现在由 native 引擎测试按需覆盖（如 `crates/wxml-lsp/src/backend_tsgo/tests.rs` 中的 events-basic / component-bindings 用例，以及 `crates/wxml-backend-tsgo/tests/real_engine.rs` 的 opt-in 真实引擎用例）。
 
 ### 7.2 事件处理函数样本（WT-C）
 
@@ -280,16 +278,16 @@ events-basic/
 
 `hover.json` 的 3 条正例是 data/properties 锚点（`label`、`title`、`firstLabel`），用于确认样本工程本身可分析；本轮不承诺事件处理函数自身的 hover。
 
-`pages/index/index.wxml` 同时包含动态、空、非标识符三种未支持事件形式；这些片段被记录但不产生诊断，也不会单独降级状态。runner 不要断言该文件的整体 `status`，只断言具体诊断与缺失噪声。
+`pages/index/index.wxml` 同时包含动态、空、非标识符三种未支持事件形式；这些片段被记录但不产生诊断，也不会单独降级状态。测试不要断言该文件的整体 `status`，只断言具体诊断与缺失噪声。
 
-`diagnostics.json` 只能表达“某处必须有诊断”，不能表达“某处必须没有”，因此扩展 runner 时需要补上文件级断言：
+`diagnostics.json` 只能表达“某处必须有诊断”，不能表达“某处必须没有”，因此恢复自动断言时需要补上文件级检查：
 
-- `pages/index/index.wxml` 恰好 1 条诊断，即只有 `missingHandler`；`bindtap="{{dynamicHandler}}"`、`bindtap=""`、`bindtap="this.onTap"` 必须不产生诊断（可用 `assert_no_diagnostic_overlapping` 逐项断言）。
+- `pages/index/index.wxml` 恰好 1 条诊断，即只有 `missingHandler`；`bindtap="{{dynamicHandler}}"`、`bindtap=""`、`bindtap="this.onTap"` 必须不产生诊断（按诊断范围与这些片段不重叠逐项检查）。
 - `components/widget/widget.wxml` 恰好 1 条诊断，即只有 `missingWidgetHandler`。
 - `pages/multi/multi.wxml`（`bindtap="onSecondTap"`）与 `pages/nonliteral/nonliteral.wxml`（`bindtap="onNonLiteralTap"`）没有任何诊断：多注册按 `Partial`、非字面量根按既有策略 `Unsupported`，均不报缺失。
-- `definition.json` 的 `expect: null` 表示 locations 为空；“找不到”与“后端不可用”仍按 `CapabilityStatus` 区分。当前 `assert_definition` 对 `expect: null` 接受 `supported`/`partial`/`unsupported`，所以动态、空、非标识符绑定不写 definition 期望，改用上面的诊断缺失断言。
+- `definition.json` 的 `expect: null` 表示 locations 为空；“找不到”与“后端不可用”仍按 `CapabilityStatus` 区分。对 `expect: null` 可以接受 `supported`/`partial`/`unsupported`，所以动态、空、非标识符绑定不写 definition 期望，改用上面的诊断缺失断言。
 
-延期断言（P6/P7 runner，不是当前校验器）：
+延期断言（当前无自动执行者）：
 
 - AC-007 的“不重复发布 JS/TS 主服务已报告的诊断”；
 - AC-004 的 `properties` overlay 变体（当前 runtime 场景只描述 `data` 路径）。
@@ -300,7 +298,7 @@ manifest 的 `coverage` 只记录覆盖范围，不代表对应断言已经执�
 
 - 普通 `.wxml` 使用 LF，不得包含 `\r`。
 - 以 `-crlf.wxml` 结尾的文件必须是 CRLF：每个 `\n` 前都是 `\r`，且至少包含一个 `\r\n`。
-- 根 `.gitattributes` 用 `tests/fixtures/**/*.wxml text eol=lf` 保证普通样本在 Windows 检出仍为 LF，再用 `tests/fixtures/**/*-crlf.wxml -text` 保持 CRLF 字节精确；校验器同时检查文件字节，不依赖 Git 配置。
+- 根 `.gitattributes` 用 `tests/fixtures/**/*.wxml text eol=lf` 保证普通样本在 Windows 检出仍为 LF，再用 `tests/fixtures/**/*-crlf.wxml -text` 保持 CRLF 字节精确；行尾约束依赖 Git 配置与样本字节本身，没有独立校验器再检查。
 
 ## 9. 新增样本
 
@@ -308,5 +306,5 @@ manifest 的 `coverage` 只记录覆盖范围，不代表对应断言已经执�
 2. 至少提供 `app.json`、`tsconfig.json`、模板与脚本、`expected/hover.json`、`expected/diagnostics.json`。
 3. 每个正例和反例都要有唯一 marker 和明确 target；不要用“存在任意 hover”代替具体断言。
 4. 在 `manifest.json` 增加 case，`positive`/`negative` 与 expected 的 marker 集合完全一致。
-5. 运行 `cargo test -p wxml-fixtures`，再运行全量测试。
+5. 运行 `cargo test -p wxml-lsp --all-features`；需要真实引擎时按 `crates/wxml-backend-tsgo/tests/real_engine.rs` 的 `TSGO_BIN` 说明执行。
 6. 新增外部来源样本前先更新 `docs/reference/provenance.md`；默认只接受自造样本。

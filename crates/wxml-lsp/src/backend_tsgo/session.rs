@@ -8,7 +8,6 @@ use crate::backend_tsgo::query::completion::CompletionQueryOptions;
 use crate::backend_tsgo::query::definition::{
     DefinitionResult as NativeDefinitionResult, map_definition,
 };
-use crate::backend_tsgo::query::documentation::{DocumentationResult, map_documentation};
 use crate::backend_tsgo::query::hover::HoverEvidence;
 use wxml_backend_tsgo::input::AnalysisInput;
 use wxml_backend_tsgo::native::document_symbol::DocumentSymbolsEvidence;
@@ -18,46 +17,6 @@ use wxml_backend_tsgo::native::session::{
 use wxml_backend_tsgo::native::strings::Utf16Position;
 use wxml_backend_tsgo::native::wire::{RawCompletionList, RawDiagnostic};
 use wxml_backend_tsgo::native::{NativeError, UnavailableReason};
-use wxml_types::CapabilityStatus;
-
-/// Documentation evidence for one hover position.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct HoverDocumentation {
-    /// Whether the engine found a symbol at the position.
-    pub(crate) symbol: bool,
-    /// Documentation and `JSDoc` tags, or an explicit failure status.
-    pub(crate) result: DocumentationResult,
-}
-
-impl HoverDocumentation {
-    /// No symbol exists at the position; this is a checked empty answer.
-    #[must_use]
-    pub(crate) const fn no_symbol() -> Self {
-        Self {
-            symbol: false,
-            result: DocumentationResult {
-                comment: None,
-                tags: Vec::new(),
-                status: CapabilityStatus::Supported,
-            },
-        }
-    }
-
-    /// A symbol exists but has no content-addressed reference descriptor.
-    #[must_use]
-    pub(crate) fn symbol_without_reference() -> Self {
-        Self {
-            symbol: true,
-            result: DocumentationResult {
-                comment: None,
-                tags: Vec::new(),
-                status: CapabilityStatus::Partial {
-                    reason: "the native symbol has no documentation reference".to_owned(),
-                },
-            },
-        }
-    }
-}
 
 /// Operations the adapter needs from one native session.
 pub(crate) trait QuerySession: Send {
@@ -80,17 +39,6 @@ pub(crate) trait QuerySession: Send {
     /// surface.
     fn type_query(&mut self, path: &str, position: Utf16Position)
     -> Result<TypeQuery, NativeError>;
-
-    /// Legacy: returns bound documentation evidence for one UTF-16 position.
-    ///
-    /// The hover adapter uses [`Self::hover_evidence`]; this individual query
-    /// remains for session decorators and test fakes that mirror the native
-    /// surface.
-    fn hover_documentation(
-        &mut self,
-        path: &str,
-        position: Utf16Position,
-    ) -> Result<HoverDocumentation, NativeError>;
 
     /// Returns composed hover evidence for one UTF-16 position.
     ///
@@ -243,24 +191,6 @@ impl QuerySession for LiveQuerySession {
         position: Utf16Position,
     ) -> Result<TypeQuery, NativeError> {
         self.session.type_query(path, position)
-    }
-
-    fn hover_documentation(
-        &mut self,
-        path: &str,
-        position: Utf16Position,
-    ) -> Result<HoverDocumentation, NativeError> {
-        let Some(symbol) = self.session.symbol_at_position(path, position)? else {
-            return Ok(HoverDocumentation::no_symbol());
-        };
-        let Some(reference) = symbol.reference().cloned() else {
-            return Ok(HoverDocumentation::symbol_without_reference());
-        };
-        let raw = self.session.documentation(&reference)?;
-        Ok(HoverDocumentation {
-            symbol: true,
-            result: map_documentation(&raw),
-        })
     }
 
     fn hover_evidence(

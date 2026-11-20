@@ -9,7 +9,6 @@ use std::collections::BTreeSet;
 
 use wxml_types::CapabilityStatus;
 
-use crate::input::ProjectKey;
 use crate::native::strings::{Utf16Offset, Utf16Position, offset_to_position, position_to_offset};
 use crate::native::wire::RawDiagnostic;
 
@@ -18,15 +17,6 @@ pub const MAX_DIAGNOSTICS: usize = 1_000;
 
 /// Maximum bytes retained from one diagnostic message.
 const MAX_MESSAGE_BYTES: usize = 8 * 1024;
-
-/// Diagnostics request for one document.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiagnosticsQuery {
-    /// Project the document belongs to.
-    pub project: ProjectKey,
-    /// Normalized document path.
-    pub path: String,
-}
 
 /// Diagnostic category mirrored from the native category field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

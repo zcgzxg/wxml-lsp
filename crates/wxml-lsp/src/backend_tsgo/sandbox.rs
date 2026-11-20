@@ -39,9 +39,7 @@ use wxml_backend_tsgo::native::session::{AutoImportPreparation, SessionOptions, 
 use wxml_backend_tsgo::native::strings::Utf16Position;
 use wxml_backend_tsgo::native::wire::{RawCompletionList, RawDiagnostic};
 
-use crate::backend_tsgo::session::{
-    HoverDocumentation, NativeSessionFactory, QuerySession, SessionFactory,
-};
+use crate::backend_tsgo::session::{NativeSessionFactory, QuerySession, SessionFactory};
 
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -374,14 +372,6 @@ impl QuerySession for SandboxedSession {
         self.inner.type_query(path, position)
     }
 
-    fn hover_documentation(
-        &mut self,
-        path: &str,
-        position: Utf16Position,
-    ) -> Result<HoverDocumentation, NativeError> {
-        self.inner.hover_documentation(path, position)
-    }
-
     fn hover_evidence(
         &mut self,
         path: &str,
@@ -599,14 +589,6 @@ mod tests {
             _path: &str,
             _position: Utf16Position,
         ) -> Result<TypeQuery, NativeError> {
-            Err(test_unsupported())
-        }
-
-        fn hover_documentation(
-            &mut self,
-            _path: &str,
-            _position: Utf16Position,
-        ) -> Result<HoverDocumentation, NativeError> {
             Err(test_unsupported())
         }
 

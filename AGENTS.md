@@ -9,13 +9,13 @@ workspace. Linux x86_64 is the only verified platform.
 - `README.md` is the current behavior/build/install baseline.
 - `docs/README.md` defines doc ownership and authority: code/tests > accepted
   ADR > `docs/reference/` > README > provenance.
-- `.opencode/instructions/` (loaded by `.opencode/opencode.json`) holds generic
-  Rust/ECC rules; keep repo-specific guidance in this file.
+- The `.opencode/` harness config (agents, commands, instructions) was removed
+  from the repo; keep guidance in this file. History still has the old files.
 - Architecture context: `docs/adr/0001` (layering), `0006` (explicit roots),
   `0008` (native backend), `0009` (slimming), `0010` (zero-config lazy discovery).
-- `tests/fixtures/README.md` is partly stale: it still references the deleted
-  `wxml-fixtures` crate and Node `wave5_acceptance` runner. Fixtures are now
-  read directly by crate tests; do not recreate those commands or crates.
+- `tests/fixtures/README.md` documents the current layout: every sample is a
+  real mini-program project read directly by crate tests. The `wxml-fixtures`
+  crate and the Node `wave5_acceptance` runner are deleted; do not recreate them.
 
 ## Verification
 

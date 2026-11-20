@@ -758,18 +758,6 @@ fn real_engine_completion_auto_import_needs_a_prepared_snapshot() {
         mapped.gaps
     );
     assert!(!mapped.gaps.contains(&CompletionGap::AutoImportsUnavailable));
-    let user_entry = mapped
-        .entries
-        .iter()
-        .find(|entry| entry.label == "User")
-        .expect("mapped User entry");
-    if let Some(symbol) = &user_entry.symbol {
-        let debug = format!("{symbol:?}");
-        assert!(
-            !debug.contains("/tmp/opencode") && !debug.contains("model.ts"),
-            "symbol evidence must not publish engine paths: {debug}"
-        );
-    }
 
     // A second preparation for the same file/snapshot is a cache hit.
     let prepared_snapshot = session.epoch().expect("epoch").snapshot;
