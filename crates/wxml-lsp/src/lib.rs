@@ -61,6 +61,7 @@ pub(crate) mod static_semantics;
 pub(crate) mod structure;
 pub(crate) mod styles;
 pub(crate) mod workspace;
+pub(crate) mod workspace_packages;
 
 pub use server::{ServerError, ServerOutcome, run_stdio, run_stdio_with_host, run_with_host};
 

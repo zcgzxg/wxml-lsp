@@ -3,6 +3,7 @@
 
 #![allow(clippy::expect_used, clippy::panic, clippy::unwrap_used)]
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -218,6 +219,60 @@ fn collect_sources_includes_overlay_and_excludes_node_modules() {
     assert_eq!(set.files[1].source_revision, 7);
     assert!(!set.truncated);
     assert_eq!(set.issues, Vec::new());
+}
+
+#[test]
+fn collect_sources_includes_configured_dependency_roots_and_aliases() {
+    let temp = TempDir::new("dependency-sources");
+    temp.write("apps/app/src/app.json", r#"{"pages": []}"#);
+    temp.write("apps/app/tsconfig.json", r#"{"compilerOptions": {}}"#);
+    temp.write(
+        "apps/app/src/pages/index/index.ts",
+        "export const page = 1;\n",
+    );
+    temp.write(
+        "packages/api/src/exam/index.ts",
+        "export enum Flag { A = 1 }\n",
+    );
+    temp.write(
+        "packages/api/src/unused/index.ts",
+        "export const unused = 1;\n",
+    );
+
+    let alias = path("packages/api/src/*/index.ts");
+    let dependencies = BTreeMap::from([("jl-api/*".to_owned(), vec![alias])]);
+    let project = Project::open_with_config(
+        temp.path.clone(),
+        path("apps/app/src/app.json"),
+        vec![path("apps/app/src"), path("packages/api")],
+        path("apps/app/tsconfig.json"),
+        dependencies,
+    )
+    .expect("open with dependencies");
+
+    let set = project.collect_sources(SourceLimits::default());
+    let paths: Vec<&str> = set.files.iter().map(|file| file.path.as_str()).collect();
+    assert_eq!(
+        paths,
+        [
+            "apps/app/src/pages/index/index.ts",
+            "packages/api/src/exam/index.ts",
+            "packages/api/src/unused/index.ts"
+        ]
+    );
+    assert!(!set.truncated);
+    let config = project.tsconfig().expect("tsconfig");
+    assert_eq!(
+        config.paths.get("jl-api/*"),
+        Some(&vec![path("packages/api/src/*/index.ts")])
+    );
+    let options = project.compiler_options().expect("compiler options");
+    assert_eq!(
+        options.get("paths"),
+        Some(&serde_json::json!({
+            "jl-api/*": ["packages/api/src/*/index.ts"]
+        }))
+    );
 }
 
 #[test]

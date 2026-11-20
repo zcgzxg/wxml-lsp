@@ -137,7 +137,11 @@ pub struct Project {
     /// This is the `app.json` directory. It is `None` when `app.json` lives at
     /// the project root, which keeps the common case free of a path prefix.
     source_root: Option<ProjectPath>,
+    /// Roots whose scripts join the type backend snapshot.
+    source_roots: Vec<ProjectPath>,
     tsconfig_path: ProjectPath,
+    /// Extra TypeScript path aliases provided by configured workspace packages.
+    dependency_paths: BTreeMap<String, Vec<ProjectPath>>,
     overlay: Arc<Overlay>,
     discovery: Discovery,
     tsconfig: Option<TsConfig>,
@@ -197,6 +201,33 @@ impl Project {
         root: impl Into<PathBuf>,
         app_json: ProjectPath,
     ) -> Result<Self, ProjectError> {
+        let source_roots = app_json.parent().into_iter().collect();
+        Self::open_with_config(
+            root,
+            app_json,
+            source_roots,
+            ProjectPath::new("tsconfig.json")?,
+            BTreeMap::new(),
+        )
+    }
+
+    /// Opens a project with explicit script roots, tsconfig and package aliases.
+    ///
+    /// `source_roots` are project-relative directories whose TypeScript and
+    /// JavaScript files join the type-backend snapshot. `dependency_paths`
+    /// provides TypeScript `paths` aliases for workspace packages whose sources
+    /// are not reached from the app's own root.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same root errors as [`Project::open_with_app_json`].
+    pub fn open_with_config(
+        root: impl Into<PathBuf>,
+        app_json: ProjectPath,
+        source_roots: Vec<ProjectPath>,
+        tsconfig_path: ProjectPath,
+        dependency_paths: BTreeMap<String, Vec<ProjectPath>>,
+    ) -> Result<Self, ProjectError> {
         let root = root.into();
         let canonical = std::fs::canonicalize(&root)
             .map_err(|error| ProjectError::RootUnavailable { kind: error.kind() })?;
@@ -206,20 +237,32 @@ impl Project {
             return Err(ProjectError::RootNotDirectory);
         }
         let source_root = app_json.parent();
-        let tsconfig_path = ProjectPath::new("tsconfig.json")?;
+        let source_roots = if source_roots.is_empty() {
+            source_root.clone().into_iter().collect()
+        } else {
+            source_roots
+        };
         let overlay = Arc::new(Overlay::new());
         let discovery = discover(&canonical, &overlay, &app_json);
         let mut project = Self {
             root: canonical,
             app_json,
             source_root,
+            source_roots,
             tsconfig_path,
+            dependency_paths,
             overlay,
             discovery,
             tsconfig: None,
         };
         project.reload_tsconfig();
         Ok(project)
+    }
+
+    /// Returns the directories whose scripts join the type-backend snapshot.
+    #[must_use]
+    pub fn source_roots(&self) -> &[ProjectPath] {
+        &self.source_roots
     }
 
     /// Opens a project from a local `file://` URI.
@@ -283,6 +326,18 @@ impl Project {
                     .strip_prefix(root.as_str())
                     .is_some_and(|rest| rest.starts_with('/'))
         })
+    }
+
+    /// Returns whether `path` belongs to any script root in the snapshot.
+    pub(crate) fn contains_source_root(&self, path: &ProjectPath) -> bool {
+        self.source_roots.is_empty()
+            || self.source_roots.iter().any(|root| {
+                path == root
+                    || path
+                        .as_str()
+                        .strip_prefix(root.as_str())
+                        .is_some_and(|rest| rest.starts_with('/'))
+            })
     }
 
     /// Finds a page by route, normalizing leading `./` and `\` separators.
@@ -509,7 +564,13 @@ impl Project {
     /// Loads the root tsconfig, recording failures as discovery issues.
     fn reload_tsconfig(&mut self) {
         self.tsconfig = match load_ts_config(&self.root, &self.tsconfig_path, &self.overlay) {
-            Ok(config) => Some(config),
+            Ok(mut config) => {
+                config.merge_paths(&self.dependency_paths);
+                Some(config)
+            }
+            Err(ConfigError::NotFound { .. }) if !self.dependency_paths.is_empty() => Some(
+                TsConfig::from_paths(self.tsconfig_path.clone(), &self.dependency_paths),
+            ),
             Err(ConfigError::NotFound { .. }) => None,
             Err(error) => {
                 let new_issue = discovery::issue(

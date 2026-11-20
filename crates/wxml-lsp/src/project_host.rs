@@ -21,11 +21,14 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 
 use thiserror::Error;
+use wxml_project::script::RegistrationKind;
 use wxml_project::{
     ComponentPropertyFacts, ComponentTargetKind, Page, Project, ProjectPath, ProjectSnapshot,
     ResourceCandidates, ResourceResolution, SourceFile, SourceKind, SourceLimits, StyleConfig,
     StyleDiagnosticsPolicy, StyleIndex, StyleIsolation, StyleScope, StyleViewFacts, UriError,
 };
+
+use crate::workspace_packages::WorkspacePackages;
 use wxml_syntax::{ParseErrorKind, ParseResult};
 use wxml_types::{
     CapabilityStatus, CheckFragment, ComponentUsage, Diagnostic, DiagnosticSeverity, EventHandler,
@@ -661,7 +664,7 @@ impl ProjectHost for NullHost {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct ViewState {
     owner: RootKind,
     script: Option<ProjectPath>,
@@ -669,6 +672,8 @@ struct ViewState {
     view_revision: ViewRevision,
     /// Local `usingComponents` entries: display tag to component base path.
     components: BTreeMap<String, ProjectPath>,
+    /// The view was derived from an adjacent script instead of `app.json`.
+    lazy: bool,
 }
 
 /// Cache key for one prepared analysis input set.
@@ -705,12 +710,18 @@ struct ProjectSlot {
     prepared: Vec<PreparedCacheEntry>,
     /// A shared `tsconfig` chain changed; reload from disk on next use.
     config_stale: bool,
+    /// The project boundary is the whole workspace, not one app package.
+    workspace_scoped: bool,
 }
 
 #[derive(Debug)]
 struct State {
     /// Explicit app roots from `InitializationOptions::resolve`.
     app_roots: Vec<AppRoot>,
+    /// Canonical workspace root used by zero-config lazy app discovery.
+    workspace_root: Option<PathBuf>,
+    /// Workspace package manifest cache for lazy app discovery.
+    workspace_packages: Option<Arc<WorkspacePackages>>,
     /// Loaded apps keyed by stable, path-free project identity.
     projects: BTreeMap<ProjectId, ProjectSlot>,
     /// App that owns foreground/path-only host queries.
@@ -935,6 +946,8 @@ impl ProjectState {
             styles: Mutex::new(StyleStore::default()),
             state: RwLock::new(State {
                 app_roots: Vec::new(),
+                workspace_root: None,
+                workspace_packages: None,
                 projects: BTreeMap::new(),
                 active_project: None,
                 snapshots: HashMap::new(),
@@ -969,32 +982,8 @@ impl ProjectState {
         &self,
         wxml: &ProjectPath,
     ) -> Option<(ProjectSnapshot, ProjectId, StyleScope, StyleIsolation, u64)> {
-        let state = self.read();
-        let active = state
-            .active_project
-            .as_ref()
-            .and_then(|id| state.projects.get(id).map(|slot| (id, slot)))
-            .filter(|(_, slot)| slot.project.owns_wxml(wxml));
-        let (project_id, slot) = active
-            .or_else(|| {
-                state
-                    .projects
-                    .iter()
-                    .find(|(_, slot)| slot.views.contains_key(wxml))
-            })
-            .or_else(|| {
-                state
-                    .projects
-                    .iter()
-                    .find(|(_, slot)| slot.project.owns_wxml(wxml))
-            })?;
-        Some((
-            slot.project.snapshot(),
-            project_id.clone(),
-            slot.project.style_scope(wxml),
-            slot.project.style_isolation(wxml),
-            state.style_epoch,
-        ))
+        let project = self.ensure_view_project(wxml)?;
+        self.style_context_in(&project, wxml)
     }
 
     /// Captures one explicitly identified project's style context.
@@ -1067,6 +1056,8 @@ impl ProjectState {
     ) -> Result<(), HostError> {
         let mut state = self.write();
         state.app_roots.clear();
+        state.workspace_root = None;
+        state.workspace_packages = None;
         state.projects.clear();
         state.active_project = None;
         state.snapshots.clear();
@@ -1083,6 +1074,15 @@ impl ProjectState {
         };
         let root = wxml_project::root_path_from_uri(uri).map_err(|_| HostError::ProjectOpen)?;
         let root = std::fs::canonicalize(root).map_err(|_| HostError::ProjectOpen)?;
+        if !root.is_dir() {
+            return Err(HostError::ProjectOpen);
+        }
+        if options.apps.is_empty() {
+            state.workspace_root = Some(root);
+            state.style_epoch = state.style_epoch.saturating_add(1);
+            self.styles().clear_all();
+            return Ok(());
+        }
         let roots = options.resolve(&root)?;
         state.app_roots.clone_from(&roots);
         state.style_epoch = state.style_epoch.saturating_add(1);
@@ -1098,11 +1098,56 @@ impl ProjectState {
     #[must_use]
     pub fn root(&self) -> Option<PathBuf> {
         let state = self.read();
+        if let Some(root) = &state.workspace_root {
+            return Some(root.clone());
+        }
         let project = active_project_id(&state)?;
         state
             .projects
             .get(project)
             .map(|slot| slot.app.project_root.clone())
+    }
+}
+
+impl ProjectState {
+    /// Resolves the project that owns one template, loading it lazily when the
+    /// workspace was opened without explicit app roots.
+    fn ensure_view_project(&self, wxml: &ProjectPath) -> Option<ProjectId> {
+        let existing = {
+            let state = self.read();
+            let active = state
+                .active_project
+                .as_ref()
+                .filter(|id| {
+                    state.projects.get(*id).is_some_and(|slot| {
+                        slot.views.contains_key(wxml) || slot.project.owns_wxml(wxml)
+                    })
+                })
+                .cloned();
+            active
+                .or_else(|| {
+                    state
+                        .projects
+                        .iter()
+                        .find(|(_, slot)| slot.views.contains_key(wxml))
+                        .map(|(id, _)| id.clone())
+                })
+                .or_else(|| {
+                    state
+                        .projects
+                        .iter()
+                        .find(|(_, slot)| slot.project.owns_wxml(wxml))
+                        .map(|(id, _)| id.clone())
+                })
+        };
+        if existing.is_some() {
+            return existing;
+        }
+        let mut state = self.write();
+        state.workspace_root.as_ref()?;
+        let project = load_project_for_path(&mut state, wxml, true).ok()?;
+        ensure_lazy_view(&mut state, &project, wxml);
+        Some(project)
     }
 }
 
@@ -1137,16 +1182,21 @@ impl ProjectHost for ProjectState {
     }
 
     fn is_project_open(&self) -> bool {
-        !self.read().app_roots.is_empty()
+        let state = self.read();
+        !state.app_roots.is_empty() || state.workspace_root.is_some()
     }
 
     fn project_ids(&self) -> Vec<ProjectId> {
         let state = self.read();
-        state
+        let mut ids: Vec<ProjectId> = state
             .app_roots
             .iter()
             .map(|app| project_id_for(&app.app_dir))
-            .collect()
+            .collect();
+        ids.extend(state.projects.keys().cloned());
+        ids.sort();
+        ids.dedup();
+        ids
     }
 
     fn path_for_uri(&self, uri: &str) -> Result<ProjectPath, HostError> {
@@ -1156,8 +1206,8 @@ impl ProjectHost for ProjectState {
     }
 
     fn resolve_file(&self, uri: &str) -> Result<FileId, HostError> {
-        let state = self.read();
-        let app = app_for_uri(&state, uri)?;
+        let mut state = self.write();
+        let app = app_for_uri(&mut state, uri)?;
         let path = wxml_project::files::project_path_from_uri(&app.project_root, uri)
             .map_err(map_uri_error)?;
         FileId::new(project_id_for(&app.app_dir), path.as_str()).map_err(|_| HostError::InvalidUri)
@@ -1188,7 +1238,15 @@ impl ProjectHost for ProjectState {
     }
 
     fn file_id(&self, path: &ProjectPath) -> Result<FileId, HostError> {
-        let state = self.read();
+        let mut state = self.write();
+        if let Some(workspace) = state.workspace_root.clone() {
+            let absolute = workspace.join(path.as_str());
+            let packages = workspace_packages_for(&mut state, &workspace);
+            let app = discover_app_for_path(&workspace, &absolute, &packages)?;
+            cache_app(&mut state, app.clone());
+            return FileId::new(project_id_for(&app.app_dir), path.as_str())
+                .map_err(|_| HostError::InvalidUri);
+        }
         let project = active_project_id(&state).cloned().unwrap_or_else(|| {
             if state.projects.len() == 1 {
                 state
@@ -1228,46 +1286,86 @@ impl ProjectHost for ProjectState {
     }
 
     fn view_for(&self, wxml: &ProjectPath) -> Result<ViewTarget, HostError> {
-        let state = self.read();
-        let project = active_project_id(&state).ok_or(HostError::Unsupported {
-            reason: "template is not a discovered page or component",
-        })?;
-        view_in_slot(&state, project, wxml)
+        let mut state = self.write();
+        let project = load_project_for_path(&mut state, wxml, true)?;
+        if !ensure_lazy_view(&mut state, &project, wxml) {
+            return Err(HostError::Unsupported {
+                reason: "template has no adjacent page or component script",
+            });
+        }
+        view_in_slot(&state, &project, wxml)
     }
 
     fn view_for_file(&self, file: &FileId) -> Result<ViewTarget, HostError> {
-        let state = self.read();
         let path = ProjectPath::new(file.path()).map_err(|_| HostError::InvalidUri)?;
-        view_in_slot(&state, file.project(), &path)
+        let mut state = self.write();
+        let project = if state.projects.contains_key(file.project()) {
+            file.project().clone()
+        } else {
+            load_project_for_path(&mut state, &path, true)?
+        };
+        if !ensure_lazy_view(&mut state, &project, &path) {
+            return Err(HostError::Unsupported {
+                reason: "template has no adjacent page or component script",
+            });
+        }
+        view_in_slot(&state, &project, &path)
     }
 
     fn view_for_script(&self, file: &FileId) -> Result<ViewTarget, HostError> {
-        let state = self.read();
-        let slot = state
-            .projects
-            .get(file.project())
-            .ok_or(HostError::Unsupported {
-                reason: "project is not loaded",
-            })?;
-        let mut owners = slot
-            .views
-            .iter()
-            .filter(|(_, view)| view.script_file.as_ref() == Some(file));
-        let Some((wxml, view)) = owners.next() else {
-            return Err(HostError::Unsupported {
-                reason: "script is not an owning page or component script",
-            });
+        let script_path = ProjectPath::new(file.path()).map_err(|_| HostError::InvalidUri)?;
+        let mut state = self.write();
+        let project = if state.projects.contains_key(file.project()) {
+            file.project().clone()
+        } else {
+            load_project_for_path(&mut state, &script_path, true)?
         };
-        if owners.next().is_some() {
-            return Err(HostError::Unsupported {
-                reason: "script is shared by several views",
-            });
+        let find_owner = |state: &State| {
+            let slot = state.projects.get(&project)?;
+            let mut owners = slot
+                .views
+                .iter()
+                .filter(|(_, view)| view.script_file.as_ref() == Some(file));
+            let first = owners
+                .next()
+                .map(|(wxml, view)| (wxml.clone(), view.clone()));
+            if owners.next().is_some() {
+                return None;
+            }
+            first
+        };
+        let mut owner = find_owner(&state);
+        if owner.is_none() {
+            if state.projects.get(&project).is_some_and(|slot| {
+                slot.views
+                    .values()
+                    .filter(|view| view.script_file.as_ref() == Some(file))
+                    .count()
+                    > 1
+            }) {
+                return Err(HostError::Unsupported {
+                    reason: "script is shared by more than one page or component",
+                });
+            }
+            if let Ok(wxml) = script_path.with_extension("wxml") {
+                if state
+                    .projects
+                    .get(&project)
+                    .is_some_and(|slot| slot.project.file_size(&wxml).is_some())
+                    && ensure_lazy_view(&mut state, &project, &wxml)
+                {
+                    owner = find_owner(&state);
+                }
+            }
         }
+        let (wxml, view) = owner.ok_or(HostError::Unsupported {
+            reason: "script is not an owning page or component script",
+        })?;
         let script = view.script.clone().ok_or(HostError::Unsupported {
             reason: "page or component has no script",
         })?;
         Ok(ViewTarget {
-            wxml: wxml.clone(),
+            wxml,
             owner: view.owner,
             script,
             script_file: file.clone(),
@@ -1319,9 +1417,12 @@ impl ProjectHost for ProjectState {
     }
 
     fn file_size(&self, file: &FileId) -> Option<u64> {
-        let state = self.read();
-        let slot = state.projects.get(file.project())?;
         let path = ProjectPath::new(file.path()).ok()?;
+        let mut state = self.write();
+        if !state.projects.contains_key(file.project()) {
+            load_project_for_id(&mut state, file.project(), &path, false).ok()?;
+        }
+        let slot = state.projects.get(file.project())?;
         slot.project.file_size(&path)
     }
 
@@ -1329,9 +1430,12 @@ impl ProjectHost for ProjectState {
         if let Some(snapshot) = self.source(file) {
             return Some(Arc::from(snapshot.text()));
         }
-        let state = self.read();
-        let slot = state.projects.get(file.project())?;
         let path = ProjectPath::new(file.path()).ok()?;
+        let mut state = self.write();
+        if !state.projects.contains_key(file.project()) {
+            load_project_for_id(&mut state, file.project(), &path, false).ok()?;
+        }
+        let slot = state.projects.get(file.project())?;
         slot.project.read(&path).ok().map(Arc::from)
     }
 
@@ -1433,19 +1537,29 @@ impl ProjectHost for ProjectState {
     }
 
     fn view_components(&self, wxml: &ProjectPath) -> Vec<ViewComponent> {
-        let state = self.read();
-        let Some(project) = active_project_id(&state) else {
+        let Some(project) = self.ensure_view_project(wxml) else {
             return Vec::new();
         };
-        view_components_in_slot(&state, project, wxml)
+        let state = self.read();
+        view_components_in_slot(&state, &project, wxml)
     }
 
     fn view_components_for(&self, file: &FileId) -> Vec<ViewComponent> {
         let Ok(path) = ProjectPath::new(file.path()) else {
             return Vec::new();
         };
+        let project = {
+            let state = self.read();
+            state
+                .projects
+                .contains_key(file.project())
+                .then(|| file.project().clone())
+        };
+        let Some(project) = project.or_else(|| self.ensure_view_project(&path)) else {
+            return Vec::new();
+        };
         let state = self.read();
-        view_components_in_slot(&state, file.project(), &path)
+        view_components_in_slot(&state, &project, &path)
     }
 
     fn style_facts(&self, wxml: &ProjectPath) -> Option<Arc<StyleViewFacts>> {
@@ -1455,6 +1569,9 @@ impl ProjectHost for ProjectState {
 
     fn style_facts_for(&self, file: &FileId) -> Option<Arc<StyleViewFacts>> {
         let path = ProjectPath::new(file.path()).ok()?;
+        if !self.read().projects.contains_key(file.project()) {
+            self.ensure_view_project(&path)?;
+        }
         self.style_facts_in(file.project(), &path)
     }
 
@@ -1500,6 +1617,9 @@ impl ProjectHost for ProjectState {
         let Ok(path) = ProjectPath::new(snapshot.file().path()) else {
             return Vec::new();
         };
+        if !self.read().projects.contains_key(snapshot.file().project()) {
+            self.ensure_view_project(&path);
+        }
         let Some((project, _, _, _, _)) = self.style_context_in(snapshot.file().project(), &path)
         else {
             return Vec::new();
@@ -1632,41 +1752,27 @@ impl ProjectHost for ProjectState {
         let parsed = wxml_syntax::parse(snapshot.text());
         let syntax = syntax_diagnostics(&parsed, snapshot);
 
-        // Load an inactive app once, including a shared tsconfig that was
-        // created after startup; never change foreground identity here.
-        let needs_load = {
-            let state = self.read();
-            state
-                .projects
-                .get(&project_id)
-                .is_none_or(|slot| slot.config_stale)
-        };
-        if needs_load {
+        // Load the owning project when needed, then derive a view from the
+        // adjacent script if discovery did not find one.
+        {
             let mut state = self.write();
             let needs_load = state
                 .projects
                 .get(&project_id)
                 .is_none_or(|slot| slot.config_stale);
-            if needs_load {
-                let app = state
-                    .app_roots
-                    .iter()
-                    .find(|app| project_id_for(&app.app_dir) == project_id)
-                    .cloned();
-                let Some(app) = app else {
-                    return Ok(syntax_only_view(
-                        snapshot,
-                        syntax,
-                        "no project root is open",
-                    ));
-                };
-                if ensure_loaded(&mut state, &app, false).is_err() {
-                    return Ok(syntax_only_view(
-                        snapshot,
-                        syntax,
-                        "no project root is open",
-                    ));
-                }
+            if needs_load && load_project_for_id(&mut state, &project_id, &path, false).is_err() {
+                return Ok(syntax_only_view(
+                    snapshot,
+                    syntax,
+                    "no project root is open",
+                ));
+            }
+            if !ensure_lazy_view(&mut state, &project_id, &path) {
+                return Ok(syntax_only_view(
+                    snapshot,
+                    syntax,
+                    "template has no adjacent page or component script",
+                ));
             }
         }
 
@@ -1683,7 +1789,7 @@ impl ProjectHost for ProjectState {
                 return Ok(syntax_only_view(
                     snapshot,
                     syntax,
-                    "template is not a discovered page or component",
+                    "template has no adjacent page or component script",
                 ));
             };
             let key = PreparedCacheKey {
@@ -1789,6 +1895,7 @@ impl ProjectState {
     /// project state or the revision.
     fn overlay_update(&self, uri: &str, text: &str) -> Result<HostUpdate, HostError> {
         let mut state = self.write();
+        let previous_active = state.active_project.clone();
         let (project, path) = route_project(&mut state, uri)?;
         mark_shared_config_stale(&mut state, &project, &path);
         let revision = state.next_overlay_revision.saturating_add(1);
@@ -1805,6 +1912,7 @@ impl ProjectState {
             )
         };
         if !accepted && !is_style {
+            state.active_project = previous_active;
             return Ok(HostUpdate::default());
         }
         let before = if is_style {
@@ -1864,6 +1972,7 @@ impl ProjectState {
     /// Removes an overlay when the client closes a tracked document.
     fn close_overlay(&self, uri: &str) -> Result<HostUpdate, HostError> {
         let mut state = self.write();
+        let previous_active = state.active_project.clone();
         let (project, path) = route_project(&mut state, uri)?;
         mark_shared_config_stale(&mut state, &project, &path);
         state.overlays.remove(uri);
@@ -1876,6 +1985,7 @@ impl ProjectState {
             )
         };
         if !accepted && !is_style {
+            state.active_project = previous_active;
             return Ok(HostUpdate::default());
         }
         let before = if is_style {
@@ -2228,7 +2338,7 @@ fn is_watch_resource(path: &ProjectPath) -> bool {
 
 /// Marks other apps sharing a changed tsconfig project root for reload.
 fn mark_shared_config_stale(state: &mut State, project: &ProjectId, path: &ProjectPath) {
-    let root = {
+    let tsconfig = {
         let Some(slot) = state.projects.get(project) else {
             return;
         };
@@ -2240,19 +2350,68 @@ fn mark_shared_config_stale(state: &mut State, project: &ProjectId, path: &Proje
         if !is_tsconfig {
             return;
         }
-        slot.app.project_root.clone()
+        slot.app.tsconfig.clone()
     };
     for (id, slot) in &mut state.projects {
-        if id != project && slot.app.project_root == root {
+        if id != project && slot.app.tsconfig == tsconfig {
             slot.config_stale = true;
             slot.prepared.clear();
         }
     }
 }
 
+/// Loads the project for a known file identity, preferring explicit app roots.
+fn load_project_for_id(
+    state: &mut State,
+    project_id: &ProjectId,
+    path: &ProjectPath,
+    activate: bool,
+) -> Result<ProjectId, HostError> {
+    if state.workspace_root.is_some() {
+        return load_project_for_path(state, path, activate);
+    }
+    if let Some(app) = state
+        .app_roots
+        .iter()
+        .find(|app| project_id_for(&app.app_dir) == *project_id)
+        .cloned()
+    {
+        return ensure_loaded(state, &app, activate);
+    }
+    load_project_for_path(state, path, activate)
+}
+
+/// Loads the project for a project path. In workspace mode the owning app is
+/// discovered from the path itself, so queries work before any explicit app is
+/// configured or loaded.
+fn load_project_for_path(
+    state: &mut State,
+    path: &ProjectPath,
+    activate: bool,
+) -> Result<ProjectId, HostError> {
+    if let Some(workspace) = state.workspace_root.clone() {
+        let absolute = workspace.join(path.as_str());
+        let packages = workspace_packages_for(state, &workspace);
+        let app = discover_app_for_path(&workspace, &absolute, &packages)?;
+        cache_app(state, app.clone());
+        return ensure_loaded(state, &app, activate);
+    }
+    if let Some(project) = active_project_id(state) {
+        return Ok(project.clone());
+    }
+    if state.projects.len() == 1 {
+        if let Some(project) = state.projects.keys().next() {
+            return Ok(project.clone());
+        }
+    }
+    Err(HostError::Unsupported {
+        reason: "no project root is open",
+    })
+}
+
 /// Resolves and loads the project that owns `uri`.
 fn route_project(state: &mut State, uri: &str) -> Result<(ProjectId, ProjectPath), HostError> {
-    let app = app_for_uri(state, uri)?.clone();
+    let app = app_for_uri(state, uri)?;
     let project = ensure_loaded(state, &app, true)?;
     let path = {
         let slot = state.projects.get(&project).ok_or(HostError::ProjectOpen)?;
@@ -2289,6 +2448,7 @@ fn ensure_loaded(state: &mut State, app: &AppRoot, activate: bool) -> Result<Pro
         .get(&project_id)
         .map_or(1, |slot| slot.revision_seq.saturating_add(1));
     let project_revision = ProjectRevision::new(project_id.clone(), revision_seq);
+    let workspace_scoped = state.workspace_root.as_ref() == Some(&app.project_root);
     let file_versions = state
         .projects
         .get(&project_id)
@@ -2306,6 +2466,7 @@ fn ensure_loaded(state: &mut State, app: &AppRoot, activate: bool) -> Result<Pro
             file_versions,
             prepared: Vec::new(),
             config_stale: false,
+            workspace_scoped,
         },
     );
     if activate {
@@ -2316,9 +2477,14 @@ fn ensure_loaded(state: &mut State, app: &AppRoot, activate: bool) -> Result<Pro
 
 /// Opens an app with its effective buffers without changing foreground routing.
 fn open_app(state: &State, candidate: &AppRoot) -> Result<Project, HostError> {
-    let mut project =
-        Project::open_with_app_json(&candidate.project_root, candidate.app_json.clone())
-            .map_err(|_| HostError::ProjectOpen)?;
+    let mut project = Project::open_with_config(
+        &candidate.project_root,
+        candidate.app_json.clone(),
+        candidate.source_roots.clone(),
+        candidate.tsconfig.clone(),
+        candidate.dependency_paths.clone(),
+    )
+    .map_err(|_| HostError::ProjectOpen)?;
     let mut pending: Vec<_> = state
         .overlays
         .iter()
@@ -2347,19 +2513,27 @@ fn open_app(state: &State, candidate: &AppRoot) -> Result<Project, HostError> {
     Ok(project)
 }
 
-/// Selects the configured app root that contains `uri`.
-fn app_for_uri<'a>(state: &'a State, uri: &str) -> Result<&'a AppRoot, HostError> {
+/// Selects the configured app root that contains `uri`, discovering one on
+/// demand in zero-config mode.
+fn app_for_uri(state: &mut State, uri: &str) -> Result<AppRoot, HostError> {
     let path = wxml_project::root_path_from_uri(uri).map_err(|_| HostError::InvalidUri)?;
-    if state.app_roots.is_empty() {
-        return Err(HostError::NoProject);
-    }
     if let Some(candidate) = state
         .app_roots
         .iter()
         .filter(|candidate| path.starts_with(&candidate.app_dir))
         .max_by_key(|candidate| candidate.app_dir.as_os_str().len())
+        .cloned()
     {
         return Ok(candidate);
+    }
+    if let Some(workspace) = state.workspace_root.clone() {
+        let packages = workspace_packages_for(state, &workspace);
+        let app = discover_app_for_path(&workspace, &path, &packages)?;
+        cache_app(state, app.clone());
+        return Ok(app);
+    }
+    if state.app_roots.is_empty() {
+        return Err(HostError::NoProject);
     }
     // A tsconfig or other file may live above `app.json` but inside the loaded
     // TypeScript project. Keep the active project for it.
@@ -2370,7 +2544,7 @@ fn app_for_uri<'a>(state: &'a State, uri: &str) -> Result<&'a AppRoot, HostError
             .find(|app| &project_id_for(&app.app_dir) == active)
         {
             if path.starts_with(&app.project_root) {
-                return Ok(app);
+                return Ok(app.clone());
             }
         }
     }
@@ -2382,7 +2556,176 @@ fn app_for_uri<'a>(state: &'a State, uri: &str) -> Result<&'a AppRoot, HostError
     if roots.next().is_some() {
         return Err(HostError::InvalidUri);
     }
-    Ok(candidate)
+    Ok(candidate.clone())
+}
+
+/// Caches a lazily discovered app for later path-only queries.
+fn cache_app(state: &mut State, app: AppRoot) {
+    if let Some(existing) = state
+        .app_roots
+        .iter_mut()
+        .find(|existing| existing.app_dir == app.app_dir)
+    {
+        *existing = app;
+    } else {
+        state.app_roots.push(app);
+        state
+            .app_roots
+            .sort_by(|left, right| left.app_dir.cmp(&right.app_dir));
+    }
+}
+
+/// Discovers the nearest Mini Program manifest and TypeScript project above
+/// one workspace file.
+/// Returns the cached workspace package index, discovering it once per open root.
+fn workspace_packages_for(state: &mut State, workspace: &Path) -> Arc<WorkspacePackages> {
+    if let Some(packages) = &state.workspace_packages {
+        return Arc::clone(packages);
+    }
+    let packages = Arc::new(WorkspacePackages::discover(workspace));
+    state.workspace_packages = Some(Arc::clone(&packages));
+    packages
+}
+
+fn discover_app_for_path(
+    workspace: &Path,
+    path: &Path,
+    packages: &WorkspacePackages,
+) -> Result<AppRoot, HostError> {
+    let path = canonicalize_existing_or_parent(workspace, path)?;
+    if !path.starts_with(workspace) {
+        return Err(HostError::InvalidUri);
+    }
+    let mut current = if path.is_dir() {
+        path.as_path()
+    } else {
+        path.parent().unwrap_or(path.as_path())
+    };
+    let mut app_json = None;
+    let mut tsconfig = None;
+    loop {
+        if app_json.is_none() && current.join("app.json").is_file() {
+            app_json = Some(current.join("app.json"));
+        }
+        if tsconfig.is_none() && current.join("tsconfig.json").is_file() {
+            tsconfig = Some(current.join("tsconfig.json"));
+        }
+        if app_json.is_some() && tsconfig.is_some() {
+            break;
+        }
+        if current == workspace {
+            break;
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if !parent.starts_with(workspace) {
+            break;
+        }
+        current = parent;
+    }
+
+    let identity = tsconfig
+        .as_ref()
+        .and_then(|path| path.parent())
+        .or_else(|| app_json.as_ref().and_then(|path| path.parent()))
+        .unwrap_or_else(|| path.parent().unwrap_or(workspace))
+        .to_path_buf();
+    let identity = if tsconfig.is_none() && app_json.is_none() {
+        nearest_package_json(workspace, &identity)
+            .and_then(|manifest| manifest.parent().map(Path::to_path_buf))
+            .unwrap_or(identity)
+    } else {
+        identity
+    };
+    if app_json.is_none() {
+        for candidate in [
+            identity.join("app.json"),
+            identity.join("src").join("app.json"),
+        ] {
+            if candidate.is_file() {
+                app_json = Some(candidate);
+                break;
+            }
+        }
+    }
+    let app_json = app_json.unwrap_or_else(|| identity.join("app.json"));
+    let tsconfig = tsconfig.unwrap_or_else(|| identity.join("tsconfig.json"));
+    let app_json = project_path_under(workspace, &app_json)?;
+    let tsconfig = project_path_under(workspace, &tsconfig)?;
+    let mut source_roots = if identity.as_path() == workspace {
+        Vec::new()
+    } else {
+        vec![project_path_under(workspace, &identity)?]
+    };
+    let manifest = nearest_package_json(workspace, &identity);
+    let mut dependency_paths = BTreeMap::new();
+    if let Some(manifest) = manifest {
+        for package in packages.dependencies_of(&manifest) {
+            source_roots.push(package.relative.clone());
+            for (alias, targets) in &package.aliases {
+                dependency_paths
+                    .entry(alias.clone())
+                    .or_insert_with(Vec::new)
+                    .extend(targets.iter().cloned());
+            }
+        }
+    }
+    source_roots.sort();
+    source_roots.dedup();
+    Ok(AppRoot {
+        app_dir: identity,
+        project_root: workspace.to_path_buf(),
+        app_json,
+        tsconfig,
+        source_roots,
+        dependency_paths,
+    })
+}
+
+/// Finds the nearest package manifest at or above one app directory.
+fn nearest_package_json(workspace: &Path, start: &Path) -> Option<PathBuf> {
+    let mut current = Some(start);
+    while let Some(directory) = current {
+        let candidate = directory.join("package.json");
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+        if directory == workspace {
+            break;
+        }
+        current = directory
+            .parent()
+            .filter(|parent| parent.starts_with(workspace));
+    }
+    None
+}
+
+/// Resolves symlinks when possible, otherwise canonicalizes the nearest
+/// existing parent and keeps the missing file name.
+fn canonicalize_existing_or_parent(workspace: &Path, path: &Path) -> Result<PathBuf, HostError> {
+    if let Ok(canonical) = std::fs::canonicalize(path) {
+        return Ok(canonical);
+    }
+    let parent = path.parent().ok_or(HostError::InvalidUri)?;
+    let canonical_parent = std::fs::canonicalize(parent).map_err(|_| HostError::InvalidUri)?;
+    let name = path.file_name().ok_or(HostError::InvalidUri)?;
+    let joined = canonical_parent.join(name);
+    if joined.starts_with(workspace) {
+        Ok(joined)
+    } else {
+        Err(HostError::InvalidUri)
+    }
+}
+
+/// Converts one host path below the workspace into a project path.
+fn project_path_under(workspace: &Path, path: &Path) -> Result<ProjectPath, HostError> {
+    let relative = path
+        .strip_prefix(workspace)
+        .map_err(|_| HostError::InvalidUri)?;
+    let text = relative.to_string_lossy();
+    let text = if text.is_empty() { "." } else { text.as_ref() };
+    ProjectPath::new(text).map_err(|_| HostError::InvalidUri)
 }
 
 fn project_id_for(root: &Path) -> ProjectId {
@@ -2421,7 +2764,107 @@ fn build_views(
             project_id,
         );
     }
+    if let Some(previous) = previous {
+        for (path, view) in previous {
+            if view.lazy && !views.contains_key(path) {
+                views.insert(path.clone(), view.clone());
+            }
+        }
+    }
     views
+}
+
+/// Reads the effective component config for a template that has no entry in
+/// the discovered page/component graph.
+fn lazy_view_config(
+    project: &Project,
+    base: &ProjectPath,
+) -> (wxml_project::PageConfig, Option<ProjectPath>) {
+    let local_file = base.with_appended_extension("json").ok();
+    let local = match local_file.as_ref().and_then(|path| {
+        project
+            .read_optional(path)
+            .ok()
+            .flatten()
+            .map(|text| (path, text))
+    }) {
+        Some((path, text)) => wxml_project::discovery::parse_page_config(path, &text)
+            .map(|parsed| parsed.value.local)
+            .unwrap_or_default(),
+        None => BTreeMap::new(),
+    };
+    let global = project
+        .read_optional(project.app_json())
+        .ok()
+        .flatten()
+        .and_then(|text| {
+            wxml_project::discovery::parse_app_config(project.app_json(), &text)
+                .ok()
+                .map(|parsed| parsed.value.using_components)
+        })
+        .unwrap_or_default();
+    (
+        wxml_project::PageConfig::from_components(Arc::new(global), local),
+        local_file,
+    )
+}
+
+fn lazy_view_components(project: &Project, base: &ProjectPath) -> BTreeMap<String, ProjectPath> {
+    let (config, _) = lazy_view_config(project, base);
+    local_component_paths(&config)
+}
+
+/// Derives a page or component view from the adjacent script when discovery
+/// did not find one. Returns whether the template now has a usable target.
+fn ensure_lazy_view(state: &mut State, project_id: &ProjectId, wxml: &ProjectPath) -> bool {
+    let Some(slot) = state.projects.get(project_id) else {
+        return false;
+    };
+    if slot.views.contains_key(wxml) {
+        return true;
+    }
+    let raw = wxml.as_str();
+    let Some(base_text) = raw.strip_suffix(".wxml") else {
+        return false;
+    };
+    let Ok(base) = ProjectPath::new(base_text) else {
+        return false;
+    };
+    let resolution = wxml_project::script::resolve_script(&base, |candidate| {
+        slot.project.file_size(candidate).is_some()
+    });
+    let Some(script) = resolution.script else {
+        return false;
+    };
+    let Ok(text) = slot.project.read(&script) else {
+        return false;
+    };
+    let owner = match wxml_project::script::registration_style_hints(&text).registration {
+        Some(RegistrationKind::Page) => RootKind::Page,
+        _ => RootKind::Component,
+    };
+    let components = lazy_view_components(&slot.project, &base);
+    let Ok(script_file) = FileId::new(project_id.clone(), script.as_str()) else {
+        return false;
+    };
+    let revision = ViewRevision::new(state.next_view_revision);
+    state.next_view_revision = state.next_view_revision.saturating_add(1);
+    let Some(slot) = state.projects.get_mut(project_id) else {
+        return false;
+    };
+    slot.views.insert(
+        wxml.clone(),
+        ViewState {
+            owner,
+            script: Some(script),
+            script_file: Some(script_file),
+            view_revision: revision,
+            components,
+            lazy: true,
+        },
+    );
+    slot.prepared.clear();
+    true
 }
 
 fn insert_view<T>(
@@ -2462,6 +2905,7 @@ fn insert_view<T>(
             script_file,
             view_revision: revision,
             components: entry.components(),
+            lazy: false,
         },
     );
 }
@@ -2687,7 +3131,7 @@ fn view_in_slot(
         reason: "project is not loaded",
     })?;
     let view = slot.views.get(wxml).ok_or(HostError::Unsupported {
-        reason: "template is not a discovered page or component",
+        reason: "template has no adjacent page or component script",
     })?;
     let script = view.script.clone().ok_or(HostError::Unsupported {
         reason: "page or component has no script",
@@ -2724,8 +3168,30 @@ fn view_components_in_slot(
         {
             (&component.config, component.json.clone())
         } else {
-            return Vec::new();
+            let Some(view) = slot.views.get(wxml) else {
+                return Vec::new();
+            };
+            if !view.lazy {
+                return Vec::new();
+            }
+            let Some(base) = wxml.as_str().strip_suffix(".wxml") else {
+                return Vec::new();
+            };
+            let Ok(base) = ProjectPath::new(base) else {
+                return Vec::new();
+            };
+            let (config, local_file) = lazy_view_config(&slot.project, &base);
+            return components_from_config(slot, &config, local_file.as_ref());
         };
+    components_from_config(slot, config, local_file.as_ref())
+}
+
+/// Builds the LSP component list from one effective page/component config.
+fn components_from_config(
+    slot: &ProjectSlot,
+    config: &wxml_project::PageConfig,
+    local_file: Option<&ProjectPath>,
+) -> Vec<ViewComponent> {
     let app_json = slot.project.app_json().clone();
     let mut components: Vec<ViewComponent> = config
         .iter()
@@ -2736,7 +3202,7 @@ fn view_components_in_slot(
                 .and_then(|base| slot.project.component(base));
             let origin = if config.local.contains_key(name) {
                 ComponentOrigin::Local {
-                    file: local_file.clone(),
+                    file: local_file.cloned(),
                 }
             } else {
                 ComponentOrigin::App {
@@ -2874,7 +3340,11 @@ fn build_prepared(
         analysis.components,
     );
 
-    let sources = slot.project.collect_sources(SourceLimits::default());
+    let sources = slot.project.collect_sources(if slot.workspace_scoped {
+        SourceLimits::workspace()
+    } else {
+        SourceLimits::default()
+    });
     let mut files = Vec::new();
     for source in &sources.files {
         let version = slot
@@ -3545,7 +4015,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_app_root_requires_explicit_configuration() {
+    fn nested_app_root_is_discovered_lazily_and_explicit_configuration_still_works() {
         let base = std::env::var_os("TMPDIR")
             .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
         let stamp = std::time::SystemTime::now()
@@ -3577,11 +4047,14 @@ mod tests {
         host.open_root(Some(&format!("file://{}", root.display())))
             .expect("open monorepo root");
         assert_eq!(host.root().as_deref(), Some(root.as_path()));
-        let wxml = ProjectPath::new("pages/index/index.wxml").expect("wxml path");
-        assert!(
-            host.view_for(&wxml).is_err(),
-            "must not scan nested app.json"
+        let lazy_wxml = ProjectPath::new("apps/miniprogram/src/pages/index/index.wxml")
+            .expect("lazy wxml path");
+        let view = host.view_for(&lazy_wxml).expect("nested view");
+        assert_eq!(
+            view.script.as_str(),
+            "apps/miniprogram/src/pages/index/index.ts"
         );
+
         host.open_root_with_options(
             Some(&format!("file://{}", root.display())),
             &InitializationOptions::parse(&serde_json::json!({
@@ -3590,8 +4063,49 @@ mod tests {
             .expect("options"),
         )
         .expect("open configured root");
-        let view = host.view_for(&wxml).expect("nested view");
+        let wxml = ProjectPath::new("pages/index/index.wxml").expect("wxml path");
+        let view = host.view_for(&wxml).expect("configured nested view");
         assert_eq!(view.script.as_str(), "pages/index/index.ts");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn analysis_without_adjacent_script_is_syntax_only() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-lazy-no-script-{stamp}"));
+        let app = root.join("apps/miniprogram/src");
+        std::fs::create_dir_all(app.join("pages/index")).expect("create app root");
+        std::fs::write(app.join("app.json"), r#"{"pages":[]}"#).expect("write app.json");
+        std::fs::write(
+            app.join("pages/index/index.wxml"),
+            "<view>{{ title }}</view>",
+        )
+        .expect("write wxml");
+
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open monorepo root");
+        let path =
+            ProjectPath::new("apps/miniprogram/src/pages/index/index.wxml").expect("wxml path");
+        let file = host.file_id(&path).expect("file id");
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(2),
+            "<view>{{ title }}</view>",
+        ));
+        let view = host.analysis(&snapshot).expect("analysis");
+        assert!(view.target.is_none());
+        assert!(matches!(
+            view.status_hint,
+            Some(CapabilityStatus::Unsupported { reason })
+                if reason == "template has no adjacent page or component script"
+        ));
 
         let _ = std::fs::remove_dir_all(root);
     }
@@ -3898,7 +4412,7 @@ mod tests {
             .expect("open project");
         let script = ProjectPath::new("pages/index/index.ts").expect("script");
         let file = host.file_id(&script).expect("script file");
-
+        host.view_for_script(&file).expect("owning view");
         // Discovery never maps two views to one script today, so construct the
         // ambiguous view table directly. The host must reject it instead of
         // picking one outline context arbitrarily.
@@ -3917,6 +4431,7 @@ mod tests {
                     script_file: Some(file.clone()),
                     view_revision: ViewRevision::new(99),
                     components: BTreeMap::new(),
+                    lazy: false,
                 },
             );
         }
@@ -4456,6 +4971,82 @@ mod tests {
         });
         assert_eq!(component.property_facts.properties.len(), 0);
         assert!(component.property_facts.complete);
+    }
+
+    #[test]
+    fn lazy_app_discovery_mounts_workspace_package_sources_and_aliases() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-lazy-packages-{stamp}"));
+        let app = root.join("apps/miniprogram");
+        let src = app.join("src");
+        let page = src.join("pages/index");
+        let api = root.join("packages/api");
+        std::fs::create_dir_all(&page).expect("page dir");
+        std::fs::create_dir_all(api.join("src/enum")).expect("api dir");
+        std::fs::write(
+            root.join("package.json"),
+            r#"{"private":true,"workspaces":["apps/*","packages/*"]}"#,
+        )
+        .expect("root manifest");
+        std::fs::write(
+            app.join("package.json"),
+            r#"{"name":"jl-miniprogram","dependencies":{"jl-api":"workspace:*"}}"#,
+        )
+        .expect("app manifest");
+        std::fs::write(
+            api.join("package.json"),
+            r#"{"name":"jl-api","exports":{"./*":"./src/*/index.ts"}}"#,
+        )
+        .expect("api manifest");
+        std::fs::write(api.join("src/enum/index.ts"), "export const value = 1;")
+            .expect("api source");
+        std::fs::write(src.join("app.json"), r#"{"pages":["pages/index/index"]}"#)
+            .expect("app json");
+        std::fs::write(app.join("tsconfig.json"), "{}").expect("tsconfig");
+        let wxml = page.join("index.wxml");
+        std::fs::write(&wxml, "<view/>").expect("wxml");
+        std::fs::write(page.join("index.ts"), "Page({ data: { value: 1 } });").expect("script");
+
+        let packages = WorkspacePackages::discover(&root);
+        let discovered = discover_app_for_path(&root, &wxml, &packages).expect("lazy app");
+        assert_eq!(discovered.app_dir, app);
+        assert_eq!(discovered.project_root, root);
+        assert!(
+            discovered
+                .source_roots
+                .iter()
+                .any(|path| path.as_str() == "apps/miniprogram")
+        );
+        assert!(
+            discovered
+                .source_roots
+                .iter()
+                .any(|path| path.as_str() == "packages/api")
+        );
+        assert_eq!(
+            discovered
+                .dependency_paths
+                .get("jl-api/*")
+                .and_then(|targets| targets.first())
+                .map(ProjectPath::as_str),
+            Some("packages/api/src/*/index.ts")
+        );
+
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open lazy workspace");
+        let path = ProjectPath::new("apps/miniprogram/src/pages/index/index.wxml").expect("path");
+        let view = host.view_for(&path).expect("lazy view");
+        assert_eq!(
+            view.script.as_str(),
+            "apps/miniprogram/src/pages/index/index.ts"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

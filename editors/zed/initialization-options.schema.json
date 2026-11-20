@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "WXML language server initialization options",
-  "description": "The object passed as initialize.initializationOptions, including through a .zed settings configuration. Configure apps explicitly; the server does not scan for app.json or search parent directories for tsconfig.json. The server also treats an omitted or null initializationOptions value as the default; this schema describes the object form. Restart the language server after changing these options.",
+  "description": "The object passed as initialize.initializationOptions, including through a .zed settings configuration. By default, omitted, null, {} or {\"apps\": []} enables zero-config lazy discovery. Set apps only to pin explicit roots; explicit mode does not scan for app.json or search ancestor directories for tsconfig.json. The server also treats an omitted or null initializationOptions value as the default; this schema describes the object form. Restart the language server after changing these options.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -9,7 +9,7 @@
       "type": "array",
       "default": [],
       "maxItems": 64,
-      "description": "Mini Programs in this workspace. Omitted or [] means one app whose root and projectRoot are both '.' (the workspace root), even if nested apps exist. Canonical app roots must be unique; distinct apps may share a projectRoot. Existence, canonical uniqueness, containment and symlink targets are checked by the server, not by JSON Schema.",
+      "description": "Optional explicit Mini Program roots. Omitted or [] enables zero-config lazy discovery: for each opened WXML, the nearest app.json and independently the nearest tsconfig.json are found by walking up to the workspace root, and workspace-package sources are discovered from the root package.json workspaces field or pnpm-workspace.yaml, but only packages named in the app package dependencies/devDependencies/peerDependencies are mounted. Explicit entries pin boundaries; canonical app roots must be unique, and distinct apps may share a projectRoot. Existence, canonical uniqueness, containment and symlink targets are checked by the server, not by JSON Schema.",
       "items": {
         "$ref": "#/$defs/app"
       }
@@ -37,6 +37,26 @@
             }
           ],
           "description": "TypeScript project directory, relative to the workspace (not to root). Omitted or null defaults to root. The server uses tsconfig.json directly in this directory if present; it does not search ancestors. This directory must contain root and remain within the workspace after canonicalization."
+        },
+        "tsconfig": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/relativeDirectory"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional workspace-relative tsconfig.json file. Omitted or null uses tsconfig.json directly in projectRoot without searching ancestors. An explicit file must exist and remain inside projectRoot after canonicalization."
+        },
+        "dependencies": {
+          "type": "array",
+          "default": [],
+          "maxItems": 64,
+          "description": "Workspace-relative package directories whose TypeScript/JavaScript sources join this app's type-backend snapshot. Omitted or [] keeps only the app's own source. Each directory must exist inside projectRoot and contain a valid package.json; its exports map becomes TypeScript paths aliases. List every workspace package the app imports. The server never scans node_modules or infers dependencies.",
+          "items": {
+            "$ref": "#/$defs/relativeDirectory"
+          }
         }
       }
     },

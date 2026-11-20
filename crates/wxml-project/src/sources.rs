@@ -103,6 +103,22 @@ impl Default for SourceLimits {
     }
 }
 
+impl SourceLimits {
+    /// Limits for a project whose boundary is a whole monorepo workspace.
+    ///
+    /// A workspace snapshot spans every configured app package and its
+    /// workspace dependencies, so the single-app defaults are too small. The
+    /// file and byte budgets still bound memory and startup work.
+    #[must_use]
+    pub const fn workspace() -> Self {
+        Self {
+            max_files: 8192,
+            max_total_bytes: 64 * 1024 * 1024,
+            max_file_bytes: 16 * 1024 * 1024,
+        }
+    }
+}
+
 /// Why a source entry was skipped or collection stopped.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
@@ -196,7 +212,9 @@ impl Project {
     /// never change analysis.
     #[must_use]
     pub fn accepts_script_overlay(&self, path: &ProjectPath) -> bool {
-        self.contains_source(path) && source_kind(path).is_some() && !has_excluded_component(path)
+        self.contains_source_root(path)
+            && source_kind(path).is_some()
+            && !has_excluded_component(path)
     }
 
     /// Returns whether an unsaved JSON buffer may become a project overlay.
@@ -398,11 +416,16 @@ fn collect_candidates_with_limit(
     max_entries: usize,
 ) -> (BTreeSet<ProjectPath>, bool) {
     let mut candidates = BTreeSet::new();
-    let start = project.source_root().map_or_else(
-        || (project.root().to_path_buf(), None),
-        |root| (project.root().join(root.as_str()), Some(root.clone())),
-    );
-    let mut stack = vec![start];
+    let starts: Vec<_> = if project.source_roots().is_empty() {
+        vec![(project.root().to_path_buf(), None)]
+    } else {
+        project
+            .source_roots()
+            .iter()
+            .map(|root| (project.root().join(root.as_str()), Some(root.clone())))
+            .collect()
+    };
+    let mut stack = starts;
     let mut scanned = 0usize;
     while let Some((directory, relative)) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&directory) else {
@@ -461,7 +484,7 @@ fn collect_candidates_with_limit(
         }
     }
     for path in project.overlay().paths() {
-        if project.contains_source(path)
+        if project.contains_source_root(path)
             && source_kind(path).is_some()
             && !has_excluded_component(path)
         {

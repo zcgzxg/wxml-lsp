@@ -1,5 +1,6 @@
 //! Explicit workspace-relative Mini Program configuration.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -11,7 +12,7 @@ use wxml_project::ProjectPath;
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct InitializationOptions {
-    /// Mini Programs in this workspace; empty means the workspace root.
+    /// Mini Programs in this workspace; empty enables lazy workspace discovery.
     #[serde(default)]
     pub apps: Vec<AppConfig>,
     /// Optional workspace snippet configuration path.
@@ -54,6 +55,12 @@ pub struct AppConfig {
     pub root: String,
     /// Workspace-relative TypeScript project directory; defaults to `root`.
     pub project_root: Option<String>,
+    /// Workspace-relative `tsconfig.json`; defaults to `projectRoot/tsconfig.json`.
+    #[serde(default)]
+    pub tsconfig: Option<String>,
+    /// Workspace-relative workspace packages whose sources join the project.
+    #[serde(default)]
+    pub dependencies: Vec<String>,
 }
 
 /// Invalid startup configuration, with no user paths in the message.
@@ -83,6 +90,9 @@ pub(crate) struct AppRoot {
     pub(crate) app_dir: PathBuf,
     pub(crate) project_root: PathBuf,
     pub(crate) app_json: ProjectPath,
+    pub(crate) tsconfig: ProjectPath,
+    pub(crate) source_roots: Vec<ProjectPath>,
+    pub(crate) dependency_paths: BTreeMap<String, Vec<ProjectPath>>,
 }
 
 impl InitializationOptions {
@@ -114,6 +124,15 @@ impl InitializationOptions {
             if let Some(project_root) = &app.project_root {
                 relative_directory(project_root)?;
             }
+            if let Some(tsconfig) = &app.tsconfig {
+                relative_directory(tsconfig)?;
+            }
+            if app.dependencies.len() > 64 {
+                return Err(ConfigurationError::InvalidOptions);
+            }
+            for dependency in &app.dependencies {
+                relative_directory(dependency)?;
+            }
         }
         Ok(())
     }
@@ -122,15 +141,13 @@ impl InitializationOptions {
         self.validate()?;
         let workspace =
             std::fs::canonicalize(workspace).map_err(|_| ConfigurationError::InvalidRoot)?;
-        let default_app = AppConfig {
-            root: ".".to_owned(),
-            project_root: None,
-        };
-        let apps = if self.apps.is_empty() {
-            std::slice::from_ref(&default_app)
-        } else {
-            &self.apps
-        };
+        if !workspace.is_dir() {
+            return Err(ConfigurationError::InvalidRoot);
+        }
+        if self.apps.is_empty() {
+            return Ok(Vec::new());
+        }
+        let apps = &self.apps;
         let mut roots = Vec::with_capacity(apps.len());
         for app in apps {
             let app_dir = resolve_directory(&workspace, &app.root)?;
@@ -142,10 +159,39 @@ impl InitializationOptions {
             let app_json = prefix.join("app.json");
             let app_json = ProjectPath::new(app_json.to_string_lossy().into_owned())
                 .map_err(|_| ConfigurationError::InvalidRoot)?;
+            let tsconfig = resolve_tsconfig(&workspace, &project_root, app.tsconfig.as_deref())?;
+            let mut source_roots = Vec::new();
+            if !prefix.as_os_str().is_empty() {
+                source_roots.push(project_relative(&project_root, &app_dir)?);
+            }
+            let mut dependency_paths = BTreeMap::new();
+            let mut seen_dependencies = BTreeSet::new();
+            for dependency in &app.dependencies {
+                let directory = resolve_directory(&workspace, dependency)?;
+                if !directory.starts_with(&project_root) {
+                    return Err(ConfigurationError::InvalidRoot);
+                }
+                if !seen_dependencies.insert(directory.clone()) {
+                    continue;
+                }
+                let relative = project_relative(&project_root, &directory)?;
+                source_roots.push(relative.clone());
+                for (alias, targets) in package_aliases(&directory, &relative)? {
+                    dependency_paths
+                        .entry(alias)
+                        .or_insert_with(Vec::new)
+                        .extend(targets);
+                }
+            }
+            source_roots.sort();
+            source_roots.dedup();
             roots.push(AppRoot {
                 app_dir,
                 project_root,
                 app_json,
+                tsconfig,
+                source_roots,
+                dependency_paths,
             });
         }
         roots.sort_by(|left, right| left.app_dir.cmp(&right.app_dir));
@@ -178,6 +224,110 @@ fn resolve_directory(workspace: &Path, raw: &str) -> Result<PathBuf, Configurati
         return Err(ConfigurationError::InvalidRoot);
     }
     Ok(directory)
+}
+
+/// Resolves an explicit tsconfig file or the default below the project root.
+fn resolve_tsconfig(
+    workspace: &Path,
+    project_root: &Path,
+    raw: Option<&str>,
+) -> Result<ProjectPath, ConfigurationError> {
+    let Some(raw) = raw else {
+        return ProjectPath::new("tsconfig.json").map_err(|_| ConfigurationError::InvalidRoot);
+    };
+    let path = std::fs::canonicalize(workspace.join(relative_directory(raw)?))
+        .map_err(|_| ConfigurationError::InvalidRoot)?;
+    if !path.starts_with(project_root) || !path.is_file() {
+        return Err(ConfigurationError::InvalidRoot);
+    }
+    project_relative(project_root, &path)
+}
+
+/// Converts a canonical host path below `root` into a project path.
+fn project_relative(root: &Path, path: &Path) -> Result<ProjectPath, ConfigurationError> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| ConfigurationError::InvalidRoot)?;
+    ProjectPath::new(relative.to_string_lossy().into_owned())
+        .map_err(|_| ConfigurationError::InvalidRoot)
+}
+
+/// Maximum size of one dependency `package.json` read during configuration.
+const MAX_PACKAGE_JSON_BYTES: u64 = 256 * 1024;
+
+/// Maximum number of `exports` entries consumed from one package.
+const MAX_PACKAGE_EXPORTS: usize = 512;
+
+/// Reads a workspace package's `exports` map into TypeScript path aliases.
+fn package_aliases(
+    directory: &Path,
+    relative: &ProjectPath,
+) -> Result<BTreeMap<String, Vec<ProjectPath>>, ConfigurationError> {
+    let manifest = directory.join("package.json");
+    let metadata = std::fs::metadata(&manifest).map_err(|_| ConfigurationError::InvalidRoot)?;
+    if !metadata.is_file() || metadata.len() > MAX_PACKAGE_JSON_BYTES {
+        return Err(ConfigurationError::InvalidRoot);
+    }
+    let text = std::fs::read_to_string(&manifest).map_err(|_| ConfigurationError::InvalidRoot)?;
+    let value: Value = serde_json::from_str(&text).map_err(|_| ConfigurationError::InvalidRoot)?;
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.is_empty() && name.len() <= 512 && !name.chars().any(char::is_control))
+        .ok_or(ConfigurationError::InvalidRoot)?;
+    let Some(exports) = value.get("exports").and_then(Value::as_object) else {
+        return Ok(BTreeMap::new());
+    };
+    if exports.len() > MAX_PACKAGE_EXPORTS {
+        return Err(ConfigurationError::InvalidRoot);
+    }
+    let mut aliases: BTreeMap<String, Vec<ProjectPath>> = BTreeMap::new();
+    for (key, value) in exports {
+        let Some(target) = export_target(value, 0) else {
+            continue;
+        };
+        if !target.starts_with("./") {
+            continue;
+        }
+        let target = target.trim_start_matches("./");
+        if target.is_empty() || target.split('/').any(|part| part == "..") {
+            return Err(ConfigurationError::InvalidRoot);
+        }
+        let alias = if key == "." {
+            name.to_owned()
+        } else if let Some(rest) = key.strip_prefix("./") {
+            if rest.is_empty() || rest.chars().any(char::is_control) {
+                continue;
+            }
+            format!("{name}/{rest}")
+        } else {
+            continue;
+        };
+        let path = ProjectPath::resolve(Some(relative), target)
+            .map_err(|_| ConfigurationError::InvalidRoot)?;
+        aliases.entry(alias).or_default().push(path);
+    }
+    Ok(aliases)
+}
+
+/// Picks the first usable target from an `exports` condition object.
+fn export_target(value: &Value, depth: usize) -> Option<&str> {
+    if depth > 4 {
+        return None;
+    }
+    if let Some(target) = value.as_str() {
+        return Some(target);
+    }
+    let object = value.as_object()?;
+    for key in ["types", "import", "default", "require"] {
+        if let Some(target) = object
+            .get(key)
+            .and_then(|value| export_target(value, depth + 1))
+        {
+            return Some(target);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -239,6 +389,10 @@ mod tests {
         InitializationOptions::parse(value)?.resolve(workspace)
     }
 
+    fn path(raw: &str) -> ProjectPath {
+        ProjectPath::new(raw).expect("valid project path")
+    }
+
     fn assert_invalid_path(raw: &str) {
         for field in ["root", "projectRoot"] {
             let mut app = json!({"root": "."});
@@ -252,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn absent_options_use_workspace_root_without_scanning_descendants() {
+    fn absent_options_enter_lazy_workspace_mode_without_scanning_descendants() {
         let temp = TestDir::new();
         let workspace = temp.directory("workspace");
         temp.write("workspace/apps/first/src/app.json", "{}");
@@ -261,11 +415,8 @@ mod tests {
         assert!(!workspace.join("app.json").exists());
 
         for value in [json!(null), json!({}), json!({"apps": []})] {
-            let roots = resolve(&value, &workspace).expect("default roots");
-            assert_eq!(roots.len(), 1);
-            assert_eq!(roots[0].app_dir, workspace);
-            assert_eq!(roots[0].project_root, workspace);
-            assert_eq!(roots[0].app_json.as_str(), "app.json");
+            let roots = resolve(&value, &workspace).expect("lazy workspace");
+            assert_eq!(roots.len(), 0);
         }
     }
 
@@ -303,6 +454,83 @@ mod tests {
         assert_eq!(roots[0].app_dir, app);
         assert_eq!(roots[0].project_root, temp.0.join("apps/miniprogram"));
         assert_eq!(roots[0].app_json.as_str(), "src/app.json");
+    }
+
+    #[test]
+    fn resolves_dependency_sources_tsconfig_and_package_aliases() {
+        let temp = TestDir::new();
+        temp.directory("apps/miniprogram/src");
+        temp.write("apps/miniprogram/tsconfig.json", "{}");
+        temp.write(
+            "packages/api/package.json",
+            r#"{"name":"jl-api","exports":{"./*":{"types":"./src/*/index.ts"}}}"#,
+        );
+        temp.write(
+            "packages/shared/package.json",
+            r#"{"name":"jl-shared","exports":{"./utils":{"types":"./src/utils/index.ts"},"./utils/*":{"types":"./src/utils/*.ts"}}}"#,
+        );
+        let roots = resolve(
+            &json!({"apps": [{
+                "root": "apps/miniprogram/src",
+                "projectRoot": ".",
+                "tsconfig": "apps/miniprogram/tsconfig.json",
+                "dependencies": ["packages/api", "packages/shared"]
+            }]}),
+            &temp.0,
+        )
+        .expect("dependencies");
+        assert_eq!(roots.len(), 1);
+        assert_eq!(roots[0].tsconfig.as_str(), "apps/miniprogram/tsconfig.json");
+        let source_roots: Vec<_> = roots[0]
+            .source_roots
+            .iter()
+            .map(ProjectPath::as_str)
+            .collect();
+        assert_eq!(
+            source_roots,
+            ["apps/miniprogram/src", "packages/api", "packages/shared"]
+        );
+        assert_eq!(
+            roots[0].dependency_paths.get("jl-api/*").map(Vec::as_slice),
+            Some(&[path("packages/api/src/*/index.ts")][..])
+        );
+        assert_eq!(
+            roots[0]
+                .dependency_paths
+                .get("jl-shared/utils/*")
+                .map(Vec::as_slice),
+            Some(&[path("packages/shared/src/utils/*.ts")][..])
+        );
+    }
+
+    #[test]
+    fn dependency_must_stay_inside_project_root_and_have_a_manifest() {
+        let temp = TestDir::new();
+        temp.directory("apps/miniprogram/src");
+        temp.directory("apps/miniprogram");
+        temp.write(
+            "outside/package.json",
+            r#"{"name":"outside","exports":{"./x":"./x.ts"}}"#,
+        );
+        let value = json!({"apps": [{
+            "root": "apps/miniprogram/src",
+            "projectRoot": "apps/miniprogram",
+            "dependencies": ["outside"]
+        }]});
+        assert_eq!(
+            resolve(&value, &temp.0).unwrap_err(),
+            ConfigurationError::InvalidRoot
+        );
+        temp.directory("apps/miniprogram/packages/missing");
+        let value = json!({"apps": [{
+            "root": "apps/miniprogram/src",
+            "projectRoot": "apps/miniprogram",
+            "dependencies": ["packages/missing"]
+        }]});
+        assert_eq!(
+            resolve(&value, &temp.0).unwrap_err(),
+            ConfigurationError::InvalidRoot
+        );
     }
 
     #[test]
@@ -573,6 +801,8 @@ mod tests {
             apps: vec![AppConfig {
                 root: "../outside".to_owned(),
                 project_root: None,
+                tsconfig: None,
+                dependencies: Vec::new(),
             }],
             ..InitializationOptions::default()
         };

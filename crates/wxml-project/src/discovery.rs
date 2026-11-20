@@ -139,6 +139,21 @@ pub struct PageConfig {
 }
 
 impl PageConfig {
+    /// Builds a config from explicit component maps, leaving style options
+    /// unset. Used by the host when a template is derived lazily.
+    #[must_use]
+    pub const fn from_components(
+        global: Arc<BTreeMap<String, UsingComponent>>,
+        local: BTreeMap<String, UsingComponent>,
+    ) -> Self {
+        Self {
+            global,
+            local,
+            style_isolation: None,
+            add_global_class: None,
+        }
+    }
+
     /// Returns the effective component for `name`; local entries win.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&UsingComponent> {

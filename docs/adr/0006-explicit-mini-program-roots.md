@@ -2,11 +2,15 @@
 
 **Date**: 2026-11-16
 
-**Status**: accepted
+**Status**: accepted（显式 `apps` 模式；省略 `apps` 时的默认行为由 [ADR-0010](0010-zero-config-lazy-discovery.md) 替代）
 
 **Deciders**: 项目维护者
 
 **2026-11-17 后续**：[ADR-0008](0008-rust-tsgo-no-node-backend.md)（2026-11-20 已在 owner scope waiver 下最终关闭为 accepted，native 默认；P7 删除完成，Node removed）调整后端资产路径配置；本文的小程序根与类型项目根边界继续有效。
+
+**2026-11-20 后续**：新增 `apps[].tsconfig`（显式 tsconfig 文件，默认 `projectRoot/tsconfig.json`）与 `apps[].dependencies`（显式工作区包目录）。依赖源码进入类型快照，`package.json#exports` 转为 TypeScript `paths`；仍不读取 `node_modules`、不推断包图。依赖目录与 tsconfig 文件必须留在 `projectRoot` 内，每 app 最多 64 个依赖，`package.json` 最多 256 KiB / 512 个 exports 项。
+
+**2026-11-20 后续（默认模式）**：[ADR-0010](0010-zero-config-lazy-discovery.md) 将**省略 `apps` 时**的默认行为改为零配置惰性发现：从当前 WXML 向上找最近 `app.json` 和独立最近的 `tsconfig.json`，并自动挂载工作区包。本文的显式 `apps` 配置仍是覆盖模式，其路径校验、隔离和“不扫描子目录”约束在该模式下继续有效；下文“取消扫描”仅指显式模式，不再约束默认模式。
 
 ## Context
 
@@ -27,18 +31,18 @@
 }
 ```
 
-每项 `root: string` 必填，指向 `app.json` 所在目录；`projectRoot?: string` 是类型后端项目及 `tsconfig.json` 所在目录，默认等于 `root`。省略 `initializationOptions`、`null`、`{}`、`{ "apps": [] }` 均等价于 `{ "apps": [{ "root": "." }] }`，不是禁用所有 app。
+每项 `root: string` 必填，指向 `app.json` 所在目录；`projectRoot?: string` 是类型后端项目目录，默认等于 `root`；`tsconfig?: string` 显式指定配置，默认 `projectRoot/tsconfig.json`；`dependencies?: string[]` 列出加入类型快照的工作区包。这些路径都相对 **LSP workspace root**：`rootUri`，或首个 `workspaceFolders` 根；不相对进程当前目录或 `.zed/`。`projectRoot` 是类型后端的项目目录基准。Rust 使用显式 tsconfig 与相对 app 路径构造项目事实，向类型后端提供快照和有效编译选项。
 
-两种路径都相对 **LSP workspace root**：`rootUri`，或首个 `workspaceFolders` 根；不相对进程当前目录或 `.zed/`。`projectRoot` 不是 `WXML_BACKEND_DIR`，后者仅指定 Node 后端程序的工作目录。Rust 使用显式 `projectRoot` 的 `tsconfig.json` 与相对 app 路径构造项目事实，向类型后端提供快照和有效编译选项。
+本文以下 Decision 描述**显式 `apps` 模式**。省略 `initializationOptions`、使用 `null`、`{}` 或 `{ "apps": [] }` 时，不再等价于 `{ "apps": [{ "root": "." }] }`，而是进入 [ADR-0010](0010-zero-config-lazy-discovery.md) 的零配置惰性发现模式；只有显式给出 `apps` 时，才应用本文的根边界与“不扫描子目录”规则。
 
 初始化校验必须满足：
 
-- 两个路径均为已存在的相对目录，禁止绝对路径及 `..` 路径分量。
-- canonical 后满足 `workspace ⊇ projectRoot ⊇ root`，不得通过 symlink 越出边界。
-- canonical app root 不得重复；最多 64 个 app，每个路径最多 4096 UTF-8 bytes。
+- `root`、`projectRoot`、显式 `tsconfig` 和 dependencies 均为已存在的相对路径，禁止绝对路径及 `..` 路径分量。
+- canonical 后满足 `workspace ⊇ projectRoot ⊇ root`，且显式 `tsconfig` 与 dependencies 留在 `projectRoot` 内，不得通过 symlink 越出边界。
+- canonical app root 不得重复；最多 64 个 app、每 app 最多 64 个 dependencies，每个路径最多 4096 UTF-8 bytes。
 - 非法配置使 `initialize` 返回 `-32602`，不截取有效子集或静默 fallback。合法目录内的 `app.json` 缺失或内容错误，仍由现有 project issues 报告，不混为初始化配置错误。
 
-取消扫描子 `app.json` 和向上寻找最近 tsconfig；生成目录不再按名称自动忽略，也不会自动发现为 app。需要使用的源码或生成小程序目录必须由配置选中。
+显式模式下取消扫描子 `app.json` 和向上寻找最近 tsconfig；生成目录不再按名称自动忽略，也不会自动发现为 app。需要使用的源码或生成小程序目录必须由配置选中。
 
 ### 路由、隔离与共享文件
 
@@ -56,10 +60,12 @@ Zed 在工作区 `.zed/settings.json` 的 `lsp.wxml-lsp.initialization_options` 
 
 ## Alternatives Considered
 
+以下替代方案评估仅针对显式 `apps` 模式；省略 `apps` 的默认发现方式已在 [ADR-0010](0010-zero-config-lazy-discovery.md) 重新评估。
+
 | 方案 | 优点 | 代价及不采用原因 |
 | --- | --- | --- |
-| 扫描嵌套 `app.json`，向上选最近 tsconfig | 嵌套项目初次打开较省配置 | 目录预算、生成物和近邻配置影响归属；不能明确表达 app 与类型项目边界 |
-| 只允许 workspace 根作为 app 与类型项目根 | 契约最小，零配置清晰 | 无法在同一 workspace 表达多 app 或分层 tsconfig；保留为默认值而非唯一模式 |
+| 显式模式下也扫描嵌套 `app.json`，向上选最近 tsconfig | 嵌套项目初次打开较省配置 | 目录预算、生成物和近邻配置影响归属；不能明确表达 app 与类型项目边界 |
+| 只允许 workspace 根作为 app 与类型项目根 | 契约最小，零配置清晰 | 无法在同一 workspace 表达多 app 或分层 tsconfig；当时保留为默认值，现由 ADR-0010 的 lazy 模式替代 |
 | 从小程序工程配置或生成目录名称推断 | 可复用部分构建工具约定 | 工具约定不统一，仍会引入隐式发现与目录过滤规则 |
 | 运行时热更新根配置 | 编辑设置后无需重启 | 涉及 owner、overlay、项目身份、后端缓存及旧结果迁移；本次以重启建立清晰边界 |
 
@@ -79,8 +85,8 @@ Zed 在工作区 `.zed/settings.json` 的 `lsp.wxml-lsp.initialization_options` 
 
 ## Migration
 
-1. workspace 根即 app 根、类型项目根的项目可保留零配置，默认两个根均为 `.`。
-2. 曾依赖自动发现嵌套 app 的项目，把每个 `app.json` 目录列入 `apps[].root`；曾依赖向上寻找 tsconfig 的项目，另填对应 `projectRoot`。
+1. 截至 [ADR-0010](0010-zero-config-lazy-discovery.md)，省略 `apps` 已默认进入 lazy mode；只有需要固定边界时才使用本文的显式模式。
+2. 从 lazy mode 切到显式模式时，把每个 `app.json` 目录列入 `apps[].root`，并为需要独立类型配置的 app 填写 `projectRoot` / `tsconfig`。
 3. 需要使用生成目录时显式配置它，不再依赖自动发现或按名称忽略。所有目录必须存在并满足 canonical 包含关系；重复 app root 或越界配置应修正，不能依赖 fallback。
 4. 保存 Zed 设置后重启 LSP。配置失败检查 `initialize -32602`；初始化配置有效但 app 清单缺失或错误时检查既有 project issues。
 
@@ -90,7 +96,7 @@ Zed 在工作区 `.zed/settings.json` 的 `lsp.wxml-lsp.initialization_options` 
 
 ## References
 
-- [项目快速开始](../../README.md#03-在-zed-中运行)
+- [项目快速开始](../../README.md#在-zed-中使用)
 - [Zed 配置指南](../../editors/zed/README.md#mini-program-roots-initialization-options)
 - [C1 类型桥：请求与项目路径边界](../reference/type-bridge-c1.md#61-请求rust--node)
 - [ADR-0001：分层语言服务与模块依赖边界](0001-layered-language-service-architecture.md)

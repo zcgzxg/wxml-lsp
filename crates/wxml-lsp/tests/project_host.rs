@@ -13,7 +13,9 @@ use wxml_lsp::project_host::{
     ChangeDocument, DocumentRoute, HostError, HostUpdate, OpenDocument, ProjectHost, ProjectState,
     WatchedChangeKind, WatchedFileChange,
 };
-use wxml_types::{CapabilityStatus, FileId, ProjectId, SnapshotId, SourceRevision, SourceSnapshot};
+use wxml_types::{
+    CapabilityStatus, FileId, ProjectId, RootKind, SnapshotId, SourceRevision, SourceSnapshot,
+};
 
 static NEXT_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -144,7 +146,7 @@ fn discovers_page_and_component_views() {
     let host = host_with(&project);
     let page = wxml_project::ProjectPath::new("pages/index/index.wxml").expect("page path");
     let target = host.view_for(&page).expect("page view");
-    assert_eq!(target.owner, wxml_types::RootKind::Page);
+    assert_eq!(target.owner, RootKind::Page);
     assert_eq!(target.script.as_str(), "pages/index/index.ts");
     assert_eq!(target.script_file.path(), "pages/index/index.ts");
     assert!(target.view_revision.get() >= 1);
@@ -152,7 +154,7 @@ fn discovers_page_and_component_views() {
     let component =
         wxml_project::ProjectPath::new("components/card/card.wxml").expect("component path");
     let target = host.view_for(&component).expect("component view");
-    assert_eq!(target.owner, wxml_types::RootKind::Component);
+    assert_eq!(target.owner, RootKind::Component);
 
     let orphan = wxml_project::ProjectPath::new("orphan.wxml").expect("orphan path");
     assert!(matches!(
@@ -359,6 +361,8 @@ fn invalid_root_fails_without_leaking_paths() {
 fn root_and_uri_helpers_do_not_expose_host_paths_in_ids() {
     let project = fixture();
     let host = host_with(&project);
+    host.view_for(&project_path("pages/index/index.wxml"))
+        .expect("load lazy project");
     let id = host.project_id();
     assert!(id.as_str().starts_with("proj-"));
     assert!(
@@ -396,6 +400,8 @@ fn unreferenced_project_json_overlay_is_ignored() {
     let project = fixture();
     project.write("package.json", r#"{"name":"fixture"}"#);
     let host = host_with(&project);
+    host.path_for_uri(&project.uri("package.json"))
+        .expect("load project");
     let path = project_path("package.json");
     let file = host.file_id(&path).expect("file");
     let before_revision = host.project_revision();
@@ -422,6 +428,8 @@ fn excluded_directory_script_overlay_is_ignored() {
     let project = fixture();
     project.write("node_modules/pkg/index.js", "module.exports = 1;\n");
     let host = host_with(&project);
+    host.path_for_uri(&project.uri("node_modules/pkg/index.js"))
+        .expect("load project");
     let path = project_path("node_modules/pkg/index.js");
     let file = host.file_id(&path).expect("file");
     let before_revision = host.project_revision();
@@ -566,6 +574,8 @@ fn a_page_json_created_after_startup_is_discovered_by_a_watched_event() {
     project.write("pages/other/other.wxml", "<view>{{ other }}</view>");
     project.write("pages/other/other.ts", "Page({ data: { other: 1 } });");
     let host = host_with(&project);
+    host.view_for(&project_path("pages/other/other.wxml"))
+        .expect("load lazy view");
     project.write("pages/other/other.json", r#"{"usingComponents":{}}"#);
 
     let update = host
@@ -619,7 +629,10 @@ fn saving_app_json_rediscovers_and_dirties_every_view() {
     project.write("pages/other/other.ts", "Page({ data: { other: 1 } });");
     let host = host_with(&project);
     let other = project_path("pages/other/other.wxml");
-    assert!(host.view_for(&other).is_err(), "not discovered before save");
+    assert!(
+        host.view_for(&other).is_ok(),
+        "lazy discovery finds the adjacent script before save"
+    );
 
     project.write(
         "app.json",
@@ -679,8 +692,8 @@ fn watched_app_json_change_rediscovers_and_drops_the_overlay() {
         "disk change must be picked up"
     );
     assert!(
-        host.view_for(&stale).is_err(),
-        "stale overlay must be dropped"
+        host.view_for(&stale).is_ok(),
+        "lazy view survives app.json removal"
     );
     assert!(
         update
@@ -719,6 +732,8 @@ fn watched_script_deletion_clears_page_script_and_view_target() {
 fn watched_script_change_dirties_exactly_its_views() {
     let project = fixture();
     let host = host_with(&project);
+    host.view_for(&project_path("pages/index/index.wxml"))
+        .expect("load lazy view");
     let update = host
         .watched_files_changed(&[watched(
             &project.uri("pages/index/index.ts"),
@@ -1313,6 +1328,13 @@ fn watched_changes_only_refresh_dependent_views() {
     project.write("utils/helper.ts", "export const helper = 1;\n");
     project.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
     let host = host_with(&project);
+    for view in [
+        "components/card/card.wxml",
+        "pages/index/index.wxml",
+        "pages/other/other.wxml",
+    ] {
+        host.view_for(&project_path(view)).expect("load lazy view");
+    }
 
     let update = host
         .watched_files_changed(&[watched(
@@ -1399,7 +1421,10 @@ fn json_overlay_removing_a_page_clears_the_old_view() {
         "removed view must be refreshed to clear diagnostics: {:?}",
         update.dirty_views
     );
-    assert!(host.view_for(&index).is_err());
+    assert!(
+        host.view_for(&index).is_ok(),
+        "lazy view survives route removal"
+    );
     assert!(host.view_for(&other).is_ok());
 
     let update = host
@@ -1430,10 +1455,11 @@ fn default_options_load_only_the_workspace_root() {
         .path_for_uri(&project.uri("apps/nested/pages/index/index.wxml"))
         .expect("workspace-relative path");
     assert_eq!(path.as_str(), "apps/nested/pages/index/index.wxml");
-    assert!(
-        host.view_for(&path).is_err(),
-        "nested app.json must not be auto-discovered"
-    );
+    let view = host
+        .view_for(&path)
+        .expect("nested app.json is discovered lazily");
+    assert_eq!(view.owner, RootKind::Page);
+    assert_eq!(view.script.as_str(), "apps/nested/pages/index/index.ts");
 }
 
 #[test]

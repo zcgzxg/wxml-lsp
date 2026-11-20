@@ -173,9 +173,29 @@ be visible to the process even though the extension adds none.
 
 ## Mini-program roots (initialization options)
 
-Set `lsp.wxml-lsp.initialization_options` in the workspace's
-`.zed/settings.json`. Zed sends its value as LSP
-`initialize.initializationOptions`:
+**No configuration is required.** Leave `lsp.wxml-lsp.initialization_options`
+unset (or use `null`, `{}`, or `{ "apps": [] }`) and the server enters lazy
+workspace mode:
+
+- the LSP workspace root comes from `rootUri` or the first `workspaceFolders`
+  root;
+- when a WXML file is opened, the nearest `app.json` is found by walking up from
+  that file;
+- the nearest `tsconfig.json` is found independently by walking up from the same
+  file (it may be above `app.json`);
+- the project root is the workspace root; source collection starts from the
+  discovered project identity directory and mounted workspace packages;
+- workspace-package sources are discovered from the root `package.json`
+  `workspaces` field or `pnpm-workspace.yaml`; only packages named in the app
+  package dependencies/devDependencies/peerDependencies are mounted into the
+  type snapshot;
+- a template without a configured route is still handled if it has an adjacent
+  same-basename `.ts` or `.js`; the owner is inferred as `Page` or `Component`.
+
+This makes `.zed/settings.json` unnecessary in a worktree and lets generated
+pages work even when they are absent from `app.json`.
+
+Use explicit `apps` only when you want to pin project boundaries:
 
 ```json
 {
@@ -189,19 +209,18 @@ Set `lsp.wxml-lsp.initialization_options` in the workspace's
 }
 ```
 
-Omitting `initialization_options`, or using `null`, `{}`, or `{ "apps": [] }`,
-all select one app with `root: "."`. Each app entry requires a `root` string.
-The optional `projectRoot` defaults to that entry's `root`:
+Each explicit app entry requires a `root` string. The optional `projectRoot`
+defaults to that entry's `root`:
 
 | Field | Meaning |
 | --- | --- |
 | `root` | Directory containing the mini-program's `app.json` |
-| `projectRoot` | Type-backend project directory containing `tsconfig.json`; independent of any backend-selection environment variable |
+| `projectRoot` | Type-backend project directory; independent of any backend-selection environment variable |
+| `tsconfig` | Optional workspace-relative `tsconfig.json`; defaults to `projectRoot/tsconfig.json` with no ancestor search |
+| `dependencies` | Workspace package directories whose sources join the type snapshot and whose `package.json` exports become TypeScript path aliases |
 
-Both paths are relative to the **LSP workspace root** (`rootUri`, or the first
-`workspaceFolders` root), not the `.zed` directory. For example, opening the
-repository root as the LSP workspace root uses this configuration for a
-two-app layout:
+Paths are relative to the **LSP workspace root**, not the `.zed` directory. For
+a two-app layout with pinned roots:
 
 ```json
 {
@@ -229,18 +248,60 @@ The first app uses `apps/miniprogram/src/app.json` and
 `apps/sub-merchant`. This example illustrates the configuration shape; it is
 not evidence of a real Zed validation.
 
+Explicit mode does not perform upward discovery. If an app imports workspace
+packages outside its own directory, raise `projectRoot` to their common
+ancestor and list each package explicitly:
+
+```json
+{
+  "lsp": {
+    "wxml-lsp": {
+      "initialization_options": {
+        "apps": [
+          {
+            "root": "apps/miniprogram/src",
+            "projectRoot": ".",
+            "tsconfig": "apps/miniprogram/tsconfig.json",
+            "dependencies": ["packages/api", "packages/shared"]
+          }
+        ]
+      }
+    }
+  }
+}
+```
+
+Each dependency must contain a `package.json`. Its `exports` map becomes
+TypeScript `paths` aliases (`"./*": "./src/*/index.ts"` becomes `"name/*"`), and
+its source files join the app's type-backend snapshot. List every workspace
+package the app imports; there is no `node_modules` scan or package-graph
+inference. The listed sources still obey the normal file-count, byte, and
+excluded-directory limits.
+
 Rules and failure modes:
 
-- Both directories must exist. After canonicalization, containment must be
-  `workspace ⊇ projectRoot ⊇ root`. Absolute paths, `..` components, and symlink
+- In lazy mode, `app.json` and `tsconfig.json` are optional. The nearest
+  `tsconfig.json` is used without expanding solution-style `references`.
+  Missing `app.json` does not disable hover; the adjacent script decides whether
+  a view can be derived.
+- In explicit mode, `root`, `projectRoot`, `tsconfig`, and each dependency
+  directory must exist. After canonicalization, containment must be
+  `workspace ⊇ projectRoot ⊇ root`, and explicit `tsconfig` and dependencies
+  must stay inside `projectRoot`. Absolute paths, `..` components, and symlink
   escapes are rejected. Duplicate canonical app roots are rejected.
-- At most 64 apps are accepted; each path is limited to 4096 UTF-8 bytes.
-- Invalid configuration fails `initialize` with `-32602`; it does not silently
-  fall back to another app. A missing or malformed `app.json` in a valid
-  directory continues through the existing project-issue reporting path.
-- There is no scan for nested `app.json` files or upward search for the nearest
-  `tsconfig.json`. Generated directories are neither automatically ignored nor
-  automatically discovered as apps; list the intended roots explicitly.
+- At most 64 explicit apps and 64 dependencies per app are accepted; each path
+  is limited to 4096 UTF-8 bytes. A dependency `package.json` is limited to
+  256 KiB with at most 512 export entries.
+- Invalid explicit configuration fails `initialize` with `-32602`; it does not
+  silently fall back to another app. A missing or malformed `app.json` in a
+  valid directory continues through the existing project-issue reporting path.
+- Explicit mode does not scan for nested `app.json` files or upward-search the
+  nearest `tsconfig.json`. Generated directories and workspace packages are
+  neither automatically ignored nor automatically discovered in that mode;
+  list the intended roots and dependencies explicitly.
+- Lazy mode scans only the discovered app package and its declared workspace
+  dependencies, excluding `node_modules`, `dist`, and build outputs. The
+  workspace source budget is 8192 files / 64 MiB total / 16 MiB per file.
 - A document URI selects the longest matching app directory. Stable
   `projectId` values isolate app state, and backend relative paths are based on
   the selected app's `projectRoot`.
@@ -258,10 +319,10 @@ describes only the inner `initialization_options` value, not the entire
 `.zed/settings.json` file. Do not replace Zed's settings schema with this
 schema. It describes JSON structure; filesystem existence, canonical
 containment, symlink checks, and UTF-8 byte limits are enforced by the server.
-For migration from automatic root discovery, explicitly list each app and its
-type project, then restart the server. See
-[ADR-0006](../../docs/adr/0006-explicit-mini-program-roots.md) for the decision
-and trade-offs.
+No migration is needed for the default lazy mode. Use explicit `apps` only to
+pin project boundaries, then restart the server. See
+[ADR-0006](../../docs/adr/0006-explicit-mini-program-roots.md) for the explicit
+mode decision and trade-offs.
 
 ## Coexistence with the JavaScript/TypeScript language server
 

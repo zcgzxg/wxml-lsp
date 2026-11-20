@@ -15,7 +15,7 @@
 | 原生合同 | [F0/F1 原生合同](reference/tsgo-native-contract.md) | 引擎固定、进程/FS/查询协议、AST 解码和回退边界 | 迁移期 oracle/ledger 过程 |
 | 诊断策略 | [模板类型诊断策略](reference/type-diagnostics.md) | 严格空值、运行时转换、属性绑定、`any`/`unknown` 和未支持形式的降级规则 | 当前实现进度或测试证据 |
 | 验收样本 | [共享验收样本](../tests/fixtures/README.md) | AC-001..AC-013 的正例、反例、runtime 场景、schema v2 与校验入口 | 类型分析实现 |
-| 架构决策 | [ADR 索引](adr/README.md) | 模块边界、类型检查与映射、文档同步、交付闸门和本次瘦身决策 | 日常进度 |
+| 架构决策 | [ADR 索引](adr/README.md) | 模块边界、类型检查与映射、文档同步、交付闸门、瘦身和零配置惰性发现决策 | 日常进度 |
 | 来源与许可证 | [来源记录](reference/provenance.md) | 外部调研对象的版本、提交、许可证和归属 | 功能需求 |
 
 ## 2. 阅读顺序
@@ -24,7 +24,7 @@
 
 1. 阅读[项目 README](../README.md)，确认目标、范围、构建和安装方式。
 2. 阅读本索引，了解文档归属。
-3. 需要理解架构时，按 0001 → 0009 阅读 [ADR](adr/README.md)。
+3. 需要理解架构时，按 0001 → 0010 阅读 [ADR](adr/README.md)。
 4. 实现或评审跨模块接口时，阅读 [C0 基础契约](reference/contracts.md)、[C1 类型桥契约](reference/type-bridge-c1.md) 与[模板类型诊断策略](reference/type-diagnostics.md)。
 5. 修改 native 后端时，阅读[F0/F1 原生合同](reference/tsgo-native-contract.md)。
 6. 需要实现通用 WXML 功能时，阅读[功能基线](reference/wxml-language-feature-baseline.md)。
@@ -59,7 +59,7 @@ docs/
 ├── adr/
 │   ├── README.md
 │   ├── template.md
-│   └── 0001-*.md ... 0009-project-slimming.md
+│   └── 0001-*.md ... 0010-zero-config-lazy-discovery.md
 └── reference/
     ├── contracts.md
     ├── provenance.md

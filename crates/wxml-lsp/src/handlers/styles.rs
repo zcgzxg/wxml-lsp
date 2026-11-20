@@ -42,6 +42,9 @@ const MAX_DOCUMENT_LINKS: usize = 512;
 /// Maximum URI length stored in a link or location.
 const MAX_LOCAL_URI_BYTES: usize = 8 * 1024;
 
+/// Longest class name shown in hover.
+const MAX_HOVER_CLASS_BYTES: usize = 128;
+
 /// Longest class comment shown in hover.
 const MAX_HOVER_COMMENT_BYTES: usize = 512;
 
@@ -130,7 +133,10 @@ fn class_hover_value(document: &Document, facts: &StyleViewFacts, site: &ClassSi
     if definitions.is_empty() {
         return Value::Null;
     }
-    let mut lines = vec![format!("`{}` — WXSS class", markdown_escape(&site.name))];
+    let mut lines = vec![format!(
+        "`{}` — WXSS class",
+        code_text(&site.name, MAX_HOVER_CLASS_BYTES)
+    )];
     let mut comments = 0_usize;
     let mut seen = HashSet::new();
     for definition in &definitions {

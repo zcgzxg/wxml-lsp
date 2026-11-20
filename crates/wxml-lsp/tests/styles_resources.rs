@@ -334,6 +334,54 @@ fn class_completion_hover_and_definition_use_project_styles() {
 }
 
 #[test]
+fn class_hover_keeps_hyphens_unescaped() {
+    let project = fixture();
+    project.write(
+        "pages/index/index.wxss",
+        ".right-fx-input { color: red; }\n",
+    );
+    let uri = project.uri("pages/index/index.wxml");
+    let text = "<view class=\"right-fx-input\"></view>";
+    let class = text.find("right-fx-input").expect("class");
+
+    let messages = vec![
+        request(
+            21,
+            "initialize",
+            json!({"rootUri": project.root_uri(), "capabilities": {}}),
+        ),
+        notification("initialized", json!({})),
+        notification(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "wxml",
+                    "version": 1,
+                    "text": text,
+                }
+            }),
+        ),
+        response(
+            22,
+            "textDocument/hover",
+            document_position(text, &uri, class),
+        ),
+        request(23, "shutdown", Value::Null),
+        notification("exit", Value::Null),
+    ];
+    let session = run_session(&project, &messages);
+
+    let hover = session.result(&json!(22));
+    let contents = hover["contents"]["value"].as_str().expect("hover text");
+    assert!(
+        contents.contains("`right-fx-input` — WXSS class"),
+        "{contents}"
+    );
+    assert!(!contents.contains("right\\-fx\\-input"), "{contents}");
+}
+
+#[test]
 fn resource_links_completion_and_definition_are_local_only() {
     let project = fixture();
     let uri = project.uri("pages/index/index.wxml");

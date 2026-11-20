@@ -17,7 +17,7 @@ Zed 扩展（editors/zed，Rust/WASM）
 wxml-lsp            传输、多项目宿主、请求路由、调度与恢复
   ├─ wxml-backend-tsgo   原生 tsgo 适配：进程、沙箱、shadow、查询、源码映射
   ├─ wxml-types          C0 契约、模板语义、WXS/静态摘要、后端接口
-  ├─ wxml-project        URI/路径、overlay、显式多 app、tsconfig、样式/资源索引
+  ├─ wxml-project        URI/路径、overlay、多 app/惰性发现、tsconfig、样式/资源索引
   ├─ wxml-syntax         容错 lexer/parser、Mustache、WXS rawtext
   └─ wxml-text           UTF-8 字节偏移 ↔ LSP UTF-16 位置、行索引
 ```
@@ -86,6 +86,10 @@ scripts/install-native.sh --root "$root"
 
 写入工作区 `.zed/settings.json` 的 `lsp.wxml-lsp.initialization_options`。路径都相对 LSP workspace root。
 
+默认**不需要配置 `apps`**：LSP 从当前打开的 WXML 向上寻找最近的 `app.json` 和独立最近的 `tsconfig.json`，并从根 `package.json#workspaces` / `pnpm-workspace.yaml` 挂载工作区包。省略 `initializationOptions`、`null`、`{}` 或 `{ "apps": [] }` 均进入该零配置模式。worktree 因此不需要复制 `.zed/settings.json`。
+
+需要固定多 app 边界时，可以显式列出：
+
 ```json
 {
   "lsp": {
@@ -109,13 +113,17 @@ scripts/install-native.sh --root "$root"
 
 | 选项 | 作用 |
 | --- | --- |
-| `apps` | 显式小程序根：`root` 指向 `app.json` 所在目录，可选 `projectRoot` 指向 `tsconfig.json` 所在目录（默认等于 `root`）。省略等价于 `[{ "root": "." }]`；非法配置返回 `-32602`，不静默回退。 |
+| `apps` | 可选。省略时启用零配置惰性发现；显式提供时，每项 `root` 指向 `app.json` 所在目录，可选 `projectRoot`、`tsconfig`（默认 `<projectRoot>/tsconfig.json`）和 `dependencies`（工作区包目录，加入类型快照并按 `package.json` exports 生成 `paths`）。非法配置返回 `-32602`，不静默回退。 |
 | `wxml.globalStyles` | 额外全局样式入口；`app.wxss`/`app.scss` 仍按 `styleIsolation` 自动参与。 |
 | `wxml.styleDiagnostics` | `resources` 默认开启；`classes` 默认关闭，只对可证明的静态 token 生效。 |
 | `snippetsPath` | 可选；省略时读取 `<workspace>/.wxml-lsp/snippets.json`，修改后经 watched-file 更新。 |
 | `semanticTools` | 关闭后不再广告 inlayHint / codeLens；其余语义工具没有独立开关。 |
 
-配置只在启动时消费，修改后需重启 LSP。不再扫描子目录发现 `app.json`，也不向上推断最近的 `tsconfig.json`。详见 [ADR-0006](docs/adr/0006-explicit-mini-program-roots.md) 和 [Zed 扩展说明](editors/zed/README.md)。
+零配置模式从当前 WXML 向上找最近 `app.json`，并独立寻找最近 `tsconfig.json`；页面/组件不要求出现在 `app.json` 中，只要存在同 basename 的 `.ts`/`.js` 即可建立惰性视图。`app.json` 仍是路由、全局 `usingComponents` 和页面配置的增强来源，但不是 hover 的前置条件。
+
+工作区包源码从根 `package.json#workspaces` 或 `pnpm-workspace.yaml` 发现，只挂载当前小程序包 `dependencies` / `devDependencies` / `peerDependencies` 中列出的同名工作区包；只读取包清单和源码，不读取 `node_modules`，也不推断第三方包图。显式 `dependencies` 配置仍可用于固定边界。详见 [ADR-0010](docs/adr/0010-zero-config-lazy-discovery.md)、[ADR-0006](docs/adr/0006-explicit-mini-program-roots.md) 和 [Zed 扩展说明](editors/zed/README.md)。
+
+配置只在启动时消费，修改后需重启 LSP。当前最近 `tsconfig.json` 选择不展开 solution-style `references`；复杂项目建议使用显式 `apps`。
 
 ## 能力摘要
 
@@ -174,7 +182,8 @@ CI（`.github/workflows/ci.yml`）只有 `check` 作业，执行 fmt、clippy（
 
 ## 已知限制
 
-- 单个 LSP workspace 内的显式多 app；不支持完整多 workspace，`apps`/`projectRoot` 变更后需重启。
+- 默认零配置惰性发现，也支持单个 LSP workspace 内的显式多 app；不支持完整多 workspace，`apps`/`projectRoot` 或 tsconfig 变更后需重启。最近 `tsconfig.json` 选择暂不展开 solution-style `references`。
+- 惰性视图只对已经打开或查询过的 WXML 建立；`view_templates` 和部分语义工具不会枚举尚未打开的模板。
 - 模板体不做逐次实例化的完整类型检查；WXS 仅支持静态子集且从不执行。
 - 插件/远程组件缺少本地可信元数据时降级，不伪造属性；动态 template/`is`、动态 WXS 导出不猜测。
 - 性能与稳定性只在单个小 fixture 上验证，没有大项目语料；真实主桌面 Wayland 与连续键入延迟未验收。
@@ -183,7 +192,7 @@ CI（`.github/workflows/ci.yml`）只有 `check` 作业，执行 fmt、clippy（
 ## 文档
 
 - [文档索引](docs/README.md)
-- [ADR 索引](docs/adr/README.md)：0001 分层、0002 类型检查与源码映射、0003 文档同步、0004 交付闸门、0005 文档自包含、0006 显式根、0007 交付信任、0008 native 后端
+- [ADR 索引](docs/adr/README.md)：0001 分层、0002 类型检查与源码映射、0003 文档同步、0004 交付闸门、0005 文档自包含、0006 显式根、0007 交付信任、0008 native 后端、0009 瘦身、0010 零配置惰性发现
 - [C0 基础契约](docs/reference/contracts.md)、[模板类型诊断策略](docs/reference/type-diagnostics.md)
 - [tsgo 原生后端合同](docs/reference/tsgo-native-contract.md)
 - [来源与许可证记录](docs/reference/provenance.md)

@@ -1,4 +1,5 @@
-//! Minimal `tsconfig.json` model: `extends`, `baseUrl`, `paths` and file sets.
+//! Minimal `tsconfig.json` model: `extends`, `baseUrl`, `paths`, `typeRoots`
+//! and file sets.
 //!
 //! The model is intentionally smaller than TypeScript project resolution. It
 //! resolves `paths` aliases to project-relative paths so template code can be
@@ -83,6 +84,12 @@ pub struct TsConfig {
     /// remain, raw `baseUrl` is always `"."` and path targets are already
     /// project-relative; consumers must not append the config directory
     /// again. If neither remains, both keys are removed.
+    ///
+    /// Relative `typeRoots` entries are rebased on the effective config's
+    /// directory and stored project-root-relative. `extends` merges the array
+    /// as a whole, so the surviving value is resolved once, not per declaring
+    /// layer. Absolute entries are forwarded unchanged, and malformed values
+    /// are preserved for the backend to report.
     pub compiler_options: BTreeMap<String, Value>,
 }
 
@@ -103,6 +110,53 @@ impl fmt::Debug for TsConfig {
 }
 
 impl TsConfig {
+    /// Builds a minimal config that only carries explicit path aliases.
+    ///
+    /// Used when the app has no `tsconfig.json` but configured workspace
+    /// packages still need TypeScript `paths` entries.
+    #[must_use]
+    pub fn from_paths(path: ProjectPath, paths: &BTreeMap<String, Vec<ProjectPath>>) -> Self {
+        let mut config = Self {
+            path,
+            base_url: None,
+            extends: Vec::new(),
+            paths: BTreeMap::new(),
+            include: Vec::new(),
+            exclude: Vec::new(),
+            compiler_options: BTreeMap::new(),
+        };
+        config.merge_paths(paths);
+        config
+    }
+
+    /// Merges explicit package aliases into the loaded configuration.
+    ///
+    /// The alias wins over an existing pattern. Both the structured
+    /// [`TsConfig::paths`] map and the raw `compilerOptions` forwarded to the
+    /// type backend are updated.
+    pub fn merge_paths(&mut self, paths: &BTreeMap<String, Vec<ProjectPath>>) {
+        if paths.is_empty() {
+            return;
+        }
+        self.paths.extend(paths.clone());
+        let mut object = Map::new();
+        for (pattern, targets) in &self.paths {
+            object.insert(
+                pattern.clone(),
+                Value::Array(
+                    targets
+                        .iter()
+                        .map(|target| Value::String(target.as_str().to_owned()))
+                        .collect(),
+                ),
+            );
+        }
+        self.compiler_options
+            .insert("baseUrl".to_owned(), Value::String(".".to_owned()));
+        self.compiler_options
+            .insert("paths".to_owned(), Value::Object(object));
+    }
+
     /// Resolves an import specifier through `compilerOptions.paths`.
     ///
     /// Exact patterns win. Otherwise a single-`*` pattern whose prefix and
@@ -313,6 +367,7 @@ pub fn load_ts_config(
     };
     let mut compiler_options = layer.compiler_options;
     rewrite_compiler_options(&mut compiler_options, &layer.paths);
+    rewrite_type_roots(&mut compiler_options, path)?;
     Ok(TsConfig {
         path: path.clone(),
         base_url,
@@ -621,6 +676,56 @@ fn rewrite_compiler_options(
         );
     }
     options.insert("paths".to_owned(), Value::Object(object));
+}
+
+/// Rebases relative `typeRoots` entries on the effective config's directory.
+///
+/// `extends` replaces whole array options, so only the merged array survives
+/// and its declaring file is not tracked. Resolving it against the config
+/// being loaded keeps the value project-root-relative, matching `baseUrl` and
+/// `paths`. Absolute entries are forwarded unchanged because
+/// [`ProjectPath`] cannot represent them, and malformed values are left
+/// untouched so the type backend reports them.
+fn rewrite_type_roots(
+    options: &mut BTreeMap<String, Value>,
+    config: &ProjectPath,
+) -> Result<(), ConfigError> {
+    let Some(Value::Array(entries)) = options.get("typeRoots") else {
+        return Ok(());
+    };
+    let directory = config.parent();
+    let mut roots = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let Value::String(value) = entry else {
+            return Ok(());
+        };
+        if is_absolute_path(value) {
+            roots.push(Value::String(value.clone()));
+            continue;
+        }
+        let resolved = ProjectPath::resolve(directory.as_ref(), value).map_err(|error| {
+            ConfigError::InvalidPath {
+                path: config.clone(),
+                error,
+            }
+        })?;
+        roots.push(Value::String(resolved.as_str().to_owned()));
+    }
+    options.insert("typeRoots".to_owned(), Value::Array(roots));
+    Ok(())
+}
+
+/// Returns `true` for filesystem-absolute `typeRoots` entries.
+///
+/// Mirrors [`ProjectPath`]'s absolute detection: POSIX, UNC (after separator
+/// normalization) and drive-letter paths.
+fn is_absolute_path(value: &str) -> bool {
+    let normalized = value.replace('\\', "/");
+    if normalized.starts_with('/') {
+        return true;
+    }
+    let bytes = normalized.as_bytes();
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 /// Validates unknown option keys and values from one config file.
@@ -1439,7 +1544,8 @@ mod tests {
             r#"{
                 "compilerOptions": {
                     "baseUrl": ".",
-                    "paths": {"@/*": ["./src/*"]}
+                    "paths": {"@/*": ["./src/*"]},
+                    "typeRoots": ["./typings"]
                 }
             }"#,
         );
@@ -1473,6 +1579,143 @@ mod tests {
                 .and_then(|targets| targets.first())
                 .and_then(|value| value.as_str()),
             Some("configs/src/*")
+        );
+        assert_eq!(
+            config.compiler_options["typeRoots"],
+            Value::Array(vec![Value::String("configs/typings".to_owned())])
+        );
+    }
+
+    #[test]
+    fn rebases_relative_type_roots_to_the_config_directory() {
+        let temp = TempDir::new("type-roots");
+        temp.write(
+            "apps/miniprogram/tsconfig.json",
+            r#"{"compilerOptions": {"typeRoots": ["./typings", "../shared-typings"]}}"#,
+        );
+
+        let config = load_ts_config(
+            &temp.root(),
+            &path("apps/miniprogram/tsconfig.json"),
+            &Overlay::new(),
+        )
+        .expect("load");
+        assert_eq!(
+            config.compiler_options["typeRoots"],
+            Value::Array(vec![
+                Value::String("apps/miniprogram/typings".to_owned()),
+                Value::String("apps/shared-typings".to_owned()),
+            ])
+        );
+    }
+
+    #[test]
+    fn preserves_absolute_type_roots() {
+        let temp = TempDir::new("type-roots-absolute");
+        temp.write(
+            "apps/miniprogram/tsconfig.json",
+            r#"{"compilerOptions": {"typeRoots": ["/opt/typings", "C:/typings", "node_modules/@types"]}}"#,
+        );
+
+        let config = load_ts_config(
+            &temp.root(),
+            &path("apps/miniprogram/tsconfig.json"),
+            &Overlay::new(),
+        )
+        .expect("load");
+        assert_eq!(
+            config.compiler_options["typeRoots"],
+            Value::Array(vec![
+                Value::String("/opt/typings".to_owned()),
+                Value::String("C:/typings".to_owned()),
+                Value::String("apps/miniprogram/node_modules/@types".to_owned()),
+            ])
+        );
+    }
+
+    #[test]
+    fn rebases_inherited_type_roots_once_against_the_effective_config() {
+        let temp = TempDir::new("type-roots-extends");
+        temp.write(
+            "shared/tsconfig.base.json",
+            r#"{"compilerOptions": {"typeRoots": ["./typings"]}}"#,
+        );
+        temp.write(
+            "apps/miniprogram/tsconfig.json",
+            r#"{"extends": "../../shared/tsconfig.base.json"}"#,
+        );
+
+        let config = load_ts_config(
+            &temp.root(),
+            &path("apps/miniprogram/tsconfig.json"),
+            &Overlay::new(),
+        )
+        .expect("load");
+        assert_eq!(
+            config.compiler_options["typeRoots"],
+            Value::Array(vec![Value::String("apps/miniprogram/typings".to_owned())])
+        );
+    }
+
+    #[test]
+    fn rejects_type_roots_that_escape_the_root() {
+        let temp = TempDir::new("type-roots-escape");
+        temp.write(
+            "apps/miniprogram/tsconfig.json",
+            r#"{"compilerOptions": {"typeRoots": ["../../../outside"]}}"#,
+        );
+
+        assert_eq!(
+            load_ts_config(
+                &temp.root(),
+                &path("apps/miniprogram/tsconfig.json"),
+                &Overlay::new()
+            ),
+            Err(ConfigError::InvalidPath {
+                path: path("apps/miniprogram/tsconfig.json"),
+                error: PathError::EscapesRoot
+            })
+        );
+    }
+
+    #[test]
+    fn classifies_absolute_type_root_entries() {
+        for value in [
+            "/opt/typings",
+            "C:/typings",
+            "C:\\typings",
+            "\\\\server\\share",
+        ] {
+            assert!(is_absolute_path(value), "{value} must be absolute");
+        }
+        for value in ["typings", "./typings", "../typings", "x"] {
+            assert!(!is_absolute_path(value), "{value} must be relative");
+        }
+    }
+
+    #[test]
+    fn tolerates_malformed_type_roots() {
+        let temp = TempDir::new("type-roots-malformed");
+        temp.write(
+            "tsconfig.json",
+            r#"{"compilerOptions": {"typeRoots": "./typings"}}"#,
+        );
+        let config =
+            load_ts_config(&temp.root(), &path("tsconfig.json"), &Overlay::new()).expect("load");
+        assert_eq!(
+            config.compiler_options["typeRoots"],
+            Value::String("./typings".to_owned())
+        );
+
+        temp.write(
+            "tsconfig.json",
+            r#"{"compilerOptions": {"typeRoots": ["./typings", 1]}}"#,
+        );
+        let config =
+            load_ts_config(&temp.root(), &path("tsconfig.json"), &Overlay::new()).expect("load");
+        assert_eq!(
+            config.compiler_options["typeRoots"],
+            Value::Array(vec![Value::String("./typings".to_owned()), Value::from(1)])
         );
     }
 }
