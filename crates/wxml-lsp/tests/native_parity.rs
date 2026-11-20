@@ -175,6 +175,7 @@ const SYMBOLS_EDITS_MIGRATED_CASES: &[&str] = &[
 
 const SCENARIO_MATRIX_MIGRATED_CASES: &[&str] = &[
     "real_matrix_manifest_is_frozen_and_oracle_derived",
+    "real_matrix_scenario_manifest_is_archived",
     "real_matrix_comparator_rejects_missing_shifted_and_perturbed_results",
     "real_matrix_in_place_matches_frozen_oracle",
     "real_matrix_known_gaps_are_characterized",

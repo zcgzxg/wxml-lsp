@@ -8,6 +8,13 @@
 //! 577,049 bytes, TypeScript 6.0.3, in-place-shadow only). There is no
 //! `BLESS`/`UPDATE_EXPECT`/`INSTA_UPDATE` path; the projection is read-only.
 //!
+//! The projection records `backends/typescript/src/scenarios.ts` as provenance,
+//! but nothing under `backends/typescript` is read at test time. The manifest
+//! bytes are archived at
+//! `crates/wxml-lsp/tests/native_parity/fixtures/real_matrix/scenarios.ts`
+//! (21,463 bytes, SHA-256 `5f0c35f3…`), so the P7 deletion of the legacy
+//! TypeScript tree cannot break this gate.
+//!
 //! Coverage is honest, not total:
 //!
 //! - 22 scenarios can be asserted strictly (20 checker scenarios plus
@@ -78,6 +85,20 @@ pub(crate) const ORACLE_RELATIVE_PATH: &str = "docs/evidence/data/type-bridge-c1
 /// Fixture sample root copied byte-for-byte from `backends/typescript/samples`.
 pub(crate) const SAMPLES_RELATIVE_PATH: &str =
     "crates/wxml-lsp/tests/native_parity/fixtures/real_matrix/samples";
+/// Historical scenario manifest path recorded by the frozen projection.
+///
+/// Provenance only. P7 deletes `backends/typescript`, so this path is never
+/// opened at test time; the bytes live at
+/// [`SCENARIO_MANIFEST_RELATIVE_PATH`] instead.
+pub(crate) const SCENARIO_MANIFEST_ORIGINAL_PATH: &str = "backends/typescript/src/scenarios.ts";
+/// Byte-exact archived copy of the historical scenario manifest.
+pub(crate) const SCENARIO_MANIFEST_RELATIVE_PATH: &str =
+    "crates/wxml-lsp/tests/native_parity/fixtures/real_matrix/scenarios.ts";
+/// Exact historical scenario manifest size.
+pub(crate) const SCENARIO_MANIFEST_SIZE: u64 = 21_463;
+/// Exact historical scenario manifest SHA-256.
+pub(crate) const SCENARIO_MANIFEST_SHA256: &str =
+    "5f0c35f341c92e8b903c6b0e9ef5127598e76aa46bd51de942bbc2ca367f5bef";
 /// Exact historical oracle identity.
 pub(crate) const ORACLE_SHA256: &str =
     "69bc6c57405f664ad3195b566be7b821a5273fe807a8b58f1eb08b93b1afd6db";
@@ -352,6 +373,17 @@ fn sha256_hex(bytes: &[u8]) -> String {
         write!(out, "{byte:02x}").expect("hex write");
     }
     out
+}
+
+/// Reads the archived scenario manifest below `root`.
+///
+/// [`SCENARIO_MANIFEST_ORIGINAL_PATH`] is provenance recorded by the
+/// projection and is deliberately not a read target: the P7 deletion removes
+/// that tree, and this gate must verify the same bytes from the committed
+/// fixture.
+fn read_archived_scenario_manifest(root: &Path) -> Vec<u8> {
+    let path = root.join(SCENARIO_MANIFEST_RELATIVE_PATH);
+    std::fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
 }
 
 /// Converts a byte offset/length in `text` into an absolute byte range.
@@ -1965,12 +1997,24 @@ fn real_matrix_manifest_is_frozen_and_oracle_derived() {
     );
     assert_eq!(projection.source.environment["typings"], json!("5.3.1"));
 
-    let scenario_source = workspace().join(&projection.source.scenario_manifest.path);
-    let scenario_bytes = std::fs::read(&scenario_source)
-        .unwrap_or_else(|error| panic!("read {}: {error}", scenario_source.display()));
+    assert_eq!(
+        projection.source.scenario_manifest.path, SCENARIO_MANIFEST_ORIGINAL_PATH,
+        "{JOB}: the projection must keep the historical manifest path as provenance"
+    );
+    assert_eq!(
+        projection.source.scenario_manifest.sha256, SCENARIO_MANIFEST_SHA256,
+        "{JOB}: frozen scenario manifest digest"
+    );
+    let scenario_bytes = read_archived_scenario_manifest(&workspace());
+    assert_eq!(
+        u64::try_from(scenario_bytes.len()).expect("size"),
+        SCENARIO_MANIFEST_SIZE,
+        "{JOB}: archived scenario manifest size"
+    );
     assert_eq!(
         sha256_hex(&scenario_bytes),
-        projection.source.scenario_manifest.sha256
+        projection.source.scenario_manifest.sha256,
+        "{JOB}: archived scenario manifest digest drift"
     );
 
     let scenarios_value = value.get("scenarios").expect("scenarios");
@@ -2319,6 +2363,50 @@ fn real_matrix_manifest_is_frozen_and_oracle_derived() {
     }
 
     assert_top_level_table(&projection);
+}
+
+/// P7 archived-source gate: the scenario manifest is verified from the
+/// committed fixture, so a checkout without `backends/typescript` still passes.
+#[test]
+fn real_matrix_scenario_manifest_is_archived() {
+    let workspace = workspace();
+    let projection = load_projection();
+    assert_eq!(
+        projection.source.scenario_manifest.path,
+        SCENARIO_MANIFEST_ORIGINAL_PATH
+    );
+
+    let fixture_bytes = read_archived_scenario_manifest(&workspace);
+    assert_eq!(
+        u64::try_from(fixture_bytes.len()).expect("size"),
+        SCENARIO_MANIFEST_SIZE,
+        "{JOB}: archived scenario manifest size"
+    );
+    assert_eq!(
+        sha256_hex(&fixture_bytes),
+        SCENARIO_MANIFEST_SHA256,
+        "{JOB}: archived scenario manifest digest"
+    );
+
+    // Simulate the P7 deletion: a root that contains only the archived fixture
+    // and no `backends/typescript` tree must satisfy the same check.
+    let simulated = TestRoot::new(&GateEnv::from_process(), "real-matrix-archived");
+    assert!(
+        !simulated.path().join("backends").exists(),
+        "{JOB}: the simulated root must not contain the legacy TypeScript tree"
+    );
+    let archived = simulated.path().join(SCENARIO_MANIFEST_RELATIVE_PATH);
+    let parent = archived.parent().expect("archived fixture parent");
+    std::fs::create_dir_all(parent)
+        .unwrap_or_else(|error| panic!("create {}: {error}", parent.display()));
+    std::fs::write(&archived, &fixture_bytes)
+        .unwrap_or_else(|error| panic!("write {}: {error}", archived.display()));
+    let archived_bytes = read_archived_scenario_manifest(simulated.path());
+    assert_eq!(
+        sha256_hex(&archived_bytes),
+        SCENARIO_MANIFEST_SHA256,
+        "{JOB}: the archived fixture must be the only manifest source"
+    );
 }
 
 impl Scenario {
