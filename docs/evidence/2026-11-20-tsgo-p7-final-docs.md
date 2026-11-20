@@ -37,10 +37,10 @@
 
 | ID | 检查项 | 命令/方法 | 通过标准 | 结果 | 证据/备注 |
 | --- | --- | --- | --- | --- | --- |
-| F-01 | workspace 静态检查 | `cargo fmt --all -- --check`；`cargo clippy --workspace --all-targets -- -D warnings` | 两个命令 exit 0，无 warning | PASS | 记录 HEAD 与日志路径 |
-| F-02 | workspace 测试 | `cargo test --workspace -- --test-threads=4`；`cargo test --workspace --doc` | 0 failed；ignored 仅限已登记 opt-in gate | PARTIAL | 记录 passed/failed/ignored 计数 |
-| F-03 | workspace 文档 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | exit 0，无 warning | PASS | 记录版本与日志 |
-| N-01 | native gates 40/40 | `scripts/native-gates.sh --package "$HOME/.local/share/wxml-lsp/versions/<version>"` | exit 0；23 engine + 3 edit + 9 stdio + 1 perf + 1 stability + 3 real_matrix = **40/40**；固定 `7.1.0-beta` | PASS | 记录 package 版本/引擎 SHA-256 |
+| F-01 | workspace 静态检查 | `cargo fmt --all -- --check`；`cargo clippy --workspace --all-targets -- -D warnings` | 两个命令 exit 0，无 warning | PASS | HEAD `8ec0427`；fmt/clippy 均 exit 0 |
+| F-02 | workspace 测试 | `cargo test --workspace -- --test-threads=4`；`cargo test --workspace --doc` | 0 failed；ignored 仅限已登记 opt-in gate | PARTIAL | 2587 passed/1 failed/73 ignored；唯一失败为已知 debug perf 单测，release 10/10 通过，预算未放宽 |
+| F-03 | workspace 文档 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | exit 0，无 warning | PASS | 修复私有 intra-doc link 后 `DOC_EXIT=0` |
+| N-01 | native gates 40/40 | `scripts/native-gates.sh --package "$HOME/.local/share/wxml-lsp/versions/<version>"` | exit 0；23 engine + 3 edit + 9 stdio + 1 perf + 1 stability + 3 real_matrix = **40/40**；固定 `7.1.0-beta` | PASS | clean 复跑 `2026-11-20T012446Z` exit 0；engine SHA-256 `a183b195…` |
 | N-02 | native 默认与 HostOnly | 真实安装下启动 `wxml-lsp --stdio`；再移除 engine 复跑 | 有安装走 native；仅 `NotInstalled` → `HostOnly`；损坏安装 fail closed | PASS | 不把 HostOnly 当 native 通过 |
 | R-01 | release 确定性 | 连续两次运行 `scripts/build-release.sh` | 两次产物 SHA-256 相同；包内无 `server.js`、无 `backends/typescript` | PASS | 记录两次 SHA-256 与文件数 |
 | R-02 | install/verify | `wxml-lsp-install` 安装、`verify`、`verify-package` | 全部 exit 0；schema v2 native 包可安装 | PASS | 记录安装根与版本 |
