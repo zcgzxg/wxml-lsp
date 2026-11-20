@@ -39,6 +39,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_wxml-lsp");
 const TIMEOUT: Duration = Duration::from_secs(10);
 const PAGE: &str = "pages/index/index.wxml";
 const CRLF_PAGE: &str = "pages/crlf/crlf.wxml";
+const WXS_PAGE: &str = "pages/index/utils.wxs";
 
 const PAGE_TEXT: &str = concat!(
     "<template name=\"row\"><view>😀 {{ 名字 }}</view></template>\n",
@@ -52,6 +53,16 @@ const PAGE_TEXT: &str = concat!(
 );
 
 const CRLF_TEXT: &str = "<view>😀 {{ 名字 }}</view>\r\n<text>{{ 标题 }}</text>\r\n";
+
+const WXS_TEXT: &str = concat!(
+    "/**\n",
+    " * Formats a name for display.\n",
+    " * @param {string} name input name\n",
+    " * @returns {string} formatted name\n",
+    " */\n",
+    "function someFunc(name) { return name; }\n",
+    "module.exports = { someFunc };\n",
+);
 
 struct Client {
     child: Child,
@@ -232,6 +243,7 @@ fn project() -> TempProject {
     );
     project.write(PAGE, PAGE_TEXT);
     project.write(CRLF_PAGE, CRLF_TEXT);
+    project.write(WXS_PAGE, WXS_TEXT);
     project.write(
         "pages/crlf/crlf.ts",
         "Page({ data: { 名字: 'a', 标题: 'b' } });",
@@ -552,6 +564,114 @@ fn native_template_rename_returns_document_changes_for_definition_and_call() {
             .iter()
             .all(|edit| edit["newText"] == json!("card-row")),
         "{renamed}"
+    );
+    client.finish();
+}
+
+#[test]
+fn hover_reads_open_wxs_source_document() {
+    let project = project();
+    let mut client = Client::start(project.root());
+    client.initialize(json!(null));
+    let uri = client.open(WXS_PAGE, WXS_TEXT);
+
+    let declaration = WXS_TEXT.find("function someFunc").expect("declaration") + "function ".len();
+    let hover = client.result(
+        "textDocument/hover",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": position_value(WXS_TEXT, declaration),
+        }),
+    );
+    assert_eq!(
+        hover["contents"]["kind"],
+        json!("markdown"),
+        "WXS source hover must be markdown: {hover}"
+    );
+    let value = hover["contents"]["value"]
+        .as_str()
+        .expect("markdown hover value");
+    assert!(value.contains("someFunc"), "member name: {value}");
+    assert!(
+        value.contains("(name: string) => string"),
+        "signature must come from the JSDoc types: {value}"
+    );
+    assert!(
+        value.contains("@param {string} name"),
+        "multi-line JSDoc must be readable: {value}"
+    );
+    assert!(
+        !value.contains("\\{"),
+        "type braces must not be escaped: {value}"
+    );
+    let (line, character) = position(WXS_TEXT, declaration);
+    let range = &hover["range"];
+    assert_eq!(
+        range["start"],
+        json!({"line": line, "character": character}),
+        "range must cover the declaration token: {hover}"
+    );
+    assert_eq!(
+        range["end"],
+        json!({"line": line, "character": character + 8}),
+        "range must cover exactly `someFunc`: {hover}"
+    );
+
+    let keyword = WXS_TEXT.find("return").expect("return keyword");
+    let none = client.result(
+        "textDocument/hover",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": position_value(WXS_TEXT, keyword),
+        }),
+    );
+    assert_eq!(
+        none,
+        Value::Null,
+        "a non-member word must return null hover"
+    );
+    client.finish();
+}
+
+#[test]
+fn mustache_module_hover_targets_the_token() {
+    let project = project();
+    let mut client = Client::start(project.root());
+    client.initialize(json!(null));
+    let uri = client.open(PAGE, PAGE_TEXT);
+
+    let token = PAGE_TEXT
+        .find("u.greet(名字, 1)")
+        .expect("mustache module reference");
+    let hover = client.result(
+        "textDocument/hover",
+        json!({
+            "textDocument": {"uri": uri},
+            "position": position_value(PAGE_TEXT, token),
+        }),
+    );
+    assert_eq!(
+        hover["contents"]["kind"],
+        json!("markdown"),
+        "module hover must be markdown: {hover}"
+    );
+    let value = hover["contents"]["value"]
+        .as_str()
+        .expect("markdown hover value");
+    assert!(value.contains("WXS module `u`"), "module header: {value}");
+    assert!(value.contains("Exports:"), "export list: {value}");
+
+    let (line, character) = position(PAGE_TEXT, token);
+    let range = &hover["range"];
+    assert_eq!(
+        range["start"],
+        json!({"line": line, "character": character}),
+        "range must start at the mustache `u`, not the `<wxs module>` attribute: {hover}"
+    );
+    assert_eq!(
+        range["end"],
+        json!({"line": line, "character": character + 1}),
+        "range must cover only the one-character `u` token: {hover}"
     );
     client.finish();
 }

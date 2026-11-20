@@ -371,7 +371,40 @@ const fn submit_message(error: SubmitError) -> &'static str {
     }
 }
 
+/// True when `uri` names a WXS document (ignoring query/fragment).
+fn wxs_uri(uri: &str) -> bool {
+    uri.split(['?', '#'])
+        .next()
+        .unwrap_or(uri)
+        .to_ascii_lowercase()
+        .ends_with(".wxs")
+}
+
 impl Server {
+    /// Answers a hover inside an open WXS source document.
+    ///
+    /// `.wxs` buffers route as scripts so unsaved text reaches static
+    /// analysis; this branch only runs for an already open WXS document and
+    /// otherwise leaves the existing routing untouched.
+    fn static_wxs_hover(&self, id: &Value, params: Option<&Value>) -> Option<Vec<Outgoing>> {
+        let params = params?;
+        let (uri, position) = hover_target(params)?;
+        if !wxs_uri(uri) {
+            return None;
+        }
+        let document = self.workspace.get(uri)?;
+        let offset = document.offset_at(position)?;
+        let Some(hover) = crate::static_semantics::wxs_source_hover(document.text(), offset) else {
+            // The document is an open WXS buffer: an unhandled word is an
+            // explicit empty result, not a backend query.
+            return Some(vec![Outgoing::success(id.clone(), Value::Null)]);
+        };
+        Some(vec![Outgoing::success(
+            id.clone(),
+            crate::static_semantics::hover_value(document, &hover),
+        )])
+    }
+
     /// Answers a hover statically when the cursor is on a tag, attribute or
     /// documented value.
     ///
@@ -511,6 +544,9 @@ impl Server {
 
     /// Handles `textDocument/hover`.
     pub(crate) fn hover(&mut self, id: Value, params: Option<Value>) -> Vec<Outgoing> {
+        if let Some(outgoing) = self.static_wxs_hover(&id, params.as_ref()) {
+            return outgoing;
+        }
         if let Some(outgoing) = self.static_hover(&id, params.as_ref()) {
             return outgoing;
         }

@@ -32,6 +32,20 @@ const TEMPLATE_TEXT: &str = concat!(
     "<template name=\"card\"><view>{{ title }}</view></template>\n",
     "<template is=\"card\" />",
 );
+const WXS_SOURCE_URI: &str = "file:///pages/index/utils.wxs";
+const WXS_SOURCE_TEXT: &str = concat!(
+    "/** Formats a name for display.\n",
+    " * @param {string} name input name\n",
+    " * @returns {string} formatted name\n",
+    " */\n",
+    "function someFunc(name) { return name; }\n",
+    "module.exports = { someFunc };\n",
+);
+const SCRIPT_URI: &str = "file:///pages/index/utils.ts";
+const SCRIPT_TEXT: &str = concat!(
+    "/** Formats a name. */\n",
+    "function someFunc(name: string): string { return name; }\n",
+);
 
 #[derive(Default)]
 struct RecordingDispatch {
@@ -70,12 +84,16 @@ fn server_with(capabilities: BackendCapabilities) -> (Server, Arc<RecordingDispa
 }
 
 fn open(server: &mut Server, text: &str) {
+    open_at(server, URI, "wxml", text);
+}
+
+fn open_at(server: &mut Server, uri: &str, language_id: &str, text: &str) {
     let outgoing = server.handle_incoming(Incoming::Notification {
         method: "textDocument/didOpen".to_owned(),
         params: Some(json!({
             "textDocument": {
-                "uri": URI,
-                "languageId": "wxml",
+                "uri": uri,
+                "languageId": language_id,
                 "version": 1,
                 "text": text,
             },
@@ -85,8 +103,12 @@ fn open(server: &mut Server, text: &str) {
 }
 
 fn point_params(line: u32, character: u32) -> Value {
+    point_params_at(URI, line, character)
+}
+
+fn point_params_at(uri: &str, line: u32, character: u32) -> Value {
     json!({
-        "textDocument": {"uri": URI},
+        "textDocument": {"uri": uri},
         "position": {"line": line, "character": character},
     })
 }
@@ -129,6 +151,21 @@ fn wxs_member_position(text: &str) -> (u32, u32) {
 fn template_call_position(text: &str) -> (u32, u32) {
     let start = text.find("is=\"card\"").expect("template call") + "is=\"".len();
     position_at(text, start + 1)
+}
+
+fn wxs_source_declaration_position() -> (u32, u32) {
+    let start = WXS_SOURCE_TEXT
+        .find("function someFunc")
+        .expect("WXS declaration")
+        + "function ".len();
+    position_at(WXS_SOURCE_TEXT, start + 1)
+}
+
+fn wxs_source_keyword_position() -> (u32, u32) {
+    let start = WXS_SOURCE_TEXT
+        .find("return name")
+        .expect("WXS return keyword");
+    position_at(WXS_SOURCE_TEXT, start + 1)
 }
 
 #[test]
@@ -363,6 +400,102 @@ fn partial_hover_answers_static_wxs_without_a_backend_job() {
         .expect("markdown hover");
     assert!(contents.contains("utils.format"), "{contents}");
     assert!(contents.contains("Formats a value."), "{contents}");
+}
+
+#[test]
+fn partial_hover_answers_open_wxs_source_document() {
+    let capabilities = BackendCapabilities {
+        hover: CapabilityStatus::Partial {
+            reason: "native expression hover only".to_owned(),
+        },
+        ..MockBackend::new().capabilities()
+    };
+    let (mut server, dispatch) = server_with(capabilities);
+    open_at(&mut server, WXS_SOURCE_URI, "wxs", WXS_SOURCE_TEXT);
+    dispatch.take();
+    let (line, character) = wxs_source_declaration_position();
+    let outgoing = server.handle_incoming(request(
+        json!(12),
+        "textDocument/hover",
+        point_params_at(WXS_SOURCE_URI, line, character),
+    ));
+    assert!(
+        dispatch.take().is_empty(),
+        "a .wxs hover must not start the backend"
+    );
+    let response = only(outgoing);
+    let value = success_value(&response);
+    let contents = value["contents"]["value"].as_str().expect("markdown hover");
+    assert!(contents.contains("someFunc"), "{contents}");
+    assert!(contents.contains("(name: string) => string"), "{contents}");
+    assert!(contents.contains("@param {string} name"), "{contents}");
+    assert!(!contents.contains("\\{"), "{contents}");
+    // The range covers the hovered declaration token.
+    assert_eq!(value["range"]["start"]["line"], json!(4), "{value}");
+    assert_eq!(
+        value["range"]["start"]["character"],
+        json!("function ".len()),
+        "{value}"
+    );
+    assert_eq!(
+        value["range"]["end"]["character"],
+        json!("function someFunc".len()),
+        "{value}"
+    );
+}
+
+#[test]
+fn wxs_hover_returns_null_for_non_member_word() {
+    let capabilities = BackendCapabilities {
+        hover: CapabilityStatus::Partial {
+            reason: "native expression hover only".to_owned(),
+        },
+        ..MockBackend::new().capabilities()
+    };
+    let (mut server, dispatch) = server_with(capabilities);
+    open_at(&mut server, WXS_SOURCE_URI, "wxs", WXS_SOURCE_TEXT);
+    dispatch.take();
+    let (line, character) = wxs_source_keyword_position();
+    let outgoing = server.handle_incoming(request(
+        json!(13),
+        "textDocument/hover",
+        point_params_at(WXS_SOURCE_URI, line, character),
+    ));
+    assert!(
+        dispatch.take().is_empty(),
+        "an unhandled .wxs word must not start the backend"
+    );
+    assert_eq!(success_value(&only(outgoing)), &json!(null));
+}
+
+#[test]
+fn hover_does_not_enter_wxs_branch_for_script_documents() {
+    // A `Partial` hover capability keeps `.ts` on the script/template gate:
+    // `schedule_point` rejects non-template documents before dispatch and the
+    // protocol-correct empty result is `null`. Asserting "no WXS payload and
+    // no backend job" is the stable invariant here; the script document holds
+    // a WXS-shaped declaration so a leaked static answer would be visible.
+    let capabilities = BackendCapabilities {
+        hover: CapabilityStatus::Partial {
+            reason: "native expression hover only".to_owned(),
+        },
+        ..MockBackend::new().capabilities()
+    };
+    let (mut server, dispatch) = server_with(capabilities);
+    open_at(&mut server, SCRIPT_URI, "typescript", SCRIPT_TEXT);
+    dispatch.take();
+    let (line, character) =
+        position_at(SCRIPT_TEXT, SCRIPT_TEXT.find("someFunc").expect("name") + 1);
+    let outgoing = server.handle_incoming(request(
+        json!(14),
+        "textDocument/hover",
+        point_params_at(SCRIPT_URI, line, character),
+    ));
+    assert!(
+        dispatch.take().is_empty(),
+        "a script document must not start the backend"
+    );
+    assert_eq!(success_value(&only(outgoing)), &json!(null));
 }
 
 #[test]

@@ -43,6 +43,8 @@ const MAX_WXS_SOURCE_BYTES: usize = 1024 * 1024;
 const MAX_DEFINITION_LOCATIONS: usize = 16;
 /// Largest documentation chunk copied into a hover.
 const MAX_HOVER_DOC_CHARS: usize = 512;
+/// Largest number of export rows shown in one module hover.
+const MAX_HOVER_EXPORTS: usize = 64;
 
 type Access<'a> = dyn Fn(&str) -> Option<String> + 'a;
 
@@ -452,13 +454,17 @@ fn wxs_hover(
     let chain = mustache_chain(mustache, tree.text(), offset)?;
     let wxs = index.wxs.iter().find(|wxs| wxs.module == chain.root)?;
     if chain.member.is_none() {
-        return Some(module_hover(wxs, path, first_block(index, &wxs.module)?));
+        let mut hover = module_hover(wxs, path, first_block(index, &wxs.module)?);
+        // The module attribute hover keeps the attribute range; a mustache root
+        // must report the reference the cursor is on.
+        hover.range = chain.range;
+        return Some(hover);
     }
     let member_name = chain.member?;
     let member = exported_member(&wxs.summary, &member_name)?;
     let positions = vec![defined_position(path, wxs, member.name_range)];
     Some(StaticHover {
-        contents: member_markdown(wxs, member, &member_name),
+        contents: member_markdown(Some(&wxs.module), &wxs.summary, member, &member_name),
         range: chain.range,
         positions,
     })
@@ -503,7 +509,7 @@ fn wxs_body_hover(
             .find(|member| member.name == token)
         {
             return Some(StaticHover {
-                contents: member_markdown(wxs, member, &token),
+                contents: member_markdown(Some(&wxs.module), &wxs.summary, member, &token),
                 range: Some(word_range(text, offset)?),
                 positions: vec![defined_position(path, wxs, member.name_range)],
             });
@@ -519,13 +525,29 @@ fn module_hover(wxs: &LocatedWxs, path: &str, block: &WxsBlock) -> StaticHover {
     } else {
         contents.push_str("\n\nSource: inline block");
     }
-    let exports = wxs
-        .summary
-        .exported()
-        .map(|member| format!("`{}`", member.name))
-        .collect::<Vec<_>>();
-    if !exports.is_empty() {
-        let _ = write!(contents, "\n\nExports: {}", exports.join(", "));
+    let mut exports = String::new();
+    let mut listed = 0_usize;
+    let mut total = 0_usize;
+    for member in wxs.summary.exported() {
+        total += 1;
+        if listed == MAX_HOVER_EXPORTS {
+            continue;
+        }
+        listed += 1;
+        let _ = write!(
+            exports,
+            "\n- {}: {}",
+            inline_code(&member.name),
+            inline_code(&wxs.summary.describe(member))
+        );
+    }
+    if total > 0 {
+        let _ = write!(contents, "\n\nExports:{exports}");
+    }
+    // Only statically enumerated exports are listed; dynamic forms stay a
+    // `Partial:` note instead of being guessed.
+    if total > listed {
+        let _ = write!(contents, "\n- … and {} more", total - listed);
     }
     if let Some(dynamic) = &wxs.summary.dynamic {
         let _ = write!(contents, "\n\nPartial: {dynamic}");
@@ -559,21 +581,27 @@ fn module_hover(wxs: &LocatedWxs, path: &str, block: &WxsBlock) -> StaticHover {
     }
 }
 
-fn member_markdown(wxs: &LocatedWxs, member: &WxsMember, name: &str) -> String {
-    let mut contents = format!(
-        "```wxs\n{}.{}: {}\n```",
-        wxs.module,
-        name,
-        wxs.summary.describe(member)
-    );
+/// Renders untrusted text as one inline code span, so it cannot break the line.
+fn inline_code(text: &str) -> String {
+    let safe = crate::handlers::code_text(text, MAX_HOVER_DOC_CHARS)
+        .replace(['\n', '\r'], " ")
+        .replace('`', "'");
+    format!("`{safe}`")
+}
+
+fn member_markdown(
+    module: Option<&str>,
+    summary: &WxsSummary,
+    member: &WxsMember,
+    name: &str,
+) -> String {
+    let qualified = module.map_or_else(|| name.to_owned(), |module| format!("{module}.{name}"));
+    let mut contents = format!("```wxs\n{qualified}: {}\n```", summary.describe(member));
     if !member.doc.is_empty() {
         contents.push_str("\n\n");
-        contents.push_str(&crate::handlers::markdown_escape(
-            &member
-                .doc
-                .chars()
-                .take(MAX_HOVER_DOC_CHARS)
-                .collect::<String>(),
+        contents.push_str(&crate::handlers::markdown_doc(
+            &member.doc,
+            MAX_HOVER_DOC_CHARS,
         ));
     }
     if member.kind == wxml_types::WxsMemberKind::Module {
@@ -581,10 +609,50 @@ fn member_markdown(wxs: &LocatedWxs, member: &WxsMember, name: &str) -> String {
             let _ = write!(contents, "\n\nRequires `{specifier}`");
         }
     }
-    if wxs.summary.truncated {
+    if summary.truncated {
         contents.push_str("\n\nPartial: WXS summary truncated; later members were skipped.");
     }
+    if !member_is_exported(summary, member) {
+        contents.push_str("\n\nLocal declaration; not exported from this module.");
+    }
     contents
+}
+
+/// True when `member` reaches templates, either directly or through an export
+/// that aliases its declaration.
+fn member_is_exported(summary: &WxsSummary, member: &WxsMember) -> bool {
+    member.exported
+        || summary.exported().any(|other| {
+            other.name == member.name
+                || other
+                    .alias_of
+                    .is_some_and(|range| contains_any(range, member.name_range.start()))
+        })
+}
+
+/// Answers a hover inside an open `.wxs` source document.
+///
+/// The hover covers the word under the cursor and shows the declaration that
+/// owns it: the declaration name, a `module.exports` key, or an in-file
+/// reference. Positions stay empty because a WXS hover would otherwise point
+/// at the very declaration it already describes.
+pub(crate) fn wxs_source_hover(text: &str, offset: u32) -> Option<StaticHover> {
+    let range = word_range(text, offset)?;
+    let token = text.get(range.start() as usize..range.end() as usize)?;
+    let summary = summarize_wxs(text);
+    // A declaration or export key under the cursor wins over a name lookup:
+    // `member()` prefers the exported entry, whose range is the `module.exports`
+    // key rather than the declaration the user is hovering.
+    let member = summary
+        .members
+        .iter()
+        .find(|member| contains_any(member.name_range, offset))
+        .or_else(|| summary.member(token))?;
+    Some(StaticHover {
+        contents: member_markdown(None, &summary, member, &member.name),
+        range: Some(range),
+        positions: Vec::new(),
+    })
 }
 
 fn wxs_definition(
@@ -1987,6 +2055,310 @@ module.exports = { format };</wxs>
         let wxml = r#"<template is="{{ name }}" /><wxs module="m">eval("x")</wxs>"#;
         let offset = u32::try_from(wxml.find("name").expect("name")).expect("offset");
         assert!(hover("pages/index/index.wxml", wxml, offset, &no_access).is_none());
+    }
+
+    const FORMAT_WXS: &str = r"
+/**
+ * Formats a name for display.
+ * @param {string} name input name
+ * @returns {string} formatted name
+ */
+function someFunc(name) { return name; }
+const count = 2;
+module.exports = { someFunc, count };
+";
+
+    #[test]
+    fn mustache_module_hover_range_covers_the_reference_for_src_modules() {
+        let wxml = r#"<wxs module="m1" src="./fmt.wxs" /><view>{{ m1.someFunc(name) }}</view>"#;
+        let entries = [("pages/index/fmt.wxs", FORMAT_WXS)];
+        let access = access_map(&entries);
+        let offset = u32::try_from(wxml.find("m1.someFunc").expect("m1 use")).expect("offset");
+        let mustache_hover =
+            hover("pages/index/index.wxml", wxml, offset, &access).expect("module hover");
+        let range = mustache_hover.range.expect("hover range");
+        assert_eq!(slice(wxml, range), "m1");
+        assert!(
+            mustache_hover.contents.contains("WXS module `m1`"),
+            "{}",
+            mustache_hover.contents
+        );
+        assert!(
+            mustache_hover
+                .contents
+                .contains("Source: `pages/index/fmt.wxs`"),
+            "{}",
+            mustache_hover.contents
+        );
+        assert_eq!(mustache_hover.positions[0].path, "pages/index/fmt.wxs");
+
+        let attribute_offset = u32::try_from(
+            wxml.find("module=\"m1\"").expect("module attribute") + "module=\"".len(),
+        )
+        .expect("offset");
+        let attribute_hover = hover("pages/index/index.wxml", wxml, attribute_offset, &access)
+            .expect("attribute hover");
+        let attribute_range = attribute_hover.range.expect("attribute range");
+        assert_eq!(slice(wxml, attribute_range), "m1");
+        assert_ne!(
+            range, attribute_range,
+            "a mustache hover must not point at the wxs attribute"
+        );
+    }
+
+    #[test]
+    fn mustache_module_hover_range_covers_the_reference_for_inline_modules() {
+        let wxml = r#"<wxs module="m2">const label = "hi"; module.exports = { label };</wxs><view>{{ m2.label }}</view>"#;
+        let offset = u32::try_from(wxml.find("m2.label").expect("m2 use")).expect("offset");
+        let mustache_hover =
+            hover("pages/index/index.wxml", wxml, offset, &no_access).expect("module hover");
+        let range = mustache_hover.range.expect("hover range");
+        assert_eq!(slice(wxml, range), "m2");
+        assert!(
+            mustache_hover.contents.contains("Source: inline block"),
+            "{}",
+            mustache_hover.contents
+        );
+
+        let attribute_offset = u32::try_from(
+            wxml.find("module=\"m2\"").expect("module attribute") + "module=\"".len(),
+        )
+        .expect("offset");
+        let attribute_hover = hover("pages/index/index.wxml", wxml, attribute_offset, &no_access)
+            .expect("attribute hover");
+        let attribute_range = attribute_hover.range.expect("attribute range");
+        assert_eq!(slice(wxml, attribute_range), "m2");
+        assert_ne!(
+            range, attribute_range,
+            "a mustache hover must not point at the wxs attribute"
+        );
+    }
+
+    #[test]
+    fn module_hover_lists_export_signatures_and_types() {
+        let wxml = r#"<wxs module="m1" src="./fmt.wxs" /><view>{{ m1.someFunc(name) }}</view>"#;
+        let entries = [("pages/index/fmt.wxs", FORMAT_WXS)];
+        let access = access_map(&entries);
+        let offset = u32::try_from(wxml.find("m1.someFunc").expect("m1 use")).expect("offset");
+        let hover = hover("pages/index/index.wxml", wxml, offset, &access).expect("module hover");
+        assert!(
+            hover
+                .contents
+                .contains("- `someFunc`: `(name: string) => string`"),
+            "{}",
+            hover.contents
+        );
+        assert!(
+            hover.contents.contains("- `count`: `number`"),
+            "{}",
+            hover.contents
+        );
+        assert!(hover.contents.contains("Exports:"), "{}", hover.contents);
+    }
+
+    #[test]
+    fn module_hover_caps_the_export_list() {
+        let mut body = String::new();
+        for index in 0..(MAX_HOVER_EXPORTS + 3) {
+            let _ = writeln!(body, "exports.value{index} = {index};");
+        }
+        let wxml = format!(r#"<wxs module="m">{body}</wxs><view>{{{{ m.value0 }}}}</view>"#);
+        let offset = u32::try_from(wxml.find("m.value0").expect("m use")).expect("offset");
+        let hover = hover("pages/index/index.wxml", &wxml, offset, &no_access).expect("hover");
+        assert!(
+            hover.contents.contains("- `value0`: `number`"),
+            "{}",
+            hover.contents
+        );
+        assert!(hover.contents.contains("and 3 more"), "{}", hover.contents);
+        assert_eq!(
+            hover.contents.matches("\n- `value").count(),
+            MAX_HOVER_EXPORTS
+        );
+        assert!(
+            !hover.contents.contains("`value66`"),
+            "unlisted rows must not leak: {}",
+            hover.contents
+        );
+    }
+
+    #[test]
+    fn wxs_member_hover_keeps_multiline_jsdoc_readable() {
+        let wxml = r#"<wxs module="m1">/**
+ * Formats a name for display.
+ * @param {string} name input name
+ * @returns {string} formatted name
+ */
+function someFunc(name) { return name; }
+module.exports = { someFunc };</wxs><view>{{ m1.someFunc(name) }}</view>"#;
+        let offset = u32::try_from(wxml.find("m1.someFunc").expect("member use") + "m1.".len())
+            .expect("offset");
+        let hover = hover("pages/index/index.wxml", wxml, offset, &no_access).expect("hover");
+        assert_eq!(slice(wxml, hover.range.expect("range")), "someFunc");
+        assert!(hover.contents.contains('\n'), "{}", hover.contents);
+        assert!(
+            hover.contents.contains("@param {string} name input name"),
+            "{}",
+            hover.contents
+        );
+        assert!(!hover.contents.contains("\\{"), "{}", hover.contents);
+    }
+
+    #[test]
+    fn wxs_member_hover_truncates_long_docs_but_keeps_the_signature() {
+        let mut body =
+            String::from("/**\n * Formats a name.\n * @param {string} name input name\n");
+        for _ in 0..40 {
+            body.push_str(" * Extra documentation line for the budget.\n");
+        }
+        body.push_str(" * @returns {string} formatted name\n */\n");
+        body.push_str("function someFunc(name) { return name; }\n");
+        body.push_str("module.exports = { someFunc };");
+        let wxml =
+            format!(r#"<wxs module="m">{body}</wxs><view>{{{{ m.someFunc(name) }}}}</view>"#);
+        let offset =
+            u32::try_from(wxml.rfind("someFunc(name)").expect("member use") + 1).expect("offset");
+        let hover = hover("pages/index/index.wxml", &wxml, offset, &no_access).expect("hover");
+        assert!(
+            hover
+                .contents
+                .contains("m.someFunc: (name: string) => string"),
+            "{}",
+            hover.contents
+        );
+        assert!(hover.contents.contains('…'), "{}", hover.contents);
+    }
+
+    const SOURCE_WXS: &str = r#"/**
+ * Formats a name for display.
+ * @param {string} name input name
+ * @returns {string} formatted name
+ */
+function someFunc(name) { return name; }
+const count = 2;
+function hidden(value) { return value; }
+module.exports = { someFunc, count };
+const label = someFunc("x");
+"#;
+
+    #[test]
+    fn wxs_source_hover_answers_declarations_exports_and_calls() {
+        let declaration = u32::try_from(
+            SOURCE_WXS.find("function someFunc").expect("declaration") + "function ".len(),
+        )
+        .expect("offset");
+        let hover = wxs_source_hover(SOURCE_WXS, declaration).expect("declaration hover");
+        assert_eq!(slice(SOURCE_WXS, hover.range.expect("range")), "someFunc");
+        assert!(
+            hover
+                .contents
+                .starts_with("```wxs\nsomeFunc: (name: string) => string"),
+            "{}",
+            hover.contents
+        );
+        assert!(
+            hover.contents.contains("@param {string} name input name"),
+            "{}",
+            hover.contents
+        );
+        assert!(
+            !hover.contents.contains("not exported"),
+            "{}",
+            hover.contents
+        );
+        assert!(hover.positions.is_empty(), "{hover:?}");
+
+        let export_key = u32::try_from(
+            SOURCE_WXS.find("module.exports = {").expect("exports") + "module.exports = { ".len(),
+        )
+        .expect("offset");
+        let hover = wxs_source_hover(SOURCE_WXS, export_key).expect("export key hover");
+        assert_eq!(slice(SOURCE_WXS, hover.range.expect("range")), "someFunc");
+        assert!(
+            hover
+                .contents
+                .contains("someFunc: (name: string) => string"),
+            "{}",
+            hover.contents
+        );
+        assert!(
+            !hover.contents.contains("not exported"),
+            "{}",
+            hover.contents
+        );
+
+        let call = u32::try_from(SOURCE_WXS.rfind("someFunc").expect("call") + 1).expect("offset");
+        let hover = wxs_source_hover(SOURCE_WXS, call).expect("call hover");
+        assert_eq!(slice(SOURCE_WXS, hover.range.expect("range")), "someFunc");
+        assert!(
+            hover
+                .contents
+                .contains("someFunc: (name: string) => string"),
+            "{}",
+            hover.contents
+        );
+        assert!(
+            !hover.contents.contains("not exported"),
+            "{}",
+            hover.contents
+        );
+    }
+
+    #[test]
+    fn wxs_source_hover_uses_the_export_key_for_aliases() {
+        let text = "const foo = 1;\nmodule.exports = { foo };\n";
+        let export_key = u32::try_from(
+            text.find("module.exports = {").expect("exports") + "module.exports = { ".len(),
+        )
+        .expect("offset");
+        let hover = wxs_source_hover(text, export_key).expect("export key hover");
+        assert_eq!(slice(text, hover.range.expect("range")), "foo");
+        assert!(hover.contents.contains("foo: number"), "{}", hover.contents);
+        assert!(
+            !hover.contents.contains("not exported"),
+            "{}",
+            hover.contents
+        );
+    }
+
+    #[test]
+    fn wxs_source_hover_does_not_mark_alias_declarations_as_not_exported() {
+        let text = "function foo() { return 1; }\nmodule.exports = { out: foo };\n";
+        let offset =
+            u32::try_from(text.find("function foo").expect("declaration") + "function ".len())
+                .expect("offset");
+        let hover = wxs_source_hover(text, offset).expect("declaration hover");
+        assert_eq!(slice(text, hover.range.expect("range")), "foo");
+        assert!(hover.contents.contains("foo: "), "{}", hover.contents);
+        assert!(
+            !hover.contents.contains("not exported"),
+            "{}",
+            hover.contents
+        );
+    }
+
+    #[test]
+    fn wxs_source_hover_marks_local_declarations_as_not_exported() {
+        let offset =
+            u32::try_from(SOURCE_WXS.find("function hidden").expect("local") + "function ".len())
+                .expect("offset");
+        let hover = wxs_source_hover(SOURCE_WXS, offset).expect("local hover");
+        assert_eq!(slice(SOURCE_WXS, hover.range.expect("range")), "hidden");
+        assert!(hover.contents.contains("hidden: "), "{}", hover.contents);
+        assert!(
+            hover.contents.contains("not exported"),
+            "{}",
+            hover.contents
+        );
+    }
+
+    #[test]
+    fn wxs_source_hover_ignores_non_member_words() {
+        let keyword =
+            u32::try_from(SOURCE_WXS.find("return value").expect("keyword") + 1).expect("offset");
+        assert!(wxs_source_hover(SOURCE_WXS, keyword).is_none());
+        let string = u32::try_from(SOURCE_WXS.find("\"x\"").expect("string") + 1).expect("offset");
+        assert!(wxs_source_hover(SOURCE_WXS, string).is_none());
     }
 }
 

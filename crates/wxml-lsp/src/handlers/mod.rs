@@ -267,6 +267,47 @@ pub(crate) fn markdown_escape(text: &str) -> String {
     escaped
 }
 
+/// Formats untrusted documentation for a hover, preserving line structure.
+///
+/// [`markdown_escape`] flattens text into one line, which turns a multi-line
+/// `JSDoc` block into an unreadable run-on sentence. This keeps one hover line
+/// per documentation line instead:
+///
+/// - `\r` and surrounding whitespace are trimmed per line and empty lines are
+///   dropped;
+/// - `JSDoc` tag lines (`@param`, `@returns`, ...) become an inline code span,
+///   so a `{type}` keeps its braces instead of being escaped to `\{type\}`;
+/// - every other line still goes through [`markdown_escape`], so HTML, links
+///   and control characters stay neutralized.
+///
+/// The joined result is capped at `limit` characters with a trailing `…`.
+pub(crate) fn markdown_doc(text: &str, limit: usize) -> String {
+    let mut formatted = String::new();
+    for raw in text.split('\n') {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if !formatted.is_empty() {
+            formatted.push('\n');
+        }
+        if line.starts_with('@') {
+            let safe = code_text(line, limit).replace('`', "'");
+            formatted.push('`');
+            formatted.push_str(&safe);
+            formatted.push('`');
+        } else {
+            formatted.push_str(&markdown_escape(line));
+        }
+    }
+    if formatted.chars().count() > limit {
+        let mut capped: String = formatted.chars().take(limit).collect();
+        capped.push('…');
+        return capped;
+    }
+    formatted
+}
+
 /// Escapes unsafe characters and truncates untrusted text to `limit` bytes
 /// for stderr.
 pub(crate) fn log_safe_text(text: &str, limit: usize) -> String {
@@ -460,6 +501,48 @@ mod tests {
         assert!(!escaped.contains("![i]("), "{escaped}");
         assert!(!escaped.contains("<b>"), "{escaped}");
         assert!(escaped.contains("\\]"), "{escaped}");
+    }
+
+    #[test]
+    fn markdown_doc_keeps_lines_and_jsdoc_braces() {
+        let doc = "Formats a name.\n  @param {string} name input name\r\n@returns {string} formatted name\n";
+        let formatted = markdown_doc(doc, 512);
+        assert_eq!(
+            formatted,
+            "Formats a name.\n`@param {string} name input name`\n`@returns {string} formatted name`"
+        );
+        assert!(formatted.contains('\n'), "{formatted}");
+        assert!(!formatted.contains("\\{"), "{formatted}");
+    }
+
+    #[test]
+    fn markdown_doc_escapes_html_and_links_on_normal_lines() {
+        let formatted = markdown_doc("x [a](command:evil) ![i](https://x) <b>", 512);
+        assert!(!formatted.contains("](command:"), "{formatted}");
+        assert!(!formatted.contains("![i]("), "{formatted}");
+        assert!(!formatted.contains("<b>"), "{formatted}");
+        assert!(formatted.contains("&lt;b&gt;"), "{formatted}");
+    }
+
+    #[test]
+    fn markdown_doc_drops_control_characters_and_blank_lines() {
+        let formatted = markdown_doc("a\u{1b}b\n\n\u{202e}c\r\n", 512);
+        assert_eq!(formatted, "ab\nc");
+    }
+
+    #[test]
+    fn markdown_doc_cannot_break_out_of_a_tag_code_span() {
+        let formatted = markdown_doc("@param {string} na`me `x`", 512);
+        assert_eq!(formatted, "`@param {string} na'me 'x'`");
+    }
+
+    #[test]
+    fn markdown_doc_truncates_with_an_ellipsis() {
+        let formatted = markdown_doc(&"x".repeat(600), 16);
+        assert_eq!(formatted, format!("{}…", "x".repeat(16)));
+        let formatted = markdown_doc(&"😀".repeat(20), 5);
+        assert_eq!(formatted.chars().count(), 6);
+        assert!(formatted.ends_with('…'), "{formatted}");
     }
 
     #[test]

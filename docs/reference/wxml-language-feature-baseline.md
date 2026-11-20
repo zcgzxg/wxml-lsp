@@ -25,7 +25,7 @@
 | F-05 | 上下文筛选 | 根据标签、组件和模式筛选候选，例如 `picker` 的 `mode` 影响可用属性 | 本地元数据中的条件规则 | 5 |
 | F-06 | 自定义组件补全 | 从页面/组件 JSON 的 `usingComponents` 解析组件，补全标签和属性说明 | 项目 JSON、组件声明、类型后端 | 5 |
 | F-07 | 表达式成员与事件处理补全 | 在 `{{ }}` 中按模板作用域补全成员；事件属性中补全处理函数 | 类型后端、模板作用域、脚本声明 | 4–5 |
-| F-08 | Hover | 显示表达式类型、字段 JSDoc、声明归属；显示组件属性、标签和属性说明 | 类型后端、项目模型、本地元数据 | 2–5 |
+| F-08 | Hover | 显示表达式类型、字段 JSDoc、声明归属；显示组件属性、标签和属性说明；WXS 模块/成员与打开的 `.wxs` 内声明、导出键和引用也可 hover | 类型后端、项目模型、本地元数据 | 2–5 |
 | F-09 | 定义跳转 | 跳转到字段声明、组件文件、class、资源文件和事件处理函数 | 类型后端、项目索引、样式索引 | 4–5 |
 | F-10 | 诊断 | 标记未知字段、非法类型操作和不兼容绑定；范围精确，修复后清除 | 类型后端、模板语义、诊断策略 | 2–4 |
 | F-11 | Class 补全与导航 | 从同名样式文件和配置的全局样式补全 class，并展示注释说明 | 项目样式索引 | 5 |
@@ -54,7 +54,7 @@ W4 重跑。S 的逐项工具状态见 §2.2，Q2 调度/恢复见 §2.3，行�
 | F-05 | 部分实现 | 数据化条件规则至少覆盖 `picker` 各 mode 和 `input` type；补全与本地诊断共用规则；未知/动态 mode 保留合法候选 | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、`full_feature_matrix.rs`（历史，P7 删除；IT-03） | 未覆盖全部组件的条件属性；规则表需继续数据化扩展 |
 | F-06 | 已实现（受限） | 页面/组件自身/app `usingComponents`、本地同名覆盖、`miniprogram_npm` 本地构建、组件标签/属性/事件补全、组件 definition | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、`full_feature_matrix.rs`（历史，P7 删除；IT-02） | 插件/远程组件仅在本地有可信元数据时建模；无远程下载或执行 |
 | F-07 | 已实现 | `wx:for` 作用域、表达式成员补全、事件处理函数补全；后端离线时静态通道保留 | stdio_type_loop.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）、native_parity/real_matrix.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）、`real_node.rs`（历史，P7 删除） | 动态/不可解析类型保持降级 |
-| F-08 | 已实现（受限） | 表达式类型/JSDoc/声明归属；内置标签/属性/事件静态文档；组件属性、事件与来源 hover；不依赖 Node 的静态 hover | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、[metadata.rs](../../crates/wxml-lsp/src/metadata.rs) | 目录仍是手写子集；插件/远程组件仅显示降级说明 |
+| F-08 | 已实现（受限） | 表达式类型/JSDoc/声明归属；内置标签/属性/事件静态文档；组件属性、事件与来源 hover；WXS 模块 hover 的 range 落在 mustache token，导出列表带签名/类型；WXS 成员展示签名与多行 JSDoc（`@param`/`@returns` 的 `{}` 保持可读）；打开的 `.wxs` 内声明、导出键与文件内引用可 hover；不依赖 Node 的静态 hover | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、[metadata.rs](../../crates/wxml-lsp/src/metadata.rs)、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs) | 目录仍是手写子集；插件/远程组件仅显示降级说明；WXS 静态子集不执行、不推断动态导出，也不提供跨文件 rename |
 | F-09 | 已实现（受限） | 字段/事件/组件文件/组件属性/class/本地资源/template/import/WXS 导出 definition；S 增加 data、事件、组件属性、template 和 class 的 references，覆盖不完整时保守返回空 | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs)、ADR-0009（历史证据见 tag pre-slim-20261120）、ADR-0009（历史证据见 tag pre-slim-20261120） | 请求目标只接受已打开的 WXML；跨 app 不推断；插件/远程目标不猜测；partial coverage 不冒充完整 |
 | F-10 | 部分实现 | 未知字段/成员、绑定不兼容、picker/input mode、资源不存在、可证明 class 缺失诊断；修复后清除 | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、[styles_diagnostics.rs](../../crates/wxml-lsp/tests/styles_diagnostics.rs) | 不是完整模板语义检查；动态/不完整索引抑制猜测 |
 | F-11 | 已实现（受限） | WXSS/SCSS/CSS class 索引；同文件、`@import`/`@use`/`@forward`、app 样式、显式全局样式；`styleIsolation`；class 补全/hover/definition；S 增加 class references/rename | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[styles.rs](../../crates/wxml-project/tests/styles.rs)、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs)、ADR-0009（历史证据见 tag pre-slim-20261120） | 动态插值、mixin/`@extend` 生成类不猜测；预算截断标记不完整 |
