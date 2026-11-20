@@ -13,14 +13,14 @@
 
 use std::collections::BTreeSet;
 
+use crate::backend_tsgo::query::diagnostics::{
+    DiagnosticSeverity as NativeSeverity, map_diagnostics_for_file,
+};
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::strings::{
     Utf16Offset, Utf16Position, position_to_offset, utf16_to_utf8,
 };
 use wxml_backend_tsgo::native::wire::RawDiagnostic;
-use wxml_backend_tsgo::query::diagnostics::{
-    DiagnosticSeverity as NativeSeverity, map_diagnostics_for_file,
-};
 use wxml_types::{
     CapabilityStatus, Diagnostic, DiagnosticSeverity, DiagnosticsResult, SourceRange,
     SourceSnapshot,

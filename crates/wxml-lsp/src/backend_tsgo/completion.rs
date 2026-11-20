@@ -35,16 +35,16 @@
 //! expression that cannot be completed safely is an explicit
 //! `Unsupported`/`Partial` reason, never a silent empty list.
 
+use crate::backend_tsgo::query::completion::{
+    AutoImportContext, CompletionEntry as NativeCompletionEntry, CompletionQueryOptions,
+    map_completions_with,
+};
 use wxml_backend_tsgo::input::{
     AnalysisInput, DocumentRevision, ProjectKey, ProjectRoot, SnapshotRevision, SourceFile,
 };
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::session::AutoImportPreparation;
 use wxml_backend_tsgo::native::strings::{Utf16Offset, Utf16Position, offset_to_position};
-use wxml_backend_tsgo::query::completion::{
-    AutoImportContext, CompletionEntry as NativeCompletionEntry, CompletionQueryOptions,
-    map_completions_with,
-};
 use wxml_backend_tsgo::script::properties::DataRootKind;
 use wxml_backend_tsgo::script::registration::RegistrationKind;
 use wxml_backend_tsgo::script::{ScriptRequest, analyze_script};

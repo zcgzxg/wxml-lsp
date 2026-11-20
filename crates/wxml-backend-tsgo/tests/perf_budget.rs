@@ -1,6 +1,7 @@
 //! Opt-in real-engine performance budgets for the native `tsgo` path (P5).
 //!
-//! Budgets follow section 9.5 of `docs/plans/2026-11-17-rust-tsgo-migration.md`:
+//! Budgets are frozen from the historical migration plan (section 9.5); the
+//! plan is available at tag `pre-slim-20261120`:
 //!
 //! | metric | budget |
 //! | --- | --- |

@@ -43,7 +43,7 @@ P6 可在 C1 前开发绑定、作用域和映射测试，但不能将候选注�
 3. Node 所有者不修改 Rust 类型层公共入口；Rust 所有者不为适配后端再实现一套脚本上下文桥。
 4. 模块内部测试由模块所有者维护；跨模块 stdio 测试和共同验收场景由集成人组织。
 5. 接口变更注明影响的工作包，先更新契约与 mock，再让依赖方接入；重要架构变化新增 ADR。
-6. 临时实验只在仓库外运行，不在项目目录生成临时文件；临时目录不得作为项目证据的唯一来源。实验结论、环境、限制和最小可复查数据必须转写到 `docs/evidence/`，来源与许可证登记到 `docs/reference/provenance.md`；只有决定保留的实现、样本和测试进入仓库。详见 [ADR-0005](0005-self-contained-project-documentation.md)。
+6. 临时实验只在仓库外运行，不在项目目录生成临时文件；临时目录不得作为项目证据的唯一来源。实验结论、环境、限制和最小可复查数据写入 ADR、`docs/reference/` 或提交说明；来源与许可证登记到 `docs/reference/provenance.md`；只有决定保留的实现、样本和测试进入仓库。过程证据不再单独保留目录，详见 [ADR-0005](0005-self-contained-project-documentation.md) 与 [ADR-0009](0009-project-slimming.md)。
 
 ### 执行波次
 

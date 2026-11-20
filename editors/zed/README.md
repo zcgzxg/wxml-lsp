@@ -68,10 +68,10 @@ status bar shows `WXML` for `.wxml` files. If the build fails, check network
 access to the grammar repository, the `wasm32-wasip2` target, and `wasi-sdk`
 (or `WASI_SDK_PATH` pointing at the directory containing `bin/clang`).
 
-The isolated user-data-dir smoke in
-[docs/evidence/p8-zed.md](../../docs/evidence/p8-zed.md) only proves that Zed
-can load the wasm, register WXML, and start the server; it is **not** a
-substitute for this standard installation step.
+The isolated user-data-dir smoke (historical evidence at tag
+`pre-slim-20261120`) only proves that Zed can load the wasm, register WXML, and
+start the server; it is **not** a substitute for this standard installation
+step.
 
 ### Manual dev install and grammar build
 
@@ -317,8 +317,8 @@ To disable this server for WXML:
   location.
 - Spike S1 was not re-run as a runtime experiment in this task; the conclusion
   above is based on Zed 1.28.1's language-buffer registration behavior and
-  should be rechecked after Zed upgrades. See
-  [docs/evidence/p8-zed.md](../../docs/evidence/p8-zed.md).
+  should be rechecked after Zed upgrades. Historical P8 evidence is available
+  at tag `pre-slim-20261120`.
 
 ## Runtime status (2026-11-16, before Node removal)
 

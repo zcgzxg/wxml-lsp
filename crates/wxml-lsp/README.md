@@ -17,8 +17,8 @@ TS/JSON overlays) are still analyzed by the pinned native engine.
 # <package>/bin/wxml-lsp.
 wxml-lsp --stdio
 
-# Strict native: requires a verified installed package and fails closed
-# when discovery, manifest, engine or type assets are missing or mismatched.
+# Strict native: requires a verified installed layout and fails closed
+# when discovery, engine or type assets are missing or mismatched.
 wxml-lsp --stdio --backend native
 
 # In-process mock backend, no project (used by the skeleton tests).
@@ -35,10 +35,9 @@ back to `workspaceFolders[0].uri`). Discovery starts at `current_exe()` and
 requires the installed layout:
 
 ```text
-<package>/bin/wxml-lsp
-<package>/manifest.json          # schema v2, package/platform/protocol/pins
-<package>/engine/lib/tsc         # pinned 7.1.0-beta
-<package>/typings/               # pinned miniprogram-api-typings
+<root>/bin/wxml-lsp
+<root>/engine/lib/tsc            # pinned 7.1.0-beta
+<root>/typings/                  # pinned miniprogram-api-typings
 ```
 
 Discovery never reads `PATH`, the working directory or backend environment
@@ -75,7 +74,7 @@ seams used by the opt-in native gates:
 - `src/project_host.rs`: `ProjectHost`/`ProjectState`; real root, `FileId`,
   page/component views, script/JSON overlays, WXML snapshots, compiler-option
   filtering and `PreparedView` assembly.
-- `src/backend_tsgo/`: native adapter; engine discovery and manifest checks,
+- `src/backend_tsgo/`: native adapter; engine discovery and layout checks,
   pinned type-asset loading, `0700` sandbox, native session lifecycle,
   shadow/query mapping, hover/definition/diagnostics/completion/document
   symbols and event-handler facts.
@@ -102,18 +101,14 @@ RUSTDOCFLAGS="-D warnings" cargo doc -p wxml-lsp --no-deps
 ```
 
 `cargo test -p wxml-lsp` works without an installed engine; real-engine tests
-skip unless `TSGO_BIN`/`TSGO_TYPINGS_ROOT` are provided, and
-`WXML_REQUIRE_REAL_ENGINE=1` turns a missing engine into a failure instead of a
-green skip. The repository-level opt-in gate is:
+in `tests/native_lsp_document_symbols.rs` and the backend's
+`crates/wxml-backend-tsgo/tests/real_engine.rs` skip unless
+`TSGO_BIN`/`TSGO_TYPINGS_ROOT` are provided, and `WXML_REQUIRE_REAL_ENGINE=1`
+turns a missing engine into a failure instead of a green skip.
 
-```bash
-scripts/native-gates.sh --package "$HOME/.local/share/wxml-lsp/versions/<version>"
-```
-
-Native gates are an opt-in required job, not default CI. They currently cover
-40/40 cases (23 engine + 3 edit + 9 stdio + 1 perf + 1 stability + 3
-real_matrix). `q2_stability` and `performance_bench` keep their measured
-scenarios on the native path.
+The former `scripts/native-gates.sh` 40/40 gate and the Q2/performance/stdio
+suites were removed by ADR-0009; their historical versions are available at tag
+`pre-slim-20261120`. Current default CI runs the normal `check` job only.
 
 ## Limits
 
@@ -133,11 +128,11 @@ scenarios on the native path.
 
 ## Security notes
 
-- Engine discovery and manifest verification are path-pinned to the running
+- Engine discovery and layout verification are path-pinned to the running
   executable's package; `PATH`, cwd and environment cannot redirect the engine.
-- Engine and type assets are re-verified against the crate pin before a sandbox
-  or session exists; symlinks, hard links, non-regular files and platform
-  mismatches fail closed.
+- Engine and type assets are re-verified against the crate pin and
+  `assets.lock.json` before a sandbox or session exists; symlinks, hard links,
+  non-regular files and platform mismatches fail closed.
 - Each session runs in a fresh `0700` sandbox with pinned argv/env/cwd; the
   native framing layer bounds frame headers, body sizes, in-flight requests and
   callbacks, pending queues, AST nodes/strings and document symbols. Truncation

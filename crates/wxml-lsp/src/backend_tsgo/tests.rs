@@ -20,6 +20,17 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::backend_tsgo::query::completion::CompletionQueryOptions;
+use crate::backend_tsgo::query::definition::{
+    DefinitionResult as NativeDefinitionResult, DefinitionTarget as NativeDefinitionTarget,
+};
+use crate::backend_tsgo::query::documentation::{
+    DocumentationResult as NativeDocumentationResult, map_documentation,
+};
+use crate::backend_tsgo::query::hover::{HoverEvidence, HoverGap};
+use crate::backend_tsgo::query::type_info::{
+    TypeInfo as NativeTypeInfo, TypeQuality as NativeTypeQuality, map_type_query,
+};
 use wxml_backend_tsgo::config::PinnedEngine;
 use wxml_backend_tsgo::input::{AnalysisInput, SourceFile as InputSourceFile};
 use wxml_backend_tsgo::native::NativeError;
@@ -39,17 +50,6 @@ use wxml_backend_tsgo::native::strings::{
 use wxml_backend_tsgo::native::wire::{
     RawCompletionEntry, RawCompletionLabelDetails, RawCompletionList, RawDiagnostic, RawJsDocTag,
     RawPosition, RawType,
-};
-use wxml_backend_tsgo::query::completion::CompletionQueryOptions;
-use wxml_backend_tsgo::query::definition::{
-    DefinitionResult as NativeDefinitionResult, DefinitionTarget as NativeDefinitionTarget,
-};
-use wxml_backend_tsgo::query::documentation::{
-    DocumentationResult as NativeDocumentationResult, map_documentation,
-};
-use wxml_backend_tsgo::query::hover::{HoverEvidence, HoverGap};
-use wxml_backend_tsgo::query::type_info::{
-    TypeInfo as NativeTypeInfo, TypeQuality as NativeTypeQuality, map_type_query,
 };
 use wxml_backend_tsgo::script::symbols::Utf16Range;
 use wxml_backend_tsgo::shadow::mapping::SourceRange as NativeSourceRange;

@@ -4,9 +4,9 @@
 //! `TSGO_ASSET_ROOT` supplies the package root used for sandbox exclusion and
 //! the standard library. `TSGO_TYPINGS_ROOT` must point at the
 //! `miniprogram-api-typings` package directory; this gate also accepts the
-//! containing directory and normalizes it. The `native_parity` fixture harness
-//! copies the supplied directory as the package itself, so it requires the
-//! package directory (`.../node_modules/miniprogram-api-typings`).
+//! containing directory and normalizes it. Real-engine tests copy the supplied
+//! directory as the package itself, so they require the package directory
+//! (`.../node_modules/miniprogram-api-typings`).
 //!
 //! `WXML_REQUIRE_REAL_ENGINE=1|true` turns a missing or unusable input into a
 //! hard failure. Without it the gate skips and prints one line.
@@ -36,6 +36,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::backend_tsgo::query::type_info::TypeQuality as NativeTypeQuality;
 use serde_json::Map;
 use wxml_backend_tsgo::config::PinnedEngine;
 use wxml_backend_tsgo::input::{
@@ -44,7 +45,6 @@ use wxml_backend_tsgo::input::{
 };
 use wxml_backend_tsgo::native::session::{NativeSession, SessionOptions};
 use wxml_backend_tsgo::native::strings::Utf16Position;
-use wxml_backend_tsgo::query::type_info::TypeQuality as NativeTypeQuality;
 use wxml_project::ProjectPath;
 use wxml_types::{
     Backend, CapabilityStatus, DiagnosticSeverity, DiagnosticsRequest, HoverRequest,

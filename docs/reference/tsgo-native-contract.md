@@ -1,8 +1,8 @@
 # tsgo 原生后端 F0/F1 合同
 
-**状态：accepted / frozen（2026-11-20，P7 删除完成后最终口径）。** F0 原生兼容合同与 F1 Backend 语义合同已随 ADR-0008 在 owner scope waiver 下最终关闭并冻结为 native 默认后端的现行合同；维护者此前对 `7.1.0-beta` 的条件接受（§2.1）是冻结基线的一部分。本文 2026-11-17 的 draft 表述和 §12 的 `planned` 测试坐标保留为历史/冻结计划，不再表示当前交付状态；当前实现与验收见 ADR-0008、`docs/reference/tsgo-delivery-contract.md` §9.5 与 `docs/evidence/2026-11-20-tsgo-p7-final-docs.md`。本文不修改任何源码、测试、Cargo、计划、ADR 或其它文档。
+**状态：accepted / frozen（2026-11-20，P7 删除完成后最终口径）。** F0 原生兼容合同与 F1 Backend 语义合同已随 ADR-0008 在 owner scope waiver 下最终关闭并冻结为 native 默认后端的现行合同；维护者此前对 `7.1.0-beta` 的条件接受（§2.1）是冻结基线的一部分。本文 2026-11-17 的 draft 表述和 §12 的 `planned` 测试坐标保留为历史/冻结计划，不再表示当前交付状态；当前实现与验收见 ADR-0008 与 [ADR-0009](../adr/0009-project-slimming.md)；交付/测试合同和过程证据已随 ADR-0009 删除，历史版本见 tag `pre-slim-20261120`。本文不修改任何源码、测试、Cargo、计划、ADR 或其它文档。
 
-更新日期：2026-11-20（原 2026-11-17）。适用基线：ADR-0008（accepted (native default; Node removed)；P7 删除完成）、`docs/plans/2026-11-17-rust-tsgo-migration.md` 第 3–4、5、6 节、`docs/evidence/2026-11-17-tsgo-native-api-spike.md`（下称“P1-A 证据”；其 §15 为 2026-11-17 P2 追加探针 B-02/B-03/B-04/B-12）。
+更新日期：2026-11-20（原 2026-11-17）。适用基线：ADR-0008（accepted (native default; Node removed)；P7 删除完成）、[ADR-0009](../adr/0009-project-slimming.md)；历史迁移计划与 P1-A 证据见 tag `pre-slim-20261120`（原 `docs/plans/2026-11-17-rust-tsgo-migration.md` 第 3–4、5、6 节、`docs/evidence/2026-11-17-tsgo-native-api-spike.md`）。
 
 ## 1. 状态、权威顺序与证据边界
 
@@ -783,7 +783,7 @@ Hover 由三部分组成，顺序固定：
 | F1-26 | cache invalidation key | `crates/wxml-backend-tsgo/tests/f1_session.rs` | `cache_keys_include_epoch_snapshot_and_dependency_fingerprint` | planned |
 | F1-27 | rename 编辑复检 | `crates/wxml-backend-tsgo/tests/f1_query.rs` | `rename_edits_revalidate_before_publication` | planned |
 
-LSP 端到端挂点：`crates/wxml-lsp/tests/native_parity.rs` 覆盖 hover/diagnostics/definition/completion/references/rename 的原文件范围、版本屏障与安全拒绝；它不能替代上述真实原生合同测试，fake peer 也不能替代真实引擎门禁。
+LSP 端到端挂点：`crates/wxml-lsp/tests/native_lsp_document_symbols.rs`、`crates/wxml-lsp/tests/lsp.rs` 与 `crates/wxml-backend-tsgo/tests/real_engine.rs` 覆盖当前可执行的 native 行为；`native_parity` 与 `stdio_type_loop` 已随 ADR-0009 删除，历史版本见 tag `pre-slim-20261120`。这些测试不能替代真实原生合同探针。
 
 2026-11-17 的 P2 追加探针只关闭了 B-02/B-03/B-04/B-12 的**未知性**（并记录了 B-02 的负结果），**没有**直接把这些 ID 变成已实现测试；不得因探针通过而删除或降级任何 ID。表中 `planned` 是 2026-11-17 的冻结坐标（历史），2026-11-20 P7 删除验收后的当前覆盖见实际测试与 native gates。
 

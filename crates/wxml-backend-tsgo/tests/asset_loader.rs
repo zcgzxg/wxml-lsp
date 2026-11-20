@@ -6,16 +6,11 @@
 //!
 //! The three real package tests are `#[ignore]`d and only run with
 //! `-- --ignored`. They read roots from `TSGO_ASSET_ROOT` (engine `lib` or
-//! `engine/lib` plus `typings/`) or `TSGO_BIN` plus `TSGO_TYPINGS_ROOT`, falling
-//! back to the committed `miniprogram-api-typings@5.3.1` fixture at
-//! `crates/wxml-delivery/tests/fixtures/miniprogram-api-typings-5.3.1`. The
-//! fixture is staged below the test temp base into the canonical
-//! `<root>/miniprogram-api-typings` layout. `WXML_REQUIRE_REAL_ENGINE=1` or
-//! `WXML_REQUIRE_REAL_ENGINE=true` (case-insensitive) turns a missing real root
-//! into a hard failure instead of a skip.
-//!
-//! [`repository_typings_runtime_closure_matches_821c93_stdlib_is_real_gate_only`]
-//! is also `#[ignore]`d because it hashes the committed fixture directly. When
+//! `engine/lib` plus `typings/`) or `TSGO_BIN` plus `TSGO_TYPINGS_ROOT`. The
+//! configured typings package is staged below the test temp base into the
+//! canonical `<root>/miniprogram-api-typings` layout. `WXML_REQUIRE_REAL_ENGINE=1`
+//! or `WXML_REQUIRE_REAL_ENGINE=true` (case-insensitive) turns a missing real
+//! root into a hard failure instead of a skip. When
 //! run explicitly with `--ignored`, it verifies the 20-file/2,522,752 B/`821c93…`
 //! typings closure with an independent walk and digest implementation without
 //! calling the loader; a missing fixture is a hard failure there. The default
@@ -818,90 +813,6 @@ fn rejects_non_regular_files_in_the_typings_package() {
 }
 
 // ---------------------------------------------------------------------------
-// Independent repository typings digest check (no loader call).
-// ---------------------------------------------------------------------------
-
-fn repository_typings_package() -> PathBuf {
-    typings_fixture::fixture_package()
-}
-
-fn collect_runtime_declarations(
-    root: &Path,
-    directory: &Path,
-    files: &mut Vec<(String, String, u64)>,
-) {
-    let mut entries: Vec<PathBuf> = fs::read_dir(directory)
-        .expect("repository typings directory")
-        .map(|entry| entry.expect("repository typings entry").path())
-        .collect();
-    entries.sort();
-    for path in entries {
-        let metadata = fs::symlink_metadata(&path).expect("repository typings metadata");
-        assert!(
-            !metadata.file_type().is_symlink(),
-            "repository typings fixture contains a symlink: {}",
-            path.display()
-        );
-        if metadata.is_dir() {
-            collect_runtime_declarations(root, &path, files);
-            continue;
-        }
-        assert!(
-            metadata.is_file(),
-            "repository typings fixture contains a non-regular file: {}",
-            path.display()
-        );
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("repository typings name");
-        if !name.ends_with(".d.ts") {
-            continue;
-        }
-        let relative = path
-            .strip_prefix(root)
-            .expect("repository typings path stays below its root")
-            .to_str()
-            .expect("repository typings path is UTF-8")
-            .to_owned();
-        let bytes = fs::read(&path).expect("repository typings bytes");
-        let size = u64::try_from(bytes.len()).expect("repository typings size");
-        files.push((relative, sha(&bytes), size));
-    }
-}
-
-#[ignore = "requires repository node_modules fixture; run with --ignored"]
-#[test]
-fn repository_typings_runtime_closure_matches_821c93_stdlib_is_real_gate_only() {
-    let package = repository_typings_package();
-    assert!(
-        package.is_dir(),
-        "committed typings fixture is missing at {}; restore it or set TSGO_TYPINGS_ROOT \
-         (the standard-library digest 5e126e… is verified only by the opt-in real gate)",
-        package.display()
-    );
-    let mut files = Vec::new();
-    collect_runtime_declarations(&package, &package, &mut files);
-    assert_eq!(files.len(), 20, "runtime typings closure file count");
-    let total: u64 = files.iter().map(|(_, _, size)| *size).sum();
-    assert_eq!(total, 2_522_752, "runtime typings closure bytes");
-
-    files.sort_by(|left, right| left.0.cmp(&right.0));
-    let mut hasher = Sha256::new();
-    for (relative, digest, _) in &files {
-        hasher.update(digest.as_bytes());
-        hasher.update(b"  ");
-        hasher.update(relative.as_bytes());
-        hasher.update(b"\n");
-    }
-    let digest = hex(&hasher.finalize());
-    assert_eq!(
-        digest, "821c93bfdf41324faa7ee44011a963993cfecc3b4ea9e41cd834e894755e9ba9",
-        "runtime typings bundle digest must match the pinned value"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // Opt-in real pinned package gates.
 // ---------------------------------------------------------------------------
 
@@ -975,11 +886,11 @@ fn real_roots() -> Option<RealRoots> {
         assert!(
             !required,
             "real type-asset roots are required when WXML_REQUIRE_REAL_ENGINE is 1 or true; \
-             set TSGO_ASSET_ROOT or TSGO_BIN (TSGO_TYPINGS_ROOT overrides the committed fixture)"
+             set TSGO_ASSET_ROOT or TSGO_BIN (TSGO_TYPINGS_ROOT overrides typings)"
         );
         eprintln!(
             "real type-asset loader gate skipped: set TSGO_ASSET_ROOT or TSGO_BIN \
-             (TSGO_TYPINGS_ROOT overrides the committed typings fixture; or \
+             (TSGO_TYPINGS_ROOT overrides typings; or \
              WXML_REQUIRE_REAL_ENGINE=1/true for a hard gate)"
         );
     }

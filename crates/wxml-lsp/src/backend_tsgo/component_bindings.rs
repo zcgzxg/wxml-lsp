@@ -19,6 +19,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::backend_tsgo::query::type_info::{TypeQuality, TypeResult, map_type_query};
 use wxml_backend_tsgo::input::{
     AnalysisInput, DocumentRevision, ProjectKey, ProjectRoot, SnapshotRevision, SourceFile,
 };
@@ -27,7 +28,6 @@ use wxml_backend_tsgo::native::session::TypeQuery;
 use wxml_backend_tsgo::native::strings::{
     Utf16Offset, Utf16Position, offset_to_position, utf16_len,
 };
-use wxml_backend_tsgo::query::type_info::{TypeQuality, TypeResult, map_type_query};
 use wxml_backend_tsgo::script::properties::PropertyFact;
 use wxml_backend_tsgo::script::registration::RegistrationKind;
 use wxml_backend_tsgo::script::{ScriptRequest, analyze_script};

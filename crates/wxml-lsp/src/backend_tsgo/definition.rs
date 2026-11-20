@@ -14,11 +14,11 @@
 
 use std::collections::BTreeSet;
 
+use crate::backend_tsgo::query::definition::DefinitionTarget as NativeDefinitionTarget;
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::strings::{
     Utf16Offset, Utf16Position, offset_to_position, utf16_to_utf8,
 };
-use wxml_backend_tsgo::query::definition::DefinitionTarget as NativeDefinitionTarget;
 use wxml_types::{BackendError, CapabilityStatus, DefinitionResult, FileId, SourceLocation};
 
 use crate::backend_tsgo::input::RequestPlan;

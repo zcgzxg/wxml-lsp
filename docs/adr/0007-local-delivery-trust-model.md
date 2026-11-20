@@ -8,6 +8,8 @@
 
 **2026-11-17 后续**：[ADR-0008](0008-rust-tsgo-no-node-backend.md)（2026-11-20 已在 owner scope waiver 下最终关闭为 accepted，native 默认；P7 删除完成，Node removed）替代 Node 安装前置与相关包字段；本文的信任、离线、原子安装与回滚规则继续有效。
 
+**2026-11-20 后续**：安装机制已由 [ADR-0009](0009-project-slimming.md) 替代。`wxml-delivery` 及其 manifest v2、`versions/<version>` + `current` 布局已删除；安装改由 `scripts/install-native.sh` 完成，布局为 `<root>/bin/wxml-lsp`、`<root>/engine/lib/tsc`、`<root>/typings/`。本文保留的运行时信任边界、引擎/类型资产 pin 和 fail-closed 原则仍然有效；原子升级、回滚、归档缓存和许可证生成不再是当前能力。
+
 ## Context
 
 项目只面向本人在 Linux 上使用 Zed，当前没有 Marketplace 发布、官方下载域名或服务器自动安装服务。Zed 扩展存在两种可选的上游交付方式：
@@ -21,7 +23,7 @@
 
 ### 扩展边界
 
-Zed 扩展**不下载、不解包、不安装**语言服务器。它只接受宿主 OS 的绝对 `WXML_LSP_BIN`，校验绝对路径、`..`、存在性和可执行性，然后启动 `wxml-lsp --stdio`。没有 worktree/PATH 回退；无效值直接报错。安装器通过打印稳定的 `<root>/current/bin/wxml-lsp` 路径把已验证产物交给扩展。
+Zed 扩展**不下载、不解包、不安装**语言服务器。它只接受宿主 OS 的绝对 `WXML_LSP_BIN`，校验绝对路径、`..`、存在性和可执行性，然后启动 `wxml-lsp --stdio`。没有 worktree/PATH 回退；无效值直接报错。安装脚本通过打印稳定的 `<root>/bin/wxml-lsp` 路径把已验证产物交给扩展。
 
 ### 默认关闭远程获取
 
@@ -42,7 +44,7 @@ Zed 扩展**不下载、不解包、不安装**语言服务器。它只接受宿
 
 ### 原子安装与只读命令
 
-安装/升级/回退先在同文件系统 `tmp/` 解包和完整校验，再执行 staged `bin/wxml-lsp --version` 与 Node 后端依赖检查；只有全部通过才 `rename` 到 `versions/<version>` 并原子替换 `current`。失败不会留下半安装或不可用的 `current`。`list`、`current`、`verify`、`env` 不创建 root、不 chmod 已有目录、不创建锁文件。
+当前安装脚本先下载到临时目录并校验大小与 SHA-256，再解包到 `<root>` 的暂存位置，最后安装 `bin/wxml-lsp`、`engine/lib/tsc` 和 `typings/`。它不再维护 `versions/<version>`、`current`、原子升级或回滚；重复运行会覆盖同一布局。失败时不会留下不可用的 `bin/wxml-lsp`，但也不提供旧版本自动恢复。
 
 `upgrade` 默认拒绝降级；降级只能通过显式 `rollback --to`。同版本不同内容不会被静默当作已安装，而是要求用户明确处理。
 
@@ -72,14 +74,15 @@ Zed 扩展**不下载、不解包、不安装**语言服务器。它只接受宿
 ## Consequences
 
 - 用户必须显式运行安装/升级/回退，并自行把 `WXML_LSP_BIN` 导出给 Zed；这是有意的安全边界。
-- 安装器是一个独立 Rust 二进制，需要系统 Node.js（类型功能）和 Linux/Unix symlink 语义；Windows/macOS 未验证。
-- 每次合并后必须重建 release；manifest/index/checksum 与具体字节绑定。
+- 安装器是一个 shell 脚本，依赖 `curl`、`tar`、`python3` 和 Linux/Unix 语义；Windows/macOS 未验证。它不依赖 Node。
+- 每次合并后必须重建 release；`assets.lock.json` 的资产版本、大小和 SHA-256 与具体字节绑定。
 - 未实现发布者签名是明确的遗留风险，不能把 TLS+checksum 宣称为完整供应链安全。
 - 未来若引入签名，需新增 ADR 并更新安装器、manifest/index schema 和测试；不得静默改变信任根。
 
 ## References
 
-- [wxml-delivery README](../../crates/wxml-delivery/README.md)
+- [ADR-0009 项目瘦身](0009-project-slimming.md)
+- [安装脚本](../../scripts/install-native.sh)
 - [ADR-0001 分层语言服务](0001-layered-language-service-architecture.md)
 - [ADR-0003 版本化文档同步](0003-versioned-document-synchronization.md)
 - [ADR-0006 显式小程序根](0006-explicit-mini-program-roots.md)

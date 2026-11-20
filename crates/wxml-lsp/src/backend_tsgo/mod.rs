@@ -102,6 +102,7 @@ pub(crate) mod event_completion;
 pub(crate) mod hover;
 pub(crate) mod input;
 pub(crate) mod mapping;
+pub(crate) mod query;
 pub(crate) mod sandbox;
 pub(crate) mod session;
 pub(crate) mod symbols;

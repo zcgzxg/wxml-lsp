@@ -1,21 +1,22 @@
 //! Pinned native engine discovery from the installed package tree.
 //!
 //! Discovery starts at [`std::env::current_exe`], resolves the real path and
-//! requires the layout `<package>/bin/wxml-lsp`, `<package>/manifest.json` and
-//! `<package>/engine/lib/tsc`. It never reads `PATH`, the process working
-//! directory, backend environment variables or a package outside the running
-//! executable's own tree, and it never falls back to the Node backend.
+//! requires the native-only layout `<root>/bin/wxml-lsp`,
+//! `<root>/engine/lib/tsc` and `<root>/typings`. The package root plus the
+//! `bin`, `engine`, `engine/lib` and `typings` directories must be real
+//! directories with safe modes, and the engine must be a regular `0755` file
+//! whose size is read from its metadata and whose SHA-256 matches the built-in
+//! pin. It never reads `PATH`, the process working directory, backend
+//! environment variables or a package outside the running executable's own
+//! tree, and it never falls back to another backend.
 //!
-//! This is the P6-4a scaffold plus the P6-4b asset handoff. It validates the
-//! manifest identity that `wxml-lsp` can check without the shared manifest
-//! crate. Type assets are not read here; the adapter loads and verifies the
-//! returned roots before it creates a sandbox or session.
+//! Type assets are not read here; the adapter loads and verifies the returned
+//! `engine/lib` and `typings` roots before it creates a sandbox or session.
 
-use std::fs::{self, File};
-use std::io::{self, Read};
-use std::path::{Component, Path, PathBuf};
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 
-use serde::Deserialize;
 use thiserror::Error;
 
 use wxml_backend_tsgo::config::PinnedEngine;
@@ -24,44 +25,26 @@ use wxml_backend_tsgo::native::supervisor::{SpawnError, verify_engine_executable
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
-/// Delivery package name recorded by the native manifest.
-///
-/// These manifest-schema constants mirror `wxml-delivery` until the shared
-/// manifest crate planned as P6-4 4-1 exists. P6-4a must not add the full
-/// delivery crate to `wxml-lsp`: it would pull in network and archive
-/// dependencies the server does not need.
-const PACKAGE_NAME: &str = "wxml-lsp";
-/// The only native platform covered by the frozen delivery contract.
-const PLATFORM: &str = "linux-x86_64";
-/// Native manifest schema version.
-const MANIFEST_SCHEMA_V2: u32 = 2;
-/// Rust-to-engine protocol version accepted by this build.
-const NATIVE_PROTOCOL_VERSION: u64 = 2;
-/// Maximum accepted `manifest.json` size.
-const MAX_MANIFEST_BYTES: u64 = 4 * 1024 * 1024;
-/// Exact POSIX mode required for `manifest.json`.
-const MANIFEST_MODE: u32 = 0o644;
 /// Exact POSIX mode required for the pinned engine executable.
 const ENGINE_MODE: u32 = 0o755;
 
-/// A package tree that passed P6-4a engine discovery.
+/// A package tree that passed pinned engine discovery.
 ///
-/// This is **not** full install verification. The strict manifest projection
-/// checks schema, package, version, platform, protocol and the pinned engine
-/// identity. `typeAssets`, `binaries` and `builtAt` are validated by the
-/// delivery manifest reader before an install can become `current`; the
-/// runtime independently verifies the standard-library and typings bytes
-/// against the crate pin in [`TsgoBackendAdapter::with_install`](super::TsgoBackendAdapter::with_install).
+/// This is **not** full install verification. Discovery checks the native-only
+/// layout and requires `<root>/engine/lib/tsc` to be a regular `0755` file whose
+/// SHA-256 matches the built-in pin. The runtime independently verifies the
+/// standard-library and typings bytes against the crate pin in
+/// [`TsgoBackendAdapter::with_install`](super::TsgoBackendAdapter::with_install).
 /// `standard_lib_root` and `typings_root` are not read during discovery.
 #[derive(Debug, Clone)]
 pub(crate) struct DiscoveredInstall {
-    /// Canonical package root (`<install>/versions/<version>`).
+    /// Canonical package root (`<root>`).
     pub(crate) package_root: PathBuf,
-    /// Canonical `<package>/engine/lib/tsc`.
+    /// Canonical `<root>/engine/lib/tsc`.
     pub(crate) engine: PathBuf,
-    /// `<package>/engine/lib`; verified against the built-in pin by the adapter.
+    /// `<root>/engine/lib`; verified against the built-in pin by the adapter.
     pub(crate) standard_lib_root: PathBuf,
-    /// `<package>/typings`; verified against the built-in pin by the adapter.
+    /// `<root>/typings`; verified against the built-in pin by the adapter.
     pub(crate) typings_root: PathBuf,
 }
 
@@ -86,8 +69,8 @@ pub enum EngineDiscoveryError {
     /// The running executable could not be canonicalized.
     #[error("the running executable cannot be resolved to a real path")]
     UnresolvableExecutable,
-    /// The executable is not laid out as `<package>/bin/wxml-lsp`.
-    #[error("the running executable is not installed as <package>/bin/wxml-lsp")]
+    /// The executable is not laid out as `<root>/bin/wxml-lsp`.
+    #[error("the running executable is not installed as <root>/bin/wxml-lsp")]
     NotInstalled,
     /// A required package directory is missing, a symlink or unsafe.
     #[error("the installed package layout is unsafe: {reason}")]
@@ -95,19 +78,7 @@ pub enum EngineDiscoveryError {
         /// Stable invariant that failed.
         reason: &'static str,
     },
-    /// `package/manifest.json` is missing, unreadable or unsafe.
-    #[error("the installed package manifest is unavailable: {reason}")]
-    ManifestUnavailable {
-        /// Stable invariant that failed.
-        reason: &'static str,
-    },
-    /// The manifest parses but does not match this build's pinned identity.
-    #[error("the installed package manifest does not match this build: {field}")]
-    ManifestMismatch {
-        /// Manifest field or shape that failed.
-        field: &'static str,
-    },
-    /// The manifest's engine file entry is absent.
+    /// The pinned engine file is absent.
     #[error("the pinned native engine is missing")]
     EngineMissing,
     /// The engine is a symlink, a non-file or has an unsafe mode.
@@ -116,13 +87,13 @@ pub enum EngineDiscoveryError {
         /// Stable invariant that failed.
         reason: &'static str,
     },
-    /// The engine bytes, size or digest differ from the manifest.
-    #[error("the pinned native engine does not match its manifest: {reason}")]
+    /// The engine bytes, size or digest differ from the pinned artifact.
+    #[error("the pinned native engine does not match the pinned artifact: {reason}")]
     EngineArtifactMismatch {
         /// Stable invariant that failed.
         reason: &'static str,
     },
-    /// The engine path is absolute, contains `..` or resolves outside the package.
+    /// The engine resolves outside the package root.
     #[error("the pinned native engine escapes the package root")]
     EngineEscapesPackage,
 }
@@ -132,8 +103,8 @@ pub enum EngineDiscoveryError {
 /// # Errors
 ///
 /// Returns a typed discovery error and no fallback backend when the executable
-/// is not installed, the manifest is missing or mismatched, or the engine is
-/// missing, unsafe or not byte-identical to the pinned artifact.
+/// is not installed, the layout is unsafe, or the engine is missing, unsafe or
+/// not byte-identical to the pinned artifact.
 pub(crate) fn discover_from_current_exe() -> Result<DiscoveredInstall, EngineDiscoveryError> {
     let executable =
         std::env::current_exe().map_err(|_| EngineDiscoveryError::UnresolvableExecutable)?;
@@ -151,7 +122,7 @@ pub(crate) fn discover_at(executable: &Path) -> Result<DiscoveredInstall, Engine
 /// Production callers always use [`discover_from_current_exe`] and therefore
 /// the pinned executable digest. The substitution lets unit tests build a
 /// small fake package tree without a 24 MiB engine artifact while still
-/// exercising every manifest, layout and digest check.
+/// exercising every layout and digest check.
 #[cfg(test)]
 pub(crate) fn discover_at_with_engine_sha256(
     executable: &Path,
@@ -184,23 +155,17 @@ fn discover(
     }
 
     validate_package_directory(package_root)?;
-    for relative in ["bin", "engine", "engine/lib"] {
+    for relative in ["bin", "engine", "engine/lib", "typings"] {
         validate_package_directory(&package_root.join(relative))?;
     }
 
-    let manifest = read_manifest(package_root)?;
-    validate_manifest(&manifest, expected_engine_sha256)?;
-
     let pin = PinnedEngine::pinned();
-    let engine_entry = manifest
-        .files
-        .iter()
-        .find(|file| file.path == pin.executable())
-        .ok_or(EngineDiscoveryError::EngineMissing)?;
+    let engine_relative = pin.executable();
+    let engine_size = engine_file_size(package_root, engine_relative)?;
     let engine = verify_engine_file(
         package_root,
-        pin.executable(),
-        engine_entry.size,
+        engine_relative,
+        engine_size,
         expected_engine_sha256,
     )?;
 
@@ -210,6 +175,19 @@ fn discover(
         standard_lib_root: package_root.join("engine/lib"),
         typings_root: package_root.join("typings"),
     })
+}
+
+/// Reads the engine size from the file itself.
+fn engine_file_size(package_root: &Path, relative: &str) -> Result<u64, EngineDiscoveryError> {
+    match fs::metadata(package_root.join(relative)) {
+        Ok(metadata) => Ok(metadata.len()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Err(EngineDiscoveryError::EngineMissing)
+        }
+        Err(_) => Err(EngineDiscoveryError::EngineUnsafe {
+            reason: "engine metadata is unreadable",
+        }),
+    }
 }
 
 fn validate_package_directory(path: &Path) -> Result<(), EngineDiscoveryError> {
@@ -245,182 +223,6 @@ fn validate_package_directory(path: &Path) -> Result<(), EngineDiscoveryError> {
     Ok(())
 }
 
-fn read_manifest(package_root: &Path) -> Result<ManifestProjection, EngineDiscoveryError> {
-    let path = package_root.join("manifest.json");
-    let metadata = fs::symlink_metadata(&path).map_err(|error| {
-        let reason = if error.kind() == io::ErrorKind::NotFound {
-            "manifest.json is missing"
-        } else {
-            "manifest.json is unreadable"
-        };
-        EngineDiscoveryError::ManifestUnavailable { reason }
-    })?;
-    if metadata.file_type().is_symlink() {
-        return Err(EngineDiscoveryError::ManifestUnavailable {
-            reason: "manifest.json must not be a symlink",
-        });
-    }
-    if !metadata.is_file() {
-        return Err(EngineDiscoveryError::ManifestUnavailable {
-            reason: "manifest.json must be a regular file",
-        });
-    }
-    if file_mode(&metadata) != MANIFEST_MODE {
-        return Err(EngineDiscoveryError::ManifestUnavailable {
-            reason: "manifest.json mode must be 0644",
-        });
-    }
-    if metadata.len() > MAX_MANIFEST_BYTES {
-        return Err(EngineDiscoveryError::ManifestUnavailable {
-            reason: "manifest.json exceeds the 4 MiB limit",
-        });
-    }
-
-    let file = File::open(&path).map_err(|_| EngineDiscoveryError::ManifestUnavailable {
-        reason: "manifest.json is unreadable",
-    })?;
-    let mut bytes = Vec::new();
-    file.take(MAX_MANIFEST_BYTES + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| EngineDiscoveryError::ManifestUnavailable {
-            reason: "manifest.json is unreadable",
-        })?;
-    let length = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-    if length > MAX_MANIFEST_BYTES {
-        return Err(EngineDiscoveryError::ManifestUnavailable {
-            reason: "manifest.json exceeds the 4 MiB limit",
-        });
-    }
-
-    parse_manifest(&bytes)
-}
-
-fn parse_manifest(bytes: &[u8]) -> Result<ManifestProjection, EngineDiscoveryError> {
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes).map_err(|_| EngineDiscoveryError::ManifestUnavailable {
-            reason: "manifest.json is not valid JSON",
-        })?;
-    if value
-        .get("schemaVersion")
-        .and_then(serde_json::Value::as_u64)
-        != Some(u64::from(MANIFEST_SCHEMA_V2))
-    {
-        return Err(EngineDiscoveryError::ManifestMismatch {
-            field: "schemaVersion",
-        });
-    }
-    serde_json::from_value(value).map_err(|_| EngineDiscoveryError::ManifestMismatch {
-        field: "manifest shape",
-    })
-}
-
-fn validate_manifest(
-    manifest: &ManifestProjection,
-    expected_engine_sha256: &str,
-) -> Result<(), EngineDiscoveryError> {
-    let pin = PinnedEngine::pinned();
-
-    require(manifest.package == PACKAGE_NAME, "package")?;
-    require(
-        manifest.package_version == crate::version(),
-        "packageVersion",
-    )?;
-    require(manifest.platform == PLATFORM, "platform")?;
-    require(
-        manifest.protocol_version == NATIVE_PROTOCOL_VERSION,
-        "protocolVersion",
-    )?;
-
-    let engine = &manifest.engine;
-    require(engine.name == "typescript", "engine.name")?;
-    require(engine.version == pin.version(), "engine.version")?;
-    require(
-        engine.source_commit == pin.git_head(),
-        "engine.sourceCommit",
-    )?;
-    require(engine.distribution == pin.package(), "engine.distribution")?;
-    require(
-        engine.distribution_integrity == pin.sri(),
-        "engine.distributionIntegrity",
-    )?;
-    require(
-        engine.distribution_sha256 == pin.tarball_sha256(),
-        "engine.distributionSha256",
-    )?;
-    require(
-        engine.distribution_unpacked_size == pin.unpacked_bytes(),
-        "engine.distributionUnpackedSize",
-    )?;
-    require(
-        engine.distribution_file_count == u64::from(pin.file_count()),
-        "engine.distributionFileCount",
-    )?;
-    require(
-        engine.api_schema_version == u64::from(pin.ast_protocol_version()),
-        "engine.apiSchemaVersion",
-    )?;
-    require(
-        engine.ast_header_bytes == u64::try_from(pin.ast_header_bytes()).unwrap_or(u64::MAX),
-        "engine.astHeaderBytes",
-    )?;
-    require(engine.license == "Apache-2.0", "engine.license")?;
-
-    if engine.binary != pin.executable() {
-        return if engine_path_escapes(&engine.binary) {
-            Err(EngineDiscoveryError::EngineEscapesPackage)
-        } else {
-            Err(EngineDiscoveryError::ManifestMismatch {
-                field: "engine.binary",
-            })
-        };
-    }
-
-    let only_version_argument = engine.probe.args.len() == 1
-        && engine
-            .probe
-            .args
-            .first()
-            .is_some_and(|arg| arg == "--version");
-    require(only_version_argument, "engine.probe.args")?;
-    let expected_prefix = pin.version_line().strip_suffix(pin.version()).unwrap_or("");
-    require(
-        engine.probe.expect_prefix == expected_prefix,
-        "engine.probe.expectPrefix",
-    )?;
-
-    let mut engine_entry = None;
-    for file in &manifest.files {
-        if file.path == pin.executable() && engine_entry.replace(file).is_some() {
-            return Err(EngineDiscoveryError::ManifestMismatch { field: "files" });
-        }
-    }
-    let engine_entry = engine_entry.ok_or(EngineDiscoveryError::EngineMissing)?;
-    require(engine_entry.mode == "0755", "files[engine].mode")?;
-    require(
-        engine_entry.sha256 == expected_engine_sha256,
-        "files[engine].sha256",
-    )?;
-    require(engine_entry.size > 0, "files[engine].size")?;
-
-    Ok(())
-}
-
-fn engine_path_escapes(path: &str) -> bool {
-    if path.is_empty()
-        || path.starts_with('/')
-        || path.contains('\\')
-        || path.chars().any(char::is_control)
-    {
-        return true;
-    }
-    Path::new(path).components().any(|component| {
-        matches!(
-            component,
-            Component::CurDir | Component::ParentDir | Component::RootDir | Component::Prefix(_)
-        )
-    })
-}
-
 fn verify_engine_file(
     package_root: &Path,
     relative: &str,
@@ -454,7 +256,7 @@ fn verify_engine_file(
     }
     if metadata.len() != expected_size {
         return Err(EngineDiscoveryError::EngineArtifactMismatch {
-            reason: "engine size differs from the manifest",
+            reason: "engine size differs from the pinned size",
         });
     }
 
@@ -478,19 +280,11 @@ const fn map_spawn_error(error: &SpawnError) -> EngineDiscoveryError {
             reason: "engine executable failed Unix safety checks",
         },
         SpawnError::ExecutableMismatch => EngineDiscoveryError::EngineArtifactMismatch {
-            reason: "engine SHA-256 differs from the manifest",
+            reason: "engine SHA-256 differs from the pinned digest",
         },
         _ => EngineDiscoveryError::EngineArtifactMismatch {
             reason: "engine executable could not be verified",
         },
-    }
-}
-
-const fn require(condition: bool, field: &'static str) -> Result<(), EngineDiscoveryError> {
-    if condition {
-        Ok(())
-    } else {
-        Err(EngineDiscoveryError::ManifestMismatch { field })
     }
 }
 
@@ -504,82 +298,6 @@ fn file_mode(_metadata: &fs::Metadata) -> u32 {
     0
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ManifestProjection {
-    schema_version: u32,
-    package: String,
-    package_version: String,
-    platform: String,
-    protocol_version: u64,
-    built_at: String,
-    engine: EngineProjection,
-    type_assets: Vec<TypeAssetProjection>,
-    binaries: Vec<BinaryProjection>,
-    files: Vec<FileProjection>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct EngineProjection {
-    name: String,
-    version: String,
-    source_commit: String,
-    distribution: String,
-    distribution_url: String,
-    distribution_integrity: String,
-    distribution_sha256: String,
-    distribution_size: u64,
-    distribution_file_count: u64,
-    distribution_unpacked_size: u64,
-    api_schema_version: u64,
-    ast_header_bytes: u64,
-    license: String,
-    license_files: Vec<String>,
-    binary: String,
-    probe: ProbeProjection,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct ProbeProjection {
-    args: Vec<String>,
-    expect_prefix: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct TypeAssetProjection {
-    name: String,
-    version: String,
-    license: String,
-    root: String,
-    include: Vec<String>,
-    file_count: u64,
-    sha256: String,
-    license_files: Vec<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct BinaryProjection {
-    kind: String,
-    name: String,
-    path: String,
-    version: String,
-    protocol_version: Option<u64>,
-    sha256: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct FileProjection {
-    path: String,
-    sha256: String,
-    size: u64,
-    mode: String,
-}
-
 #[cfg(all(test, unix))]
 mod tests {
     #![allow(clippy::expect_used, clippy::unwrap_used)]
@@ -588,7 +306,6 @@ mod tests {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use serde_json::json;
     use sha2::{Digest, Sha256};
 
     use super::*;
@@ -606,7 +323,7 @@ mod tests {
             assert!(base.is_absolute(), "WXML_TEST_TMPDIR must be absolute");
             fs::create_dir_all(&base).expect("test base");
             let path = base.join(format!(
-                "wxml-lsp-p64a-{label}-{}-{}",
+                "wxml-lsp-engine-{label}-{}-{}",
                 std::process::id(),
                 COUNTER.fetch_add(1, Ordering::Relaxed)
             ));
@@ -640,6 +357,7 @@ mod tests {
                 package.join("bin"),
                 package.join("engine"),
                 package.join("engine/lib"),
+                package.join("typings"),
                 package.join("typings/miniprogram-api-typings"),
             ] {
                 fs::create_dir_all(&directory).expect("package directory");
@@ -655,81 +373,19 @@ mod tests {
             fs::write(&engine, engine_bytes).expect("engine");
             set_mode(&engine, 0o755);
 
-            let fake = Self {
+            Self {
                 root,
                 package,
                 executable,
                 engine,
                 engine_sha: sha256_hex(engine_bytes),
                 engine_size: u64::try_from(engine_bytes.len()).expect("engine size"),
-            };
-            fake.write_manifest_value(&fake.manifest_value());
-            fake
-        }
-
-        fn manifest_value(&self) -> serde_json::Value {
-            manifest_value(&self.engine_sha, self.engine_size)
-        }
-
-        fn write_manifest_value(&self, value: &serde_json::Value) {
-            let path = self.package.join("manifest.json");
-            let bytes = serde_json::to_vec_pretty(value).expect("manifest json");
-            fs::write(&path, bytes).expect("manifest");
-            set_mode(&path, 0o644);
+            }
         }
 
         fn discover(&self) -> Result<DiscoveredInstall, EngineDiscoveryError> {
             discover_at_with_engine_sha256(&self.executable, &self.engine_sha)
         }
-    }
-
-    fn manifest_value(engine_sha: &str, engine_size: u64) -> serde_json::Value {
-        let pin = PinnedEngine::pinned();
-        json!({
-            "schemaVersion": MANIFEST_SCHEMA_V2,
-            "package": PACKAGE_NAME,
-            "packageVersion": env!("CARGO_PKG_VERSION"),
-            "platform": PLATFORM,
-            "protocolVersion": NATIVE_PROTOCOL_VERSION,
-            "builtAt": "2026-11-18T00:00:00Z",
-            "engine": {
-                "name": "typescript",
-                "version": pin.version(),
-                "sourceCommit": pin.git_head(),
-                "distribution": pin.package(),
-                "distributionUrl": "https://registry.npmjs.org/@typescript/typescript-linux-x64/-/typescript-linux-x64-7.1.0-beta.tgz",
-                "distributionIntegrity": pin.sri(),
-                "distributionSha256": pin.tarball_sha256(),
-                "distributionSize": 10_175_135,
-                "distributionFileCount": pin.file_count(),
-                "distributionUnpackedSize": pin.unpacked_bytes(),
-                "apiSchemaVersion": pin.ast_protocol_version(),
-                "astHeaderBytes": pin.ast_header_bytes(),
-                "license": "Apache-2.0",
-                "licenseFiles": ["engine/LICENSE", "engine/NOTICE.txt"],
-                "binary": pin.executable(),
-                "probe": {
-                    "args": ["--version"],
-                    "expectPrefix": "Version "
-                }
-            },
-            "typeAssets": [],
-            "binaries": [],
-            "files": [
-                {
-                    "path": pin.executable(),
-                    "sha256": engine_sha,
-                    "size": engine_size,
-                    "mode": "0755"
-                },
-                {
-                    "path": "bin/wxml-lsp",
-                    "sha256": "0".repeat(64),
-                    "size": 1,
-                    "mode": "0755"
-                }
-            ]
-        })
     }
 
     fn set_mode(path: &Path, mode: u32) {
@@ -765,37 +421,20 @@ mod tests {
     }
 
     #[test]
-    fn discovery_is_engine_only_and_does_not_claim_asset_verification() {
+    fn discovery_checks_layout_roots_but_not_asset_bytes() {
         let fake = FakeInstall::new();
-        fs::remove_dir_all(fake.package.join("typings")).unwrap();
-        let mut value = fake.manifest_value();
-        value["builtAt"] = json!("not-a-date");
-        value["engine"]["distributionUrl"] = json!("https://invalid.example/engine.tgz");
-        value["engine"]["distributionSize"] = json!(1);
-        value["typeAssets"] = json!([{
-            "name": "not-a-pinned-asset",
-            "version": "0.0.0",
-            "license": "GPL-3.0",
-            "root": "types",
-            "include": ["**"],
-            "fileCount": 1,
-            "sha256": "0".repeat(64),
-            "licenseFiles": []
-        }]);
-        value["binaries"] = json!([{
-            "kind": "node-backend",
-            "name": "legacy",
-            "path": "node/server.js",
-            "version": "0.0.0",
-            "sha256": "0".repeat(64)
-        }]);
-        fake.write_manifest_value(&value);
+        fs::remove_dir_all(fake.package.join("typings/miniprogram-api-typings")).unwrap();
+        fs::write(
+            fake.package.join("typings/unpinned.txt"),
+            b"not a pinned asset\n",
+        )
+        .unwrap();
 
         let install = fake
             .discover()
-            .expect("P6-4a discovery is engine-only and must not overclaim assets");
+            .expect("discovery checks the layout root only and must not claim assets");
         assert_eq!(install.typings_root, fake.package.join("typings"));
-        assert!(!install.typings_root.exists());
+        assert!(install.typings_root.is_dir());
     }
 
     #[test]
@@ -831,25 +470,25 @@ mod tests {
     }
 
     #[test]
-    fn discovery_does_not_search_parent_directories_for_a_manifest() {
+    fn discovery_does_not_search_parent_directories_for_layout_roots() {
         let fake = FakeInstall::new();
-        fs::remove_file(fake.package.join("manifest.json")).unwrap();
-        // A valid-looking manifest above the package root must never be used.
-        fs::write(
-            fake.root.path.join("manifest.json"),
-            serde_json::to_vec_pretty(&fake.manifest_value()).unwrap(),
-        )
-        .unwrap();
-        set_mode(&fake.root.path.join("manifest.json"), 0o644);
+        fs::remove_dir_all(fake.package.join("typings")).unwrap();
+        // A typings directory above the package root must never be used.
+        fs::create_dir_all(fake.root.path.join("typings")).unwrap();
+        set_mode(&fake.root.path.join("typings"), 0o755);
         assert!(matches!(
             fake.discover(),
-            Err(EngineDiscoveryError::ManifestUnavailable { .. })
+            Err(EngineDiscoveryError::PackageUnsafe { .. })
         ));
     }
 
     #[test]
     fn discovery_requires_engine_lib_and_typings_layout_roots() {
-        for (label, path) in [("engine", "engine"), ("engine-lib", "engine/lib")] {
+        for (label, path) in [
+            ("engine", "engine"),
+            ("engine-lib", "engine/lib"),
+            ("typings", "typings"),
+        ] {
             let fake = FakeInstall::new();
             fs::remove_dir_all(fake.package.join(path)).unwrap();
             let error = fake.discover().expect_err(label);
@@ -861,58 +500,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_missing_manifest() {
-        let fake = FakeInstall::new();
-        fs::remove_file(fake.package.join("manifest.json")).unwrap();
-        assert!(matches!(
-            fake.discover(),
-            Err(EngineDiscoveryError::ManifestUnavailable { .. })
-        ));
-    }
-
-    #[test]
-    fn rejects_manifest_with_an_unsafe_mode() {
-        let fake = FakeInstall::new();
-        set_mode(&fake.package.join("manifest.json"), 0o600);
-        assert!(matches!(
-            fake.discover(),
-            Err(EngineDiscoveryError::ManifestUnavailable { .. })
-        ));
-    }
-
-    #[test]
     fn rejects_missing_engine_file() {
         let fake = FakeInstall::new();
         fs::remove_file(&fake.engine).unwrap();
         assert!(matches!(
             fake.discover(),
             Err(EngineDiscoveryError::EngineMissing)
-        ));
-    }
-
-    #[test]
-    fn rejects_missing_engine_manifest_entry() {
-        let fake = FakeInstall::new();
-        let mut value = fake.manifest_value();
-        value["files"] = json!([]);
-        fake.write_manifest_value(&value);
-        assert!(matches!(
-            fake.discover(),
-            Err(EngineDiscoveryError::EngineMissing)
-        ));
-    }
-
-    #[test]
-    fn rejects_manifest_engine_entry_mode() {
-        let fake = FakeInstall::new();
-        let mut value = fake.manifest_value();
-        value["files"][0]["mode"] = json!("0644");
-        fake.write_manifest_value(&value);
-        assert!(matches!(
-            fake.discover(),
-            Err(EngineDiscoveryError::ManifestMismatch {
-                field: "files[engine].mode"
-            })
         ));
     }
 
@@ -931,127 +524,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_manifest_symlink() {
-        let fake = FakeInstall::new();
-        let outside = fake.root.path.join("outside-manifest.json");
-        fs::copy(fake.package.join("manifest.json"), &outside).unwrap();
-        fs::remove_file(fake.package.join("manifest.json")).unwrap();
-        std::os::unix::fs::symlink(&outside, fake.package.join("manifest.json")).unwrap();
-        assert!(matches!(
-            fake.discover(),
-            Err(EngineDiscoveryError::ManifestUnavailable { .. })
-        ));
-    }
-
-    #[test]
-    fn rejects_v1_manifest() {
-        let fake = FakeInstall::new();
-        let mut value = fake.manifest_value();
-        value["schemaVersion"] = json!(1);
-        fake.write_manifest_value(&value);
-        assert!(matches!(
-            fake.discover(),
-            Err(EngineDiscoveryError::ManifestMismatch {
-                field: "schemaVersion"
-            })
-        ));
-    }
-
-    #[test]
-    fn rejects_unknown_manifest_field() {
-        let fake = FakeInstall::new();
-        let mut value = fake.manifest_value();
-        value["futureField"] = json!(true);
-        fake.write_manifest_value(&value);
-        assert!(matches!(
-            fake.discover(),
-            Err(EngineDiscoveryError::ManifestMismatch {
-                field: "manifest shape"
-            })
-        ));
-    }
-
-    #[test]
-    fn rejects_wrong_package_version() {
-        let fake = FakeInstall::new();
-        let mut value = fake.manifest_value();
-        value["packageVersion"] = json!("9.9.9");
-        fake.write_manifest_value(&value);
-        assert!(matches!(
-            fake.discover(),
-            Err(EngineDiscoveryError::ManifestMismatch {
-                field: "packageVersion"
-            })
-        ));
-    }
-
-    #[test]
-    fn rejects_wrong_platform_and_protocol() {
-        let fake = FakeInstall::new();
-        let mut platform = fake.manifest_value();
-        platform["platform"] = json!("darwin-x86_64");
-        fake.write_manifest_value(&platform);
-        assert!(matches!(
-            fake.discover(),
-            Err(EngineDiscoveryError::ManifestMismatch { field: "platform" })
-        ));
-
-        let mut protocol = fake.manifest_value();
-        protocol["protocolVersion"] = json!(1);
-        fake.write_manifest_value(&protocol);
-        assert!(matches!(
-            fake.discover(),
-            Err(EngineDiscoveryError::ManifestMismatch {
-                field: "protocolVersion"
-            })
-        ));
-    }
-
-    #[test]
-    fn rejects_wrong_engine_version_and_ast_header() {
-        let fake = FakeInstall::new();
-        let mut version = fake.manifest_value();
-        version["engine"]["version"] = json!("7.0.2");
-        fake.write_manifest_value(&version);
-        assert!(matches!(
-            fake.discover(),
-            Err(EngineDiscoveryError::ManifestMismatch {
-                field: "engine.version"
-            })
-        ));
-
-        let mut ast = fake.manifest_value();
-        ast["engine"]["astHeaderBytes"] = json!(60);
-        fake.write_manifest_value(&ast);
-        assert!(matches!(
-            fake.discover(),
-            Err(EngineDiscoveryError::ManifestMismatch {
-                field: "engine.astHeaderBytes"
-            })
-        ));
-    }
-
-    #[test]
-    fn rejects_manifest_engine_digest_mismatch() {
-        let fake = FakeInstall::new();
-        let mut value = fake.manifest_value();
-        value["files"][0]["sha256"] = json!("0".repeat(64));
-        fake.write_manifest_value(&value);
-        assert!(matches!(
-            fake.discover(),
-            Err(EngineDiscoveryError::ManifestMismatch {
-                field: "files[engine].sha256"
-            })
-        ));
-    }
-
-    #[test]
     fn rejects_engine_artifact_digest_mismatch() {
         let fake = FakeInstall::new();
         let zeros = "0".repeat(64);
-        let mut value = fake.manifest_value();
-        value["files"][0]["sha256"] = json!(zeros);
-        fake.write_manifest_value(&value);
         assert!(matches!(
             discover_at_with_engine_sha256(&fake.executable, &zeros),
             Err(EngineDiscoveryError::EngineArtifactMismatch { .. })
@@ -1061,11 +536,14 @@ mod tests {
     #[test]
     fn rejects_engine_size_mismatch() {
         let fake = FakeInstall::new();
-        let mut value = fake.manifest_value();
-        value["files"][0]["size"] = json!(fake.engine_size + 1);
-        fake.write_manifest_value(&value);
+        let pin = PinnedEngine::pinned();
         assert!(matches!(
-            fake.discover(),
+            verify_engine_file(
+                &fake.package,
+                pin.executable(),
+                fake.engine_size + 1,
+                &fake.engine_sha,
+            ),
             Err(EngineDiscoveryError::EngineArtifactMismatch { .. })
         ));
     }
@@ -1116,23 +594,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_engine_paths_that_escape_the_package() {
-        let fake = FakeInstall::new();
-        for escaped in ["/tmp/tsc", "../tsc", "engine/../tsc"] {
-            let mut value = fake.manifest_value();
-            value["engine"]["binary"] = json!(escaped);
-            fake.write_manifest_value(&value);
-            assert!(
-                matches!(
-                    fake.discover(),
-                    Err(EngineDiscoveryError::EngineEscapesPackage)
-                ),
-                "expected EngineEscapesPackage for {escaped}"
-            );
-        }
-    }
-
-    #[test]
     fn rejects_executable_outside_bin() {
         let fake = FakeInstall::new();
         let loose = fake.root.path.join("wxml-lsp");
@@ -1172,21 +633,6 @@ mod tests {
     }
 
     #[test]
-    fn does_not_search_parent_directories_for_the_manifest() {
-        let fake = FakeInstall::new();
-        fs::copy(
-            fake.package.join("manifest.json"),
-            fake.root.path.join("manifest.json"),
-        )
-        .unwrap();
-        fs::remove_file(fake.package.join("manifest.json")).unwrap();
-        assert!(matches!(
-            fake.discover(),
-            Err(EngineDiscoveryError::ManifestUnavailable { .. })
-        ));
-    }
-
-    #[test]
     fn rejects_group_writable_package_root() {
         let fake = FakeInstall::new();
         set_mode(&fake.package, 0o775);
@@ -1220,9 +666,6 @@ mod tests {
         let lib = bin.parent().expect("TSGO_BIN must be <lib>/tsc");
         copy_tree(lib, fake.engine.parent().expect("fake engine parent"));
         set_mode(&fake.engine, 0o755);
-        let size = fs::metadata(&fake.engine).unwrap().len();
-        let pinned_sha = PinnedEngine::pinned().executable_sha256();
-        fake.write_manifest_value(&manifest_value(pinned_sha, size));
         Some(fake)
     }
 

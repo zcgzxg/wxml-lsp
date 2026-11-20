@@ -287,34 +287,17 @@ fn assert_default_fails_closed(package: &Path, expected: &str) {
 }
 
 #[test]
-fn default_discovers_current_package_and_fails_closed_on_a_missing_manifest() {
-    let tree = build_package_skeleton("missing-manifest");
+fn default_fails_closed_on_a_missing_typings_root() {
+    let tree = build_package_skeleton("missing-typings");
     let package = tree.path.join("version");
-    assert_default_fails_closed(&package, "installed package manifest is unavailable");
-}
-
-#[test]
-fn default_fails_closed_on_an_invalid_manifest() {
-    let tree = build_package_skeleton("invalid-manifest");
-    let package = tree.path.join("version");
-    fs::write(package.join("manifest.json"), b"{").expect("invalid manifest");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(
-            package.join("manifest.json"),
-            fs::Permissions::from_mode(0o644),
-        )
-        .expect("manifest mode");
-    }
-    assert_default_fails_closed(&package, "manifest.json is not valid JSON");
+    fs::remove_dir_all(package.join("typings")).expect("remove typings");
+    assert_default_fails_closed(&package, "the installed package layout is unsafe");
 }
 
 #[test]
 fn default_fails_closed_on_a_missing_engine() {
     let tree = build_package_skeleton("missing-engine");
     let package = tree.path.join("version");
-    write_engine_entry(&package, PinnedEngine::pinned().executable_sha256(), 1);
     assert_default_fails_closed(&package, "the pinned native engine is missing");
 }
 
@@ -329,10 +312,9 @@ fn default_fails_closed_on_an_engine_artifact_mismatch() {
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&engine, fs::Permissions::from_mode(0o755)).expect("engine mode");
     }
-    write_engine_entry(&package, PinnedEngine::pinned().executable_sha256(), 1);
     assert_default_fails_closed(
         &package,
-        "the pinned native engine does not match its manifest",
+        "the pinned native engine does not match the pinned artifact",
     );
 }
 
@@ -591,22 +573,7 @@ fn write_install_manifest(package: &Path) {
     write_manifest_value(package, &install_manifest_value(package));
 }
 
-/// Points the manifest engine entry at a pinned identity the tree cannot meet.
-fn write_engine_entry(package: &Path, sha256: &str, size: u64) {
-    let pin = PinnedEngine::pinned();
-    let mut manifest = install_manifest_value(package);
-    let files = manifest["files"].as_array_mut().expect("manifest files");
-    files.retain(|file| file["path"] != serde_json::json!(pin.executable()));
-    files.push(serde_json::json!({
-        "path": pin.executable(),
-        "sha256": sha256,
-        "size": size,
-        "mode": "0755",
-    }));
-    write_manifest_value(package, &manifest);
-}
-
-/// Builds a temporary install tree shaped like a real v2 package.
+/// Builds a temporary install tree shaped like a real native package.
 fn build_install_tree(tag: &str, engine: &Path, typings: &Path) -> TempTree {
     let tree = TempTree::new(tag);
     let package = tree.path.join("version");

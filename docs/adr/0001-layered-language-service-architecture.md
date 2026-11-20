@@ -126,7 +126,7 @@ Vue/Pug、Emmet、创建组件命令、自定义变量装饰、市场发布和�
 - [项目目标与功能需求](../../README.md#1-项目目标)
 - [WXML 语言功能基线](../reference/wxml-language-feature-baseline.md)
 - [已有实验与证据边界](../../README.md#6-已有验证与证据边界)
-- [证据索引](../evidence/README.md)
+- [ADR-0009 项目瘦身](0009-project-slimming.md)（历史证据见 tag `pre-slim-20261120`）
 - [来源与许可证记录](../reference/provenance.md)
 - [ADR-0002：模板类型检查与映射](0002-template-type-checking-and-source-maps.md)
 - [ADR-0003：版本化同步与接入](0003-versioned-document-synchronization.md)

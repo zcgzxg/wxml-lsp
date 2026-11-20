@@ -1,18 +1,13 @@
-//! Checked-in `miniprogram-api-typings@5.3.1` fixture staging for opt-in
-//! native tests.
+//! `miniprogram-api-typings@5.3.1` staging for opt-in native tests.
 //!
 //! The trusted loader and every native session require the canonical layout
-//! `<typings_root>/miniprogram-api-typings/**`. The repository fixture lives at
-//! `crates/wxml-delivery/tests/fixtures/miniprogram-api-typings-5.3.1`, so tests
-//! copy its 20 runtime `.d.ts` files below a private temporary root. The
-//! deleted `backends/typescript/node_modules` tree is never read.
+//! `<typings_root>/miniprogram-api-typings/**`. Tests source that package from
+//! `TSGO_TYPINGS_ROOT` or `TSGO_ASSET_ROOT/typings`, then copy its runtime
+//! `.d.ts` closure below a private temporary root.
 //!
-//! A missing fixture returns `None`; callers must turn that into an explicit
+//! A missing source returns `None`; callers must turn that into an explicit
 //! skip or a hard failure, never a silent pass. `WXML_REQUIRE_REAL_ENGINE=1`
 //! and `WXML_REQUIRE_REAL_ENGINE=true` remain the caller's decision.
-//!
-//! The fixture is a repository copy, not a packaged-chain claim: F3-03 asset
-//! discovery stays BLOCKED.
 
 #![allow(
     dead_code,
@@ -31,10 +26,20 @@ pub(crate) const PACKAGE: &str = "miniprogram-api-typings";
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// Returns the checked-in `miniprogram-api-typings` fixture package directory.
+/// Returns the `miniprogram-api-typings` package from the configured roots.
+///
+/// `TSGO_TYPINGS_ROOT` is the directory containing the package;
+/// `TSGO_ASSET_ROOT/typings` is accepted as a fallback. When neither is set the
+/// returned path does not exist, so [`stage`] returns `None` and opt-in tests
+/// skip.
 pub(crate) fn fixture_package() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/wxml-delivery/tests/fixtures/miniprogram-api-typings-5.3.1")
+    if let Some(root) = std::env::var_os("TSGO_TYPINGS_ROOT") {
+        return PathBuf::from(root).join(PACKAGE);
+    }
+    if let Some(root) = std::env::var_os("TSGO_ASSET_ROOT") {
+        return PathBuf::from(root).join("typings").join(PACKAGE);
+    }
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/miniprogram-api-typings-5.3.1")
 }
 
 /// One staged temporary typings root, removed on drop.
@@ -61,11 +66,11 @@ impl Drop for Staged {
     }
 }
 
-/// Stages the committed fixture below a private temporary root.
+/// Stages the configured typings package below a private temporary root.
 ///
-/// Returns `None` when the committed fixture does not contain the two
-/// declaration roots the loader requires. Copy failures are fatal because a
-/// present fixture must not degrade into a skip.
+/// Returns `None` when no configured package contains the two declaration
+/// roots the loader requires. Copy failures are fatal because a present
+/// package must not degrade into a skip.
 pub(crate) fn stage() -> Option<Staged> {
     let fixture = fixture_package();
     if !fixture.join("index.d.ts").is_file() || !fixture.join("types/index.d.ts").is_file() {

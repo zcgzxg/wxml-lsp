@@ -179,7 +179,7 @@ pub trait Backend: Send + Sync {
 - fixture 必须给出 `root`、`positive`、`negative`、`expected.hover`、`expected.diagnostics`；可选 `expectClean`、`expected.definition`、`coverage`。
 - runtime 必须有 `scenario` 与至少两个 `steps`。
 - marker 唯一；`target` 是 marker 内唯一的 token；`position` 由 `wxml_text::LineIndex` 计算并精确匹配；`positive`/`negative` 按 marker 出现次数比较（跨文件重复需重复列出），`requirePositions` 强制每条 hover 带 `position`。
-- 校验入口：`cargo test -p wxml-fixtures`。
+- 校验入口：fixtures 由测试直接读取；原 `wxml-fixtures` crate 已随 ADR-0009 删除，`manifest.json` 保留为样本清单。
 
 ## 11. 发布校验
 

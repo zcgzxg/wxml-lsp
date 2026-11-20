@@ -8,11 +8,9 @@
 //! `<package>/engine/lib/lib*.d.ts` (or `<package>/lib` for the extracted
 //! upstream tarball) plus `<package>/typings/miniprogram-api-typings/**`. When
 //! `TSGO_ASSET_ROOT` is unset the standard library is derived from
-//! `TSGO_BIN`'s directory and the typings fall back to the committed
-//! `miniprogram-api-typings@5.3.1` fixture at
-//! `crates/wxml-delivery/tests/fixtures/miniprogram-api-typings-5.3.1`, staged
-//! into the canonical package layout below the test temp base. The fixture is
-//! a repository copy, not a packaged-chain claim (P6-3-4 blocked).
+//! `TSGO_BIN`'s directory and typings come from `TSGO_TYPINGS_ROOT` or
+//! `TSGO_ASSET_ROOT/typings`, staged into the canonical package layout below the
+//! test temp base.
 
 #![allow(clippy::expect_used, clippy::too_many_lines)]
 
@@ -777,11 +775,11 @@ fn real_engine_context() -> Option<(PathBuf, AssetRoots)> {
         assert!(
             !required,
             "type-asset roots are required when WXML_REQUIRE_REAL_ENGINE=1; \
-             set TSGO_ASSET_ROOT (TSGO_TYPINGS_ROOT overrides the committed fixture)"
+             set TSGO_ASSET_ROOT or TSGO_TYPINGS_ROOT"
         );
         eprintln!(
             "real-engine type-asset gate skipped: no standard-library root found and the \
-             committed typings fixture is missing near {}",
+             configured typings package is missing near {}",
             executable.display()
         );
         return None;

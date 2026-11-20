@@ -18,7 +18,7 @@
 //! - [`template`]: `wx:for`/event/mustache analysis that produces check
 //!   fragments, bounded by [`MAX_FRAGMENTS`].
 //!
-//! The real Node backend lands in a later phase.
+//! The native tsgo backend is the only backend.
 
 pub mod backend;
 pub mod check;

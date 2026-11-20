@@ -5,6 +5,8 @@
 **P7 删除状态**: removed（2026-11-20）；Node/旧 TS/v1 已删除并通过删除后验收
 **Deciders**: 项目维护者；planner、architect、Rust 测试及交付盘点参与设计
 
+> **2026-11-20 项目瘦身说明**：[ADR-0009](0009-project-slimming.md) 删除了 `docs/evidence/`、`docs/plans/`、`wxml-delivery` 和 native parity/ledger/Q2/性能/stdio 门禁。本文中的历史证据、台账和 40/40 门禁引用保留为决策记录，原文可从 tag `pre-slim-20261120` 取回。当前验证为 **2,142 passed / 0 failed / 0 ignored**，`cargo clippy --workspace --all-targets -- -D warnings` 通过。
+
 本文记录已采用的迁移方向。2026-11-20 owner 明确选择 **C-lite（owner-scoped functional waiver）**，原话：**“不需要严格按照原来的功能写测试。功能合理即可”**。据此本 ADR 最终关闭为 `accepted`，验收口径固定为 **native engine + native gates + F3 + 合理行为测试**，状态附注 **native default; Node removed**。`accepted` 接受的是架构方向、默认后端和功能验收口径，删除已落地；仍不表示 G7 的逐条 parity。
 
 本 ADR 明确**不声称旧 TS/Node 测试逐条等价**，也不把 `reviewed` / `waived` / `retired-with-decision` 当作 `green` 或“已迁移”。功能验收以 native engine、native gates、F3 交付合同和合理行为测试为准；旧 TS/Node 的逐条对照保留为历史证据和残余风险登记。台账终态与 waiver 依据见 `docs/evidence/2026-11-20-tsgo-p7-closeout-ledger.md`、`docs/evidence/2026-11-20-tsgo-p7-scope-decision.md` 和 `docs/evidence/2026-11-20-tsgo-p7-ledger-waiver-policy.md`。

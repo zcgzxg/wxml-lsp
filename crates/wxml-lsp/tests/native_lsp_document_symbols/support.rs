@@ -134,16 +134,16 @@ pub(crate) fn non_empty(value: Option<&OsString>) -> Option<&OsString> {
 /// Resolution order mirrors the production gate: the pinned engine comes from
 /// `TSGO_BIN`; the standard library comes from `TSGO_ASSET_ROOT` (an extracted
 /// package) or the engine's own directory; typings come from
-/// `TSGO_TYPINGS_ROOT`, `TSGO_ASSET_ROOT/typings`, or the committed fixture at
-/// `crates/wxml-delivery/tests/fixtures/miniprogram-api-typings-5.3.1`.
+/// `TSGO_TYPINGS_ROOT` or `TSGO_ASSET_ROOT/typings`. There is no committed
+/// fallback: unset typings inputs are a missing input and skip in optional mode.
 pub(crate) fn provisioning_hint() -> String {
     format!(
         "set {TSGO_BIN_ENV} to the pinned 7.1.0-beta lib/tsc; \
          {TSGO_ASSET_ROOT_ENV} may point at an extracted package whose engine/lib or lib \
          contains lib.d.ts (otherwise the lib*.d.ts next to {TSGO_BIN_ENV} are used); \
          set {TSGO_TYPINGS_ROOT_ENV} to the directory containing miniprogram-api-typings \
-         (also accepted: {TSGO_ASSET_ROOT_ENV}/typings); when both are unset the committed \
-         fixture crates/wxml-delivery/tests/fixtures/miniprogram-api-typings-5.3.1 is used; \
+         (also accepted: {TSGO_ASSET_ROOT_ENV}/typings); when neither provides typings the \
+         gate is skipped in optional mode; \
          {REQUIRE_ENV}=1 makes every missing input fatal"
     )
 }
@@ -386,9 +386,8 @@ fn asset_candidates(root: &Path) -> Vec<PathBuf> {
 /// Resolves the pinned `miniprogram-api-typings` package.
 ///
 /// Explicit `TSGO_TYPINGS_ROOT` wins; an extracted `TSGO_ASSET_ROOT` may carry
-/// `typings/miniprogram-api-typings`; the last fallback is the committed
-/// fixture at
-/// `crates/wxml-delivery/tests/fixtures/miniprogram-api-typings-5.3.1`.
+/// `typings/miniprogram-api-typings`. When neither input provides the package,
+/// the input is absent and optional mode skips it.
 fn resolve_typings(env: &ProvisionEnv) -> Result<PathBuf, ProvisionError> {
     if let Some(root) = non_empty(env.typings_root.as_ref()) {
         let root = PathBuf::from(root);
@@ -427,9 +426,12 @@ fn resolve_typings(env: &ProvisionEnv) -> Result<PathBuf, ProvisionError> {
             }
         }
     }
-    let package = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/wxml-delivery/tests/fixtures/miniprogram-api-typings-5.3.1");
-    require_typings_package(package, false)
+    let reason = format!(
+        "the pinned miniprogram-api-typings package is unavailable: set \
+         {TSGO_TYPINGS_ROOT_ENV} to the directory containing miniprogram-api-typings, or place \
+         typings/miniprogram-api-typings under {TSGO_ASSET_ROOT_ENV}"
+    );
+    Err(ProvisionError::Missing { reason })
 }
 
 /// Requires both declarations the pinned typings loader needs.

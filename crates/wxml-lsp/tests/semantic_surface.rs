@@ -14,7 +14,7 @@
 //! - a local template rename through `documentChanges`.
 //!
 //! These are static native facts. They do not claim engine-backed type
-//! queries; the ignored `native_parity` gates cover those.
+//! queries; the opt-in real-engine tests cover those.
 
 #![allow(
     clippy::expect_used,

@@ -19,7 +19,7 @@
 采用“本地需求基线 + 本地证据 + 隔离来源台账”的文档结构：
 
 - 功能需求写入[WXML 语言功能基线](../reference/wxml-language-feature-baseline.md)，以本项目自己的行为、数据来源和验收条件表述。
-- 实验结论、环境、方法、限制和最小数据写入[证据目录](../evidence/README.md)。临时目录和外部仓库不能作为唯一证据。
+- 实验结论、环境、方法、限制和最小数据写入 ADR、`docs/reference/` 或提交说明（由 [ADR-0009](0009-project-slimming.md) 更新）。临时目录和外部仓库不能作为唯一证据。
 - 外部项目标识、版本、提交和许可证集中记录在[来源与许可证记录](../reference/provenance.md)，只用于归属、合规和复查，不作为需求入口。
 - 架构决策引用本地需求和证据；需要引用外部对象时，通过来源记录定位。
 - 临时实验在仓库外运行。进入仓库的只有决定保留的实现、样本、测试和结论。
@@ -81,6 +81,6 @@
 - [项目 README](../../README.md)
 - [文档索引](../README.md)
 - [WXML 语言功能基线](../reference/wxml-language-feature-baseline.md)
-- [证据索引](../evidence/README.md)
+- [ADR-0009 项目瘦身](0009-project-slimming.md)（历史证据见 tag `pre-slim-20261120`）
 - [来源与许可证记录](../reference/provenance.md)
 - [ADR-0004](0004-parallel-delivery-and-validation-gates.md)：临时实验与交付证据规则

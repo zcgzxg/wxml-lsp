@@ -21,12 +21,12 @@
 
 use std::collections::BTreeMap;
 
-use wxml_backend_tsgo::native::NativeError;
-use wxml_backend_tsgo::native::strings::{Utf16Offset, offset_to_position};
-use wxml_backend_tsgo::query::hover::{HoverEvidence, HoverGap, compose_hover_markdown};
-use wxml_backend_tsgo::query::type_info::{
+use crate::backend_tsgo::query::hover::{HoverEvidence, HoverGap, compose_hover_markdown};
+use crate::backend_tsgo::query::type_info::{
     TypeInfo as NativeTypeInfo, TypeQuality as NativeTypeQuality,
 };
+use wxml_backend_tsgo::native::NativeError;
+use wxml_backend_tsgo::native::strings::{Utf16Offset, offset_to_position};
 use wxml_types::{
     BackendError, CapabilityStatus, HoverRequest, HoverResult, MarkupKind, TypeQuality,
 };

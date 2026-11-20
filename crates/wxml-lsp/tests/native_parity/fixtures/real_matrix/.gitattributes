@@ -1,4 +1,0 @@
-# Byte-exact historical fixtures: CRLF and BOM are part of the oracle.
-samples/** -text
-# Byte-exact archive of `backends/typescript/src/scenarios.ts` (sha256 pinned).
-scenarios.ts -text

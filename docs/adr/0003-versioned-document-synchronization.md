@@ -148,7 +148,7 @@ disposeProject / shutdown
 ## References
 
 - [未保存文档需求](../../README.md#53-未保存文档同步)
-- [证据索引](../evidence/README.md)
+- [ADR-0009 项目瘦身](0009-project-slimming.md)（历史证据见 tag `pre-slim-20261120`）
 - [ADR-0001：运行时与模块边界](0001-layered-language-service-architecture.md)
 - [ADR-0002：片段、映射与检查状态](0002-template-type-checking-and-source-maps.md)
 - [ADR-0004：验证工作包和闸门](0004-parallel-delivery-and-validation-gates.md)

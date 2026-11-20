@@ -16,6 +16,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::backend_tsgo::query::definition::DefinitionResult as NativeDefinitionResult;
+use crate::backend_tsgo::query::hover::HoverEvidence;
+use crate::backend_tsgo::query::type_info::{TypeInfo, TypeQuality as NativeTypeQuality};
 use serde_json::{Map, Value};
 use wxml_backend_tsgo::config::PinnedEngine;
 use wxml_backend_tsgo::input::{AnalysisInput, TypeAssets};
@@ -24,9 +27,6 @@ use wxml_backend_tsgo::native::document_symbol::DocumentSymbolsEvidence;
 use wxml_backend_tsgo::native::session::TypeQuery;
 use wxml_backend_tsgo::native::strings::Utf16Position;
 use wxml_backend_tsgo::native::wire::{RawCompletionList, RawDiagnostic};
-use wxml_backend_tsgo::query::definition::DefinitionResult as NativeDefinitionResult;
-use wxml_backend_tsgo::query::hover::HoverEvidence;
-use wxml_backend_tsgo::query::type_info::{TypeInfo, TypeQuality as NativeTypeQuality};
 use wxml_project::ProjectPath;
 use wxml_text::SourceRange;
 use wxml_types::{

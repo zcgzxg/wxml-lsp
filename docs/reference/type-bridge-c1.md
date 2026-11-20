@@ -3,7 +3,7 @@
 **Status**: accepted（2026-11-15，C1.1 增量版；布局/边界仍为第 4 轮）；**native 路径不实现 C1**（2026-11-20：C1 只保留为历史 Node 桥契约，native 见 [ADR-0008](../adr/0008-rust-tsgo-no-node-backend.md)）。
 **Last Updated**: 2026-11-20（native 版本段改为 TypeScript `7.1.0-beta` / typings `5.3.1`；显式 app/project 根边界见 [ADR-0006](../adr/0006-explicit-mini-program-roots.md)）。
 冻结动作由 P0 在合并本文件时执行；C0 契约仍以[基础契约](contracts.md)为准，本文件只补充类型桥部分。
-证据：[类型桥验证与 C1 建议](../evidence/type-bridge-c1.md)；实验实现（历史 Node 树）见 `backends/typescript/`（P7 删除后不存在，仅保留于 `p7-pre-delete` 历史证据）。
+证据：历史类型桥验证与实验实现见 tag `pre-slim-20261120`（`docs/evidence/type-bridge-c1.md` 与 `backends/typescript/` 已删除）。
 
 ## 0. 范围
 
@@ -393,11 +393,10 @@ invalid params `-32602`（`data.code` 为 `bad-protocol`/`bad-params`/`bad-limit
    crates/wxml-backend-tsgo/src/input.rs:128 的 `PINNED_TYPINGS_VERSION` 定义，并由
    crates/wxml-backend-tsgo/src/config.rs:415 `pinned_identity_uses_literal_f0_values`、
    crates/wxml-backend-tsgo/src/input.rs:2201 `type_assets_validate_pin_identity_and_paths`
-   和 crates/wxml-delivery/tests/assets_lock_root.rs:130 `repository_root_lock_is_frozen_and_canonical` 断言。
+   断言。资产版本、大小与 SHA-256 由根目录 `assets.lock.json` 固定，并作为 `scripts/install-native.sh` 的输入；原 `wxml-delivery` 测试已随 ADR-0009 删除。
 - **历史 Node 桥**（本文 §1–§8 描述的实现）：TypeScript `6.0.3`、Node ≥ 24；该实现已按
   [ADR-0008](../adr/0008-rust-tsgo-no-node-backend.md) 退出 native 路径，旧的 6.0.3 文档断言
-  （`TS-META-0027`）已 `retired-with-decision`，记录见
-  [wave-11 retire 证据](../evidence/2026-11-20-tsgo-ledger-retire-0774-meta.md)。当前 C1 只在历史
+  （`TS-META-0027`）已 `retired-with-decision`，历史记录见 tag `pre-slim-20261120`。当前 C1 只在历史
   Node 桥语境下有效，不能作为 native 版本门禁。
 - 必须覆盖：探针落点（含 2353 反例）、`optionalTypes` 覆盖（TS/JS）、JS 策略优先级与 `off` 中和、`@ts-nocheck`、pragma 注入点、位置替换（BOM）、合成前缀裁剪、定义回原脚本、模块翻转门、输入上限、读取白名单。
 - 升级依赖需重跑矩阵并新增证据记录。
@@ -423,9 +422,9 @@ invalid params `-32602`（`data.code` 为 `bad-protocol`/`bad-params`/`bad-limit
 验证（WT-B，2026-11-16；**历史**）：
 
 > `backends/typescript` 与 `wave5_acceptance` 已随 P7 删除，以下命令当前不可执行，仅保留为历史证据。
-> 当前 native 等价覆盖见 `crates/wxml-lsp/tests/native_parity/native_engine_real.rs`（`loop-scope`、
-> `conditional-union`、`multi-view`、`alias-project`、`component-bindings`）与
-> `crates/wxml-lsp/tests/stdio_type_loop.rs`。
+> 当前 native 覆盖见 `crates/wxml-lsp/tests/native_lsp_document_symbols.rs` 与
+> `crates/wxml-backend-tsgo/tests/real_engine.rs`；`native_parity`/`stdio_type_loop` 已随
+> ADR-0009 删除，历史版本见 tag `pre-slim-20261120`。
 
 ```bash
 (cd backends/typescript && npm ci && npm run build)

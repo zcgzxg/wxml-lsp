@@ -5,9 +5,7 @@
 //! opt-in through `TSGO_BIN`; `WXML_REQUIRE_REAL_ENGINE=1` turns a missing
 //! engine into a hard failure instead of a skip. The pinned standard library
 //! comes from `TSGO_ASSET_ROOT` (or the engine's `lib` directory) and typings
-//! from `TSGO_TYPINGS_ROOT`, falling back to the committed
-//! `miniprogram-api-typings@5.3.1` fixture at
-//! `crates/wxml-delivery/tests/fixtures/miniprogram-api-typings-5.3.1`.
+//! from `TSGO_TYPINGS_ROOT` (or `TSGO_ASSET_ROOT/typings`).
 
 #![allow(clippy::expect_used, clippy::too_many_lines)]
 
@@ -435,8 +433,8 @@ fn load_pinned_assets() -> Result<TypeAssets, String> {
     } else {
         let staged = typings_fixture::stage().ok_or_else(|| {
             format!(
-                "committed typings fixture is missing at {}; restore it or set \
-                 TSGO_TYPINGS_ROOT",
+                "typings package is missing at {}; set TSGO_TYPINGS_ROOT or \
+                 TSGO_ASSET_ROOT",
                 typings_fixture::fixture_package().display()
             )
         })?;

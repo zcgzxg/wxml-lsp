@@ -362,7 +362,7 @@ impl BrokenPackage {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum PackageDefect {
     MissingEngine,
-    TamperedManifest,
+    TamperedEngine,
 }
 
 /// Builds a package that must fail discovery before `initialize`.
@@ -386,13 +386,12 @@ pub(crate) fn broken_package(label: &str, defect: PackageDefect) -> BrokenPackag
         Path::new(env!("CARGO_BIN_EXE_wxml-lsp")),
         &package.join(PACKAGE_BIN),
     );
-    let engine_sha = match defect {
-        PackageDefect::MissingEngine => PINNED_ENGINE_SHA256,
-        PackageDefect::TamperedManifest => {
-            "0000000000000000000000000000000000000000000000000000000000000000"
-        }
-    };
-    write_discovery_manifest(&package, engine_sha);
+    write_discovery_manifest(&package, PINNED_ENGINE_SHA256);
+    if matches!(defect, PackageDefect::TamperedEngine) {
+        let engine = package.join(ENGINE_BINARY);
+        fs::write(&engine, b"tampered engine").expect("tampered engine");
+        set_mode(&engine, 0o755).expect("tampered engine mode");
+    }
     let project = root.path().join("project");
     fs::create_dir(&project).expect("broken project");
     set_mode(&project, 0o755).expect("broken project mode");

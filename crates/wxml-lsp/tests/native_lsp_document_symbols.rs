@@ -202,8 +202,8 @@ fn a_missing_engine_fails_before_initialize_without_node_fallback() {
 }
 
 #[test]
-fn a_tampered_manifest_fails_before_initialize() {
-    let broken = broken_package("tampered-manifest", PackageDefect::TamperedManifest);
+fn a_tampered_engine_fails_before_initialize() {
+    let broken = broken_package("tampered-engine", PackageDefect::TamperedEngine);
     let failure = run_startup_failure(&broken);
     assert!(!failure.status.success(), "{failure:?}");
     assert!(
@@ -217,7 +217,9 @@ fn a_tampered_manifest_fails_before_initialize() {
         failure.stderr
     );
     assert!(
-        failure.stderr.contains("manifest does not match"),
+        failure
+            .stderr
+            .contains("does not match the pinned artifact"),
         "{}",
         failure.stderr
     );

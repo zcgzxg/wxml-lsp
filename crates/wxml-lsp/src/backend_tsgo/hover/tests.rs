@@ -5,9 +5,9 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+use crate::backend_tsgo::query::hover::{HoverEvidence, HoverGap, HoverSymbolFacts};
+use crate::backend_tsgo::query::type_info::{TypeInfo, TypeQuality};
 use wxml_backend_tsgo::native::handles::BoundNodeHandle;
-use wxml_backend_tsgo::query::hover::{HoverEvidence, HoverGap, HoverSymbolFacts};
-use wxml_backend_tsgo::query::type_info::{TypeInfo, TypeQuality};
 use wxml_backend_tsgo::shadow::mapping::ShadowMap;
 use wxml_backend_tsgo::shadow::mapping::SourceRange as ShadowSourceRange;
 use wxml_backend_tsgo::shadow::rewrite::{
@@ -242,6 +242,8 @@ mod adapter {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
+    use crate::backend_tsgo::query::hover::HoverEvidence;
+    use crate::backend_tsgo::query::type_info::{TypeInfo, TypeQuality};
     use wxml_backend_tsgo::input::{
         AnalysisInput, DocumentRevision, ProjectKey, ProjectRoot, SnapshotRevision, SourceFile,
     };
@@ -251,8 +253,6 @@ mod adapter {
     use wxml_backend_tsgo::native::strings::Utf16Position;
     use wxml_backend_tsgo::native::wire::RawCompletionList;
     use wxml_backend_tsgo::native::wire::RawDiagnostic;
-    use wxml_backend_tsgo::query::hover::HoverEvidence;
-    use wxml_backend_tsgo::query::type_info::{TypeInfo, TypeQuality};
     use wxml_backend_tsgo::script::registration::RegistrationKind;
     use wxml_backend_tsgo::script::{ScriptRequest, analyze_script};
     use wxml_backend_tsgo::shadow::layout::{
@@ -328,7 +328,7 @@ mod adapter {
             &mut self,
             _path: &str,
             _position: Utf16Position,
-        ) -> Result<wxml_backend_tsgo::query::definition::DefinitionResult, NativeError> {
+        ) -> Result<crate::backend_tsgo::query::definition::DefinitionResult, NativeError> {
             unimplemented!("not used")
         }
 

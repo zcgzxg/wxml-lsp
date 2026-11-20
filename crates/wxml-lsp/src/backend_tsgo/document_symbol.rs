@@ -17,9 +17,9 @@
 //! mapping drops are visible through the result status and never turn into a
 //! supported empty outline.
 
+use crate::backend_tsgo::query::document_symbol::map_document_symbols;
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::strings::{Utf8Offset, utf8_to_utf16};
-use wxml_backend_tsgo::query::document_symbol::map_document_symbols;
 use wxml_text::SourceRange;
 use wxml_types::{
     BackendError, CapabilityStatus, DocumentSymbol, DocumentSymbolGap, DocumentSymbolsResult,

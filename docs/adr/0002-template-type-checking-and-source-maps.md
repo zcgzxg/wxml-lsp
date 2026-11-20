@@ -143,7 +143,7 @@ Node 不重排、缩进、规范化换行或重新打印 Rust 片段，分隔符
 
 - [需求 T1–T9 与类型增强](../../README.md#31-第一优先级模板类型体验)
 - [已有实验的证据边界](../../README.md#6-已有验证与证据边界)
-- [证据索引](../evidence/README.md)
+- [ADR-0009 项目瘦身](0009-project-slimming.md)（历史证据见 tag `pre-slim-20261120`）
 - [ADR-0001：分层与职责](0001-layered-language-service-architecture.md)
 - [ADR-0003：版本和后端协议](0003-versioned-document-synchronization.md)
 - [ADR-0004：验收闸门](0004-parallel-delivery-and-validation-gates.md)
