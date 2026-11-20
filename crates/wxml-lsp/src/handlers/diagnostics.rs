@@ -25,6 +25,14 @@ use crate::workspace::Document;
 /// Method name used for pushed diagnostics.
 const PUBLISH: &str = "textDocument/publishDiagnostics";
 
+/// Upper bound on script diagnostics retries after an unrelated workspace
+/// update invalidates the stamp.
+///
+/// Opening an unrelated overlay bumps the project revision while the script
+/// text stays unchanged. One fresh job is normally enough; the cap prevents a
+/// client that continuously opens files from creating an unbounded loop.
+const MAX_SCRIPT_DIAGNOSTICS_RETRIES: u32 = 3;
+
 /// Returns `true` when `path` is a project script the type backend checks.
 ///
 /// This mirrors the native input language set exactly: `.tsx`/`.jsx` stay out
@@ -664,7 +672,7 @@ impl Server {
         epoch: &BackendEpoch,
     ) -> Vec<Outgoing> {
         if matches!(self.host.route(uri), DocumentRoute::Script(_)) {
-            return self.schedule_script_diagnostics_with_epoch(uri, epoch);
+            return self.schedule_script_diagnostics_with_epoch(uri, epoch, 0);
         }
         let Some(document) = self.workspace.get(uri) else {
             self.clear_dirty(uri);
@@ -713,14 +721,19 @@ impl Server {
     /// queued twice for the same stamp while a result is in flight.
     pub(crate) fn schedule_script_diagnostics(&mut self, uri: &str) -> Vec<Outgoing> {
         let epoch = self.refresh_epoch();
-        self.schedule_script_diagnostics_with_epoch(uri, &epoch)
+        self.schedule_script_diagnostics_with_epoch(uri, &epoch, 0)
     }
 
     /// Queues script diagnostics using an already observed backend epoch.
+    ///
+    /// `attempt` is the bounded retry counter carried by the scheduler job. It
+    /// is reset to zero for every new document edit and only advances when an
+    /// otherwise-valid result was invalidated by an unrelated workspace update.
     fn schedule_script_diagnostics_with_epoch(
         &mut self,
         uri: &str,
         epoch: &BackendEpoch,
+        attempt: u32,
     ) -> Vec<Outgoing> {
         if !matches!(
             self.host.route(uri),
@@ -758,7 +771,7 @@ impl Server {
             context,
             offset: 0,
             stamp: stamp.clone(),
-            attempt: 0,
+            attempt: u64::from(attempt),
             cancel: Arc::clone(&cancel),
         };
         match self.dispatch.submit(job) {
@@ -811,18 +824,39 @@ impl Server {
             }
             return Vec::new();
         }
-        if !self.workspace.is_current(&done.stamp) {
-            log(format_args!(
-                "dropping script diagnostics for an old revision"
-            ));
-            return Vec::new();
-        }
         let JobKind::ScriptDiagnostics { script_hash } = &done.kind else {
             log(format_args!(
                 "script diagnostics job returned the wrong result kind"
             ));
             return Vec::new();
         };
+        if !self.workspace.is_current(&done.stamp) {
+            let Some(document) = self.workspace.get_by_file(&done.stamp.file) else {
+                return Vec::new();
+            };
+            if super::content_hash(document.text()) != *script_hash {
+                log(format_args!(
+                    "dropping script diagnostics for changed script content"
+                ));
+                return Vec::new();
+            }
+            let uri = document.uri().to_owned();
+            let attempt = u32::try_from(done.attempt).unwrap_or(MAX_SCRIPT_DIAGNOSTICS_RETRIES);
+            if attempt >= MAX_SCRIPT_DIAGNOSTICS_RETRIES {
+                log(format_args!(
+                    "dropping script diagnostics after repeated workspace updates"
+                ));
+                return Vec::new();
+            }
+            log(format_args!(
+                "rescheduling script diagnostics after an unrelated workspace update"
+            ));
+            return self.schedule_script_diagnostics_with_epoch(
+                &uri,
+                epoch,
+                attempt.saturating_add(1),
+            );
+        }
         let Some(document) = self.workspace.get_by_file(&done.stamp.file) else {
             return Vec::new();
         };

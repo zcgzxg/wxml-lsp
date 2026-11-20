@@ -759,6 +759,7 @@ mod tests {
         snapshot: Mutex<Arc<SourceSnapshot>>,
         script_text: Mutex<Arc<str>>,
         view_revision: Mutex<ViewRevision>,
+        project_revision: Mutex<ProjectRevision>,
         template_open: AtomicBool,
         shared_owner: bool,
     }
@@ -778,6 +779,7 @@ mod tests {
                 SnapshotId::new(1),
                 "<view>{{ user.name }}</view>",
             ));
+            let project_revision = ProjectRevision::new(project.clone(), 1);
             Self {
                 project,
                 wxml,
@@ -789,6 +791,7 @@ mod tests {
                 snapshot: Mutex::new(snapshot),
                 script_text: Mutex::new(Arc::from(script_text)),
                 view_revision: Mutex::new(ViewRevision::new(2)),
+                project_revision: Mutex::new(project_revision),
                 template_open: AtomicBool::new(template_open),
                 shared_owner: false,
             }
@@ -855,7 +858,10 @@ mod tests {
         }
 
         fn project_revision(&self) -> ProjectRevision {
-            ProjectRevision::new(self.project.clone(), 1)
+            self.project_revision
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
         }
 
         fn path_for_uri(&self, uri: &str) -> Result<wxml_project::ProjectPath, HostError> {
@@ -878,6 +884,7 @@ mod tests {
             match path.extension().map(str::to_ascii_lowercase).as_deref() {
                 Some("wxml") => DocumentRoute::Wxml(path),
                 Some("ts") => DocumentRoute::Script(path),
+                Some("json") => DocumentRoute::Json(path),
                 _ => DocumentRoute::Unknown,
             }
         }
@@ -907,8 +914,21 @@ mod tests {
             }
         }
 
-        fn open_document(&self, _open: OpenDocument) -> Result<HostUpdate, HostError> {
-            Ok(HostUpdate::default())
+        fn open_document(&self, open: OpenDocument) -> Result<HostUpdate, HostError> {
+            if self.route(&open.uri) != DocumentRoute::Json(self.path_for_uri(&open.uri)?) {
+                return Ok(HostUpdate::default());
+            }
+            let mut revision = self
+                .project_revision
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let next = revision.clone().next();
+            *revision = next.clone();
+            Ok(HostUpdate {
+                project_revision: Some(revision.clone()),
+                project: Some(self.project.clone()),
+                ..HostUpdate::default()
+            })
         }
 
         fn change_document(&self, _change: ChangeDocument) -> Result<HostUpdate, HostError> {
@@ -4394,6 +4414,59 @@ mod tests {
         let params = publish_params(&outgoing);
         assert_eq!(params["uri"], json!(SCRIPT_URI));
         assert_eq!(params["version"], json!(2));
+        assert_eq!(params["diagnostics"], json!([]));
+    }
+
+    #[test]
+    fn script_diagnostics_retry_after_an_unrelated_project_revision() {
+        let answer = DiagnosticsResult {
+            diagnostics: Vec::new(),
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x: string = 1;\n"));
+        let (mut server, dispatch) =
+            script_diagnostics_server(backend.clone(), host, "const x: string = 1;\n");
+        let old = take_script_diagnostics_job(&dispatch);
+
+        // Opening an unrelated JSON overlay advances the project revision. The
+        // script text is unchanged, so its in-flight check must be retried
+        // instead of silently disappearing.
+        assert!(
+            server
+                .handle_incoming(notification(
+                    "textDocument/didOpen",
+                    json!({
+                        "textDocument": {
+                            "uri": "file:///pages/index/app.json",
+                            "languageId": "json",
+                            "version": 1,
+                            "text": "{\"pages\":[]}",
+                        }
+                    }),
+                ))
+                .is_empty()
+        );
+        assert!(
+            finish_script_diagnostics_job(
+                &mut server,
+                &old,
+                Ok(run_script_diagnostics(&backend, &old))
+            )
+            .is_empty(),
+            "the stale result must not publish directly"
+        );
+
+        let retry = take_script_diagnostics_job(&dispatch);
+        assert_eq!(retry.attempt, 1);
+        assert_eq!(retry.stamp.revision, old.stamp.revision);
+        let outgoing = only(finish_script_diagnostics_job(
+            &mut server,
+            &retry,
+            Ok(run_script_diagnostics(&backend, &retry)),
+        ));
+        let params = publish_params(&outgoing);
+        assert_eq!(params["uri"], json!(SCRIPT_URI));
         assert_eq!(params["diagnostics"], json!([]));
     }
 
