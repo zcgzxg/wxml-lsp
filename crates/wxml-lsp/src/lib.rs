@@ -8,8 +8,8 @@
 //! `exit`, text document synchronization, `textDocument/hover`, optional
 //! `textDocument/definition`, push diagnostics and `$/cancelRequest` over
 //! stdio. Backend work runs on one background thread with revision barriers,
-//! cancellation and bounded queues. Project discovery and the real Node
-//! backend land in later waves; [`run_stdio`] is generic over
+//! cancellation and bounded queues. Project discovery and the native backend
+//! live in the sibling crates; [`run_stdio`] is generic over
 //! [`wxml_types::Backend`] so they can be plugged in without changing the
 //! protocol layer.
 //!
@@ -41,7 +41,11 @@
 // so `pub(crate)` is the accurate visibility and `pub` would be unreachable.
 #![allow(clippy::redundant_pub_crate)]
 
-pub mod backend_node;
+pub(crate) mod backend_tsgo;
+// Native backend only. `--stdio` without `--backend` selects it and falls back
+// to HostOnly only when the executable is not inside an installed package;
+// `--backend native` requires the verified install and fails closed. There is
+// no legacy Node backend and `--backend node` is rejected.
 pub(crate) mod completion;
 pub mod configuration;
 pub(crate) mod dependencies;
@@ -59,6 +63,17 @@ pub(crate) mod styles;
 pub(crate) mod workspace;
 
 pub use server::{ServerError, ServerOutcome, run_stdio, run_stdio_with_host, run_with_host};
+
+// Native startup. `run_stdio_native_default` is the default `--stdio` path: it
+// serves the verified install and degrades to HostOnly only when the executable
+// is not installed. `run_stdio_native` is the strict `--backend native` path.
+// `run_stdio_host_only` serves static WXML features without an engine and
+// answers type queries as unavailable. All exports report typed, path-free
+// failures.
+pub use backend_tsgo::{
+    EngineDiscoveryError, EnvironmentLoadError, NativeStartupError, SandboxError,
+    run_stdio_host_only, run_stdio_native, run_stdio_native_default,
+};
 
 /// Returns the version reported by `wxml-lsp --version`.
 #[must_use]

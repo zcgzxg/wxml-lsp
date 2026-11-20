@@ -1,6 +1,6 @@
 # 架构决策记录
 
-更新日期：2026-11-17。
+更新日期：2026-11-20。
 
 本目录记录 WXML LSP 的架构选择、替代方案、边界和后果。需求与实际实施进度见[项目 README](../../README.md)。
 
@@ -15,15 +15,18 @@
 | [0005](0005-self-contained-project-documentation.md) | 项目文档自包含与证据本地化 | accepted | 2026-11-15 |
 | [0006](0006-explicit-mini-program-roots.md) | 显式小程序根与类型项目根 | accepted | 2026-11-16 |
 | [0007](0007-local-delivery-trust-model.md) | 本地交付与安装信任模型 | accepted | 2026-11-17 |
+| [0008](0008-rust-tsgo-no-node-backend.md) | Rust + tsgo 类型后端与移除 Node 依赖 | accepted (native default; Node removed) | 2026-11-17；2026-11-20 accepted/removed |
+
+ADR-0008 于 2026-11-20 在 owner scope waiver（C-lite）下最终关闭为 `accepted`，并随 P7 删除完成写入 **Node removed**：接受 native 默认后端、**native engine + native gates + F3 + 合理行为测试**的验收口径和 P7 删除范围，**不声称旧 TS 逐条 parity**。默认 `--stdio` 已是 native（`NotInstalled` 时 HostOnly，损坏安装 fail closed）；Node 运行时、旧 TS 树、12 个 delete gate 与 v1 写路径已删除，11 个 retarget gate 保持 native-only。功能验收以 native engine、native gates（**40/40**，opt-in required job）、F3（16/0/0）和合理行为测试为准；台账终态为 109 `green` / 0 `planned` / 130 `reviewed` / 29 `waived` / 71 `retired-with-decision`，其中 `reviewed`/`waived`/`retired` 均非 green。删除后 release/install/Zed smoke 通过（Zed 16/16），无 Node/server.js；F-02 修复已落地，**2592 passed / 0 failed / 73 ignored 待 `p7-final-verification` 追加**（不是 tag 事实）；functional P1 fixed / P2 known，stability 4 implemented / 1 blocked；第三方许可 155/155（144 本地 + 11 SPDX），首方 LICENSE BLOCKED、对外发布 BLOCKED（内部安装可用）。最终验收清单见 [2026-11-20 P7 最终文档](../evidence/2026-11-20-tsgo-p7-final-docs.md)（**PASS-with-followup**）。
 
 ## 阅读与维护约定
 
-1. 按 0001 → 0007 阅读；并行任务同时阅读其依赖的 ADR。
+1. 按 0001 → 0008 阅读；并行任务同时阅读其依赖的 ADR。
 2. ADR-0001..0005 整理自 2026-11-15 的总体设计会话，其历史实现基线是 Rust workspace、文本坐标模块和 CLI 脚手架；ADR-0006 记录 2026-11-16 的显式根配置决策；ADR-0007 记录 2026-11-17 的本地交付与安装信任模型。当前实施进度见项目 README，不从历史背景推断。
 3. 架构边界以有效的 ADR 为准；需求以项目 README 为依据；已支持能力必须以实际代码、测试及编辑器验证记录为依据。
 4. ADR-0001 统一原 README 与 Cargo 注释中相互冲突的 crate 依赖描述。该决策没有自动添加 Cargo 依赖。
 5. 工作包表是决策时的交付基线，日常实施进度维护在项目 README；不要通过改写 ADR 将待验证设计追记为既有事实。
 6. 需求与功能基线维护在 `docs/reference/`，实验证据维护在 `docs/evidence/`，外部来源和许可证集中记录在 `docs/reference/provenance.md`；外部项目或临时目录不作为需求依据。
-7. 后续改变已采用的关键决策时新增 ADR；整体替代时将原记录标为 `superseded by ADR-NNNN`，局部补充或替代时仅在相关条目链接新记录，保留原来的决策背景和其余有效决定。ADR-0006 仅补充/替代 0001、0003 的根配置及项目选择部分。
+7. 后续改变已采用的关键决策时新增 ADR；整体替代时将原记录标为 `superseded by ADR-NNNN`，局部补充或替代时仅在相关条目链接新记录，保留原来的决策背景和其余有效决定。ADR-0006 仅补充/替代 0001、0003 的根配置及项目选择部分。ADR-0008 仅替代 0001/0002/0003/0006/0007 中与 Node 运行时、类型桥实现、协议和安装前置相关的部分，保留其余有效决定；当前状态为 `accepted (native default; Node removed)`，G7 逐条 parity 仍以实施计划为准。
 
 新增记录使用下一个四位编号；手工编写可复制 [template.md](template.md)。可用状态为 `proposed`、`accepted`、`deprecated`、`superseded by ADR-NNNN`。

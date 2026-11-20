@@ -78,6 +78,103 @@ pub fn is_prerelease(version: &str) -> bool {
         .is_some_and(|(_, suffix)| !suffix.is_empty())
 }
 
+/// Validates strict semantic versioning (`MAJOR.MINOR.PATCH[-pre][+build]`).
+///
+/// Unlike [`Semver::parse`], this rejects a leading `v`, whitespace, missing
+/// components, leading zeroes in the numeric core or numeric pre-release
+/// identifiers, and empty dot-separated identifiers.
+///
+/// # Errors
+///
+/// Returns [`DeliveryError::InvalidArgument`] for a non-semver value.
+pub fn validate_strict(input: &str) -> Result<()> {
+    if input.is_empty() || input.len() > 128 {
+        return Err(DeliveryError::InvalidArgument(
+            "version must be 1-128 bytes".to_owned(),
+        ));
+    }
+    if input.trim() != input || input.starts_with('v') {
+        return Err(DeliveryError::InvalidArgument(format!(
+            "`{input}` is not a strict semantic version"
+        )));
+    }
+    let (without_build, build) = match input.split_once('+') {
+        Some((core, build)) => {
+            if build.is_empty() || build.contains('+') {
+                return Err(DeliveryError::InvalidArgument(format!(
+                    "`{input}` has a malformed build suffix"
+                )));
+            }
+            (core, Some(build))
+        }
+        None => (input, None),
+    };
+    let (core, prerelease) = match without_build.split_once('-') {
+        Some((core, pre)) => {
+            if pre.is_empty() {
+                return Err(DeliveryError::InvalidArgument(format!(
+                    "`{input}` has a malformed pre-release suffix"
+                )));
+            }
+            (core, Some(pre))
+        }
+        None => (without_build, None),
+    };
+    let mut parts = core.split('.');
+    for _ in 0..3 {
+        let part = parts.next().ok_or_else(|| {
+            DeliveryError::InvalidArgument(format!("`{input}` is not a semantic version"))
+        })?;
+        if part.is_empty()
+            || !part.bytes().all(|byte| byte.is_ascii_digit())
+            || (part.len() > 1 && part.starts_with('0'))
+        {
+            return Err(DeliveryError::InvalidArgument(format!(
+                "`{input}` is not a semantic version"
+            )));
+        }
+    }
+    if parts.next().is_some() {
+        return Err(DeliveryError::InvalidArgument(format!(
+            "`{input}` is not a semantic version"
+        )));
+    }
+    if let Some(pre) = prerelease {
+        for identifier in pre.split('.') {
+            if !valid_identifier(identifier) {
+                return Err(DeliveryError::InvalidArgument(format!(
+                    "`{input}` has a malformed pre-release identifier"
+                )));
+            }
+            if identifier.bytes().all(|byte| byte.is_ascii_digit())
+                && identifier.len() > 1
+                && identifier.starts_with('0')
+            {
+                return Err(DeliveryError::InvalidArgument(format!(
+                    "`{input}` has a numeric pre-release with a leading zero"
+                )));
+            }
+        }
+    }
+    if let Some(build) = build {
+        for identifier in build.split('.') {
+            if !valid_identifier(identifier) {
+                return Err(DeliveryError::InvalidArgument(format!(
+                    "`{input}` has a malformed build identifier"
+                )));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn valid_identifier(identifier: &str) -> bool {
+    !identifier.is_empty()
+        && identifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+}
+
 /// Orders two version strings by numeric core, then by `SemVer` pre-release rules.
 #[must_use]
 pub fn compare_versions(left: &str, right: &str) -> Ordering {
@@ -184,5 +281,37 @@ mod tests {
         );
         assert!(Semver::parse("24.1.0").unwrap() > Semver::parse("24.0.9").unwrap());
         assert_eq!(compare_versions("0.2.0", "0.10.0"), Ordering::Less);
+    }
+
+    #[test]
+    fn strict_semver_rejects_loose_or_malformed_values() {
+        for value in [
+            "",
+            "v0.1.0",
+            " 0.1.0",
+            "0.1.0 ",
+            "0.1",
+            "0.1.0.0",
+            "01.1.0",
+            "0.01.0",
+            "0.1.00",
+            "0.1.0-",
+            "0.1.0-01",
+            "0.1.0-rc..1",
+            "0.1.0+",
+            "0.1.0+build+more",
+        ] {
+            assert!(validate_strict(value).is_err(), "{value}");
+        }
+        for value in [
+            "0.1.0",
+            "7.1.0-beta",
+            "1.2.3-rc.1",
+            "1.2.3+build.01",
+            "1.2.3-rc-1+build-2",
+            "0.1.0-rc.1+build.1.2",
+        ] {
+            validate_strict(value).unwrap();
+        }
     }
 }

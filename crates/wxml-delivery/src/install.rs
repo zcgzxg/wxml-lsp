@@ -9,7 +9,7 @@ use crate::error::{DeliveryError, Result};
 use crate::manifest::{ExpectedManifest, Manifest, set_mode};
 use crate::paths::{host_platform, validate_version};
 use crate::semver::compare_versions;
-use crate::verify::{check_backend, check_binary, verify_tree};
+use crate::verify::verify_tree;
 
 /// Environment variable that always wins over the installed server.
 pub const BINARY_ENV: &str = "WXML_LSP_BIN";
@@ -110,6 +110,7 @@ impl InstallRoot {
     /// Returns an error when the directory cannot be created.
     pub fn new_temp_dir(&self, prefix: &str) -> Result<PathBuf> {
         let tmp = self.tmp_dir();
+        ensure_real_directory_or_missing(&tmp, "temporary directory")?;
         let existed = tmp.exists();
         std::fs::create_dir_all(&tmp).map_err(|error| DeliveryError::io(&tmp, error))?;
         if !existed {
@@ -166,6 +167,7 @@ impl InstallRoot {
     /// Returns an error when the versions directory cannot be read.
     pub fn versions(&self) -> Result<Vec<String>> {
         let directory = self.versions_dir();
+        ensure_real_directory_or_missing(&directory, "versions directory")?;
         let entries = match std::fs::read_dir(&directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -271,88 +273,41 @@ impl InstallRoot {
         )
     }
 
-    /// Installs an already verified extraction tree and activates it.
-    ///
-    /// The tree must live under this root's `tmp/` directory so the rename is
-    /// atomic. On success the `current` link is switched after the version
-    /// directory is complete.
+    /// Atomically switches `current` and treats a missing fsync as an error.
     ///
     /// # Errors
     ///
-    /// Returns an error when the tree is outside the root, verification fails,
-    /// or the atomic rename or link update fails.
-    pub fn install_tree(&self, tree: &Path, version: &str) -> Result<InstallOutcome> {
-        validate_version(version)?;
-        let platform = host_platform()?;
-        let canonical_tree =
-            std::fs::canonicalize(tree).map_err(|error| DeliveryError::io(tree, error))?;
-        let canonical_tmp = std::fs::canonicalize(self.tmp_dir())
-            .map_err(|error| DeliveryError::io(&self.tmp_dir(), error))?;
-        if !canonical_tree.starts_with(&canonical_tmp) {
-            return Err(DeliveryError::InstallState(
-                "staging tree is outside the install root".to_owned(),
-            ));
+    /// Returns an error when the link cannot be replaced or the directory
+    /// fsync fails after the replacement.
+    pub fn switch_durable(&self, version: &str) -> Result<()> {
+        match self.switch(version)? {
+            SwitchOutcome::Switched => Ok(()),
+            SwitchOutcome::SwitchedButNotDurable => Err(DeliveryError::InstallState(
+                "current was switched but the install root fsync failed".to_owned(),
+            )),
         }
-        let manifest = verify_tree(
-            &canonical_tree,
-            ExpectedManifest {
-                version: Some(version),
-                platform: Some(&platform),
-                protocol_version: None,
-            },
-        )?;
-
-        // Runtime checks happen on the staged tree, before it can become
-        // active. A bad binary or backend must not replace a working version.
-        check_binary(&canonical_tree, &manifest)?;
-        check_backend(&canonical_tree, &manifest)?;
-
-        let versions = self.versions_dir();
-        let versions_existed = versions.exists();
-        std::fs::create_dir_all(&versions).map_err(|error| DeliveryError::io(&versions, error))?;
-        if !versions_existed {
-            set_mode(&versions, 0o755)?;
-        }
-        let destination = versions.join(version);
-        if destination.exists() {
-            if let Ok(existing) = self.verify_installed(version) {
-                if same_payload(&existing, &manifest) {
-                    check_binary(&destination, &existing)?;
-                    check_backend(&destination, &existing)?;
-                    let _ = std::fs::remove_dir_all(&canonical_tree);
-                    self.switch(version)?;
-                    return Ok(InstallOutcome::AlreadyInstalled);
-                }
-                return Err(DeliveryError::InstallState(format!(
-                    "version {version} is already installed with different contents; \
-                     remove that version or rebuild with a new version number"
-                )));
-            }
-            let broken = self.new_temp_dir("broken")?;
-            let _ = std::fs::remove_dir(&broken);
-            std::fs::rename(&destination, &broken)
-                .map_err(|error| DeliveryError::io(&destination, error))?;
-            let _ = std::fs::remove_dir_all(&broken);
-        }
-        std::fs::rename(&canonical_tree, &destination)
-            .map_err(|error| DeliveryError::io(&destination, error))?;
-        set_mode(&destination, 0o755)?;
-        self.switch(version)?;
-        Ok(InstallOutcome::Installed)
     }
 
     /// Atomically switches the `current` symlink to `version`.
+    ///
+    /// A rename failure means `current` was not changed. A directory fsync
+    /// failure is reported as [`SwitchOutcome::SwitchedButNotDurable`]: the
+    /// link was replaced, but its persistence across a power loss is unknown.
     ///
     /// # Errors
     ///
     /// Returns an error when the version is not installed or the link cannot be
     /// replaced.
-    pub fn switch(&self, version: &str) -> Result<()> {
+    pub fn switch(&self, version: &str) -> Result<SwitchOutcome> {
         validate_version(version)?;
-        if !self.versions_dir().join(version).is_dir() {
-            return Err(DeliveryError::InstallState(format!(
-                "version {version} is not installed"
-            )));
+        let version_dir = self.versions_dir().join(version);
+        match std::fs::symlink_metadata(&version_dir) {
+            Ok(metadata) if metadata.file_type().is_dir() => {}
+            _ => {
+                return Err(DeliveryError::InstallState(format!(
+                    "version {version} is not installed"
+                )));
+            }
         }
         #[cfg(unix)]
         {
@@ -370,7 +325,13 @@ impl InstallRoot {
                 let _ = std::fs::remove_file(&temporary);
                 return Err(DeliveryError::io(&self.path.join("current"), error));
             }
-            Ok(())
+            let Ok(directory) = File::open(&self.path) else {
+                return Ok(SwitchOutcome::SwitchedButNotDurable);
+            };
+            match directory.sync_all() {
+                Ok(()) => Ok(SwitchOutcome::Switched),
+                Err(_) => Ok(SwitchOutcome::SwitchedButNotDurable),
+            }
         }
         #[cfg(not(unix))]
         {
@@ -378,6 +339,20 @@ impl InstallRoot {
                 "the installer currently supports Unix hosts only".to_owned(),
             ))
         }
+    }
+}
+
+fn ensure_real_directory_or_missing(path: &Path, label: &str) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => Err(DeliveryError::InstallState(
+            format!("{label} must not be a symbolic link"),
+        )),
+        Ok(metadata) if !metadata.file_type().is_dir() => Err(DeliveryError::InstallState(
+            format!("{label} is not a directory"),
+        )),
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(DeliveryError::io(path, error)),
     }
 }
 
@@ -389,23 +364,14 @@ fn is_forbidden_root(path: &Path) -> bool {
         .any(|candidate| candidate == path)
 }
 
-/// Compares installed payloads without treating the build timestamp as content.
-fn same_payload(left: &Manifest, right: &Manifest) -> bool {
-    left.package_version == right.package_version
-        && left.platform == right.platform
-        && left.protocol_version == right.protocol_version
-        && left.node == right.node
-        && left.binaries == right.binaries
-        && left.files == right.files
-}
-
-/// Result of installing one version.
+/// Result of an atomic `current` switch.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InstallOutcome {
-    /// A new version directory was created and activated.
-    Installed,
-    /// The same verified version was already installed.
-    AlreadyInstalled,
+pub enum SwitchOutcome {
+    /// The link was replaced and the root directory was fsynced.
+    Switched,
+    /// The link was replaced, but the directory fsync failed. Callers must not
+    /// treat this as "not switched" or delete the transaction journal.
+    SwitchedButNotDurable,
 }
 
 /// Holds the exclusive install lock until dropped.
@@ -437,6 +403,36 @@ pub fn explicit_binary() -> Result<Option<PathBuf>> {
         DeliveryError::InstallState(format!("{BINARY_ENV} is set but is not valid UTF-8"))
     })?;
     validate_explicit_binary(&raw).map(Some)
+}
+
+/// Library helper that turns a set `WXML_LSP_BIN` into a hard error before a
+/// native mutating operation.
+///
+/// The `wxml-lsp-install` CLI reports the explicit path and returns success
+/// instead, so it validates [`explicit_binary`] itself. CLI users lose nothing:
+/// both paths validate the variable and never fall back to an install when it
+/// is set.
+///
+/// # Errors
+///
+/// Returns [`DeliveryError::InstallState`] when the variable is set.
+pub fn ensure_no_explicit_binary(operation: &str) -> Result<()> {
+    check_explicit_binary_precedence(explicit_binary()?.as_deref(), operation)
+}
+
+/// Pure precedence check used by the native state machine and tests.
+///
+/// # Errors
+///
+/// Returns [`DeliveryError::InstallState`] when `explicit` is `Some`.
+pub fn check_explicit_binary_precedence(explicit: Option<&Path>, operation: &str) -> Result<()> {
+    if let Some(path) = explicit {
+        return Err(DeliveryError::InstallState(format!(
+            "{BINARY_ENV} is set; explicit binary `{}` takes precedence, so native {operation} is skipped",
+            crate::error::display_name(path)
+        )));
+    }
+    Ok(())
 }
 
 fn validate_explicit_binary(raw: &str) -> Result<PathBuf> {
@@ -532,103 +528,6 @@ mod tests {
     #[test]
     fn rejects_canonical_aliases_of_the_filesystem_root() {
         assert!(InstallRoot::create(Path::new("/tmp/..")).is_err());
-    }
-
-    #[test]
-    fn install_tree_rejects_a_tree_outside_the_root() {
-        let base = scratch("outside");
-        let root = InstallRoot::create(&base.join("root")).unwrap();
-        let outside = base.join("tree");
-        std::fs::create_dir_all(&outside).unwrap();
-        assert!(root.install_tree(&outside, "0.1.0").is_err());
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn missing_backend_dependency_is_rejected_before_activation() {
-        use crate::manifest::{
-            ArtifactKind, BinaryArtifact, FileEntry, Manifest, NodeInfo, PACKAGE_NAME,
-            SCHEMA_VERSION, atomic_write, sha256_file,
-        };
-        use crate::verify::checksums_for_tree;
-
-        let base = scratch("backend-order");
-        let root = InstallRoot::create(&base.join("root")).unwrap();
-        let tree = root.new_temp_dir("stage").unwrap();
-        std::fs::create_dir_all(tree.join("bin")).unwrap();
-        std::fs::create_dir_all(tree.join("bin/wxml-type-backend")).unwrap();
-        std::fs::write(
-            tree.join("bin/wxml-lsp"),
-            b"#!/bin/sh\nprintf 'wxml-lsp 0.1.0\\n'\n",
-        )
-        .unwrap();
-        set_mode(&tree.join("bin/wxml-lsp"), 0o755).unwrap();
-        std::fs::write(
-            tree.join("bin/wxml-type-backend/server.js"),
-            b"console.log('backend');\n",
-        )
-        .unwrap();
-        let binary_hash = sha256_file(&tree.join("bin/wxml-lsp")).unwrap();
-        let backend_hash = sha256_file(&tree.join("bin/wxml-type-backend/server.js")).unwrap();
-        let manifest = Manifest {
-            schema_version: SCHEMA_VERSION,
-            package: PACKAGE_NAME.to_owned(),
-            package_version: "0.1.0".to_owned(),
-            platform: host_platform().unwrap(),
-            protocol_version: 2,
-            node: NodeInfo {
-                minimum_version: "24.0.0".to_owned(),
-                backend_version: "0.1.0".to_owned(),
-            },
-            built_at: "2026-01-01T00:00:00Z".to_owned(),
-            binaries: vec![
-                BinaryArtifact {
-                    kind: ArtifactKind::Rust,
-                    name: "wxml-lsp".to_owned(),
-                    path: "bin/wxml-lsp".to_owned(),
-                    version: "0.1.0".to_owned(),
-                    protocol_version: None,
-                    sha256: binary_hash,
-                },
-                BinaryArtifact {
-                    kind: ArtifactKind::NodeBackend,
-                    name: "node-backend".to_owned(),
-                    path: "bin/wxml-type-backend/server.js".to_owned(),
-                    version: "0.1.0".to_owned(),
-                    protocol_version: Some(2),
-                    sha256: backend_hash,
-                },
-            ],
-            files: vec![
-                FileEntry {
-                    path: "bin/wxml-lsp".to_owned(),
-                    sha256: sha256_file(&tree.join("bin/wxml-lsp")).unwrap(),
-                    size: std::fs::metadata(tree.join("bin/wxml-lsp")).unwrap().len(),
-                    mode: "0755".to_owned(),
-                },
-                FileEntry {
-                    path: "bin/wxml-type-backend/server.js".to_owned(),
-                    sha256: sha256_file(&tree.join("bin/wxml-type-backend/server.js")).unwrap(),
-                    size: std::fs::metadata(tree.join("bin/wxml-type-backend/server.js"))
-                        .unwrap()
-                        .len(),
-                    mode: "0644".to_owned(),
-                },
-            ],
-        };
-        atomic_write(
-            &tree.join("manifest.json"),
-            &manifest.to_json().unwrap(),
-            0o644,
-        )
-        .unwrap();
-        let checksums = checksums_for_tree(&tree, &manifest).unwrap();
-        atomic_write(&tree.join("SHA256SUMS"), &checksums, 0o644).unwrap();
-        let error = root.install_tree(&tree, "0.1.0").unwrap_err();
-        assert!(matches!(error, DeliveryError::Runtime(_)), "{error:?}");
-        assert!(root.current_version().unwrap().is_none());
-        assert!(!root.versions_dir().exists());
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

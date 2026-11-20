@@ -13,16 +13,15 @@ const LANGUAGE_SERVER_ID: &str = "wxml-lsp";
 /// Absolute host path to a locally built `wxml-lsp` binary.
 const BINARY_ENV: &str = "WXML_LSP_BIN";
 
-/// Backend/type-checker variables forwarded to the server when the user has
-/// exported them in the shell Zed inherited. Values are not interpreted here;
-/// `wxml-lsp` validates and rejects relative paths itself.
-const FORWARDED_ENV: [&str; 5] = [
-    "WXML_TYPE_BACKEND",
-    "WXML_BACKEND_DIR",
-    "WXML_NODE",
-    "WXML_ANALYZE_TIMEOUT_MS",
-    "WXML_TEMPLATE_CHECK",
-];
+/// Environment variables added to the language server command.
+///
+/// Intentionally empty. `WXML_LSP_BIN` is consumed by the extension itself
+/// (see [`resolve_binary`]) and is not passed through. The legacy Node
+/// variables (`WXML_TYPE_BACKEND`, `WXML_BACKEND_DIR`, `WXML_NODE`) and the
+/// removed Node-era tuning variables (`WXML_ANALYZE_TIMEOUT_MS`,
+/// `WXML_TEMPLATE_CHECK`) are never injected: `wxml-lsp` does not read them,
+/// so setting them has no effect.
+const FORWARDED_ENV: [&str; 0] = [];
 
 struct WxmlExtension;
 
@@ -225,9 +224,12 @@ fn env_lookup<'a>(shell_env: &'a [(String, String)], key: &str) -> Option<&'a st
         .map(|(_, value)| value.as_str())
 }
 
-/// Copies only the documented backend variables. This is not a redaction
-/// boundary: Zed may still merge the full shell environment when spawning the
-/// language server.
+/// Copies the documented forwarding variables from the shell environment.
+///
+/// [`FORWARDED_ENV`] is empty, so the result is always empty. This is not a
+/// redaction boundary: Zed may still merge the full shell environment when
+/// spawning the language server, and the server ignores the removed Node-era
+/// variables anyway.
 fn forwarded_env(shell_env: &[(String, String)]) -> Vec<(String, String)> {
     FORWARDED_ENV
         .iter()
@@ -678,25 +680,37 @@ mod tests {
     }
 
     #[test]
-    fn forwards_only_documented_backend_variables() {
+    fn forwards_no_environment_variables() {
         let env = vec![
             (
                 "WXML_TYPE_BACKEND".to_owned(),
                 "/opt/wxml/server.js".to_owned(),
             ),
-            ("PATH".to_owned(), "/usr/bin".to_owned()),
+            ("WXML_BACKEND_DIR".to_owned(), "/opt/wxml".to_owned()),
             ("WXML_NODE".to_owned(), "node".to_owned()),
+            ("WXML_LSP_BIN".to_owned(), "/opt/wxml-lsp".to_owned()),
+            ("WXML_ANALYZE_TIMEOUT_MS".to_owned(), "1500".to_owned()),
+            ("WXML_TEMPLATE_CHECK".to_owned(), "off".to_owned()),
+            ("PATH".to_owned(), "/usr/bin".to_owned()),
         ];
-        let forwarded = forwarded_env(&env);
-        assert_eq!(
-            forwarded,
-            vec![
-                (
-                    "WXML_TYPE_BACKEND".to_owned(),
-                    "/opt/wxml/server.js".to_owned()
-                ),
-                ("WXML_NODE".to_owned(), "node".to_owned()),
-            ]
+
+        assert!(
+            forwarded_env(&env).is_empty(),
+            "the extension must not inject any environment variable"
         );
+        assert!(FORWARDED_ENV.is_empty());
+
+        for removed in [
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_NODE",
+            "WXML_ANALYZE_TIMEOUT_MS",
+            "WXML_TEMPLATE_CHECK",
+        ] {
+            assert!(
+                !FORWARDED_ENV.contains(&removed),
+                "{removed} must not be forwarded by the Zed extension"
+            );
+        }
     }
 }

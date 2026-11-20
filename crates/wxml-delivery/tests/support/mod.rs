@@ -5,6 +5,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 #![allow(clippy::assert_is_empty)]
 
+pub mod legacy_fixture;
+
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -13,9 +15,6 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-
-use wxml_delivery::manifest::set_mode;
-use wxml_delivery::package::{BuildOptions, BuildReport, build_package};
 
 /// A unique test directory below `/tmp/opencode` when available.
 pub struct TempDir {
@@ -48,137 +47,10 @@ impl Drop for TempDir {
     }
 }
 
-pub fn host_platform() -> String {
-    wxml_delivery::paths::host_platform().expect("host platform")
-}
-
-/// Creates a fake staged package tree whose `wxml-lsp` prints `version`.
-pub fn fake_input(base: &Path, version: &str) -> PathBuf {
-    fake_input_with_binary(base, version, version)
-}
-
-/// Creates a fake staged package tree whose binary reports `binary_output`
-/// while the release/manifest version is `version`.
-pub fn fake_input_with_binary(base: &Path, version: &str, binary_output: &str) -> PathBuf {
-    let root = base.join(format!("input-{version}-{binary_output}"));
-    std::fs::create_dir_all(root.join("bin/wxml-type-backend/node_modules/typescript")).unwrap();
-    std::fs::create_dir_all(
-        root.join("bin/wxml-type-backend/node_modules/miniprogram-api-typings"),
-    )
-    .unwrap();
-    std::fs::create_dir_all(root.join("zed-extension/languages/wxml")).unwrap();
-    let script = format!(
-        "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'wxml-lsp {binary_output}\\n'; exit 0; fi\nexit 0\n"
-    );
-    std::fs::write(root.join("bin/wxml-lsp"), script).unwrap();
-    set_mode(&root.join("bin/wxml-lsp"), 0o755).unwrap();
-    std::fs::write(
-        root.join("bin/wxml-lsp-install"),
-        format!("#!/bin/sh\nprintf 'wxml-lsp-install {version}\\n'\n"),
-    )
-    .unwrap();
-    set_mode(&root.join("bin/wxml-lsp-install"), 0o755).unwrap();
-    std::fs::write(
-        root.join("bin/wxml-type-backend/server.js"),
-        b"console.log('fake backend');\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("bin/wxml-type-backend/node_modules/typescript/package.json"),
-        b"{}\n",
-    )
-    .unwrap();
-    std::fs::write(
-        root.join("bin/wxml-type-backend/node_modules/miniprogram-api-typings/package.json"),
-        b"{}\n",
-    )
-    .unwrap();
-    std::fs::write(root.join("zed-extension/extension.wasm"), b"\0asm").unwrap();
-    std::fs::write(
-        root.join("zed-extension/extension.toml"),
-        b"id = \"wxml-lsp\"\n",
-    )
-    .unwrap();
-    root
-}
-
-/// Builds one release package into `output`.
-pub fn pack(output: &Path, version: &str) -> BuildReport {
-    pack_with(output, version, 2, &host_platform())
-}
-
-pub fn pack_with(output: &Path, version: &str, protocol: u64, platform: &str) -> BuildReport {
-    let base = output.parent().expect("output parent");
-    let input = fake_input(base, version);
-    build_package(&BuildOptions {
-        input,
-        output: output.to_path_buf(),
-        release_version: version.to_owned(),
-        platform: platform.to_owned(),
-        protocol_version: protocol,
-        node_minimum: "24.0.0".to_owned(),
-        backend_version: "0.1.0".to_owned(),
-        zed_version: Some("0.0.1".to_owned()),
-        built_at: "2026-01-01T00:00:00Z".to_owned(),
-        mtime: 0,
-        force: true,
-        dry_run: false,
-    })
-    .expect("build package")
-}
-
-/// Builds a package with a binary that reports a different version.
-pub fn pack_broken_binary(output: &Path, version: &str, binary_output: &str) -> BuildReport {
-    let base = output.parent().expect("output parent");
-    let input = fake_input_with_binary(base, version, binary_output);
-    build_package(&BuildOptions {
-        input,
-        output: output.to_path_buf(),
-        release_version: version.to_owned(),
-        platform: host_platform(),
-        protocol_version: 2,
-        node_minimum: "24.0.0".to_owned(),
-        backend_version: "0.1.0".to_owned(),
-        zed_version: Some("0.0.1".to_owned()),
-        built_at: "2026-01-01T00:00:00Z".to_owned(),
-        mtime: 0,
-        force: true,
-        dry_run: false,
-    })
-    .expect("build package")
-}
-
-/// Builds a package with one extra payload file (same version re-release).
-pub fn pack_with_extra(output: &Path, version: &str, path: &str, bytes: &[u8]) -> BuildReport {
-    let base = output.parent().expect("output parent");
-    let input = fake_input(base, version);
-    let extra = input.join(path);
-    if let Some(parent) = extra.parent() {
-        std::fs::create_dir_all(parent).unwrap();
-    }
-    std::fs::write(&extra, bytes).unwrap();
-    build_package(&BuildOptions {
-        input,
-        output: output.to_path_buf(),
-        release_version: version.to_owned(),
-        platform: host_platform(),
-        protocol_version: 2,
-        node_minimum: "24.0.0".to_owned(),
-        backend_version: "0.1.0".to_owned(),
-        zed_version: Some("0.0.1".to_owned()),
-        built_at: "2026-01-01T00:00:00Z".to_owned(),
-        mtime: 0,
-        force: true,
-        dry_run: false,
-    })
-    .expect("build package")
-}
-
-/// Builds several versions into one release output directory.
-pub fn pack_versions(output: &Path, versions: &[&str]) {
-    for version in versions {
-        pack(output, version);
-    }
+/// Builds one schema v1 legacy release fixture into `output` and returns the
+/// versioned release directory. Test-only: the production v1 packager is gone.
+pub fn pack(output: &Path, version: &str) -> PathBuf {
+    legacy_fixture::build_legacy_release(output, version, None).release_dir
 }
 
 #[derive(Clone)]
@@ -354,11 +226,17 @@ where
     let _ = stream.write_all(&route.body);
 }
 
-/// Returns the installer command with a clean `WXML_LSP_BIN`.
+/// Returns the installer command with legacy/Node activation variables cleared.
 pub fn installer() -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_wxml-lsp-install"));
-    command.env_remove("WXML_LSP_BIN");
-    command.env_remove("WXML_NODE");
+    for name in [
+        "WXML_LSP_BIN",
+        "WXML_NODE",
+        "WXML_TYPE_BACKEND",
+        "WXML_BACKEND_DIR",
+    ] {
+        command.env_remove(name);
+    }
     command
 }
 

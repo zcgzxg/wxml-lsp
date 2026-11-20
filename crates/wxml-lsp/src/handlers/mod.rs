@@ -10,6 +10,9 @@ pub(crate) mod lifecycle;
 pub(crate) mod mode_diagnostics;
 pub(crate) mod styles;
 
+#[cfg(test)]
+mod capability_gate_tests;
+
 use serde_json::{Map, Value};
 use wxml_text::{Position, SourceRange};
 use wxml_types::{CapabilityStatus, DiagnosticSeverity, TypeQuality};
@@ -96,6 +99,20 @@ pub(crate) fn position_value(position: Position) -> Value {
 /// own line index. Returns `None` instead of clamping invalid bounds.
 pub(crate) fn source_range_value(document: &Document, range: SourceRange) -> Option<Value> {
     line_index_range_value(document.snapshot().line_index(), range)
+}
+
+/// FNV-1a over the complete document text.
+///
+/// Script diagnostics are scheduled with this hash and the server re-hashes the
+/// current workspace text before publishing, so a late result can never be
+/// shown against different content even if its revision bookkeeping is wrong.
+pub(crate) fn content_hash(text: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// Converts a byte range in any indexed text into an LSP range.
@@ -313,6 +330,20 @@ pub(crate) const fn status_label(status: &CapabilityStatus) -> &'static str {
         CapabilityStatus::Unknown { .. } => "unknown",
         _ => "unknown",
     }
+}
+
+/// Returns `true` when a backend capability can answer requests.
+///
+/// [`CapabilityStatus::Partial`] is available: the backend answers some
+/// inputs and reports the limits on each result, so it must still receive the
+/// request. `Unsupported`, `Disabled`, `Unavailable` and `Unknown` cannot
+/// answer; dispatching them would turn a known gap into a misleading empty
+/// result.
+pub(crate) const fn backend_available(status: &CapabilityStatus) -> bool {
+    matches!(
+        status,
+        CapabilityStatus::Supported | CapabilityStatus::Partial { .. }
+    )
 }
 
 /// Stable label for a type quality.

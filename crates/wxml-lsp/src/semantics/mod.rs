@@ -24,6 +24,8 @@ impl Default for SemanticToolsConfig {
         }
     }
 }
+pub(crate) mod event_definition;
+pub(crate) mod event_diagnostics;
 pub(crate) mod facts;
 pub(crate) mod handlers;
 pub(crate) mod hints;

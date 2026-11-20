@@ -44,8 +44,15 @@ fn parse_count() -> usize {
 use serde_json::{Value, json};
 use wxml_syntax::parser::{NodeId, NodeKind, SyntaxTree};
 use wxml_text::{LineIndex, SourceRange, TextRange};
+use wxml_types::{
+    BackendEpoch, BackendError, CapabilityStatus, DocumentSymbolKind, DocumentSymbolsResult,
+    RequestContext,
+};
 
-use crate::jsonrpc::{self, Outgoing};
+use crate::handlers::line_index_range_value;
+use crate::jsonrpc::{self, Outgoing, RequestKey};
+use crate::project_host::DocumentRoute;
+use crate::scheduler::{DocumentSymbolsScope, Job, JobKind, Outcome, SubmitError, WorkDone};
 use crate::server::{Server, log};
 
 /// Largest number of folding ranges returned for one document.
@@ -639,6 +646,141 @@ fn flatten_symbol(
     true
 }
 
+/// Serializes a backend document-symbol result for one script document.
+///
+/// Returns `None` if any kind or range cannot be represented, so the caller
+/// returns `[]` instead of a half-serialized outline. Hierarchical clients get
+/// `DocumentSymbol` with `range`, `selectionRange` and `children`; other clients
+/// get flat `SymbolInformation` whose `location.uri` is the requested script.
+///
+/// Truncation and gaps are not padded with placeholders: the decoded subset is
+/// returned exactly as the backend reported it. The backend owns the
+/// partial/unsupported status; this serializer only refuses invalid positions.
+fn script_symbol_values(
+    result: &DocumentSymbolsResult,
+    line_index: &LineIndex,
+    uri: &str,
+    hierarchical: bool,
+) -> Option<Vec<Value>> {
+    let mut values = Vec::with_capacity(result.symbols.len());
+    for symbol in &result.symbols {
+        if hierarchical {
+            values.push(hierarchical_script_symbol(line_index, symbol)?);
+        } else if !flatten_script_symbol(line_index, uri, symbol, None, &mut values) {
+            return None;
+        }
+    }
+    Some(values)
+}
+
+/// Serializes one hierarchical `DocumentSymbol` and its descendants.
+fn hierarchical_script_symbol(
+    line_index: &LineIndex,
+    symbol: &wxml_types::DocumentSymbol,
+) -> Option<Value> {
+    if !script_symbol_ranges_are_valid(symbol) {
+        return None;
+    }
+    let kind = script_symbol_kind(symbol.kind)?;
+    let range = line_index_range_value(line_index, symbol.range)?;
+    let selection_range = line_index_range_value(line_index, symbol.selection_range)?;
+    let mut children = Vec::with_capacity(symbol.children.len());
+    for child in &symbol.children {
+        children.push(hierarchical_script_symbol(line_index, child)?);
+    }
+    let mut value = json!({
+        "name": symbol.name,
+        "kind": kind,
+        "range": range,
+        "selectionRange": selection_range,
+    });
+    if !children.is_empty() {
+        value
+            .as_object_mut()?
+            .insert("children".to_owned(), Value::Array(children));
+    }
+    Some(value)
+}
+
+/// Serializes one flat `SymbolInformation` and its descendants.
+///
+/// Returns `false` if any kind or range is invalid; the caller then drops the
+/// whole result instead of returning a partial outline.
+fn flatten_script_symbol(
+    line_index: &LineIndex,
+    uri: &str,
+    symbol: &wxml_types::DocumentSymbol,
+    container: Option<&str>,
+    output: &mut Vec<Value>,
+) -> bool {
+    if !script_symbol_ranges_are_valid(symbol) {
+        return false;
+    }
+    let Some(kind) = script_symbol_kind(symbol.kind) else {
+        return false;
+    };
+    let Some(range) = line_index_range_value(line_index, symbol.range) else {
+        return false;
+    };
+    let mut value = json!({
+        "name": symbol.name,
+        "kind": kind,
+        "location": {"uri": uri, "range": range},
+    });
+    if let Some(container) = container {
+        let Some(object) = value.as_object_mut() else {
+            return false;
+        };
+        object.insert(
+            "containerName".to_owned(),
+            Value::String(container.to_owned()),
+        );
+    }
+    output.push(value);
+    for child in &symbol.children {
+        if !flatten_script_symbol(line_index, uri, child, Some(&symbol.name), output) {
+            return false;
+        }
+    }
+    true
+}
+
+/// Requires LSP's `selectionRange` containment and parent/child containment.
+fn script_symbol_ranges_are_valid(symbol: &wxml_types::DocumentSymbol) -> bool {
+    if symbol.selection_range.start() < symbol.range.start()
+        || symbol.selection_range.end() > symbol.range.end()
+    {
+        return false;
+    }
+    symbol.children.iter().all(|child| {
+        child.range.start() >= symbol.range.start()
+            && child.range.end() <= symbol.range.end()
+            && script_symbol_ranges_are_valid(child)
+    })
+}
+
+/// Maps the C0 symbol kind to the LSP `SymbolKind` number.
+///
+/// LSP has no type-alias kind, so [`DocumentSymbolKind::TypeAlias`] maps to
+/// `Interface` (11) while the C0 DTO keeps the distinction. A future C0 kind
+/// with no proven LSP mapping fails serialization instead of guessing.
+#[allow(clippy::match_same_arms)] // TypeAlias intentionally maps to Interface.
+const fn script_symbol_kind(kind: DocumentSymbolKind) -> Option<u32> {
+    match kind {
+        DocumentSymbolKind::Module => Some(2),
+        DocumentSymbolKind::Class => Some(5),
+        DocumentSymbolKind::Method => Some(6),
+        DocumentSymbolKind::Property => Some(7),
+        DocumentSymbolKind::Enum => Some(10),
+        DocumentSymbolKind::Interface => Some(11),
+        DocumentSymbolKind::TypeAlias => Some(11),
+        DocumentSymbolKind::Function => Some(12),
+        DocumentSymbolKind::Variable => Some(13),
+        DocumentSymbolKind::EnumMember => Some(22),
+        _ => None,
+    }
+}
+
 impl Server {
     /// Handles `textDocument/linkedEditingRange`.
     pub(crate) fn linked_editing(&self, id: Value, params: Option<Value>) -> Vec<Outgoing> {
@@ -784,10 +926,15 @@ impl Server {
 
     /// Handles `textDocument/documentSymbol`.
     ///
-    /// E is the single owner of this outline implementation. S must reuse
+    /// E is the single owner of the static WXML outline. S must reuse
     /// [`StructureFacts::document_symbols`] and must not parse the document a
     /// second time for its symbol queries.
-    pub(crate) fn document_symbol(&self, id: Value, params: Option<Value>) -> Vec<Outgoing> {
+    ///
+    /// A script document is answered by [`wxml_types::Backend::document_symbols`]
+    /// on the background worker and is never merged with the static WXML
+    /// outline: script ranges belong to the requested script, not to a
+    /// template. The WXML outline stays synchronous and never calls a backend.
+    pub(crate) fn document_symbol(&mut self, id: Value, params: Option<Value>) -> Vec<Outgoing> {
         let Some(params) = params else {
             return vec![Outgoing::failure(
                 id,
@@ -802,14 +949,42 @@ impl Server {
                 "invalid textDocument URI",
             )];
         };
-        if !crate::handlers::template_document(self, uri) {
-            return vec![Outgoing::success(id, json!([]))];
+        match self.host.route(uri) {
+            DocumentRoute::Script(_) => self.schedule_script_document_symbol(id, uri),
+            DocumentRoute::Wxml(_) => self.static_document_symbol(id, uri),
+            DocumentRoute::Json(_) | DocumentRoute::Style(_) => {
+                vec![Outgoing::success(id, json!([]))]
+            }
+            DocumentRoute::Unknown => {
+                // Synthetic templates have no project route; the URI is the
+                // only signal that they are WXML.
+                if crate::handlers::template_document(self, uri) {
+                    self.static_document_symbol(id, uri)
+                } else {
+                    vec![Outgoing::success(id, json!([]))]
+                }
+            }
         }
+    }
+
+    /// Answers the static WXML outline for one open template.
+    fn static_document_symbol(&self, id: Value, uri: &str) -> Vec<Outgoing> {
         let Some(document) = self.workspace.get(uri) else {
-            return vec![Outgoing::success(id, json!([]))];
+            log(format_args!(
+                "WXML document symbols failed: the template is not open"
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the template is not open",
+            )];
         };
         let Some(facts) = StructureFacts::parse(document.text()) else {
-            return vec![Outgoing::success(id, json!([]))];
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the template outline is unavailable",
+            )];
         };
         let symbols = facts.document_symbols();
         let values: Option<Vec<Value>> = if self.client.hierarchical_symbols {
@@ -837,11 +1012,415 @@ impl Server {
         };
         let Some(values) = values else {
             log(format_args!(
-                "document symbols skipped: a range could not be serialized"
+                "WXML document symbols failed: a range could not be serialized"
             ));
-            return vec![Outgoing::success(id, json!([]))];
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the template outline could not be serialized",
+            )];
         };
         vec![Outgoing::success(id, json!(values))]
+    }
+
+    /// Validates one script outline request and queues its backend job.
+    ///
+    /// The scheduling check is fail-closed: a missing owning template, missing
+    /// script text, or a script/overlay mismatch rejects the request instead of
+    /// returning an empty outline. The backend query itself runs on the
+    /// scheduler worker; `document_symbols_done` publishes the result only if
+    /// the captured script/view/template identity is still current.
+    #[allow(clippy::too_many_lines)] // one linear request validation and schedule
+    fn schedule_script_document_symbol(&mut self, id: Value, uri: &str) -> Vec<Outgoing> {
+        let Some(document) = self.workspace.get(uri) else {
+            log(format_args!(
+                "script document symbols failed: the script is not open"
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the script is not open",
+            )];
+        };
+        let subject = document.file().clone();
+        let view = match self.host.view_for_script(&subject) {
+            Ok(view) => view,
+            Err(error) => {
+                log(format_args!(
+                    "script document symbols failed: {}",
+                    crate::handlers::log_safe_text(&error.to_string(), 200)
+                ));
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::REQUEST_FAILED,
+                    "the script is not an owning page or component script",
+                )];
+            }
+        };
+        let template = match self.host.file_id_in(subject.project(), &view.wxml) {
+            Ok(file) => file,
+            Err(error) => {
+                log(format_args!(
+                    "script document symbols failed: {}",
+                    crate::handlers::log_safe_text(&error.to_string(), 200)
+                ));
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::REQUEST_FAILED,
+                    "the owning template path is invalid",
+                )];
+            }
+        };
+        let Some(snapshot) = self.host.source(&template) else {
+            log(format_args!(
+                "script document symbols failed: the owning template is not open"
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the owning template is not open",
+            )];
+        };
+        let Some(host_text) = self.host.file_text(&subject) else {
+            log(format_args!(
+                "script document symbols failed: the script text is unavailable"
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the script text is unavailable",
+            )];
+        };
+        if host_text.as_ref() != document.text() {
+            log(format_args!(
+                "script document symbols failed: the workspace and host script text disagree"
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the script text changed before the outline was requested",
+            )];
+        }
+        let script_hash = script_text_hash(document.text());
+        let template_snapshot = snapshot.snapshot();
+        let epoch = self.refresh_epoch();
+        let Some(document) = self.workspace.get(uri) else {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the script was closed before the outline was scheduled",
+            )];
+        };
+        let stamp = document.stamp(&epoch);
+        let context = match RequestContext::new(
+            self.host.project_revision(),
+            view.view_revision,
+            epoch,
+            snapshot,
+        ) {
+            Ok(context) => context,
+            Err(error) => {
+                log(format_args!(
+                    "script document symbols failed: {}",
+                    crate::handlers::log_safe_text(&error.to_string(), 200)
+                ));
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::CONTENT_MODIFIED,
+                    "the owning template snapshot does not match the request",
+                )];
+            }
+        };
+        let Some(key) = RequestKey::from_id(&id) else {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::INVALID_PARAMS,
+                "request id must be a string or a number",
+            )];
+        };
+        if self.inflight.contains_key(&key) {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::INVALID_REQUEST,
+                "request id is already in flight",
+            )];
+        }
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let attempt = self.next_attempt();
+        self.inflight.insert(
+            key.clone(),
+            crate::server::Inflight {
+                id: id.clone(),
+                attempt,
+                cancel: std::sync::Arc::clone(&cancel),
+                uri: uri.to_owned(),
+            },
+        );
+        let job = Job {
+            key: Some(key.clone()),
+            kind: JobKind::DocumentSymbols {
+                subject,
+                scope: DocumentSymbolsScope {
+                    template,
+                    template_snapshot,
+                    view_revision: view.view_revision,
+                    script_hash,
+                },
+            },
+            context,
+            offset: 0,
+            stamp,
+            attempt,
+            cancel,
+        };
+        match self.dispatch.submit(job) {
+            Ok(()) => Vec::new(),
+            Err(error) => {
+                self.inflight.remove(&key);
+                log(format_args!(
+                    "dispatch rejected a document symbols job: {error:?}"
+                ));
+                vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::INTERNAL_ERROR,
+                    submit_message(error),
+                )]
+            }
+        }
+    }
+
+    /// Answers one finished script outline query.
+    ///
+    /// Every stale, cancelled or unsupported outcome is an explicit protocol
+    /// error. Only a `Supported` empty outline and a non-empty `Partial`
+    /// outline are published; a backend status that does not prove an outline
+    /// never becomes `[]`.
+    #[allow(clippy::too_many_lines)] // one ordered publication-barrier matrix
+    pub(crate) fn document_symbols_done(
+        &self,
+        id: Value,
+        uri: &str,
+        done: WorkDone,
+        epoch: &BackendEpoch,
+    ) -> Vec<Outgoing> {
+        if done.cancelled {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_CANCELLED,
+                "request cancelled",
+            )];
+        }
+        let JobKind::DocumentSymbols { subject, scope } = &done.kind else {
+            log(format_args!(
+                "a document symbol result carried the wrong job kind"
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::INTERNAL_ERROR,
+                "the script outline query returned an unexpected result",
+            )];
+        };
+        if done.stamp.epoch != *epoch || !self.workspace.is_current(&done.stamp) {
+            log(format_args!(
+                "dropping a script outline result for an old revision"
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the document changed before the outline was published",
+            )];
+        }
+        let Some(document) = self.workspace.get(uri) else {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the script was closed before the outline was published",
+            )];
+        };
+        if document.file() != subject || script_text_hash(document.text()) != scope.script_hash {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the script text changed before the outline was published",
+            )];
+        }
+        match self.host.file_text(subject) {
+            Some(text) if script_text_hash(&text) == scope.script_hash => {}
+            _ => {
+                log(format_args!(
+                    "dropping a script outline result: the host script text changed"
+                ));
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::CONTENT_MODIFIED,
+                    "the script text changed before the outline was published",
+                )];
+            }
+        }
+        let view = match self.host.view_for_script(subject) {
+            Ok(view) => view,
+            Err(error) => {
+                log(format_args!(
+                    "dropping a script outline result: {}",
+                    crate::handlers::log_safe_text(&error.to_string(), 200)
+                ));
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::CONTENT_MODIFIED,
+                    "the owning view changed before the outline was published",
+                )];
+            }
+        };
+        if view.view_revision != scope.view_revision || view.script_file != *subject {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the owning view changed before the outline was published",
+            )];
+        }
+        let Ok(template) = self.host.file_id_in(subject.project(), &view.wxml) else {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the owning view changed before the outline was published",
+            )];
+        };
+        if template != scope.template {
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::CONTENT_MODIFIED,
+                "the owning view changed before the outline was published",
+            )];
+        }
+        match self.host.source(&scope.template) {
+            Some(snapshot) if snapshot.snapshot() == scope.template_snapshot => {}
+            _ => {
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::CONTENT_MODIFIED,
+                    "the owning template changed before the outline was published",
+                )];
+            }
+        }
+
+        let result = match done.outcome {
+            Ok(Outcome::DocumentSymbols(result)) => *result,
+            Ok(_) => {
+                log(format_args!(
+                    "document symbol job returned the wrong result kind"
+                ));
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::INTERNAL_ERROR,
+                    "the script outline query returned an unexpected result",
+                )];
+            }
+            Err(BackendError::Cancelled) => {
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::CONTENT_MODIFIED,
+                    "the script outline request was cancelled",
+                )];
+            }
+            Err(error) => {
+                log(format_args!(
+                    "script document symbols failed: {}",
+                    crate::handlers::log_safe_text(&error.to_string(), 200)
+                ));
+                return vec![Outgoing::failure(
+                    id,
+                    jsonrpc::error_codes::REQUEST_FAILED,
+                    backend_failure_message(&error),
+                )];
+            }
+        };
+        if !result.status.is_supported()
+            && !matches!(result.status, CapabilityStatus::Partial { .. })
+        {
+            log(format_args!(
+                "script document symbols are {}: {} symbol(s), {} skipped, truncated={}",
+                crate::handlers::status_label(&result.status),
+                result.symbols.len(),
+                result.skipped,
+                result.truncated
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the script outline is unavailable",
+            )];
+        }
+        if result.symbols.is_empty() && !result.status.is_supported() {
+            log(format_args!(
+                "script document symbols are {} with no symbols: {} skipped, truncated={}",
+                crate::handlers::status_label(&result.status),
+                result.skipped,
+                result.truncated
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the script outline is incomplete",
+            )];
+        }
+        if let Some(reason) = result.status.reason() {
+            log(format_args!(
+                "script document symbols are {}: {}",
+                crate::handlers::status_label(&result.status),
+                crate::handlers::log_safe_text(reason, 200)
+            ));
+        }
+        let Some(values) = script_symbol_values(
+            &result,
+            document.snapshot().line_index(),
+            uri,
+            self.client.hierarchical_symbols,
+        ) else {
+            log(format_args!(
+                "script document symbols failed: a range or kind could not be serialized"
+            ));
+            return vec![Outgoing::failure(
+                id,
+                jsonrpc::error_codes::REQUEST_FAILED,
+                "the script outline could not be serialized",
+            )];
+        };
+        vec![Outgoing::success(id, json!(values))]
+    }
+}
+
+/// FNV-1a over the complete script text.
+///
+/// The scheduler compares this hash with both the workspace document and the
+/// host's effective script text before publishing ranges produced for the
+/// prepared view. A mismatch means the outline ranges no longer describe the
+/// text the LSP layer would convert them against.
+fn script_text_hash(text: &str) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
+}
+
+/// Client-safe message for one failed backend outline query.
+const fn backend_failure_message(error: &BackendError) -> &'static str {
+    match error {
+        BackendError::Timeout => "the type backend timed out",
+        BackendError::Unavailable(_) => "the type backend is unavailable",
+        BackendError::Protocol(_) => "the type backend violated its protocol",
+        BackendError::Internal(_) => "the type backend failed internally",
+        BackendError::Cancelled => "the script outline request was cancelled",
+        _ => "the type backend failed",
+    }
+}
+
+/// Message for a rejected scheduler submission.
+const fn submit_message(error: SubmitError) -> &'static str {
+    match error {
+        SubmitError::Busy => "server is busy",
+        SubmitError::Stopped => "server is not running",
     }
 }
 
@@ -906,6 +1485,7 @@ pub(crate) fn document_symbols(text: &str) -> Vec<DocumentSymbol> {
 #[allow(clippy::expect_used, clippy::assert_is_empty)]
 mod tests {
     use super::*;
+    use wxml_types::CapabilityStatus;
 
     #[test]
     fn folds_elements_multiline_tags_comments_and_wxs() {
@@ -1172,6 +1752,220 @@ mod tests {
         assert_eq!(symbols.len(), 1);
         assert_eq!(symbols[0].name, "view");
         assert!(symbols[0].children.iter().any(|child| child.name == "text"));
+    }
+
+    fn script_range(start: usize, end: usize) -> SourceRange {
+        SourceRange::from_bounds(
+            u32::try_from(start).expect("range start"),
+            u32::try_from(end).expect("range end"),
+        )
+        .expect("script range")
+    }
+
+    fn script_symbol(
+        name: &str,
+        kind: DocumentSymbolKind,
+        range: (usize, usize),
+        selection: (usize, usize),
+        children: Vec<wxml_types::DocumentSymbol>,
+    ) -> wxml_types::DocumentSymbol {
+        wxml_types::DocumentSymbol {
+            name: name.to_owned(),
+            kind,
+            range: script_range(range.0, range.1),
+            selection_range: script_range(selection.0, selection.1),
+            children,
+        }
+    }
+
+    fn script_symbols(text: &str) -> DocumentSymbolsResult {
+        let class_start = text.find("class").expect("class");
+        let class_end = text.find("}\ntype Shape").expect("class end") + 1;
+        let alias_start = text.find("type Shape").expect("alias");
+        let alias_end = alias_start + "type Shape = User;".len();
+        let name_start = text.find("name:").expect("name");
+        let greet_start = text.find("greet").expect("greet");
+        DocumentSymbolsResult {
+            symbols: vec![
+                script_symbol(
+                    "用户",
+                    DocumentSymbolKind::Class,
+                    (class_start, class_end),
+                    (
+                        text.find("用户").expect("class name"),
+                        text.find("用户").expect("class name") + "用户".len(),
+                    ),
+                    vec![
+                        script_symbol(
+                            "name",
+                            DocumentSymbolKind::Property,
+                            (name_start, name_start + "name: string;".len()),
+                            (name_start, name_start + "name".len()),
+                            Vec::new(),
+                        ),
+                        script_symbol(
+                            "greet😀",
+                            DocumentSymbolKind::Method,
+                            (greet_start, greet_start + "greet😀(): void {}".len()),
+                            (greet_start, greet_start + "greet😀".len()),
+                            Vec::new(),
+                        ),
+                    ],
+                ),
+                script_symbol(
+                    "Shape",
+                    DocumentSymbolKind::TypeAlias,
+                    (alias_start, alias_end),
+                    (
+                        alias_start + "type ".len(),
+                        alias_start + "type Shape".len(),
+                    ),
+                    Vec::new(),
+                ),
+            ],
+            status: CapabilityStatus::Supported,
+            truncated: false,
+            skipped: 0,
+            gaps: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn script_document_symbols_are_hierarchical_with_selection_ranges() {
+        let text = "// 😀 文档\nclass 用户 {\n  name: string;\n  greet😀(): void {}\n}\ntype Shape = User;\n";
+        let result = script_symbols(text);
+        let values = script_symbol_values(&result, &LineIndex::new(text), "file:///a.ts", true)
+            .expect("hierarchical script symbols");
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0]["name"], json!("用户"));
+        assert_eq!(values[0]["kind"], json!(5));
+        assert_eq!(
+            values[0]["range"]["start"],
+            json!({"line": 1, "character": 0})
+        );
+        assert_eq!(
+            values[0]["range"]["end"],
+            json!({"line": 4, "character": 1})
+        );
+        assert_eq!(
+            values[0]["selectionRange"]["start"],
+            json!({"line": 1, "character": 6})
+        );
+        assert_eq!(
+            values[0]["selectionRange"]["end"],
+            json!({"line": 1, "character": 8})
+        );
+        let children = values[0]["children"].as_array().expect("children");
+        assert_eq!(children.len(), 2);
+        assert_eq!(children[0]["name"], json!("name"));
+        assert_eq!(children[0]["kind"], json!(7));
+        assert_eq!(
+            children[1]["selectionRange"]["start"],
+            json!({"line": 3, "character": 2})
+        );
+        assert_eq!(
+            children[1]["selectionRange"]["end"],
+            json!({"line": 3, "character": 9})
+        );
+        // TypeAlias stays distinct in C0 but maps to LSP Interface.
+        assert_eq!(values[1]["name"], json!("Shape"));
+        assert_eq!(values[1]["kind"], json!(11));
+    }
+
+    #[test]
+    fn script_document_symbols_flatten_with_container_names() {
+        let text = "// 😀 文档\nclass 用户 {\n  name: string;\n  greet😀(): void {}\n}\ntype Shape = User;\n";
+        let result = script_symbols(text);
+        let values = script_symbol_values(&result, &LineIndex::new(text), "file:///a.ts", false)
+            .expect("flat script symbols");
+        assert_eq!(values.len(), 4);
+        assert_eq!(values[0]["name"], json!("用户"));
+        assert_eq!(values[0]["location"]["uri"], json!("file:///a.ts"));
+        assert_eq!(
+            values[0]["location"]["range"]["start"],
+            json!({"line": 1, "character": 0})
+        );
+        assert!(values[0].get("selectionRange").is_none());
+        assert_eq!(values[1]["containerName"], json!("用户"));
+        assert_eq!(values[2]["containerName"], json!("用户"));
+        assert_eq!(values[3]["name"], json!("Shape"));
+        assert!(values[3].get("containerName").is_none());
+    }
+
+    #[test]
+    fn script_document_symbols_do_not_pad_gaps_or_truncation() {
+        let text = "class C {}\n";
+        let class_start = text.find("class").expect("class");
+        let mut result = DocumentSymbolsResult {
+            symbols: vec![script_symbol(
+                "C",
+                DocumentSymbolKind::Class,
+                (class_start, class_start + "class C {}".len()),
+                (class_start + "class ".len(), class_start + "class C".len()),
+                Vec::new(),
+            )],
+            status: CapabilityStatus::Partial {
+                reason: "the document symbol evidence is incomplete".to_owned(),
+            },
+            truncated: true,
+            skipped: 3,
+            gaps: vec![wxml_types::DocumentSymbolGap {
+                start: None,
+                reason: "name slot is not an Identifier".to_owned(),
+            }],
+        };
+        let values = script_symbol_values(&result, &LineIndex::new(text), "file:///a.ts", true)
+            .expect("partial script symbols");
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0]["name"], json!("C"));
+        result.symbols.clear();
+        let values = script_symbol_values(&result, &LineIndex::new(text), "file:///a.ts", true)
+            .expect("empty partial result");
+        assert!(values.is_empty());
+    }
+
+    #[test]
+    fn script_document_symbols_fail_closed_on_invalid_ranges() {
+        let text = "class C {}\n";
+        let out_of_bounds = DocumentSymbolsResult {
+            symbols: vec![script_symbol(
+                "C",
+                DocumentSymbolKind::Class,
+                (0, text.len() + 1),
+                (0, 1),
+                Vec::new(),
+            )],
+            status: CapabilityStatus::Supported,
+            truncated: false,
+            skipped: 0,
+            gaps: Vec::new(),
+        };
+        assert!(
+            script_symbol_values(&out_of_bounds, &LineIndex::new(text), "file:///a.ts", true)
+                .is_none()
+        );
+        let selection_outside = DocumentSymbolsResult {
+            symbols: vec![script_symbol(
+                "C",
+                DocumentSymbolKind::Class,
+                (0, 2),
+                (0, 9),
+                Vec::new(),
+            )],
+            status: CapabilityStatus::Supported,
+            truncated: false,
+            skipped: 0,
+            gaps: Vec::new(),
+        };
+        assert!(
+            script_symbol_values(
+                &selection_outside,
+                &LineIndex::new(text),
+                "file:///a.ts",
+                false
+            )
+            .is_none()
+        );
     }
 
     #[test]

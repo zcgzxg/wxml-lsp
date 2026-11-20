@@ -1,5 +1,7 @@
 # Wave 5 并行交付计划：补全、模板类型、事件链路与 Zed 实时同步
 
+> **状态：历史归档（Superseded）**。P7 删除已完成；本文仅记录当时计划/证据，不再代表当前仓库状态。最终状态见 docs/plans/2026-11-17-rust-tsgo-migration.md §12.16。
+
 - 状态：待确认（Draft）
 - 日期：2026-11-16
 - 基线：`master` @ `b57f4c8`（fix: answer hover across WXML expressions）

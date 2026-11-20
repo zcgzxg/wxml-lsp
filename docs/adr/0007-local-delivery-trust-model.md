@@ -6,6 +6,8 @@
 
 **Deciders**: 项目维护者
 
+**2026-11-17 后续**：[ADR-0008](0008-rust-tsgo-no-node-backend.md)（2026-11-20 已在 owner scope waiver 下最终关闭为 accepted，native 默认；P7 删除完成，Node removed）替代 Node 安装前置与相关包字段；本文的信任、离线、原子安装与回滚规则继续有效。
+
 ## Context
 
 项目只面向本人在 Linux 上使用 Zed，当前没有 Marketplace 发布、官方下载域名或服务器自动安装服务。Zed 扩展存在两种可选的上游交付方式：

@@ -1,5 +1,7 @@
 # P7 真实集成证据
 
+> **状态：历史归档（Superseded）**。Node 时代 P7 集成记录；Node/旧 TS 已由 tag p7-removed 删除，当前状态见 docs/plans/2026-11-17-rust-tsgo-migration.md §12.16。
+
 日期：2026-11-15（G1 补充于 2026-11-16）。范围：`crates/wxml-lsp/**`（P7-1..P7-4）。
 未修改 P3/P5/P6、根 Cargo/lock、CI、fixtures、`.opencode` 或 ADR。
 证据等级：E1（关键命令和结果摘录见第 6 节；完整运行日志未逐条入库）。

@@ -1,0 +1,4795 @@
+{
+  "projectionSha256": "9d47f7d0e9510c4c735e3290d0b2cb0d66fb713042e2fa0c59f6e7d5b752d911",
+  "scenarios": [
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-PAGE_BASIC-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "blockedBy": "docs",
+        "status": "blocked"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "user.nmae",
+          "range": {
+            "end": 138,
+            "start": 134
+          },
+          "target": "nmae"
+        }
+      ],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        },
+        {
+          "expr": "user.name",
+          "target": "name",
+          "wxmlRange": {
+            "end": 94,
+            "start": 85
+          }
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae",
+          "wxmlRange": {
+            "end": 138,
+            "start": 129
+          }
+        }
+      ],
+      "id": "page-basic",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 50,
+                "start": 45
+              }
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 140,
+                "start": 136
+              }
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": null,
+            "query": "user.nmae"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 2339,
+            "range": {
+              "end": 138,
+              "start": 134
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "页面标题",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "missing",
+              "typeOnly": "any"
+            },
+            "query": "user.nmae"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          },
+          {
+            "fragmentId": "user.name",
+            "target": "name"
+          },
+          {
+            "fragmentId": "user.nmae",
+            "target": "nmae"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 3,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "页面标题",
+          "expectDocSource": "quickinfo",
+          "expectType": "string",
+          "expr": "title",
+          "target": "title"
+        },
+        {
+          "definition": true,
+          "expectDefinition": "script",
+          "expectDoc": "用户显示名称",
+          "expectDocSource": "quickinfo",
+          "expectType": "string",
+          "expr": "user.name",
+          "target": "name"
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "page-basic",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text class=\"title\">{{ title }}</text>\n  <text class=\"name\">{{ user.name }}</text>\n  <text class=\"typo\">{{ user.nmae }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-PAGE_EXPORT_EMPTY-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "user.nmae",
+          "range": {
+            "end": 138,
+            "start": 134
+          },
+          "target": "nmae"
+        }
+      ],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        },
+        {
+          "expr": "user.name",
+          "target": "name",
+          "wxmlRange": {
+            "end": 94,
+            "start": 85
+          }
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae",
+          "wxmlRange": {
+            "end": 138,
+            "start": 129
+          }
+        }
+      ],
+      "id": "page-export-empty",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 50,
+                "start": 45
+              }
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 140,
+                "start": 136
+              }
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": null,
+            "query": "user.nmae"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 2339,
+            "range": {
+              "end": 138,
+              "start": 134
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "页面标题",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "missing",
+              "typeOnly": "any"
+            },
+            "query": "user.nmae"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "module",
+        "moduleBefore": "module",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          },
+          {
+            "fragmentId": "user.name",
+            "target": "name"
+          },
+          {
+            "fragmentId": "user.nmae",
+            "target": "nmae"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 3,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "页面标题",
+          "expectType": "string",
+          "expr": "title",
+          "target": "title"
+        },
+        {
+          "expectDoc": "用户显示名称",
+          "expectType": "string",
+          "expr": "user.name",
+          "target": "name"
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "page-export-empty",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text class=\"title\">{{ title }}</text>\n  <text class=\"name\">{{ user.name }}</text>\n  <text class=\"typo\">{{ user.nmae }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-PAGE_CJS-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "user.nmae",
+          "range": {
+            "end": 138,
+            "start": 134
+          },
+          "target": "nmae"
+        }
+      ],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        },
+        {
+          "expr": "user.name",
+          "target": "name",
+          "wxmlRange": {
+            "end": 94,
+            "start": 85
+          }
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae",
+          "wxmlRange": {
+            "end": 138,
+            "start": 129
+          }
+        }
+      ],
+      "id": "page-cjs",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 238,
+                "start": 233
+              }
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 328,
+                "start": 324
+              }
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": null,
+            "query": "user.nmae"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 2339,
+            "range": {
+              "end": 138,
+              "start": 134
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "页面标题",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "missing",
+              "typeOnly": "any"
+            },
+            "query": "user.nmae"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          },
+          {
+            "fragmentId": "user.name",
+            "target": "name"
+          },
+          {
+            "fragmentId": "user.nmae",
+            "target": "nmae"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 3,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "页面标题",
+          "expectType": "string",
+          "expr": "title",
+          "target": "title"
+        },
+        {
+          "expectDoc": "用户显示名称",
+          "expectType": "string",
+          "expr": "user.name",
+          "target": "name"
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "page-cjs",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text class=\"title\">{{ title }}</text>\n  <text class=\"name\">{{ user.name }}</text>\n  <text class=\"typo\">{{ user.nmae }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-PAGE_ESM-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "user.nmae",
+          "range": {
+            "end": 138,
+            "start": 134
+          },
+          "target": "nmae"
+        }
+      ],
+      "extraFiles": [
+        "helper.ts"
+      ],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        },
+        {
+          "expr": "user.name",
+          "target": "name",
+          "wxmlRange": {
+            "end": 94,
+            "start": 85
+          }
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae",
+          "wxmlRange": {
+            "end": 138,
+            "start": 129
+          }
+        }
+      ],
+      "id": "page-esm",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 97,
+                "start": 92
+              }
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 187,
+                "start": 183
+              }
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": null,
+            "query": "user.nmae"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 2339,
+            "range": {
+              "end": 138,
+              "start": 134
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "页面标题",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "missing",
+              "typeOnly": "any"
+            },
+            "query": "user.nmae"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "module",
+        "moduleBefore": "module",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          },
+          {
+            "fragmentId": "user.name",
+            "target": "name"
+          },
+          {
+            "fragmentId": "user.nmae",
+            "target": "nmae"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 2,
+          "fragmentCount": 3,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "页面标题",
+          "expectType": "string",
+          "expr": "title",
+          "target": "title"
+        },
+        {
+          "expectDoc": "用户显示名称",
+          "expectType": "string",
+          "expr": "user.name",
+          "target": "name"
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "page-esm",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text class=\"title\">{{ title }}</text>\n  <text class=\"name\">{{ user.name }}</text>\n  <text class=\"typo\">{{ user.nmae }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-PAGE_CLOSURE-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "blockedBy": "checker",
+        "status": "blocked"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "config.title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 57,
+            "start": 45
+          }
+        },
+        {
+          "expr": "user.name",
+          "target": "name",
+          "wxmlRange": {
+            "end": 101,
+            "start": 92
+          }
+        }
+      ],
+      "id": "page-closure",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 213,
+                "start": 208
+              }
+            },
+            "query": "config.title"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 102,
+                "start": 98
+              }
+            },
+            "query": "user.name"
+          }
+        ],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "页面标题",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "config.title"
+          },
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "user.name"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "config.title",
+            "target": "title"
+          },
+          {
+            "fragmentId": "user.name",
+            "target": "name"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 2,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "页面标题",
+          "expectType": "string",
+          "expr": "config.title",
+          "target": "title"
+        },
+        {
+          "expectDoc": "用户显示名称",
+          "expectType": "string",
+          "expr": "user.name",
+          "target": "name"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "page-closure",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text class=\"title\">{{ config.title }}</text>\n  <text class=\"name\">{{ user.name }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-COMPONENT_PROPERTIES-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "blockedBy": "docs",
+        "status": "blocked"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "subtitle",
+          "range": {
+            "end": 138,
+            "start": 130
+          },
+          "target": "subtitle"
+        }
+      ],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        },
+        {
+          "expr": "state",
+          "target": "state",
+          "wxmlRange": {
+            "end": 91,
+            "start": 86
+          }
+        },
+        {
+          "expr": "subtitle",
+          "target": "subtitle",
+          "wxmlRange": {
+            "end": 138,
+            "start": 130
+          }
+        }
+      ],
+      "id": "component-properties",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "generated",
+              "range": {
+                "end": 82,
+                "start": 77
+              }
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 257,
+                "start": 252
+              }
+            },
+            "query": "state"
+          },
+          {
+            "observation": null,
+            "query": "subtitle"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 2339,
+            "range": {
+              "end": 138,
+              "start": 130
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "标题，支持字符串或数字",
+              "documentationSource": "copied",
+              "quality": "known",
+              "typeOnly": "string | number"
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "documentation": "内部状态",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "state"
+          },
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "missing",
+              "typeOnly": "any"
+            },
+            "query": "subtitle"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          },
+          {
+            "fragmentId": "state",
+            "target": "state"
+          },
+          {
+            "fragmentId": "subtitle",
+            "target": "subtitle"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "component"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 3,
+          "ownerKind": "component"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "definition": true,
+          "expectDefinition": "generated",
+          "expectDoc": "标题，支持字符串或数字",
+          "expectDocSource": "copied",
+          "expectType": "string | number",
+          "expr": "title",
+          "target": "title"
+        },
+        {
+          "expectDoc": "内部状态",
+          "expectType": "string",
+          "expr": "state",
+          "target": "state"
+        },
+        {
+          "expr": "subtitle",
+          "target": "subtitle"
+        }
+      ],
+      "registration": "component",
+      "sampleDir": "component-properties",
+      "script": "index.ts",
+      "wxml": "<view class=\"card\">\n  <text class=\"title\">{{ title }}</text>\n  <text class=\"state\">{{ state }}</text>\n  <text class=\"subtitle\">{{ subtitle }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-COMPONENT_MODULE-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "subtitle",
+          "range": {
+            "end": 138,
+            "start": 130
+          },
+          "target": "subtitle"
+        }
+      ],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        },
+        {
+          "expr": "state",
+          "target": "state",
+          "wxmlRange": {
+            "end": 91,
+            "start": 86
+          }
+        },
+        {
+          "expr": "subtitle",
+          "target": "subtitle",
+          "wxmlRange": {
+            "end": 138,
+            "start": 130
+          }
+        }
+      ],
+      "id": "component-module",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "generated",
+              "range": {
+                "end": 82,
+                "start": 77
+              }
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 186,
+                "start": 181
+              }
+            },
+            "query": "state"
+          },
+          {
+            "observation": null,
+            "query": "subtitle"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 2339,
+            "range": {
+              "end": 138,
+              "start": 130
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "标题，支持字符串或数字",
+              "documentationSource": "copied",
+              "quality": "known",
+              "typeOnly": "string | number"
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "documentation": "内部状态",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "state"
+          },
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "missing",
+              "typeOnly": "any"
+            },
+            "query": "subtitle"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "module",
+        "moduleBefore": "module",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          },
+          {
+            "fragmentId": "state",
+            "target": "state"
+          },
+          {
+            "fragmentId": "subtitle",
+            "target": "subtitle"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "component"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 3,
+          "ownerKind": "component"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "标题，支持字符串或数字",
+          "expectType": "string | number",
+          "expr": "title",
+          "target": "title"
+        },
+        {
+          "expectDoc": "内部状态",
+          "expectType": "string",
+          "expr": "state",
+          "target": "state"
+        },
+        {
+          "expr": "subtitle",
+          "target": "subtitle"
+        }
+      ],
+      "registration": "component",
+      "sampleDir": "component-module",
+      "script": "index.ts",
+      "wxml": "<view class=\"card\">\n  <text class=\"title\">{{ title }}</text>\n  <text class=\"state\">{{ state }}</text>\n  <text class=\"subtitle\">{{ subtitle }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": true,
+      "caseId": "TS-MATRIX-0102-COMPONENT_JS-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "blockedBy": "docs",
+        "status": "blocked"
+      },
+      "compilerOptions": {
+        "allowJs": true,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "subtitle",
+          "range": {
+            "end": 138,
+            "start": 130
+          },
+          "target": "subtitle"
+        }
+      ],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        },
+        {
+          "expr": "state",
+          "target": "state",
+          "wxmlRange": {
+            "end": 91,
+            "start": 86
+          }
+        },
+        {
+          "expr": "subtitle",
+          "target": "subtitle",
+          "wxmlRange": {
+            "end": 138,
+            "start": 130
+          }
+        }
+      ],
+      "id": "component-js",
+      "jsCheck": "pragma",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "generated",
+              "range": {
+                "end": 82,
+                "start": 77
+              }
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 186,
+                "start": 181
+              }
+            },
+            "query": "state"
+          },
+          {
+            "observation": null,
+            "query": "subtitle"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 2339,
+            "range": {
+              "end": 138,
+              "start": 130
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "标题，支持字符串或数字",
+              "documentationSource": "copied",
+              "quality": "known",
+              "typeOnly": "string | number"
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "documentation": "内部状态",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "state"
+          },
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "missing",
+              "typeOnly": "any"
+            },
+            "query": "subtitle"
+          }
+        ],
+        "jsCheckApplied": "pragma",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          },
+          {
+            "fragmentId": "state",
+            "target": "state"
+          },
+          {
+            "fragmentId": "subtitle",
+            "target": "subtitle"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "component"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 3,
+          "ownerKind": "component"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "标题，支持字符串或数字",
+          "expectDocSource": "copied",
+          "expectType": "string | number",
+          "expr": "title",
+          "target": "title"
+        },
+        {
+          "expectDoc": "内部状态",
+          "expectType": "string",
+          "expr": "state",
+          "target": "state"
+        },
+        {
+          "expr": "subtitle",
+          "target": "subtitle"
+        }
+      ],
+      "registration": "component",
+      "sampleDir": "component-js",
+      "script": "index.js",
+      "wxml": "<view class=\"card\">\n  <text class=\"title\">{{ title }}</text>\n  <text class=\"state\">{{ state }}</text>\n  <text class=\"subtitle\">{{ subtitle }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-PROPERTIES_SPREAD-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        },
+        {
+          "expr": "state",
+          "target": "state",
+          "wxmlRange": {
+            "end": 91,
+            "start": 86
+          }
+        }
+      ],
+      "id": "properties-spread",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "generated",
+              "range": {
+                "end": 172,
+                "start": 167
+              }
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 276,
+                "start": 271
+              }
+            },
+            "query": "state"
+          }
+        ],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "标题，支持字符串或数字",
+              "documentationSource": "copied",
+              "quality": "known",
+              "typeOnly": "string | number"
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "documentation": "内部状态",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "state"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          },
+          {
+            "fragmentId": "state",
+            "target": "state"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "component"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 2,
+          "ownerKind": "component"
+        },
+        "states": {
+          "definition": {
+            "reason": "component properties are incomplete: `properties` uses a spread assignment; declared properties are incomplete",
+            "status": "partial"
+          },
+          "diagnostics": {
+            "reason": "component properties are incomplete: `properties` uses a spread assignment; declared properties are incomplete",
+            "status": "partial"
+          },
+          "hover": {
+            "reason": "component properties are incomplete: `properties` uses a spread assignment; declared properties are incomplete",
+            "status": "partial"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectType": "string | number",
+          "expr": "title",
+          "target": "title"
+        },
+        {
+          "expectType": "string",
+          "expr": "state",
+          "target": "state"
+        }
+      ],
+      "registration": "component",
+      "sampleDir": "properties-spread",
+      "script": "index.ts",
+      "wxml": "<view class=\"card\">\n  <text class=\"title\">{{ title }}</text>\n  <text class=\"state\">{{ state }}</text>\n  <text class=\"subtitle\">{{ subtitle }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-MULTI_REGISTRATION-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        }
+      ],
+      "id": "multi-registration",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 50,
+                "start": 45
+              }
+            },
+            "query": "title"
+          }
+        ],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "页面标题",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "title"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 2,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 1,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "reason": "2 page registrations; the probe mounts the first one",
+            "status": "partial"
+          },
+          "diagnostics": {
+            "reason": "2 page registrations; the probe mounts the first one",
+            "status": "partial"
+          },
+          "hover": {
+            "reason": "2 page registrations; the probe mounts the first one",
+            "status": "partial"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "页面标题",
+          "expectType": "string",
+          "expr": "title",
+          "target": "title"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "multi-registration",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text class=\"title\">{{ title }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": true,
+      "caseId": "TS-MATRIX-0102-JS_JSDOC_PRAGMA-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": true,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "user.nmae",
+          "range": {
+            "end": 144,
+            "start": 140
+          },
+          "target": "nmae"
+        }
+      ],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "greeting",
+          "target": "greeting",
+          "wxmlRange": {
+            "end": 56,
+            "start": 48
+          }
+        },
+        {
+          "expr": "user.name",
+          "target": "name",
+          "wxmlRange": {
+            "end": 100,
+            "start": 91
+          }
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae",
+          "wxmlRange": {
+            "end": 144,
+            "start": 135
+          }
+        }
+      ],
+      "id": "js-jsdoc-pragma",
+      "jsCheck": "pragma",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 273,
+                "start": 265
+              }
+            },
+            "query": "greeting"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 56,
+                "start": 52
+              }
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": null,
+            "query": "user.nmae"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 2339,
+            "range": {
+              "end": 144,
+              "start": 140
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "问候语",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "greeting"
+          },
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "missing",
+              "typeOnly": "any"
+            },
+            "query": "user.nmae"
+          }
+        ],
+        "jsCheckApplied": "pragma",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "greeting",
+            "target": "greeting"
+          },
+          {
+            "fragmentId": "user.name",
+            "target": "name"
+          },
+          {
+            "fragmentId": "user.nmae",
+            "target": "nmae"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 3,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "reason": "derived view reports 1 script diagnostic(s) outside the fragments; they are suppressed, not published",
+            "status": "partial"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": [
+          2322
+        ]
+      },
+      "queries": [
+        {
+          "expectDoc": "问候语",
+          "expectType": "string",
+          "expr": "greeting",
+          "target": "greeting"
+        },
+        {
+          "expectDoc": "用户显示名称",
+          "expectType": "string",
+          "expr": "user.name",
+          "target": "name"
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "js-jsdoc",
+      "script": "index.js",
+      "wxml": "<view class=\"page\">\n  <text class=\"greeting\">{{ greeting }}</text>\n  <text class=\"name\">{{ user.name }}</text>\n  <text class=\"typo\">{{ user.nmae }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": true,
+      "caseId": "TS-MATRIX-0102-JS_JSDOC_OFF-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "blockedBy": "state",
+        "status": "blocked"
+      },
+      "compilerOptions": {
+        "allowJs": true,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "greeting",
+          "target": "greeting",
+          "wxmlRange": {
+            "end": 56,
+            "start": 48
+          }
+        },
+        {
+          "expr": "user.name",
+          "target": "name",
+          "wxmlRange": {
+            "end": 100,
+            "start": 91
+          }
+        }
+      ],
+      "id": "js-jsdoc-off",
+      "jsCheck": "off",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 273,
+                "start": 265
+              }
+            },
+            "query": "greeting"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 56,
+                "start": 52
+              }
+            },
+            "query": "user.name"
+          }
+        ],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "问候语",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "greeting"
+          },
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "user.name"
+          }
+        ],
+        "jsCheckApplied": "off",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "greeting",
+            "target": "greeting"
+          },
+          {
+            "fragmentId": "user.name",
+            "target": "name"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 2,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "reason": "template check policy is off",
+            "status": "disabled"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "问候语",
+          "expectType": "string",
+          "expr": "greeting",
+          "target": "greeting"
+        },
+        {
+          "expectDoc": "用户显示名称",
+          "expectType": "string",
+          "expr": "user.name",
+          "target": "name"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "js-jsdoc",
+      "script": "index.js",
+      "wxml": "<view class=\"page\">\n  <text class=\"greeting\">{{ greeting }}</text>\n  <text class=\"name\">{{ user.name }}</text>\n  <text class=\"typo\">{{ user.nmae }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": true,
+      "caseId": "TS-MATRIX-0102-JS_CHECKJS-IN_PLACE_SHADOW",
+      "checkJs": true,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": true,
+        "checkJs": true,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "user.nmae",
+          "range": {
+            "end": 144,
+            "start": 140
+          },
+          "target": "nmae"
+        }
+      ],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "greeting",
+          "target": "greeting",
+          "wxmlRange": {
+            "end": 56,
+            "start": 48
+          }
+        },
+        {
+          "expr": "user.name",
+          "target": "name",
+          "wxmlRange": {
+            "end": 100,
+            "start": 91
+          }
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae",
+          "wxmlRange": {
+            "end": 144,
+            "start": 135
+          }
+        }
+      ],
+      "id": "js-checkjs",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 273,
+                "start": 265
+              }
+            },
+            "query": "greeting"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 56,
+                "start": 52
+              }
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": null,
+            "query": "user.nmae"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 2339,
+            "range": {
+              "end": 144,
+              "start": 140
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "问候语",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "greeting"
+          },
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "missing",
+              "typeOnly": "any"
+            },
+            "query": "user.nmae"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "greeting",
+            "target": "greeting"
+          },
+          {
+            "fragmentId": "user.name",
+            "target": "name"
+          },
+          {
+            "fragmentId": "user.nmae",
+            "target": "nmae"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 3,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "问候语",
+          "expectType": "string",
+          "expr": "greeting",
+          "target": "greeting"
+        },
+        {
+          "expectDoc": "用户显示名称",
+          "expectType": "string",
+          "expr": "user.name",
+          "target": "name"
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "js-jsdoc",
+      "script": "index.js",
+      "wxml": "<view class=\"page\">\n  <text class=\"greeting\">{{ greeting }}</text>\n  <text class=\"name\">{{ user.name }}</text>\n  <text class=\"typo\">{{ user.nmae }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-TS_NOCHECK-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "blockedBy": "state",
+        "status": "blocked"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        }
+      ],
+      "id": "ts-nocheck",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 65,
+                "start": 60
+              }
+            },
+            "query": "title"
+          }
+        ],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "页面标题",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "title"
+          }
+        ],
+        "jsCheckApplied": "off",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 1,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "reason": "`@ts-nocheck` in the source",
+            "status": "disabled"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "页面标题",
+          "expectType": "string",
+          "expr": "title",
+          "target": "title"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "ts-nocheck",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text class=\"title\">{{ title }}</text>\n  <text class=\"typo\">{{ title.missing }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": true,
+      "caseId": "TS-MATRIX-0102-JS_NOCHECK-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "blockedBy": "state",
+        "status": "blocked"
+      },
+      "compilerOptions": {
+        "allowJs": true,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "greeting",
+          "target": "greeting",
+          "wxmlRange": {
+            "end": 56,
+            "start": 48
+          }
+        }
+      ],
+      "id": "js-nocheck",
+      "jsCheck": "pragma",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 65,
+                "start": 57
+              }
+            },
+            "query": "greeting"
+          }
+        ],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "问候语",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "greeting"
+          }
+        ],
+        "jsCheckApplied": "off",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "greeting",
+            "target": "greeting"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 1,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "reason": "`@ts-nocheck` in the source",
+            "status": "disabled"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "问候语",
+          "expectType": "string",
+          "expr": "greeting",
+          "target": "greeting"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "js-nocheck",
+      "script": "index.js",
+      "wxml": "<view class=\"page\">\n  <text class=\"greeting\">{{ greeting }}</text>\n  <text class=\"typo\">{{ greeting.missing }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": true,
+      "caseId": "TS-MATRIX-0102-JS_SHEBANG_BOM-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": true,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "title.missing",
+          "range": {
+            "end": 98,
+            "start": 91
+          },
+          "target": "missing"
+        }
+      ],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        },
+        {
+          "expr": "title.missing",
+          "target": "missing",
+          "wxmlRange": {
+            "end": 98,
+            "start": 85
+          }
+        }
+      ],
+      "id": "js-shebang-bom",
+      "jsCheck": "pragma",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 73,
+                "start": 68
+              }
+            },
+            "query": "title"
+          },
+          {
+            "observation": null,
+            "query": "title.missing"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 2339,
+            "range": {
+              "end": 98,
+              "start": 91
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "页面标题",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "missing",
+              "typeOnly": "any"
+            },
+            "query": "title.missing"
+          }
+        ],
+        "jsCheckApplied": "pragma",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          },
+          {
+            "fragmentId": "title.missing",
+            "target": "missing"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 2,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "页面标题",
+          "expectType": "string",
+          "expr": "title",
+          "target": "title"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "js-shebang-bom",
+      "script": "index.js",
+      "wxml": "<view class=\"page\">\n  <text class=\"title\">{{ title }}</text>\n  <text class=\"typo\">{{ title.missing }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-INTERFACE_ROOT-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [],
+      "fragments": [],
+      "id": "interface-root",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 0,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "reason": "data root is a type-only reference (interface/type alias, possibly imported); no runtime data object exists",
+            "status": "unsupported"
+          },
+          "diagnostics": {
+            "reason": "data root is a type-only reference (interface/type alias, possibly imported); no runtime data object exists",
+            "status": "unsupported"
+          },
+          "hover": {
+            "reason": "data root is a type-only reference (interface/type alias, possibly imported); no runtime data object exists",
+            "status": "unsupported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [],
+      "registration": "page",
+      "sampleDir": "interface-root",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text class=\"name\">{{ user.name }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-INTERFACE_ROOT_IMPORT-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "blockedBy": "root",
+        "status": "blocked"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [
+        "models.ts"
+      ],
+      "fragments": [],
+      "id": "interface-root-import",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "module",
+        "moduleBefore": "module",
+        "mounts": [],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 2,
+          "fragmentCount": 0,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "reason": "data root is a type-only reference (interface/type alias, possibly imported); no runtime data object exists",
+            "status": "unsupported"
+          },
+          "diagnostics": {
+            "reason": "data root is a type-only reference (interface/type alias, possibly imported); no runtime data object exists",
+            "status": "unsupported"
+          },
+          "hover": {
+            "reason": "data root is a type-only reference (interface/type alias, possibly imported); no runtime data object exists",
+            "status": "unsupported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [],
+      "registration": "page",
+      "sampleDir": "interface-root-import",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text class=\"name\">{{ user.name }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-NULLABLE-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "maybeUser.name",
+          "range": {
+            "end": 54,
+            "start": 45
+          },
+          "target": "maybeUser"
+        },
+        {
+          "expr": "external.anything",
+          "range": {
+            "end": 106,
+            "start": 98
+          },
+          "target": "external"
+        }
+      ],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "users[0].name",
+          "target": "name",
+          "wxmlRange": {
+            "end": 163,
+            "start": 150
+          }
+        },
+        {
+          "expr": "maybeUser.name",
+          "target": "maybeUser",
+          "wxmlRange": {
+            "end": 59,
+            "start": 45
+          }
+        },
+        {
+          "expr": "external.anything",
+          "target": "external",
+          "wxmlRange": {
+            "end": 115,
+            "start": 98
+          }
+        }
+      ],
+      "id": "nullable",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 51,
+                "start": 47
+              }
+            },
+            "query": "users[0].name"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 94,
+                "start": 85
+              }
+            },
+            "query": "maybeUser.name"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 153,
+                "start": 145
+              }
+            },
+            "query": "external.anything"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 18047,
+            "range": {
+              "end": 54,
+              "start": 45
+            }
+          },
+          {
+            "code": 18046,
+            "range": {
+              "end": 106,
+              "start": 98
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "users[0].name"
+          },
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "known",
+              "typeOnly": "User | null"
+            },
+            "query": "maybeUser.name"
+          },
+          {
+            "observation": {
+              "documentation": "外部数据",
+              "documentationSource": "quickinfo",
+              "quality": "unknown",
+              "typeOnly": "unknown"
+            },
+            "query": "external.anything"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "users[0].name",
+            "target": "name"
+          },
+          {
+            "fragmentId": "maybeUser.name",
+            "target": "maybeUser"
+          },
+          {
+            "fragmentId": "external.anything",
+            "target": "external"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 3,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "用户显示名称",
+          "expectType": "string",
+          "expr": "users[0].name",
+          "target": "name"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "nullable",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text class=\"maybe\">{{ maybeUser.name }}</text>\n  <text class=\"external\">{{ external.anything }}</text>\n  <text class=\"item\">{{ users[0].name }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-CROSS_FILE_OVERLAY-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [
+        "models.ts"
+      ],
+      "fragments": [
+        {
+          "expr": "user.name",
+          "target": "name",
+          "wxmlRange": {
+            "end": 53,
+            "start": 44
+          }
+        }
+      ],
+      "id": "cross-file-overlay",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "external",
+              "range": {
+                "end": 58,
+                "start": 54
+              }
+            },
+            "query": "user.name"
+          }
+        ],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "user.name"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "module",
+        "moduleBefore": "module",
+        "mounts": [
+          {
+            "fragmentId": "user.name",
+            "target": "name"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 2,
+          "fragmentCount": 1,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "definition": true,
+          "expectDefinition": "external",
+          "expectDoc": "用户显示名称",
+          "expectType": "string",
+          "expr": "user.name",
+          "target": "name"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "cross-file-overlay",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text class=\"name\">{{ user.name }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-ALIAS_PROJECT-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "baseUrl": ".",
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "paths": {
+          "@models/*": [
+            "models/*"
+          ]
+        },
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [
+        "models/user.ts"
+      ],
+      "fragments": [
+        {
+          "expr": "user.name",
+          "target": "name",
+          "wxmlRange": {
+            "end": 53,
+            "start": 44
+          }
+        }
+      ],
+      "id": "alias-project",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "external",
+              "range": {
+                "end": 58,
+                "start": 54
+              }
+            },
+            "query": "user.name"
+          }
+        ],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "user.name"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "module",
+        "moduleBefore": "module",
+        "mounts": [
+          {
+            "fragmentId": "user.name",
+            "target": "name"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 2,
+          "fragmentCount": 1,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "definition": true,
+          "expectDefinition": "external",
+          "expectDoc": "用户显示名称",
+          "expectType": "string",
+          "expr": "user.name",
+          "target": "name"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "alias-project",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text class=\"name\">{{ user.name }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-COMPONENT_DATA_CROSS_FILE-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [
+        "models.ts"
+      ],
+      "fragments": [
+        {
+          "expr": "user.name",
+          "target": "name",
+          "wxmlRange": {
+            "end": 53,
+            "start": 44
+          }
+        },
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 94,
+            "start": 89
+          }
+        }
+      ],
+      "id": "component-data-cross-file",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "external",
+              "range": {
+                "end": 58,
+                "start": 54
+              }
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 94,
+                "start": 89
+              }
+            },
+            "query": "title"
+          }
+        ],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": {
+              "documentation": "标题",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "title"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "module",
+        "moduleBefore": "module",
+        "mounts": [
+          {
+            "fragmentId": "user.name",
+            "target": "name"
+          },
+          {
+            "fragmentId": "title",
+            "target": "title"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "component"
+        },
+        "request": {
+          "fileCount": 2,
+          "fragmentCount": 2,
+          "ownerKind": "component"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "definition": true,
+          "expectDefinition": "external",
+          "expectDoc": "用户显示名称",
+          "expectType": "string",
+          "expr": "user.name",
+          "target": "name"
+        },
+        {
+          "expectDoc": "标题",
+          "expectType": "string",
+          "expr": "title",
+          "target": "title"
+        }
+      ],
+      "registration": "component",
+      "sampleDir": "component-data-cross-file",
+      "script": "index.ts",
+      "wxml": "<view class=\"card\">\n  <text class=\"name\">{{ user.name }}</text>\n  <text class=\"title\">{{ title }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-CRLF_SCRIPT-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "user.nmae",
+          "range": {
+            "end": 99,
+            "start": 95
+          },
+          "target": "nmae"
+        }
+      ],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "user.name",
+          "target": "name",
+          "wxmlRange": {
+            "end": 54,
+            "start": 45
+          }
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae",
+          "wxmlRange": {
+            "end": 99,
+            "start": 90
+          }
+        }
+      ],
+      "id": "crlf-script",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 94,
+                "start": 90
+              }
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": null,
+            "query": "user.nmae"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 2339,
+            "range": {
+              "end": 99,
+              "start": 95
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "missing",
+              "typeOnly": "any"
+            },
+            "query": "user.nmae"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "user.name",
+            "target": "name"
+          },
+          {
+            "fragmentId": "user.nmae",
+            "target": "nmae"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 2,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "用户显示名称",
+          "expectType": "string",
+          "expr": "user.name",
+          "target": "name"
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "crlf-script",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\r\n  <text class=\"name\">{{ user.name }}</text>\r\n  <text class=\"typo\">{{ user.nmae }}</text>\r\n</view>\r\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-DATA_SHORTHAND-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [],
+      "fragments": [],
+      "id": "data-shorthand",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 0,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "reason": "`data` member exists but is not a property assignment (shorthand/method); the template root cannot be bound",
+            "status": "unsupported"
+          },
+          "diagnostics": {
+            "reason": "`data` member exists but is not a property assignment (shorthand/method); the template root cannot be bound",
+            "status": "unsupported"
+          },
+          "hover": {
+            "reason": "`data` member exists but is not a property assignment (shorthand/method); the template root cannot be bound",
+            "status": "unsupported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [],
+      "registration": "page",
+      "sampleDir": "data-shorthand",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text>{{ title }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": true,
+      "caseId": "TS-MATRIX-0102-JS_SOURCE_CHECK_OFF-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "blockedBy": "state",
+        "status": "blocked"
+      },
+      "compilerOptions": {
+        "allowJs": true,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        }
+      ],
+      "id": "js-source-check-off",
+      "jsCheck": "off",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 63,
+                "start": 58
+              }
+            },
+            "query": "title"
+          }
+        ],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "页面标题",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "title"
+          }
+        ],
+        "jsCheckApplied": "off",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 1,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "reason": "template check policy is off",
+            "status": "disabled"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "页面标题",
+          "expectType": "string",
+          "expr": "title",
+          "target": "title"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "js-source-check",
+      "script": "index.js",
+      "wxml": "<view class=\"page\">\n  <text class=\"title\">{{ title }}</text>\n  <text class=\"typo\">{{ title.missing }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": true,
+      "caseId": "TS-MATRIX-0102-JS_SOURCE_CHECK_INHERIT-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": true,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "title.missing",
+          "range": {
+            "end": 98,
+            "start": 91
+          },
+          "target": "missing"
+        }
+      ],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        },
+        {
+          "expr": "title.missing",
+          "target": "missing",
+          "wxmlRange": {
+            "end": 98,
+            "start": 85
+          }
+        }
+      ],
+      "id": "js-source-check-inherit",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 63,
+                "start": 58
+              }
+            },
+            "query": "title"
+          },
+          {
+            "observation": null,
+            "query": "title.missing"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 2339,
+            "range": {
+              "end": 98,
+              "start": 91
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "页面标题",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "missing",
+              "typeOnly": "any"
+            },
+            "query": "title.missing"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          },
+          {
+            "fragmentId": "title.missing",
+            "target": "missing"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 2,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "页面标题",
+          "expectType": "string",
+          "expr": "title",
+          "target": "title"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "js-source-check",
+      "script": "index.js",
+      "wxml": "<view class=\"page\">\n  <text class=\"title\">{{ title }}</text>\n  <text class=\"typo\">{{ title.missing }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-METHODS_NONLITERAL-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        }
+      ],
+      "id": "methods-nonliteral",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "component"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 1,
+          "ownerKind": "component"
+        },
+        "states": {
+          "definition": {
+            "reason": "component `methods` is not an object literal; the in-place probe cannot be mounted",
+            "status": "partial"
+          },
+          "diagnostics": {
+            "reason": "component `methods` is not an object literal; the in-place probe cannot be mounted",
+            "status": "partial"
+          },
+          "hover": {
+            "reason": "component `methods` is not an object literal; the in-place probe cannot be mounted",
+            "status": "partial"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "标题",
+          "expectType": "string",
+          "expr": "title",
+          "target": "title"
+        }
+      ],
+      "registration": "component",
+      "sampleDir": "methods-nonliteral",
+      "script": "index.ts",
+      "wxml": "<view class=\"card\">\n  <text class=\"title\">{{ title }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-UNCHECKED_INDEX-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "noUncheckedIndexedAccess": true,
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "users[0].name",
+          "range": {
+            "end": 52,
+            "start": 44
+          },
+          "target": "users[0]"
+        }
+      ],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "users[0].name",
+          "target": null,
+          "wxmlRange": {
+            "end": 57,
+            "start": 44
+          }
+        }
+      ],
+      "id": "unchecked-index",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 51,
+                "start": 47
+              }
+            },
+            "query": "users[0].name"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 2532,
+            "range": {
+              "end": 52,
+              "start": 44
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "users[0].name"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "users[0].name",
+            "target": "name"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 1,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [],
+      "registration": "page",
+      "sampleDir": "unchecked-index",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text class=\"name\">{{ users[0].name }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-NULLABLE_NO_STRICT_NULL-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "strictNullChecks": false,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "maybeUser.name",
+          "target": "name",
+          "wxmlRange": {
+            "end": 59,
+            "start": 45
+          }
+        }
+      ],
+      "id": "nullable-no-strict-null",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 51,
+                "start": 47
+              }
+            },
+            "query": "maybeUser.name"
+          }
+        ],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "maybeUser.name"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "maybeUser.name",
+            "target": "name"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 1,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectType": "string",
+          "expr": "maybeUser.name",
+          "target": "name"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "nullable",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text class=\"maybe\">{{ maybeUser.name }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-NO_IMPLICIT_THIS_OFF-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "blockedBy": "probe",
+        "status": "blocked"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "noImplicitThis": false,
+        "strict": false,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        }
+      ],
+      "id": "no-implicit-this-off",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": null,
+            "query": "title"
+          }
+        ],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "any",
+              "typeOnly": "any"
+            },
+            "query": "title"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 1,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "reason": "probe root resolves to any",
+            "status": "unavailable"
+          },
+          "diagnostics": {
+            "reason": "probe root resolves to any",
+            "status": "unavailable"
+          },
+          "hover": {
+            "reason": "probe root resolves to any",
+            "status": "unavailable"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expr": "title",
+          "target": "title"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "no-implicit-this",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\n  <text class=\"title\">{{ title }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": true,
+      "caseId": "TS-MATRIX-0102-JS_BOM_CHECK_OFF-IN_PLACE_SHADOW",
+      "checkJs": true,
+      "classification": {
+        "blockedBy": "state",
+        "status": "blocked"
+      },
+      "compilerOptions": {
+        "allowJs": true,
+        "checkJs": true,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        }
+      ],
+      "id": "js-bom-check-off",
+      "jsCheck": "off",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 86,
+                "start": 81
+              }
+            },
+            "query": "title"
+          }
+        ],
+        "diagnostics": [],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "页面标题",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "title"
+          }
+        ],
+        "jsCheckApplied": "off",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 1,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "reason": "template check policy is off",
+            "status": "disabled"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "页面标题",
+          "expectType": "string",
+          "expr": "title",
+          "target": "title"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "js-bom-shebang-check",
+      "script": "index.js",
+      "wxml": "<view class=\"page\">\n  <text class=\"title\">{{ title }}</text>\n  <text class=\"typo\">{{ title.missing }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": true,
+      "caseId": "TS-MATRIX-0102-JS_BOM_CHECK_INHERIT-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": true,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "title.missing",
+          "range": {
+            "end": 98,
+            "start": 91
+          },
+          "target": "missing"
+        }
+      ],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "title",
+          "target": "title",
+          "wxmlRange": {
+            "end": 50,
+            "start": 45
+          }
+        },
+        {
+          "expr": "title.missing",
+          "target": "missing",
+          "wxmlRange": {
+            "end": 98,
+            "start": 85
+          }
+        }
+      ],
+      "id": "js-bom-check-inherit",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 86,
+                "start": 81
+              }
+            },
+            "query": "title"
+          },
+          {
+            "observation": null,
+            "query": "title.missing"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 2339,
+            "range": {
+              "end": 98,
+              "start": 91
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "页面标题",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "title"
+          },
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "missing",
+              "typeOnly": "any"
+            },
+            "query": "title.missing"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "title",
+            "target": "title"
+          },
+          {
+            "fragmentId": "title.missing",
+            "target": "missing"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 2,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "页面标题",
+          "expectType": "string",
+          "expr": "title",
+          "target": "title"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "js-bom-shebang-check",
+      "script": "index.js",
+      "wxml": "<view class=\"page\">\n  <text class=\"title\">{{ title }}</text>\n  <text class=\"typo\">{{ title.missing }}</text>\n</view>\n"
+    },
+    {
+      "allowJs": false,
+      "caseId": "TS-MATRIX-0102-UNICODE_CRLF-IN_PLACE_SHADOW",
+      "checkJs": false,
+      "classification": {
+        "status": "exact"
+      },
+      "compilerOptions": {
+        "allowJs": false,
+        "checkJs": false,
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "strict": true,
+        "target": "ES2022",
+        "types": [
+          "miniprogram-api-typings"
+        ]
+      },
+      "expectedDiagnostics": [
+        {
+          "expr": "user.nmae",
+          "range": {
+            "end": 107,
+            "start": 103
+          },
+          "target": "nmae"
+        }
+      ],
+      "extraFiles": [],
+      "fragments": [
+        {
+          "expr": "user.name",
+          "target": "name",
+          "wxmlRange": {
+            "end": 75,
+            "start": 66
+          }
+        },
+        {
+          "expr": "标题",
+          "target": "标题",
+          "wxmlRange": {
+            "end": 38,
+            "start": 32
+          }
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae",
+          "wxmlRange": {
+            "end": 107,
+            "start": 98
+          }
+        }
+      ],
+      "id": "unicode-crlf",
+      "jsCheck": "inherit",
+      "oracle": {
+        "definitions": [
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 135,
+                "start": 131
+              }
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": {
+              "kind": "script",
+              "range": {
+                "end": 45,
+                "start": 39
+              }
+            },
+            "query": "标题"
+          },
+          {
+            "observation": null,
+            "query": "user.nmae"
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": 2339,
+            "range": {
+              "end": 107,
+              "start": 103
+            }
+          }
+        ],
+        "diagnosticsExact": true,
+        "hovers": [
+          {
+            "observation": {
+              "documentation": "用户显示名称",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "user.name"
+          },
+          {
+            "observation": {
+              "documentation": "标题",
+              "documentationSource": "quickinfo",
+              "quality": "known",
+              "typeOnly": "string"
+            },
+            "query": "标题"
+          },
+          {
+            "observation": {
+              "documentation": "",
+              "documentationSource": "none",
+              "quality": "missing",
+              "typeOnly": "any"
+            },
+            "query": "user.nmae"
+          }
+        ],
+        "jsCheckApplied": "inherit",
+        "moduleAfter": "script",
+        "moduleBefore": "script",
+        "mounts": [
+          {
+            "fragmentId": "user.name",
+            "target": "name"
+          },
+          {
+            "fragmentId": "标题",
+            "target": "标题"
+          },
+          {
+            "fragmentId": "user.nmae",
+            "target": "nmae"
+          }
+        ],
+        "perturbsUserTypes": false,
+        "registration": {
+          "count": 1,
+          "kind": "page"
+        },
+        "request": {
+          "fileCount": 1,
+          "fragmentCount": 3,
+          "ownerKind": "page"
+        },
+        "states": {
+          "definition": {
+            "status": "supported"
+          },
+          "diagnostics": {
+            "status": "supported"
+          },
+          "hover": {
+            "status": "supported"
+          }
+        },
+        "userScriptDiagnosticsIntroduced": []
+      },
+      "queries": [
+        {
+          "expectDoc": "用户显示名称",
+          "expectType": "string",
+          "expr": "user.name",
+          "target": "name"
+        },
+        {
+          "expectDoc": "标题",
+          "expectType": "string",
+          "expr": "标题",
+          "target": "标题"
+        },
+        {
+          "expr": "user.nmae",
+          "target": "nmae"
+        }
+      ],
+      "registration": "page",
+      "sampleDir": "unicode-crlf",
+      "script": "index.ts",
+      "wxml": "<view class=\"page\">\r\n  <text>{{ 标题 }}</text>\r\n  <text>😀 {{ user.name }}</text>\r\n  <text>{{ user.nmae }}</text>\r\n</view>\r\n"
+    }
+  ],
+  "schema": "tsgo-real-matrix-projection/1",
+  "source": {
+    "environment": {
+      "cpu": "AMD Ryzen AI 9 HX 370 w/ Radeon 890M",
+      "cpuCount": 24,
+      "memoryGiB": 30.5,
+      "node": "v24.22.2",
+      "platform": "linux 7.2.15+deb14-amd64 (x64)",
+      "typescript": "6.0.3",
+      "typings": "5.3.1"
+    },
+    "path": "docs/evidence/data/type-bridge-c1/matrix.json",
+    "sampleFiles": {
+      "alias-project/index.ts": {
+        "sha256": "adeee72d673d75753b49b2c1d98be7da48c9a93385b20ee2e979a74e762389f2",
+        "size": 137
+      },
+      "alias-project/models/user.ts": {
+        "sha256": "4db21176aa8e25f3f7e51825d3cf9935aa79283fc196dc32032d058af1870c5e",
+        "size": 107
+      },
+      "component-data-cross-file/index.ts": {
+        "sha256": "f54043d5dc0cbd45ee615f2ac15ae0a96a5a4cbeac267835fdfd53abd94c083e",
+        "size": 208
+      },
+      "component-data-cross-file/models.ts": {
+        "sha256": "4fbe77e5a3b7ae07d9e5e81b0e6fdb64b2daa88982b7cab036688eac113c072c",
+        "size": 70
+      },
+      "component-js/index.js": {
+        "sha256": "cd28f1e891403678b038f4b3a13140b48f3ea48bd3c3f94e9433e7e0176be078",
+        "size": 283
+      },
+      "component-module/index.ts": {
+        "sha256": "69630f5b803ec400732937d03c734178eff4720f8184a5746dcf12b5fb8b99d6",
+        "size": 295
+      },
+      "component-properties/index.ts": {
+        "sha256": "32688d3be92e6b644aa56f924f5544454736f7822a6078fce106f7480d38c591",
+        "size": 354
+      },
+      "crlf-script/index.ts": {
+        "sha256": "e20db8a79d31066e0502aaaf16e5c36cb1cc71913f414a9a4023220bd32ef6a8",
+        "size": 123
+      },
+      "cross-file-overlay/index.ts": {
+        "sha256": "d04998c5c8979b3a6bc3dd7c2e2b7fd3fab402b8b538987e3fbd4ad23a75e976",
+        "size": 133
+      },
+      "cross-file-overlay/models.ts": {
+        "sha256": "4db21176aa8e25f3f7e51825d3cf9935aa79283fc196dc32032d058af1870c5e",
+        "size": 107
+      },
+      "data-shorthand/index.ts": {
+        "sha256": "6a0308d9e8d992d9fdac2d16d404477b888f2bc2fff195c7d232c235ef448e8c",
+        "size": 56
+      },
+      "interface-root-import/index.ts": {
+        "sha256": "c6a146f6724d8d314f916324e1c1cbf2b79ee5f3f3fdaa4c493adf0fd82c40ef",
+        "size": 64
+      },
+      "interface-root-import/models.ts": {
+        "sha256": "4fbe77e5a3b7ae07d9e5e81b0e6fdb64b2daa88982b7cab036688eac113c072c",
+        "size": 70
+      },
+      "interface-root/index.ts": {
+        "sha256": "0452da8c5adc21ee419a80d8996a315458f434b2d8672a5a2e0a41b0d5d30fc5",
+        "size": 89
+      },
+      "js-bom-shebang-check/index.js": {
+        "sha256": "e873b4a4a044bfe4933f8661b6e1532e31404ad89b5e8d3389ea8e84d5b22e0c",
+        "size": 107
+      },
+      "js-jsdoc/index.js": {
+        "sha256": "f6c691d5660f9abd431adb84e6512d1570de57cd97329bd6a841308f7f061cf1",
+        "size": 304
+      },
+      "js-nocheck/index.js": {
+        "sha256": "fdb55b73b5d261824a978ad1781195c36d0255eaea6e7d115ddf2eda2a3b474f",
+        "size": 113
+      },
+      "js-shebang-bom/index.js": {
+        "sha256": "7de2fb36a1354c6ced57e5570d2778cde6a04ea834aecaec8e138a21564ad6c2",
+        "size": 94
+      },
+      "js-source-check/index.js": {
+        "sha256": "22c0ca88ff15a74fa360557a511afcb724063d5c6cd9c76414e7f622df4a2756",
+        "size": 84
+      },
+      "methods-nonliteral/index.ts": {
+        "sha256": "136a1791dc589c92adb8da02beb3f472ac5a70e67d030d989804c2561f0078aa",
+        "size": 221
+      },
+      "multi-registration/index.ts": {
+        "sha256": "be4eec590afa6ad69d3e3dbf35d57845bb32d6fc404075fa65d652c60b7f0785",
+        "size": 113
+      },
+      "no-implicit-this/index.ts": {
+        "sha256": "9e5ad9bdaf87b8213fe02d303622b79102710ece3c78bebd84ab914d989dfd5a",
+        "size": 71
+      },
+      "nullable/index.ts": {
+        "sha256": "3343cb104356e431a4fd627705523b54c4bfb39508cae7285843e42e14999445",
+        "size": 206
+      },
+      "page-basic/index.ts": {
+        "sha256": "5b1d32ff81b384be936e46bc43169ddab11c4616bf786cf48cb60a4fdae1a279",
+        "size": 269
+      },
+      "page-cjs/index.ts": {
+        "sha256": "1d0d5c52618d87ad6f879065a7720f905dba414c69cb4549ef74c0a6acbcbcaa",
+        "size": 353
+      },
+      "page-closure/index.ts": {
+        "sha256": "f0b12d4b0045f0ba4f3ffcfec7e2ab340962adc45c84509d7de625503ef20fe3",
+        "size": 517
+      },
+      "page-esm/helper.ts": {
+        "sha256": "97c7a2076a394322ff220833a45610e0d656448ae2dacda86740b7a6a4389da2",
+        "size": 106
+      },
+      "page-esm/index.ts": {
+        "sha256": "471295d286e66491ee5488e516012c38eb4ed1cab9383520393bf31efe91c201",
+        "size": 224
+      },
+      "page-export-empty/index.ts": {
+        "sha256": "3263f2ecde653fbd028f2444eb7cdfbd1d8b83cf39f2880290e144752914f0d1",
+        "size": 177
+      },
+      "properties-spread/index.ts": {
+        "sha256": "58011ee3339042ed916aa37d6e3ed68a46a030eceb9fcb34a6acc1223353cea7",
+        "size": 295
+      },
+      "ts-nocheck/index.ts": {
+        "sha256": "a043b14d3f1faf6d443d8ec8602e6aab34bea1f15e5d06d14b07b2cf12886c4a",
+        "size": 86
+      },
+      "unchecked-index/index.ts": {
+        "sha256": "602bbbbc4b8e62f6f74502d8db312c9a1abc42b904659d17cb9221572391a7ce",
+        "size": 115
+      },
+      "unicode-crlf/index.ts": {
+        "sha256": "d6ebd30bf28e153e6f76608edb24fd456c3c5a92603b422c05f1b9606ddd554b",
+        "size": 160
+      }
+    },
+    "scenarioManifest": {
+      "path": "backends/typescript/src/scenarios.ts",
+      "sha256": "5f0c35f341c92e8b903c6b0e9ef5127598e76aa46bd51de942bbc2ca367f5bef"
+    },
+    "selection": {
+      "inPlaceDiagnostics": 17,
+      "layout": "in-place-shadow",
+      "scenarios": 33
+    },
+    "sha256": "69bc6c57405f664ad3195b566be7b821a5273fe807a8b58f1eb08b93b1afd6db",
+    "size": 577049
+  },
+  "topLevelCases": [
+    {
+      "blockedBy": null,
+      "caseId": "TS-MATRIX-0092",
+      "inPlaceHalf": "exact",
+      "note": "in-place build only; symbol-bridge retired by the 2026-11-17 decision",
+      "title": "every scenario runs both candidates without throwing"
+    },
+    {
+      "blockedBy": "root",
+      "caseId": "TS-MATRIX-0215",
+      "inPlaceHalf": "blocked",
+      "note": "checker data-root classification; native reports Partial for the imported alias",
+      "title": "interface used as data value is reported, never fabricated"
+    },
+    {
+      "blockedBy": null,
+      "caseId": "TS-MATRIX-0228",
+      "inPlaceHalf": "exact",
+      "title": "a shorthand data member is unsupported, not missing"
+    },
+    {
+      "blockedBy": "state",
+      "caseId": "TS-MATRIX-0239",
+      "inPlaceHalf": "blocked",
+      "note": "checker half is exact; the adapter still publishes Supported diagnostics instead of Disabled",
+      "title": "JavaScript hover works without checking, diagnostics do not"
+    },
+    {
+      "blockedBy": "state",
+      "caseId": "TS-MATRIX-0252",
+      "inPlaceHalf": "blocked",
+      "note": "checker half is exact; the adapter does not publish Diagnostics=Disabled for the off half",
+      "title": "explicit off beats a source @ts-check and publishes no diagnostics"
+    },
+    {
+      "blockedBy": "docs",
+      "caseId": "TS-MATRIX-0271",
+      "inPlaceHalf": "blocked",
+      "note": "native has no documentationSource DTO; the checker half is exact",
+      "title": "component properties union needs the declaration overlay"
+    },
+    {
+      "blockedBy": "state",
+      "caseId": "TS-MATRIX-0283",
+      "inPlaceHalf": "blocked",
+      "note": "checker half is exact; the adapter does not publish Diagnostics=Disabled for the off half",
+      "title": "BOM + hashbang + source pragma works for off and inherit"
+    },
+    {
+      "blockedBy": null,
+      "caseId": "TS-MATRIX-0301",
+      "inPlaceHalf": "exact",
+      "title": "multi-registration uses the first registration and does not merge"
+    },
+    {
+      "blockedBy": null,
+      "caseId": "TS-MATRIX-0319",
+      "inPlaceHalf": "exact",
+      "title": "documented option switches change the derived check"
+    },
+    {
+      "blockedBy": "probe",
+      "caseId": "TS-MATRIX-0335",
+      "inPlaceHalf": "blocked",
+      "note": "the checker proves the probe root is any; product probe health is not published yet",
+      "title": "noImplicitThis:false degrades the probe instead of claiming Supported"
+    }
+  ]
+}

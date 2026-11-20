@@ -32,8 +32,9 @@ use std::time::{Duration, Instant};
 
 use wxml_types::{
     Backend, BackendError, CompletionKind, CompletionRequest, CompletionResult, DefinitionRequest,
-    DefinitionResult, DiagnosticsRequest, DiagnosticsResult, FileId, HoverRequest, HoverResult,
-    RequestContext, SymbolQuery, SymbolRequest, SymbolResult,
+    DefinitionResult, DiagnosticsRequest, DiagnosticsResult, DocumentSymbolsRequest,
+    DocumentSymbolsResult, FileId, HoverRequest, HoverResult, RequestContext, SnapshotId,
+    SymbolQuery, SymbolRequest, SymbolResult, ViewRevision,
 };
 
 use crate::jsonrpc::RequestKey;
@@ -74,10 +75,26 @@ pub(crate) enum JobKind {
     Hover,
     /// A diagnostics query that will publish a notification.
     Diagnostics,
+    /// Standalone script diagnostics that will publish a notification.
+    ///
+    /// `script_hash` is the FNV-1a hash of the client text at scheduling time.
+    /// The server re-hashes the current workspace text before publishing so a
+    /// late result can never publish ranges for different content.
+    ScriptDiagnostics {
+        /// FNV-1a hash of the script text the ranges refer to.
+        script_hash: u64,
+    },
     /// A definition query that will answer a request.
     Definition,
     /// A completion query that will answer a request.
     Completion(CompletionKind),
+    /// A script outline query for one owning script.
+    DocumentSymbols {
+        /// Script whose outline was requested.
+        subject: FileId,
+        /// Owning view and text identity the outline must still match.
+        scope: DocumentSymbolsScope,
+    },
     /// A script symbol query used by references, rename or code actions.
     Symbols {
         /// Script the query is about.
@@ -87,10 +104,28 @@ pub(crate) enum JobKind {
     },
 }
 
+/// Identity of the view a script outline was requested for.
+///
+/// The server can only publish the outline while the script text, the owning
+/// view revision and the owning template snapshot are unchanged. The hash is
+/// the workspace text hash; the server re-hashes both the workspace document
+/// and the host script text before serializing ranges.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct DocumentSymbolsScope {
+    /// Owning WXML template.
+    pub(crate) template: FileId,
+    /// Snapshot id of the owning template the query was built from.
+    pub(crate) template_snapshot: SnapshotId,
+    /// Host view revision at scheduling time.
+    pub(crate) view_revision: ViewRevision,
+    /// FNV-1a hash of the script text the outline ranges refer to.
+    pub(crate) script_hash: u64,
+}
+
 impl JobKind {
     /// Returns `true` for request/response jobs that need interactive latency.
     const fn is_interactive(&self) -> bool {
-        !matches!(self, Self::Diagnostics)
+        !matches!(self, Self::Diagnostics | Self::ScriptDiagnostics { .. })
     }
 }
 
@@ -129,6 +164,8 @@ pub(crate) enum Outcome {
     Definition(Box<DefinitionResult>),
     /// Completion candidates.
     Completion(Box<CompletionResult>),
+    /// Script outline.
+    DocumentSymbols(Box<DocumentSymbolsResult>),
     /// Script symbol facts.
     Symbols(Box<SymbolResult>),
 }
@@ -397,6 +434,11 @@ fn run(backend: &dyn Backend, job: &Job) -> Result<Outcome, BackendError> {
                 context: job.context.clone(),
             })
             .map(|diagnostics| Outcome::Diagnostics(Box::new(diagnostics))),
+        JobKind::ScriptDiagnostics { .. } => backend
+            .script_diagnostics(DiagnosticsRequest {
+                context: job.context.clone(),
+            })
+            .map(|diagnostics| Outcome::Diagnostics(Box::new(diagnostics))),
         JobKind::Definition => backend
             .definition(DefinitionRequest {
                 context: job.context.clone(),
@@ -410,6 +452,12 @@ fn run(backend: &dyn Backend, job: &Job) -> Result<Outcome, BackendError> {
                 kind: *kind,
             })
             .map(|completion| Outcome::Completion(Box::new(completion))),
+        JobKind::DocumentSymbols { subject, .. } => backend
+            .document_symbols(DocumentSymbolsRequest {
+                context: job.context.clone(),
+                subject: subject.clone(),
+            })
+            .map(|symbols| Outcome::DocumentSymbols(Box::new(symbols))),
         JobKind::Symbols { subject, query } => backend
             .symbols(SymbolRequest {
                 context: job.context.clone(),
@@ -618,6 +666,8 @@ mod tests {
         gate: Arc<(Mutex<bool>, Condvar)>,
         calls: AtomicUsize,
         diagnostics_calls: AtomicUsize,
+        symbol_calls: AtomicUsize,
+        symbol_subjects: Mutex<Vec<FileId>>,
     }
 
     struct Gate {
@@ -635,6 +685,8 @@ mod tests {
                     gate: Arc::clone(&gate),
                     calls: AtomicUsize::new(0),
                     diagnostics_calls: AtomicUsize::new(0),
+                    symbol_calls: AtomicUsize::new(0),
+                    symbol_subjects: Mutex::new(Vec::new()),
                 }),
                 Gate {
                     entered: entered_rx,
@@ -671,6 +723,33 @@ mod tests {
             Ok(DiagnosticsResult {
                 diagnostics: Vec::new(),
                 status: CapabilityStatus::Supported,
+            })
+        }
+
+        fn document_symbols(
+            &self,
+            request: DocumentSymbolsRequest,
+        ) -> Result<DocumentSymbolsResult, BackendError> {
+            self.symbol_calls.fetch_add(1, Ordering::SeqCst);
+            self.symbol_subjects
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(request.subject);
+            let _ = self.entered.send(());
+            let (lock, condvar) = &*self.gate;
+            let mut released = lock.lock().unwrap_or_else(PoisonError::into_inner);
+            while !*released {
+                released = condvar
+                    .wait(released)
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+            drop(released);
+            Ok(DocumentSymbolsResult {
+                symbols: Vec::new(),
+                status: CapabilityStatus::Supported,
+                truncated: false,
+                skipped: 0,
+                gaps: Vec::new(),
             })
         }
 
@@ -742,6 +821,130 @@ mod tests {
         let done = receive(&receiver);
         assert!(done.cancelled);
         assert!(matches!(done.outcome, Ok(Outcome::Hover(_))));
+    }
+
+    fn symbol_subject() -> FileId {
+        FileId::new(wxml_types::ProjectId::new("lsp"), "documents/1.ts").expect("subject")
+    }
+
+    fn document_symbol_kind(subject: &FileId) -> JobKind {
+        JobKind::DocumentSymbols {
+            subject: subject.clone(),
+            scope: DocumentSymbolsScope {
+                template: FileId::new(wxml_types::ProjectId::new("lsp"), "documents/1.wxml")
+                    .expect("template"),
+                template_snapshot: SnapshotId::new(1),
+                view_revision: ViewRevision::new(1),
+                script_hash: 7,
+            },
+        }
+    }
+
+    #[test]
+    fn executes_document_symbols_jobs_with_the_requested_subject() {
+        let (backend, gate) = GatedBackend::new();
+        let (sender, receiver) = mpsc::channel();
+        let scheduler = Scheduler::start(backend.clone(), move |done| {
+            let _ = sender.send(done);
+        })
+        .expect("worker");
+
+        let subject = symbol_subject();
+        let kind = document_symbol_kind(&subject);
+        scheduler
+            .submit(job(kind.clone(), Some("symbols"), 0))
+            .expect("submit");
+        gate.wait_until_entered();
+        gate.release();
+
+        let done = receive(&receiver);
+        assert_eq!(done.kind, kind);
+        assert!(!done.cancelled);
+        assert!(matches!(done.outcome, Ok(Outcome::DocumentSymbols(_))));
+        assert_eq!(
+            *backend
+                .symbol_subjects
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            vec![subject]
+        );
+    }
+
+    #[test]
+    fn skips_the_backend_call_for_pre_cancelled_document_symbols() {
+        let backend = GatedBackend::new().0;
+        let (sender, receiver) = mpsc::channel();
+        let scheduler = Scheduler::start(backend.clone(), move |done| {
+            let _ = sender.send(done);
+        })
+        .expect("worker");
+
+        let cancelled = job(document_symbol_kind(&symbol_subject()), Some("symbols"), 0);
+        let flag = Arc::clone(&cancelled.cancel);
+        scheduler.submit(cancelled).expect("submit");
+        flag.store(true, Ordering::SeqCst);
+
+        let done = receive(&receiver);
+        assert!(done.cancelled);
+        assert!(matches!(done.outcome, Err(BackendError::Cancelled)));
+        assert_eq!(backend.symbol_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn marks_a_running_document_symbols_job_cancelled_after_the_backend_call() {
+        let (backend, gate) = GatedBackend::new();
+        let (sender, receiver) = mpsc::channel();
+        let scheduler = Scheduler::start(backend.clone(), move |done| {
+            let _ = sender.send(done);
+        })
+        .expect("worker");
+
+        let running = job(document_symbol_kind(&symbol_subject()), Some("symbols"), 0);
+        let flag = Arc::clone(&running.cancel);
+        scheduler.submit(running).expect("submit");
+        gate.wait_until_entered();
+        flag.store(true, Ordering::SeqCst);
+        gate.release();
+
+        let done = receive(&receiver);
+        assert!(done.cancelled);
+        assert!(matches!(done.outcome, Ok(Outcome::DocumentSymbols(_))));
+        assert_eq!(backend.symbol_calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn rejects_document_symbols_when_the_interactive_queue_is_full() {
+        let (backend, gate) = GatedBackend::new();
+        let (sender, _receiver) = mpsc::channel();
+        let scheduler = Scheduler::start_with_capacity(backend, 1, move |done| {
+            let _ = sender.send(done);
+        })
+        .expect("worker");
+
+        scheduler
+            .submit(job(
+                document_symbol_kind(&symbol_subject()),
+                Some("running"),
+                0,
+            ))
+            .expect("running");
+        gate.wait_until_entered();
+        scheduler
+            .submit(job(
+                document_symbol_kind(&symbol_subject()),
+                Some("queued"),
+                0,
+            ))
+            .expect("queued");
+        assert_eq!(
+            scheduler.submit(job(
+                document_symbol_kind(&symbol_subject()),
+                Some("rejected"),
+                0
+            )),
+            Err(SubmitError::Busy)
+        );
+        gate.release();
     }
 
     #[test]
@@ -833,7 +1036,7 @@ mod tests {
         let first = job(JobKind::Diagnostics, None, 0);
         let mut second = job(JobKind::Diagnostics, None, 0);
         second.stamp.revision = wxml_types::SourceRevision::new(2);
-        second.stamp.snapshot = wxml_types::SnapshotId::new(2);
+        second.stamp.snapshot = SnapshotId::new(2);
         let second_stamp = second.stamp.clone();
         scheduler.submit(first).expect("first diagnostics");
         scheduler.submit(second).expect("second diagnostics");
@@ -851,6 +1054,47 @@ mod tests {
             backend.diagnostics_calls.load(Ordering::SeqCst),
             1,
             "the superseded queued diagnostics job must not call the backend"
+        );
+    }
+
+    #[test]
+    fn script_diagnostics_are_coalesced_per_document() {
+        let (backend, gate) = GatedBackend::new();
+        let (sender, receiver) = mpsc::channel();
+        let scheduler = Scheduler::start(backend.clone(), move |done| {
+            let _ = sender.send(done);
+        })
+        .expect("worker");
+
+        scheduler
+            .submit(job(JobKind::Hover, Some("running"), 1))
+            .expect("running");
+        gate.wait_until_entered();
+
+        let first = job(JobKind::ScriptDiagnostics { script_hash: 1 }, None, 0);
+        let mut second = job(JobKind::ScriptDiagnostics { script_hash: 2 }, None, 0);
+        second.stamp.revision = wxml_types::SourceRevision::new(2);
+        second.stamp.snapshot = SnapshotId::new(2);
+        let second_stamp = second.stamp.clone();
+        scheduler.submit(first).expect("first script diagnostics");
+        scheduler.submit(second).expect("second script diagnostics");
+        gate.release();
+
+        let hover = receive(&receiver);
+        assert!(!hover.cancelled);
+        let diagnostics = receive(&receiver);
+        assert_eq!(
+            diagnostics.kind,
+            JobKind::ScriptDiagnostics { script_hash: 2 }
+        );
+        assert_eq!(
+            diagnostics.stamp, second_stamp,
+            "the newest queued script diagnostics job must replace the older one"
+        );
+        assert_eq!(
+            backend.diagnostics_calls.load(Ordering::SeqCst),
+            0,
+            "script jobs must not call the template diagnostics method"
         );
     }
 

@@ -4,6 +4,8 @@
 **Status**: accepted  
 **Deciders**: 项目维护者、规划协作 agent
 
+**2026-11-17 后续**：[ADR-0008](0008-rust-tsgo-no-node-backend.md)（2026-11-20 已在 owner scope waiver 下最终关闭为 accepted，native 默认；P7 删除完成，Node removed）替代类型桥的实现归属；本文的原位 shadow、模板语义和映射原则继续有效。
+
 ## Context
 
 模板必须在不修改普通 Page/Component 源码的前提下保留真实类型、字段 JSDoc、声明位置和精确错误范围。WXML 的页面/组件数据根只能来自脚本中的 `data`（自定义组件还包括 `properties`），独立 `interface`/`type` 只有在被这些字段引用时才进入类型上下文。WXML 外层解析、模板作用域和 TS 类型检查属于不同问题，某个后端能识别联合类型不代表模板转换已经保留了窄化。JS 能返回 hover 也不代表启用了错误检查，过滤生成代码诊断后得到空结果更不能视为检查通过。类型上下文桥的具体形式仍需验证，已有有限实验不作为完整实现证据。

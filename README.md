@@ -1,10 +1,10 @@
 # WXML LSP：需求与实施计划
 
-更新日期：2026-11-17。
+更新日期：2026-11-17（W4）；Rust + tsgo 迁移、P7 与 F-02 状态补充：2026-11-20。
 
-架构决策于 2026-11-15 整理至 [ADR 索引](docs/adr/README.md)，包含模块边界、类型检查与源码映射、文档同步及并行交付方案；2026-11-16 的 [ADR-0006](docs/adr/0006-explicit-mini-program-roots.md) 补充显式小程序根配置。架构边界以有效 ADR 为准；`accepted` 不表示功能已实现，实际进度与证据仍见本文。
+架构决策于 2026-11-15 整理至 [ADR 索引](docs/adr/README.md)，包含模块边界、类型检查与源码映射、文档同步及并行交付方案；2026-11-16 的 [ADR-0006](docs/adr/0006-explicit-mini-program-roots.md) 补充显式小程序根配置；2026-11-20 的 [ADR-0008](docs/adr/0008-rust-tsgo-no-node-backend.md) 在 owner scope waiver 下最终关闭为 `accepted (native default; Node removed)`。架构边界以有效 ADR 为准；删除已完成；实际进度与证据仍见本文。
 
-本文记录已确认的需求、方案评审结果、实验依据和后续计划。项目用于个人在 Zed 中开发微信小程序。截至 W4（2026-11-17，`9b804d4`），Rust workspace、WXML 语法/项目模型、C0/C1 契约、Node 类型后端、模板类型语义、组件/样式/资源智能、结构编辑与保真格式化、显式多 app、依赖失效、未保存 overlay、版本屏障与重启恢复均已接入；S 语义工具（references/rename/codeAction/semanticTokens/workspaceSymbol/inlayHint/signatureHelp/codeLens）已合入；Q2 调度/恢复、最终 release 和 Linux Zed 运行时冒烟已完成。Q2 的 Rust 与安全 R2 均 `APPROVE`；S 第 2 轮 `CHANGES_REQUESTED` 的残余已由 `dd15bc1` 修复并由集成侧复验，按用户上限没有第 3 轮正式审核，不写成 `APPROVED`。Q1 本地交付（本地打包、验证安装、升级/回退、可选显式 HTTPS 下载）已合入 `f46dec9`。当前没有 marketplace、远端 release 或发布者签名；Windows/macOS 实机、真实主桌面 Wayland 交互和完整多 workspace 仍未验收。
+本文记录已确认的需求、方案评审结果、实验依据和后续计划。项目用于个人在 Zed 中开发微信小程序。以下“截至 W4（2026-11-17，`9b804d4`）”段落是 **Node 后端历史快照**：当时 Rust workspace、WXML 语法/项目模型、C0/C1 契约、Node 类型后端、模板类型语义、组件/样式/资源智能、结构编辑与保真格式化、显式多 app、依赖失效、未保存 overlay、版本屏障与重启恢复均已接入；S 语义工具（references/rename/codeAction/semanticTokens/workspaceSymbol/inlayHint/signatureHelp/codeLens）已合入；Q2 调度/恢复、最终 release 和 Linux Zed 运行时冒烟已完成。Q2 的 Rust 与安全 R2 均 `APPROVE`；S 第 2 轮 `CHANGES_REQUESTED` 的残余已由 `dd15bc1` 修复并由集成侧复验，按用户上限没有第 3 轮正式审核，不写成 `APPROVED`。Q1 本地交付（本地打包、验证安装、升级/回退、可选显式 HTTPS 下载）已合入 `f46dec9`。当前没有 marketplace、远端 release 或发布者签名；Windows/macOS 实机、真实主桌面 Wayland 交互和完整多 workspace 仍未验收。**当前 native 状态见 §0.1 与 §10，不能把本段 Node 结果当作当前后端验收。**
 
 文档入口：[文档索引](docs/README.md) · [WXML 语言功能基线](docs/reference/wxml-language-feature-baseline.md) · [W4 最终验收证据](docs/evidence/full-feature-final.md) · [W3 语义工具证据](docs/evidence/full-feature-w3.md) · [W2 集成证据](docs/evidence/full-feature-w2.md) · [证据索引](docs/evidence/README.md) · [来源与许可证记录](docs/reference/provenance.md)。
 
@@ -14,12 +14,15 @@
 
 | 组件 | 位置 | 当前内容 |
 | --- | --- | --- |
-| Rust workspace | `crates/` | `wxml-text`（UTF-8 字节 ↔ UTF-16 位置、行索引）、`wxml-syntax`（容错 lexer/parser、Mustache Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、显式多 app、tsconfig、依赖/样式/资源索引）、`wxml-types`（C0 契约、模板语义、`wx:for`/guards、Behavior 声明事实、template/import/include 与 WXS 静态摘要、脚本符号事实、后端接口与 mock）、`wxml-lsp`（JSON-RPC、多项目宿主、Node 后端、hover/definition/diagnostics/completion、格式/结构/链接、语义工具与安全编辑、Q2 调度/取消/恢复、版本屏障/缓存/超时/重启）、`wxml-delivery`（Q1 本地打包/验证安装器）、`wxml-fixtures`（schema v2 校验） |
-| Node 类型后端 | `backends/typescript/` | C1.1 类型桥；固定 `typescript@6.0.3`、`miniprogram-api-typings@5.3.1`；要求 Node >= 24；行为/共享 data/props、复杂属性类型、guards/loops、JS/JSDoc、未保存 overlay 与符号/引用事实；内存原位 shadow，不写业务文件；支持 source/dist/packaged/symlink 安装布局 |
+| Rust workspace | `crates/` | `wxml-text`（UTF-8 字节 ↔ UTF-16 位置、行索引）、`wxml-syntax`（容错 lexer/parser、Mustache Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、显式多 app、tsconfig、依赖/样式/资源索引）、`wxml-types`（C0 契约、模板语义、`wx:for`/guards、Behavior 声明事实、template/import/include 与 WXS 静态摘要、脚本符号事实、后端接口与 mock）、`wxml-backend-tsgo`（原生 tsgo 适配：native/script/shadow/query）、`wxml-lsp`（JSON-RPC、多项目宿主、native 默认后端、hover/definition/diagnostics/completion、格式/结构/链接、语义工具与安全编辑、Q2 调度/取消/恢复、版本屏障/缓存/超时/重启）、`wxml-delivery`（本地打包/验证安装器）、`wxml-fixtures`（schema v2 校验） |
+| native 类型后端（默认） | `crates/wxml-backend-tsgo/`、固定资产 | Rust 语义适配器 + 独立 tsgo 子进程；固定 `7.1.0-beta` 引擎与 `miniprogram-api-typings@5.3.1` 类型资产；原位 shadow、快照/租约、C0 DTO、查询呈现与保守编辑；默认 `--stdio`，仅引擎未安装时 HostOnly |
+| 旧 Node 类型后端（历史，已删除） | `backends/typescript/`、`crates/wxml-lsp/src/backend_node/`、`crates/wxml-delivery/` 的 v1 写路径（均已删除） | 仅保留历史证据；当前无 Node/server.js 运行路径，显式 `--backend node` 被拒绝；业务 TS/JS/.d.ts 输入仍保留 |
 | Zed 扩展 | `editors/zed/` | 本地 Dev Extension，id `wxml-lsp`、名称 `WXML LSP`（避免与 Marketplace 上仅 grammar 的 `wxml` 扩展冲突）；WXML 语言配置、tree-sitter 查询与 outline、`wasm32-wasip2`；真实 grammar 已用 wasi-sdk 34 构建（约 23,806 B）；从 `WXML_LSP_BIN` 绝对路径启动 `wxml-lsp --stdio` |
-| 样本与证据 | `tests/fixtures/`、`docs/evidence/` | AC-001..AC-013 样本与 schema 校验；类型桥、P7/P8、G1、[W2 集成证据](docs/evidence/full-feature-w2.md)、[W3 语义工具证据](docs/evidence/full-feature-w3.md) 与 [W4 最终验收证据](docs/evidence/full-feature-final.md) |
+| 样本与证据 | `tests/fixtures/`、`docs/evidence/` | AC-001..AC-013 样本与 schema 校验；类型桥、P8、G1、[W2 集成证据](docs/evidence/full-feature-w2.md)、[W3 语义工具证据](docs/evidence/full-feature-w3.md)、[W4 最终验收证据](docs/evidence/full-feature-final.md) 与 P7 删除/最终验收证据；Node 时代的 [P7 真实集成](docs/evidence/p7-integration.md) 仅作历史 |
 
-当前状态快照（W4 `9b804d4`）：W4 固定日志为 Rust workspace `1283 passed / 0 failed / 23 ignored`（49 suites，含 doctests），Node 串行 `333 / 333`；23 个 ignored 门禁（performance 1、q2_stability 1、real_node 5、stdio 9、wave5 7）全部通过；覆盖率 lines 87.24% / functions 88.85% / regions 86.71%；`cargo audit` 0 vulnerabilities、`cargo deny` advisories ok。最终 release 两次构建 SHA-256 均为 `c09062b16dd6bfea4ee03f99f13665cf4858130aae83eefec9c04cd94d3815ab`（8,696,984 B、protocol 2、214 files），install/verify/verify-package 通过；Linux Zed 运行时冒烟使用最终发布包，hover/definition/成员补全/诊断均通过。W3 的 `1251 / 21`、Node `326 / 326` 与 W2 的 `1095 / 20`、Node `304 / 305`、Zed `25 passed` 保持各自历史记录，不与 W4 混用。Q1 `f46dec9` 的 `cargo test -p wxml-delivery` 结果也保持原记录。W4 的 Linux 冒烟是手工安装发布包，不是标准 UI 重跑；标准 Dev Extension 安装仍引用 [P8 第 13 节](docs/evidence/p8-zed.md) 的历史证据。
+W4 历史快照（2026-11-17，`9b804d4`；Node 后端，非当前验收）：W4 固定日志为 Rust workspace `1283 passed / 0 failed / 23 ignored`（49 suites，含 doctests），Node 串行 `333 / 333`；23 个 ignored 门禁（performance 1、q2_stability 1、real_node 5、stdio 9、wave5 7）全部通过；覆盖率 lines 87.24% / functions 88.85% / regions 86.71%；`cargo audit` 0 vulnerabilities、`cargo deny` advisories ok。最终 release 两次构建 SHA-256 均为 `c09062b16dd6bfea4ee03f99f13665cf4858130aae83eefec9c04cd94d3815ab`（8,696,984 B、protocol 2、214 files），install/verify/verify-package 通过；Linux Zed 运行时冒烟使用最终发布包，hover/definition/成员补全/诊断均通过。W3 的 `1251 / 21`、Node `326 / 326` 与 W2 的 `1095 / 20`、Node `304 / 305`、Zed `25 passed` 保持各自历史记录，不与 W4 混用。Q1 `f46dec9` 的 `cargo test -p wxml-delivery` 结果也保持原记录。W4 的 Linux 冒烟是手工安装发布包，不是标准 UI 重跑；标准 Dev Extension 安装仍引用 [P8 第 13 节](docs/evidence/p8-zed.md) 的历史证据。以上 Node 命令和计数只用于历史追溯，**不是当前后端验收**。
+
+Rust + tsgo 迁移状态（2026-11-20，P7 完成）：F3 交付合同 **16 closed / 0 partial / 0 blocked**；测试迁移台账终态 **109 `green` / 0 `planned` / 130 `reviewed` / 29 `waived` / 71 `retired-with-decision`**（339 总数）；native gates **40/40**（23 engine + 3 edit + 9 stdio + 1 perf + 1 stability + 3 real_matrix，opt-in required job）；真实 matrix **22 exact / 11 blocked**。默认 `--stdio` 已是 native（引擎未安装时退化为 `HostOnly`，损坏安装 fail closed），显式 `--backend node` 被拒绝。2026-11-20 owner 选择 **C-lite functional waiver**（原话：“不需要严格按照原来的功能写测试。功能合理即可”）：**不声称旧 TypeScript/Node 测试逐条 parity**，`reviewed`/`waived`/`retired` 均非 green；功能验收以 native engine、native gates、F3 和合理行为测试为准。P7 删除已完成（删除提交 **`c4ddf32`**；`p7-removed` 指向 `b6c1ced`，只是旧 tag，不含本轮验收修复）：`backend_node`、旧 TS 实现/测试树、12 个 delete gate、v1 写路径和 legacy Node env 已删除；11 个 retarget gate 保留 native-only；业务 TS/JS/.d.ts 输入、WXS/WXML 语义和 fixtures 保留。删除后 release/install/Zed smoke 通过（Zed **16/16**、截图 9 张），无 Node/server.js；F-02 的 debug perf 假失败修复已落地（release 200 ms 预算未放宽），**2592 passed / 0 failed / 73 ignored 待 `p7-final-verification` 追加**（不是 tag 事实；[F-02 记录](docs/evidence/2026-11-20-tsgo-f02-debug-perf-fix.md)）。functional smoke 为 **P1 fixed / P2 known / PASS-with-followup**（P1 由 `180fa42` 修复）；stability 为 **4 implemented / 1 blocked**（ledger 未回填）。最终验收清单见 [P7 最终文档与验收清单](docs/evidence/2026-11-20-tsgo-p7-final-docs.md)（**PASS-with-followup**）；**第三方许可文本 P1 已解除**（155/155 有文本：144 本地 + 11 vendored SPDX），首方 LICENSE 仍 **BLOCKED owner decision/需 owner 决策**，内部安装可用。详见 [ADR-0008](docs/adr/0008-rust-tsgo-no-node-backend.md)、[P7 收口台账](docs/evidence/2026-11-20-tsgo-p7-closeout-ledger.md)、[P7 范围裁决](docs/evidence/2026-11-20-tsgo-p7-scope-decision.md) 与[迁移计划 §12.16](docs/plans/2026-11-17-rust-tsgo-migration.md)。
 
 ### 0.2 验证命令
 
@@ -31,11 +34,9 @@ cargo test --workspace -- --test-threads=4
 cargo test --workspace --doc
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
 
-# Node 类型后端（Node >= 24）
-(cd backends/typescript && npm ci && npm run check && npm run build && npm test)
-# 墙钟敏感断言用串行运行复核
-(cd backends/typescript && node --test --test-concurrency=1 test/*.test.ts)
-(cd backends/typescript && npm run matrix:json && npm run perf:json)
+# 真实 native gates（opt-in required job；不是默认 CI，也不是 mandatory_green）
+# --package 指向已安装/已解包的 schema v2 native package（含 engine/lib/tsc 与 typings）
+scripts/native-gates.sh --package "$HOME/.local/share/wxml-lsp/versions/<version>"
 
 # 本地交付（Q1）
 cargo test -p wxml-delivery
@@ -50,10 +51,13 @@ scripts/build-release.sh --dry-run --output "$HOME/wxml-release"
 (cd editors/zed && cargo build --target wasm32-wasip2 --release --locked)
 ```
 
-真实 Node 端到端门禁：
+历史 Node 命令（**P7 已删除；仅用于追溯 `p7-pre-delete` 及更早证据；当前不可运行，不再是验收命令**）：
 
 ```bash
-(cd backends/typescript && npm ci && npm run build)
+# 以下命令依赖 backends/typescript、Node >= 24 和 dist/server.js，P7 后删除
+(cd backends/typescript && npm ci && npm run check && npm run build && npm test)
+(cd backends/typescript && node --test --test-concurrency=1 test/*.test.ts)
+(cd backends/typescript && npm run matrix:json && npm run perf:json)
 WXML_TEST_NODE=1 cargo test -p wxml-lsp --test stdio_type_loop -- --ignored
 WXML_TEST_NODE=1 cargo test -p wxml-lsp --test real_node -- --ignored
 env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR WXML_TEST_NODE=1 \
@@ -62,19 +66,17 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test q2_stability -- --ignored
 WXML_TEST_NODE=1 cargo test -p wxml-lsp --test performance_bench -- --ignored --nocapture
 ```
 
-性能/稳定性门禁要求 clean worktree，并保留 `thresholds.pass`、`git_head`、`git_dirty` 和
-samples 字段；最终数字见[W4 证据](docs/evidence/full-feature-final.md)。
+当前性能/稳定性以 native gate runner 的 opt-in job 为准；W4 的 Node 性能数字和 23 个 ignored 门禁只作为历史证据，见[W4 证据](docs/evidence/full-feature-final.md)。Node/旧 TS/v1 删除后的 workspace、native gates **40/40**、release/install、Zed smoke、无 Node 进程与文档口径已按 [P7 最终验收清单](docs/evidence/2026-11-20-tsgo-p7-final-docs.md) 执行并记录；残余风险见清单。
 
 ### 0.3 在 Zed 中运行
 
-1. 构建服务与后端：`cargo build -p wxml-lsp --release`，并在 `backends/typescript` 执行 `npm ci && npm run build`。
+默认 `--stdio` 自 `5020ae7` 起走 native（只有引擎未安装时为 `HostOnly`，损坏安装 fail closed）。当前推荐路径是安装 schema v2 native 包，用 `WXML_LSP_BIN` 指向安装根的 `current/bin/wxml-lsp`；**不再需要 Node/npm，也不使用 `WXML_TYPE_BACKEND`/`WXML_BACKEND_DIR`**。P7 删除已完成：显式 `--backend node` 被拒绝，5 个 legacy Node 变量不再读取（设置无效果）；它们只保留在历史证据中，不是推荐或验收路径。
+
+1. 构建 native 服务：`cargo build -p wxml-lsp --release`；再按本节「本地打包、安装、升级与回退」构建或安装 schema v2 包，或复用已有安装。
 2. 在仓库根目录、启动 Zed 前导出绝对路径（必须是**绝对路径**，扩展不探测 worktree、不查 `PATH`）：
 
    ```bash
-   export WXML_LSP_BIN="$PWD/target/release/wxml-lsp"
-   export WXML_TYPE_BACKEND="$PWD/backends/typescript/dist/server.js"
-   # 可选：覆盖后端工作目录（含 node_modules）
-   # export WXML_BACKEND_DIR="$PWD/backends/typescript"
+   export WXML_LSP_BIN="$HOME/.local/share/wxml-lsp/current/bin/wxml-lsp"
    ```
 
 3. 标准安装动作：在 Zed 命令面板执行 `zed: install dev extension`，选择 `editors/zed`；扩展 id 为 `wxml-lsp`，名称 `WXML LSP`。
@@ -82,20 +84,16 @@ samples 字段；最终数字见[W4 证据](docs/evidence/full-feature-final.md)
 
 `WXML_LSP_BIN` 缺失或无效时，扩展返回错误且不会启动 LSP，也没有 worktree 或 `PATH` 回退。
 
-本机主 Zed 用户数据目录还放入过手工 dev symlink/index（`extensions/installed/wxml-lsp -> editors/zed`）作为等价安装；主 Zed 已重启并实际加载扩展，打开 `tests/fixtures/page-basic` 后启动了 `wxml-lsp --stdio` 与 Node 后端，`user.nmae` 显示红色诊断。这不等于标准 UI 安装。
+> 历史记录（2026-11-16）：本机主 Zed 曾用 dev symlink/index（`extensions/installed/wxml-lsp -> editors/zed`）加载扩展，并通过 `WXML_TYPE_BACKEND` 启动 Node 后端；该路径已在 P7 删除，仅保留为[P8 证据](docs/evidence/p8-zed.md)与 [W4 证据](docs/evidence/full-feature-final.md)的历史事实，不是当前安装说明。
 
-环境变量约束（由 `wxml-lsp --help` 与扩展转发逻辑共同决定）：
+环境变量约束（native 路径）：
 
 | 变量 | 约束 |
 | --- | --- |
 | `WXML_LSP_BIN` | Zed 扩展唯一支持的服务器来源；必须为宿主 OS 绝对路径，且存在、可执行；无回退 |
-| `WXML_NODE` | Node 可执行文件名或绝对路径；默认 `node` |
-| `WXML_TYPE_BACKEND` | `server.js` 的绝对路径；相对值被服务端拒绝 |
-| `WXML_BACKEND_DIR` | 后端工作目录的绝对路径（含 `node_modules`），默认由 `dist/` 推导；不用于选择 `server.js` |
-| `WXML_ANALYZE_TIMEOUT_MS` | 单请求超时；默认 `15000` |
-| `WXML_TEMPLATE_CHECK` | `off` / `pragma` / `inherit`；默认 `pragma` |
+| `WXML_NODE`、`WXML_TYPE_BACKEND`、`WXML_BACKEND_DIR`、`WXML_ANALYZE_TIMEOUT_MS`、`WXML_TEMPLATE_CHECK` | 旧 Node 后端变量（P7 已删除）：native 不读取，设置无效果；仅保留在历史证据中，不再是配置项 |
 
-未设置 `WXML_TYPE_BACKEND` 时，服务只探测可执行文件相对的安装布局，不读取当前工作目录；`WXML_BACKEND_DIR` 只改后端工作目录，不能替代服务器路径。类型能力会降级。
+native 默认路径只按已验证安装布局发现引擎和类型资产；缺引擎时退化为 `HostOnly`（模板语法/格式/结构/事件 facts 可用，类型查询 `Unavailable`），manifest/引擎/类型资产损坏或不匹配则在 LSP handshake 前 fail closed，不回退 Node。原生包的构建与安装见本节「本地打包、安装、升级与回退」。
 
 #### 小程序根与类型项目根
 
@@ -176,15 +174,16 @@ references、rename、codeAction、semanticTokens、workspaceSymbol 和 signatur
 
 Q1 已合入本地交付工具，但**没有 marketplace 发布、远端 release 或自动更新**；下载只在用户显式执行安装/升级命令并给出 `--enable-download` 时可用。Zed 扩展本身仍不下载、不解包、不安装服务器；它只接受宿主 OS 的绝对 `WXML_LSP_BIN`。独立安装器负责生成和验证产物，再把稳定的 `current/bin/wxml-lsp` 路径交给扩展。
 
-构建（输出目录必须在仓库外；默认离线，只有显式 `--online` 才允许 cargo/npm 取依赖）：
+构建（输出目录必须在仓库外；默认 cargo 离线，显式 `--online` 只允许 cargo 取依赖；asset 只来自已校验缓存或 `--from-dir`）：
 
 ```bash
-scripts/build-release.sh --output "$HOME/wxml-release"
+# 首次或缓存未命中：--from-dir 提供 assets.lock.json 中精确文件名的两个 tarball
+scripts/build-release.sh --output "$HOME/wxml-release" --from-dir /path/to/locked-tarballs
 # 只检查前置条件，不写文件、不联网
 scripts/build-release.sh --dry-run --output "$HOME/wxml-release"
 ```
 
-脚本拒绝 `--publish`、`--tag`、`--release`、`--upload`，只生成本地版本化目录、`.tar.gz`、checksum、`index.json` 和 `manifest.json`。产物绑定当前 HEAD 的 Rust/Node 协议版本、平台、Node 最低版本和逐文件哈希；旧 release 不能用于新 HEAD 验收。完整命令与布局见 [wxml-delivery README](crates/wxml-delivery/README.md)。
+`build-release.sh` 只生成 schema v2 原生包：不执行 node/npm/npx/pnpm/yarn/bun，也不从 `backends/typescript` 复制 JavaScript。脚本拒绝 `--publish`、`--tag`、`--release`、`--upload`，只生成本地版本化目录、`.tar.gz`、checksum、`index.json`、`manifest.json`、`provenance.json` 和 `THIRD_PARTY_LICENSES.md`。产物绑定当前 HEAD 的 Rust/native engine 协议版本、`linux-x86_64` 平台和逐文件哈希；旧 release 不能用于新 HEAD 验收。完整命令与布局见 [wxml-delivery README](crates/wxml-delivery/README.md)。
 
 安装、升级和回退：
 
@@ -208,14 +207,16 @@ export WXML_LSP_BIN="$HOME/.local/share/wxml-lsp/current/bin/wxml-lsp"
 "$installer" env     --root "$HOME/.local/share/wxml-lsp"
 ```
 
-- `install`/`upgrade`/`rollback` 先在 `tmp/` 解包并完成归档、manifest、逐文件哈希、权限和 Node 依赖校验，再原子替换 `current` symlink；失败保留原活动版本。`upgrade` 默认拒绝降级，降级必须显式 `rollback --to`。
+- `install`/`upgrade`/`rollback` 先在 `tmp/` 解包并完成归档、manifest、逐文件哈希和权限校验，再原子替换 `current` symlink；失败保留原活动版本。schema v2 另做引擎/typeAssets 探针；schema v1 只做只读后端文件存在性校验，不执行 `node` 或 `node --version`。`upgrade` 默认拒绝降级，降级必须显式 `rollback --to`。
 - 下载默认关闭；远端源必须同时给出 `--enable-download`。仅接受 HTTPS；只有测试 fixture 允许 `localhost`/`127.0.0.1`/`[::1]` 的 HTTP。拒绝凭据、query、fragment、`..`、跨源 redirect 和路径/链接逃逸。项目文件、`.zed/settings.json` 不能指定下载源。
 - `WXML_LSP_BIN` 已设置且有效时，安装/升级/回退跳过，不下载、不覆盖；已设置但无效（空、相对、含 `..`、不存在、非普通文件、不可执行）立即报错，绝不回退到已安装版本或网络。
-- `list`、`current`、`verify`、`env` 是只读命令，不创建安装根或锁文件。缓存只保存完整验证通过的归档；离线安装/回退只使用已验证缓存或显式 `--from-dir`。
+- `list`、`current`、`verify`、`env` 是只读命令，不创建安装根或锁文件。`env` 只输出 `WXML_LSP_BIN`；schema v1 的 `current`/`verify`/`env` 不执行旧二进制、不探测 Node。缓存只保存完整验证通过的归档；离线安装/回退只使用已验证缓存或显式 `--from-dir`。
 - 当前信任链是 **TLS + index/归档 SHA-256 + manifest 文件哈希**，没有发布者签名、公钥 pin 或透明日志。它能证明内容与同一份元数据一致，不能证明发布者身份；被攻破的 HTTPS 源、误签 CA 或恶意本地 bundle 仍可自洽。该残留风险已明确接受，正式发布前应增加 detached 签名或 minisign，详见 [ADR-0007](docs/adr/0007-local-delivery-trust-model.md)。
-- 安装器目前只在 Linux 验证，依赖 Unix 原子 symlink 与系统 Node.js；Windows/macOS 未验证。S 语义工具已在 W3 合入，Q2 调度/恢复已在 W4 通过；完整多 workspace、标准 UI 最终重跑和跨平台验收仍不在本记录范围。
+- 安装器目前只在 Linux 验证，依赖 Unix 原子 symlink；安装器本身不执行 Node，schema v1 只读命令也不执行或探测 Node。Windows/macOS 未验证。S 语义工具已在 W3 合入，Q2 调度/恢复已在 W4 通过；完整多 workspace、标准 UI 最终重跑和跨平台验收仍不在本记录范围。
 
-#### 最终 release 与 Linux Zed 运行时冒烟（W4）
+#### 最终 release 与 Linux Zed 运行时冒烟（W4，历史）
+
+以下 W4 包是 **Node 后端历史产物**，不是 P7 后的 native release 验收；P7 删除后发布包只含 Rust 二进制、原生引擎/类型资产和 Zed 扩展，不含 `server.js`。保留此节用于追溯最终 W4 快照与 P8 安装证据。
 
 W4 在 `7433194`/`9b804d4` 两个 Node 发布运行时修复后重建最终包两次，归档 SHA-256 完全一致：
 
@@ -243,10 +244,10 @@ Linux Zed 运行时冒烟在隔离 Xvfb `:99`、隔离 `HOME`/`XDG`/user-data �
 - 当前仍是**单 LSP workspace 内的显式多 app**：不支持完整多 workspace、根配置热更新或跨 app 自动依赖图；修改 `apps`/`projectRoot` 后需重启 LSP。插件/远程组件只有在本地存在可信元数据时才建模，否则明确降级；动态 template/is、动态 WXS 导出、动态 Behavior 和无法证明的 SCSS 生成类不猜测。模板体仍不按每次调用实例做完整类型检查，WXS 是静态子集且从不执行。格式化只规范开始标签内部空白，不重排文本节点或整份文档缩进。
 - S 语义工具已合入：references、prepareRename/rename、codeAction、semanticTokens、workspaceSymbol、inlayHint、signatureHelp、codeLens；rename 使用安全 `EditPlan`，只接受 `documentChanges`，打开文件带客户端 version、关闭文件重读并以 `version: null` 返回，失败零编辑，服务端不写盘。保守拒绝自定义组件 tag rename、静态 include 导致的 caller 覆盖不完整、动态访问、共享 importedData 跨脚本、快照截断/超限、跨视图冲突和文件含 `<template name>` 时的页面 data rename；未落盘 WXML fail-closed；没有跨文件事务/undo；硬链接未检测。
 - Q2 调度/恢复已合入：诊断 debounce（默认 120 ms，可配 0–5000）、同文档合并、交互队列 128 / 诊断队列 8、每 8 个交互任务让诊断前进、排队请求可立即取消、timeout/crash/协议不匹配降级并恢复、根移除/重加重放 overlay。单 worker 执行同步 TypeScript 调用，运行中请求不可中断；性能/稳定性门禁使用单个小 fixture，不是大项目语料。大项目语料调优、真实编辑器 UI 和完整多根/多 workspace 仍不在当前验证范围。
-- 发布包仅在 Linux x86_64 验证；没有 marketplace、远端 release、自动更新或发布者签名。最终 release 和 Linux Zed 运行时冒烟的细节见 [W4 证据](docs/evidence/full-feature-final.md)；标准 UI 安装没有在最终版本重跑。
+- 发布包仅在 Linux x86_64 验证；没有 marketplace、远端 release、自动更新或发布者签名。W4 的 Node 包和 Linux Zed 运行时冒烟是历史事实，native 包的 F3 验收见 [F3 合同](docs/reference/tsgo-delivery-contract.md)；标准 UI 安装在最终版本上没有重跑。
 - 源文件预算为 2048 个文件 / 16 MiB，连续 hover 的待处理队列上限为 128；样式索引、资源扫描和 WXS/template 分析各有独立上限，截断时会标记不完整而不是伪造完整结果。
-- Zed 扩展已完成代码评审、host 测试、wasm 构建和真实 `tree-sitter-wxml` grammar 构建（wasi-sdk 34，约 23,806 B）。2026-11-16 已在隔离 user-data-dir 中通过命令面板实际执行 `zed: install dev extension`：安装目录为指向 `editors/zed` 的 symlink，`index.json` 中 `dev=true`，扩展加载并启动 release `wxml-lsp --stdio` 与 Node 后端。干净 fixture 的 `title`/`user.name` hover、definition、标签/属性/事件/成员补全、未知成员诊断和重启恢复均已实际执行并核对内容；真实 TS/JS 项目观感已记录。**W4 已对最终发布包做 Linux Zed 运行时冒烟，但没有重跑标准 UI 安装；Windows/macOS 实机、真实主桌面 Wayland 观感和连续键入延迟仍未验收**；证据见 [P8 第 13 节](docs/evidence/p8-zed.md) 与 [W4 证据](docs/evidence/full-feature-final.md)。
-- G0/G2 已在隔离 Xvfb 中完成标准安装、扩展加载、五语言注册、LSP/Node 启动、hover/definition/completion/diagnostics 和重启恢复；Windows/macOS、真实主桌面 Wayland 观感和连续键入延迟未验收，完整 G0/G2 矩阵仍不整体勾选。W4 的 ignored 门禁 `stdio_type_loop` 9、`real_node` 5、`wave5_acceptance` 7 全部通过；标准 UI 没有在最终版本重跑。
+- Zed 扩展已完成代码评审、host 测试、wasm 构建和真实 `tree-sitter-wxml` grammar 构建（wasi-sdk 34，约 23,806 B）。2026-11-16 已在隔离 user-data-dir 中通过命令面板实际执行 `zed: install dev extension`：安装目录为指向 `editors/zed` 的 symlink，`index.json` 中 `dev=true`，扩展加载并启动 release `wxml-lsp --stdio`（W4 历史为 Node 后端）。干净 fixture 的 `title`/`user.name` hover、definition、标签/属性/事件/成员补全、未知成员诊断和重启恢复均已实际执行并核对内容；真实 TS/JS 项目观感已记录。**W4 已对最终发布包做 Linux Zed 运行时冒烟，但没有重跑标准 UI 安装；Windows/macOS 实机、真实主桌面 Wayland 观感和连续键入延迟仍未验收**；证据见 [P8 第 13 节](docs/evidence/p8-zed.md) 与 [W4 证据](docs/evidence/full-feature-final.md)。
+- G0/G2 已在隔离 Xvfb 中完成标准安装、扩展加载、五语言注册、LSP 启动（W4 历史为 Node 后端）、hover/definition/completion/diagnostics 和重启恢复；Windows/macOS、真实主桌面 Wayland 观感和连续键入延迟未验收，完整 G0/G2 矩阵仍不整体勾选。W4 的 ignored 门禁 `stdio_type_loop` 9、`real_node` 5、`wave5_acceptance` 7 全部通过；标准 UI 没有在最终版本重跑。上述 Node 门禁是历史记录，P7 后由 native gates 替代。
 - Q1 已提供本地打包与安装器，但未发布：扩展 id 为 `wxml-lsp`、名称 `WXML LSP`（避免与 Marketplace 上仅 grammar 的 `wxml` 扩展冲突）；没有 marketplace 发布、远端 release/tag、服务器自动下载或自动安装。安装器下载默认关闭，只有显式 `--enable-download` 才访问 HTTPS 源；当前信任链没有发布者签名，详见 [ADR-0007](docs/adr/0007-local-delivery-trust-model.md)。
 - Zed 扩展已注册 WXML、JavaScript、TypeScript、TSX、JSON（不含 JSX），同一 `wxml-lsp` 进程接收关联文档的 `didOpen`/`didChange`/`didSave`。2026-11-16 隔离 Xvfb smoke 已验证：未保存的 TS 字段类型修改会实时反映到 WXML hover；保存后 `didSave` 刷新诊断；无关 TS 脚本只触发一次诊断刷新、不改变 WXML 类型结果；服务端动态注册并接收 `workspace/didChangeWatchedFiles`。标准 UI 安装、definition 跳转、服务重启恢复和真实项目观感已在隔离 Xvfb 中验收；Windows/macOS 和连续键入延迟仍未验收。
 
@@ -325,7 +326,7 @@ Component({
 
 首阶段聚焦原生微信小程序的 `.wxml` 与相关 JS/TS、JSON、样式文件。原插件中为 Vue/Pug 或其他模板方言服务的兼容层不作为首阶段目标。
 
-“全部逻辑只能使用 Rust”“单进程”“无 Node”“单一二进制分发”均未被确认为硬性要求。当前优先级是类型准确性、说明完整性和真实编辑体验。
+“全部逻辑只能使用 Rust”“单进程”“单一二进制分发”仍不是硬性要求；**去 Node 已由用户于 2026-11-17 明确选择**，并由 [ADR-0008](docs/adr/0008-rust-tsgo-no-node-backend.md) 于 2026-11-20 在 owner scope waiver 下 accepted。当前优先级仍是类型准确性、说明完整性和真实编辑体验；去 Node 不等于删除 TypeScript 语言支持。
 
 ## 3. 功能需求
 
@@ -458,8 +459,8 @@ Rust WXML Language Server
     ├─ 文档覆盖层、依赖图、缓存与失效处理
     ├─ 补全、Hover、跳转、诊断的路由与结果转换
     └─ 可替换的 TypeScript 类型后端
-         ├─ 首选验证：Node + TypeScript Language Service
-         └─ 后续候选：TypeScript 原生语言服务
+         ├─ 默认：Rust tsgo 适配器 + 固定原生引擎（`wxml-backend-tsgo`）
+         └─ 历史：Node + TypeScript Language Service（已删除，仅保留 p7-pre-delete 证据）
 ```
 
 ### 5.1 内存检查视图
@@ -470,9 +471,9 @@ Rust WXML Language Server
 
 ### 5.2 类型后端选择
 
-优先用 Node + TypeScript Language Service 完成端到端验证，原因是本次实验已经验证其在普通小程序上下文上的类型与文档机制，内存文件和项目管理也可直接控制。
+2026-11-17 的端到端验证优先使用 Node + TypeScript Language Service；该比较结论已由 [ADR-0008](docs/adr/0008-rust-tsgo-no-node-backend.md) 取代：现在采用 **Rust 语义适配器 + 独立原生 tsgo 子进程**，默认 `--stdio` 为 native。Node 后端已删除，仅保留历史基线和 `p7-pre-delete` 证据，不再是运行路径。
 
-后端通过清晰的接口隔离，避免模板解析、源码映射与某一版本的 TypeScript API 强绑定。若后续希望去除 Node，先让原生 TypeScript 后端通过同一套验收用例，再决定是否切换。
+后端通过清晰的 `Backend` 接口隔离，避免模板解析、源码映射与某一版本的 TypeScript API 强绑定。迁移已按同一套验收思路推进：先由 native engine/gates/F3 和合理行为测试证明功能，再删除旧实现；不要求旧 TS 断言逐条重现（2026-11-20 owner scope waiver）。
 
 本次实验中的 TypeScript 版本仅表示已测试版本，不代表推荐追随的最新版本。TS 6 时代的 JavaScript Compiler/Language Service API 与原生后端的 LSP 接入方式不同，不能假设直接替换。
 
@@ -503,17 +504,17 @@ crates/
 ├── wxml-syntax               # WXML 词法/语法、Mustache 表达式、源码映射
 ├── wxml-project              # 项目、页面/组件、usingComponents、tsconfig
 ├── wxml-types                # C0 契约、请求上下文、模板语义、WXS/静态摘要、后端接口与 mock
+├── wxml-backend-tsgo         # native tsgo 适配：native/script/shadow/query
 ├── wxml-fixtures             # 共享验收样本的结构校验器
-├── wxml-delivery             # 本地 release 打包器与验证安装器（Q1）
-└── wxml-lsp                  # LSP 传输、多项目宿主、Node 后端与请求路由（二进制）
-backends/typescript           # C1.1 Node 类型后端
+├── wxml-delivery             # 本地 release 打包器与验证安装器（Q1/F3）
+└── wxml-lsp                  # LSP 传输、多项目宿主、native 默认后端与请求路由（二进制）
 editors/zed                   # 本地 Zed Dev Extension（独立 workspace）
-scripts/build-release.sh      # 本地构建 Rust/Node/Zed 产物；不发布
+scripts/build-release.sh      # 本地构建 Node-free v2 native 产物；不发布
 tests/fixtures                # AC-001..AC-013 样本
 docs/                         # 参考、ADR、证据
 ```
 
-目标依赖按 [ADR-0001](docs/adr/0001-layered-language-service-architecture.md) 统一：`wxml-lsp` 依赖各功能层，`wxml-types` 允许依赖 `wxml-syntax`，各层按需依赖 `wxml-text`；`wxml-project` 独立于 syntax/types，项目事实由 LSP 适配为 types 输入。禁止反向依赖和 `types → project`。这取代原文“禁止所有横向依赖”的表述；依赖声明在首次使用时接入。当前 workspace 已包含上表六个 crate；`wxml-types` 落地 C0 契约、请求上下文、后端接口、mock 与模板语义；`wxml-lsp` 已接入真实 `ProjectHost`、Node 后端与 LSP 路由。C1 类型桥和 Node 后端位于 `backends/typescript/`，Zed 扩展位于 `editors/zed/`；`wxml-fixtures` 只校验共享样本结构。
+目标依赖按 [ADR-0001](docs/adr/0001-layered-language-service-architecture.md) 统一：`wxml-lsp` 依赖各功能层，`wxml-types` 允许依赖 `wxml-syntax`，各层按需依赖 `wxml-text`；`wxml-project` 独立于 syntax/types，项目事实由 LSP 适配为 types 输入；`wxml-backend-tsgo` 位于 `wxml-lsp → wxml-backend-tsgo → wxml-types` 之间。禁止反向依赖和 `types → project`。当前 workspace 已包含上表八个 crate；`wxml-types` 落地 C0 契约、请求上下文、后端接口、mock 与模板语义；`wxml-lsp` 已接入真实 `ProjectHost`、native 默认后端与 LSP 路由；C1 类型桥与 Node 后端已在 P7 删除（`backends/typescript/` 不再存在，仅保留历史证据）；Zed 扩展位于 `editors/zed/`；`wxml-fixtures` 只校验共享样本结构。业务 `.ts/.js/.d.ts` 输入、WXS/WXML 语义、fixtures 和 tree-sitter grammar 不随 Node 删除。
 
 ## 6. 已有验证与证据边界
 
@@ -551,7 +552,7 @@ docs/                         # 参考、ADR、证据
 
 ## 7. 实施计划
 
-当前已完成 P0–P8 与 G1：多 crate 的 Rust workspace、C0/C1 契约、WXML 语法与项目模型、类型桥（候选 A）、Node 类型后端、模板语义、LSP、Zed 扩展代码及真实 Node 端到端。Zed 扩展已通过独立评审，但标准 Dev Extension 安装、真实 grammar 渲染和 hover/definition 可视化尚未验证。
+当前已完成 P0–P8、G1、W2/W3/W4、Q1/Q2 和 Rust + tsgo 迁移的 P0–P7：多 crate 的 Rust workspace、C0/C1 契约、WXML 语法与项目模型、模板语义、LSP、Zed 扩展代码、native tsgo 默认后端、F3 本地交付与真实 native gates。P7 删除已完成（2026-11-20，删除提交 `c4ddf32`；`p7-removed` 为旧 tag）：删除范围已冻结、retarget 已完成，旧 Node 后端、旧 TS 实现/测试和 v1 写路径均已删除，删除后复验通过（验收为 PASS-with-followup，见 §0.1）。Zed 扩展已通过独立评审，标准 Dev Extension 安装、真实 grammar 渲染和 hover/definition 可视化的历史 Node 证据见 [P8 证据](docs/evidence/p8-zed.md)；当前 native 验收见 §0.1、§10 与 F3 合同。
 
 ### 阶段 1：固定样本和验收规则
 
@@ -576,7 +577,7 @@ docs/                         # 参考、ADR、证据
 
 产出：可通过 stdio 测试的最小语言服务；此时仍不宣称支持完整 WXML。
 
-状态（2026-11-16）：上述六项已在 LSP/Node 层由 G1 真实端到端覆盖（AC-001/002/003/013）；Zed 实机观感仍见阶段 3。
+状态（2026-11-16，历史 Node 后端）：上述六项已在 LSP/Node 层由 G1 真实端到端覆盖（AC-001/002/003/013）；Zed 实机观感仍见阶段 3。
 
 ### 阶段 3：Zed 本地端到端验证
 
@@ -620,12 +621,12 @@ docs/                         # 参考、ADR、证据
 ### 阶段 6：优化与可选后端替换
 
 - [x] 根据实测性能处理后台任务、取消、诊断防抖及大项目缓存（Q2）。
-- [ ] 评估原生 TypeScript 后端能否通过完全相同的类型和项目验收用例。
-- [ ] 只有在兼容性、收益和维护成本明确后，决定是否去除 Node。
+- [x] 评估原生 TypeScript 后端能否通过功能验收（ADR-0008；以 native engine/gates/F3/合理行为测试为准，不要求旧 TS 逐条 parity）。
+- [x] 完成去除 Node 的 P7 删除（2026-11-20；Node 运行时、旧 TS、12 个 delete gate 与 v1 写路径已删除，11 个 retarget gate 为 native-only）。
 - [x] 补齐本地构建、安装、升级、回退和排错说明（Q1）。
-- [x] 最终本地 release 与 Linux Zed 运行时冒烟（W4）。
+- [x] 最终本地 release 与 Linux Zed 运行时冒烟（W4；Node 历史包，native 包见 F3）。
 
-状态（2026-11-17）：版本屏障、缓存、请求超时、后端失败重启、响应上限、诊断 debounce/coalescing、有界队列、排队取消、timeout/crash/协议恢复和根移除/重加 overlay 重放已实现；Q2 的 Rust 与安全 R2 均 `APPROVE`。最终性能/稳定性门禁通过（static p95 0.178 ms、semantic 39.659 ms、diagnostics stop 164.894 ms、queued cancel 0.674 ms、single TS 402.126 ms、parent RSS 10,460 KiB；strict 10 轮 + RSS baseline `pass`）。Q1 已合入本地构建、验证、安装、升级、回退和离线缓存，`WXML_LSP_BIN` 优先，下载默认关闭；最终 release 两次构建 SHA-256 一致，install/verify/verify-package 和 Linux Zed 运行时冒烟通过。未实现 marketplace/远端发布和发布者签名；大项目语料、标准 UI 最终重跑、原生 TypeScript 后端替换/去 Node 决策仍未完成。
+状态（2026-11-20）：Q2 调度/恢复在 W4 已通过；本地交付已合入并演进为 schema v2 native 包。原生 tsgo 已为默认 `--stdio` 后端；F3 为 16/0/0，native gates 40/40，台账终态 109/0/130/29/71。P7 删除已完成（删除提交 `c4ddf32`），Node/旧 TS/v1 已移除；删除后 release/install/Zed smoke 通过（Zed 16/16），无 Node 进程，F-02 修复已落地、2592/0/73 待 p7-final-verification 追加（不是 tag 事实）。functional smoke P1 fixed / P2 known；stability 4 implemented / 1 blocked；第三方许可 155/155，首方 LICENSE BLOCKED、对外发布 BLOCKED（内部安装可用）。W4 的 Node 性能/发布数字只作为历史证据。未实现 marketplace/远端发布和发布者签名；大项目语料、标准 UI 最终重跑和跨平台验收仍未完成。
 
 公开发布、自动下载和多平台发布流水线不在当前计划中；Q1 的下载器仅在用户显式 `--enable-download` 时读取 HTTPS 源，不构成 marketplace 发布或后台自动更新。
 
@@ -654,7 +655,19 @@ docs/                         # 参考、ADR、证据
 
 ## 10. 当前状态
 
-快照：2026-11-17，W4 `9b804d4`（Q2 `95ebb21`）+ Q1 `f46dec9`。P0–P8、G1、W2、Q1、S 语义工具和 Q2 调度/恢复已实现并通过最终门禁；最终 release 和 Linux Zed 运行时冒烟已完成。Q2 的 Rust 与安全 R2 均为 `APPROVE`；S 第 2 轮 `CHANGES_REQUESTED` 残余已修复并复验，没有第 3 轮正式审核。CRLF 样本由 `.gitattributes` 保护。
+快照：2026-11-20（迁移收口 `2ce4626`、预删除冻结 `8bda306`、pre-delete 记录 `4dd62b1`、retarget 完成 `3e24c44`、matrix 源归档 `4035bb7`、P7 删除完成 `c4ddf32`；旧 tag `p7-removed`=`b6c1ced`）。当前默认后端为 **native tsgo**；Node 后端、旧 TS 实现/测试和 v1 写路径已删除，ADR-0008 写 **Node removed**。
+
+- 已完成（native）：`wxml-backend-tsgo` 适配器、固定 `7.1.0-beta` 引擎与 typings、默认 `--stdio` native/HostOnly、损坏安装 fail closed、真实 native gates 40/40、F3 交付合同 16/0/0、真实 matrix 22 exact/11 blocked（scenario source 已归档 fixture），以及 Q2 调度/取消/恢复、语义工具和本地 schema v2 交付。
+- 迁移台账：**109 `green` / 0 `planned` / 130 `reviewed` / 29 `waived` / 71 `retired-with-decision`**（339 总数）。只有 `parity=exact` 计入 `green`；`reviewed`/`waived`/`retired` 是非 green 终态，不计作 parity。依据是 2026-11-20 owner C-lite waiver 和 [P7 收口台账](docs/evidence/2026-11-20-tsgo-p7-closeout-ledger.md)。
+- P7 范围与状态：`crates/wxml-lsp/src/backend_node/**`（8 文件/102 单元测试）、`backends/typescript/**`（99 tracked + 34 dist；含 12 个 delete gate）、15 个 v1 delivery 写路径和 5 个 legacy Node env；23 个旧 gate 中 12 个 delete、11 个 retarget。**11 个 retarget 已全部 native-only**（9 个 stdio + perf/stability，`3e24c44`），不标记 `old_test_removed`；stability 后续经 scenario 证据收敛为 **4 implemented / 1 blocked**（外部 RSS baseline），ledger 未回填，见 [stability 证据](docs/evidence/2026-11-20-tsgo-stability-scenarios.md)。删除已完成（删除提交 `c4ddf32`；`p7-removed`/`b6c1ced` 只是旧 tag）；冻结范围与 `p7-pre-delete` tag 保留在历史，当前无 `--backend node`。
+- 显式保留：业务 `.ts/.js/.d.ts` 输入与 JSDoc、WXS/WXML 语义、tree-sitter grammar、统一 fixtures、typings/`assets.lock.json`、schema v1 只读识别（`list/current/verify/env`、`verify_installed`、`read_legacy_manifest`）、`build_native_package` 与历史证据。**去 Node 不等于删除 TypeScript 语言支持。**
+- 验证口径：native engine、native gates、F3 合同和合理行为测试；不声称旧 TypeScript/Node 断言逐条 parity，`reviewed`/`waived` 也不写成“已迁移”。native gates 是 opt-in required job，不是默认 CI 绿或 `mandatory_green`。删除后的最终验收已按 [P7 最终文档与验收清单](docs/evidence/2026-11-20-tsgo-p7-final-docs.md) 执行并记录。
+- 删除后验证：F-02 修复已落地，**2592 passed / 0 failed / 73 ignored 待 `p7-final-verification` 追加**（release 预算 200 ms 未放宽；不是 tag 事实）；release/install/Zed smoke 通过（Zed 16/16）；无 Node/server.js 进程；functional P1 fixed / P2 known；stability 4/1；第三方许可 155/155，首方 LICENSE BLOCKED、对外发布 BLOCKED（内部安装可用）。
+- 未完成/限制：23 个旧 gate 的 mandatory/review（native gates 40/40 是 opt-in required job）、G5/G6/G7、完整多 workspace/多根热加、大项目语料、Windows/macOS 实机、真实主桌面 Wayland、标准 UI 在最终版本上的重跑、marketplace/远端发布/发布者签名。平台证据仍只有 Linux x86_64。
+
+### 10.1 历史快照（W4，2026-11-17；Node 后端）
+
+以下记录保留 W4 Node 后端的原始事实，不作为当前验收：
 
 - 已完成：C0/C1 契约；`wxml-text`、`wxml-syntax`（容错 lexer/parser、表达式 Pratt、WXS rawtext、资源上限）、`wxml-project`（URI/路径、overlay、显式多 app、tsconfig、sources、styles/resources）、`wxml-types`（类型契约、`wx:for`/guards、Behavior、template/WXS 静态语义、脚本符号事实、后端接口与 mock）、`wxml-lsp`（JSON-RPC、多项目宿主、Node 后端、hover/diagnostics/definition/completion、格式/结构/链接、语义工具与安全编辑、Q2 调度/取消/恢复、版本屏障/缓存/超时/重启）、Node 类型桥与后端、P8 Zed 扩展、Q1 本地打包/安装器、S 语义工具、Q2 调度/恢复、最终本地 release。
 - 验证（W4 最终日志）：Rust workspace `1283 passed / 0 failed / 23 ignored`（49 suites）；Node 串行 `333 / 333`；23 个 ignored 门禁全部通过；性能 static p95 0.178 ms、semantic 39.659 ms、diagnostics stop 164.894 ms、queued cancel 0.674 ms、single TS 402.126 ms、parent RSS 10,460 KiB；strict 10 轮 + RSS baseline `pass`；覆盖率 lines 87.24% / functions 88.85% / regions 86.71%；`cargo audit` 0 vulnerabilities、`cargo deny` advisories ok。W3 的 `1251 / 21`、Node `326 / 326` 与 W2 的 `1095 / 20`、Node `304 / 305`、Zed `25 passed` 保持历史记录，不与 W4 混用。

@@ -6,6 +6,8 @@
 
 **Deciders**: 项目维护者
 
+**2026-11-17 后续**：[ADR-0008](0008-rust-tsgo-no-node-backend.md)（2026-11-20 已在 owner scope waiver 下最终关闭为 accepted，native 默认；P7 删除完成，Node removed）调整后端资产路径配置；本文的小程序根与类型项目根边界继续有效。
+
 ## Context
 
 工作区根、小程序 `app.json` 目录和类型项目 `tsconfig.json` 目录可能分层，同一仓库也可能包含多个小程序。自动扫描子 `app.json`、向上寻找最近 tsconfig，以及按生成目录名称忽略候选，会让项目归属依赖目录布局和扫描规则，难以解释或复现。需要由用户明确 app 与类型项目边界，同时保留工作区根就是单个小程序的零配置用法。本记录补充/替代 [ADR-0001](0001-layered-language-service-architecture.md) 与 [ADR-0003](0003-versioned-document-synchronization.md) 中的根发现、配置选择及生效时机，不废弃它们的历史背景、分层或同步原则。

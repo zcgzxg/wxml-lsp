@@ -1,6 +1,6 @@
 # 证据索引与记录规则
 
-更新日期：2026-11-17。
+更新日期：2026-11-20。
 
 本目录保存支撑设计判断的最小证据。结论、环境、方法、限制和原始数据都在仓库内，不把本机临时目录或外部仓库当作唯一证据来源。
 
@@ -28,10 +28,84 @@
 | 2026-11-17 | [W2 集成与 Q1 交付](full-feature-w2.md) | W2 `a441de9` / Q1 `f46dec9` | E1 | W2 固定日志 workspace 1095 passed / 20 ignored；Node 304/305，唯一失败为既有 perf 墙钟断言（高负载超时，单独重跑通过）；IT-01/02/03/05/09/10/11/12 真实 stdio 矩阵通过；Q1 `cargo test -p wxml-delivery` 通过；本地打包/安装/升级/回退存在，下载默认关闭；S/Q2 当时未完成 |
 | 2026-11-17 | [W3 语义工具与安全编辑](full-feature-w3.md) | W3 `379b097` / S `dd15bc1` | E1 | S 语义工具合入：references/rename/codeAction/semanticTokens/workspaceSymbol/inlayHint/signatureHelp/codeLens；W3 固定日志 workspace 1251 passed / 0 failed / 21 ignored（45 suites），Node 串行 326/326，`semantic_tools` 41 passed；两轮正式 Rust/安全审核均 CHANGES_REQUESTED，残余项由 `dd15bc1` 修复并由集成探针复验，未开第 3 轮；Q2 当时未完成 |
 | 2026-11-17 | [W4 最终验收与发布](full-feature-final.md) | W4 `9b804d4` / Q2 `95ebb21` | E1 | W4 Rust 1283 passed / 0 failed / 23 ignored（49 suites）；Node 串行 333/333；ignored 真实 Node/stdio/wave5/stability/performance 全部通过；性能/稳定性阈值 `pass=true`；覆盖率 lines 87.24% / functions 88.85% / regions 86.71%；cargo audit 0 vulnerabilities、deny advisories ok；Zed workspace 25 passed；最终 release 两次构建 SHA-256 `c09062b16dd6bfea4ee03f99f13665cf4858130aae83eefec9c04cd94d3815ab`，214 files，install/verify/verify-package 通过；Linux Zed 运行时冒烟通过；Q2 R2 Rust/安全 APPROVE；无 marketplace/远端发布/发布者签名 |
+| 2026-11-17 | [tsgo 迁移 workspace 基线](2026-11-17-tsgo-workspace-baseline.md) | `tsgo/migration` `b9616c5` | E1 | 记录 worktree、工具链、Backend 边界、单写者与 P2/P3 阻塞；无生产代码改动 |
+| 2026-11-17 | [tsgo 迁移测试基线](2026-11-17-tsgo-migration-baseline.md) | Rust workspace / TS 339 用例 | E1 | Rust 1297 pass/0 fail/23 ignored；TS 338/339，唯一失败为全量并行 perf 8325.25ms；isolated 串行 3/3 绿；台账 274 静态/339 展开 |
+| 2026-11-17 | [tsgo 原生 API 能力验证](2026-11-17-tsgo-native-api-spike.md) | 7.1.0-beta Linux x64 | E1 | 无 Node `--api --async`、虚拟快照、诊断/类型/符号/文档/补全/引用可用；AST v9 部分解码；无 QuickInfo/Definition/Rename 直接 API；7.0.2 排除；脚本仅在临时目录 |
+| 2026-11-17 | [tsgo 无 Node 交付验证](2026-11-17-tsgo-delivery-spike.md) | 7.1.0-beta / miniprogram-api-typings 5.3.1 | E0 | 资产身份、SRI、无 Node 入口与安装/回滚状态机设计；未下载安装，安装器与 clean-env 验收仍待执行 |
+| 2026-11-18 | [P6-3 原生类型资产实施计划](2026-11-18-tsgo-native-type-assets-plan.md) | `b0a108f` / 7.1.0-beta | E0 | 只读审计：full VFS 必须挂载 116 个 stdlib 与 20 个 typings `.d.ts`；真实引擎探针可解析 `wx`/`Page`/`Component`/`getApp`；P6-3 未完成，AC-004 旧诊断、TS 6.0.3/7.1.0-beta 偏差和真实资产布局仍阻塞 |
+| 2026-11-18 | [P6-3 LSP adapter 类型资产接线计划](2026-11-18-tsgo-adapter-type-assets-plan.md) | `4ad3459` | E0 | 只读审计：backend 已具备 `AnalysisInput::with_environment`，adapter 仍调用 `AnalysisInput::new`，没有 loader/compilerOptions/jsCheck 接线；给出有序接线与回滚步骤 |
+| 2026-11-18 | [P6-4 原生引擎发现与可启动性计划](2026-11-18-tsgo-native-engine-discovery-plan.md) | `558beb9` | E0 | P6-4a 可实施、P6-4b/c BLOCKED；当时默认仍是 Node；本文不声称原生后端可启动 |
+| 2026-11-18 | [F1 completion auto-import/逐项文档计划](2026-11-18-tsgo-completion-autoimport-plan.md) | `a17794a` / `5541ee0` | E0 | auto-import 未实现；逐项文档被固定 API 阻塞；F1-21/B-07 仍开放，非空补全仍为 `Partial` |
+| 2026-11-18 | [F3-03 资产锁与 provisioning 设计](2026-11-18-tsgo-f3-asset-lock-plan.md) | `5541ee0` / `f7b9ef7` | E0 | 仓库无 `assets.lock.json`；当时 26/23 typings 口径冲突（后由 `6358925` 固定为 payload 23）；F3-03 仍 BLOCKED |
+| 2026-11-18 | [F3-02 干净环境/进程审计](2026-11-18-tsgo-f3-clean-env.md) | `8490a92` | E1 | 真实资产安装、干净 PATH、网络/挂载隔离和 fixture 升级回滚 PASS；`execve/execveat` 审计与原生 stdio LSP 会话 BLOCKED，F3-02 仍 BLOCKED |
+| 2026-11-18 | [P5 安全审计](2026-11-18-tsgo-p5-security.md) | `d6e8f41` | E1 | 方法白名单、VFS 读边界、进程清理和 AST/句柄预算 PASS；运行目录最小权限第二层与 `--runExternalCode` 全验证 BLOCKED；license 门禁当时 BLOCKED（后续根 `deny.toml` 已补，P5 其余项仍 BLOCKED）；G5 未通过 |
+| 2026-11-18 | [P6/P7 默认切换与去 Node 审计](2026-11-18-tsgo-p6-cutover-audit.md) | `69e13fb` | E0 | 默认 `--stdio` 仍构造 `NodeBackend`；记录 8 个硬阻塞；该审计时 P6/P7 未开始，不删除 Node |
+| 2026-11-18 | [P7 mandatory gates triage](2026-11-18-tsgo-p7-gates-triage.md) | `8490a92` | E1 | 23 个 `#[ignore]` 在 Node 24 下单跑全通过；0 enable-now / 11 keep-gated / 12 delete-at-P7；`semantic_tools` 2 个静默 return 与可选 `tsc` 分支复现 |
+| 2026-11-18 | [Native document symbols DTO 计划](2026-11-18-tsgo-document-symbols-dto-plan.md) | `497380c` | E0 | 推荐独立 `Backend::document_symbols`（Option B）；DTO/decoder 未接 adapter/LSP，脚本路由与 reverse lookup 仍是前置；F1 未关闭 |
+| 2026-11-18 | [tsgo typings 26 vs 23 裁决](2026-11-18-tsgo-typings-26-23-decision.md) | `f6f175f` | E1 | 交付 payload 定为 23 文件 / 2,548,075 B / `ba3eb83…`，上游身份保留 26 文件；lock 与真实 tarball 未冻结，F3-03 仍 BLOCKED |
+| 2026-11-18/19 | [P6-2 mandatory-gate 转换计划](2026-11-18-tsgo-p6-gate-conversion-plan.md) | `f6f175f` | E0 | 0/23 gate 绿；3 enable-now / 8 keep-gated / 12 delete-at-P7；2 个静默 return + 可选 `tsc` 转为 3 个强制原生 gate；S0–S9 与 no-false-green 规则 |
+| 2026-11-19 | [tsgo native hover 与首波 native gate 证据](2026-11-19-tsgo-hover-gates.md) | `953ee1e` / 7.1.0-beta | E0 | `wxml-lsp` lib 668 passed（执行会话记录，未重跑）；真实引擎 adapter hover 1 passed；首波 3 个 native gate 3 passed / 36 filtered（G-P5-E2E-09/12/14）；ledger 仍 `required_not_migrated`；当时默认仍 Node；记录时 workspace clippy 被并行 loader 的 `unreadable_literal` 阻塞（后续 `ca0b554` 未重跑，不声称已绿） |
+| 2026-11-19 | [tsgo native gate 台账提升](2026-11-19-tsgo-native-gate-status.md) | `7bdab96` / 证据 `953ee1e` / 7.1.0-beta | E0 | P6-2 台账 3 `gate_green`（`G-P5-E2E-09/12/14`）/ 20 `required_not_migrated` / 23 total；green 带命令、pinned 引擎/资产身份与 3 passed 证据；3 个仍 `#[ignore]`，默认 CI 不跑；本次复跑被并行 type-assets WIP 阻塞，green 仍锚定 `953ee1e`；P6/G5/G6/F3 未关闭 |
+| 2026-11-19 | [F1 event-handler completion 实施计划](2026-11-19-tsgo-event-handler-completion-plan.md) | `bff58d1` / S1 `939831b` | E0 | 设计 only：保留宽松直接事件形式，避免 `bindgetphonenumber` 等回归；缓存键排除 `view_id`；S1 顶层注册选择已提交，S2+ 尚未实现；无 native checker/auto-import/自定义事件；F1/P6/G5 未关闭 |
+| 2026-11-19 | [tsgo 测试台账回填与 native gate 复核](2026-11-19-tsgo-ledger-backfill.md) | `9a8b65c` / 7.1.0-beta | E0 | case 级 36 `green` / 267 `planned` / 36 retired（新增 `TS-COMPLETION-0175/0193`、`TS-PROBES-0169`）；`TS-META-0009`、`TS-SERVER-0237` 为 weaker；document symbols 真实引擎 7 passed；3 个既有 `gate_green` 复跑 3 passed / 36 filtered；20 gate 仍 required，无新增 gate；当时默认仍为 Node、CI/mandatory 未变 |
+| 2026-11-20 | [tsgo 测试台账 wave-5 回填](2026-11-20-tsgo-ledger-backfill-wave5.md) | 边界 `375cde2` / 记录 `28c5e18` | E0 | case 级 44 `green` / 259 `planned` / 36 retired（新增 `TS-COMPLETION-0127/0153`、`TS-EVENTS-0108`、`TS-SYMBOLS-0061/0150/0215/0226/0312`）；17 weaker、1 blocked、1 structural 新证据 + 14 个既有用例追加；无证据 184→158；未映射 E2E-20/f3/zed，未改 gate 状态 |
+| 2026-11-20 | [tsgo 测试台账 wave-6 回填](2026-11-20-tsgo-ledger-backfill-wave6.md) | `1d5222e` / 7.1.0-beta | E0 | 无新增 exact `green`，仍 44 `green` / 259 `planned` / 36 retired；新增 6 weaker（`TS-COMPONENT-0147/0193/0206/0229/0251/0268`）+ 3 blocked（`TS-COMPONENT-0279`、`TS-SYMBOLS-0299/0425`），4 个既有用例追加；`assessed` 145→154、无证据 158→149；E2E-20 不升级 exact，gate_green 与 case green 分离 |
+| 2026-11-20 | [tsgo 台账 wave-6 组件绑定 exact 跟进](2026-11-20-tsgo-ledger-wave6-component-exact.md) | `0bf666b` / 7.1.0-beta | E0 | 4 个组件绑定 case 提升 exact：per-tag 全矩阵 + 8 skipped、no-mustache literal、无 properties、path-free 遍历；`TS-COMPONENT-0193` 因 `probeProblems` 无 native 对应、`TS-COMPONENT-0229` 因 union 成员无结构 flag 保持 blocked；48 `green` / 255 `planned` / 36 retired，`exact` 48、`weaker` 74、`blocked` 22 |
+| 2026-11-20 | [tsgo 测试台账 wave-7 回填](2026-11-20-tsgo-ledger-backfill-wave7.md) | `94c8a66` / 7.1.0-beta | E0 | 无新增 exact `green`，仍 48 `green` / 255 `planned` / 36 retired；逐条复核 32 个 weaker/blocked 后新增 6 weaker（`TS-ANALYSIS-0078/0093/0139/0174`、`TS-PROBES-0027`、`TS-GUARDS-0302`）；`assessed` 154→160、无证据 149→143、`weaker` 80；`TS-COMPLETION-0104/0078` 依赖并行会话未提交测试，保持 planned |
+| 2026-11-20 | [events/locals/guards 7 例 exact](2026-11-20-tsgo-events-locals-guards-exact.md) | `75040c2` / 7.1.0-beta | E0 | `TS-EVENTS-0301/0322/0461`、`TS-LOCALS-0063/0089/0144`、`TS-GUARDS-0075` 逐条补齐 Supported/absent definition/unresolved/text/close/index name；全部 exact，建议 55 green |
+| 2026-11-20 | [tsgo 测试台账 wave-8 回填](2026-11-20-tsgo-ledger-backfill-wave8.md) | `75040c2` / 7.1.0-beta | E0 | 7 个 exact case 入库，台账 55 `green` / 248 `planned` / 36 retired；exact 55、weaker 73、assessed 160、无证据 143；分区 events 13/7、loops 8/0、guards_js 6/2 |
+| 2026-11-20 | [P7-2 legacy oracle manifest](2026-11-20-tsgo-p7-oracle-manifest.md) | `75040c2` / 7.1.0-beta | E1 | 339 case/21 文件/4 fixture 树冻结清单，projection `14cd870e…`；live 树存在时校验 SHA/行/body，缺失时与 ledger 冻结比对；模拟删除 21/339 Frozen 通过，篡改/缺失/重复/排序失败；P7 删除未执行 |
+| 2026-11-20 | [P7 native 编辑门禁](2026-11-20-tsgo-p6-edit-gates.md) | `899a89a` / 7.1.0-beta | E1 | 3 个 native edit gate 真实实现（组件属性 rename 后重解析/类型检查、独立 reparse+typecheck、跨 namespace/动态编辑拒绝）；旧 semantic_tools 在 native 请求模式下 fail-closed；required native 3 passed/12.83s；ledger silent gates 仍 required，旧 23 gate 仍 `#[ignore]` |
+| 2026-11-19 | [F3 真实 release 验收](2026-11-19-tsgo-f3-real-release.md) | `561b00a` / 7.1.0-beta / 真实 Rust + Zed 产物 | E1 | 真实 lock/tarball 的两次打包逐字节一致（157 文件）、真实包空安装/verify/current/env、N1→N2→N1、离线回滚、recover、archive 篡改拒绝、readelf/ldd/GLIBC_2.39、平台拒绝和进程级 Zed 启动；F3-02/14 blocked；F3-12 只覆盖缓存 install |
+| 2026-11-19 | [F3 剩余验收矩阵](2026-11-19-tsgo-f3-acceptance.md) | `0b3b3da` / 真实包 + 受控变异 | E1 | 6 个 opt-in 测试：F3-05 缺资产/探针、F3-10 六类篡改、F3-11 五种恶意归档经真实 `--from-dir`、F3-08/09/15 legacy、F3-06 四窗口 seam、F3-16 journal 注入/并发；F3-06/09 进程级 kill 仍 blocked |
+| 2026-11-20 | [F3-02 ptrace exec 审计](2026-11-20-tsgo-f3-exec-audit.md) | `f2952c2` / 7.1.0-beta | E1 | test-only ptrace 记录真实 installer 10 exec、native LSP 3 exec；无 Node 家族/server.js/legacy 变量，全绝对路径；F3-02 closed（Linux x86_64），非 Linux/无 ptrace 权限显式 BLOCKED |
+| 2026-11-20 | [F3-14 打包 Zed native 冒烟](2026-11-20-tsgo-f3-14-zed-smoke.md) | `5020ae7` / 纯净 archive 构建 0.1.0 / Zed 1.29.2 / Xvfb | E1 | 默认路径 16/16：HEAD `5020ae7` 无 Node 构建真实包；Zed 直接启动 `bin/wxml-lsp --stdio`（无 wrapper/无 `--backend`），`ps` 无 Node/server.js；WXML hover/诊断、未保存脚本 hover 变化、五语言注册、结束恰好 1 个进程；F3-14 closed。旧 `--backend native` bridge 结果（`b095258`）已被默认路径取代 |
+| 2026-11-20 | [P6-2 原生性能与稳定性门禁](2026-11-20-tsgo-p6-perf-stability.md) | `8b6ca14` / 7.1.0-beta release | E1 | 真实 stdio：hover p95 0.822ms、completion 0.648ms、diagnostics 208.075ms/500（含 120ms debounce）、cold start 60.1ms、RSS +11.6%；12-cycle RSS +6.373%；gate 18/23 |
+| 2026-11-20 | [E2E-20 组件属性绑定诊断设计](2026-11-20-tsgo-e2e20-component-binding-plan.md) | `4140e9b` / 7.1.0-beta | E0 | `PreparedView`/`ScriptAnalysis` 已有子组件属性类型；需新增 `ShadowLayout` 表达式范围 + `type_query` 的绑定检查，复杂类型 Partial，事件属性排除；尚未实现 |
+| 2026-11-20 | [P6 默认切换与 P7 删除设计](2026-11-20-tsgo-p6-default-switch-plan.md) | `4140e9b` / 7.1.0-beta | E0 | 默认 native + HostOnly + 显式 `--backend node`；P7 仍被 5 个 required gate、2 个 silent return、267 planned、旧 TS fixture 与 v1 build 阻塞 |
+| 2026-11-20 | [F3-06/09 进程级 kill 窗口设计](2026-11-20-tsgo-f3-kill-window-plan.md) | `4140e9b` / 7.1.0-beta | E0 | 建议 test-only ptrace 在 rename/symlink/fsync 暂停后 SIGKILL；仍需真实 N2、真实 legacy release，contract §6.3 崩溃语义需裁决 |
+| 2026-11-20 | [F3-06/09 进程级 kill 窗口证据](2026-11-20-tsgo-f3-kill-window.md) | `28c5e18` / 7.1.0-beta | E1 | 真实 `wxml-lsp-install` 外部 SIGKILL：F3-06 U1/U3/U5/U5-durable/U6 + never-match 控制项，F3-09 L3/L4；U5 实测 `recover` 前滚到 N2；F3-06/09 仍 partial（N2 版本重标 / legacy fixture） |
+| 2026-11-20 | [F3-06/09 切换后崩溃语义裁决](2026-11-20-tsgo-f3-crash-semantics.md) | `28c5e18` / 文档 `b095258` | E0 | pre-switch 旧 current/旧树字节不变；post-switch 崩溃前滚已验证 native target，legacy/Node 永不恢复；合同 §6.3 第 975 行拆为“进程存活/崩溃”两行；F3-06/09 仍 partial，剩余缺口为 N2 provenance 与真实 legacy 发布包 |
+| 2026-11-20 | [F3-09 真实 legacy 包与迁移验收](2026-11-20-tsgo-f3-legacy-real.md) | `e4fed4a` clean archive / 生产 v1 packager / Node 24.22.2 / 真实 Rust+Node+Zed 产物 | E1 | 真实 schema v1 包（333 文件、archive `b62d3112…d970ae`）经生产安装器安装；legacy 入口 `--version` + `--backend node` LSP initialize 通过；迁移到 N2 `migrated once`、legacy 树/二进制哈希不变、pre-switch 失败、`AfterSwitch` 前滚、legacy rollback 拒绝、`recover` 不恢复；F3-09 closed，F3-06 仍 partial |
+| 2026-11-20 | [P7-0 预删除冻结](2026-11-20-tsgo-p7-predelete-freeze.md) | `75040c2` / 7.1.0-beta | E1 | 只读冻结 `backends/typescript` 99 tracked + 34 dist、`backend_node` 8 文件、23 个旧 `#[ignore]` gate、15 个 v1 写路径、5 个 legacy env、2 个 silent return + 1 个 tsc 分支；`scripts/p7-freeze.sh --check` 在 `75040c2` 通过；oracle archive 绑定已落；ledger 55/248/36，P7-0 仅完成冻结子项，删除仍 BLOCKED |
+| 2026-11-20 | [F3-06 真实第二版本 N2](2026-11-20-tsgo-f3-06-real-n2.md) | `fb6047e` / N1 `0.1.0` + N2 `0.2.0` / 7.1.0-beta | E1 | 同一 clean 源码树两次独立编译打包；N1/N2 archive、二进制、manifest、provenance 均不同；`verify-package`、install→upgrade→rollback→recover、篡改拒绝与六个 kill-window 用例通过；F3-06 closed，F3 合同 16/0/0 |
+| 2026-11-20 | [wave-7 weaker 补断言](2026-11-20-tsgo-wave7-weaker-exact.md) | `75040c2` / 7.1.0-beta | E0 | 逐条复核 6 个 wave-7 weaker：3 个补到 exact（`TS-PROBES-0027`、`TS-ANALYSIS-0139/0174`），另 3 个保持 weaker/blocked；建议 55→58 green、248→245 planned |
+| 2026-11-20 | [tsgo 测试台账 wave-9 回填](2026-11-20-tsgo-ledger-backfill-wave9.md) | `16e88b2` / 提交 `6fc7a00` | E0 | 3 个 exact case 入库，最终 58 green / 245 planned / 36 retired；exact 58、weaker 70、assessed 160、无证据 143；只改台账/validator 常量，不改测试断言 |
+| 2026-11-20 | [P7 旧 gate 删除语义准备](2026-11-20-tsgo-p7-gate-removal-readiness.md) | 基线 `16e88b2` / 提交 `6727059` | E0 | `old_test_removed` 缺省 false 且 fail-closed；0/23 gate 实际可删；23 旧 gate 全 ignored、2 silent return + tsc 仍在；native_parity 75 passed/26 ignored、semantic_tools 41 passed；删除仍未放行 |
+| 2026-11-20 | [wave-9 剩余 planned 规划](2026-11-20-tsgo-remaining-ledger-wave9-plan.md) | 58/245/36 / 143 无证据 | E0 | 143 个无证据 planned 分为 12 exact-ready、25 少量测试、59 需 native 能力、41 需契约裁决、6 应 retired/waiver；最乐观 245→233、保守 236；不能降到 0 |
+| 2026-11-20 | [P7 收口范围裁决（C-lite）](2026-11-20-tsgo-p7-scope-decision.md) | `befba03` | E0 | owner 原话“不需要严格按照原来的功能写测试。功能合理即可”；128 green 严格上限、A/B/C 方案对照；明确不伪造 parity、不声称 Node 可立即删除 |
+| 2026-11-20 | [P7 closeout ledger](2026-11-20-tsgo-p7-closeout-ledger.md) | `2ce4626` / 339 case | E1 | 终态 109 green / 0 planned / 130 reviewed / 29 waived / 71 retired；33 个退休、29 个 waiver、130 reviewed 的逐组依据；reviewed/waived/retired 均非 green |
+| 2026-11-20 | [P7 ledger waiver policy](2026-11-20-tsgo-p7-ledger-waiver-policy.md) | `2ce4626` / ledger | E0 | `reviewed`/`waived`/`retired-with-decision` 状态语义、owner 签署与“不伪造 green”规则 |
+| 2026-11-20 | [P7 删除面审计](2026-11-20-tsgo-p7-deletion-surface.md) | `b0f6cc1` | E0 | 7 个删除面：backend_node、13 测试文件/111 属性、旧 TS 99+34、15 个 v1 写路径、脚本/CI/Zed、oracle/ledger、文档；最小安全顺序 |
+| 2026-11-20 | [P7 retarget 计划](2026-11-20-tsgo-p7-retarget-plan.md) | `74669c3` / `75040c2` | E0 | 11 个 retarget gate：9 个 stdio 等价/更强，perf/stability 部分覆盖；不新增 `#[ignore]`，需重冻 freeze |
+| 2026-11-20 | [P7 retarget native 薄壳](2026-11-20-tsgo-p7-retarget-native-tests.md) | `3e24c44` / 7.1.0-beta release | E1 | 9 个 stdio + perf/stability 共 11 个 retarget 全部 native-only；perf p95 与 stability 10 轮通过；本切片记录时 stability 5 项 BLOCKED，后续 4 项 implemented / 1 blocked（ledger 未回填）；ledger 109/0/130/29/71 不变 |
+| 2026-11-20 | [real_matrix 归档 scenario source](2026-11-20-tsgo-real-matrix-archived-source.md) | `4035bb7` / 7.1.0-beta | E1 | `scenarios.ts` 21,463 B 归档 fixture；`backends/typescript` 缺失时 matrix 3/3、native_parity 81/29 通过；projection 33/17/22/11 未变 |
+| 2026-11-20 | [P7 最终文档与验收清单](2026-11-20-tsgo-p7-final-docs.md) | 删除提交 `c4ddf32` / 旧 tag `p7-removed`=`b6c1ced` / 工作树 `180fa42` | E1 | P7 删除完成；ADR Node removed；**验收对象为工作树，不是旧 tag**；F-02 修复已落地、2592/0/73 待 `p7-final-verification` 追加；functional P1 fixed / P2 known / PASS-with-followup；stability 4/1；第三方许可 155/155，首方 LICENSE BLOCKED |
+| 2026-11-20 | [P7 删除演练](2026-11-20-tsgo-p7-delete-dryrun.md) | `8a56f27` / 干净拷贝 | E1 | 12 个 delete gate 删除后 native_parity 75/26、native-gates 26/26、默认 1246/37；必须先 Frozen；11 个 retarget 不可删 |
+| 2026-11-20 | [P7 native gate runner](2026-11-20-tsgo-p7-native-gate-runner.md) | `94c8a66` / 7.1.0-beta | E1 | `scripts/native-gates.sh` 初始 26/26（23 engine + 3 edit）；后续加入 9 个 stdio retarget，最终 35/35 |
+| 2026-11-20 | [P7 删除前 native 基线](2026-11-20-tsgo-p7-predeletion-baseline.md) | `b0f6cc1` / 真实 package | E1 | workspace 2813 passed / 87 ignored；native_parity 78/29；native gates 35/35；release verify-package 通过；`p7-freeze --check` 过期 exit 2 |
+| 2026-11-20 | [P7-0 预删除冻结（re-freeze）](2026-11-20-tsgo-p7-predelete-freeze.md) | `8bda306` / 7.1.0-beta | E1 | 109/0/130/29/71；`p7-pre-delete` tag、23 gate 12 delete/11 retarget、15 v1 写路径、`deletion_allowed=false`；实际删除未执行 |
+| 2026-11-20 | [native matrix 实现证据](2026-11-20-tsgo-native-matrix-implementation.md) | `1c89338` / `befba03` | E1 | 真实 pinned 引擎严格 22 exact / 11 blocked（33 in-place），修正设计 23/10；顶层 4 exact / 6 blocked |
+| 2026-11-20 | [P7 F3 历史引用核对与 scope waiver](2026-11-20-tsgo-p7-f3-historical-refs.md) | `3e24c44` / `p7-pre-delete` `4dd62b1` / F3-09 | E1 | F3-09 的 v1 迁移验收标为历史证据（当前 HEAD 不可重跑）；删除后仅保留 schema v1 只读识别；F3-02 辅助 guard 语义已反转为无 Node 静态检查；F3-06 证据链不受影响 |
+| 2026-11-20 | [F3 历史引用清理](2026-11-20-tsgo-f3-historical-cleanup.md) | `b6c1ced` / `p7-pre-delete` `4dd62b1` | E1 | §9.2 的 F3-03/04/06/10/11/15/16 行中已删除的 `packager_cli.rs`、`installer_flow.rs`、`installer_security.rs` 改标历史证据并补当前 native 等价路径；`provisioning.rs`/`crash_recovery_and_lock` 等未采用计划名明确标注；F3 16/0/0、ledger 与代码未变；rg/链接/表格校验通过 |
+| 2026-11-20 | [F-02 debug 全工作区 perf 假失败修复](2026-11-20-tsgo-f02-debug-perf-fix.md) | `b6c1ced` + 未提交 `type_assets.rs` / rustc 1.100.0 | E1 | debug 保留功能/字节/10 次循环断言，200 ms 延迟断言只在 release 执行（新增 release-only 入口，非 `#[ignore]`）；2592/0/73 **待 `p7-final-verification` 追加**，不是 tag 事实；release `type_assets` 11 passed |
+| 2026-11-20 | [P7 删除后最终 release/install/无 Node 独立复验](2026-11-20-tsgo-p7-post-delete-revalidation.md) | `b6c1ced` / 旧 tag `p7-removed` | E1 | A/B + 冷 target C 三次构建逐字节一致（archive `7a51a3e9…dcd81b7`、15,117,270 B，许可重建前）；install/verify 157 files、PATH-only 无 Node、`--stdio` LSP 冒烟、Zed **16/16**（截图 **9** 张）；限 Linux x86_64 |
+| 2026-11-20 | [P7 删除后最终产物 exec 审计](2026-11-20-tsgo-p7-final-exec-audit.md) | `b6c1ced` / 最终安装 | E1 | ptrace：installer 10 exec + native LSP 3 exec，13/13 绝对路径，0 Node/server.js/legacy env；阳性对照有效；F3-02 仅 Linux x86_64 + ptrace |
+| 2026-11-20 | [P7 最终安全/供应链审计](2026-11-20-tsgo-p7-final-security-audit.md) | `b6c1ced` | E1 | 漏洞/unsafe/exec 范围无 HIGH/CRITICAL；MEDIUM 为预编译引擎无内核级隔离（既有风险）；`cargo audit` 0、`cargo deny` 四项 ok；exec 级无 Node；**“许可”仅指表达式策略，不覆盖随包许可文本**（第三方文本后续 155/155，首方 LICENSE 仍 BLOCKED） |
+| 2026-11-20 | [G-P5-STABILITY-01 scenario closure](2026-11-20-tsgo-stability-scenarios.md) | `b6c1ced` / native retarget | E1 | `q2_stability` **4 implemented / 1 blocked**（外部 RSS baseline）；新增本地 support module；证据使用 `WXML_STABILITY_ALLOW_DIRTY=1` 的脏工作树，干净默认未放宽；**ledger 未回填**，仍记 4 场景 BLOCKED |
+| 2026-11-20 | [P7 删除后最终仓库/文档卫生审计](2026-11-20-tsgo-p7-final-repo-audit.md) | `b6c1ced` | E1 | HIGH 4 / MEDIUM 8 / LOW 8；代码/构建/计数 PASS，文档权威口径阻塞；H-01～H-04、M-01、M-07、M-08 与 L-06/L-07 已由后续文档修复处理（未提交）；L-05 为空 `backends/` 本地残留，未删除 |
+| 2026-11-20 | [P7 最终发布产物许可审计](2026-11-20-tsgo-p7-release-license-audit.md) | `b6c1ced` / post-delete archive | E1 | 机械完整性/上游许可/无 Node PASS；`THIRD_PARTY_LICENSES.md` 不含 Rust/Zed 依赖许可 → 当时**对外发布 BLOCKED、P1 HIGH**；首方 LICENSE 缺失 P2；内部安装/verify/LSP/Zed 不阻塞。第三方文本后由 generator/2 补齐为 155/155，首方 LICENSE 仍 BLOCKED |
+| 2026-11-20 | [P7 许可生成 P1 修复](2026-11-20-tsgo-p7-license-generation-fix.md) | `180fa42` + 未提交许可生成代码（generator/2） | E1 | 确定性生成 155 个第三方 crate：**155/155 有文本（144 本地 + 11 vendored SPDX）**，0 missing / 0 unlicensed，逐行 `text_source`；首方 LICENSE 仍 **BLOCKED owner decision**；许可重建 archive `793a4f21…2e4077`、15,143,353 B；`THIRD_PARTY_LICENSES.md` 467,493 B；**对外发布仍 BLOCKED（首方 LICENSE），内部安装可用** |
+| 2026-11-20 | [P7 final release/install/许可/native-Zed 复验](2026-11-20-tsgo-p7-final-release-license.md) | `180fa42` / 工作树 | E1 | release/install/verify PASS；native LSP PASS；Zed 16/16；P1 PASS / P2 known；文中许可为 144/155 中间构建，最终以 generator/2 的 155/155、`793a4f21…` 为准 |
+| 2026-11-20 | [P7 删除后最终安装功能级冒烟](2026-11-20-tsgo-p7-final-functional-smoke.md) | `b6c1ced` / 最终安装 `aa8aa03b…` | E1 | 36 条操作 32 PASS / 1 FAIL / 3 INFO；**P1** JSON didOpen 静默丢弃脚本首次诊断（20 s 不重试），已由 `180fa42` 修复并真实复验；**P2** Page-only 脚本 `documentSymbol` `-32803` 保留为已知限制；整体 **P1 fixed / P2 known / PASS-with-followup**，不是全 PASS |
+| 2026-11-20 | [P1 脚本诊断在无关 JSON didOpen 后重试](2026-11-20-tsgo-p1-script-diagnostics-retry.md) | `180fa42` / 真实安装布局探针 | E1 | 修复 `script_diagnostics_done` 的 old-revision 静默丢弃：文本未变则有界重试（上限 3），文本已变仍丢弃；`wxml-lsp` lib 851 passed、crate 1098 passed / 40 ignored；真实 LSP 探针 10 s 内收到脚本诊断；**P2 Page-only `documentSymbol` 保留为已知限制** |
+| 2026-11-20 | [P7 残余 native gates 复验](2026-11-20-tsgo-p7-residual-native-gates.md) | `b6c1ced` + 未提交 stability 修复 / post-delete package | E1 | `scripts/native-gates.sh` **40/40 PASS**、exit 0（23+3+9+1+1+3）；dirty 工作树显式 `WXML_STABILITY_ALLOW_DIRTY=1`；stability 4 implemented / 0 failed / 1 blocked；不代替 workspace/Zed/升级回滚 |
+| 2026-11-20 | [P7 最终验收声明交叉核对](2026-11-20-tsgo-p7-acceptance-crosscheck.md) | `b6c1ced` 快照 + 并发证据 | E1 | HIGH 3 / MEDIUM 7 / LOW 3：删除提交误写、functional P1/P2、许可 BLOCKED、Zed 18→16、stability 5→4/1、§12.16 旧 archive、R-03/E-01/E-02/N-02 过宽 PASS、证据指针问题；许可第三方文本后由 generator/2 解除；逐项处理结果见 crosscheck resolution |
+| 2026-11-20 | [P7 crosscheck 修正结果](2026-11-20-tsgo-p7-crosscheck-resolution.md) | 本工作树文档切面 | E1 | 逐项 H-01～H-03、M-01～M-07、L-01～L-03 的修正/保留/未闭合状态；删除提交 `c4ddf32`、functional P1 fixed/P2 known、许可 155/155（144 本地 + 11 SPDX）、Zed 16/16、stability 4/1、R-03/N-02 PARTIAL、F-02 待 p7-final-verification |
 
 ## 3. 当前门禁基线（2026-11-17，W4 最终）
 
-以下是 W4 最终快照，不替代各记录的原始结论。W2、W3、Q1 的计数只作历史，不与 W4 混用。
+以下是 W4 最终快照，不替代各记录的原始结论。W2、W3、Q1 的计数只作历史，不与 W4 混用。Rust + tsgo 迁移的 P0/P1 基线见 §3.1，P6 实施状态见 §3.2；P7 删除已完成、删除后验收为 **PASS-with-followup**（§3.4），不能把本节 W4 的 Node 结果当作原生后端结果。
 
 | 项 | 命令 | 当前结果 |
 | --- | --- | --- |
@@ -66,6 +140,129 @@ extension` 在最终版本上的重跑、大项目中/大语料性能、完整 G
 release/发布者签名。W4 的 Linux Zed 冒烟是手工安装最终发布包的运行时验证，不冒充标准 UI
 安装；标准安装历史证据仍见 [p8-zed.md](p8-zed.md) 第 13 节。
 
+## 3.1 Rust + tsgo 迁移 P0/P1（2026-11-17）
+
+| 项 | 命令/范围 | 结果 |
+| --- | --- | --- |
+| Rust 基线 | `cargo test --workspace --all-features` | 1297 passed / 0 failed / 23 ignored（36.5s） |
+| Rust 静态质量 | fmt / check / clippy `-D warnings` | 通过 |
+| TS 基线 | 全量 339 展开用例 | 338 passed / 1 failed（perf 并行冷启动 8325.25ms） |
+| TS perf 隔离 | `node --test test/perf.test.ts` 串行 3 次 | 3/3 通过（1058.25 / 1005.64 / 675.60ms） |
+| 迁移台账 | 21 个测试文件 + support | 274 静态 / 339 展开；direct 240、rewrite 52、split 11、obsolete 36、blocked 0 |
+| 原生能力 | 7.1.0-beta `--api --async` | 有条件通过；AST v9 部分解码；完整 shadow/查询组合待后续 gate |
+| 无 Node 交付 | 资产/安装设计 | PARTIAL；未安装、未 clean-env 验收 |
+
+G1 尚未关闭；7.1.0-beta 的接受与 integrity 固定、可执行安装器和 F0–F3 契约冻结是 P3 前置。
+
+## 3.2 Rust + tsgo 迁移 P6 实施状态（2026-11-19，HEAD `6358925`）
+
+本节记录已提交切片的当前状态，不替代各证据记录，也不把库级测试当作真实资产、CLI 或 Zed 验收。**本节是 2026-11-19 历史快照；P7 删除完成状态（109/0/130/29/71、native 默认、Node removed）见 §3.4。** 工作树中存在未提交的 P6-3 adapter/document-symbol 接线 WIP（不属于 HEAD `6358925`）；这些改动不是本节事实，也不作为通过证据。
+
+| 提交 | 切片 | 已提交内容 | 当前可证明 | 仍未关闭 |
+| --- | --- | --- | --- | --- |
+| `2c6d39e` | P6-3 后端类型资产 | `AnalysisInput::with_environment`、33 个 compiler option key、`TypeAssets`/`TypeAssetsPin`、full VFS 资产表、116 stdlib + 20 typings `.d.ts`、environment tsconfig；`crates/wxml-backend-tsgo/tests/type_assets.rs` 10 个测试 | 库/单元与真实引擎层：`type_assets` 真实门禁记录为 10/10 passed（其中 2 个为 opt-in 真实引擎用例；本轮未重跑）。可解析 `wx`/`Page`/`Component`/`getApp`，缺资产 fail-closed | adapter 仍调用 `AnalysisInput::new`（ /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/src/backend_tsgo/input.rs:121 ），`js_check` 仍为 `Inherit`（ /home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/crates/wxml-lsp/src/backend_tsgo/input.rs:202 ）；可信 pin loader、F3-03、AC-004 未保存更新旧诊断、TS 6.0.3 vs 7.1.0-beta 偏差、adapter 降级均未关闭 |
+| `abf0046` | P6-4a 引擎发现/沙箱/opt-in | `engine.rs` 从安装树发现并校验 `manifest.json`/`engine/lib/tsc`；`sandbox.rs` 每 session 新建 `0700` 沙箱；`wxml-lsp --stdio --backend native`；默认 `--stdio` 仍为 `NodeBackend` | CLI/库层：`--backend native` 失败闭合，未验证包时不回退 Node；默认路径未改变 | fd/`openat` 沙箱加固仍 BLOCKED，存在路径校验到 spawn 的残余 TOCTOU；P6-4b 真实资产启动、P6-4c 真实包/无 Node 进程审计、默认切换均未完成 |
+| `31d6d29` | F1 hover 证据与 Markdown 组合 | 三段式 Markdown 顺序、checked-empty/`Unsupported`/`Partial` 区分、声明范围双坐标；`crates/wxml-backend-tsgo/tests/f1_hover.rs` 11 个测试 | 库/单元层：9 个纯组合测试；2 个真实引擎测试仅在 `TSGO_BIN` 可用时运行，`WXML_REQUIRE_REAL_ENGINE=1` 才转为硬门禁 | 无 `getQuickInfoAtPosition`；QuickInfo display parts、逐 overload 文档/分段仍 BLOCKED；组件缺失等降级仍需 adapter 合同 |
+| `6eb6f26` | Native document symbols DTO | `wxml-types` 新增 `DocumentSymbol*` DTO 与默认 `Backend::document_symbols`；`wxml-backend-tsgo` 解码 v9 document symbols，保留 UTF-16/UTF-8 范围与 gap/truncation | 库/单元层：DTO 默认 `Unsupported`、decoder 与映射测试；不会把空结果伪装成 supported | adapter 与 LSP 路由未接线；脚本文档的 view/reverse lookup、snapshot 身份与 `DocumentRoute::Script` 仍是前置；`structure.rs` 的 WXML outline 不变 |
+| `6358925` | typings payload 身份强制 | 23 文件 allowlist、`2,548,075 B`、bundle 摘要 `ba3eb83…`、精确 payload 路径、入库的 5.3.1 fixture；manifest/verify/打包器重算并比较 | 交付库/单元层：hermetic fixture 下的打包/清单/安装树负向测试；`typings_payload.rs` 仍是对真实 5.3.1 树的 opt-in 一致性检查 | 真实上游 tarball 的 SRI/SHA-256/size、provisioning、`assets.lock.json`、clean-env/ABI、包级验收未完成；**F3-03/B6 仍 BLOCKED**，不关闭任何 F3 ID |
+| `0e7c672` | P6-2 gate 转换计划 | 23 个 `#[ignore]` 的逐项处置、3 个 enable-now/8 个 keep-gated/12 个 delete-at-P7、2 个静默 return + 可选 `tsc` → 3 个强制原生 gate、S0–S9 | 计划层：gate 状态与 case 状态分离，定义 `required_not_migrated → replacement_authored → replacement_red → gate_green → mandatory_green → replacement_reviewed → old_test_removed → closed` | 0/23 gate 绿；23 ignored + 2 个静默 return（另有可选 `tsc` 分支）仍是 gate debt；未删除旧测试、未改 `#[ignore]`、未切换默认后端 |
+
+当前门禁口径：
+
+> 本节是 2026-11-19 `6358925` 快照；F3 的 2026-11-20 审计状态见 §3.3。
+
+| 项 | 状态 |
+| --- | --- |
+| F3-01～F3-16 | 16 closed / 0 partial / 0 blocked（2026-11-20 §3.3；F3-06 由 `fb6047e` 真实 N1/N2 关闭，F3-14 于 `5020ae7` 默认路径关闭，F3-09 于真实 v1 包验收关闭）；root lock/package cache 已落（`assets.lock.json`）；F3 合同已收口，不等于迁移完成 |
+| P6-3 | 部分：backend 数据层与 adapter trusted type-assets handoff 已接线（`caf045d`）；P6-3 整体未关闭 |
+| P6-4 | P6-4a opt-in 切片已落；P6-4b/c BLOCKED |
+| G5 / G6 | 均未关闭；G7 不在当前范围 |
+| 默认后端 | `--stdio` 默认 native/HostOnly（`5020ae7`）；显式 `--backend node` 保留为过渡 |
+| ignored / silent | 26 个 `#[ignore]`（23 个旧 gate + 3 个 native replacement）；`semantic_tools` 2 个静默 return；可选 `tsc` 分支仍在 |
+| native gate 台账 | 3 `gate_green`（`G-P5-E2E-09/12/14`）/ 20 `required_not_migrated` / 23 total；3 个仍 `#[ignore]`，只在 opt-in native job 绿，不是默认 CI 绿，也不是 `mandatory_green` |
+| 迁移台账 | 58 `green` / 245 `planned` / 36 `retired-with-decision`（339 总数，wave-9 `6fc7a00`）；`exact` 58、`weaker` 70、无证据 planned 143；仍无 `reviewed`/`closed` |
+| 平台 | 仅 Linux x86_64 有证据；aarch64/macOS/Windows/musl 未验证 |
+
+证据层级说明：
+
+- **库/单元**：`type_assets`、`f1_hover` 纯测试、document-symbol DTO/decoder 测试只证明 Rust 数据层与映射，不证明 LSP adapter、CLI 或编辑器行为。
+- **真实资产/CLI**：F3-01/02 的安装/干净 PATH/网络隔离与 ptrace exec 审计是真实资产级证据（`f2952c2`，Linux x86_64）；其他交付测试多为入库 fixture。
+- **Zed/UI**：F3-14 的默认路径证据见 `2026-11-20-tsgo-f3-14-zed-smoke.md`（真实包 + 默认 `--stdio` + Xvfb 截图/OCR）；不得引用历史 Node/W4 的 Zed 结果代替。
+
+## 3.3 F3 逐项验收状态（2026-11-20 审计 + ptrace/kill-window + F3-14 默认路径 + F3-09 真实 legacy 包 + F3-06 N2）
+
+本节只记录 2026-11-20 对 F3 证据的审计结论，权威表和关闭条件在
+` docs/reference/tsgo-delivery-contract.md` §9.5。证据运行锚点为 `561b00a`（real release）、
+`0b3b3da`（acceptance）、`50e4a21`（partial gaps）、`f2952c2`（ptrace exec audit）、
+`28c5e18`（kill-window）、`5020ae7`（默认 native + F3-14 Zed）、`e4fed4a`（F3-09 真实 v1
+包，clean `git archive`）和 `fb6047e`（F3-06 真实 N1/N2 双构建）；`crates/wxml-delivery/src`
+在 `561b00a..28c5e18` 无变化（`28c5e18` 只新增 test/script/doc）。包内 `bin/wxml-lsp`
+是 2026-11-19 23:21 从含并发未提交改动的工作树构建，不是任一 HEAD 的逐字节重建；
+F3-03/04 只声明包/安装事实，不声明该二进制可从 HEAD 复现。F3-14 使用 `5020ae7`
+生产源码重新构建的独立包，不受该旧包限制；F3-09 使用 `e4fed4a` clean `git archive`
+重新构建的独立 v1 包，F3-06 使用 `fb6047e` 的 N1/N2 独立构建，也不受该旧包限制。
+
+| 结果 | ID |
+| --- | --- |
+| **closed（16）** | F3-01、F3-02、F3-03、F3-04、F3-05、F3-06、F3-07、F3-08、F3-09、F3-10、F3-11、F3-12、F3-13、F3-14、F3-15、F3-16 |
+| **partial（0）** | 无 |
+| **blocked（0）** | 无 |
+
+F3-05/10 是“真实包 + 单点受控变异”，F3-08/15 的 legacy 包仍是生产 v1 packager 生成的
+fixture；F3-09 已由 [真实 legacy 包证据](2026-11-20-tsgo-f3-legacy-real.md) 覆盖（真实
+Rust/Node/Zed 产物、生产 v1 packager/安装器，333 文件 archive `b62d3112…d970ae`）。F3-16 的
+journal 由测试注入。F3-06/09 的进程级 switch 前/后中断已由 `28c5e18` 的 `f3_kill_window`
+覆盖（Linux x86_64、opt-in；U3/U5/U5-durable/U6 与 L3/L4），库级 `InstallHooks` seam 仍用于
+进程存活分支和 fixture 细节。崩溃后的前滚/切回裁决见
+[F3-06/09 切换后崩溃语义](2026-11-20-tsgo-f3-crash-semantics.md)；F3-06 的 N2 provenance
+已由 [真实 N1/N2 双构建](2026-11-20-tsgo-f3-06-real-n2.md) 补齐（`fb6047e`，N1 `0.1.0` /
+N2 `0.2.0` 独立编译打包、升级/回退/中断窗口通过），该行据此 closed。F3-09 的真实 v1 包
+不是历史发布产物，若维护者要求历史 provenance，应另开 waiver 并把该行退回 partial。
+F3-11/12/15/16 的关闭依据
+是 `50e4a21` 的真实 installer 归档形态、缓存 upgrade/rollback、Zed 变量移除与 activated
+幂等测试；F3-02 的关闭依据是 `f2952c2` 的真实 installer/native LSP ptrace exec 审计，
+Linux x86_64 以外平台仍不声明。F3-14 由 `5020ae7` 默认 `--stdio` + 真实包 + 真实 Zed
+默认路径冒烟独立关闭；上述其他测试不是其关闭依据。F3 合同 16/0/0 收口不等于迁移完成。
+本节是 2026-11-20 早先的 F3 审计快照；当时 Node 仍保留为显式 `--backend node`、P7 删除
+未开始。P7 集成状态以 §3.4 为准。
+
+## 3.4 P7 删除完成快照（2026-11-20，删除提交 `c4ddf32`，旧 tag `p7-removed`=`b6c1ced`，基线 `3e24c44`，含 `4035bb7`）
+
+本节记录 2026-11-20 owner C-lite 裁决后的台账、retarget 与**最终删除完成**状态，不替代各证据记录，
+也不把 `reviewed`/`waived`/`retired-with-decision` 当作 green。§3.2 是 2026-11-19 P6 快照；
+§3.3 是 F3 审计快照，均保留历史事实。**P7 删除已完成（`c4ddf32`）；删除后验收为 PASS-with-followup（工作树口径），ADR-0008 写 Node removed。**
+
+| 项 | 终态/当前值 | 证据与边界 |
+| --- | --- | --- |
+| Owner 裁决 | C-lite functional waiver；“不需要严格按照原来的功能写测试。功能合理即可” | [P7 范围裁决](2026-11-20-tsgo-p7-scope-decision.md)；不要求旧 TS/Node 逐条 parity |
+| 测试台账 | **109 `green` / 0 `planned` / 130 `reviewed` / 29 `waived` / 71 `retired-with-decision`**（339 总数） | [closeout ledger](2026-11-20-tsgo-p7-closeout-ledger.md)；`exact=109`、`blocked=31`、`never_green=38`；非 green 终态不计 exact |
+| F3 交付合同 | **16 closed / 0 partial / 0 blocked** | `docs/reference/tsgo-delivery-contract.md` §9.5；交付合同单独成立 |
+| native gates | **40/40**（23 engine + 3 edit + 9 stdio + 1 perf + 1 stability + 3 real_matrix） | [gate coverage](2026-11-20-tsgo-p7-native-gate-coverage.md)、[residual 复验](2026-11-20-tsgo-p7-residual-native-gates.md) 与 `/tmp/opencode/native-gates/20261120T012446Z/summary.txt`；opt-in required job，不是默认 CI 或 `mandatory_green` |
+| 真实 matrix | **22 exact / 11 blocked**（33 in-place） | [matrix 实现](2026-11-20-tsgo-native-matrix-implementation.md)、[archived source](2026-11-20-tsgo-real-matrix-archived-source.md)；顶层 4 exact / 6 blocked，ledger 26 green / 17 blocked |
+| 默认后端 | `--stdio` native；`NotInstalled` → HostOnly；损坏安装 fail closed；显式 `--backend node` 被拒绝 | `5020ae7`/`7f9116a` + P7 删除补丁 |
+| ADR-0008 | **accepted (native default; Node removed)** | 验收 = native engine + native gates + F3 + 合理行为测试；不声称旧 TS parity |
+| retarget | **11/11 native-only**：9 个 stdio + perf/stability；不标记 `old_test_removed` | [retarget 薄壳](2026-11-20-tsgo-p7-retarget-native-tests.md)；stability 后续经 scenario 证据收敛为 **4 implemented / 1 blocked**（ledger 未回填） |
+| P7-0 | 历史：冻结清单 + `p7-pre-delete` tag 已保留 | [预删除冻结](2026-11-20-tsgo-p7-predelete-freeze.md)；`deletion_allowed=false` 为历史门禁 |
+| 删除状态 | **已完成（删除提交 `c4ddf32`）**：Node 运行时、旧 TS 树、12 个 delete gate、v1 写路径已删除；11 个 retarget gate native-only | [删除面审计](2026-11-20-tsgo-p7-deletion-surface.md)、[final security audit](2026-11-20-tsgo-p7-final-security-audit.md)（P7 删除提交 `c4ddf32`） |
+| 最终验收 | [P7 最终文档](2026-11-20-tsgo-p7-final-docs.md)；**PASS-with-followup（工作树口径）**：F-02 修复已落地、2592/0/73 待 `p7-final-verification` 追加、functional P1 fixed / P2 known、stability 4/1、R-03/N-02 PARTIAL | 旧 tag `p7-removed`/`b6c1ced` 不含这些修复；第三方许可 155/155（144 本地 + 11 SPDX），**首方 LICENSE owner 决策、对外发布 BLOCKED** |
+
+P7 删除范围（已删除并已提交）：`crates/wxml-lsp/src/backend_node/**`（8 文件/102 单元测试）、
+`backends/typescript/**`（99 tracked + 34 dist；12 个 delete gate）、15 个 v1 写路径和
+5 个 legacy Node env；23 个旧 gate 中 12 个 delete、11 个 retarget（全部已完成 native-only）。
+删除由 `c4ddf32` 记录；旧 tag `p7-removed` 指向 `b6c1ced`（只改 final-docs 4 行，不含删除后修复），不作为最终验收复现点。工作树无 live `backends/typescript/test|samples`
+或 v1 写路径，2 个 silent return 与可选 `tsc` 分支已随 Node 路径删除。删除后独立复验见
+[post-delete revalidation](2026-11-20-tsgo-p7-post-delete-revalidation.md)、
+[exec 审计](2026-11-20-tsgo-p7-final-exec-audit.md) 与 [安全审计](2026-11-20-tsgo-p7-final-security-audit.md)。
+
+显式保留：业务 `.ts/.js/.d.ts` 输入与 JSDoc、WXS/WXML 语义、tree-sitter grammar、
+统一 fixtures、`assets.lock.json`/typings 资产、schema v1 只读识别
+（`list`/`current`/`verify`/`env`、`verify_installed`、`read_legacy_manifest`、
+`build_native_package`）、历史证据。**去 Node 不等于删除 TypeScript 语言支持。**
+
+不声称：不声称旧 TS 逐条 parity、不声称 `reviewed`/`waived`/`retired` 是 green、
+不声称 G5/G6/G7 已完成。平台证据仍只有 Linux x86_64；F3-02 的 exec 审计也只在
+Linux x86_64 + ptrace 上成立。
+
 ## 4. 维护规则
 
 1. 每条记录至少包含：日期、对象与版本、环境、方法、结果、限制、对项目决策的影响、数据位置。
@@ -86,11 +283,13 @@ docs/evidence/
 ├── 2026-11-15-official-template-analyzer-audit.md
 ├── 2026-11-15-native-typescript-service.md
 ├── type-bridge-c1.md
-├── p7-integration.md
+├── p7-integration.md              # Node 时代 P7 集成证据（历史，已被 P7 删除取代）
 ├── p8-zed.md
 ├── full-feature-w2.md
 ├── full-feature-w3.md
 ├── full-feature-final.md
+├── 2026-11-17-tsgo-*.md          # 迁移 workspace/测试基线、原生 API、交付 spike
+├── 2026-11-18-tsgo-*.md          # P5/P6/P7 计划、F3 资产/clean-env、hover/symbols/typings
 └── data/
     ├── typescript-language-service/
     ├── existing-wxml-lsp-audit/

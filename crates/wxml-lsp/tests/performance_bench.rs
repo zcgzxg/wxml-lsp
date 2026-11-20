@@ -1,32 +1,48 @@
 #![cfg(target_os = "linux")]
 #![allow(
-    clippy::expect_used,
-    clippy::unwrap_used,
-    clippy::too_many_lines,
-    clippy::needless_pass_by_value,
+    dead_code,
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
-    clippy::cast_sign_loss
+    clippy::cast_sign_loss,
+    clippy::expect_used,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pub_crate,
+    clippy::too_many_lines,
+    clippy::unwrap_used
 )]
 
-//! Repeatable Linux performance benchmark for the Q2 scheduling work.
+//! P7 native-only shell for `G-P5-PERF-01`.
 //!
-//! The benchmark is `#[ignore]`d so ordinary `cargo test` runs stay fast. It is
-//! an explicit gate:
+//! The frozen gate coordinate is kept, but the old Node process boundary is
+//! replaced by the real `wxml-lsp --stdio --backend native` package from
+//! `native_parity/native_package.rs`. The shell has two segments:
+//!
+//! 1. **real engine**: cold start, 10,000 independent static completions,
+//!    semantic completion, hover and stop-typing diagnostics through the
+//!    pinned 7.1.0-beta engine, plus server-tree RSS and one-engine accounting;
+//! 2. **scheduler**: an in-process server over a 400 ms test `SlowBackend`
+//!    reproduces the old `SlowTransport` cancel/queue/occupancy scenarios. It
+//!    never starts Node or the engine and does not claim native engine cancel
+//!    latency.
+//!
+//! The deep native oracle stays in
+//! `native_parity/native_engine_real.rs::native_q2_performance_benchmark`; this
+//! shell does not duplicate it.
 //!
 //! ```bash
-//! (cd backends/typescript && npm ci && npm run build)
-//! WXML_TEST_NODE=1 WXML_PERF_LABEL=after WXML_PERF_REQUIRE_CLEAN=1 \
-//! WXML_PERF_REQUIRE_BASELINE=1 WXML_PERF_BASELINE=/tmp/opencode/q2-bench/w3-baseline-r2.json \
-//!   CARGO_TARGET_DIR=/home/zxg/.cache/wxml-targets/full-performance-local \
-//!   cargo test -p wxml-lsp --test performance_bench -- --ignored --nocapture
+//! WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 \
+//! TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc \
+//! TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine \
+//! TSGO_TYPINGS_ROOT=/tmp/opencode/tsgo-native-pkg/typings/miniprogram-api-typings \
+//! cargo test -p wxml-lsp --release --test performance_bench -- \
+//!   --ignored --test-threads=1
 //! ```
 //!
-//! Raw samples are written as JSON to `WXML_PERF_OUT` (default
-//! `/tmp/opencode/q2-bench/<label>.json`). The output is evidence, never a
-//! committed fixture. Absolute targets, p95 regression and parent RSS are
-//! asserted by the test; a baseline JSON is required for the W4 gate. Set
-//! `WXML_PERF_BASELINE_ONLY=1` only when producing that baseline from W3.
+//! A debug run is rejected: the absolute p95 budgets are release baselines.
+//! Raw samples are written to `WXML_PERF_OUT` (default
+//! `/tmp/opencode/q2-bench/<label>.json`). `WXML_PERF_BASELINE` is an optional
+//! pre-recorded JSON regression baseline; `WXML_PERF_REQUIRE_BASELINE=1`
+//! makes it mandatory. Generated evidence is never committed.
 
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -38,16 +54,70 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use wxml_lsp::backend_node::{NodeBackend, NodeBackendConfig, NodeTransport, NodeTransportError};
-use wxml_lsp::project_host::ProjectState;
+use wxml_backend_tsgo::config::{AST_PROTOCOL_VERSION, ENGINE_VERSION, PinnedEngine};
+use wxml_lsp::project_host::{ProjectHost, ProjectState};
 use wxml_lsp::run_with_host;
+use wxml_types::{
+    Backend, BackendCapabilities, BackendEpoch, BackendError, BackendId, CapabilityStatus,
+    CompletionItem, CompletionItemKind, CompletionRequest, CompletionResult, DiagnosticsRequest,
+    DiagnosticsResult, HoverRequest, HoverResult, InsertTextFormat, MarkupKind, SourceRange,
+    TypeQuality,
+};
 
-mod common;
+#[path = "native_parity/native_gate_env.rs"]
+mod native_gate_env;
+#[path = "native_parity/native_lsp.rs"]
+mod native_lsp;
+#[path = "native_parity/native_package.rs"]
+mod native_package;
 
-use common::TempProject;
+#[cfg(target_os = "linux")]
+#[path = "native_parity/native_measure.rs"]
+mod native_measure;
 
-const WXML: &str = "pages/index/index.wxml";
-const SCRIPT: &str = "pages/index/index.ts";
+/// The harness modules only need the workspace root from this crate's ledger.
+mod ledger {
+    use std::path::PathBuf;
+
+    /// Returns the nearest ancestor containing the workspace `Cargo.toml`.
+    pub(crate) fn workspace_root() -> PathBuf {
+        let start = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for ancestor in start.ancestors() {
+            let manifest = ancestor.join("Cargo.toml");
+            let Ok(text) = std::fs::read_to_string(&manifest) else {
+                continue;
+            };
+            if text.lines().any(|line| line.trim() == "[workspace]") {
+                return ancestor.to_path_buf();
+            }
+        }
+        panic!("workspace root not found above {}", start.display());
+    }
+}
+
+use native_gate_env::PINNED_ENGINE_SIZE;
+use native_lsp::{Session as NativeSession, hover_is_empty};
+use native_measure::{
+    Stats, check_p95, elapsed_ms, engine_children, growth_percent, rss_kib, sample_tree, threads,
+    wait_gone,
+};
+use native_package::NativeGate;
+
+const INDEX_WXML: &str = "pages/index/index.wxml";
+const COMPLETE_WXML: &str = "pages/complete/complete.wxml";
+const PAGE_TEXT: &str = r#"<view class="card">{{ user.name }} {{ title }}</view>"#;
+const COMPLETE: &str = "<view>{{ user. }}</view>";
+const SCRIPT: &str = "Page({ data: { user: { name: 'Ada', age: 36 }, title: 'Hello' } });";
+const STATIC_SITE: &str = "<view cla";
+const HOVER_P95_MS: f64 = 200.0;
+const COMPLETION_P95_MS: f64 = 200.0;
+const DIAGNOSTICS_P95_MS: f64 = 500.0;
+const STATIC_COMPLETION_P95_MS: f64 = 50.0;
+const CANCEL_P95_MS: f64 = 100.0;
+const RSS_GROWTH_PERCENT_MAX: f64 = 15.0;
+const OCCUPANCY_P50_FLOOR_MS: f64 = 300.0;
+const SLOW_BACKEND_DELAY: Duration = Duration::from_millis(400);
+const CALLS_PER_OUTER_ITERATION: usize = 50;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 
 fn sample_count() -> usize {
@@ -56,6 +126,14 @@ fn sample_count() -> usize {
         .and_then(|value| value.parse().ok())
         .filter(|value: &usize| *value >= 10)
         .unwrap_or(200)
+}
+
+fn slow_call_count() -> usize {
+    std::env::var("WXML_PERF_TS_SAMPLES")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .filter(|value: &usize| *value >= 5)
+        .unwrap_or(20)
 }
 
 fn label() -> String {
@@ -77,37 +155,450 @@ fn repo_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn backend_paths() -> (PathBuf, PathBuf) {
-    let repo = repo_root();
-    let server = std::env::var_os("WXML_TEST_BACKEND_SERVER").map_or_else(
-        || repo.join("backends/typescript/dist/server.js"),
-        PathBuf::from,
-    );
-    let backend_dir = std::env::var_os("WXML_TEST_BACKEND_DIR")
-        .map_or_else(|| repo.join("backends/typescript"), PathBuf::from);
-    assert!(
-        server.is_file(),
-        "build the Node backend first: {}",
-        server.display()
-    );
-    (server, backend_dir)
+fn round(value: f64) -> f64 {
+    (value * 1000.0).round() / 1000.0
 }
 
-fn project_fixture() -> TempProject {
-    let project = TempProject::new("wxml-q2-bench");
-    project.write(
+fn millis(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1000.0
+}
+
+fn write_fixture(gate: &NativeGate) {
+    gate.write(
         "app.json",
-        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+        r#"{"pages":["pages/index/index","pages/complete/complete"],"usingComponents":{}}"#,
     );
-    project.write(WXML, "<view class=\"card\">{{ user.name }}</view>");
-    project.write(
-        SCRIPT,
-        "Page({ data: { user: { name: 'Ada', age: 36 } } });",
-    );
-    project.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
-    project
+    gate.write(INDEX_WXML, PAGE_TEXT);
+    gate.write("pages/index/index.ts", SCRIPT);
+    gate.write(COMPLETE_WXML, COMPLETE);
+    gate.write("pages/complete/complete.ts", SCRIPT);
+    gate.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
 }
 
+fn command_line(program: &str, args: &[&str]) -> String {
+    std::process::Command::new(program)
+        .args(args)
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map_or_else(|| "unknown".to_owned(), |value| value.trim().to_owned())
+}
+
+fn git_output(args: &[&str]) -> String {
+    std::process::Command::new("git")
+        .args(args)
+        .current_dir(repo_root())
+        .output()
+        .ok()
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .map_or_else(|| "unknown".to_owned(), |value| value.trim().to_owned())
+}
+
+fn rustc_version() -> String {
+    command_line("rustc", &["-vV"])
+        .lines()
+        .next()
+        .unwrap_or("unknown")
+        .to_owned()
+}
+
+fn cpu_model() -> String {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("model name\t: "))
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn cpu_count() -> usize {
+    thread::available_parallelism().map_or(0, std::num::NonZero::get)
+}
+
+fn mem_total_kib() -> u64 {
+    std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("MemTotal:"))
+                .and_then(|value| value.split_whitespace().next())
+                .and_then(|value| value.parse().ok())
+        })
+        .unwrap_or(0)
+}
+
+fn os_pretty_name() -> String {
+    std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("PRETTY_NAME="))
+                .map(|value| value.trim_matches('"').to_owned())
+        })
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn kernel_release() -> String {
+    command_line("uname", &["-r"])
+}
+
+fn loadavg() -> String {
+    std::fs::read_to_string("/proc/loadavg")
+        .map_or_else(|_| "unknown".to_owned(), |text| text.trim().to_owned())
+}
+
+fn parent_rss_kib() -> u64 {
+    rss_kib(std::process::id()).unwrap_or(0)
+}
+
+fn parent_threads() -> usize {
+    threads(std::process::id()).unwrap_or(0)
+}
+
+fn engine_identity() -> Value {
+    let pin = PinnedEngine::pinned();
+    json!({
+        "version": ENGINE_VERSION,
+        "git_head": pin.git_head(),
+        "ast_protocol": AST_PROTOCOL_VERSION,
+        "executable_sha256": pin.executable_sha256(),
+        "executable_size_bytes": PINNED_ENGINE_SIZE,
+    })
+}
+
+fn require_hover(
+    session: &mut NativeSession,
+    uri: &str,
+    position: (u32, u32),
+    context: &str,
+) -> f64 {
+    let started = Instant::now();
+    let response = session.hover(uri, position);
+    let elapsed = elapsed_ms(started);
+    assert!(
+        response.get("result").is_some(),
+        "{context} failed: {}",
+        session.describe(&response)
+    );
+    assert!(
+        !hover_is_empty(&response),
+        "{context} returned an empty hover: {}",
+        session.describe(&response)
+    );
+    elapsed
+}
+
+fn require_completion(
+    session: &mut NativeSession,
+    uri: &str,
+    position: (u32, u32),
+    context: &str,
+) -> f64 {
+    let started = Instant::now();
+    let response = session.completion(uri, position);
+    let elapsed = elapsed_ms(started);
+    let items = response["result"]["items"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{context} returned no completion list: {response}"));
+    assert!(
+        !items.is_empty(),
+        "{context} returned an empty completion list: {response}"
+    );
+    elapsed
+}
+
+fn real_engine_segment(gate: &NativeGate, failures: &mut Vec<String>) -> Value {
+    let index_uri = gate.uri(INDEX_WXML);
+    let complete_uri = gate.uri(COMPLETE_WXML);
+    let name_position = native_lsp::lsp_position(PAGE_TEXT, "name");
+    let member = native_lsp::lsp_position(COMPLETE, "user.");
+    let member_position = (member.0, member.1 + 5);
+    // `<view cla` is answered without the engine (static attribute names). One
+    // request is far below the 10% regression resolution, so 50 independent
+    // calls are timed per outer iteration while every call remains a sample.
+    let static_character = u32::try_from(STATIC_SITE.chars().count()).expect("characters");
+
+    let started = Instant::now();
+    let mut session = NativeSession::start(gate);
+    let initialize_ms = elapsed_ms(started);
+
+    let open_started = Instant::now();
+    let diagnostics = session.open_wxml(&index_uri, PAGE_TEXT, 1);
+    let first_page_ms = elapsed_ms(open_started);
+    assert_eq!(
+        diagnostics,
+        json!([]),
+        "the performance page must start clean: {diagnostics}"
+    );
+    let cold_open_total_ms = elapsed_ms(started);
+
+    let first_hover_started = Instant::now();
+    require_hover(&mut session, &index_uri, name_position, "cold first hover");
+    let first_engine_hover_ms = elapsed_ms(first_hover_started);
+
+    session.open_wxml(&complete_uri, COMPLETE, 1);
+
+    let mut version = 1_u64;
+    for iteration in 0..5 {
+        require_hover(&mut session, &index_uri, name_position, "hover warm-up");
+        require_completion(
+            &mut session,
+            &complete_uri,
+            member_position,
+            "completion warm-up",
+        );
+        version += 1;
+        let text = format!("{PAGE_TEXT}\n<!-- warm {iteration} -->\n");
+        let diagnostics = session.change_wxml(&index_uri, &text, version);
+        assert_eq!(
+            diagnostics,
+            json!([]),
+            "diagnostics warm-up must stay clean: {diagnostics}"
+        );
+    }
+
+    let parent_rss_start = parent_rss_kib();
+    let baseline = sample_tree(session.pid());
+    assert!(
+        baseline.rss_kib > 0,
+        "the native server tree must expose a non-zero RSS baseline"
+    );
+
+    let mut static_samples = Vec::with_capacity(sample_count() * CALLS_PER_OUTER_ITERATION);
+    for _ in 0..sample_count() {
+        for _ in 0..CALLS_PER_OUTER_ITERATION {
+            static_samples.push(require_completion(
+                &mut session,
+                &index_uri,
+                (0, static_character),
+                "static completion",
+            ));
+        }
+    }
+
+    let mut hover_samples = Vec::with_capacity(sample_count());
+    for _ in 0..sample_count() {
+        hover_samples.push(require_hover(
+            &mut session,
+            &index_uri,
+            name_position,
+            "hot hover",
+        ));
+    }
+
+    let mut completion_samples = Vec::with_capacity(sample_count());
+    for _ in 0..sample_count() {
+        completion_samples.push(require_completion(
+            &mut session,
+            &complete_uri,
+            member_position,
+            "hot completion",
+        ));
+    }
+
+    let mut diagnostics_samples = Vec::with_capacity(sample_count());
+    for sample in 0..sample_count() {
+        version += 1;
+        let text = format!("{PAGE_TEXT}\n<!-- edit {sample} -->\n");
+        let started = Instant::now();
+        let diagnostics = session.change_wxml(&index_uri, &text, version);
+        diagnostics_samples.push(elapsed_ms(started));
+        assert_eq!(
+            diagnostics,
+            json!([]),
+            "a clean edit must publish no diagnostics: {diagnostics}"
+        );
+    }
+
+    let final_sample = sample_tree(session.pid());
+    let parent_rss_end = parent_rss_kib();
+    let engines = engine_children(session.pid(), gate.package_root());
+    assert_eq!(
+        engines.len(),
+        1,
+        "the performance run must keep exactly one engine child: {engines:?}"
+    );
+    let descendants = session.descendant_pids();
+    assert!(
+        descendants.len() <= 1,
+        "the performance run leaked child processes: {descendants:?}"
+    );
+    session.assert_no_node_exec();
+    let pid = session.pid();
+    let evidence = session.shutdown_with_evidence();
+    assert!(
+        !evidence.stderr.contains("detaching it"),
+        "server detached a worker on shutdown; stderr:\n{}",
+        evidence.stderr
+    );
+    wait_gone(&[pid], "server after perf shutdown");
+    wait_gone(&descendants, "engine after perf shutdown");
+    gate.assert_no_native_sandbox();
+    gate.tripwire().assert_absent();
+
+    let static_stats = Stats::from_samples(&static_samples);
+    let hover = Stats::from_samples(&hover_samples);
+    let completion = Stats::from_samples(&completion_samples);
+    let diagnostics = Stats::from_samples(&diagnostics_samples);
+    check_p95(
+        failures,
+        "static_completion",
+        &static_stats,
+        STATIC_COMPLETION_P95_MS,
+    );
+    check_p95(failures, "semantic_hover", &hover, HOVER_P95_MS);
+    check_p95(
+        failures,
+        "semantic_completion",
+        &completion,
+        COMPLETION_P95_MS,
+    );
+    check_p95(
+        failures,
+        "diagnostics_stop",
+        &diagnostics,
+        DIAGNOSTICS_P95_MS,
+    );
+
+    let rss_growth = growth_percent(baseline.rss_kib, final_sample.rss_kib);
+    println!(
+        "server tree RSS: baseline {} KiB, final {} KiB, growth {rss_growth:.2}%",
+        baseline.rss_kib, final_sample.rss_kib
+    );
+    if !rss_growth.is_finite() {
+        failures.push("server tree RSS baseline is zero".to_owned());
+    } else if rss_growth > RSS_GROWTH_PERCENT_MAX {
+        failures.push(format!(
+            "server tree RSS grew {rss_growth:.2}% (cap {RSS_GROWTH_PERCENT_MAX:.0}%)"
+        ));
+    }
+
+    json!({
+        "transport": "--stdio --backend native",
+        "cold_start": {
+            "spawn_initialize_ms": round(initialize_ms),
+            "open_and_first_diagnostics_ms": round(first_page_ms),
+            "first_page_total_ms": round(cold_open_total_ms),
+            "first_engine_hover_ms": round(first_engine_hover_ms),
+            "budget": "recorded only; the frozen gate defines no cold-start p95",
+        },
+        "metrics": {
+            "static_completion": static_stats.to_json(),
+            "semantic_completion": completion.to_json(),
+            "semantic_hover": hover.to_json(),
+            "diagnostics_stop": diagnostics.to_json(),
+        },
+        "samples": {
+            "static_completion_calls": static_samples.len(),
+            "static_calls_per_outer_iteration": CALLS_PER_OUTER_ITERATION,
+            "semantic_calls_per_metric": sample_count(),
+            "warmup_calls_per_metric": 5,
+            "diagnostics_debounce_ms": 0,
+            "diagnostics_debounce_note": "the native harness pins 0 ms, which is stricter than the old 120 ms gate",
+        },
+        "resources": {
+            "parent_rss_kib_start": parent_rss_start,
+            "parent_rss_kib_end": parent_rss_end,
+            "server_tree_rss_kib_baseline": baseline.rss_kib,
+            "server_tree_rss_kib_final": final_sample.rss_kib,
+            "server_tree_rss_growth_percent": round(rss_growth),
+            "server_tree_cpu_ticks_delta": final_sample.cpu_ticks.saturating_sub(baseline.cpu_ticks),
+            "engine_processes": engines.len(),
+        },
+        "shutdown": {
+            "server_pid": evidence.pid,
+            "elapsed_ms": round(millis(evidence.elapsed)),
+            "detached_worker": false,
+            "sandbox_left": false,
+            "processes_left": 0,
+        },
+    })
+}
+
+/// A backend that sleeps on every completion, like the retired 400 ms
+/// `SlowTransport`. It is an in-process test double: it never starts Node or
+/// the engine, and it is used only for scheduler cancellation/queue timing.
+struct SlowBackend {
+    delay: Duration,
+    completions: AtomicU64,
+    hovers: AtomicU64,
+}
+
+impl SlowBackend {
+    const fn new(delay: Duration) -> Self {
+        Self {
+            delay,
+            completions: AtomicU64::new(0),
+            hovers: AtomicU64::new(0),
+        }
+    }
+
+    fn completion_calls(&self) -> u64 {
+        self.completions.load(Ordering::SeqCst)
+    }
+}
+
+impl Backend for SlowBackend {
+    fn epoch(&self) -> BackendEpoch {
+        BackendEpoch::new(BackendId::new("p7-perf-slow"), 1)
+    }
+
+    fn hover(&self, _request: HoverRequest) -> Result<HoverResult, BackendError> {
+        self.hovers.fetch_add(1, Ordering::SeqCst);
+        thread::sleep(self.delay);
+        Ok(HoverResult {
+            contents: "string".to_owned(),
+            markup: MarkupKind::Markdown,
+            range: None,
+            status: CapabilityStatus::Supported,
+            quality: TypeQuality::Known,
+        })
+    }
+
+    fn diagnostics(&self, _request: DiagnosticsRequest) -> Result<DiagnosticsResult, BackendError> {
+        Ok(DiagnosticsResult {
+            diagnostics: Vec::new(),
+            status: CapabilityStatus::Supported,
+        })
+    }
+
+    fn completion(&self, request: CompletionRequest) -> Result<CompletionResult, BackendError> {
+        self.completions.fetch_add(1, Ordering::SeqCst);
+        thread::sleep(self.delay);
+        let end = request.offset;
+        let start = end.saturating_sub(1);
+        Ok(CompletionResult {
+            items: vec![CompletionItem {
+                label: "name".to_owned(),
+                kind: CompletionItemKind::Property,
+                detail: Some("string".to_owned()),
+                documentation: None,
+                insert_text: "name".to_owned(),
+                insert_text_format: InsertTextFormat::PlainText,
+                replace: SourceRange::from_bounds(start, end).expect("valid slow completion range"),
+                sort_text: None,
+                filter_text: None,
+            }],
+            status: CapabilityStatus::Supported,
+            truncated: false,
+        })
+    }
+
+    fn capabilities(&self) -> BackendCapabilities {
+        BackendCapabilities {
+            hover: CapabilityStatus::Supported,
+            diagnostics: CapabilityStatus::Supported,
+            definition: CapabilityStatus::Unsupported {
+                reason: "definition is not implemented".to_owned(),
+            },
+            completion: CapabilityStatus::Supported,
+        }
+    }
+}
+
+/// Minimal JSON-RPC client for the in-process scheduler segment.
 struct Client {
     writer: UnixStream,
     reader: BufReader<UnixStream>,
@@ -186,17 +677,7 @@ impl Client {
         })
     }
 
-    fn wait_diagnostics(&mut self, uri: &str, min_version: u64) -> Value {
-        self.next_matching(|message| {
-            message.get("method").and_then(Value::as_str) == Some("textDocument/publishDiagnostics")
-                && message["params"]["uri"].as_str() == Some(uri)
-                && message["params"]["version"]
-                    .as_u64()
-                    .is_some_and(|version| version >= min_version)
-        })
-    }
-
-    fn completion(&mut self, uri: &str, line: u32, character: u32) -> Duration {
+    fn completion(&mut self, uri: &str, line: u32, character: u32, case: &str) -> Duration {
         let started = Instant::now();
         let id = self.request(
             "textDocument/completion",
@@ -206,33 +687,20 @@ impl Client {
             }),
         );
         let response = self.response(id);
+        let elapsed = started.elapsed();
         assert!(
             response.get("result").is_some(),
-            "completion failed: {response}"
+            "{case} completion failed: {response}"
         );
-        started.elapsed()
+        elapsed
     }
 
-    fn hover(&mut self, uri: &str, line: u32, character: u32) -> Duration {
-        let started = Instant::now();
-        let id = self.request(
-            "textDocument/hover",
-            json!({
-                "textDocument": {"uri": uri},
-                "position": {"line": line, "character": character},
-            }),
-        );
-        let response = self.response(id);
-        assert!(response.get("result").is_some(), "hover failed: {response}");
-        started.elapsed()
-    }
-
-    fn initialize(&mut self, project: &TempProject) {
+    fn initialize(&mut self, root_uri: &str) {
         let id = self.request(
             "initialize",
             json!({
                 "processId": null,
-                "rootUri": project.root_uri(),
+                "rootUri": root_uri,
                 "capabilities": {},
                 "initializationOptions": {"wxml": {"diagnostics": {"debounceMs": 120}}},
             }),
@@ -264,32 +732,13 @@ impl Client {
     }
 }
 
-struct Session {
+struct SlowSession {
     client: Client,
+    backend: Arc<SlowBackend>,
     handle: thread::JoinHandle<Result<wxml_lsp::ServerOutcome, wxml_lsp::ServerError>>,
 }
 
-fn start_real_node(project: &TempProject) -> Session {
-    let (server, backend_dir) = backend_paths();
-    let (server_stream, client_stream) = UnixStream::pair().expect("socket pair");
-    let server_read = server_stream.try_clone().expect("clone");
-    let host = Arc::new(ProjectState::new());
-    let backend = Arc::new(NodeBackend::new(
-        NodeBackendConfig {
-            server: Some(server),
-            backend_dir: Some(backend_dir),
-            timeout: Duration::from_secs(30),
-            ..NodeBackendConfig::default()
-        },
-        host.clone(),
-    ));
-    let handle = thread::spawn(move || run_with_host(server_read, server_stream, backend, host));
-    let mut client = Client::new(client_stream);
-    client.initialize(project);
-    Session { client, handle }
-}
-
-impl Session {
+impl SlowSession {
     fn finish(self) {
         self.client.finish();
         let outcome = self.handle.join().expect("server thread").expect("outcome");
@@ -297,375 +746,41 @@ impl Session {
     }
 }
 
-fn percentile(samples: &mut [f64], fraction: f64) -> f64 {
-    if samples.is_empty() {
-        return 0.0;
-    }
-    samples.sort_by(|left, right| left.partial_cmp(right).unwrap_or(std::cmp::Ordering::Equal));
-    let index = (fraction * samples.len() as f64).ceil() as usize;
-    let index = index.clamp(1, samples.len()) - 1;
-    samples[index]
-}
-
-fn summary(samples: &mut [f64]) -> Value {
-    let p50 = percentile(samples, 0.50);
-    let p95 = percentile(samples, 0.95);
-    let p99 = percentile(samples, 0.99);
-    let mean = samples.iter().sum::<f64>() / samples.len().max(1) as f64;
-    json!({
-        "count": samples.len(),
-        "mean_ms": round(mean),
-        "p50_ms": round(p50),
-        "p95_ms": round(p95),
-        "p99_ms": round(p99),
-        "max_ms": round(samples.iter().copied().fold(0.0, f64::max)),
-    })
-}
-
-fn round(value: f64) -> f64 {
-    (value * 1000.0).round() / 1000.0
-}
-
-fn millis(duration: Duration) -> f64 {
-    duration.as_secs_f64() * 1000.0
-}
-
-fn rss_kib() -> u64 {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("VmRSS:"))
-        .and_then(|value| value.split_whitespace().next())
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0)
-}
-
-fn threads() -> usize {
-    std::fs::read_dir("/proc/self/task").map_or(0, |entries| entries.filter_map(Result::ok).count())
-}
-
-fn node_version() -> String {
-    std::process::Command::new("node")
-        .arg("--version")
-        .output()
-        .ok()
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map_or_else(|| "unavailable".to_owned(), |value| value.trim().to_owned())
-}
-
-fn git_head() -> String {
-    std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(repo_root())
-        .output()
-        .ok()
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map_or_else(|| "unknown".to_owned(), |value| value.trim().to_owned())
-}
-
-fn git_dirty() -> String {
-    std::process::Command::new("git")
-        .args(["status", "--porcelain"])
-        .current_dir(repo_root())
-        .output()
-        .ok()
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map_or_else(|| "unknown".to_owned(), |value| value.trim().to_owned())
-}
-
-fn command_line(program: &str, args: &[&str]) -> String {
-    std::process::Command::new(program)
-        .args(args)
-        .output()
-        .ok()
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map_or_else(|| "unknown".to_owned(), |value| value.trim().to_owned())
-}
-
-fn rustc_version() -> String {
-    command_line("rustc", &["-vV"])
-        .lines()
-        .next()
-        .unwrap_or("unknown")
-        .to_owned()
-}
-
-fn cpu_model() -> String {
-    std::fs::read_to_string("/proc/cpuinfo")
-        .ok()
-        .and_then(|text| {
-            text.lines()
-                .find_map(|line| line.strip_prefix("model name\t: "))
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| "unknown".to_owned())
-}
-
-fn cpu_count() -> usize {
-    thread::available_parallelism().map_or(0, std::num::NonZero::get)
-}
-
-fn mem_total_kib() -> u64 {
-    std::fs::read_to_string("/proc/meminfo")
-        .ok()
-        .and_then(|text| {
-            text.lines()
-                .find_map(|line| line.strip_prefix("MemTotal:"))
-                .and_then(|value| value.split_whitespace().next())
-                .and_then(|value| value.parse().ok())
-        })
-        .unwrap_or(0)
-}
-
-fn os_pretty_name() -> String {
-    std::fs::read_to_string("/etc/os-release")
-        .ok()
-        .and_then(|text| {
-            text.lines()
-                .find_map(|line| line.strip_prefix("PRETTY_NAME="))
-                .map(|value| value.trim_matches('"').to_owned())
-        })
-        .unwrap_or_else(|| "unknown".to_owned())
-}
-
-fn kernel_release() -> String {
-    command_line("uname", &["-r"])
-}
-
-fn loadavg() -> String {
-    std::fs::read_to_string("/proc/loadavg")
-        .map_or_else(|_| "unknown".to_owned(), |text| text.trim().to_owned())
-}
-
-fn static_completion(project: &TempProject) -> Value {
-    const CALLS_PER_OUTER_ITERATION: usize = 50;
-    let mut session = start_real_node(project);
-    let uri = project.uri(WXML);
-    let text = "<view class=\"card\">{{ user.name }}</view>";
-    session.client.open(&uri, text, 1);
-    session.client.wait_diagnostics(&uri, 1);
-    // `<view cla` is an attribute-name site answered without Node. A single
-    // request is ~0.2 ms, below the resolution needed for a 10% gate. Each
-    // outer iteration issues 50 independent calls and every individual call
-    // time is summarized, so the reported p95 is per independent call.
-    let character = u32::try_from("<view cla".chars().count()).expect("characters");
-    for _ in 0..20 {
-        session.client.completion(&uri, 0, character);
-    }
-    let mut samples = Vec::with_capacity(sample_count().saturating_mul(CALLS_PER_OUTER_ITERATION));
-    for _ in 0..sample_count() {
-        for _ in 0..CALLS_PER_OUTER_ITERATION {
-            samples.push(millis(session.client.completion(&uri, 0, character)));
-        }
-    }
-    session.finish();
-    let mut summary = summary(&mut samples);
-    if let Some(object) = summary.as_object_mut() {
-        object.insert(
-            "independent_calls_per_outer_iteration".to_owned(),
-            json!(CALLS_PER_OUTER_ITERATION),
-        );
-    }
-    summary
-}
-
-fn semantic_completion(project: &TempProject) -> (Value, Value) {
-    let mut session = start_real_node(project);
-    let uri = project.uri(WXML);
-    // Distinct partial member prefixes exercise the path a user typing
-    // `{{ user.na`, `{{ user.nam`, ... takes. The document is not edited, so
-    // this isolates Node project reuse from LSP document/debounce overhead.
-    let text = (0..32)
-        .map(|index| format!("<view>{{{{ user.na{index} }}}}</view>"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    session.client.open(&uri, &text, 1);
-    session.client.wait_diagnostics(&uri, 1);
-    let positions: Vec<(u32, u32)> = text
-        .lines()
-        .enumerate()
-        .map(|(line, value)| {
-            let character =
-                u32::try_from(value.find("user.").expect("member") + "user.".len()).expect("chars");
-            (u32::try_from(line).expect("line"), character)
-        })
-        .collect();
-    for (line, character) in positions.iter().take(8) {
-        session.client.completion(&uri, *line, *character);
-    }
-    let mut samples = Vec::with_capacity(sample_count());
-    for index in 0..sample_count() {
-        let (line, character) = positions[index % positions.len()];
-        samples.push(millis(session.client.completion(&uri, line, character)));
-    }
-    let mut hovers = Vec::with_capacity(sample_count());
-    for index in 0..sample_count() {
-        let (line, character) = positions[index % positions.len()];
-        hovers.push(millis(session.client.hover(&uri, line, character)));
-    }
-    session.finish();
-    (summary(&mut samples), summary(&mut hovers))
-}
-
-fn diagnostics_stop(project: &TempProject) -> Value {
-    let mut session = start_real_node(project);
-    let uri = project.uri(WXML);
-    session
-        .client
-        .open(&uri, "<view class=\"card\">{{ user.name }}</view>", 1);
-    session.client.wait_diagnostics(&uri, 1);
-    let mut version = 2_u64;
-    for _ in 0..10 {
-        let text =
-            format!("<view class=\"card\">{{{{ user.name }}}}</view>\n<!-- warm {version} -->");
-        session.client.notify(
-            "textDocument/didChange",
-            json!({
-                "textDocument": {"uri": uri, "version": version},
-                "contentChanges": [{"text": text}],
-            }),
-        );
-        session.client.wait_diagnostics(&uri, version);
-        version += 1;
-    }
-    let mut samples = Vec::with_capacity(sample_count());
-    for _ in 0..sample_count() {
-        let text =
-            format!("<view class=\"card\">{{{{ user.name }}}}</view>\n<!-- edit {version} -->");
-        let started = Instant::now();
-        session.client.notify(
-            "textDocument/didChange",
-            json!({
-                "textDocument": {"uri": uri, "version": version},
-                "contentChanges": [{"text": text}],
-            }),
-        );
-        session.client.wait_diagnostics(&uri, version);
-        samples.push(millis(started.elapsed()));
-        version += 1;
-    }
-    session.finish();
-    summary(&mut samples)
-}
-
-/// A transport that blocks every analyze/symbol request for a fixed delay.
-struct SlowTransport {
-    delay: Duration,
-    requests: AtomicU64,
-}
-
-impl NodeTransport for SlowTransport {
-    fn request(&self, line: &str, _timeout: Duration) -> Result<String, NodeTransportError> {
-        self.requests.fetch_add(1, Ordering::SeqCst);
-        thread::sleep(self.delay);
-        Ok(slow_response(line))
-    }
-
-    fn shutdown(&self) {}
-}
-
-fn slow_response(line: &str) -> String {
-    let request: Value = serde_json::from_str(line).expect("request");
-    let id = &request["id"];
-    let params = &request["params"];
-    let request_id = params["requestId"].as_str().unwrap_or("r");
-    let view_revision = params["analysisStamp"]["viewRevision"]
-        .as_u64()
-        .unwrap_or(1);
-    let project_revision = params["analysisStamp"]["projectRevision"]
-        .as_u64()
-        .unwrap_or(1);
-    let script_file = params["scriptFileId"].as_str().unwrap_or("s");
-    let fragments = params["fragments"]
-        .as_array()
-        .map_or_else(Vec::new, |fragments| {
-            fragments
-                .iter()
-                .map(|fragment| {
-                    json!({
-                        "fragmentId": fragment["fragmentId"],
-                        "hover": {
-                            "typeText": "string",
-                            "typeOnly": "string",
-                            "quality": "known",
-                            "documentation": "synthetic",
-                            "documentationSource": "quickinfo"
-                        },
-                        "diagnostics": [],
-                        "definition": {
-                            "kind": "script",
-                            "fileId": script_file,
-                            "range": {"start": 0, "end": 4}
-                        }
-                    })
-                })
-                .collect()
-        });
-    serde_json::to_string(&json!({
-        "jsonrpc": "2.0",
-        "id": id,
-        "result": {
-            "protocolVersion": 2,
-            "requestId": request_id,
-            "jsCheckApplied": "pragma",
-            "registration": {"kind": "page", "count": 1, "topLevel": true},
-            "states": {
-                "hover": {"status": "supported"},
-                "diagnostics": {"status": "supported"},
-                "definition": {"status": "supported"}
-            },
-            "insertions": [{"viewRevision": view_revision, "backendFileVersion": 1}],
-            "mounts": [],
-            "fragments": fragments,
-            "moduleKind": {"before": "script", "after": "script"},
-            "suppressed": {"count": 0, "details": []},
-            "projectRevision": project_revision
-        }
-    }))
-    .expect("response")
-}
-
-fn slow_session(project: &TempProject) -> Session {
+fn start_slow(project_uri: &str) -> SlowSession {
+    let backend = Arc::new(SlowBackend::new(SLOW_BACKEND_DELAY));
     let (server_stream, client_stream) = UnixStream::pair().expect("socket pair");
     let server_read = server_stream.try_clone().expect("clone");
-    let host = Arc::new(ProjectState::new());
-    let backend = Arc::new(NodeBackend::with_transport_factory(
-        NodeBackendConfig::default(),
-        host.clone(),
-        || {
-            Ok(Box::new(SlowTransport {
-                delay: Duration::from_millis(400),
-                requests: AtomicU64::new(0),
-            }))
-        },
-    ));
-    let handle = thread::spawn(move || run_with_host(server_read, server_stream, backend, host));
+    let host: Arc<dyn ProjectHost> = Arc::new(ProjectState::new());
+    let backend_for_server: Arc<dyn Backend> = backend.clone();
+    let handle =
+        thread::spawn(move || run_with_host(server_read, server_stream, backend_for_server, host));
     let mut client = Client::new(client_stream);
-    client.initialize(project);
-    Session { client, handle }
+    client.initialize(project_uri);
+    SlowSession {
+        client,
+        backend,
+        handle,
+    }
 }
 
-fn cancel_latency(project: &TempProject) -> (Value, Value) {
-    let mut session = slow_session(project);
-    let uri = project.uri(WXML);
-    // `{{ user. }}` is a Node-backed member completion; completion never uses
-    // the analysis cache, so each request reaches the slow transport.
-    let text = "<view class=\"card\">{{ user. }}</view>";
+fn scheduler_segment(gate: &NativeGate, failures: &mut Vec<String>) -> Value {
+    let mut session = start_slow(&gate.project_uri());
+    let uri = gate.uri(COMPLETE_WXML);
+    let text = COMPLETE;
     session.client.open(&uri, text, 1);
-    let character =
-        u32::try_from(text.find("user.").expect("member") + "user.".len()).expect("chars");
+    let member = native_lsp::lsp_position(text, "user.");
+    let character = member.1 + 5;
 
     let mut queue_samples = Vec::with_capacity(sample_count());
     let mut running_samples = Vec::with_capacity(sample_count());
     for round in 0..sample_count() {
         // A running backend call is not interruptible. The cancellation
-        // response is immediate; the actual call occupancy is measured by
-        // `slow_call_occupancy`, not by this response latency.
+        // response is immediate; the call occupancy is measured separately.
         let running_id = session.client.request(
             "textDocument/completion",
             json!({
                 "textDocument": {"uri": uri},
-                "position": {"line": 0, "character": character},
+                "position": {"line": member.0, "character": character},
             }),
         );
         thread::sleep(Duration::from_millis(5));
@@ -675,19 +790,15 @@ fn cancel_latency(project: &TempProject) -> (Value, Value) {
             .notify("$/cancelRequest", json!({"id": running_id}));
         let running = session.client.response(running_id);
         running_samples.push(millis(running_started.elapsed()));
-        assert!(
-            running.get("error").is_some(),
-            "a cancelled running request must answer with an error: round {round} {running}"
-        );
+        assert_cancelled(&running, "running", round);
 
         // The first completion occupies the worker; the second waits in the
-        // queue. Cancelling the queued request must not wait for the running
-        // TypeScript call.
+        // queue. Cancelling the queued request must not start it.
         let busy_id = session.client.request(
             "textDocument/completion",
             json!({
                 "textDocument": {"uri": uri},
-                "position": {"line": 0, "character": character},
+                "position": {"line": member.0, "character": character},
             }),
         );
         thread::sleep(Duration::from_millis(5));
@@ -695,7 +806,7 @@ fn cancel_latency(project: &TempProject) -> (Value, Value) {
             "textDocument/completion",
             json!({
                 "textDocument": {"uri": uri},
-                "position": {"line": 0, "character": character},
+                "position": {"line": member.0, "character": character},
             }),
         );
         thread::sleep(Duration::from_millis(5));
@@ -705,50 +816,73 @@ fn cancel_latency(project: &TempProject) -> (Value, Value) {
             .notify("$/cancelRequest", json!({"id": queued_id}));
         let queued = session.client.response(queued_id);
         queue_samples.push(millis(cancel_started.elapsed()));
-        assert!(
-            queued.get("error").is_some(),
-            "cancelled request must answer with an error: round {round} {queued}"
-        );
+        assert_cancelled(&queued, "queued", round);
         let busy = session.client.response(busy_id);
         assert!(
             busy.get("result").is_some() || busy.get("error").is_some(),
             "running request must answer: round {round} {busy}"
         );
     }
+    let backend_completion_calls = session.backend.completion_calls();
+
+    let occupancy_samples = {
+        let count = slow_call_count();
+        let mut samples = Vec::with_capacity(count);
+        for _ in 0..count {
+            samples.push(millis(session.client.completion(
+                &uri,
+                member.0,
+                character,
+                "slow occupancy",
+            )));
+        }
+        samples
+    };
+
     session.finish();
-    (summary(&mut queue_samples), summary(&mut running_samples))
+
+    let queue = Stats::from_samples(&queue_samples);
+    let running = Stats::from_samples(&running_samples);
+    let occupancy = Stats::from_samples(&occupancy_samples);
+    check_p95(failures, "cancel_queued_request", &queue, CANCEL_P95_MS);
+    check_p95(failures, "cancel_running_response", &running, CANCEL_P95_MS);
+    let occupancy_floor = occupancy.p50_ms >= OCCUPANCY_P50_FLOOR_MS;
+    println!(
+        "threshold single_ts_call_occupancy_p50: {:.3} ms >= {OCCUPANCY_P50_FLOOR_MS:.3} ms -> {occupancy_floor}",
+        occupancy.p50_ms
+    );
+    if !occupancy_floor {
+        failures.push(format!(
+            "single_ts_call_occupancy_p50: {:.3} ms < {OCCUPANCY_P50_FLOOR_MS:.3} ms; \
+             the synthetic delay was not observed",
+            occupancy.p50_ms
+        ));
+    }
+
+    json!({
+        "transport": "in-process run_with_host",
+        "backend": "test SlowBackend; 400 ms completion delay; no engine and no Node process",
+        "cancel_queued_request": queue.to_json(),
+        "cancel_running_response": running.to_json(),
+        "single_ts_call_occupancy": occupancy.to_json(),
+        "backend_completion_calls": backend_completion_calls,
+        "rounds": sample_count(),
+        "occupancy_calls": slow_call_count(),
+        "scope": "scheduler cancellation/queue/occupancy only; this is not a native engine cancel-latency claim",
+    })
 }
 
-fn slow_call_occupancy(project: &TempProject) -> Value {
-    let mut session = slow_session(project);
-    let uri = project.uri(WXML);
-    let text = "<view class=\"card\">{{ user. }}</view>";
-    session.client.open(&uri, text, 1);
-    let character =
-        u32::try_from(text.find("user.").expect("member") + "user.".len()).expect("chars");
-    let count = std::env::var("WXML_PERF_TS_SAMPLES")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .filter(|value: &usize| *value >= 5)
-        .unwrap_or(20);
-    let mut samples = Vec::with_capacity(count);
-    for _ in 0..count {
-        samples.push(millis(session.client.completion(&uri, 0, character)));
-    }
-    session.finish();
-    summary(&mut samples)
+fn assert_cancelled(response: &Value, case: &str, round: usize) {
+    let code = response["error"]["code"].as_i64();
+    assert_eq!(
+        code,
+        Some(-32800),
+        "a cancelled {case} request must answer REQUEST_CANCELLED: round {round} {response}"
+    );
 }
 
 fn p95(summary: &Value) -> f64 {
     summary["p95_ms"].as_f64().unwrap_or(f64::INFINITY)
-}
-
-fn check_limit(failures: &mut Vec<String>, name: &str, value: f64, limit: f64) {
-    let pass = value <= limit;
-    println!("threshold {name}: {value:.3} <= {limit:.3} -> {pass}");
-    if !pass {
-        failures.push(format!("{name}: {value:.3} > {limit:.3}"));
-    }
 }
 
 fn check_regression(
@@ -778,72 +912,51 @@ fn check_regression(
 }
 
 #[test]
-#[ignore = "performance gate: set WXML_TEST_NODE=1 and run with --ignored"]
+#[allow(
+    clippy::assertions_on_constants,
+    reason = "the release profile is a constant prerequisite of the baseline"
+)]
+#[ignore = "P7 native perf gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
 fn q2_performance_benchmark() {
+    let Some(gate) = NativeGate::require("G-P5-PERF-01") else {
+        return;
+    };
     assert!(
-        std::env::var("WXML_TEST_NODE").as_deref() == Ok("1"),
-        "set WXML_TEST_NODE=1 to run the performance gate"
+        !cfg!(debug_assertions),
+        "G-P5-PERF-01 is a release baseline: run `cargo test -p wxml-lsp --release --test performance_bench -- --ignored`; \
+         a debug build cannot be compared with the frozen p95 budgets"
     );
     let require_clean = std::env::var("WXML_PERF_REQUIRE_CLEAN").as_deref() == Ok("1");
     let baseline_only = std::env::var("WXML_PERF_BASELINE_ONLY").as_deref() == Ok("1");
-    let head = git_head();
-    let dirty = git_dirty();
+    let head = git_output(&["rev-parse", "HEAD"]);
+    let dirty = git_output(&["status", "--porcelain"]);
     if require_clean {
         assert!(
             dirty.is_empty(),
             "performance gate requires a clean worktree; dirty:\n{dirty}"
         );
     }
-    let project = project_fixture();
+    write_fixture(&gate);
     let label = label();
     let started = Instant::now();
-    let rss_before = rss_kib();
-    let threads_before = threads();
     let load_start = loadavg();
-
-    let static_summary = static_completion(&project);
-    println!("static_completion: {static_summary}");
-    let (semantic_summary, hover_summary) = semantic_completion(&project);
-    println!("semantic_completion: {semantic_summary}");
-    println!("semantic_hover: {hover_summary}");
-    let diagnostics_summary = diagnostics_stop(&project);
-    println!("diagnostics_stop: {diagnostics_summary}");
-    let (cancel_queue_summary, cancel_running_summary) = cancel_latency(&project);
-    println!("cancel_queued_request: {cancel_queue_summary}");
-    println!("cancel_running_response: {cancel_running_summary}");
-    let ts_call_summary = slow_call_occupancy(&project);
-    println!("single_ts_call_occupancy: {ts_call_summary}");
-
-    let rss_after = rss_kib();
-    let threads_after = threads();
-    let load_end = loadavg();
-    let debounce_ms = 120_u64; // pinned by the initialization options in start_real_node
+    let threads_before = parent_threads();
 
     let mut failures = Vec::new();
-    check_limit(
-        &mut failures,
-        "static_completion_p95",
-        p95(&static_summary),
-        50.0,
-    );
-    check_limit(
-        &mut failures,
-        "semantic_completion_p95",
-        p95(&semantic_summary),
-        200.0,
-    );
-    check_limit(
-        &mut failures,
-        "diagnostics_stop_p95",
-        p95(&diagnostics_summary),
-        500.0,
-    );
-    check_limit(
-        &mut failures,
-        "cancel_queued_request_p95",
-        p95(&cancel_queue_summary),
-        100.0,
-    );
+    let real = real_engine_segment(&gate, &mut failures);
+    println!("real_engine: {real}");
+    let scheduler = scheduler_segment(&gate, &mut failures);
+    println!("scheduler: {scheduler}");
+
+    let scenarios = json!({
+        "static_completion": real["metrics"]["static_completion"],
+        "semantic_completion": real["metrics"]["semantic_completion"],
+        "semantic_hover": real["metrics"]["semantic_hover"],
+        "diagnostics_stop": real["metrics"]["diagnostics_stop"],
+        "cancel_queued_request": scheduler["cancel_queued_request"],
+        "cancel_running_response": scheduler["cancel_running_response"],
+        "single_ts_call_occupancy": scheduler["single_ts_call_occupancy"],
+    });
 
     let baseline_value = std::env::var_os("WXML_PERF_BASELINE").and_then(|path| {
         std::fs::read_to_string(&path).ok().map(|text| {
@@ -852,27 +965,26 @@ fn q2_performance_benchmark() {
         })
     });
     if let Some((_baseline_path, baseline)) = baseline_value.as_ref() {
-        for (name, after) in [
-            ("static_completion", p95(&static_summary)),
-            ("semantic_completion", p95(&semantic_summary)),
-            ("semantic_hover", p95(&hover_summary)),
-            ("diagnostics_stop", p95(&diagnostics_summary)),
-            ("cancel_queued_request", p95(&cancel_queue_summary)),
+        for name in [
+            "static_completion",
+            "semantic_completion",
+            "semantic_hover",
+            "diagnostics_stop",
+            "cancel_queued_request",
         ] {
             let Some(before) = baseline["scenarios"][name]["p95_ms"].as_f64() else {
                 failures.push(format!("baseline {name} is missing"));
                 continue;
             };
-            check_regression(&mut failures, name, after, before, 0.10);
+            check_regression(&mut failures, name, p95(&scenarios[name]), before, 0.10);
         }
-        if let (Some(before), Some(after)) = (
-            baseline["resources"]["rss_kib_after"].as_u64(),
-            Some(rss_after),
-        ) {
+        if let Some(before) = baseline["resources"]["rss_kib_after"].as_u64() {
             check_regression(
                 &mut failures,
                 "parent_rss_kib",
-                after as f64,
+                real["resources"]["parent_rss_kib_end"]
+                    .as_u64()
+                    .unwrap_or(0) as f64,
                 before as f64,
                 0.15,
             );
@@ -885,33 +997,23 @@ fn q2_performance_benchmark() {
 
     let report = json!({
         "label": label,
-        "harness": "q2-r2-batch",
+        "harness": "p7-native-retarget-perf",
+        "gate": "G-P5-PERF-01",
         "baseline_only": baseline_only,
         "git_head": head,
         "git_dirty": dirty,
         "generated_at_unix_s": std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |duration| duration.as_secs()),
+        "engine": engine_identity(),
         "environment": {
-            "node": node_version(),
+            "transport": "--stdio --backend native (real engine) + in-process scheduler test double",
+            "profile": "release (debug is rejected by the gate)",
+            "samples_per_metric": sample_count(),
+            "static_outer_iterations": sample_count(),
+            "static_independent_calls": sample_count().saturating_mul(CALLS_PER_OUTER_ITERATION),
             "rustc": rustc_version(),
             "target_dir": std::env::var("CARGO_TARGET_DIR").unwrap_or_default(),
-            "samples_per_scenario": sample_count(),
-            "static_outer_iterations": sample_count(),
-            "static_independent_calls": sample_count().saturating_mul(50),
-            "warmups": {
-                "static_completion_calls": 20,
-                "semantic_completion_calls": 8,
-                "semantic_hover_calls": 0,
-                "diagnostics_edits": 10,
-                "cancel_rounds": 0,
-                "single_ts_call_calls": 0
-            },
-            "diagnostics_debounce_ms": debounce_ms,
-            "diagnostics_backend_estimate_ms": round(
-                (p95(&diagnostics_summary) - debounce_ms as f64).max(0.0)
-            ),
-            "outliers": "max_ms and p99_ms include outliers; raw percentile method is nearest-rank",
         },
         "machine": {
             "os": os_pretty_name(),
@@ -920,44 +1022,44 @@ fn q2_performance_benchmark() {
             "cpu_count": cpu_count(),
             "mem_total_kib": mem_total_kib(),
             "loadavg_start": load_start,
-            "loadavg_end": load_end,
-            "concurrency": "single benchmark process, no other benchmark running"
+            "loadavg_end": loadavg(),
+            "concurrency": "single benchmark process, no other benchmark running",
         },
         "baseline": baseline_value.as_ref().map(|(path, _)| path.display().to_string()),
-        "scenarios": {
-            "static_completion": static_summary,
-            "semantic_completion": semantic_summary,
-            "semantic_hover": hover_summary,
-            "diagnostics_stop": diagnostics_summary,
-            "cancel_queued_request": cancel_queue_summary,
-            "cancel_running_response": cancel_running_summary,
-            "single_ts_call_occupancy": ts_call_summary,
-        },
+        "scenarios": scenarios,
+        "real_engine": real,
+        "scheduler": scheduler,
         "resources": {
-            "rss_kib_before": rss_before,
-            "rss_kib_after": rss_after,
+            "rss_kib_before": real["resources"]["parent_rss_kib_start"],
+            "rss_kib_after": real["resources"]["parent_rss_kib_end"],
             "threads_before": threads_before,
-            "threads_after": threads_after,
-            "wall_time_ms": millis(started.elapsed()),
+            "threads_after": parent_threads(),
+            "wall_time_ms": round(millis(started.elapsed())),
         },
         "thresholds": {
-            "static_completion_p95_ms": 50.0,
-            "semantic_completion_p95_ms": 200.0,
-            "diagnostics_stop_p95_ms": 500.0,
-            "cancel_queued_request_p95_ms": 100.0,
+            "static_completion_p95_ms": STATIC_COMPLETION_P95_MS,
+            "semantic_completion_p95_ms": COMPLETION_P95_MS,
+            "semantic_hover_p95_ms": HOVER_P95_MS,
+            "diagnostics_stop_p95_ms": DIAGNOSTICS_P95_MS,
+            "cancel_queued_request_p95_ms": CANCEL_P95_MS,
+            "cancel_running_response_p95_ms": CANCEL_P95_MS,
+            "single_ts_call_occupancy_p50_min_ms": OCCUPANCY_P50_FLOOR_MS,
+            "rss_growth_percent_max": RSS_GROWTH_PERCENT_MAX,
             "p95_regression_fraction": 0.10,
             "parent_rss_regression_fraction": 0.15,
             "pass": failures.is_empty(),
             "failures": failures,
         },
         "notes": [
-            "cancel_queued_request measures the LSP response path for a job that has not started yet.",
-            "cancel_running_response is the immediate protocol response for a running call; a synchronous TypeScript call is not interruptible.",
-            "single_ts_call_occupancy measures one uncached slow backend call and is reported separately.",
-            "semantic_hover exercises the Rust analysis-cache hit path; it is not a cold Node hover measurement.",
+            "The old `#[ignore]` gate coordinate and test name are preserved; the Node boundary is replaced by `--stdio --backend native`.",
+            "The deep native oracle stays in native_parity/native_engine_real.rs::native_q2_performance_benchmark.",
             "static_completion reports p95 across 10,000 independent calls (50 per outer iteration, 200 outer iterations).",
-            "diagnostics_stop is measured from the final didChange notification to the matching publishDiagnostics version."
-        ]
+            "semantic_hover and semantic_completion are measured around the JSON-RPC call and include serialization and server queueing.",
+            "diagnostics_stop is measured from didChange to the matching publishDiagnostics version; the native harness pins a 0 ms debounce, stricter than the old 120 ms gate.",
+            "cancel/queue/occupancy run against an in-process 400 ms SlowBackend, exactly like the retired SlowTransport; they are scheduler measurements, not native engine cancel-latency claims.",
+            "RSS is the summed VmRSS of the server tree sampled from /proc with a hard process cap.",
+            "No Node process, Node shim or external sampler is used.",
+        ],
     });
     let path = output_path(report["label"].as_str().unwrap_or("run"));
     if let Some(parent) = path.parent() {

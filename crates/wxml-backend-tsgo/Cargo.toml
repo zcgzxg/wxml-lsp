@@ -1,0 +1,17 @@
+[package]
+name = "wxml-backend-tsgo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+description = "Native tsgo backend scaffold for the WXML language server"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+wxml-types = { path = "../wxml-types" }
+
+[lints]
+workspace = true

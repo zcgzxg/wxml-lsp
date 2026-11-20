@@ -351,6 +351,35 @@ fn parse_pax_size(content: &[u8]) -> Result<Option<u64>> {
 /// Returns an error for oversized archives/files, unsafe paths, links, device
 /// entries, duplicate paths, unsupported modes or truncated data.
 pub fn extract_tar_gz(archive: &Path, destination: &Path) -> Result<ExtractReport> {
+    extract_tar_gz_inner(archive, destination, None)
+}
+
+/// Extracts a formal release archive and enforces an exact file allowlist.
+///
+/// Every regular file must be listed, every listed file must be present, and
+/// directories must only exist as parents of allowed files. Links, devices,
+/// traversal, duplicates, case-folding collisions and unsafe modes are rejected
+/// by the same rules as [`extract_tar_gz`].
+///
+/// # Errors
+///
+/// See [`extract_tar_gz`], plus missing, extra or unsafe allowlist entries.
+pub fn extract_tar_gz_allowlisted(
+    archive: &Path,
+    destination: &Path,
+    allowed: &BTreeSet<String>,
+) -> Result<ExtractReport> {
+    for path in allowed {
+        validate_relative_path(path, true)?;
+    }
+    extract_tar_gz_inner(archive, destination, Some(allowed))
+}
+
+fn extract_tar_gz_inner(
+    archive: &Path,
+    destination: &Path,
+    allowed: Option<&BTreeSet<String>>,
+) -> Result<ExtractReport> {
     let metadata =
         std::fs::symlink_metadata(archive).map_err(|error| DeliveryError::io(archive, error))?;
     if !metadata.file_type().is_file() {
@@ -373,14 +402,18 @@ pub fn extract_tar_gz(archive: &Path, destination: &Path) -> Result<ExtractRepor
     }
     std::fs::create_dir(destination).map_err(|error| DeliveryError::io(destination, error))?;
 
-    let result = extract_inner(archive, destination);
+    let result = extract_inner(archive, destination, allowed);
     if result.is_err() {
         let _ = std::fs::remove_dir_all(destination);
     }
     result
 }
 
-fn extract_inner(archive: &Path, destination: &Path) -> Result<ExtractReport> {
+fn extract_inner(
+    archive: &Path,
+    destination: &Path,
+    allowed: Option<&BTreeSet<String>>,
+) -> Result<ExtractReport> {
     let mut file = File::open(archive).map_err(|error| DeliveryError::io(archive, error))?;
     prescan_tar(BoundedReader::new(
         GzDecoder::new(&mut file),
@@ -392,6 +425,7 @@ fn extract_inner(archive: &Path, destination: &Path) -> Result<ExtractReport> {
     let mut tar = Archive::new(BoundedReader::new(decoder, MAX_DECOMPRESSED_BYTES));
     let mut files = BTreeSet::new();
     let mut directories = BTreeSet::new();
+    let mut folded = BTreeSet::new();
     let mut total_bytes = 0_u64;
     let mut entry_count = 0_usize;
 
@@ -412,8 +446,18 @@ fn extract_inner(archive: &Path, destination: &Path) -> Result<ExtractReport> {
             destination,
             &mut files,
             &mut directories,
+            &mut folded,
             &mut total_bytes,
+            allowed,
         )?;
+    }
+
+    if let Some(allowed) = allowed {
+        if &files != allowed {
+            return Err(DeliveryError::Integrity(
+                "archive file set does not match the package allowlist".to_owned(),
+            ));
+        }
     }
 
     let mut files: Vec<ExtractedFile> = files
@@ -428,13 +472,16 @@ fn extract_inner(archive: &Path, destination: &Path) -> Result<ExtractReport> {
     Ok(ExtractReport { files, total_bytes })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn process_entry<R: Read>(
     entry: &mut Entry<'_, R>,
     archive: &Path,
     destination: &Path,
     files: &mut BTreeSet<String>,
     directories: &mut BTreeSet<String>,
+    folded: &mut BTreeSet<String>,
     total_bytes: &mut u64,
+    allowed: Option<&BTreeSet<String>>,
 ) -> Result<()> {
     let header = entry.header();
     let kind = header.entry_type();
@@ -453,6 +500,11 @@ fn process_entry<R: Read>(
         ));
     }
     validate_relative_path(&path_text, true)?;
+    if !folded.insert(path_text.to_ascii_lowercase()) {
+        return Err(DeliveryError::UnsafeArchive(format!(
+            "archive path `{path_text}` collides with another path by case folding"
+        )));
+    }
     let relative = PathBuf::from(&path_text);
     let mode = header
         .mode()
@@ -469,12 +521,27 @@ fn process_entry<R: Read>(
 
     if kind.is_dir() {
         check_entry_mode(mode, true, &path_text)?;
+        if let Some(allowed) = allowed {
+            let prefix = format!("{path_text}/");
+            if !allowed.iter().any(|path| path.starts_with(&prefix)) {
+                return Err(DeliveryError::UnsafeArchive(format!(
+                    "archive directory `{path_text}` is not a parent of an allowed file"
+                )));
+            }
+        }
         return ensure_directory(destination, &relative, directories, files);
     }
     if !kind.is_file() {
         return Err(DeliveryError::UnsafeArchive(format!(
             "entry `{path_text}` is not a regular file or directory"
         )));
+    }
+    if let Some(allowed) = allowed {
+        if !allowed.contains(&path_text) {
+            return Err(DeliveryError::UnsafeArchive(format!(
+                "archive entry `{path_text}` is not in the package allowlist"
+            )));
+        }
     }
     if size > MAX_FILE_BYTES {
         return Err(DeliveryError::SizeLimit(format!(
@@ -934,6 +1001,82 @@ mod tests {
             );
             let _ = std::fs::remove_dir_all(&base);
         }
+    }
+
+    #[test]
+    fn allowlist_rejects_extra_and_missing_files() {
+        let base = scratch("allowlist");
+        std::fs::create_dir_all(&base).unwrap();
+
+        let with_extra = base.join("extra.tar.gz");
+        build_archive(
+            &with_extra,
+            &[
+                Spec::File("a", 0o644, b"a"),
+                Spec::File("extra", 0o644, b"x"),
+            ],
+        );
+        let only_a = BTreeSet::from(["a".to_owned()]);
+        let dest = base.join("out-extra");
+        let error = extract_tar_gz_allowlisted(&with_extra, &dest, &only_a).unwrap_err();
+        assert!(
+            matches!(error, DeliveryError::UnsafeArchive(_)),
+            "{error:?}"
+        );
+        assert!(!dest.exists());
+
+        let only_a_archive = base.join("only-a.tar.gz");
+        build_archive(&only_a_archive, &[Spec::File("a", 0o644, b"a")]);
+        let mut missing = only_a.clone();
+        missing.insert("missing".to_owned());
+        let dest = base.join("out-missing");
+        let error = extract_tar_gz_allowlisted(&only_a_archive, &dest, &missing).unwrap_err();
+        assert!(matches!(error, DeliveryError::Integrity(_)), "{error:?}");
+        assert!(!dest.exists());
+
+        let dest = base.join("out-ok");
+        let report = extract_tar_gz_allowlisted(&only_a_archive, &dest, &only_a).unwrap();
+        assert_eq!(report.files.len(), 1);
+        assert_eq!(std::fs::read(dest.join("a")).unwrap(), b"a");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rejects_duplicate_directory_entries() {
+        let base = scratch("duplicate-dir");
+        std::fs::create_dir_all(&base).unwrap();
+        let archive = base.join("a.tar.gz");
+        build_archive(&archive, &[Spec::Dir("d/"), Spec::Dir("d/")]);
+        let dest = base.join("out");
+        let error = extract_tar_gz(&archive, &dest).unwrap_err();
+        assert!(
+            matches!(error, DeliveryError::UnsafeArchive(_)),
+            "{error:?}"
+        );
+        assert!(!dest.exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn rejects_case_folding_collisions() {
+        let base = scratch("case-fold");
+        std::fs::create_dir_all(&base).unwrap();
+        let archive = base.join("a.tar.gz");
+        build_archive(
+            &archive,
+            &[
+                Spec::File("Lib.d.ts", 0o644, b"x"),
+                Spec::File("lib.d.ts", 0o644, b"y"),
+            ],
+        );
+        let dest = base.join("out");
+        let error = extract_tar_gz(&archive, &dest).unwrap_err();
+        assert!(
+            matches!(error, DeliveryError::UnsafeArchive(_)),
+            "{error:?}"
+        );
+        assert!(!dest.exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

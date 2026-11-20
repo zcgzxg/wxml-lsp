@@ -150,8 +150,21 @@ pub(crate) struct Server {
     ///
     /// Every edit supersedes the previous diagnostics request. Cancelling the
     /// old flag keeps a burst of keystrokes from queueing one multi-second
-    /// analysis per character ahead of hover and completion requests.
+    /// analysis per character ahead of hover and completion requests. Script
+    /// documents use the same per-URI slot because a document is either a
+    /// template or a script.
     pub(crate) diagnostics_cancel: HashMap<String, Arc<AtomicBool>>,
+    /// Script diagnostics jobs currently queued or running, keyed by URI.
+    ///
+    /// A request for the exact same stamp is not queued twice while its result
+    /// is still in flight. The entry is removed when that stamp completes,
+    /// fails or is superseded.
+    pub(crate) script_diagnostics_inflight: HashMap<String, crate::workspace::AnalysisStamp>,
+    /// Script documents with a published supported/partial result.
+    ///
+    /// Used only to clear the client when such a document closes. A script that
+    /// never published (for example the default Node backend) sends nothing.
+    pub(crate) script_diagnostics_published: HashSet<String>,
     /// Set by `exit` or a fatal transport error.
     pub(crate) stop: bool,
     /// Set by `shutdown`.
@@ -237,6 +250,8 @@ impl Server {
             inflight: HashMap::new(),
             dirty: VecDeque::new(),
             diagnostics_cancel: HashMap::new(),
+            script_diagnostics_inflight: HashMap::new(),
+            script_diagnostics_published: HashSet::new(),
             stop: false,
             clean_shutdown: false,
             client: ClientFlags::default(),
@@ -307,8 +322,13 @@ impl Server {
         // Read the backend generation once for this event and share it with
         // the result handler and the diagnostics retry batch.
         let epoch = self.refresh_epoch();
-        if done.kind == JobKind::Diagnostics {
-            let outgoing = self.diagnostics_done(done, &epoch);
+        let script = matches!(&done.kind, JobKind::ScriptDiagnostics { .. });
+        if script || done.kind == JobKind::Diagnostics {
+            let outgoing = if script {
+                self.script_diagnostics_done(done, &epoch)
+            } else {
+                self.diagnostics_done(done, &epoch)
+            };
             self.retry_pending_diagnostics_with_epoch(&epoch);
             return outgoing;
         }
@@ -341,12 +361,14 @@ impl Server {
             self.retry_pending_diagnostics_with_epoch(&epoch);
             return Vec::new();
         };
+        let Inflight { id, uri, .. } = inflight;
         let outgoing = match done.kind {
-            JobKind::Hover => self.hover_done(inflight.id, done, &epoch),
-            JobKind::Definition => self.definition_done(inflight.id, done, &epoch),
-            JobKind::Completion(_) => self.completion_done(inflight.id, done, &epoch),
-            JobKind::Diagnostics => Vec::new(),
-            JobKind::Symbols { .. } => self.symbols_done(inflight.id, done, &epoch),
+            JobKind::Hover => self.hover_done(id, done, &epoch),
+            JobKind::Definition => self.definition_done(id, done, &epoch),
+            JobKind::Completion(_) => self.completion_done(id, done, &epoch),
+            JobKind::Diagnostics | JobKind::ScriptDiagnostics { .. } => Vec::new(),
+            JobKind::DocumentSymbols { .. } => self.document_symbols_done(id, &uri, done, &epoch),
+            JobKind::Symbols { .. } => self.symbols_done(id, done, &epoch),
         };
         self.retry_pending_diagnostics_with_epoch(&epoch);
         outgoing
@@ -655,16 +677,23 @@ mod tests {
     use wxml_types::{
         BackendCapabilities, BackendError, BackendId, CapabilityStatus, CompletionItem,
         CompletionItemKind, CompletionKind, CompletionResult, DefinitionResult, Diagnostic,
-        DiagnosticSeverity, DiagnosticsResult, FileId, HoverResult, InsertTextFormat, MarkupKind,
-        MockBackend, ProjectId, SourceLocation, TypeQuality,
+        DiagnosticSeverity, DiagnosticsRequest, DiagnosticsResult, DocumentSymbol,
+        DocumentSymbolKind, DocumentSymbolsRequest, DocumentSymbolsResult, FileId, HoverResult,
+        InsertTextFormat, MarkupKind, MockBackend, ProjectId, ProjectRevision, RootKind,
+        SnapshotId, SourceLocation, SourceRevision, SourceSnapshot, TypeQuality, ViewRevision,
     };
 
     use super::*;
     use crate::jsonrpc::ResponseOutcome;
-    use crate::project_host::ProjectState;
+    use crate::project_host::{
+        ChangeDocument, DocumentRoute, HostError, HostUpdate, OpenDocument, ProjectHost,
+        ProjectState, ViewTarget,
+    };
     use crate::scheduler::{JobKind, Outcome};
 
     const URI: &str = "file:///pages/index/index.wxml";
+    const SCRIPT_URI: &str = "file:///pages/index/index.ts";
+    const SCRIPT_OUTLINE_TEXT: &str = "class 用户 {\n  name: string;\n}\n";
 
     #[derive(Default)]
     struct ManualDispatch {
@@ -718,6 +747,579 @@ mod tests {
                 .push(job);
             Ok(())
         }
+    }
+
+    /// Host with one template/script view and an open owning template.
+    struct ScriptHost {
+        project: ProjectId,
+        wxml: FileId,
+        script: FileId,
+        wxml_path: wxml_project::ProjectPath,
+        script_path: wxml_project::ProjectPath,
+        snapshot: Mutex<Arc<SourceSnapshot>>,
+        script_text: Mutex<Arc<str>>,
+        view_revision: Mutex<ViewRevision>,
+        project_revision: Mutex<ProjectRevision>,
+        template_open: AtomicBool,
+        shared_owner: bool,
+    }
+
+    impl ScriptHost {
+        fn new(script_text: &str) -> Self {
+            Self::with_template(script_text, true)
+        }
+
+        fn with_template(script_text: &str, template_open: bool) -> Self {
+            let project = ProjectId::new("script-outline");
+            let wxml = FileId::new(project.clone(), "pages/index/index.wxml").expect("wxml");
+            let script = FileId::new(project.clone(), "pages/index/index.ts").expect("script");
+            let snapshot = Arc::new(SourceSnapshot::new(
+                wxml.clone(),
+                SourceRevision::new(1),
+                SnapshotId::new(1),
+                "<view>{{ user.name }}</view>",
+            ));
+            let project_revision = ProjectRevision::new(project.clone(), 1);
+            Self {
+                project,
+                wxml,
+                script,
+                wxml_path: wxml_project::ProjectPath::new("pages/index/index.wxml")
+                    .expect("wxml path"),
+                script_path: wxml_project::ProjectPath::new("pages/index/index.ts")
+                    .expect("script path"),
+                snapshot: Mutex::new(snapshot),
+                script_text: Mutex::new(Arc::from(script_text)),
+                view_revision: Mutex::new(ViewRevision::new(2)),
+                project_revision: Mutex::new(project_revision),
+                template_open: AtomicBool::new(template_open),
+                shared_owner: false,
+            }
+        }
+
+        fn shared(script_text: &str) -> Self {
+            Self {
+                shared_owner: true,
+                ..Self::new(script_text)
+            }
+        }
+
+        fn view(&self) -> ViewTarget {
+            ViewTarget {
+                wxml: self.wxml_path.clone(),
+                owner: RootKind::Page,
+                script: self.script_path.clone(),
+                script_file: self.script.clone(),
+                view_revision: *self
+                    .view_revision
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner),
+            }
+        }
+
+        fn close_template(&self) {
+            self.template_open.store(false, Ordering::SeqCst);
+        }
+
+        fn replace_template_snapshot(&self) {
+            let wxml = self.wxml.clone();
+            *self.snapshot.lock().unwrap_or_else(PoisonError::into_inner) =
+                Arc::new(SourceSnapshot::new(
+                    wxml,
+                    SourceRevision::new(2),
+                    SnapshotId::new(2),
+                    "<view>{{ user.name }}</view>",
+                ));
+        }
+
+        fn bump_view_revision(&self) {
+            let mut revision = self
+                .view_revision
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            *revision = revision.next();
+        }
+
+        fn set_script_text(&self, text: &str) {
+            *self
+                .script_text
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Arc::from(text);
+        }
+    }
+
+    impl ProjectHost for ScriptHost {
+        fn open_root(&self, _root_uri: Option<&str>) -> Result<(), HostError> {
+            Ok(())
+        }
+
+        fn project_id(&self) -> ProjectId {
+            self.project.clone()
+        }
+
+        fn project_revision(&self) -> ProjectRevision {
+            self.project_revision
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+
+        fn path_for_uri(&self, uri: &str) -> Result<wxml_project::ProjectPath, HostError> {
+            let path = uri.strip_prefix("file:///").ok_or(HostError::InvalidUri)?;
+            wxml_project::ProjectPath::new(path).map_err(|_| HostError::InvalidUri)
+        }
+
+        fn uri_for(&self, file: &FileId) -> Option<String> {
+            Some(format!("file:///{}", file.path()))
+        }
+
+        fn file_id(&self, path: &wxml_project::ProjectPath) -> Result<FileId, HostError> {
+            FileId::new(self.project.clone(), path.as_str()).map_err(|_| HostError::InvalidUri)
+        }
+
+        fn route(&self, uri: &str) -> DocumentRoute {
+            let Ok(path) = self.path_for_uri(uri) else {
+                return DocumentRoute::Unknown;
+            };
+            match path.extension().map(str::to_ascii_lowercase).as_deref() {
+                Some("wxml") => DocumentRoute::Wxml(path),
+                Some("ts") => DocumentRoute::Script(path),
+                Some("json") => DocumentRoute::Json(path),
+                _ => DocumentRoute::Unknown,
+            }
+        }
+
+        fn view_for(&self, wxml: &wxml_project::ProjectPath) -> Result<ViewTarget, HostError> {
+            if *wxml == self.wxml_path {
+                Ok(self.view())
+            } else {
+                Err(HostError::Unsupported {
+                    reason: "unknown template",
+                })
+            }
+        }
+
+        fn view_for_script(&self, file: &FileId) -> Result<ViewTarget, HostError> {
+            if self.shared_owner {
+                return Err(HostError::Unsupported {
+                    reason: "script is shared by several views",
+                });
+            }
+            if *file == self.script {
+                Ok(self.view())
+            } else {
+                Err(HostError::Unsupported {
+                    reason: "script is not an owning page or component script",
+                })
+            }
+        }
+
+        fn open_document(&self, open: OpenDocument) -> Result<HostUpdate, HostError> {
+            if self.route(&open.uri) != DocumentRoute::Json(self.path_for_uri(&open.uri)?) {
+                return Ok(HostUpdate::default());
+            }
+            let mut revision = self
+                .project_revision
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let next = revision.clone().next();
+            *revision = next;
+            Ok(HostUpdate {
+                project_revision: Some(revision.clone()),
+                project: Some(self.project.clone()),
+                ..HostUpdate::default()
+            })
+        }
+
+        fn change_document(&self, _change: ChangeDocument) -> Result<HostUpdate, HostError> {
+            Ok(HostUpdate::default())
+        }
+
+        fn close_document(&self, _uri: &str) -> Result<HostUpdate, HostError> {
+            Ok(HostUpdate::default())
+        }
+
+        fn set_wxml_snapshot(&self, _file: FileId, _snapshot: Arc<SourceSnapshot>) {}
+
+        fn remove_wxml_snapshot(&self, _file: &FileId) {}
+
+        fn source(&self, file: &FileId) -> Option<Arc<SourceSnapshot>> {
+            (*file == self.wxml && self.template_open.load(Ordering::SeqCst))
+                .then(|| Arc::clone(&self.snapshot.lock().unwrap_or_else(PoisonError::into_inner)))
+        }
+
+        fn file_text(&self, file: &FileId) -> Option<Arc<str>> {
+            (*file == self.script).then(|| {
+                Arc::clone(
+                    &self
+                        .script_text
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner),
+                )
+            })
+        }
+
+        fn analysis(
+            &self,
+            _snapshot: &SourceSnapshot,
+        ) -> Result<crate::project_host::PreparedView, HostError> {
+            Err(HostError::Unsupported {
+                reason: "test host has no analysis",
+            })
+        }
+    }
+
+    /// Backend wrapper that records document-symbol calls and returns one answer.
+    struct ScriptSymbolsBackend {
+        inner: MockBackend,
+        calls: AtomicUsize,
+        answer: Mutex<Option<DocumentSymbolsResult>>,
+        requests: Mutex<Vec<DocumentSymbolsRequest>>,
+        fail: bool,
+    }
+
+    impl ScriptSymbolsBackend {
+        fn new(answer: DocumentSymbolsResult) -> Self {
+            Self {
+                inner: MockBackend::new(),
+                calls: AtomicUsize::new(0),
+                answer: Mutex::new(Some(answer)),
+                requests: Mutex::new(Vec::new()),
+                fail: false,
+            }
+        }
+
+        fn failing() -> Self {
+            Self {
+                inner: MockBackend::new(),
+                calls: AtomicUsize::new(0),
+                answer: Mutex::new(None),
+                requests: Mutex::new(Vec::new()),
+                fail: true,
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+
+        fn requests(&self) -> Vec<DocumentSymbolsRequest> {
+            self.requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl Backend for ScriptSymbolsBackend {
+        fn epoch(&self) -> BackendEpoch {
+            self.inner.epoch()
+        }
+
+        fn hover(&self, request: wxml_types::HoverRequest) -> Result<HoverResult, BackendError> {
+            self.inner.hover(request)
+        }
+
+        fn diagnostics(
+            &self,
+            request: DiagnosticsRequest,
+        ) -> Result<DiagnosticsResult, BackendError> {
+            self.inner.diagnostics(request)
+        }
+
+        fn document_symbols(
+            &self,
+            request: DocumentSymbolsRequest,
+        ) -> Result<DocumentSymbolsResult, BackendError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(request);
+            if self.fail {
+                return Err(BackendError::Unavailable(
+                    "document symbols failed".to_owned(),
+                ));
+            }
+            self.answer
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+                .ok_or_else(|| BackendError::Internal("missing answer".to_owned()))
+        }
+
+        fn capabilities(&self) -> BackendCapabilities {
+            self.inner.capabilities()
+        }
+    }
+
+    /// Backend wrapper that records standalone script diagnostics requests.
+    struct ScriptDiagnosticsBackend {
+        inner: MockBackend,
+        requests: Mutex<Vec<DiagnosticsRequest>>,
+        answer: Mutex<Option<DiagnosticsResult>>,
+    }
+
+    impl ScriptDiagnosticsBackend {
+        fn new(answer: DiagnosticsResult) -> Self {
+            Self {
+                inner: MockBackend::new(),
+                requests: Mutex::new(Vec::new()),
+                answer: Mutex::new(Some(answer)),
+            }
+        }
+
+        fn requests(&self) -> Vec<DiagnosticsRequest> {
+            self.requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl Backend for ScriptDiagnosticsBackend {
+        fn epoch(&self) -> BackendEpoch {
+            self.inner.epoch()
+        }
+
+        fn hover(&self, request: wxml_types::HoverRequest) -> Result<HoverResult, BackendError> {
+            self.inner.hover(request)
+        }
+
+        fn diagnostics(
+            &self,
+            request: DiagnosticsRequest,
+        ) -> Result<DiagnosticsResult, BackendError> {
+            self.inner.diagnostics(request)
+        }
+
+        fn script_diagnostics(
+            &self,
+            request: DiagnosticsRequest,
+        ) -> Result<DiagnosticsResult, BackendError> {
+            self.requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(request);
+            self.answer
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+                .ok_or_else(|| BackendError::Internal("missing script answer".to_owned()))
+        }
+
+        fn capabilities(&self) -> BackendCapabilities {
+            self.inner.capabilities()
+        }
+    }
+
+    fn script_outline(truncated: bool, skipped: usize) -> DocumentSymbolsResult {
+        let text = SCRIPT_OUTLINE_TEXT;
+        let class_start = text.find("class").expect("class");
+        let class_end = text.rfind('}').expect("class end") + 1;
+        let name_start = text.find("name:").expect("name");
+        DocumentSymbolsResult {
+            symbols: vec![DocumentSymbol {
+                name: "用户".to_owned(),
+                kind: DocumentSymbolKind::Class,
+                range: SourceRange::from_bounds(
+                    u32::try_from(class_start).expect("start"),
+                    u32::try_from(class_end).expect("end"),
+                )
+                .expect("range"),
+                selection_range: SourceRange::from_bounds(
+                    u32::try_from(text.find("用户").expect("name")).expect("name start"),
+                    u32::try_from(text.find("用户").expect("name") + "用户".len())
+                        .expect("name end"),
+                )
+                .expect("selection"),
+                children: vec![DocumentSymbol {
+                    name: "name".to_owned(),
+                    kind: DocumentSymbolKind::Property,
+                    range: SourceRange::from_bounds(
+                        u32::try_from(name_start).expect("prop start"),
+                        u32::try_from(name_start + "name: string;".len()).expect("prop end"),
+                    )
+                    .expect("prop range"),
+                    selection_range: SourceRange::from_bounds(
+                        u32::try_from(name_start).expect("prop name start"),
+                        u32::try_from(name_start + "name".len()).expect("prop name end"),
+                    )
+                    .expect("prop selection"),
+                    children: Vec::new(),
+                }],
+            }],
+            status: if truncated || skipped > 0 {
+                CapabilityStatus::Partial {
+                    reason: "the document symbol evidence is incomplete".to_owned(),
+                }
+            } else {
+                CapabilityStatus::Supported
+            },
+            truncated,
+            skipped,
+            gaps: Vec::new(),
+        }
+    }
+
+    fn initialize_with_hierarchy(server: &mut Server, hierarchical: bool) {
+        let outgoing = server.handle_incoming(request(
+            json!(1),
+            "initialize",
+            json!({
+                "capabilities": {
+                    "textDocument": {
+                        "documentSymbol": {
+                            "hierarchicalDocumentSymbolSupport": hierarchical,
+                        }
+                    }
+                }
+            }),
+        ));
+        assert_eq!(outgoing.len(), 1);
+    }
+
+    fn open_script_document(server: &mut Server, text: &str) {
+        let outgoing = server.handle_incoming(notification(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": SCRIPT_URI,
+                    "languageId": "typescript",
+                    "version": 1,
+                    "text": text,
+                }
+            }),
+        ));
+        assert!(outgoing.is_empty());
+    }
+
+    fn document_symbol_request(id: u64, uri: &str) -> Incoming {
+        request(
+            json!(id),
+            "textDocument/documentSymbol",
+            json!({"textDocument": {"uri": uri}}),
+        )
+    }
+
+    fn take_script_diagnostics_job(dispatch: &ManualDispatch) -> Job {
+        let mut found = None;
+        for job in dispatch.take() {
+            if matches!(job.kind, JobKind::ScriptDiagnostics { .. }) {
+                assert!(found.is_none(), "one script diagnostics job per event");
+                found = Some(job);
+            }
+        }
+        found.expect("a script diagnostics job")
+    }
+
+    fn finish_script_diagnostics_job(
+        server: &mut Server,
+        job: &Job,
+        result: Result<DiagnosticsResult, BackendError>,
+    ) -> Vec<Outgoing> {
+        server.handle_work(WorkDone {
+            key: job.key.clone(),
+            kind: job.kind.clone(),
+            stamp: job.stamp.clone(),
+            attempt: job.attempt,
+            cancelled: false,
+            outcome: result.map(|result| Outcome::Diagnostics(Box::new(result))),
+        })
+    }
+
+    fn finish_cancelled_script_diagnostics_job(server: &mut Server, job: &Job) -> Vec<Outgoing> {
+        server.handle_work(WorkDone {
+            key: job.key.clone(),
+            kind: job.kind.clone(),
+            stamp: job.stamp.clone(),
+            attempt: job.attempt,
+            cancelled: true,
+            outcome: Err(BackendError::Cancelled),
+        })
+    }
+
+    fn run_script_diagnostics(backend: &ScriptDiagnosticsBackend, job: &Job) -> DiagnosticsResult {
+        backend
+            .script_diagnostics(DiagnosticsRequest {
+                context: job.context.clone(),
+            })
+            .expect("script diagnostics answer")
+    }
+
+    fn script_diagnostics_server(
+        backend: Arc<ScriptDiagnosticsBackend>,
+        host: Arc<ScriptHost>,
+        text: &str,
+    ) -> (Server, Arc<ManualDispatch>) {
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend,
+            MockBackend::new().capabilities(),
+            dispatch.clone(),
+            host,
+        );
+        server.diagnostics_debounce = Duration::ZERO;
+        initialize(&mut server);
+        open_script_document(&mut server, text);
+        (server, dispatch)
+    }
+
+    fn publish_params(outgoing: &Outgoing) -> &serde_json::Value {
+        let Outgoing::Notification { method, params } = outgoing else {
+            panic!("expected a diagnostics notification");
+        };
+        assert_eq!(method, "textDocument/publishDiagnostics");
+        params
+    }
+
+    fn take_document_symbol_job(dispatch: &ManualDispatch) -> Job {
+        let mut found = None;
+        for job in dispatch.take() {
+            if matches!(job.kind, JobKind::DocumentSymbols { .. }) {
+                assert!(found.is_none(), "one document symbol job per request");
+                found = Some(job);
+            }
+        }
+        found.expect("a document symbol job")
+    }
+
+    fn finish_document_symbol_job(
+        server: &mut Server,
+        job: &Job,
+        result: Result<DocumentSymbolsResult, BackendError>,
+    ) -> Vec<Outgoing> {
+        finish_document_symbol_job_outcome(
+            server,
+            job,
+            result.map(|result| Outcome::DocumentSymbols(Box::new(result))),
+        )
+    }
+
+    fn finish_document_symbol_job_outcome(
+        server: &mut Server,
+        job: &Job,
+        outcome: Result<Outcome, BackendError>,
+    ) -> Vec<Outgoing> {
+        server.handle_work(WorkDone {
+            key: job.key.clone(),
+            kind: job.kind.clone(),
+            stamp: job.stamp.clone(),
+            attempt: job.attempt,
+            cancelled: false,
+            outcome,
+        })
+    }
+
+    fn finish_cancelled_document_symbol_job(server: &mut Server, job: &Job) -> Vec<Outgoing> {
+        server.handle_work(WorkDone {
+            key: job.key.clone(),
+            kind: job.kind.clone(),
+            stamp: job.stamp.clone(),
+            attempt: job.attempt,
+            cancelled: true,
+            outcome: Err(BackendError::Cancelled),
+        })
     }
 
     fn epoch() -> BackendEpoch {
@@ -1979,6 +2581,57 @@ mod tests {
     }
 
     #[test]
+    fn case_server_0150_json_rpc_notifications_never_produce_a_response() {
+        // Oracle: `server.test.ts:150`. Notifications may change state and may
+        // schedule diagnostics, but they never answer; the first reply belongs
+        // to the request that follows them.
+        let (mut server, _) = setup();
+        initialize(&mut server);
+
+        assert!(
+            server
+                .handle_incoming(notification("nope", json!({})))
+                .is_empty(),
+            "an unknown notification is ignored"
+        );
+        assert!(
+            server
+                .handle_incoming(notification("textDocument/didOpen", json!({})))
+                .is_empty(),
+            "a malformed notification is ignored"
+        );
+        assert!(
+            server
+                .handle_incoming(notification(
+                    "textDocument/didOpen",
+                    json!({
+                        "textDocument": {
+                            "uri": URI,
+                            "languageId": "wxml",
+                            "version": 1,
+                            "text": "<view>{{ title }}</view>",
+                        }
+                    }),
+                ))
+                .is_empty(),
+            "a valid notification only schedules work"
+        );
+
+        let outgoing = only(server.handle_incoming(request(json!(7), "shutdown", json!(null))));
+        match &outgoing {
+            Outgoing::Response { id, .. } => {
+                assert_eq!(id, &json!(7), "the first reply must belong to the request");
+            }
+            other => panic!("expected the shutdown response, got {other:?}"),
+        }
+        assert!(
+            server
+                .handle_incoming(notification("exit", json!(null)))
+                .is_empty()
+        );
+    }
+
+    #[test]
     fn invalid_parameters_are_rejected() {
         let (mut server, _) = setup();
         initialize(&mut server);
@@ -2803,7 +3456,7 @@ mod tests {
 
             fn diagnostics(
                 &self,
-                _request: wxml_types::DiagnosticsRequest,
+                _request: DiagnosticsRequest,
             ) -> Result<DiagnosticsResult, BackendError> {
                 Ok(DiagnosticsResult {
                     diagnostics: Vec::new(),
@@ -2949,5 +3602,1150 @@ mod tests {
         assert_eq!(document.offset_at(Position::new(0, 1)), Some(1));
         assert_eq!(document.offset_at(Position::new(0, 3)), Some(5));
         assert_eq!(document.offset_at(Position::new(0, 2)), None);
+    }
+
+    fn script_outline_file() -> FileId {
+        FileId::new(ProjectId::new("script-outline"), "pages/index/index.ts").expect("script file")
+    }
+
+    fn template_outline_file() -> FileId {
+        FileId::new(ProjectId::new("script-outline"), "pages/index/index.wxml")
+            .expect("template file")
+    }
+
+    fn outline_server(
+        backend: Arc<ScriptSymbolsBackend>,
+        host: Arc<ScriptHost>,
+        hierarchical: bool,
+        text: &str,
+    ) -> (Server, Arc<ManualDispatch>) {
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend,
+            MockBackend::new().capabilities(),
+            dispatch.clone(),
+            host,
+        );
+        initialize_with_hierarchy(&mut server, hierarchical);
+        open_script_document(&mut server, text);
+        dispatch.take();
+        (server, dispatch)
+    }
+
+    fn run_outline(
+        backend: &ScriptSymbolsBackend,
+        job: &Job,
+    ) -> Result<DocumentSymbolsResult, BackendError> {
+        let JobKind::DocumentSymbols { subject, .. } = &job.kind else {
+            panic!("expected a document symbol job");
+        };
+        backend.document_symbols(DocumentSymbolsRequest {
+            context: job.context.clone(),
+            subject: subject.clone(),
+        })
+    }
+
+    #[test]
+    fn script_document_symbol_request_runs_on_the_worker_and_publishes() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) =
+            outline_server(backend.clone(), host, true, SCRIPT_OUTLINE_TEXT);
+
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty(),
+            "the protocol loop must not answer before the worker finishes"
+        );
+        let job = take_document_symbol_job(&dispatch);
+        let JobKind::DocumentSymbols { subject, scope } = &job.kind else {
+            panic!("expected a document symbol job");
+        };
+        assert_eq!(subject, &script_outline_file());
+        assert_eq!(scope.template, template_outline_file());
+        assert_eq!(scope.template_snapshot, SnapshotId::new(1));
+        assert_eq!(scope.view_revision, ViewRevision::new(2));
+        assert_ne!(scope.script_hash, 0);
+
+        let answer = run_outline(&backend, &job).expect("backend answer");
+        let requests = backend.requests();
+        assert_eq!(requests.len(), 1);
+        let request = &requests[0];
+        assert_eq!(request.subject, *subject);
+        assert_eq!(
+            request.context.project_revision(),
+            ProjectRevision::new(ProjectId::new("script-outline"), 1)
+        );
+        assert_eq!(request.context.view_revision(), ViewRevision::new(2));
+        assert_eq!(request.context.backend_epoch(), epoch());
+        assert_eq!(request.context.source().file(), &template_outline_file());
+        assert_eq!(request.context.source().snapshot(), SnapshotId::new(1));
+        assert_eq!(
+            request.context.source().text(),
+            "<view>{{ user.name }}</view>"
+        );
+
+        let outgoing = only(finish_document_symbol_job(&mut server, &job, Ok(answer)));
+        let values = result(&outgoing).as_array().expect("outline array");
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0]["name"], json!("用户"));
+        assert_eq!(values[0]["kind"], json!(5));
+        assert_eq!(
+            values[0]["range"]["start"],
+            json!({"line": 0, "character": 0})
+        );
+        assert_eq!(
+            values[0]["selectionRange"]["start"],
+            json!({"line": 0, "character": 6})
+        );
+        assert_eq!(
+            values[0]["selectionRange"]["end"],
+            json!({"line": 0, "character": 8})
+        );
+        let children = values[0]["children"].as_array().expect("children");
+        assert_eq!(children.len(), 1);
+        assert_eq!(children[0]["name"], json!("name"));
+        assert_eq!(children[0]["kind"], json!(7));
+        assert_eq!(backend.calls(), 1);
+    }
+
+    #[test]
+    fn script_document_symbols_flatten_without_hierarchical_support() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(true, 2)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) =
+            outline_server(backend.clone(), host, false, SCRIPT_OUTLINE_TEXT);
+
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        let answer = run_outline(&backend, &job).expect("backend answer");
+        let outgoing = only(finish_document_symbol_job(&mut server, &job, Ok(answer)));
+        let values = result(&outgoing).as_array().expect("outline array");
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0]["name"], json!("用户"));
+        assert_eq!(values[0]["location"]["uri"], json!(SCRIPT_URI));
+        assert_eq!(
+            values[0]["location"]["range"]["start"],
+            json!({"line": 0, "character": 0})
+        );
+        assert!(values[0].get("selectionRange").is_none());
+        assert_eq!(values[1]["name"], json!("name"));
+        assert_eq!(values[1]["containerName"], json!("用户"));
+        assert!(values[1].get("selectionRange").is_none());
+        assert_eq!(backend.calls(), 1);
+    }
+
+    #[test]
+    fn script_document_symbols_checked_empty_is_the_only_empty_success() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) = outline_server(backend, host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        let mut empty = script_outline(false, 0);
+        empty.symbols.clear();
+        empty.status = CapabilityStatus::Supported;
+        let outgoing = only(finish_document_symbol_job(&mut server, &job, Ok(empty)));
+        assert_eq!(result(&outgoing), &json!([]));
+    }
+
+    #[test]
+    fn script_document_symbols_unsupported_with_symbols_are_a_request_failure() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) = outline_server(backend, host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        let mut unsupported = script_outline(false, 0);
+        unsupported.status = CapabilityStatus::Unsupported {
+            reason: "document symbols are not implemented".to_owned(),
+        };
+        let outgoing = only(finish_document_symbol_job(
+            &mut server,
+            &job,
+            Ok(unsupported),
+        ));
+        assert_eq!(
+            error_code(&outgoing),
+            jsonrpc::error_codes::REQUEST_FAILED,
+            "an unsupported status must not publish its symbols"
+        );
+    }
+
+    #[test]
+    fn script_document_symbols_partial_empty_is_a_request_failure() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) = outline_server(backend, host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        let mut partial = script_outline(false, 0);
+        partial.symbols.clear();
+        partial.status = CapabilityStatus::Partial {
+            reason: "the document symbol evidence is incomplete".to_owned(),
+        };
+        let outgoing = only(finish_document_symbol_job(&mut server, &job, Ok(partial)));
+        assert_eq!(error_code(&outgoing), jsonrpc::error_codes::REQUEST_FAILED);
+    }
+
+    #[test]
+    fn script_document_symbols_partial_with_symbols_publish_them() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(true, 2)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) = outline_server(backend, host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        let outgoing = only(finish_document_symbol_job(
+            &mut server,
+            &job,
+            Ok(script_outline(true, 2)),
+        ));
+        let values = result(&outgoing).as_array().expect("outline array");
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0]["name"], json!("用户"));
+    }
+
+    #[test]
+    fn script_document_symbols_backend_errors_are_request_failures() {
+        let backend = Arc::new(ScriptSymbolsBackend::failing());
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) =
+            outline_server(backend.clone(), host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        let error = run_outline(&backend, &job).expect_err("backend failure");
+        let outgoing = only(finish_document_symbol_job(&mut server, &job, Err(error)));
+        assert_eq!(error_code(&outgoing), jsonrpc::error_codes::REQUEST_FAILED);
+        assert_eq!(backend.calls(), 1);
+
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) = outline_server(backend, host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(3, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        let outgoing = only(finish_document_symbol_job(
+            &mut server,
+            &job,
+            Err(BackendError::Timeout),
+        ));
+        assert_eq!(error_code(&outgoing), jsonrpc::error_codes::REQUEST_FAILED);
+    }
+
+    #[test]
+    fn script_document_symbols_wrong_result_kind_is_an_internal_error() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) = outline_server(backend, host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        let outgoing = only(finish_document_symbol_job_outcome(
+            &mut server,
+            &job,
+            Ok(Outcome::Hover(Box::new(hover_result()))),
+        ));
+        assert_eq!(error_code(&outgoing), jsonrpc::error_codes::INTERNAL_ERROR);
+    }
+
+    #[test]
+    fn script_document_symbols_cancelled_backend_error_is_content_modified() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) = outline_server(backend, host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        let outgoing = only(finish_document_symbol_job(
+            &mut server,
+            &job,
+            Err(BackendError::Cancelled),
+        ));
+        assert_eq!(
+            error_code(&outgoing),
+            jsonrpc::error_codes::CONTENT_MODIFIED
+        );
+    }
+
+    #[test]
+    fn script_document_symbols_serialization_failure_is_a_request_failure() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) = outline_server(backend, host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        let mut invalid = script_outline(false, 0);
+        invalid.symbols[0].range = SourceRange::from_bounds(
+            0,
+            u32::try_from(SCRIPT_OUTLINE_TEXT.len() + 8).expect("range end"),
+        )
+        .expect("range");
+        let outgoing = only(finish_document_symbol_job(&mut server, &job, Ok(invalid)));
+        assert_eq!(error_code(&outgoing), jsonrpc::error_codes::REQUEST_FAILED);
+    }
+
+    #[test]
+    fn script_document_symbols_stale_epoch_and_revision_are_content_modified() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) = outline_server(backend, host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let mut job = take_document_symbol_job(&dispatch);
+        job.stamp.epoch = BackendEpoch::new(BackendId::new("mock"), 2);
+        let outgoing = only(finish_document_symbol_job(
+            &mut server,
+            &job,
+            Ok(script_outline(false, 0)),
+        ));
+        assert_eq!(
+            error_code(&outgoing),
+            jsonrpc::error_codes::CONTENT_MODIFIED
+        );
+
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) = outline_server(backend, host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(3, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        server.handle_incoming(notification(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {"uri": SCRIPT_URI, "version": 2},
+                "contentChanges": [{"text": "class Changed {}\n"}],
+            }),
+        ));
+        dispatch.take();
+        let outgoing = only(finish_document_symbol_job(
+            &mut server,
+            &job,
+            Ok(script_outline(false, 0)),
+        ));
+        assert_eq!(
+            error_code(&outgoing),
+            jsonrpc::error_codes::CONTENT_MODIFIED
+        );
+    }
+
+    #[test]
+    fn script_document_symbols_stale_scope_is_content_modified() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) =
+            outline_server(backend, host.clone(), true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        host.close_template();
+        let outgoing = only(finish_document_symbol_job(
+            &mut server,
+            &job,
+            Ok(script_outline(false, 0)),
+        ));
+        assert_eq!(
+            error_code(&outgoing),
+            jsonrpc::error_codes::CONTENT_MODIFIED
+        );
+
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) =
+            outline_server(backend, host.clone(), true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(3, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        host.bump_view_revision();
+        let outgoing = only(finish_document_symbol_job(
+            &mut server,
+            &job,
+            Ok(script_outline(false, 0)),
+        ));
+        assert_eq!(
+            error_code(&outgoing),
+            jsonrpc::error_codes::CONTENT_MODIFIED
+        );
+
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) =
+            outline_server(backend, host.clone(), true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(4, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        host.replace_template_snapshot();
+        let outgoing = only(finish_document_symbol_job(
+            &mut server,
+            &job,
+            Ok(script_outline(false, 0)),
+        ));
+        assert_eq!(
+            error_code(&outgoing),
+            jsonrpc::error_codes::CONTENT_MODIFIED
+        );
+    }
+
+    #[test]
+    fn script_document_symbols_host_text_change_is_content_modified() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) =
+            outline_server(backend, host.clone(), true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        host.set_script_text("class Changed {}\n");
+        let outgoing = only(finish_document_symbol_job(
+            &mut server,
+            &job,
+            Ok(script_outline(false, 0)),
+        ));
+        assert_eq!(
+            error_code(&outgoing),
+            jsonrpc::error_codes::CONTENT_MODIFIED
+        );
+    }
+
+    #[test]
+    fn script_document_symbols_reject_mismatched_script_text_before_scheduling() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) =
+            outline_server(backend.clone(), host, true, "class Other {}\n");
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, SCRIPT_URI)));
+        assert_eq!(
+            error_code(&outgoing),
+            jsonrpc::error_codes::CONTENT_MODIFIED
+        );
+        assert!(dispatch.take().is_empty());
+        assert_eq!(backend.calls(), 0);
+    }
+
+    #[test]
+    fn script_document_symbols_for_an_unopened_script_fail() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend.clone(),
+            MockBackend::new().capabilities(),
+            dispatch.clone(),
+            host,
+        );
+        initialize_with_hierarchy(&mut server, true);
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, SCRIPT_URI)));
+        assert_eq!(error_code(&outgoing), jsonrpc::error_codes::REQUEST_FAILED);
+        assert!(dispatch.take().is_empty());
+        assert_eq!(backend.calls(), 0);
+    }
+
+    #[test]
+    fn script_document_symbols_require_the_owning_template_to_be_open() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::with_template(SCRIPT_OUTLINE_TEXT, false));
+        let (mut server, dispatch) =
+            outline_server(backend.clone(), host, true, SCRIPT_OUTLINE_TEXT);
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, SCRIPT_URI)));
+        assert_eq!(error_code(&outgoing), jsonrpc::error_codes::REQUEST_FAILED);
+        assert!(dispatch.take().is_empty());
+        assert_eq!(backend.calls(), 0);
+    }
+
+    #[test]
+    fn script_document_symbols_for_a_non_owning_script_fail() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) =
+            outline_server(backend.clone(), host, true, SCRIPT_OUTLINE_TEXT);
+        let other_uri = "file:///pages/index/other.ts";
+        let outgoing = server.handle_incoming(notification(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {
+                    "uri": other_uri,
+                    "languageId": "typescript",
+                    "version": 1,
+                    "text": "const other = 1;\n",
+                }
+            }),
+        ));
+        assert!(outgoing.is_empty());
+        dispatch.take();
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, other_uri)));
+        assert_eq!(error_code(&outgoing), jsonrpc::error_codes::REQUEST_FAILED);
+        assert!(dispatch.take().is_empty());
+        assert_eq!(backend.calls(), 0);
+    }
+
+    #[test]
+    fn script_document_symbols_for_a_shared_owner_fail() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::shared(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) =
+            outline_server(backend.clone(), host, true, SCRIPT_OUTLINE_TEXT);
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, SCRIPT_URI)));
+        assert_eq!(error_code(&outgoing), jsonrpc::error_codes::REQUEST_FAILED);
+        assert!(dispatch.take().is_empty());
+        assert_eq!(backend.calls(), 0);
+    }
+
+    #[test]
+    fn script_document_symbols_outside_a_project_are_empty() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new(
+            backend.clone(),
+            MockBackend::new().capabilities(),
+            dispatch.clone(),
+        );
+        initialize_with_hierarchy(&mut server, true);
+        open_script_document(&mut server, SCRIPT_OUTLINE_TEXT);
+        dispatch.take();
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, SCRIPT_URI)));
+        assert_eq!(
+            result(&outgoing),
+            &json!([]),
+            "a document with no project route is not a script outline"
+        );
+        assert!(dispatch.take().is_empty());
+        assert_eq!(backend.calls(), 0);
+    }
+
+    #[test]
+    fn script_document_symbols_reject_a_duplicate_inflight_id() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) = outline_server(backend, host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, SCRIPT_URI)));
+        assert_eq!(error_code(&outgoing), jsonrpc::error_codes::INVALID_REQUEST);
+        assert_eq!(dispatch.take().len(), 1);
+    }
+
+    #[test]
+    fn script_document_symbols_queued_cancellation_answers_once() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) = outline_server(backend, host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        let outgoing =
+            only(server.handle_incoming(notification("$/cancelRequest", json!({"id": 2}))));
+        assert_eq!(
+            error_code(&outgoing),
+            jsonrpc::error_codes::REQUEST_CANCELLED
+        );
+        assert!(
+            finish_document_symbol_job(&mut server, &job, Ok(script_outline(false, 0))).is_empty(),
+            "a late result for a cancelled request must be dropped"
+        );
+    }
+
+    #[test]
+    fn script_document_symbols_running_cancellation_is_request_cancelled() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) = outline_server(backend, host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        let outgoing = only(finish_cancelled_document_symbol_job(&mut server, &job));
+        assert_eq!(
+            error_code(&outgoing),
+            jsonrpc::error_codes::REQUEST_CANCELLED
+        );
+    }
+
+    #[test]
+    fn script_document_symbols_keep_inflight_state_across_did_close() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) = outline_server(backend, host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let job = take_document_symbol_job(&dispatch);
+        server.handle_incoming(notification(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": SCRIPT_URI}}),
+        ));
+        let outgoing = only(finish_cancelled_document_symbol_job(&mut server, &job));
+        assert_eq!(
+            error_code(&outgoing),
+            jsonrpc::error_codes::REQUEST_CANCELLED
+        );
+    }
+
+    #[test]
+    fn script_document_symbols_reused_id_drops_the_old_attempt() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let (mut server, dispatch) = outline_server(backend, host, true, SCRIPT_OUTLINE_TEXT);
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let old = take_document_symbol_job(&dispatch);
+        let _ = only(server.handle_incoming(notification("$/cancelRequest", json!({"id": 2}))));
+        assert!(
+            server
+                .handle_incoming(document_symbol_request(2, SCRIPT_URI))
+                .is_empty()
+        );
+        let new = take_document_symbol_job(&dispatch);
+        assert_ne!(old.attempt, new.attempt);
+        assert!(
+            finish_document_symbol_job(&mut server, &old, Ok(script_outline(false, 0))).is_empty(),
+            "the old attempt must not answer the new request"
+        );
+        let outgoing = only(finish_document_symbol_job(
+            &mut server,
+            &new,
+            Ok(script_outline(false, 0)),
+        ));
+        assert_eq!(result(&outgoing).as_array().expect("outline").len(), 1);
+    }
+
+    #[test]
+    fn wxml_document_symbols_stay_static_and_never_call_the_backend() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend.clone(),
+            MockBackend::new().capabilities(),
+            dispatch.clone(),
+            host,
+        );
+        initialize_with_hierarchy(&mut server, true);
+        open_document(&mut server, "<view id=\"a\"><text>x</text></view>", 1);
+        dispatch.take();
+
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, URI)));
+        let values = result(&outgoing).as_array().expect("outline array");
+        assert_eq!(values[0]["name"], json!("view"));
+        assert_eq!(values[0]["kind"], json!(5));
+        assert_eq!(backend.calls(), 0);
+        assert!(dispatch.take().is_empty());
+    }
+
+    #[test]
+    fn wxml_document_symbols_for_an_unopened_template_fail() {
+        let backend = Arc::new(ScriptSymbolsBackend::new(script_outline(false, 0)));
+        let host = Arc::new(ScriptHost::new(SCRIPT_OUTLINE_TEXT));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend.clone(),
+            MockBackend::new().capabilities(),
+            dispatch.clone(),
+            host,
+        );
+        initialize_with_hierarchy(&mut server, true);
+        let outgoing = only(server.handle_incoming(document_symbol_request(2, URI)));
+        assert_eq!(error_code(&outgoing), jsonrpc::error_codes::REQUEST_FAILED);
+        assert!(dispatch.take().is_empty());
+        assert_eq!(backend.calls(), 0);
+    }
+
+    #[test]
+    fn script_diagnostics_publish_exact_uri_version_and_utf16_ranges() {
+        const TEXT: &str = "// 😀 中文\nconst 名字: string = 1;\n";
+        let start = u32::try_from(TEXT.find("名字: string").expect("name token")).expect("start");
+        let end = start + u32::try_from("名字: string".len()).expect("length");
+        let answer = DiagnosticsResult {
+            diagnostics: vec![Diagnostic {
+                range: SourceRange::from_bounds(start, end).expect("range"),
+                severity: DiagnosticSeverity::Error,
+                message: "Type 'number' is not assignable to type 'string'.".to_owned(),
+                code: Some("2322".to_owned()),
+            }],
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new(TEXT));
+        let (mut server, dispatch) = script_diagnostics_server(backend.clone(), host, TEXT);
+        let job = take_script_diagnostics_job(&dispatch);
+        assert_eq!(job.context.file().path(), "pages/index/index.ts");
+        assert_eq!(job.context.source().text(), TEXT);
+        assert_eq!(job.context.source().revision(), job.stamp.revision);
+        assert!(matches!(
+            job.kind,
+            JobKind::ScriptDiagnostics { script_hash } if script_hash != 0
+        ));
+
+        let answer = run_script_diagnostics(&backend, &job);
+        let requests = backend.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].context.file().path(), "pages/index/index.ts");
+        assert_eq!(requests[0].context.source().text(), TEXT);
+        assert_eq!(requests[0].context.source().revision(), job.stamp.revision);
+
+        let outgoing = only(finish_script_diagnostics_job(&mut server, &job, Ok(answer)));
+        let params = publish_params(&outgoing);
+        assert_eq!(params["uri"], json!(SCRIPT_URI));
+        assert_eq!(params["version"], json!(1));
+        let diagnostic = &params["diagnostics"][0];
+        assert_eq!(
+            diagnostic["range"]["start"],
+            json!({"line": 1, "character": 6})
+        );
+        assert_eq!(
+            diagnostic["range"]["end"],
+            json!({"line": 1, "character": 16})
+        );
+        assert_eq!(diagnostic["severity"], json!(1));
+        assert_eq!(diagnostic["code"], json!("2322"));
+    }
+
+    #[test]
+    fn stale_script_diagnostics_are_dropped_and_the_latest_publishes() {
+        let answer = DiagnosticsResult {
+            diagnostics: Vec::new(),
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x: string = 1;\n"));
+        let (mut server, dispatch) =
+            script_diagnostics_server(backend.clone(), host, "const x: string = 1;\n");
+        let old = take_script_diagnostics_job(&dispatch);
+
+        server.handle_incoming(notification(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {"uri": SCRIPT_URI, "version": 2},
+                "contentChanges": [{"text": "const y: string = 2;\n"}],
+            }),
+        ));
+        let latest = take_script_diagnostics_job(&dispatch);
+        assert!(
+            old.cancel.load(Ordering::SeqCst),
+            "a newer edit supersedes the queued job"
+        );
+
+        let stale = DiagnosticsResult {
+            diagnostics: vec![Diagnostic {
+                range: SourceRange::from_bounds(6, 13).expect("range"),
+                severity: DiagnosticSeverity::Error,
+                message: "stale".to_owned(),
+                code: Some("2322".to_owned()),
+            }],
+            status: CapabilityStatus::Supported,
+        };
+        assert!(
+            finish_script_diagnostics_job(&mut server, &old, Ok(stale)).is_empty(),
+            "a result for the previous revision must not publish"
+        );
+
+        let outgoing = only(finish_script_diagnostics_job(
+            &mut server,
+            &latest,
+            Ok(run_script_diagnostics(&backend, &latest)),
+        ));
+        let params = publish_params(&outgoing);
+        assert_eq!(params["uri"], json!(SCRIPT_URI));
+        assert_eq!(params["version"], json!(2));
+        assert_eq!(params["diagnostics"], json!([]));
+    }
+
+    #[test]
+    fn script_diagnostics_retry_after_an_unrelated_project_revision() {
+        let answer = DiagnosticsResult {
+            diagnostics: Vec::new(),
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x: string = 1;\n"));
+        let (mut server, dispatch) =
+            script_diagnostics_server(backend.clone(), host, "const x: string = 1;\n");
+        let old = take_script_diagnostics_job(&dispatch);
+
+        // Opening an unrelated JSON overlay advances the project revision. The
+        // script text is unchanged, so its in-flight check must be retried
+        // instead of silently disappearing.
+        assert!(
+            server
+                .handle_incoming(notification(
+                    "textDocument/didOpen",
+                    json!({
+                        "textDocument": {
+                            "uri": "file:///pages/index/app.json",
+                            "languageId": "json",
+                            "version": 1,
+                            "text": "{\"pages\":[]}",
+                        }
+                    }),
+                ))
+                .is_empty()
+        );
+        assert!(
+            finish_script_diagnostics_job(
+                &mut server,
+                &old,
+                Ok(run_script_diagnostics(&backend, &old))
+            )
+            .is_empty(),
+            "the stale result must not publish directly"
+        );
+
+        let retry = take_script_diagnostics_job(&dispatch);
+        assert_eq!(retry.attempt, 1);
+        assert_eq!(retry.stamp.revision, old.stamp.revision);
+        let outgoing = only(finish_script_diagnostics_job(
+            &mut server,
+            &retry,
+            Ok(run_script_diagnostics(&backend, &retry)),
+        ));
+        let params = publish_params(&outgoing);
+        assert_eq!(params["uri"], json!(SCRIPT_URI));
+        assert_eq!(params["diagnostics"], json!([]));
+    }
+
+    #[test]
+    fn stale_script_diagnostics_epoch_is_dropped_and_rescheduled() {
+        let answer = DiagnosticsResult {
+            diagnostics: Vec::new(),
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x: string = 1;\n"));
+        let (mut server, dispatch) =
+            script_diagnostics_server(backend.clone(), host, "const x: string = 1;\n");
+        let job = take_script_diagnostics_job(&dispatch);
+
+        let next_epoch = BackendEpoch::new(BackendId::new("mock"), 2);
+        backend.inner.set_epoch(next_epoch.clone());
+        assert!(
+            finish_script_diagnostics_job(
+                &mut server,
+                &job,
+                Ok(run_script_diagnostics(&backend, &job))
+            )
+            .is_empty(),
+            "a result from the previous backend generation must not publish"
+        );
+        let retried = take_script_diagnostics_job(&dispatch);
+        assert_eq!(
+            retried.stamp.epoch, next_epoch,
+            "the retry must use the new backend generation"
+        );
+        assert!(
+            server.dirty.is_empty(),
+            "the retry consumed the dirty marker"
+        );
+    }
+
+    #[test]
+    fn unsupported_script_diagnostics_publish_nothing() {
+        let backend = Arc::new(MockBackend::new());
+        let host = Arc::new(ScriptHost::new("const x: string = 1;\n"));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend.clone(),
+            backend.capabilities(),
+            dispatch.clone(),
+            host,
+        );
+        server.diagnostics_debounce = Duration::ZERO;
+        initialize(&mut server);
+        open_script_document(&mut server, "const x: string = 1;\n");
+
+        let job = take_script_diagnostics_job(&dispatch);
+        let answer = Backend::script_diagnostics(
+            &*backend,
+            DiagnosticsRequest {
+                context: job.context.clone(),
+            },
+        )
+        .expect("default script diagnostics");
+        assert!(matches!(
+            answer.status,
+            CapabilityStatus::Unsupported { .. }
+        ));
+        assert!(
+            finish_script_diagnostics_job(&mut server, &job, Ok(answer)).is_empty(),
+            "Unsupported must not be published as an empty, checked script"
+        );
+        assert!(
+            server
+                .handle_incoming(notification(
+                    "textDocument/didClose",
+                    json!({"textDocument": {"uri": SCRIPT_URI}}),
+                ))
+                .is_empty(),
+            "a script that never published does not need a close clear"
+        );
+    }
+
+    #[test]
+    fn partial_script_diagnostics_publish_their_entries() {
+        let answer = DiagnosticsResult {
+            diagnostics: vec![Diagnostic {
+                range: SourceRange::from_bounds(0, 5).expect("range"),
+                severity: DiagnosticSeverity::Warning,
+                message: "partial script warning".to_owned(),
+                code: None,
+            }],
+            status: CapabilityStatus::Partial {
+                reason: "the project source list is incomplete".to_owned(),
+            },
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x = 1;\n"));
+        let (mut server, dispatch) =
+            script_diagnostics_server(backend.clone(), host, "const x = 1;\n");
+        let job = take_script_diagnostics_job(&dispatch);
+        let outgoing = only(finish_script_diagnostics_job(
+            &mut server,
+            &job,
+            Ok(run_script_diagnostics(&backend, &job)),
+        ));
+        let params = publish_params(&outgoing);
+        let diagnostics = params["diagnostics"].as_array().expect("diagnostics");
+        assert_eq!(
+            diagnostics.len(),
+            2,
+            "the entry plus a partial status warning"
+        );
+        assert_eq!(diagnostics[0]["message"], json!("partial script warning"));
+        let status = diagnostics[1]["message"].as_str().expect("status message");
+        assert!(status.contains("partial"), "{status}");
+        assert!(status.contains("incomplete"), "{status}");
+    }
+
+    #[test]
+    fn did_save_schedules_script_diagnostics_immediately() {
+        let answer = DiagnosticsResult {
+            diagnostics: Vec::new(),
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x = 1;\n"));
+        let dispatch = Arc::new(ManualDispatch::default());
+        let mut server = Server::new_with_host(
+            backend,
+            MockBackend::new().capabilities(),
+            dispatch.clone(),
+            host,
+        );
+        server.diagnostics_debounce = Duration::from_millis(120);
+        initialize(&mut server);
+        open_script_document(&mut server, "const x = 1;\n");
+        dispatch.take();
+
+        server.handle_incoming(notification(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {"uri": SCRIPT_URI, "version": 2},
+                "contentChanges": [{"text": "const x = 2;\n"}],
+            }),
+        ));
+        assert!(dispatch.take().is_empty(), "typing is debounced");
+        assert_eq!(server.debounced_diagnostics.len(), 1);
+
+        server.handle_incoming(notification(
+            "textDocument/didSave",
+            json!({"textDocument": {"uri": SCRIPT_URI}}),
+        ));
+        let job = take_script_diagnostics_job(&dispatch);
+        assert_eq!(job.context.source().text(), "const x = 2;\n");
+        assert!(server.debounced_diagnostics.is_empty());
+    }
+
+    #[test]
+    fn the_same_script_stamp_is_not_queued_twice_while_in_flight() {
+        let answer = DiagnosticsResult {
+            diagnostics: Vec::new(),
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x = 1;\n"));
+        let (mut server, dispatch) = script_diagnostics_server(backend, host, "const x = 1;\n");
+        let job = take_script_diagnostics_job(&dispatch);
+
+        assert!(server.schedule_script_diagnostics(SCRIPT_URI).is_empty());
+        assert!(server.schedule_script_diagnostics(SCRIPT_URI).is_empty());
+        assert!(
+            dispatch.take().is_empty(),
+            "the exact same stamp is already in flight"
+        );
+
+        let _ = finish_script_diagnostics_job(
+            &mut server,
+            &job,
+            Ok(DiagnosticsResult {
+                diagnostics: Vec::new(),
+                status: CapabilityStatus::Supported,
+            }),
+        );
+        assert!(server.schedule_script_diagnostics(SCRIPT_URI).is_empty());
+        assert_eq!(dispatch.take().len(), 1, "a completed stamp may be retried");
+    }
+
+    #[test]
+    fn script_diagnostics_never_merge_template_diagnostics() {
+        let answer = DiagnosticsResult {
+            diagnostics: vec![Diagnostic {
+                range: SourceRange::from_bounds(0, 5).expect("range"),
+                severity: DiagnosticSeverity::Error,
+                message: "script only".to_owned(),
+                code: Some("2322".to_owned()),
+            }],
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x: string = 1;\n"));
+        let (mut server, dispatch) =
+            script_diagnostics_server(backend.clone(), host, "const x: string = 1;\n");
+        let script_job = take_script_diagnostics_job(&dispatch);
+
+        open_document(&mut server, "<view>{{ user.name }}</view>", 1);
+        let template_job = dispatch
+            .take()
+            .into_iter()
+            .find(|job| job.kind == JobKind::Diagnostics)
+            .expect("a template diagnostics job");
+
+        let outgoing = only(finish_script_diagnostics_job(
+            &mut server,
+            &script_job,
+            Ok(run_script_diagnostics(&backend, &script_job)),
+        ));
+        let params = publish_params(&outgoing);
+        assert_eq!(params["uri"], json!(SCRIPT_URI));
+        let diagnostics = params["diagnostics"].as_array().expect("diagnostics");
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0]["code"], json!("2322"));
+        assert_eq!(diagnostics[0]["message"], json!("script only"));
+
+        let outgoing = only(finish_script_diagnostics_job(
+            &mut server,
+            &template_job,
+            Ok(DiagnosticsResult {
+                diagnostics: Vec::new(),
+                status: CapabilityStatus::Supported,
+            }),
+        ));
+        let params = publish_params(&outgoing);
+        assert_eq!(params["uri"], json!(URI));
+        assert!(
+            !params["diagnostics"]
+                .as_array()
+                .expect("diagnostics")
+                .iter()
+                .any(|diagnostic| diagnostic["code"] == json!("2322")),
+            "a script diagnostic must not appear in the template payload: {params}"
+        );
+    }
+
+    #[test]
+    fn closing_a_published_script_cancels_and_clears_it() {
+        let answer = DiagnosticsResult {
+            diagnostics: Vec::new(),
+            status: CapabilityStatus::Supported,
+        };
+        let backend = Arc::new(ScriptDiagnosticsBackend::new(answer));
+        let host = Arc::new(ScriptHost::new("const x = 1;\n"));
+        let (mut server, dispatch) =
+            script_diagnostics_server(backend.clone(), host, "const x = 1;\n");
+        let first = take_script_diagnostics_job(&dispatch);
+        let outgoing = only(finish_script_diagnostics_job(
+            &mut server,
+            &first,
+            Ok(run_script_diagnostics(&backend, &first)),
+        ));
+        assert_eq!(publish_params(&outgoing)["uri"], json!(SCRIPT_URI));
+
+        server.handle_incoming(notification(
+            "textDocument/didSave",
+            json!({"textDocument": {"uri": SCRIPT_URI}}),
+        ));
+        let pending = take_script_diagnostics_job(&dispatch);
+        let outgoing = only(server.handle_incoming(notification(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": SCRIPT_URI}}),
+        )));
+        let params = publish_params(&outgoing);
+        assert_eq!(params["uri"], json!(SCRIPT_URI));
+        assert_eq!(params["diagnostics"], json!([]));
+        assert!(params.get("version").is_none());
+        assert!(
+            pending.cancel.load(Ordering::SeqCst),
+            "closing must cancel the pending script job"
+        );
+        assert!(
+            finish_cancelled_script_diagnostics_job(&mut server, &pending).is_empty(),
+            "a cancelled script job must not publish"
+        );
+        assert!(server.workspace.get(SCRIPT_URI).is_none());
     }
 }

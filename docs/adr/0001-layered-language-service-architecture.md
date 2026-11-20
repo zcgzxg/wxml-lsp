@@ -4,6 +4,8 @@
 **Status**: accepted  
 **Deciders**: 项目维护者、规划协作 agent
 
+**2026-11-17 后续**：[ADR-0008](0008-rust-tsgo-no-node-backend.md)（2026-11-20 已在 owner scope waiver 下最终关闭为 accepted，native 默认；P7 删除完成，Node removed）替代 Node 首选运行时与进程模型；本文的分层、依赖边界和可替换后端原则继续有效。
+
 **2026-11-16 补充**：[ADR-0006](0006-explicit-mini-program-roots.md) 明确 app 根与类型项目根的初始化配置和职责，替代根扫描及最近 tsconfig 推断；本记录的历史背景、分层和依赖边界继续有效。
 
 ## Context

@@ -39,11 +39,11 @@ use crate::dependencies::DependencyIndex;
 /// Marker used by the synthetic host and the synthetic workspace project.
 pub const SYNTHETIC_PROJECT: &str = "lsp";
 
-/// Compiler options that the C1 Node backend accepts.
+/// Compiler options accepted by the native backend.
 ///
-/// This mirrors `REQUEST_COMPILER_OPTION_KEYS` in
+/// This mirrors `REQUEST_COMPILER_OPTION_KEYS` in the retired
 /// `backends/typescript/src/protocol.ts`. Unknown keys are filtered here and
-/// reported as a `Partial` hint instead of being sent to Node, which rejects
+/// reported as a `Partial` hint instead of being forwarded, which would reject
 /// unknown options.
 const SUPPORTED_COMPILER_OPTIONS: [&str; 33] = [
     "strict",
@@ -424,6 +424,16 @@ pub trait ProjectHost: Send + Sync {
     fn view_for_file(&self, file: &FileId) -> Result<ViewTarget, HostError> {
         let path = ProjectPath::new(file.path()).map_err(|_| HostError::InvalidUri)?;
         self.view_for(&path)
+    }
+    /// Returns the discovered view that owns `file` as its script.
+    ///
+    /// A script may belong to at most one page/component view; a script shared
+    /// by several views has no unambiguous outline context and is rejected.
+    /// Hosts without a project return [`HostError::Unsupported`].
+    fn view_for_script(&self, _file: &FileId) -> Result<ViewTarget, HostError> {
+        Err(HostError::Unsupported {
+            reason: "script is not an owning page or component script",
+        })
     }
     /// Records an opened script/JSON document overlay.
     fn open_document(&self, open: OpenDocument) -> Result<HostUpdate, HostError>;
@@ -1229,6 +1239,40 @@ impl ProjectHost for ProjectState {
         let state = self.read();
         let path = ProjectPath::new(file.path()).map_err(|_| HostError::InvalidUri)?;
         view_in_slot(&state, file.project(), &path)
+    }
+
+    fn view_for_script(&self, file: &FileId) -> Result<ViewTarget, HostError> {
+        let state = self.read();
+        let slot = state
+            .projects
+            .get(file.project())
+            .ok_or(HostError::Unsupported {
+                reason: "project is not loaded",
+            })?;
+        let mut owners = slot
+            .views
+            .iter()
+            .filter(|(_, view)| view.script_file.as_ref() == Some(file));
+        let Some((wxml, view)) = owners.next() else {
+            return Err(HostError::Unsupported {
+                reason: "script is not an owning page or component script",
+            });
+        };
+        if owners.next().is_some() {
+            return Err(HostError::Unsupported {
+                reason: "script is shared by several views",
+            });
+        }
+        let script = view.script.clone().ok_or(HostError::Unsupported {
+            reason: "page or component has no script",
+        })?;
+        Ok(ViewTarget {
+            wxml: wxml.clone(),
+            owner: view.owner,
+            script,
+            script_file: file.clone(),
+            view_revision: view.view_revision,
+        })
     }
 
     fn open_document(&self, open: OpenDocument) -> Result<HostUpdate, HostError> {
@@ -3819,6 +3863,69 @@ mod tests {
         assert_eq!(usage.attributes[0].name, "title");
         let component_file = usage.component_file.as_ref().expect("component file");
         assert_eq!(component_file.path(), "components/card/card.ts");
+    }
+
+    #[test]
+    fn view_for_script_resolves_the_unique_owning_view() {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/component-basic");
+        let root = std::fs::canonicalize(root).expect("fixture root");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open project");
+        let script = ProjectPath::new("pages/index/index.ts").expect("script");
+        let file = host.file_id(&script).expect("script file");
+        let view = host.view_for_script(&file).expect("owning view");
+        assert_eq!(view.wxml.as_str(), "pages/index/index.wxml");
+        assert_eq!(view.script, script);
+        assert_eq!(view.script_file, file);
+
+        let wxml = ProjectPath::new("pages/index/index.wxml").expect("wxml");
+        let wxml_file = host.file_id(&wxml).expect("wxml file");
+        assert!(matches!(
+            host.view_for_script(&wxml_file),
+            Err(HostError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn view_for_script_rejects_a_script_shared_by_two_views() {
+        let root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/component-basic");
+        let root = std::fs::canonicalize(root).expect("fixture root");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open project");
+        let script = ProjectPath::new("pages/index/index.ts").expect("script");
+        let file = host.file_id(&script).expect("script file");
+
+        // Discovery never maps two views to one script today, so construct the
+        // ambiguous view table directly. The host must reject it instead of
+        // picking one outline context arbitrarily.
+        {
+            let mut state = host.write();
+            let slot = state
+                .projects
+                .get_mut(file.project())
+                .expect("project slot");
+            let extra = ProjectPath::new("pages/index/index-copy.wxml").expect("extra wxml");
+            slot.views.insert(
+                extra,
+                ViewState {
+                    owner: RootKind::Page,
+                    script: Some(script),
+                    script_file: Some(file.clone()),
+                    view_revision: ViewRevision::new(99),
+                    components: BTreeMap::new(),
+                },
+            );
+        }
+
+        let error = host.view_for_script(&file).expect_err("shared owner");
+        assert!(
+            matches!(error, HostError::Unsupported { reason } if reason.contains("shared")),
+            "{error:?}"
+        );
     }
 
     #[test]

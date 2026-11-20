@@ -4,6 +4,8 @@
 **Status**: accepted  
 **Deciders**: 项目维护者、规划协作 agent
 
+**2026-11-17 后续**：[ADR-0008](0008-rust-tsgo-no-node-backend.md)（2026-11-20 已在 owner scope waiver 下最终关闭为 accepted，native 默认；P7 删除完成，Node removed）替代 Rust–Node NDJSON 协议；本文的版本化同步、快照一致性和发布屏障继续有效。
+
 **2026-11-16 补充**：根配置来源、项目选择和配置生效时机以 [ADR-0006](0006-explicit-mini-program-roots.md) 为准；本记录的历史背景与版本化同步原则继续有效。
 
 ## Context

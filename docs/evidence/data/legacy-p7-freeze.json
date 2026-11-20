@@ -1,0 +1,2153 @@
+{
+  "schema": "wxml-tsgo-p7-freeze/2",
+  "generated_at": "2026-11-20T09:02:15+08:00",
+  "generated_by": "scripts/p7-freeze.sh",
+  "algorithm": {
+    "name": "p7-freeze-tree-v1",
+    "path_base": "tree root",
+    "path_format": "root-relative UTF-8 with / separators",
+    "order": "LC_ALL=C byte sort of the root-relative path",
+    "entry": "relative_path + NUL + raw_file_bytes + NUL",
+    "digest": "SHA-256, lowercase hex",
+    "files": "regular files only; symlinks and special files rejected",
+    "empty_directories": "not represented",
+    "locale": "LC_ALL=C",
+    "line_endings": "raw working-tree bytes; a CRLF checkout changes every hash"
+  },
+  "commit": {
+    "requested_head": "3e24c444e87de13a20d4a67367e4d8e99b940524",
+    "head": "3e24c444e87de13a20d4a67367e4d8e99b940524",
+    "head_subject": "test(p7): retarget perf and stability gates to native",
+    "branch": "tsgo/migration",
+    "frozen_paths_clean": false,
+    "frozen_path_diff_requested_to_head": "not enforced in Frozen archived mode; identity is verified against the worktree only"
+  },
+  "frozen_paths_state": {
+    "oracle_manifest_mode": "Frozen",
+    "paths": [
+      {
+        "path": "backends/typescript",
+        "state": "archived",
+        "last_known": {
+          "file_count": 99,
+          "total_bytes": 746335,
+          "tree_sha256": "ef41f49c939cb881c2028c791b68731250184f38218c5aa71339f7702f02623f"
+        },
+        "reason": "tracked tree deleted by the P7 archive scope; oracle manifest is Frozen"
+      },
+      {
+        "path": "crates/wxml-lsp/src/backend_node",
+        "state": "archived",
+        "last_known": {
+          "file_count": 8,
+          "total_bytes": 264166,
+          "tree_sha256": "2f131507696b7163ce776c290cd1420551aae0df40eac3015ac6fad78ee0c710"
+        },
+        "reason": "tracked tree deleted by the P7 archive scope; oracle manifest is Frozen"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/real_node.rs",
+        "state": "archived",
+        "last_known": {
+          "bytes": 26150,
+          "sha256": "fc948a4bf7838c93693fdbc1b104ee96119a959835ed640077221d47af9849c4"
+        },
+        "reason": "frozen file deleted by the P7 archive scope; oracle manifest is Frozen"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "state": "archived",
+        "last_known": {
+          "bytes": 41910,
+          "sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+        },
+        "reason": "frozen file deleted by the P7 archive scope; oracle manifest is Frozen"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "state": "present",
+        "bytes": 23949,
+        "sha256": "0a8ccc3745ce323af596e031d218668d33f6901b238b3ca271cb1e847543d376"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/performance_bench.rs",
+        "state": "present",
+        "bytes": 39268,
+        "sha256": "f04c0dfed4e03661b647943c9336a4dbe2dcab74f133e6b7329bac0e2a249451"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/q2_stability.rs",
+        "state": "present",
+        "bytes": 17477,
+        "sha256": "55f2a601ef8dcde957989ec6a9afa15960099e51f9d807f7fdde2acc53244978"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/semantic_tools.rs",
+        "state": "archived",
+        "last_known": {
+          "bytes": 100857,
+          "sha256": "359e5d9a38d88d75617dc4effbad240782b1f356bbaa4a1e1c2f2d7a45572773"
+        },
+        "reason": "frozen file deleted by the P7 archive scope; oracle manifest is Frozen"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/native_parity/native_gates.rs",
+        "state": "present",
+        "bytes": 53408,
+        "sha256": "518f211efed570bfc0562a17d7709dbbbad5a03e7b78f5fe18386d956873b806"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/native_parity/ledger.rs",
+        "state": "present",
+        "bytes": 103957,
+        "sha256": "492ecc260dbd4884af5b374f9fd5a93c4be7e2ea18304c1c75d5d336d4a750b3"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/native_parity/fixture_hash.rs",
+        "state": "present",
+        "bytes": 25560,
+        "sha256": "fd3fbfa9095738fdc04278d1b84ba9d8552b8a0e998c7cd8693a1bb09543fc23"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs",
+        "state": "present",
+        "bytes": 136184,
+        "sha256": "62ab6ed6ffe6a124baa5e1c07f0b5729cf0a81a986c258976ebfa052a36e7e00"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/native_parity/symbols_edits.rs",
+        "state": "present",
+        "bytes": 29844,
+        "sha256": "3b63dd6b98b0d4598283d09910de5c30ed23e10c086ab283183c1cbca8f715c9"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/native_parity/oracle_manifest.rs",
+        "state": "present",
+        "bytes": 42984,
+        "sha256": "2d8bd4e8263cd75ed10dd08de3aecd82a7c163966c97e63b4ee03a25061ddf4f"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/native_parity/oracle_manifest_tests.rs",
+        "state": "present",
+        "bytes": 16648,
+        "sha256": "31119dee9c36cb0b741c74c9ab04f664bda831eb7e3776c343cd63c44abab89b"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/native_parity.rs",
+        "state": "present",
+        "bytes": 12004,
+        "sha256": "8b988abfd0b9d65a8a306086328c4964d7c9c92fb1a6a9e5dfd78ce50e3d0f4c"
+      },
+      {
+        "path": "docs/plans/tsgo-test-ledger.json",
+        "state": "present",
+        "bytes": 1525281,
+        "sha256": "bb71fb9fe2b7e50948ceda631c64f827a9f2f24bfa91ff759a0f0a059e96087a"
+      },
+      {
+        "path": "docs/plans/tsgo-legacy-oracle-manifest.json",
+        "state": "present",
+        "bytes": 83170,
+        "sha256": "ed820c1f39eafd4011ab139772f07bc2b3b5daaa9d1358583282d5fb65322278"
+      },
+      {
+        "path": "crates/wxml-delivery/src",
+        "state": "partially-archived",
+        "reason": "v1 write symbols removed by the P7 delete scope; keep/read-only boundaries remain",
+        "v1_present_symbols": 4,
+        "v1_archived_symbols": 11,
+        "archived_entries": [
+          {
+            "file": "crates/wxml-delivery/src/acquire.rs",
+            "symbol": "acquire",
+            "last_known": {
+              "line": 60,
+              "file_sha256": "7c3ec564dc3812d002098918c249e0cc43d822b5a96773bfc807b1ec63b7bb94"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/bin/wxml-lsp-install.rs",
+            "symbol": "install_and_report",
+            "last_known": {
+              "line": 942,
+              "file_sha256": "c43e105b7cf392cc6fb90221338f9ee4544a08dd79a7ac1504dc2900ec3748ab"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/bin/wxml-lsp-package.rs",
+            "symbol": "build_package_call",
+            "last_known": {
+              "line": 179,
+              "file_sha256": "8d44c72d31cff63d682ac3d20f390f70712c2f5cc77fbe50bf9211acc3176cd9"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/cache.rs",
+            "symbol": "store_verified",
+            "last_known": {
+              "line": 176,
+              "file_sha256": "82fd1d7949cf49ca4acb09b65f4659a7f5056783811efdfb7ef35c4dcc80a325"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/install.rs",
+            "symbol": "install_tree",
+            "last_known": {
+              "line": 286,
+              "file_sha256": "b9759c58cf5bcd4261bf92d5e71b6b7582c089db3829bdc10271437ad6c99778"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/manifest.rs",
+            "symbol": "parse_index",
+            "last_known": {
+              "line": 632,
+              "file_sha256": "4ca379e0b21fa5274db5586a652bb75a7d4236e445792737fd9479d39e2e42b9"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/package.rs",
+            "symbol": "build_manifest",
+            "last_known": {
+              "line": 422,
+              "file_sha256": "d09e1466d5e7d44fc3c4ae707ae3de29494c6033b5e873c108a0b740eed1b4df"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/package.rs",
+            "symbol": "build_package",
+            "last_known": {
+              "line": 101,
+              "file_sha256": "d09e1466d5e7d44fc3c4ae707ae3de29494c6033b5e873c108a0b740eed1b4df"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/package.rs",
+            "symbol": "update_index",
+            "last_known": {
+              "line": 508,
+              "file_sha256": "d09e1466d5e7d44fc3c4ae707ae3de29494c6033b5e873c108a0b740eed1b4df"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/verify.rs",
+            "symbol": "check_backend",
+            "last_known": {
+              "line": 244,
+              "file_sha256": "51e1f747b9bb26782551c9d8f95b92770a962828794152cf3c4ca1c4757cd64a"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/verify.rs",
+            "symbol": "verify_archive",
+            "last_known": {
+              "line": 283,
+              "file_sha256": "51e1f747b9bb26782551c9d8f95b92770a962828794152cf3c4ca1c4757cd64a"
+            }
+          }
+        ]
+      }
+    ],
+    "present": [
+      "crates/wxml-lsp/tests/stdio_type_loop.rs",
+      "crates/wxml-lsp/tests/performance_bench.rs",
+      "crates/wxml-lsp/tests/q2_stability.rs",
+      "crates/wxml-lsp/tests/native_parity/native_gates.rs",
+      "crates/wxml-lsp/tests/native_parity/ledger.rs",
+      "crates/wxml-lsp/tests/native_parity/fixture_hash.rs",
+      "crates/wxml-lsp/tests/native_parity/native_engine_real.rs",
+      "crates/wxml-lsp/tests/native_parity/symbols_edits.rs",
+      "crates/wxml-lsp/tests/native_parity/oracle_manifest.rs",
+      "crates/wxml-lsp/tests/native_parity/oracle_manifest_tests.rs",
+      "crates/wxml-lsp/tests/native_parity.rs",
+      "docs/plans/tsgo-test-ledger.json",
+      "docs/plans/tsgo-legacy-oracle-manifest.json"
+    ],
+    "archived": [
+      {
+        "path": "backends/typescript",
+        "state": "archived",
+        "last_known": {
+          "file_count": 99,
+          "total_bytes": 746335,
+          "tree_sha256": "ef41f49c939cb881c2028c791b68731250184f38218c5aa71339f7702f02623f"
+        },
+        "reason": "tracked tree deleted by the P7 archive scope; oracle manifest is Frozen"
+      },
+      {
+        "path": "crates/wxml-lsp/src/backend_node",
+        "state": "archived",
+        "last_known": {
+          "file_count": 8,
+          "total_bytes": 264166,
+          "tree_sha256": "2f131507696b7163ce776c290cd1420551aae0df40eac3015ac6fad78ee0c710"
+        },
+        "reason": "tracked tree deleted by the P7 archive scope; oracle manifest is Frozen"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/real_node.rs",
+        "state": "archived",
+        "last_known": {
+          "bytes": 26150,
+          "sha256": "fc948a4bf7838c93693fdbc1b104ee96119a959835ed640077221d47af9849c4"
+        },
+        "reason": "frozen file deleted by the P7 archive scope; oracle manifest is Frozen"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "state": "archived",
+        "last_known": {
+          "bytes": 41910,
+          "sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+        },
+        "reason": "frozen file deleted by the P7 archive scope; oracle manifest is Frozen"
+      },
+      {
+        "path": "crates/wxml-lsp/tests/semantic_tools.rs",
+        "state": "archived",
+        "last_known": {
+          "bytes": 100857,
+          "sha256": "359e5d9a38d88d75617dc4effbad240782b1f356bbaa4a1e1c2f2d7a45572773"
+        },
+        "reason": "frozen file deleted by the P7 archive scope; oracle manifest is Frozen"
+      }
+    ],
+    "partially_archived": [
+      {
+        "path": "crates/wxml-delivery/src",
+        "state": "partially-archived",
+        "reason": "v1 write symbols removed by the P7 delete scope; keep/read-only boundaries remain",
+        "v1_present_symbols": 4,
+        "v1_archived_symbols": 11,
+        "archived_entries": [
+          {
+            "file": "crates/wxml-delivery/src/acquire.rs",
+            "symbol": "acquire",
+            "last_known": {
+              "line": 60,
+              "file_sha256": "7c3ec564dc3812d002098918c249e0cc43d822b5a96773bfc807b1ec63b7bb94"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/bin/wxml-lsp-install.rs",
+            "symbol": "install_and_report",
+            "last_known": {
+              "line": 942,
+              "file_sha256": "c43e105b7cf392cc6fb90221338f9ee4544a08dd79a7ac1504dc2900ec3748ab"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/bin/wxml-lsp-package.rs",
+            "symbol": "build_package_call",
+            "last_known": {
+              "line": 179,
+              "file_sha256": "8d44c72d31cff63d682ac3d20f390f70712c2f5cc77fbe50bf9211acc3176cd9"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/cache.rs",
+            "symbol": "store_verified",
+            "last_known": {
+              "line": 176,
+              "file_sha256": "82fd1d7949cf49ca4acb09b65f4659a7f5056783811efdfb7ef35c4dcc80a325"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/install.rs",
+            "symbol": "install_tree",
+            "last_known": {
+              "line": 286,
+              "file_sha256": "b9759c58cf5bcd4261bf92d5e71b6b7582c089db3829bdc10271437ad6c99778"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/manifest.rs",
+            "symbol": "parse_index",
+            "last_known": {
+              "line": 632,
+              "file_sha256": "4ca379e0b21fa5274db5586a652bb75a7d4236e445792737fd9479d39e2e42b9"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/package.rs",
+            "symbol": "build_manifest",
+            "last_known": {
+              "line": 422,
+              "file_sha256": "d09e1466d5e7d44fc3c4ae707ae3de29494c6033b5e873c108a0b740eed1b4df"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/package.rs",
+            "symbol": "build_package",
+            "last_known": {
+              "line": 101,
+              "file_sha256": "d09e1466d5e7d44fc3c4ae707ae3de29494c6033b5e873c108a0b740eed1b4df"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/package.rs",
+            "symbol": "update_index",
+            "last_known": {
+              "line": 508,
+              "file_sha256": "d09e1466d5e7d44fc3c4ae707ae3de29494c6033b5e873c108a0b740eed1b4df"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/verify.rs",
+            "symbol": "check_backend",
+            "last_known": {
+              "line": 244,
+              "file_sha256": "51e1f747b9bb26782551c9d8f95b92770a962828794152cf3c4ca1c4757cd64a"
+            }
+          },
+          {
+            "file": "crates/wxml-delivery/src/verify.rs",
+            "symbol": "verify_archive",
+            "last_known": {
+              "line": 283,
+              "file_sha256": "51e1f747b9bb26782551c9d8f95b92770a962828794152cf3c4ca1c4757cd64a"
+            }
+          }
+        ]
+      }
+    ],
+    "missing": [],
+    "note": "archived entries record last-known identity only; they are not matches"
+  },
+  "trees": {
+    "backends/typescript": {
+      "path": "backends/typescript",
+      "kind": "tracked-repository-tree",
+      "state": "archived",
+      "file_count": null,
+      "total_bytes": null,
+      "tree_sha256": null,
+      "files_listed": false,
+      "files": [],
+      "last_known": {
+        "file_count": 99,
+        "total_bytes": 746335,
+        "tree_sha256": "ef41f49c939cb881c2028c791b68731250184f38218c5aa71339f7702f02623f"
+      },
+      "archive_reason": "tracked tree deleted by the P7 archive scope; oracle manifest is Frozen"
+    },
+    "backends/typescript/src": {
+      "path": "backends/typescript/src",
+      "kind": "tracked-subtree",
+      "state": "archived",
+      "file_count": null,
+      "total_bytes": null,
+      "tree_sha256": null,
+      "files_listed": false,
+      "files": [],
+      "last_known": {
+        "file_count": 34,
+        "total_bytes": 466392,
+        "tree_sha256": "26e377e77040ac6adfe78a4730944cd08ce7e5d2345efa3c1b25726f87bb946b"
+      },
+      "archive_reason": "tracked tree deleted by the P7 archive scope; oracle manifest is Frozen"
+    },
+    "backends/typescript/test": {
+      "path": "backends/typescript/test",
+      "kind": "tracked-subtree",
+      "state": "archived",
+      "file_count": null,
+      "total_bytes": null,
+      "tree_sha256": null,
+      "files_listed": false,
+      "files": [],
+      "last_known": {
+        "file_count": 22,
+        "total_bytes": 253965,
+        "tree_sha256": "630a16af41623c78f19f47bcaba1a7f1282201ac27b4414115ac0b3764afc32e"
+      },
+      "archive_reason": "tracked tree deleted by the P7 archive scope; oracle manifest is Frozen"
+    },
+    "backends/typescript/dist": {
+      "path": "backends/typescript/dist",
+      "kind": "local-build-output",
+      "state": "archived",
+      "file_count": null,
+      "total_bytes": null,
+      "tree_sha256": null,
+      "files_listed": false,
+      "files": [],
+      "last_known": {
+        "file_count": 34,
+        "total_bytes": 419511,
+        "tree_sha256": "37753181846b843f2ba9086bb98b2db8246bb74f820329b0b717b987bccb9898"
+      },
+      "archive_reason": "local build output absent after the P7 archive scope; oracle manifest is Frozen"
+    },
+    "crates/wxml-lsp/src/backend_node": {
+      "path": "crates/wxml-lsp/src/backend_node",
+      "kind": "tracked-repository-tree",
+      "state": "archived",
+      "file_count": null,
+      "total_bytes": null,
+      "tree_sha256": null,
+      "files_listed": false,
+      "files": [],
+      "last_known": {
+        "file_count": 8,
+        "total_bytes": 264166,
+        "tree_sha256": "2f131507696b7163ce776c290cd1420551aae0df40eac3015ac6fad78ee0c710"
+      },
+      "archive_reason": "tracked tree deleted by the P7 archive scope; oracle manifest is Frozen"
+    }
+  },
+  "excluded": [
+    {
+      "path": "backends/typescript/node_modules",
+      "reason": "gitignored npm install tree; contains symlinks in .bin; not repository identity and not part of --check"
+    }
+  ],
+  "old_ignored_gates": {
+    "source": "docs/plans/tsgo-test-ledger.json#ignored_rust_tests",
+    "count": 23,
+    "gates": [
+      {
+        "gate_id": "G-P5-E2E-01",
+        "file": "crates/wxml-lsp/tests/real_node.rs",
+        "test": "non_owner_script_overlay_propagates_and_survives_a_node_restart",
+        "fully_qualified": "real_node::non_owner_script_overlay_propagates_and_survives_a_node_restart",
+        "state": "archived",
+        "line_ignore": null,
+        "line_fn": null,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": false,
+        "old_test_removed": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_non_owner_overlay_replay_survives_restart",
+        "replacement_kind": "native_engine_real_stdio_overlay_replay",
+        "old_reason": "requires Node 24 and a built P5 dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new in the test process",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": null,
+        "last_known": {
+          "line_ignore": 494,
+          "line_fn": 496,
+          "file_sha256": "fc948a4bf7838c93693fdbc1b104ee96119a959835ed640077221d47af9849c4"
+        },
+        "archive_reason": "gate source deleted with the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "gate_id": "G-P5-E2E-02",
+        "file": "crates/wxml-lsp/tests/real_node.rs",
+        "test": "real_node_event_handler_diagnostics_definition_and_completion",
+        "fully_qualified": "real_node::real_node_event_handler_diagnostics_definition_and_completion",
+        "state": "archived",
+        "line_ignore": null,
+        "line_fn": null,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": false,
+        "old_test_removed": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_event_handler_hover_diagnostics_definition_completion",
+        "replacement_kind": "native_engine_real_stdio_event",
+        "old_reason": "requires Node 24 and a built P5 dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new in the test process",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": null,
+        "last_known": {
+          "line_ignore": 219,
+          "line_fn": 221,
+          "file_sha256": "fc948a4bf7838c93693fdbc1b104ee96119a959835ed640077221d47af9849c4"
+        },
+        "archive_reason": "gate source deleted with the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "gate_id": "G-P5-E2E-03",
+        "file": "crates/wxml-lsp/tests/real_node.rs",
+        "test": "real_node_expression_and_event_completion_smoke",
+        "fully_qualified": "real_node::real_node_expression_and_event_completion_smoke",
+        "state": "archived",
+        "line_ignore": null,
+        "line_fn": null,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": false,
+        "old_test_removed": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_expression_and_event_completion_smoke",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires Node 24 and a built P5 dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new in the test process",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": null,
+        "last_known": {
+          "line_ignore": 103,
+          "line_fn": 105,
+          "file_sha256": "fc948a4bf7838c93693fdbc1b104ee96119a959835ed640077221d47af9849c4"
+        },
+        "archive_reason": "gate source deleted with the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "gate_id": "G-P5-E2E-04",
+        "file": "crates/wxml-lsp/tests/real_node.rs",
+        "test": "real_node_hover_and_diagnostics_smoke",
+        "fully_qualified": "real_node::real_node_hover_and_diagnostics_smoke",
+        "state": "archived",
+        "line_ignore": null,
+        "line_fn": null,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": false,
+        "old_test_removed": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_hover_and_diagnostics_smoke",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires Node 24 and a built P5 dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new in the test process",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": null,
+        "last_known": {
+          "line_ignore": 30,
+          "line_fn": 31,
+          "file_sha256": "fc948a4bf7838c93693fdbc1b104ee96119a959835ed640077221d47af9849c4"
+        },
+        "archive_reason": "gate source deleted with the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "gate_id": "G-P5-E2E-05",
+        "file": "crates/wxml-lsp/tests/real_node.rs",
+        "test": "real_node_symbols_smoke",
+        "fully_qualified": "real_node::real_node_symbols_smoke",
+        "state": "archived",
+        "line_ignore": null,
+        "line_fn": null,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": false,
+        "old_test_removed": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_symbols_smoke",
+        "replacement_kind": "native_engine_real_stdio_symbols",
+        "old_reason": "requires Node 24 and a built P5 dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new in the test process",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_TEST_EXTERNAL_BACKEND"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": null,
+        "last_known": {
+          "line_ignore": 626,
+          "line_fn": 627,
+          "file_sha256": "fc948a4bf7838c93693fdbc1b104ee96119a959835ed640077221d47af9849c4"
+        },
+        "archive_reason": "gate source deleted with the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "gate_id": "G-P5-E2E-06",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "ac001_page_data_and_jsdoc_hover",
+        "fully_qualified": "stdio_type_loop::ac001_page_data_and_jsdoc_hover",
+        "state": "present",
+        "line_ignore": 111,
+        "line_fn": 112,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "old_test_removed": false,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac001_page_data_and_jsdoc_hover",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
+          "env": [
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
+          ],
+          "node_minimum": null,
+          "source": "native_package.rs disposable fixture"
+        },
+        "file_sha256": "0a8ccc3745ce323af596e031d218668d33f6901b238b3ca271cb1e847543d376"
+      },
+      {
+        "gate_id": "G-P5-E2E-07",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "ac002_field_typo_diagnostic_and_fix_clear",
+        "fully_qualified": "stdio_type_loop::ac002_field_typo_diagnostic_and_fix_clear",
+        "state": "present",
+        "line_ignore": 148,
+        "line_fn": 149,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "old_test_removed": false,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac002_field_typo_diagnostic_and_fix_clear",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
+          "env": [
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
+          ],
+          "node_minimum": null,
+          "source": "native_package.rs disposable fixture"
+        },
+        "file_sha256": "0a8ccc3745ce323af596e031d218668d33f6901b238b3ca271cb1e847543d376"
+      },
+      {
+        "gate_id": "G-P5-E2E-08",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "ac003_unicode_and_crlf_positions",
+        "fully_qualified": "stdio_type_loop::ac003_unicode_and_crlf_positions",
+        "state": "present",
+        "line_ignore": 188,
+        "line_fn": 189,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "old_test_removed": false,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac003_unicode_and_crlf_positions",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
+          "env": [
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
+          ],
+          "node_minimum": null,
+          "source": "native_package.rs disposable fixture"
+        },
+        "file_sha256": "0a8ccc3745ce323af596e031d218668d33f6901b238b3ca271cb1e847543d376"
+      },
+      {
+        "gate_id": "G-P5-E2E-09",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "ac011_unknown_owner_degrades_honestly",
+        "fully_qualified": "stdio_type_loop::ac011_unknown_owner_degrades_honestly",
+        "state": "present",
+        "line_ignore": 229,
+        "line_fn": 230,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "old_test_removed": false,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac011_unknown_owner_degrades_honestly",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
+          "env": [
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
+          ],
+          "node_minimum": null,
+          "source": "native_package.rs disposable fixture"
+        },
+        "file_sha256": "0a8ccc3745ce323af596e031d218668d33f6901b238b3ca271cb1e847543d376"
+      },
+      {
+        "gate_id": "G-P5-E2E-10",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "ac013_component_properties_hover",
+        "fully_qualified": "stdio_type_loop::ac013_component_properties_hover",
+        "state": "present",
+        "line_ignore": 279,
+        "line_fn": 280,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "old_test_removed": false,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac013_component_properties_hover",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires WXML_TEST_NODE=1 and a built backends/typescript/dist/server.js",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
+          "env": [
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
+          ],
+          "node_minimum": null,
+          "source": "native_package.rs disposable fixture"
+        },
+        "file_sha256": "0a8ccc3745ce323af596e031d218668d33f6901b238b3ca271cb1e847543d376"
+      },
+      {
+        "gate_id": "G-P5-E2E-11",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "component_behavior_data_and_properties_work_over_stdio",
+        "fully_qualified": "stdio_type_loop::component_behavior_data_and_properties_work_over_stdio",
+        "state": "present",
+        "line_ignore": 352,
+        "line_fn": 353,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "old_test_removed": false,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_component_behavior_data_and_properties",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires the real server binary and Node fixture; set WXML_TEST_NODE=1",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
+          "env": [
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
+          ],
+          "node_minimum": null,
+          "source": "native_package.rs disposable fixture"
+        },
+        "file_sha256": "0a8ccc3745ce323af596e031d218668d33f6901b238b3ca271cb1e847543d376"
+      },
+      {
+        "gate_id": "G-P5-E2E-12",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "static_wxs_and_template_semantics_work_over_stdio",
+        "fully_qualified": "stdio_type_loop::static_wxs_and_template_semantics_work_over_stdio",
+        "state": "present",
+        "line_ignore": 434,
+        "line_fn": 435,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "old_test_removed": false,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_static_wxs_and_template_semantics_work_over_stdio",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires the real server binary and Node fixture; set WXML_TEST_NODE=1",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
+          "env": [
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
+          ],
+          "node_minimum": null,
+          "source": "native_package.rs disposable fixture"
+        },
+        "file_sha256": "0a8ccc3745ce323af596e031d218668d33f6901b238b3ca271cb1e847543d376"
+      },
+      {
+        "gate_id": "G-P5-E2E-13",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "static_wxs_answers_survive_an_unavailable_type_backend",
+        "fully_qualified": "stdio_type_loop::static_wxs_answers_survive_an_unavailable_type_backend",
+        "state": "present",
+        "line_ignore": 530,
+        "line_fn": 531,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "old_test_removed": false,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_static_wxs_answers_survive_an_unavailable_type_backend",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires the real server binary; set WXML_TEST_NODE=1",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
+          "env": [
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
+          ],
+          "node_minimum": null,
+          "source": "native_package.rs disposable fixture"
+        },
+        "file_sha256": "0a8ccc3745ce323af596e031d218668d33f6901b238b3ca271cb1e847543d376"
+      },
+      {
+        "gate_id": "G-P5-E2E-14",
+        "file": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+        "test": "unsaved_wxs_overlay_updates_static_hover_and_completion",
+        "fully_qualified": "stdio_type_loop::unsaved_wxs_overlay_updates_static_hover_and_completion",
+        "state": "present",
+        "line_ignore": 613,
+        "line_fn": 614,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "old_test_removed": false,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_unsaved_wxs_overlay_updates_static_hover_and_completion",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires the real server binary and Node fixture; set WXML_TEST_NODE=1",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "p7_state": "retargeted-native",
+          "boundary": "spawns <package>/bin/wxml-lsp --stdio --backend native; the gate keeps the external LSP process boundary and a clean shutdown",
+          "opt_in": "WXML_TEST_NATIVE=1",
+          "backend_script": null,
+          "backend_dir": null,
+          "env": [
+            "WXML_TEST_NATIVE",
+            "WXML_REQUIRE_REAL_ENGINE",
+            "TSGO_BIN",
+            "TSGO_ASSET_ROOT",
+            "TSGO_TYPINGS_ROOT"
+          ],
+          "node_minimum": null,
+          "source": "native_package.rs disposable fixture"
+        },
+        "file_sha256": "0a8ccc3745ce323af596e031d218668d33f6901b238b3ca271cb1e847543d376"
+      },
+      {
+        "gate_id": "G-P5-E2E-15",
+        "file": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "test": "ac005_loop_scope_typed_locals",
+        "fully_qualified": "wave5_acceptance::ac005_loop_scope_typed_locals",
+        "state": "archived",
+        "line_ignore": null,
+        "line_fn": null,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": false,
+        "old_test_removed": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac005_loop_scope_typed_locals",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new through Runner::open",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": null,
+        "last_known": {
+          "line_ignore": 670,
+          "line_fn": 671,
+          "file_sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+        },
+        "archive_reason": "gate source deleted with the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "gate_id": "G-P5-E2E-16",
+        "file": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "test": "ac006_conditional_union_narrowing",
+        "fully_qualified": "wave5_acceptance::ac006_conditional_union_narrowing",
+        "state": "archived",
+        "line_ignore": null,
+        "line_fn": null,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": false,
+        "old_test_removed": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac006_conditional_union_narrowing",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new through Runner::open",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": null,
+        "last_known": {
+          "line_ignore": 723,
+          "line_fn": 724,
+          "file_sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+        },
+        "archive_reason": "gate source deleted with the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "gate_id": "G-P5-E2E-17",
+        "file": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "test": "ac008_alias_project_hover_and_definition",
+        "fully_qualified": "wave5_acceptance::ac008_alias_project_hover_and_definition",
+        "state": "archived",
+        "line_ignore": null,
+        "line_fn": null,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": false,
+        "old_test_removed": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac008_alias_project_hover_and_definition",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new through Runner::open",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": null,
+        "last_known": {
+          "line_ignore": 1112,
+          "line_fn": 1113,
+          "file_sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+        },
+        "archive_reason": "gate source deleted with the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "gate_id": "G-P5-E2E-18",
+        "file": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "test": "ac008_multi_view_fixture_isolation",
+        "fully_qualified": "wave5_acceptance::ac008_multi_view_fixture_isolation",
+        "state": "archived",
+        "line_ignore": null,
+        "line_fn": null,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": false,
+        "old_test_removed": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac008_multi_view_fixture_isolation",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new through Runner::open",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": null,
+        "last_known": {
+          "line_ignore": 995,
+          "line_fn": 996,
+          "file_sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+        },
+        "archive_reason": "gate source deleted with the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "gate_id": "G-P5-E2E-19",
+        "file": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "test": "ac008_simultaneous_views_do_not_pollute_each_other",
+        "fully_qualified": "wave5_acceptance::ac008_simultaneous_views_do_not_pollute_each_other",
+        "state": "archived",
+        "line_ignore": null,
+        "line_fn": null,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": false,
+        "old_test_removed": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac008_simultaneous_views_do_not_pollute_each_other",
+        "replacement_kind": "native_engine_real_stdio",
+        "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new through Runner::open",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": null,
+        "last_known": {
+          "line_ignore": 1029,
+          "line_fn": 1030,
+          "file_sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+        },
+        "archive_reason": "gate source deleted with the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "gate_id": "G-P5-E2E-20",
+        "file": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "test": "ac012_component_property_bindings",
+        "fully_qualified": "wave5_acceptance::ac012_component_property_bindings",
+        "state": "archived",
+        "line_ignore": null,
+        "line_fn": null,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": false,
+        "old_test_removed": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac012_component_property_bindings",
+        "replacement_kind": "native_engine_real_stdio_acceptance",
+        "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new through Runner::open",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": null,
+        "last_known": {
+          "line_ignore": 771,
+          "line_fn": 772,
+          "file_sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+        },
+        "archive_reason": "gate source deleted with the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "gate_id": "G-P5-E2E-21",
+        "file": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+        "test": "ac012_event_handlers_basic",
+        "fully_qualified": "wave5_acceptance::ac012_event_handlers_basic",
+        "state": "archived",
+        "line_ignore": null,
+        "line_fn": null,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": false,
+        "old_test_removed": true,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac012_event_handlers_basic",
+        "replacement_kind": "native_engine_real_stdio_acceptance",
+        "old_reason": "requires Node 24 and a built dist/server.js; set WXML_TEST_NODE=1",
+        "p7_action": "delete",
+        "node_dependency": {
+          "boundary": "NodeBackend::new through Runner::open",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE",
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR"
+          ],
+          "node_minimum": "24",
+          "source": "#[ignore] reason"
+        },
+        "file_sha256": null,
+        "last_known": {
+          "line_ignore": 845,
+          "line_fn": 847,
+          "file_sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+        },
+        "archive_reason": "gate source deleted with the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "gate_id": "G-P5-PERF-01",
+        "file": "crates/wxml-lsp/tests/performance_bench.rs",
+        "test": "q2_performance_benchmark",
+        "fully_qualified": "performance_bench::q2_performance_benchmark",
+        "state": "present",
+        "line_ignore": 919,
+        "line_fn": 920,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "old_test_removed": false,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_q2_performance_benchmark",
+        "replacement_kind": "native_engine_real_stdio_perf",
+        "old_reason": "performance gate: set WXML_TEST_NODE=1 and run with --ignored",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "boundary": "NodeBackend plus a `node --version` probe and git metadata",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE"
+          ],
+          "node_minimum": null,
+          "source": "test helper"
+        },
+        "file_sha256": "f04c0dfed4e03661b647943c9336a4dbe2dcab74f133e6b7329bac0e2a249451"
+      },
+      {
+        "gate_id": "G-P5-STABILITY-01",
+        "file": "crates/wxml-lsp/tests/q2_stability.rs",
+        "test": "ten_round_lifecycle_stability",
+        "fully_qualified": "q2_stability::ten_round_lifecycle_stability",
+        "state": "present",
+        "line_ignore": 188,
+        "line_fn": 189,
+        "status": "gate_green",
+        "mandatory_green": false,
+        "replacement_reviewed": false,
+        "old_test_present": true,
+        "old_test_removed": false,
+        "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ten_round_lifecycle_stability",
+        "replacement_kind": "native_engine_real_stdio_stability",
+        "old_reason": "stability gate: set WXML_TEST_NODE=1 and run with --ignored",
+        "p7_action": "retarget",
+        "node_dependency": {
+          "boundary": "NodeBackend plus a process-table scan for dist/server.js",
+          "opt_in": "WXML_TEST_NODE=1",
+          "backend_script": "backends/typescript/dist/server.js",
+          "backend_dir": "backends/typescript",
+          "env": [
+            "WXML_TEST_NODE"
+          ],
+          "node_minimum": null,
+          "source": "test helper"
+        },
+        "file_sha256": "55f2a601ef8dcde957989ec6a9afa15960099e51f9d807f7fdde2acc53244978"
+      }
+    ],
+    "summary": {
+      "by_state": {
+        "archived": 12,
+        "present": 11
+      },
+      "by_status": {
+        "gate_green": 23
+      },
+      "by_action": {
+        "delete": 12,
+        "retarget": 11
+      },
+      "by_file": {
+        "crates/wxml-lsp/tests/performance_bench.rs": 1,
+        "crates/wxml-lsp/tests/q2_stability.rs": 1,
+        "crates/wxml-lsp/tests/real_node.rs": 5,
+        "crates/wxml-lsp/tests/stdio_type_loop.rs": 9,
+        "crates/wxml-lsp/tests/wave5_acceptance.rs": 7
+      }
+    }
+  },
+  "semantic_tools": {
+    "state": "archived",
+    "silent_returns": [],
+    "archived_silent_returns": [
+      {
+        "gate_id": "G-P5-E2E-22",
+        "file": "crates/wxml-lsp/tests/semantic_tools.rs",
+        "test": "real_node_lsp_component_property_edit_applies_and_parses",
+        "state": "archived",
+        "line_fn": null,
+        "line_asset_lookup": null,
+        "line_silent_return": null,
+        "line_tsc_branch": null,
+        "line_tsc_skip": null,
+        "file_sha256": null,
+        "last_known": {
+          "line_fn": 2086,
+          "line_asset_lookup": 2091,
+          "line_silent_return": 2099,
+          "line_tsc_branch": 2184,
+          "line_tsc_skip": 2215,
+          "file_sha256": "359e5d9a38d88d75617dc4effbad240782b1f356bbaa4a1e1c2f2d7a45572773"
+        },
+        "archive_reason": "semantic_tools.rs retired with the old Node gates; oracle manifest is Frozen"
+      },
+      {
+        "gate_id": "G-P5-E2E-23",
+        "file": "crates/wxml-lsp/tests/semantic_tools.rs",
+        "test": "real_node_lsp_rejects_cross_namespace_and_dynamic_edits",
+        "state": "archived",
+        "line_fn": null,
+        "line_asset_lookup": null,
+        "line_silent_return": null,
+        "line_tsc_branch": null,
+        "line_tsc_skip": null,
+        "file_sha256": null,
+        "last_known": {
+          "line_fn": 2589,
+          "line_asset_lookup": 2594,
+          "line_silent_return": 2602,
+          "line_tsc_branch": null,
+          "line_tsc_skip": null,
+          "file_sha256": "359e5d9a38d88d75617dc4effbad240782b1f356bbaa4a1e1c2f2d7a45572773"
+        },
+        "archive_reason": "semantic_tools.rs retired with the old Node gates; oracle manifest is Frozen"
+      }
+    ],
+    "note": "semantic_tools.rs and its two silent returns were retired with the old Node gates; archived coordinates are last-known only."
+  },
+  "legacy_env": {
+    "runtime": [
+      {
+        "name": "WXML_ANALYZE_TIMEOUT_MS",
+        "file": "crates/wxml-lsp/src/backend_node/config.rs",
+        "state": "archived",
+        "line": null,
+        "anchor": "if let Some(value) = lookup(\"WXML_ANALYZE_TIMEOUT_MS\") {",
+        "reader": "NodeBackendConfig::from_env",
+        "note": "Per-request Node timeout, default 15000",
+        "file_sha256": null,
+        "last_known": {
+          "line": 196,
+          "file_sha256": "cdc40ec0a265f6cca172a76a2c9fd60ce8228d338a89ea209ed6184d3d81d642"
+        },
+        "archive_reason": "node backend config deleted; oracle manifest is Frozen"
+      },
+      {
+        "name": "WXML_BACKEND_DIR",
+        "file": "crates/wxml-lsp/src/backend_node/config.rs",
+        "state": "archived",
+        "line": null,
+        "anchor": "if let Some(dir) = lookup(\"WXML_BACKEND_DIR\").map(PathBuf::from) {",
+        "reader": "NodeBackendConfig::from_env",
+        "note": "Absolute backend directory; relative values disable the backend",
+        "file_sha256": null,
+        "last_known": {
+          "line": 185,
+          "file_sha256": "cdc40ec0a265f6cca172a76a2c9fd60ce8228d338a89ea209ed6184d3d81d642"
+        },
+        "archive_reason": "node backend config deleted; oracle manifest is Frozen"
+      },
+      {
+        "name": "WXML_NODE",
+        "file": "crates/wxml-lsp/src/backend_node/config.rs",
+        "state": "archived",
+        "line": null,
+        "anchor": "if let Some(node) = lookup(\"WXML_NODE\") {",
+        "reader": "NodeBackendConfig::from_env",
+        "note": "Node executable name or absolute path; node backend only",
+        "file_sha256": null,
+        "last_known": {
+          "line": 166,
+          "file_sha256": "cdc40ec0a265f6cca172a76a2c9fd60ce8228d338a89ea209ed6184d3d81d642"
+        },
+        "archive_reason": "node backend config deleted; oracle manifest is Frozen"
+      },
+      {
+        "name": "WXML_TEMPLATE_CHECK",
+        "file": "crates/wxml-lsp/src/backend_node/config.rs",
+        "state": "archived",
+        "line": null,
+        "anchor": "if let Some(value) = lookup(\"WXML_TEMPLATE_CHECK\") {",
+        "reader": "NodeBackendConfig::from_env",
+        "note": "off, pragma or inherit; node backend only",
+        "file_sha256": null,
+        "last_known": {
+          "line": 203,
+          "file_sha256": "cdc40ec0a265f6cca172a76a2c9fd60ce8228d338a89ea209ed6184d3d81d642"
+        },
+        "archive_reason": "node backend config deleted; oracle manifest is Frozen"
+      },
+      {
+        "name": "WXML_TYPE_BACKEND",
+        "file": "crates/wxml-lsp/src/backend_node/config.rs",
+        "state": "archived",
+        "line": null,
+        "anchor": "if let Some(server) = lookup(\"WXML_TYPE_BACKEND\").map(PathBuf::from) {",
+        "reader": "NodeBackendConfig::from_env",
+        "note": "Absolute server.js path; relative values disable the backend",
+        "file_sha256": null,
+        "last_known": {
+          "line": 179,
+          "file_sha256": "cdc40ec0a265f6cca172a76a2c9fd60ce8228d338a89ea209ed6184d3d81d642"
+        },
+        "archive_reason": "node backend config deleted; oracle manifest is Frozen"
+      }
+    ],
+    "gate_only": [
+      {
+        "name": "WXML_TEST_EXTERNAL_BACKEND",
+        "kind": "test-only opt-in; deleted with the old Node gates",
+        "files": [
+          "crates/wxml-lsp/tests/real_node.rs"
+        ]
+      },
+      {
+        "name": "WXML_TEST_NODE",
+        "kind": "test-only opt-in; deleted with the old Node gates",
+        "files": [
+          "crates/wxml-lsp/tests/real_node.rs",
+          "crates/wxml-lsp/tests/wave5_acceptance.rs",
+          "crates/wxml-lsp/tests/performance_bench.rs",
+          "crates/wxml-lsp/tests/q2_stability.rs"
+        ]
+      }
+    ]
+  },
+  "v1_delivery": {
+    "write_paths": [
+      {
+        "file": "crates/wxml-delivery/src/acquire.rs",
+        "symbol": "acquire",
+        "state": "archived",
+        "line": null,
+        "anchor": "pub fn acquire(options: &AcquireOptions<'_>) -> Result<AcquiredPackage> {",
+        "action": "delete",
+        "role": "v1 acquire/cache path",
+        "file_sha256": null,
+        "last_known": {
+          "line": 60,
+          "file_sha256": "7c3ec564dc3812d002098918c249e0cc43d822b5a96773bfc807b1ec63b7bb94"
+        },
+        "archive_reason": "v1 write symbol removed by the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "file": "crates/wxml-delivery/src/bin/wxml-lsp-install.rs",
+        "symbol": "install_and_report",
+        "state": "archived",
+        "line": null,
+        "anchor": "fn install_and_report(",
+        "action": "delete",
+        "role": "v1 install/verify/switch reporting",
+        "file_sha256": null,
+        "last_known": {
+          "line": 942,
+          "file_sha256": "c43e105b7cf392cc6fb90221338f9ee4544a08dd79a7ac1504dc2900ec3748ab"
+        },
+        "archive_reason": "v1 write symbol removed by the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "file": "crates/wxml-delivery/src/bin/wxml-lsp-install.rs",
+        "symbol": "install",
+        "state": "present",
+        "line": 266,
+        "anchor": "fn install(options: &Options) -> Result<()> {",
+        "action": "delete",
+        "role": "schema v1 install branch",
+        "file_sha256": "04639af4e6c7063975de28e0f69acc5930b3bba1250b16b144eff9fb24a30363"
+      },
+      {
+        "file": "crates/wxml-delivery/src/bin/wxml-lsp-install.rs",
+        "symbol": "upgrade",
+        "state": "present",
+        "line": 309,
+        "anchor": "fn upgrade(options: &Options) -> Result<()> {",
+        "action": "delete",
+        "role": "schema v1 upgrade branch",
+        "file_sha256": "04639af4e6c7063975de28e0f69acc5930b3bba1250b16b144eff9fb24a30363"
+      },
+      {
+        "file": "crates/wxml-delivery/src/bin/wxml-lsp-install.rs",
+        "symbol": "verify_package",
+        "state": "present",
+        "line": 740,
+        "anchor": "fn verify_package(options: &Options) -> Result<()> {",
+        "action": "delete",
+        "role": "contains the schema v1 verify-package branch",
+        "file_sha256": "04639af4e6c7063975de28e0f69acc5930b3bba1250b16b144eff9fb24a30363"
+      },
+      {
+        "file": "crates/wxml-delivery/src/bin/wxml-lsp-package.rs",
+        "symbol": "build_package_call",
+        "state": "archived",
+        "line": null,
+        "anchor": "build_package(&options).map_err(",
+        "action": "delete",
+        "role": "v1 packager call site",
+        "file_sha256": null,
+        "last_known": {
+          "line": 179,
+          "file_sha256": "8d44c72d31cff63d682ac3d20f390f70712c2f5cc77fbe50bf9211acc3176cd9"
+        },
+        "archive_reason": "v1 write symbol removed by the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "file": "crates/wxml-delivery/src/bin/wxml-lsp-package.rs",
+        "symbol": "run",
+        "state": "present",
+        "line": 105,
+        "anchor": "fn run() -> Result<(), String> {",
+        "action": "delete",
+        "role": "CLI dispatch; the no-subcommand/default path still builds schema v1",
+        "file_sha256": "c3119c69c1ebfbd741305e768b108f96e6164408dadad0284a5f9795476be12b"
+      },
+      {
+        "file": "crates/wxml-delivery/src/cache.rs",
+        "symbol": "store_verified",
+        "state": "archived",
+        "line": null,
+        "anchor": "pub fn store_verified(",
+        "action": "delete",
+        "role": "v1 archive cache writer",
+        "file_sha256": null,
+        "last_known": {
+          "line": 176,
+          "file_sha256": "82fd1d7949cf49ca4acb09b65f4659a7f5056783811efdfb7ef35c4dcc80a325"
+        },
+        "archive_reason": "v1 write symbol removed by the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "file": "crates/wxml-delivery/src/install.rs",
+        "symbol": "install_tree",
+        "state": "archived",
+        "line": null,
+        "anchor": "pub fn install_tree(&self, tree: &Path, version: &str) -> Result<InstallOutcome> {",
+        "action": "delete",
+        "role": "v1 install write path into versions/current",
+        "file_sha256": null,
+        "last_known": {
+          "line": 286,
+          "file_sha256": "b9759c58cf5bcd4261bf92d5e71b6b7582c089db3829bdc10271437ad6c99778"
+        },
+        "archive_reason": "v1 write symbol removed by the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "file": "crates/wxml-delivery/src/manifest.rs",
+        "symbol": "parse_index",
+        "state": "archived",
+        "line": null,
+        "anchor": "pub fn parse_index(bytes: &[u8]) -> Result<Index> {",
+        "action": "delete",
+        "role": "v1 index parser",
+        "file_sha256": null,
+        "last_known": {
+          "line": 632,
+          "file_sha256": "4ca379e0b21fa5274db5586a652bb75a7d4236e445792737fd9479d39e2e42b9"
+        },
+        "archive_reason": "v1 write symbol removed by the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "file": "crates/wxml-delivery/src/package.rs",
+        "symbol": "build_manifest",
+        "state": "archived",
+        "line": null,
+        "anchor": "fn build_manifest(options: &BuildOptions, files: &[SourceFile]) -> Result<Manifest> {",
+        "action": "delete",
+        "role": "v1 schema manifest constructor",
+        "file_sha256": null,
+        "last_known": {
+          "line": 422,
+          "file_sha256": "d09e1466d5e7d44fc3c4ae707ae3de29494c6033b5e873c108a0b740eed1b4df"
+        },
+        "archive_reason": "v1 write symbol removed by the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "file": "crates/wxml-delivery/src/package.rs",
+        "symbol": "build_package",
+        "state": "archived",
+        "line": null,
+        "anchor": "pub fn build_package(options: &BuildOptions) -> Result<BuildReport> {",
+        "action": "delete",
+        "role": "v1 package entry point",
+        "file_sha256": null,
+        "last_known": {
+          "line": 101,
+          "file_sha256": "d09e1466d5e7d44fc3c4ae707ae3de29494c6033b5e873c108a0b740eed1b4df"
+        },
+        "archive_reason": "v1 write symbol removed by the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "file": "crates/wxml-delivery/src/package.rs",
+        "symbol": "update_index",
+        "state": "archived",
+        "line": null,
+        "anchor": "fn update_index(",
+        "action": "delete",
+        "role": "v1 index.json writer",
+        "file_sha256": null,
+        "last_known": {
+          "line": 508,
+          "file_sha256": "d09e1466d5e7d44fc3c4ae707ae3de29494c6033b5e873c108a0b740eed1b4df"
+        },
+        "archive_reason": "v1 write symbol removed by the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "file": "crates/wxml-delivery/src/verify.rs",
+        "symbol": "check_backend",
+        "state": "archived",
+        "line": null,
+        "anchor": "pub fn check_backend(root: &Path, manifest: &Manifest) -> Result<()> {",
+        "action": "delete",
+        "role": "requires bin/wxml-type-backend/server.js and node_modules",
+        "file_sha256": null,
+        "last_known": {
+          "line": 244,
+          "file_sha256": "51e1f747b9bb26782551c9d8f95b92770a962828794152cf3c4ca1c4757cd64a"
+        },
+        "archive_reason": "v1 write symbol removed by the P7 delete scope; oracle manifest is Frozen"
+      },
+      {
+        "file": "crates/wxml-delivery/src/verify.rs",
+        "symbol": "verify_archive",
+        "state": "archived",
+        "line": null,
+        "anchor": "pub fn verify_archive(",
+        "action": "delete",
+        "role": "v1 archive verification entry point",
+        "file_sha256": null,
+        "last_known": {
+          "line": 283,
+          "file_sha256": "51e1f747b9bb26782551c9d8f95b92770a962828794152cf3c4ca1c4757cd64a"
+        },
+        "archive_reason": "v1 write symbol removed by the P7 delete scope; oracle manifest is Frozen"
+      }
+    ],
+    "keep_paths": [
+      {
+        "file": "crates/wxml-delivery/src/install.rs",
+        "symbol": "verify_installed",
+        "state": "present",
+        "line": 257,
+        "anchor": "pub fn verify_installed(&self, version: &str) -> Result<Manifest> {",
+        "action": "keep",
+        "role": "read-only verification kept for legacy current",
+        "file_sha256": "65493165e61bf75364f2255e7ceb9fb0808deb350d0106cf652388cff7cf778e"
+      },
+      {
+        "file": "crates/wxml-delivery/src/manifest_v2.rs",
+        "symbol": "read_legacy_manifest",
+        "state": "present",
+        "line": 1438,
+        "anchor": "pub fn read_legacy_manifest(root: &Path) -> Result<LegacyManifestProjection> {",
+        "action": "keep",
+        "role": "legacy read-only projection",
+        "file_sha256": "2a0fb5725a334cb7f697735b9bd7e73927868f13d9f6e9800ea29559fc6443b8"
+      },
+      {
+        "file": "crates/wxml-delivery/src/package.rs",
+        "symbol": "build_native_package",
+        "state": "present",
+        "line": 173,
+        "anchor": "pub fn build_native_package(options: &BuildOptionsV2) -> Result<BuildReportV2> {",
+        "action": "keep",
+        "role": "schema v2 native packager; not a deletion candidate",
+        "file_sha256": "49cf1fb28ff22a716f88d093b4125f8d468cef6095bfd1353d671a53f6413251"
+      }
+    ],
+    "note": "P7-5 deletes only the schema v1 write path; legacy current list/current/verify/env and the read-only projection must remain."
+  },
+  "legacy_ts_oracle": {
+    "manifest": {
+      "path": "docs/plans/tsgo-legacy-oracle-manifest.json",
+      "bytes": 83170,
+      "sha256": "ed820c1f39eafd4011ab139772f07bc2b3b5daaa9d1358583282d5fb65322278",
+      "mode": "Frozen",
+      "live_tree_present": false,
+      "schema": "wxml-tsgo-legacy-oracle-manifest/1",
+      "baseline": {
+        "head": "807a1578173992ad16f15e22b45f8dd62b024df3",
+        "branch": "tsgo/migration",
+        "source_root": "backends/typescript/test",
+        "ledger_schema": "wxml-tsgo-test-ledger/1"
+      },
+      "counts": {
+        "test_files": 21,
+        "support_files": 1,
+        "cases": 339,
+        "fixture_trees": 4
+      },
+      "projection_sha256": "14cd870e8ce7d15294285fe9205bb98bb121164e44f8c67ee3c433aa43508123",
+      "fixture_trees": [
+        {
+          "tree": "backends/typescript/samples",
+          "files": 35,
+          "bytes": 6069,
+          "sha256": "00a7fa3d6962da50581c396f73c13f7ffb043efae060a0801b373928726e5c1f",
+          "archived_ok": true
+        },
+        {
+          "tree": "backends/typescript/test",
+          "files": 22,
+          "bytes": 253965,
+          "sha256": "630a16af41623c78f19f47bcaba1a7f1282201ac27b4414115ac0b3764afc32e",
+          "archived_ok": true
+        },
+        {
+          "tree": "crates/wxml-lsp/tests/fixtures",
+          "files": 43,
+          "bytes": 6456,
+          "sha256": "834eea4defcb7565c4b84e91a173079cf3be85201d44fb4a7a6d0a32af3da073",
+          "archived_ok": false
+        },
+        {
+          "tree": "tests/fixtures",
+          "files": 136,
+          "bytes": 61928,
+          "sha256": "7c9ddedda18c70bc217af6b3bbd23dd22a33be9c885276cbd587adc0596f04a9",
+          "archived_ok": false
+        }
+      ],
+      "support_file": {
+        "path": "backends/typescript/test/support.ts",
+        "sha256": "9b4fcb347885dbeff1d1711b5f606aa48586cdf86b291ee5f868b36fbc4cef36",
+        "lines": 144
+      }
+    },
+    "bindings": [
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/fixture_hash.rs",
+        "symbol": "test_tree",
+        "line": 71,
+        "anchor": "path: \"backends/typescript/test\",",
+        "what": "legacy_archived=true; archive accepted when absent",
+        "kind": "archived-tree",
+        "file_sha256": "fd3fbfa9095738fdc04278d1b84ba9d8552b8a0e998c7cd8693a1bb09543fc23"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/fixture_hash.rs",
+        "symbol": "samples_tree",
+        "line": 78,
+        "anchor": "path: \"backends/typescript/samples\",",
+        "what": "legacy_archived=true; archive accepted when absent",
+        "kind": "archived-tree",
+        "file_sha256": "fd3fbfa9095738fdc04278d1b84ba9d8552b8a0e998c7cd8693a1bb09543fc23"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/fixture_hash.rs",
+        "symbol": "verify_fixture_trees",
+        "line": 415,
+        "anchor": "let statuses = verify_fixture_trees(&workspace, &ledger_value, &manifest, FROZEN_TREES)",
+        "what": "fixture gate takes the oracle manifest",
+        "kind": "archive-authority",
+        "file_sha256": "fd3fbfa9095738fdc04278d1b84ba9d8552b8a0e998c7cd8693a1bb09543fc23"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/ledger.rs",
+        "symbol": "verify_legacy_oracle",
+        "line": 2464,
+        "anchor": "&workspace.join(oracle_manifest::LEGACY_TEST_SOURCE_ROOT),",
+        "what": "ledger passes the legacy root to the oracle verifier",
+        "kind": "mode-selection",
+        "file_sha256": "492ecc260dbd4884af5b374f9fd5a93c4be7e2ea18304c1c75d5d336d4a750b3"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/ledger.rs",
+        "symbol": "live_root",
+        "line": 2476,
+        "anchor": "let live_root = workspace.join(oracle_manifest::LEGACY_TEST_SOURCE_ROOT);",
+        "what": "live root existence selects Live vs Frozen",
+        "kind": "mode-selection",
+        "file_sha256": "492ecc260dbd4884af5b374f9fd5a93c4be7e2ea18304c1c75d5d336d4a750b3"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/oracle_manifest.rs",
+        "symbol": "ORACLE_MANIFEST_RELATIVE_PATH",
+        "line": 34,
+        "anchor": "pub(crate) const ORACLE_MANIFEST_RELATIVE_PATH: &str =",
+        "what": "manifest path constant",
+        "kind": "archive-authority",
+        "file_sha256": "2d8bd4e8263cd75ed10dd08de3aecd82a7c163966c97e63b4ee03a25061ddf4f"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/oracle_manifest.rs",
+        "symbol": "LEGACY_TEST_SOURCE_ROOT",
+        "line": 37,
+        "anchor": "pub(crate) const LEGACY_TEST_SOURCE_ROOT: &str = \"backends/typescript/test\";",
+        "what": "legacy source root",
+        "kind": "archive-authority",
+        "file_sha256": "2d8bd4e8263cd75ed10dd08de3aecd82a7c163966c97e63b4ee03a25061ddf4f"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/oracle_manifest.rs",
+        "symbol": "ORACLE_BASELINE_HEAD",
+        "line": 42,
+        "anchor": "pub(crate) const ORACLE_BASELINE_HEAD: &str =",
+        "what": "frozen oracle baseline head",
+        "kind": "provenance",
+        "file_sha256": "2d8bd4e8263cd75ed10dd08de3aecd82a7c163966c97e63b4ee03a25061ddf4f"
+      },
+      {
+        "file": "crates/wxml-lsp/tests/native_parity/oracle_manifest.rs",
+        "symbol": "FROZEN_MANIFEST_SHA256",
+        "line": 45,
+        "anchor": "pub(crate) const FROZEN_MANIFEST_SHA256: &str =",
+        "what": "manifest integrity pin",
+        "kind": "integrity",
+        "file_sha256": "2d8bd4e8263cd75ed10dd08de3aecd82a7c163966c97e63b4ee03a25061ddf4f"
+      }
+    ],
+    "mode": "Frozen",
+    "note": "oracle manifest Frozen: ledger.rs and fixture_hash.rs accept the archived legacy trees; live bytes are not available."
+  },
+  "reference_files": [
+    {
+      "path": "crates/wxml-delivery/src/acquire.rs",
+      "state": "archived",
+      "bytes": null,
+      "sha256": null,
+      "last_known": {
+        "bytes": 10024,
+        "sha256": "7c3ec564dc3812d002098918c249e0cc43d822b5a96773bfc807b1ec63b7bb94"
+      },
+      "archive_reason": "frozen file deleted by the P7 archive scope; oracle manifest is Frozen"
+    },
+    {
+      "path": "crates/wxml-delivery/src/bin/wxml-lsp-install.rs",
+      "state": "present",
+      "bytes": 36099,
+      "sha256": "04639af4e6c7063975de28e0f69acc5930b3bba1250b16b144eff9fb24a30363"
+    },
+    {
+      "path": "crates/wxml-delivery/src/bin/wxml-lsp-package.rs",
+      "state": "present",
+      "bytes": 14721,
+      "sha256": "c3119c69c1ebfbd741305e768b108f96e6164408dadad0284a5f9795476be12b"
+    },
+    {
+      "path": "crates/wxml-delivery/src/cache.rs",
+      "state": "archived",
+      "bytes": null,
+      "sha256": null,
+      "last_known": {
+        "bytes": 16498,
+        "sha256": "82fd1d7949cf49ca4acb09b65f4659a7f5056783811efdfb7ef35c4dcc80a325"
+      },
+      "archive_reason": "frozen file deleted by the P7 archive scope; oracle manifest is Frozen"
+    },
+    {
+      "path": "crates/wxml-delivery/src/install.rs",
+      "state": "present",
+      "bytes": 19813,
+      "sha256": "65493165e61bf75364f2255e7ceb9fb0808deb350d0106cf652388cff7cf778e"
+    },
+    {
+      "path": "crates/wxml-delivery/src/manifest.rs",
+      "state": "present",
+      "bytes": 29237,
+      "sha256": "0bd8443c529493e3d114bf131d88580c22a03ae1ec0fb262304e47f57ac2ffee"
+    },
+    {
+      "path": "crates/wxml-delivery/src/manifest_v2.rs",
+      "state": "present",
+      "bytes": 63713,
+      "sha256": "2a0fb5725a334cb7f697735b9bd7e73927868f13d9f6e9800ea29559fc6443b8"
+    },
+    {
+      "path": "crates/wxml-delivery/src/package.rs",
+      "state": "present",
+      "bytes": 79607,
+      "sha256": "49cf1fb28ff22a716f88d093b4125f8d468cef6095bfd1353d671a53f6413251"
+    },
+    {
+      "path": "crates/wxml-delivery/src/verify.rs",
+      "state": "present",
+      "bytes": 13605,
+      "sha256": "06559c60cc4a0d7896d5f8bbd404fb513285df83723ca9de72349b3f40ceaf00"
+    },
+    {
+      "path": "crates/wxml-lsp/src/backend_node/config.rs",
+      "state": "archived",
+      "bytes": null,
+      "sha256": null,
+      "last_known": {
+        "bytes": 14267,
+        "sha256": "cdc40ec0a265f6cca172a76a2c9fd60ce8228d338a89ea209ed6184d3d81d642"
+      },
+      "archive_reason": "frozen file deleted by the P7 archive scope; oracle manifest is Frozen"
+    },
+    {
+      "path": "crates/wxml-lsp/src/lib.rs",
+      "state": "present",
+      "bytes": 3845,
+      "sha256": "4ed8148e31d207a1cd4ffd9c49090522b086c683e2aeddc6f6f6f6a0b6e35d08"
+    },
+    {
+      "path": "crates/wxml-lsp/src/main.rs",
+      "state": "present",
+      "bytes": 8569,
+      "sha256": "9e6546247398dd31ea9178f82fe0bf11f3fc814993800bd9141a96dd443e3289"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity.rs",
+      "state": "present",
+      "bytes": 12004,
+      "sha256": "8b988abfd0b9d65a8a306086328c4964d7c9c92fb1a6a9e5dfd78ce50e3d0f4c"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity/fixture_hash.rs",
+      "state": "present",
+      "bytes": 25560,
+      "sha256": "fd3fbfa9095738fdc04278d1b84ba9d8552b8a0e998c7cd8693a1bb09543fc23"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity/ledger.rs",
+      "state": "present",
+      "bytes": 103957,
+      "sha256": "492ecc260dbd4884af5b374f9fd5a93c4be7e2ea18304c1c75d5d336d4a750b3"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs",
+      "state": "present",
+      "bytes": 136184,
+      "sha256": "62ab6ed6ffe6a124baa5e1c07f0b5729cf0a81a986c258976ebfa052a36e7e00"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity/native_gates.rs",
+      "state": "present",
+      "bytes": 53408,
+      "sha256": "518f211efed570bfc0562a17d7709dbbbad5a03e7b78f5fe18386d956873b806"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity/oracle_manifest.rs",
+      "state": "present",
+      "bytes": 42984,
+      "sha256": "2d8bd4e8263cd75ed10dd08de3aecd82a7c163966c97e63b4ee03a25061ddf4f"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity/oracle_manifest_tests.rs",
+      "state": "present",
+      "bytes": 16648,
+      "sha256": "31119dee9c36cb0b741c74c9ab04f664bda831eb7e3776c343cd63c44abab89b"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/native_parity/symbols_edits.rs",
+      "state": "present",
+      "bytes": 29844,
+      "sha256": "3b63dd6b98b0d4598283d09910de5c30ed23e10c086ab283183c1cbca8f715c9"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/performance_bench.rs",
+      "state": "present",
+      "bytes": 39268,
+      "sha256": "f04c0dfed4e03661b647943c9336a4dbe2dcab74f133e6b7329bac0e2a249451"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/q2_stability.rs",
+      "state": "present",
+      "bytes": 17477,
+      "sha256": "55f2a601ef8dcde957989ec6a9afa15960099e51f9d807f7fdde2acc53244978"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/real_node.rs",
+      "state": "archived",
+      "bytes": null,
+      "sha256": null,
+      "last_known": {
+        "bytes": 26150,
+        "sha256": "fc948a4bf7838c93693fdbc1b104ee96119a959835ed640077221d47af9849c4"
+      },
+      "archive_reason": "frozen file deleted by the P7 archive scope; oracle manifest is Frozen"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/semantic_tools.rs",
+      "state": "archived",
+      "bytes": null,
+      "sha256": null,
+      "last_known": {
+        "bytes": 100857,
+        "sha256": "359e5d9a38d88d75617dc4effbad240782b1f356bbaa4a1e1c2f2d7a45572773"
+      },
+      "archive_reason": "frozen file deleted by the P7 archive scope; oracle manifest is Frozen"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/stdio_type_loop.rs",
+      "state": "present",
+      "bytes": 23949,
+      "sha256": "0a8ccc3745ce323af596e031d218668d33f6901b238b3ca271cb1e847543d376"
+    },
+    {
+      "path": "crates/wxml-lsp/tests/wave5_acceptance.rs",
+      "state": "archived",
+      "bytes": null,
+      "sha256": null,
+      "last_known": {
+        "bytes": 41910,
+        "sha256": "d28c9eace06a401ad632d162518e3243b1557f993748aec4fb5d8770249c2af3"
+      },
+      "archive_reason": "frozen file deleted by the P7 archive scope; oracle manifest is Frozen"
+    },
+    {
+      "path": "docs/plans/tsgo-legacy-oracle-manifest.json",
+      "state": "present",
+      "bytes": 83170,
+      "sha256": "ed820c1f39eafd4011ab139772f07bc2b3b5daaa9d1358583282d5fb65322278"
+    }
+  ],
+  "blocking_state": {
+    "ledger": {
+      "green": 109,
+      "planned": 0,
+      "reviewed": 130,
+      "waived": 29,
+      "retired": 71,
+      "total": 339,
+      "planned_target": 0,
+      "closeout_policy": "c-lite-owner-scope-waiver",
+      "ignored_gate_green": 23,
+      "ignored_gate_required": 0,
+      "ignored_gate_total": 23,
+      "silent_skip_gates": 0,
+      "rust_silent_skips": 0
+    },
+    "old_gates_present": 11,
+    "old_gates_archived": 12,
+    "old_gates_still_ignored": true,
+    "mandatory_green": false,
+    "replacement_reviewed": false,
+    "old_ts_oracle_requires_live_tree": false,
+    "legacy_oracle_archive_bound": true,
+    "legacy_ts_tree_present": {
+      "test": false,
+      "samples": false
+    },
+    "v1_write_paths_present": true,
+    "v1_write_anchor_count": 4,
+    "v1_write_archived_count": 11,
+    "v1_keep_anchor_count": 3,
+    "p7_0": {
+      "freeze_inventory": true,
+      "tag_created": true,
+      "legacy_node_tests_manifest": false,
+      "ledger_reads_archive_manifest": true,
+      "fixture_hash_archive_binding": true,
+      "native_gates_old_test_removed": true,
+      "complete": false
+    },
+    "deletion_allowed": false,
+    "blocked_by": [
+      "ledger is 109 green / 0 planned / 130 reviewed / 29 waived / 71 retired; reviewed/waived are not green",
+      "11 old gates still carry #[ignore]; gate_green is opt-in, not mandatory_green",
+      "no replacement_reviewed evidence exists for the 23 gates",
+      "12 delete gates are archived with last-known identity; archived is not a live match",
+      "oracle manifest is Frozen: backends/typescript test/samples are archive-only",
+      "4 v1 write anchors still exist and need review",
+      "11 v1 write symbols are archived; keep/read-only boundaries remain present",
+      "semantic_tools silent-return evidence is archived only; it is not a live pass"
+    ]
+  },
+  "scope_notes": [
+    "This file freezes identity only; it does not authorize deletion.",
+    "Archived entries record last-known identity from the previous freeze; they are not matches and are not re-hashed.",
+    "Present frozen paths are still verified byte-for-byte; partial deletions fail.",
+    "backends/typescript is archived (tracked 99 files plus local dist 34); backend_node is archived (8 files).",
+    "node_modules is an ignored npm install tree and is deliberately outside --check.",
+    "Line numbers are current worktree line numbers for present entries; archived entries carry last-known lines."
+  ]
+}
