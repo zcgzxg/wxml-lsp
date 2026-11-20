@@ -3444,22 +3444,19 @@ mod tests {
         );
     }
 
-    struct TempTree(PathBuf);
-
-    impl Drop for TempTree {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
+    /// Base directory for real-engine sandboxes: `TMPDIR` when set, else a
+    /// writable location outside the repository.
+    fn sandbox_base() -> PathBuf {
+        std::env::var_os("TMPDIR")
+            .filter(|value| !value.is_empty())
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from)
     }
 
     fn real_engine_doc_symbol_session(
         tag: &str,
         source: &str,
-    ) -> Option<(NativeSession, TempTree)> {
+    ) -> Option<(NativeSession, tempfile::TempDir)> {
         use crate::input::{DocumentRevision, ProjectRoot, SourceFile as InputSourceFile};
-        use std::sync::atomic::{AtomicU64, Ordering};
-
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
 
         let Ok(bin) = std::env::var("TSGO_BIN") else {
             let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
@@ -3480,18 +3477,12 @@ mod tests {
             "TSGO_BIN does not point at a file: {bin}"
         );
 
-        let suffix = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let sandbox = std::env::temp_dir().join(format!(
-            "wxml-tsgo-doc-symbols-{tag}-sandbox-{}-{suffix}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&sandbox).expect("sandbox");
-        let guard = TempTree(sandbox.clone());
+        let sandbox = tempfile::Builder::new()
+            .prefix(&format!("wxml-tsgo-doc-symbols-{tag}-sandbox-"))
+            .tempdir_in(sandbox_base())
+            .expect("sandbox");
 
-        let project_root = format!(
-            "/tmp/opencode/wxml-tsgo-doc-symbols-{tag}-project-{}-{suffix}",
-            std::process::id()
-        );
+        let project_root = format!("{}/project", sandbox.path().display());
         let input = AnalysisInput::new(
             ProjectKey::new("doc-symbols"),
             ProjectRoot::new(&project_root).expect("project root"),
@@ -3502,10 +3493,10 @@ mod tests {
         )
         .expect("analysis input");
 
-        let mut session =
-            NativeSession::start(SessionOptions::new(executable, sandbox)).expect("start engine");
+        let mut session = NativeSession::start(SessionOptions::new(executable, sandbox.path()))
+            .expect("start engine");
         session.open_project(&input).expect("open project");
-        Some((session, guard))
+        Some((session, sandbox))
     }
 
     #[test]

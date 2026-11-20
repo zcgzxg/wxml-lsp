@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 use wxml_project::ProjectPath;
 
+use crate::configuration::export_target;
+
 /// Maximum number of workspace patterns considered from all manifests.
 const MAX_PATTERNS: usize = 256;
 
@@ -468,26 +470,6 @@ fn package_aliases(
         aliases.entry(alias).or_default().push(path);
     }
     aliases
-}
-
-/// Picks the first usable target from an `exports` condition object.
-fn export_target(value: &Value, depth: usize) -> Option<&str> {
-    if depth > 4 {
-        return None;
-    }
-    if let Some(target) = value.as_str() {
-        return Some(target);
-    }
-    let object = value.as_object()?;
-    for key in ["types", "import", "default", "require"] {
-        if let Some(target) = object
-            .get(key)
-            .and_then(|value| export_target(value, depth + 1))
-        {
-            return Some(target);
-        }
-    }
-    None
 }
 
 /// Reads and parses a JSON file with the discovery size bound.

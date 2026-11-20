@@ -44,8 +44,6 @@ use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 #[path = "lsp.rs"]
 mod lsp;
@@ -89,8 +87,6 @@ const ENGINE_DISTRIBUTION_FILE_COUNT: u64 = 122;
 const ENGINE_DISTRIBUTION_UNPACKED_SIZE: u64 = 28_450_796;
 const ENGINE_API_SCHEMA_VERSION: u64 = 9;
 const ENGINE_AST_HEADER_BYTES: u64 = 64;
-
-static ROOT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// One read-only projection of the gate environment.
 #[derive(Debug, Clone, Default)]
@@ -455,33 +451,22 @@ fn require_typings_package(package: PathBuf, explicit: bool) -> Result<PathBuf, 
 /// A disposable private directory below the test temp base.
 #[derive(Debug)]
 pub(crate) struct TestRoot {
-    path: PathBuf,
+    dir: tempfile::TempDir,
 }
 
 impl TestRoot {
     pub(crate) fn new(base: &Path, label: &str) -> Self {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        let path = base.join(format!(
-            "wxml-native-ds-{label}-{}-{nanos}-{}",
-            std::process::id(),
-            ROOT_COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir(&path)
-            .unwrap_or_else(|error| panic!("create test root {}: {error}", path.display()));
-        set_mode(&path, 0o700).expect("private test root");
-        Self { path }
+        let prefix = format!("wxml-native-ds-{label}-");
+        let dir = tempfile::Builder::new()
+            .prefix(prefix.as_str())
+            .tempdir_in(base)
+            .unwrap_or_else(|error| panic!("create test root in {}: {error}", base.display()));
+        set_mode(dir.path(), 0o700).expect("private test root");
+        Self { dir }
     }
 
     pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for TestRoot {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        self.dir.path()
     }
 }
 

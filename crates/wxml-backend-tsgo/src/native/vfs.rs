@@ -38,7 +38,7 @@ use thiserror::Error;
 
 use crate::input::{
     AnalysisInput, CompilerOptions, InputError, MINIPROGRAM_TYPINGS, ProjectRoot, TypeAssetError,
-    TypeAssetFile, TypeAssets,
+    TypeAssetFile, TypeAssets, hex_lower,
 };
 
 /// Name of the synthesized project configuration file.
@@ -1269,21 +1269,6 @@ fn push_unique(values: &mut Vec<String>, value: String) {
     if !values.contains(&value) {
         values.push(value);
     }
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for &byte in bytes {
-        if let (Some(&high), Some(&low)) = (
-            DIGITS.get(usize::from(byte >> 4)),
-            DIGITS.get(usize::from(byte & 0x0f)),
-        ) {
-            encoded.push(char::from(high));
-            encoded.push(char::from(low));
-        }
-    }
-    encoded
 }
 
 /// Upper bound for one JSON string value after escaping.

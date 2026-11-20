@@ -19,9 +19,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serde_json::{Value, json};
 use wxml_lsp::ServerOutcome;
@@ -29,39 +28,34 @@ use wxml_lsp::project_host::{ProjectHost, ProjectState};
 use wxml_lsp::run_with_host;
 use wxml_types::Backend;
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-
 const TIMEOUT: Duration = Duration::from_secs(15);
 
-/// A temporary project rooted under `/tmp/opencode`, removed on drop.
+/// A temporary project rooted under `TMPDIR` (or `/tmp/opencode`), removed on
+/// drop.
 pub struct TempProject {
-    root: PathBuf,
+    dir: tempfile::TempDir,
 }
 
 impl TempProject {
-    /// Creates a unique project directory below `/tmp/opencode`.
+    /// Creates a unique project directory below `TMPDIR` (or `/tmp/opencode`).
     pub fn new(prefix: &str) -> Self {
-        let base = PathBuf::from("/tmp/opencode");
-        std::fs::create_dir_all(&base).expect("temp base");
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        let root = base.join(format!(
-            "{prefix}-{stamp}-{}",
-            NEXT_ID.fetch_add(1, Ordering::SeqCst)
-        ));
-        std::fs::create_dir_all(&root).expect("temp project");
-        Self { root }
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let dir = tempfile::Builder::new()
+            .prefix(prefix)
+            .tempdir_in(base)
+            .expect("temp project");
+        Self { dir }
     }
 
     /// Returns the project root.
     pub fn root(&self) -> &Path {
-        &self.root
+        self.dir.path()
     }
 
     /// Writes one project file, creating parent directories.
     pub fn write(&self, path: &str, text: &str) {
-        let target = self.root.join(path);
+        let target = self.root().join(path);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).expect("parent");
         }
@@ -70,7 +64,7 @@ impl TempProject {
 
     /// Removes one project file, ignoring an already absent path.
     pub fn remove(&self, path: &str) {
-        let target = self.root.join(path);
+        let target = self.root().join(path);
         match std::fs::remove_file(target) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -80,18 +74,12 @@ impl TempProject {
 
     /// Returns the `file://` URI of the project root.
     pub fn root_uri(&self) -> String {
-        format!("file://{}", self.root.display())
+        format!("file://{}", self.root().display())
     }
 
     /// Returns the `file://` URI of a project-relative path.
     pub fn uri(&self, path: &str) -> String {
-        format!("file://{}", self.root.join(path).display())
-    }
-}
-
-impl Drop for TempProject {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        format!("file://{}", self.root().join(path).display())
     }
 }
 

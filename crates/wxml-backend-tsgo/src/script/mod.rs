@@ -45,6 +45,7 @@ pub mod behavior;
 pub mod data_path;
 pub mod events;
 pub mod insertion;
+pub(crate) mod members;
 pub mod occurrences;
 pub mod properties;
 pub mod references;

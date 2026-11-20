@@ -6,7 +6,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde_json::Value;
 use wxml_project::discovery::MAX_COMPONENT_SCRIPT_BYTES;
@@ -17,21 +16,26 @@ use wxml_project::{
     SourceLimits, UriError,
 };
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+/// Base for temporary directories: `TMPDIR` when set, otherwise `/tmp/opencode`.
+fn temp_base() -> PathBuf {
+    std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from)
+}
 
 struct TempDir {
+    /// Owns creation and recursive cleanup.
+    _dir: tempfile::TempDir,
+    /// Directory handle used by the existing helpers.
     path: PathBuf,
 }
 
 impl TempDir {
     fn new(name: &str) -> Self {
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "wxml-project-p3b-{}-{id}-{name}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("create temp dir");
-        Self { path }
+        let dir = tempfile::Builder::new()
+            .prefix(name)
+            .tempdir_in(temp_base())
+            .expect("create temp dir");
+        let path = dir.path().to_path_buf();
+        Self { _dir: dir, path }
     }
 
     fn root(&self) -> PathBuf {
@@ -44,12 +48,6 @@ impl TempDir {
             fs::create_dir_all(parent).expect("create parent");
         }
         fs::write(target, text).expect("write file");
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
     }
 }
 
@@ -91,7 +89,7 @@ fn compiler_options_merge_extends_and_paths() {
         }"#,
     );
 
-    let project = Project::open(temp.path.clone()).expect("open");
+    let project = Project::open(temp.path).expect("open");
     let options = project.compiler_options().expect("merged options");
 
     assert_eq!(options.get("strict").and_then(Value::as_bool), Some(true));
@@ -154,7 +152,7 @@ fn compiler_options_merge_extends_and_paths() {
 fn compiler_options_none_without_tsconfig() {
     let temp = TempDir::new("no-tsconfig");
     temp.write("app.json", r#"{"pages": []}"#);
-    let project = Project::open(temp.path.clone()).expect("open");
+    let project = Project::open(temp.path).expect("open");
     assert!(project.tsconfig().is_none());
     assert!(project.compiler_options().is_none());
 }
@@ -205,7 +203,7 @@ fn collect_sources_includes_overlay_and_excludes_node_modules() {
     temp.write("NODE_MODULES/y.ts", "export const y = 1;\n");
     temp.write("dist/z.ts", "export const z = 1;\n");
 
-    let mut project = Project::open(temp.path.clone()).expect("open");
+    let mut project = Project::open(temp.path).expect("open");
     project
         .set_overlay(&path("src/unsaved.ts"), "export const u = 2;\n", 7)
         .expect("overlay");
@@ -242,7 +240,7 @@ fn collect_sources_includes_configured_dependency_roots_and_aliases() {
     let alias = path("packages/api/src/*/index.ts");
     let dependencies = BTreeMap::from([("jl-api/*".to_owned(), vec![alias])]);
     let project = Project::open_with_config(
-        temp.path.clone(),
+        temp.path,
         path("apps/app/src/app.json"),
         vec![path("apps/app/src"), path("packages/api")],
         path("apps/app/tsconfig.json"),
@@ -285,7 +283,7 @@ fn collect_sources_respects_file_and_total_limits() {
     temp.write("a.ts", "0123456789");
     temp.write("d.d.ts", "x");
 
-    let project = Project::open(temp.path.clone()).expect("open");
+    let project = Project::open(temp.path).expect("open");
 
     let by_files = project.collect_sources(SourceLimits {
         max_files: 2,
@@ -365,7 +363,7 @@ fn collect_sources_skips_symlinks() {
     temp.write("src/a.ts", "export const a = 1;\n");
     symlink(temp.path.join("src/a.ts"), temp.path.join("src/link.ts")).expect("symlink script");
 
-    let project = Project::open(temp.path.clone()).expect("open");
+    let project = Project::open(temp.path).expect("open");
     let set = project.collect_sources(SourceLimits::default());
     let paths: Vec<&str> = set.files.iter().map(|file| file.path.as_str()).collect();
     assert_eq!(paths, ["src/a.ts"]);
@@ -394,7 +392,7 @@ fn source_issues_are_bounded() {
         symlink(&target, temp.path.join(format!("link{index:04}.ts"))).expect("symlink script");
     }
 
-    let project = Project::open(temp.path.clone()).expect("open");
+    let project = Project::open(temp.path).expect("open");
     let started = Instant::now();
     let set = project.collect_sources(SourceLimits::default());
     let elapsed = started.elapsed();
@@ -415,7 +413,7 @@ fn source_issues_are_bounded() {
 fn overlay_revision_zero_is_preserved() {
     let temp = TempDir::new("zero-revision");
     temp.write("app.json", r#"{"pages": []}"#);
-    let mut project = Project::open(temp.path.clone()).expect("open");
+    let mut project = Project::open(temp.path).expect("open");
     project
         .set_overlay(&path("src/zero.ts"), "export const zero = 0;\n", 0)
         .expect("overlay");
@@ -459,7 +457,7 @@ fn discovery_json_budget_limits_symlinked_pages() {
     }
 
     let started = Instant::now();
-    let project = Project::open(temp.path.clone()).expect("open");
+    let project = Project::open(temp.path).expect("open");
     let elapsed = started.elapsed();
     assert_eq!(project.pages().len(), PAGES);
     assert!(
@@ -507,7 +505,7 @@ fn discovery_json_budget_limits_symlinked_components() {
     }
 
     let started = Instant::now();
-    let project = Project::open(temp.path.clone()).expect("open");
+    let project = Project::open(temp.path).expect("open");
     let elapsed = started.elapsed();
     assert_eq!(project.components().len(), COMPONENTS);
     assert!(
@@ -562,7 +560,7 @@ fn component_script_budget_is_bounded() {
     }
 
     let started = Instant::now();
-    let project = Project::open(temp.path.clone()).expect("open");
+    let project = Project::open(temp.path).expect("open");
     let elapsed = started.elapsed();
 
     assert_eq!(project.components().len(), COMPONENTS);
@@ -628,7 +626,7 @@ fn invalid_utf8_component_scripts_are_budgeted() {
     }
 
     let started = Instant::now();
-    let project = Project::open(temp.path.clone()).expect("open");
+    let project = Project::open(temp.path).expect("open");
     let elapsed = started.elapsed();
 
     assert_eq!(project.components().len(), COMPONENTS);
@@ -687,7 +685,7 @@ fn invalid_utf8_page_json_is_budgeted() {
     }
 
     let started = Instant::now();
-    let project = Project::open(temp.path.clone()).expect("open");
+    let project = Project::open(temp.path).expect("open");
     let elapsed = started.elapsed();
 
     assert_eq!(project.pages().len(), PAGES);
@@ -743,7 +741,7 @@ fn invalid_utf8_component_json_is_budgeted() {
     }
 
     let started = Instant::now();
-    let project = Project::open(temp.path.clone()).expect("open");
+    let project = Project::open(temp.path).expect("open");
     let elapsed = started.elapsed();
 
     assert_eq!(project.components().len(), COMPONENTS);
@@ -775,7 +773,7 @@ fn invalid_utf8_app_json_is_budgeted() {
     fs::write(temp.path.join("app.json"), &invalid).expect("write invalid app json");
 
     let started = Instant::now();
-    let project = Project::open(temp.path.clone()).expect("open");
+    let project = Project::open(temp.path).expect("open");
     let elapsed = started.elapsed();
 
     assert_eq!(project.pages(), &[] as &[wxml_project::Page]);

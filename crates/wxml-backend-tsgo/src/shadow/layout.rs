@@ -38,6 +38,10 @@ use std::collections::BTreeSet;
 
 use crate::input::SourceFile;
 use crate::script::behavior::BehaviorProperty;
+use crate::script::members::{
+    Member, MemberKind, Members, doc_before, function_keyword_before, member_end, member_last,
+    method_name_before, object_bounds, scan_members,
+};
 use crate::shadow::ShadowError;
 use crate::shadow::expression::{self, Token, TokenKind};
 use crate::shadow::guards::{GuardChain, PlannedGuards, render_guards_planned};
@@ -379,36 +383,6 @@ struct Registration {
     members: Vec<Member>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MemberKind {
-    Property,
-    Method,
-    Shorthand,
-    Spread,
-    Computed,
-    Accessor,
-    Unknown,
-}
-
-#[derive(Debug, Clone)]
-struct Member {
-    name: Option<String>,
-    kind: MemberKind,
-    key_start: usize,
-    key_end: usize,
-    value_start: usize,
-    value_end: usize,
-}
-
-impl Member {
-    fn key_range(&self) -> SourceRange {
-        SourceRange::new(
-            u32::try_from(self.key_start).unwrap_or(u32::MAX),
-            u32::try_from(self.key_end).unwrap_or(u32::MAX),
-        )
-    }
-}
-
 struct Script<'a> {
     text: &'a str,
     tokens: Vec<Token>,
@@ -451,6 +425,32 @@ impl<'a> Script<'a> {
         self.tokens.get(index).is_some_and(|token| {
             token.kind == TokenKind::Identifier && token.text(self.text) == name
         })
+    }
+}
+
+impl Members for Script<'_> {
+    fn kind_at(&self, index: usize) -> Option<TokenKind> {
+        self.tokens.get(index).map(|token| token.kind)
+    }
+
+    fn span_at(&self, index: usize) -> Option<(usize, usize)> {
+        self.tokens.get(index).map(|token| (token.start, token.end))
+    }
+
+    fn text_at(&self, index: usize) -> Option<&str> {
+        self.tokens.get(index).map(|token| token.text(self.text))
+    }
+
+    fn close_at(&self, index: usize) -> Option<usize> {
+        self.pairs.get(index).copied().flatten()
+    }
+
+    fn punct_at(&self, index: usize, character: char) -> bool {
+        self.is_punct(index, character)
+    }
+
+    fn ident_at(&self, index: usize, name: &str) -> bool {
+        self.is_ident(index, name)
     }
 }
 
@@ -1703,45 +1703,6 @@ fn import_continuation(script: &Script<'_>, cursor: usize) -> bool {
     )
 }
 
-fn function_keyword_before(script: &Script<'_>, open: usize) -> bool {
-    let mut cursor = open;
-    while cursor > 0 {
-        cursor -= 1;
-        if script.is_ident(cursor, "function") {
-            return true;
-        }
-        if script.is_ident(cursor, "if")
-            || script.is_ident(cursor, "while")
-            || script.is_ident(cursor, "switch")
-            || script.is_ident(cursor, "for")
-            || script.is_ident(cursor, "with")
-            || script.is_ident(cursor, "catch")
-        {
-            return false;
-        }
-        if open - cursor > 3 {
-            break;
-        }
-    }
-    false
-}
-
-fn method_name_before(script: &Script<'_>, open: usize) -> bool {
-    let Some(previous) = open.checked_sub(1) else {
-        return false;
-    };
-    if !matches!(
-        script.kind(previous),
-        TokenKind::Identifier | TokenKind::StringLiteral | TokenKind::Number
-    ) {
-        return false;
-    }
-    !matches!(
-        script.token_text(previous),
-        "if" | "while" | "switch" | "for" | "with" | "catch"
-    )
-}
-
 fn immediate_level_contains(script: &Script<'_>, open: usize, close: usize, name: &str) -> bool {
     let mut cursor = open + 1;
     while cursor < close {
@@ -1760,176 +1721,6 @@ fn immediate_level_contains(script: &Script<'_>, open: usize, close: usize, name
         cursor += 1;
     }
     false
-}
-
-fn scan_members(script: &Script<'_>, start: usize, end: usize) -> Vec<Member> {
-    let mut members = Vec::new();
-    let mut index = start;
-    while index < end {
-        while index < end && script.is_punct(index, ',') {
-            index += 1;
-        }
-        if index >= end {
-            break;
-        }
-        let segment_end = member_end(script, index, end);
-        if segment_end <= index {
-            break;
-        }
-        members.push(parse_member(script, index, segment_end));
-        index = segment_end;
-    }
-    members
-}
-
-fn member_end(script: &Script<'_>, start: usize, end: usize) -> usize {
-    let mut depth = 0_usize;
-    let mut index = start;
-    while index < end {
-        match script.kind(index) {
-            TokenKind::TemplateExpressionStart | TokenKind::Punctuator('(' | '[' | '{') => {
-                depth += 1;
-            }
-            TokenKind::TemplateExpressionEnd | TokenKind::Punctuator(')' | ']' | '}') => {
-                if depth == 0 {
-                    break;
-                }
-                depth -= 1;
-            }
-            TokenKind::Punctuator(',') if depth == 0 => break,
-            _ => {}
-        }
-        index += 1;
-    }
-    index
-}
-
-#[allow(clippy::too_many_lines)] // one member grammar; mirrors the TypeScript scanner
-fn parse_member(script: &Script<'_>, start: usize, end: usize) -> Member {
-    if start >= end {
-        return Member {
-            name: None,
-            kind: MemberKind::Unknown,
-            key_start: 0,
-            key_end: 0,
-            value_start: start,
-            value_end: end,
-        };
-    }
-    let unknown = Member {
-        name: None,
-        kind: MemberKind::Unknown,
-        key_start: script.tokens[start].start,
-        key_end: script.tokens[start].end,
-        value_start: start,
-        value_end: end,
-    };
-    if script.is_punct(start, '.')
-        && script.is_punct(start + 1, '.')
-        && script.is_punct(start + 2, '.')
-    {
-        return Member {
-            kind: MemberKind::Spread,
-            value_start: start + 3,
-            ..unknown
-        };
-    }
-    if script.is_punct(start, '[') {
-        return Member {
-            kind: MemberKind::Computed,
-            ..unknown
-        };
-    }
-    if script.is_punct(start, '*') {
-        return Member {
-            kind: MemberKind::Method,
-            ..unknown
-        };
-    }
-    let token = script.tokens[start];
-    if !matches!(
-        token.kind,
-        TokenKind::Identifier | TokenKind::StringLiteral | TokenKind::Number
-    ) {
-        return unknown;
-    }
-    let name = match token.kind {
-        TokenKind::StringLiteral => unquote(script.token_text(start)),
-        TokenKind::Identifier => Some(script.token_text(start).to_owned()),
-        _ => None,
-    };
-    let key_end = token.end;
-    let second = start + 1;
-    if second >= end {
-        return Member {
-            name,
-            kind: MemberKind::Shorthand,
-            key_start: token.start,
-            key_end,
-            value_start: start,
-            value_end: end,
-        };
-    }
-    match script.kind(second) {
-        TokenKind::Punctuator(':') => Member {
-            name,
-            kind: MemberKind::Property,
-            key_start: token.start,
-            key_end,
-            value_start: second + 1,
-            value_end: end,
-        },
-        TokenKind::Punctuator('(') => Member {
-            name,
-            kind: MemberKind::Method,
-            key_start: token.start,
-            key_end,
-            value_start: second,
-            value_end: end,
-        },
-        TokenKind::Identifier
-            if matches!(script.token_text(start), "get" | "set")
-                && script.is_punct(second + 1, '(') =>
-        {
-            Member {
-                name: Some(script.token_text(second).to_owned()),
-                kind: MemberKind::Accessor,
-                key_start: token.start,
-                key_end,
-                value_start: second,
-                value_end: end,
-            }
-        }
-        _ => Member {
-            name,
-            kind: MemberKind::Unknown,
-            key_start: token.start,
-            key_end,
-            value_start: second,
-            value_end: end,
-        },
-    }
-}
-
-fn object_bounds(script: &Script<'_>, member: &Member) -> Option<(usize, usize)> {
-    if member.kind != MemberKind::Property || member.value_start >= member.value_end {
-        return None;
-    }
-    if !script.is_punct(member.value_start, '{') {
-        return None;
-    }
-    let close = script.close_of(member.value_start).ok()?;
-    if close + 1 != member.value_end {
-        return None;
-    }
-    Some((member.value_start, close))
-}
-
-fn member_last<'a>(members: &'a [Member], name: &str) -> Option<&'a Member> {
-    members
-        .iter()
-        .rev()
-        .find(|member| member.name.as_deref() == Some(name))
 }
 
 fn classify_data_root(script: &Script<'_>, registration: &Registration) -> DataRootKind {
@@ -2138,52 +1929,6 @@ fn array_elements(script: &Script<'_>, member: &Member) -> Option<Vec<usize>> {
             .filter(|index| *index != usize::MAX)
             .collect(),
     )
-}
-
-fn doc_before(text: &str, key_start: usize) -> String {
-    let prefix = &text[..key_start];
-    let trimmed = prefix.trim_end();
-    if !trimmed.ends_with("*/") {
-        return String::new();
-    }
-    let Some(start) = trimmed[..trimmed.len() - 2].rfind("/**") else {
-        return String::new();
-    };
-    let comment = &trimmed[start + 3..trimmed.len() - 2];
-    comment
-        .lines()
-        .map(|line| line.trim().trim_start_matches('*').trim())
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn unquote(text: &str) -> Option<String> {
-    let mut characters = text.chars();
-    let quote = characters.next()?;
-    if quote != '\'' && quote != '"' {
-        return None;
-    }
-    let mut value = String::new();
-    let mut escaped = false;
-    for character in characters {
-        if escaped {
-            match character {
-                'n' => value.push('\n'),
-                'r' => value.push('\r'),
-                't' => value.push('\t'),
-                other => value.push(other),
-            }
-            escaped = false;
-        } else if character == '\\' {
-            escaped = true;
-        } else if character == quote {
-            break;
-        } else {
-            value.push(character);
-        }
-    }
-    Some(value)
 }
 
 fn behaviors_incomplete(script: &Script<'_>, registration: &Registration) -> bool {
@@ -2799,5 +2544,62 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// The shared grammar reads both script token views; they must agree.
+    #[test]
+    fn layout_and_scanner_member_views_agree() {
+        let text = "const o = {\n\
+             a: 1,\n\
+             b() {},\n\
+             \"c\": 2,\n\
+             4: 'five',\n\
+             d,\n\
+             ...e,\n\
+             [f]: 3,\n\
+             g: { h: 1, i: [2, 3] },\n\
+             j: () => ({ k: 1 }),\n\
+             l: `t${m}`,\n\
+             n: function () { return 1; },\n\
+             o(): number { return 1; },\n\
+             get p() { return 1; },\n\
+             set q(v: number) {},\n\
+             *r() {},\n\
+             async s() {},\n\
+             't': 9,\n\
+         };\n";
+        let layout = Script::new(text).expect("layout lex");
+        let scanner = crate::script::scanner::Script::new(text).expect("scanner lex");
+        let (layout_open, layout_close) = object_bounds_of(&layout);
+        let (scanner_open, scanner_close) = object_bounds_of(&scanner);
+        assert_eq!((layout_open, layout_close), (scanner_open, scanner_close));
+        let layout_members = scan_members(&layout, layout_open + 1, layout_close);
+        let scanner_members = scan_members(&scanner, scanner_open + 1, scanner_close);
+        assert_eq!(layout_members.len(), scanner_members.len());
+        for (left, right) in layout_members.iter().zip(&scanner_members) {
+            assert_eq!(left.name, right.name);
+            assert_eq!(left.kind, right.kind);
+            assert_eq!(
+                (
+                    left.key_start,
+                    left.key_end,
+                    left.value_start,
+                    left.value_end
+                ),
+                (
+                    right.key_start,
+                    right.key_end,
+                    right.value_start,
+                    right.value_end
+                )
+            );
+        }
+    }
+
+    fn object_bounds_of(script: &impl Members) -> (usize, usize) {
+        let open = (0..4096)
+            .find(|&index| script.punct_at(index, '{'))
+            .expect("object open");
+        (open, script.close_at(open).expect("object close"))
     }
 }

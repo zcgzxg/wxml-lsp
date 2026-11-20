@@ -1024,6 +1024,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror",
  "wxml-types",
 ]
@@ -1036,6 +1037,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror",
  "wxml-backend-tsgo",
  "wxml-project",
@@ -1050,6 +1052,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
  "wxml-text",
 ]

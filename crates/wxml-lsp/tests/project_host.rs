@@ -4,8 +4,6 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
 use wxml_lsp::configuration::InitializationOptions;
@@ -17,27 +15,27 @@ use wxml_types::{
     CapabilityStatus, FileId, ProjectId, RootKind, SnapshotId, SourceRevision, SourceSnapshot,
 };
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-
 struct TempProject {
-    root: PathBuf,
+    dir: tempfile::TempDir,
 }
 
 impl TempProject {
     fn new() -> Self {
         let base = std::env::var_os("TMPDIR")
             .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
-        let root = base.join(format!("wxml-p7-host-{stamp}-{id}"));
-        std::fs::create_dir_all(&root).expect("create temp project");
-        Self { root }
+        let dir = tempfile::Builder::new()
+            .prefix("wxml-p7-host-")
+            .tempdir_in(base)
+            .expect("create temp project");
+        Self { dir }
+    }
+
+    fn root(&self) -> &Path {
+        self.dir.path()
     }
 
     fn write(&self, path: &str, text: &str) {
-        let target = self.root.join(path);
+        let target = self.root().join(path);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).expect("create parent");
         }
@@ -45,17 +43,11 @@ impl TempProject {
     }
 
     fn uri(&self, path: &str) -> String {
-        format!("file://{}", self.root.join(path).display())
+        format!("file://{}", self.root().join(path).display())
     }
 
     fn root_uri(&self) -> String {
-        format!("file://{}", self.root.display())
-    }
-}
-
-impl Drop for TempProject {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        format!("file://{}", self.root().display())
     }
 }
 
@@ -130,7 +122,7 @@ fn routes_and_file_ids_are_real_and_stable() {
     assert!(
         !file
             .as_str()
-            .contains(project.root.to_string_lossy().as_ref())
+            .contains(project.root().to_string_lossy().as_ref())
     );
     assert_eq!(host.uri_for(&file).as_deref(), Some(wxml_uri.as_str()));
     assert_eq!(host.path_for_uri(outside_uri), Err(HostError::InvalidUri));
@@ -367,9 +359,9 @@ fn root_and_uri_helpers_do_not_expose_host_paths_in_ids() {
     assert!(id.as_str().starts_with("proj-"));
     assert!(
         !id.as_str()
-            .contains(project.root.to_string_lossy().as_ref())
+            .contains(project.root().to_string_lossy().as_ref())
     );
-    assert!(Path::new(project.root.to_string_lossy().as_ref()).exists());
+    assert!(Path::new(project.root().to_string_lossy().as_ref()).exists());
     assert!(
         host.uri_for(&FileId::new(id, "pages/index/index.wxml").expect("file"))
             .is_some()
@@ -724,7 +716,7 @@ fn watched_script_deletion_clears_page_script_and_view_target() {
     let wxml = project_path("pages/index/index.wxml");
     assert!(host.view_for(&wxml).is_ok());
 
-    std::fs::remove_file(project.root.join("pages/index/index.ts")).expect("remove script");
+    std::fs::remove_file(project.root().join("pages/index/index.ts")).expect("remove script");
     let update = host
         .watched_files_changed(&[watched(
             &project.uri("pages/index/index.ts"),
@@ -861,7 +853,7 @@ fn configured_project_root_supplies_tsconfig_for_a_nested_app() {
     assert_eq!(
         view.compiler_options["baseUrl"],
         project
-            .root
+            .root()
             .join("apps/miniprogram")
             .to_string_lossy()
             .as_ref()
@@ -926,7 +918,7 @@ fn each_app_uses_its_configured_tsconfig_and_preserves_identity() {
             "<view>{{ title }}</view>",
         ));
         let view = host.analysis(&snapshot).expect("analysis");
-        let expected_root = project.root.join(format!("apps/{app}"));
+        let expected_root = project.root().join(format!("apps/{app}"));
         assert_eq!(
             view.compiler_options["baseUrl"],
             expected_root.to_string_lossy().as_ref()
@@ -1063,11 +1055,11 @@ fn nested_app_roots_use_the_longest_match_in_either_configuration_order() {
             .path_for_uri(&project.uri("apps/outer/nested/pages/new.wxml"))
             .expect("nested file");
         assert_eq!(path.as_str(), "pages/new.wxml");
-        assert_eq!(host.root(), Some(project.root.join("apps/outer/nested")));
+        assert_eq!(host.root(), Some(project.root().join("apps/outer/nested")));
         let nested = host.project_id();
         host.path_for_uri(&project.uri("apps/outer/pages/new.wxml"))
             .expect("outer file");
-        assert_eq!(host.root(), Some(project.root.join("apps/outer")));
+        assert_eq!(host.root(), Some(project.root().join("apps/outer")));
         assert_ne!(host.project_id(), nested);
     }
 }
@@ -1133,7 +1125,7 @@ fn shared_project_files_use_an_active_or_unique_owner_and_reject_ambiguity() {
             .as_str(),
         "shared.ts"
     );
-    assert_eq!(host.root(), Some(project.root.join("apps")));
+    assert_eq!(host.root(), Some(project.root().join("apps")));
 }
 
 #[test]
@@ -1155,7 +1147,7 @@ fn explicit_app_does_not_infer_a_parent_tsconfig() {
         &InitializationOptions::parse(&json!({"apps":[{"root":"apps/a/src"}]})).expect("options"),
     )
     .expect("configured root");
-    assert_eq!(host.root(), Some(project.root.join("apps/a/src")));
+    assert_eq!(host.root(), Some(project.root().join("apps/a/src")));
     let view = host
         .analysis(&snapshot(&host, "pages/index/index.wxml", "{{ title }}"))
         .expect("analysis");
@@ -1262,8 +1254,8 @@ fn explicit_apps_isolate_same_relative_paths_and_overlays() {
     ));
     let analysis_a = host.analysis(&snapshot_a).expect("a analysis");
     let analysis_b = host.analysis(&snapshot_b).expect("b analysis");
-    assert_eq!(analysis_a.project_root, project.root.join("a"));
-    assert_eq!(analysis_b.project_root, project.root.join("b"));
+    assert_eq!(analysis_a.project_root, project.root().join("a"));
+    assert_eq!(analysis_b.project_root, project.root().join("b"));
     assert_eq!(analysis_a.compiler_options["strict"], json!(true));
     assert_eq!(analysis_b.compiler_options["strict"], json!(false));
 
@@ -1308,7 +1300,7 @@ fn explicit_apps_isolate_same_relative_paths_and_overlays() {
     let active = host.project_id();
     let analysis_a = host.analysis(&snapshot_a).expect("background a");
     assert_eq!(host.project_id(), active);
-    assert_eq!(analysis_a.project_root, project.root.join("a"));
+    assert_eq!(analysis_a.project_root, project.root().join("a"));
 }
 
 #[test]
@@ -1462,7 +1454,7 @@ fn default_options_discover_nested_app_lazily() {
     let host = ProjectState::new();
     host.open_root_with_options(Some(&project.root_uri()), &InitializationOptions::default())
         .expect("default workspace root");
-    assert_eq!(host.root(), Some(project.root.clone()));
+    assert_eq!(host.root(), Some(project.root().to_path_buf()));
     let path = host
         .path_for_uri(&project.uri("apps/nested/pages/index/index.wxml"))
         .expect("workspace-relative path");
@@ -1618,7 +1610,7 @@ fn new_shared_tsconfig_reloads_the_non_owner_app() {
 
     // Renaming the tsconfig away refreshes both apps again; the uppercase file
     // is still not treated as configuration.
-    std::fs::remove_file(project.root.join("tsconfig.json")).expect("remove tsconfig");
+    std::fs::remove_file(project.root().join("tsconfig.json")).expect("remove tsconfig");
     host.watched_files_changed(&[watched(
         &project.uri("tsconfig.json"),
         WatchedChangeKind::Deleted,

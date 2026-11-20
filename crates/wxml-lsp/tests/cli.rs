@@ -116,7 +116,7 @@ fn default_without_install_serves_host_only() {
     let mut client = SessionClient::start(
         Path::new(BIN),
         &["--stdio"],
-        &cwd.path,
+        cwd.path(),
         &[
             ("WXML_NODE", "/nonexistent/node"),
             ("WXML_TYPE_BACKEND", "/nonexistent/server.js"),
@@ -251,7 +251,7 @@ fn rejects_the_removed_node_backend() {
 
 fn build_package_skeleton(tag: &str) -> TempTree {
     let tree = TempTree::new(tag);
-    let package = tree.path.join("version");
+    let package = tree.path().join("version");
     fs::create_dir_all(package.join("bin")).expect("bin");
     fs::create_dir_all(package.join("engine/lib")).expect("engine lib");
     fs::create_dir_all(package.join("typings/miniprogram-api-typings")).expect("typings root");
@@ -263,7 +263,7 @@ fn assert_default_fails_closed(package: &Path, expected: &str) {
     let unrelated = TempTree::new("damaged-cwd");
     let output = Command::new(package.join("bin/wxml-lsp"))
         .args(["--stdio"])
-        .current_dir(&unrelated.path)
+        .current_dir(unrelated.path())
         .env_clear()
         .env("PATH", "/nonexistent")
         .stdin(Stdio::null())
@@ -289,7 +289,7 @@ fn assert_default_fails_closed(package: &Path, expected: &str) {
 #[test]
 fn default_fails_closed_on_a_missing_typings_root() {
     let tree = build_package_skeleton("missing-typings");
-    let package = tree.path.join("version");
+    let package = tree.path().join("version");
     fs::remove_dir_all(package.join("typings")).expect("remove typings");
     assert_default_fails_closed(&package, "the installed package layout is unsafe");
 }
@@ -297,14 +297,14 @@ fn default_fails_closed_on_a_missing_typings_root() {
 #[test]
 fn default_fails_closed_on_a_missing_engine() {
     let tree = build_package_skeleton("missing-engine");
-    let package = tree.path.join("version");
+    let package = tree.path().join("version");
     assert_default_fails_closed(&package, "the pinned native engine is missing");
 }
 
 #[test]
 fn default_fails_closed_on_an_engine_artifact_mismatch() {
     let tree = build_package_skeleton("engine-mismatch");
-    let package = tree.path.join("version");
+    let package = tree.path().join("version");
     let engine = package.join("engine/lib/tsc");
     fs::write(&engine, b"").expect("empty engine");
     #[cfg(unix)]
@@ -398,7 +398,7 @@ fn real_inputs() -> Option<(PathBuf, PathBuf)> {
 }
 
 struct TempTree {
-    path: PathBuf,
+    dir: tempfile::TempDir,
 }
 
 impl TempTree {
@@ -406,20 +406,16 @@ impl TempTree {
         let base = std::env::var_os("WXML_TEST_TMPDIR")
             .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
         fs::create_dir_all(&base).expect("test base");
-        let path = base.join(format!(
-            "wxml-lsp-cli-install-{tag}-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_nanos())
-        ));
-        fs::create_dir(&path).expect("temp tree");
-        Self { path }
+        let prefix = format!("wxml-lsp-cli-install-{tag}-");
+        let dir = tempfile::Builder::new()
+            .prefix(prefix.as_str())
+            .tempdir_in(&base)
+            .expect("temp tree");
+        Self { dir }
     }
-}
-impl Drop for TempTree {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+
+    fn path(&self) -> &Path {
+        self.dir.path()
     }
 }
 
@@ -576,7 +572,7 @@ fn write_install_manifest(package: &Path) {
 /// Builds a temporary install tree shaped like a real native package.
 fn build_install_tree(tag: &str, engine: &Path, typings: &Path) -> TempTree {
     let tree = TempTree::new(tag);
-    let package = tree.path.join("version");
+    let package = tree.path().join("version");
     fs::create_dir_all(package.join("bin")).expect("bin");
     fs::create_dir_all(package.join("engine/lib")).expect("engine lib");
     fs::create_dir_all(package.join("typings/miniprogram-api-typings")).expect("typings root");
@@ -589,9 +585,9 @@ fn build_install_tree(tag: &str, engine: &Path, typings: &Path) -> TempTree {
 
 fn tripwire_directory() -> (TempTree, PathBuf, PathBuf) {
     let base = TempTree::new("tripwire");
-    let directory = base.path.join("bin");
+    let directory = base.path().join("bin");
     fs::create_dir_all(&directory).expect("tripwire bin");
-    let marker = base.path.join("executed");
+    let marker = base.path().join("executed");
     for name in ["node", "npm", "npx"] {
         let script = directory.join(name);
         fs::write(
@@ -824,8 +820,8 @@ fn optional_real_install_tree_serves_native_stdio_without_path_node() {
         return;
     };
     let tree = build_install_tree("serve", &engine, &typings);
-    let package = tree.path.join("version");
-    let unrelated = tree.path.join("unrelated-cwd");
+    let package = tree.path().join("version");
+    let unrelated = tree.path().join("unrelated-cwd");
     fs::create_dir_all(&unrelated).expect("unrelated cwd");
 
     let output = run_native_session(&package, &unrelated);
@@ -856,8 +852,8 @@ fn optional_real_install_tree_serves_native_stdio_by_default() {
         return;
     };
     let tree = build_install_tree("serve-default", &engine, &typings);
-    let package = tree.path.join("version");
-    let unrelated = tree.path.join("unrelated-cwd");
+    let package = tree.path().join("version");
+    let unrelated = tree.path().join("unrelated-cwd");
     fs::create_dir_all(&unrelated).expect("unrelated cwd");
     let project = repo_fixture("events-basic");
     assert!(
@@ -950,7 +946,7 @@ fn optional_real_install_tree_default_fails_closed_without_typings() {
         return;
     };
     let tree = build_install_tree("default-missing-assets", &engine, &typings);
-    let package = tree.path.join("version");
+    let package = tree.path().join("version");
     fs::remove_dir_all(package.join("typings/miniprogram-api-typings")).expect("remove typings");
     let output = Command::new(package.join("bin/wxml-lsp"))
         .args(["--stdio"])
@@ -982,7 +978,7 @@ fn optional_real_install_tree_without_typings_fails_closed() {
         return;
     };
     let tree = build_install_tree("missing-assets", &engine, &typings);
-    let package = tree.path.join("version");
+    let package = tree.path().join("version");
     fs::remove_dir_all(package.join("typings/miniprogram-api-typings")).expect("remove typings");
     let output = Command::new(package.join("bin/wxml-lsp"))
         .args(["--stdio", "--backend", "native"])

@@ -317,7 +317,7 @@ fn package_aliases(
 }
 
 /// Picks the first usable target from an `exports` condition object.
-fn export_target(value: &Value, depth: usize) -> Option<&str> {
+pub(crate) fn export_target(value: &Value, depth: usize) -> Option<&str> {
     if depth > 4 {
         return None;
     }

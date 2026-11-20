@@ -27,6 +27,7 @@ use crate::input::SourceFile;
 use crate::shadow::mapping::SourceRange;
 
 use super::ScriptError;
+use super::members::{function_keyword_before, method_name_before};
 use super::scanner::{Member, Script, scan_members};
 
 /// Mini-program registration kind recognized by the script layer.
@@ -441,50 +442,6 @@ fn in_call_position(script: &Script<'_>, index: usize) -> bool {
         || script.token_text(index - 1) == Some("set");
     // A class/object method may carry a return type between `)` and `{`.
     !(member_start && script.is_punct(close + 1, ':'))
-}
-
-/// Conservative shadowing check for one canonical registrar name.
-fn function_keyword_before(script: &Script<'_>, open: usize) -> bool {
-    let mut cursor = open;
-    while cursor > 0 {
-        cursor -= 1;
-        if script.is_ident(cursor, "function") {
-            return true;
-        }
-        if script.is_ident(cursor, "if")
-            || script.is_ident(cursor, "while")
-            || script.is_ident(cursor, "switch")
-            || script.is_ident(cursor, "for")
-            || script.is_ident(cursor, "with")
-            || script.is_ident(cursor, "catch")
-        {
-            return false;
-        }
-        if open - cursor > 3 {
-            break;
-        }
-    }
-    false
-}
-
-fn method_name_before(script: &Script<'_>, open: usize) -> bool {
-    let Some(previous) = open.checked_sub(1) else {
-        return false;
-    };
-    if !matches!(
-        script.kind(previous),
-        Some(
-            crate::shadow::expression::TokenKind::Identifier
-                | crate::shadow::expression::TokenKind::StringLiteral
-                | crate::shadow::expression::TokenKind::Number
-        )
-    ) {
-        return false;
-    }
-    !matches!(
-        script.token_text(previous),
-        Some("if" | "while" | "switch" | "for" | "with" | "catch")
-    )
 }
 
 /// Selects the registration for a requested root with the shadow fallback rules.

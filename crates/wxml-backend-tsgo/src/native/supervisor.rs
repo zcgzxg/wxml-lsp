@@ -47,6 +47,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::config::{LaunchError, LaunchPlan, PinnedEngine};
+use crate::input::hex_lower;
 use crate::native::framing::{
     DEFAULT_FRAME_LIMITS, Frame, FrameError, FrameLimits, FrameReader, FrameRole, FrameWriter,
 };
@@ -682,22 +683,6 @@ fn verify_executable(path: &Path, expected_sha256: &str) -> Result<(), SpawnErro
         return Err(SpawnError::ExecutableMismatch);
     }
     Ok(())
-}
-
-/// Encodes bytes as lowercase hexadecimal without an extra dependency.
-fn hex_lower(bytes: &[u8]) -> String {
-    const DIGITS: &[u8; 16] = b"0123456789abcdef";
-    let mut encoded = String::with_capacity(bytes.len() * 2);
-    for &byte in bytes {
-        if let (Some(&high), Some(&low)) = (
-            DIGITS.get(usize::from(byte >> 4)),
-            DIGITS.get(usize::from(byte & 0x0f)),
-        ) {
-            encoded.push(char::from(high));
-            encoded.push(char::from(low));
-        }
-    }
-    encoded
 }
 
 /// Supervisor failure outside the frame/router layer.

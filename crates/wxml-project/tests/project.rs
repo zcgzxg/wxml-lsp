@@ -4,28 +4,32 @@
 
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use wxml_project::ProjectPath;
 use wxml_project::{
     DataRootKind, DiscoveryIssueKind, FileError, OverlayError, Project, ProjectError,
 };
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+/// Base for temporary directories: `TMPDIR` when set, otherwise `/tmp/opencode`.
+fn temp_base() -> PathBuf {
+    std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from)
+}
 
 struct TempDir {
+    /// Owns creation and recursive cleanup.
+    _dir: tempfile::TempDir,
+    /// Directory handle used by the existing helpers.
     path: PathBuf,
 }
 
 impl TempDir {
     fn new(name: &str) -> Self {
-        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "wxml-project-e2e-{}-{id}-{name}",
-            std::process::id()
-        ));
-        fs::create_dir_all(&path).expect("create temp dir");
-        Self { path }
+        let dir = tempfile::Builder::new()
+            .prefix(name)
+            .tempdir_in(temp_base())
+            .expect("create temp dir");
+        let path = dir.path().to_path_buf();
+        Self { _dir: dir, path }
     }
 
     fn root(&self) -> PathBuf {
@@ -38,12 +42,6 @@ impl TempDir {
             fs::create_dir_all(parent).expect("create parent");
         }
         fs::write(target, text).expect("write file");
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
     }
 }
 
@@ -119,7 +117,7 @@ fn overlay_wins_then_falls_back_to_disk() {
     temp.write("app.json", r#"{"pages": []}"#);
     temp.write("pages/a/a.wxml", "<view>disk</view>");
 
-    let mut project = Project::open(temp.path.clone()).expect("open");
+    let mut project = Project::open(temp.path).expect("open");
     let page = path("pages/a/a.wxml");
     assert_eq!(project.read(&page).expect("disk"), "<view>disk</view>");
 
@@ -164,7 +162,7 @@ fn overlay_configuration_requires_rediscovery() {
     temp.write("pages/a/a.wxml", "<view/>");
     temp.write("pages/b/b.wxml", "<view/>");
 
-    let mut project = Project::open(temp.path.clone()).expect("open");
+    let mut project = Project::open(temp.path).expect("open");
     assert_eq!(project.pages()[0].route, "pages/a/a");
 
     project
@@ -211,7 +209,7 @@ fn loads_tsconfig_and_reports_alias_errors_as_issues() {
 #[test]
 fn missing_app_json_is_an_issue_not_a_failure() {
     let temp = TempDir::new("missing-app");
-    let project = Project::open(temp.path.clone()).expect("open");
+    let project = Project::open(temp.path).expect("open");
     assert_eq!(project.pages(), &[] as &[wxml_project::Page]);
     assert_eq!(issue_kinds(&project), [DiscoveryIssueKind::MissingFile]);
 }
@@ -231,7 +229,7 @@ fn debug_output_hides_the_absolute_root() {
 fn maps_file_uris_inside_the_project_only() {
     let temp = TempDir::new("uri");
     temp.write("app.json", r#"{"pages": []}"#);
-    let project = Project::open(temp.path.clone()).expect("open");
+    let project = Project::open(temp.path).expect("open");
 
     let page = path("pages/a/a.wxml");
     let uri = project.uri_for(&page).expect("uri");
@@ -266,7 +264,7 @@ fn data_roots_prefer_overlay_and_ignore_missing_scripts() {
     temp.write("pages/a/a.wxml", "<view/>");
     temp.write("pages/a/a.ts", "Page({ data: { from: 'disk' } });");
 
-    let mut project = Project::open(temp.path.clone()).expect("open");
+    let mut project = Project::open(temp.path).expect("open");
     let script = path("pages/a/a.ts");
     let roots = project.data_roots(&script).expect("roots");
     assert_eq!(roots.len(), 1);

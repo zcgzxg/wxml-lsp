@@ -135,7 +135,7 @@ fn with_install_reports_asset_failure_before_creating_a_sandbox() {
 #[test]
 fn with_install_reports_a_missing_typings_root() {
     let dir = TempDir::new("missing-typings");
-    let package_root = dir.0.join("package");
+    let package_root = dir.path().join("package");
     let standard_lib_root = package_root.join("engine/lib");
     fs::create_dir_all(&standard_lib_root).expect("standard root");
     fs::write(standard_lib_root.join("lib.d.ts"), b"// lib\n").expect("lib");
@@ -158,7 +158,7 @@ fn with_install_reports_a_missing_typings_root() {
 #[test]
 fn load_environment_rejects_an_incomplete_tree_without_exposing_paths() {
     let dir = TempDir::new("incomplete");
-    let package_root = dir.0.join("package");
+    let package_root = dir.path().join("package");
     let standard_lib_root = package_root.join("engine/lib");
     let typings_root = package_root.join("typings");
     fs::create_dir_all(&standard_lib_root).expect("standard root");

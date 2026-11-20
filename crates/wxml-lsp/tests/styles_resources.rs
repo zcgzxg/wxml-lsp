@@ -9,10 +9,8 @@
 //! definition and document links.
 
 use std::io::Cursor;
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 use wxml_lsp::project_host::ProjectState;
@@ -20,27 +18,27 @@ use wxml_lsp::run_with_host;
 use wxml_text::LineIndex;
 use wxml_types::{Backend, MockBackend};
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-
 struct TempProject {
-    root: PathBuf,
+    dir: tempfile::TempDir,
 }
 
 impl TempProject {
     fn new() -> Self {
         let base = std::env::var_os("TMPDIR")
             .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
-        let root = base.join(format!("wxml-lsp-styles-{stamp}-{id}"));
-        std::fs::create_dir_all(&root).expect("create temp project");
-        Self { root }
+        let dir = tempfile::Builder::new()
+            .prefix("wxml-lsp-styles-")
+            .tempdir_in(base)
+            .expect("create temp project");
+        Self { dir }
+    }
+
+    fn root(&self) -> &Path {
+        self.dir.path()
     }
 
     fn write(&self, path: &str, text: &str) {
-        let target = self.root.join(path);
+        let target = self.root().join(path);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent).expect("create parent");
         }
@@ -48,17 +46,11 @@ impl TempProject {
     }
 
     fn uri(&self, path: &str) -> String {
-        format!("file://{}", self.root.join(path).display())
+        format!("file://{}", self.root().join(path).display())
     }
 
     fn root_uri(&self) -> String {
-        format!("file://{}", self.root.display())
-    }
-}
-
-impl Drop for TempProject {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        format!("file://{}", self.root().display())
     }
 }
 
@@ -80,7 +72,8 @@ fn fixture() -> TempProject {
     project.write("pages/index/index.ts", "Page({})");
     project.write("images/logo.png", "png");
     project.write("images/my logo.png", "png");
-    std::fs::write(project.root.join("images/bin.png"), [0xff, 0xfe, 0x00]).expect("binary image");
+    std::fs::write(project.root().join("images/bin.png"), [0xff, 0xfe, 0x00])
+        .expect("binary image");
     project.write("styles/extra.wxss", ".configured { color: gray; }\n");
     project
 }
@@ -319,7 +312,7 @@ fn class_completion_hover_and_definition_use_project_styles() {
         })
         .expect("page style location");
     let style_text =
-        std::fs::read_to_string(project.root.join("pages/index/index.wxss")).expect("style text");
+        std::fs::read_to_string(project.root().join("pages/index/index.wxss")).expect("style text");
     let style_card = style_text.find(".card").expect("card selector") + 1;
     assert_eq!(
         page_location["range"],
@@ -595,7 +588,7 @@ fn unsaved_style_overlays_and_watched_files_refresh_classes() {
 
     // A watched style change removes the overlay and re-reads disk.
     std::fs::write(
-        project.root.join("pages/index/index.wxss"),
+        project.root().join("pages/index/index.wxss"),
         ".disk { color: green; }\n",
     )
     .expect("write disk style");

@@ -34,7 +34,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::backend_tsgo::query::type_info::TypeQuality as NativeTypeQuality;
 use serde_json::Map;
@@ -162,25 +161,15 @@ fn real_install() -> Option<DiscoveredInstall> {
 }
 
 /// Temporary directory used only by the gate and its regression tests.
-struct TempDir(PathBuf);
-
-impl TempDir {
-    fn new(tag: &str) -> Self {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "wxml-lsp-gate-{tag}-{}-{}",
-            std::process::id(),
-            COUNTER.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(&path).expect("gate temp dir");
-        Self(path)
-    }
-}
-
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
+fn temp_dir(tag: &str) -> tempfile::TempDir {
+    let base =
+        std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+    fs::create_dir_all(&base).expect("gate temp base");
+    let prefix = format!("wxml-lsp-gate-{tag}-");
+    tempfile::Builder::new()
+        .prefix(prefix.as_str())
+        .tempdir_in(&base)
+        .expect("gate temp dir")
 }
 
 fn assert_pinned_assets(assets: &TypeAssets) {
@@ -225,8 +214,8 @@ fn open_trusted_session(
 
 /// Hovers `wx.request` in the real session and checks the typings signature.
 fn assert_native_wx_hover(install: &DiscoveredInstall, assets: &Arc<TypeAssets>) {
-    let sandbox = TempDir::new("native-session");
-    let mut session = open_trusted_session(install, assets, &sandbox.0);
+    let sandbox = temp_dir("native-session");
+    let mut session = open_trusted_session(install, assets, sandbox.path());
     let evidence = session
         .hover_evidence(
             "main.ts",
@@ -308,13 +297,13 @@ fn optional_real_adapter_hover_matches_legacy_without_assets() {
     let assets = environment.assets().expect("trusted assets");
 
     let legacy_views = TestViews::new(project_symbol_view());
-    let legacy_sandbox = TempDir::new("legacy-adapter");
+    let legacy_sandbox = temp_dir("legacy-adapter");
     let legacy = TsgoBackendAdapter::new(
         PinnedEngine::pinned(),
         Arc::clone(&legacy_views) as Arc<dyn ViewProvider>,
         Arc::new(NativeSessionFactory::new(SessionOptions::new(
             install.engine.clone(),
-            legacy_sandbox.0.clone(),
+            legacy_sandbox.path().to_path_buf(),
         ))),
     );
     assert_adapter_project_symbol_hover(&legacy);
@@ -332,14 +321,18 @@ fn optional_real_adapter_hover_matches_legacy_without_assets() {
 }
 
 /// Creates a real on-disk mini-program project for the host.
-fn real_project() -> (TempDir, Arc<ProjectState>) {
-    let dir = TempDir::new("real-project");
-    fs::create_dir_all(dir.0.join("pages/index")).expect("project dirs");
-    fs::write(dir.0.join("app.json"), r#"{"pages":["pages/index/index"]}"#).expect("app.json");
-    fs::write(dir.0.join("pages/index/index.wxml"), WXML).expect("wxml");
-    fs::write(dir.0.join("pages/index/index.ts"), SCRIPT).expect("script");
+fn real_project() -> (tempfile::TempDir, Arc<ProjectState>) {
+    let dir = temp_dir("real-project");
+    fs::create_dir_all(dir.path().join("pages/index")).expect("project dirs");
+    fs::write(
+        dir.path().join("app.json"),
+        r#"{"pages":["pages/index/index"]}"#,
+    )
+    .expect("app.json");
+    fs::write(dir.path().join("pages/index/index.wxml"), WXML).expect("wxml");
+    fs::write(dir.path().join("pages/index/index.ts"), SCRIPT).expect("script");
     let host = Arc::new(ProjectState::new());
-    let uri = format!("file://{}", dir.0.display());
+    let uri = format!("file://{}", dir.path().display());
     host.open_root(Some(&uri)).expect("open real project");
     (dir, host)
 }
@@ -392,17 +385,21 @@ fn optional_real_project_script_diagnostics_use_the_host_view() {
     let Some(install) = real_install() else {
         return;
     };
-    let dir = TempDir::new("script-diagnostics");
-    fs::create_dir_all(dir.0.join("pages/index")).expect("project dirs");
-    fs::write(dir.0.join("app.json"), r#"{"pages":["pages/index/index"]}"#).expect("app.json");
+    let dir = temp_dir("script-diagnostics");
+    fs::create_dir_all(dir.path().join("pages/index")).expect("project dirs");
+    fs::write(
+        dir.path().join("app.json"),
+        r#"{"pages":["pages/index/index"]}"#,
+    )
+    .expect("app.json");
     let wxml = "<view>{{ title }}</view>";
     let script = "const x: string = 1;\nPage({ data: { title: \"hi\" } });\n";
     let model = "export const model: string = 1;\n";
-    fs::write(dir.0.join("pages/index/index.wxml"), wxml).expect("wxml");
-    fs::write(dir.0.join("pages/index/index.ts"), script).expect("script");
-    fs::write(dir.0.join("model.ts"), model).expect("model script");
+    fs::write(dir.path().join("pages/index/index.wxml"), wxml).expect("wxml");
+    fs::write(dir.path().join("pages/index/index.ts"), script).expect("script");
+    fs::write(dir.path().join("model.ts"), model).expect("model script");
     let host = Arc::new(ProjectState::new());
-    let uri = format!("file://{}", dir.0.display());
+    let uri = format!("file://{}", dir.path().display());
     host.open_root(Some(&uri)).expect("open real project");
     let adapter =
         TsgoBackendAdapter::with_install(Arc::clone(&host) as Arc<dyn ProjectHost>, &install)
@@ -506,20 +503,24 @@ fn optional_real_project_script_diagnostics_check_allow_js() {
     let Some(install) = real_install() else {
         return;
     };
-    let dir = TempDir::new("script-diagnostics-js");
-    fs::create_dir_all(dir.0.join("pages/index")).expect("project dirs");
-    fs::write(dir.0.join("app.json"), r#"{"pages":["pages/index/index"]}"#).expect("app.json");
+    let dir = temp_dir("script-diagnostics-js");
+    fs::create_dir_all(dir.path().join("pages/index")).expect("project dirs");
     fs::write(
-        dir.0.join("tsconfig.json"),
+        dir.path().join("app.json"),
+        r#"{"pages":["pages/index/index"]}"#,
+    )
+    .expect("app.json");
+    fs::write(
+        dir.path().join("tsconfig.json"),
         r#"{"compilerOptions":{"allowJs":true,"checkJs":true}}"#,
     )
     .expect("tsconfig.json");
     let wxml = "<view>{{ title }}</view>";
     let script = "/** @type {string} */\nconst x = 1;\nPage({ data: { title: \"hi\" } });\n";
-    fs::write(dir.0.join("pages/index/index.wxml"), wxml).expect("wxml");
-    fs::write(dir.0.join("pages/index/index.js"), script).expect("script");
+    fs::write(dir.path().join("pages/index/index.wxml"), wxml).expect("wxml");
+    fs::write(dir.path().join("pages/index/index.js"), script).expect("script");
     let host = Arc::new(ProjectState::new());
-    let uri = format!("file://{}", dir.0.display());
+    let uri = format!("file://{}", dir.path().display());
     host.open_root(Some(&uri)).expect("open real project");
     let adapter =
         TsgoBackendAdapter::with_install(Arc::clone(&host) as Arc<dyn ProjectHost>, &install)
@@ -630,8 +631,8 @@ fn required_gate_fails_for_a_binary_without_a_parent() {
 #[test]
 #[should_panic(expected = "lib.d.ts")]
 fn required_gate_fails_without_the_standard_library() {
-    let dir = TempDir::new("no-lib");
-    let bin = dir.0.join("tsc");
+    let dir = temp_dir("no-lib");
+    let bin = dir.path().join("tsc");
     fs::write(&bin, b"engine").expect("bin");
     let _ = load_real_install(Some(bin), Some(PathBuf::from("/tmp")), None, true);
 }
@@ -639,9 +640,9 @@ fn required_gate_fails_without_the_standard_library() {
 #[test]
 #[should_panic(expected = "TSGO_TYPINGS_ROOT")]
 fn required_gate_fails_without_typings() {
-    let dir = TempDir::new("no-typings");
-    let bin = dir.0.join("tsc");
+    let dir = temp_dir("no-typings");
+    let bin = dir.path().join("tsc");
     fs::write(&bin, b"engine").expect("bin");
-    fs::write(dir.0.join("lib.d.ts"), b"// lib\n").expect("lib");
+    fs::write(dir.path().join("lib.d.ts"), b"// lib\n").expect("lib");
     let _ = load_real_install(Some(bin), None, None, true);
 }

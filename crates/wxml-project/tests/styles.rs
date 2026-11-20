@@ -3,31 +3,29 @@
 //! Project-level style index and local resource resolution tests.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use wxml_project::{
     Project, ProjectPath, ResourceKind, ResourceResolution, StyleConfig, StyleDiagnosticsPolicy,
     StyleIndex, StyleIsolation, StyleIssueKind, StyleLimits, StyleScope,
 };
 
-static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+/// Base for temporary directories: `TMPDIR` when set, otherwise `/tmp/opencode`.
+fn temp_base() -> PathBuf {
+    std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from)
+}
 
 struct TempProject {
+    /// Owns creation and recursive cleanup.
+    _dir: tempfile::TempDir,
+    /// Directory handle used by the existing helpers.
     root: PathBuf,
 }
 
 impl TempProject {
     fn new() -> Self {
-        let base = std::env::var_os("TMPDIR")
-            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
-        let stamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        let id = NEXT_ID.fetch_add(1, Ordering::SeqCst);
-        let root = base.join(format!("wxml-styles-{stamp}-{id}"));
-        std::fs::create_dir_all(&root).expect("create temp project");
-        Self { root }
+        let dir = tempfile::tempdir_in(temp_base()).expect("create temp project");
+        let root = dir.path().to_path_buf();
+        Self { _dir: dir, root }
     }
 
     fn write(&self, path: &str, text: &str) {
@@ -36,12 +34,6 @@ impl TempProject {
             std::fs::create_dir_all(parent).expect("create parent");
         }
         std::fs::write(target, text).expect("write fixture");
-    }
-}
-
-impl Drop for TempProject {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
     }
 }
 

@@ -14,13 +14,17 @@
     clippy::unwrap_used
 )]
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::process::{Child, ChildStdin, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use serde_json::{Value, json};
+
+mod common;
+
+use common::{read_frame, wait_with_timeout};
 
 const BIN: &str = env!("CARGO_BIN_EXE_wxml-lsp");
 const TIMEOUT: Duration = Duration::from_secs(10);
@@ -190,42 +194,6 @@ impl Drop for Client {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
-    }
-}
-
-fn read_frame(reader: &mut impl BufRead) -> Option<Value> {
-    let mut length = None;
-    loop {
-        let mut line = String::new();
-        let read = reader.read_line(&mut line).ok()?;
-        if read == 0 {
-            return None;
-        }
-        let line = line.trim_end();
-        if line.is_empty() {
-            break;
-        }
-        if let Some(value) = line.strip_prefix("Content-Length:") {
-            length = value.trim().parse::<usize>().ok();
-        }
-    }
-    let length = length?;
-    let mut body = vec![0_u8; length];
-    reader.read_exact(&mut body).ok()?;
-    serde_json::from_slice(&body).ok()
-}
-
-fn wait_with_timeout(child: &mut Child) -> ExitStatus {
-    let deadline = Instant::now() + TIMEOUT;
-    loop {
-        if let Some(status) = child.try_wait().expect("try_wait") {
-            return status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            panic!("server did not exit before the timeout");
-        }
-        thread::sleep(Duration::from_millis(10));
     }
 }
 

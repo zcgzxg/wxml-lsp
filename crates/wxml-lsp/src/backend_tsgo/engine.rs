@@ -304,43 +304,32 @@ mod tests {
 
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use sha2::{Digest, Sha256};
 
     use super::*;
 
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    struct TestRoot {
-        path: PathBuf,
+    fn temp_base() -> PathBuf {
+        std::env::var_os("WXML_TEST_TMPDIR")
+            .or_else(|| std::env::var_os("TMPDIR"))
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from)
     }
 
-    impl TestRoot {
-        fn new(label: &str) -> Self {
-            let base =
-                std::env::var_os("WXML_TEST_TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from);
-            assert!(base.is_absolute(), "WXML_TEST_TMPDIR must be absolute");
-            fs::create_dir_all(&base).expect("test base");
-            let path = base.join(format!(
-                "wxml-lsp-engine-{label}-{}-{}",
-                std::process::id(),
-                COUNTER.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir(&path).expect("test root");
-            set_mode(&path, 0o700);
-            Self { path }
-        }
-    }
-
-    impl Drop for TestRoot {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
+    fn test_root(label: &str) -> tempfile::TempDir {
+        let base = temp_base();
+        assert!(base.is_absolute(), "test temp base must be absolute");
+        fs::create_dir_all(&base).expect("test base");
+        let prefix = format!("wxml-lsp-engine-{label}-");
+        let dir = tempfile::Builder::new()
+            .prefix(prefix.as_str())
+            .tempdir_in(&base)
+            .expect("test root");
+        set_mode(dir.path(), 0o700);
+        dir
     }
 
     struct FakeInstall {
-        root: TestRoot,
+        root: tempfile::TempDir,
         package: PathBuf,
         executable: PathBuf,
         engine: PathBuf,
@@ -350,8 +339,8 @@ mod tests {
 
     impl FakeInstall {
         fn new() -> Self {
-            let root = TestRoot::new("engine");
-            let package = root.path.join("package");
+            let root = test_root("engine");
+            let package = root.path().join("package");
             for directory in [
                 package.clone(),
                 package.join("bin"),
@@ -474,8 +463,8 @@ mod tests {
         let fake = FakeInstall::new();
         fs::remove_dir_all(fake.package.join("typings")).unwrap();
         // A typings directory above the package root must never be used.
-        fs::create_dir_all(fake.root.path.join("typings")).unwrap();
-        set_mode(&fake.root.path.join("typings"), 0o755);
+        fs::create_dir_all(fake.root.path().join("typings")).unwrap();
+        set_mode(&fake.root.path().join("typings"), 0o755);
         assert!(matches!(
             fake.discover(),
             Err(EngineDiscoveryError::PackageUnsafe { .. })
@@ -512,7 +501,7 @@ mod tests {
     #[test]
     fn rejects_a_symlinked_bin_executable() {
         let fake = FakeInstall::new();
-        let outside = fake.root.path.join("outside-wxml-lsp");
+        let outside = fake.root.path().join("outside-wxml-lsp");
         fs::copy(&fake.executable, &outside).unwrap();
         set_mode(&outside, 0o755);
         fs::remove_file(&fake.executable).unwrap();
@@ -563,7 +552,7 @@ mod tests {
     #[test]
     fn rejects_engine_symlink() {
         let fake = FakeInstall::new();
-        let outside = fake.root.path.join("outside-tsc");
+        let outside = fake.root.path().join("outside-tsc");
         fs::write(&outside, b"outside\n").unwrap();
         set_mode(&outside, 0o755);
         fs::remove_file(&fake.engine).unwrap();
@@ -579,7 +568,7 @@ mod tests {
     #[test]
     fn rejects_engine_parent_directory_symlink() {
         let fake = FakeInstall::new();
-        let outside = fake.root.path.join("outside-lib");
+        let outside = fake.root.path().join("outside-lib");
         fs::create_dir_all(&outside).unwrap();
         set_mode(&outside, 0o755);
         fs::write(outside.join("tsc"), b"outside\n").unwrap();
@@ -596,7 +585,7 @@ mod tests {
     #[test]
     fn rejects_executable_outside_bin() {
         let fake = FakeInstall::new();
-        let loose = fake.root.path.join("wxml-lsp");
+        let loose = fake.root.path().join("wxml-lsp");
         fs::copy(&fake.executable, &loose).unwrap();
         set_mode(&loose, 0o755);
         assert!(matches!(
@@ -604,8 +593,8 @@ mod tests {
             Err(EngineDiscoveryError::NotInstalled)
         ));
 
-        let other = fake.root.path.join("other/wxml-lsp");
-        fs::create_dir_all(fake.root.path.join("other")).unwrap();
+        let other = fake.root.path().join("other/wxml-lsp");
+        fs::create_dir_all(fake.root.path().join("other")).unwrap();
         fs::copy(&fake.executable, &other).unwrap();
         set_mode(&other, 0o755);
         assert!(matches!(
@@ -617,7 +606,7 @@ mod tests {
     #[test]
     fn rejects_missing_executable() {
         let fake = FakeInstall::new();
-        let missing = fake.root.path.join("missing/bin/wxml-lsp");
+        let missing = fake.root.path().join("missing/bin/wxml-lsp");
         assert!(matches!(
             discover_at_with_engine_sha256(&missing, &fake.engine_sha),
             Err(EngineDiscoveryError::UnresolvableExecutable)

@@ -983,26 +983,30 @@ fn flush_comma(output: &mut Vec<u8>, pending: &mut bool) {
 mod tests {
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
     use crate::files::{MAX_FILE_BYTES, MAX_MESSAGE_BYTES};
 
-    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+    /// Base for temporary directories: `TMPDIR` when set, otherwise `/tmp/opencode`.
+    fn temp_base() -> PathBuf {
+        std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from)
+    }
 
     struct TempDir {
+        /// Owns creation and recursive cleanup.
+        _dir: tempfile::TempDir,
+        /// Directory handle used by the existing helpers.
         path: PathBuf,
     }
 
     impl TempDir {
         fn new(name: &str) -> Self {
-            let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!(
-                "wxml-project-config-{}-{id}-{name}",
-                std::process::id()
-            ));
-            fs::create_dir_all(&path).expect("create temp dir");
-            Self { path }
+            let dir = tempfile::Builder::new()
+                .prefix(name)
+                .tempdir_in(temp_base())
+                .expect("create temp dir");
+            let path = dir.path().to_path_buf();
+            Self { _dir: dir, path }
         }
 
         fn root(&self) -> PathBuf {
@@ -1015,12 +1019,6 @@ mod tests {
                 fs::create_dir_all(parent).expect("create parent");
             }
             fs::write(target, text).expect("write file");
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
         }
     }
 
@@ -1471,7 +1469,7 @@ mod tests {
         }
 
         let started = Instant::now();
-        let project = crate::Project::open(temp.path.clone()).expect("open must not fail");
+        let project = crate::Project::open(temp.path).expect("open must not fail");
         let elapsed = started.elapsed();
         assert!(project.tsconfig().is_none());
         assert!(project.compiler_options().is_none());
@@ -1556,7 +1554,7 @@ mod tests {
         assert_eq!(config.resolve_alias("p19999/x"), Some(path("src19999/x")));
 
         let started = Instant::now();
-        let project = crate::Project::open(temp.path.clone()).expect("open");
+        let project = crate::Project::open(temp.path).expect("open");
         let elapsed = started.elapsed();
         assert!(elapsed < Duration::from_secs(2), "elapsed={elapsed:?}");
         assert_eq!(

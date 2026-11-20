@@ -57,26 +57,36 @@ pub(super) fn script_file() -> FileId {
 
 pub(super) fn unique_temp(tag: &str) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
-    std::env::temp_dir().join(format!(
+    temp_base().join(format!(
         "wxml-lsp-env-{tag}-{}-{}",
         std::process::id(),
         COUNTER.fetch_add(1, Ordering::Relaxed)
     ))
 }
 
-pub(super) struct TempDir(pub(super) PathBuf);
+/// Base directory for environment tests: `TMPDIR`, else `/tmp/opencode`.
+pub(super) fn temp_base() -> PathBuf {
+    std::env::var_os("TMPDIR").map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from)
+}
+
+/// Owned temporary directory for the duration of one environment test.
+pub(super) struct TempDir(tempfile::TempDir);
 
 impl TempDir {
     pub(super) fn new(tag: &str) -> Self {
-        let path = unique_temp(tag);
-        fs::create_dir_all(&path).expect("temp dir");
-        Self(path)
+        let base = temp_base();
+        fs::create_dir_all(&base).expect("temp base");
+        let prefix = format!("wxml-lsp-env-{tag}-");
+        Self(
+            tempfile::Builder::new()
+                .prefix(prefix.as_str())
+                .tempdir_in(&base)
+                .expect("temp dir"),
+        )
     }
-}
 
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
+    pub(super) fn path(&self) -> &std::path::Path {
+        self.0.path()
     }
 }
 

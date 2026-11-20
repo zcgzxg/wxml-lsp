@@ -12,5 +12,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 wxml-text = { path = "../wxml-text" }
 
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

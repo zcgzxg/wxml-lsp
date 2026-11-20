@@ -19,6 +19,7 @@ wxml-types = { path = "../wxml-types" }
 [dev-dependencies]
 proptest.workspace = true
 sha2.workspace = true
+tempfile.workspace = true
 
 [lints]
 workspace = true

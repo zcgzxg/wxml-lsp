@@ -497,7 +497,7 @@ mod tests {
 
     use std::os::unix::fs::PermissionsExt;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use crate::backend_tsgo::query::hover::HoverGap;
     use crate::backend_tsgo::query::type_info::{TypeInfo, TypeQuality};
@@ -505,33 +505,23 @@ mod tests {
 
     use super::*;
 
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-
-    struct TestRoot {
-        path: PathBuf,
+    fn temp_base() -> PathBuf {
+        std::env::var_os("WXML_TEST_TMPDIR")
+            .or_else(|| std::env::var_os("TMPDIR"))
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from)
     }
 
-    impl TestRoot {
-        fn new(label: &str) -> Self {
-            let base =
-                std::env::var_os("WXML_TEST_TMPDIR").map_or_else(std::env::temp_dir, PathBuf::from);
-            assert!(base.is_absolute(), "WXML_TEST_TMPDIR must be absolute");
-            fs::create_dir_all(&base).expect("test base");
-            let path = base.join(format!(
-                "wxml-lsp-sandbox-{label}-{}-{}",
-                std::process::id(),
-                COUNTER.fetch_add(1, Ordering::Relaxed)
-            ));
-            fs::create_dir(&path).expect("test root");
-            set_mode(&path, 0o700);
-            Self { path }
-        }
-    }
-
-    impl Drop for TestRoot {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.path);
-        }
+    fn test_root(label: &str) -> tempfile::TempDir {
+        let base = temp_base();
+        assert!(base.is_absolute(), "test temp base must be absolute");
+        fs::create_dir_all(&base).expect("test base");
+        let prefix = format!("wxml-lsp-sandbox-{label}-");
+        let dir = tempfile::Builder::new()
+            .prefix(prefix.as_str())
+            .tempdir_in(&base)
+            .expect("test root");
+        set_mode(dir.path(), 0o700);
+        dir
     }
 
     fn set_mode(path: &Path, mode: u32) {
@@ -656,8 +646,8 @@ mod tests {
 
     #[test]
     fn sandboxed_session_forwards_hover_evidence() {
-        let test = TestRoot::new("hover-forward");
-        let root = SandboxRoot::at(&test.path).expect("root");
+        let test = test_root("hover-forward");
+        let root = SandboxRoot::at(test.path()).expect("root");
         let sandbox = root.create().expect("sandbox");
         let calls = Arc::new(AtomicUsize::new(0));
         let mut session = SandboxedSession {
@@ -689,8 +679,8 @@ mod tests {
 
     #[test]
     fn creates_private_empty_non_symlink_directory() {
-        let test = TestRoot::new("private");
-        let root = SandboxRoot::at(&test.path).expect("root");
+        let test = test_root("private");
+        let root = SandboxRoot::at(test.path()).expect("root");
         let sandbox = root.create().expect("sandbox");
 
         let metadata = fs::symlink_metadata(sandbox.path()).expect("metadata");
@@ -700,14 +690,14 @@ mod tests {
         assert!(sandbox.path().read_dir().unwrap().next().is_none());
         assert_eq!(
             fs::canonicalize(sandbox.path()).unwrap().parent(),
-            Some(fs::canonicalize(&test.path).unwrap().as_path())
+            Some(fs::canonicalize(test.path()).unwrap().as_path())
         );
     }
 
     #[test]
     fn unique_per_call() {
-        let test = TestRoot::new("unique");
-        let root = SandboxRoot::at(&test.path).expect("root");
+        let test = test_root("unique");
+        let root = SandboxRoot::at(test.path()).expect("root");
         let first = root.create().expect("first sandbox");
         let second = root.create().expect("second sandbox");
         assert_ne!(first.path(), second.path());
@@ -715,8 +705,8 @@ mod tests {
 
     #[test]
     fn cleans_up_on_drop() {
-        let test = TestRoot::new("cleanup");
-        let root = SandboxRoot::at(&test.path).expect("root");
+        let test = test_root("cleanup");
+        let root = SandboxRoot::at(test.path()).expect("root");
         let sandbox = root.create().expect("sandbox");
         let path = sandbox.path().to_path_buf();
         assert!(path.exists());
@@ -734,10 +724,10 @@ mod tests {
 
     #[test]
     fn rejects_symlink_base() {
-        let test = TestRoot::new("symlink-base");
-        let target = test.path.join("target");
+        let test = test_root("symlink-base");
+        let target = test.path().join("target");
         fs::create_dir(&target).unwrap();
-        let link = test.path.join("link");
+        let link = test.path().join("link");
         std::os::unix::fs::symlink(&target, &link).unwrap();
         assert!(matches!(
             SandboxRoot::at(&link),
@@ -747,8 +737,8 @@ mod tests {
 
     #[test]
     fn rejects_file_base() {
-        let test = TestRoot::new("file-base");
-        let file = test.path.join("base-file");
+        let test = test_root("file-base");
+        let file = test.path().join("base-file");
         fs::write(&file, b"not a directory").unwrap();
         assert!(matches!(
             SandboxRoot::at(&file),
@@ -758,15 +748,15 @@ mod tests {
 
     #[test]
     fn effective_uid_matches_the_test_root_owner() {
-        let test = TestRoot::new("effective-uid");
-        let metadata = fs::metadata(&test.path).unwrap();
+        let test = test_root("effective-uid");
+        let metadata = fs::metadata(test.path()).unwrap();
         assert_eq!(effective_uid(), Some(file_owner(&metadata)));
     }
 
     #[test]
     fn rejects_base_owned_by_another_user_without_sticky() {
-        let test = TestRoot::new("owner-mismatch");
-        let base = test.path.join("base");
+        let test = test_root("owner-mismatch");
+        let base = test.path().join("base");
         fs::create_dir(&base).unwrap();
         set_mode(&base, 0o755);
         let owner = file_owner(&fs::metadata(&base).unwrap());
@@ -779,8 +769,8 @@ mod tests {
 
     #[test]
     fn permits_a_sticky_base_owned_by_the_effective_user() {
-        let test = TestRoot::new("sticky-owned");
-        let base = test.path.join("base");
+        let test = test_root("sticky-owned");
+        let base = test.path().join("base");
         fs::create_dir(&base).unwrap();
         set_mode(&base, 0o1777);
         let owner = file_owner(&fs::metadata(&base).unwrap());
@@ -794,8 +784,8 @@ mod tests {
 
     #[test]
     fn rejects_a_sticky_base_owned_by_another_unprivileged_user() {
-        let test = TestRoot::new("sticky-foreign");
-        let base = test.path.join("base");
+        let test = test_root("sticky-foreign");
+        let base = test.path().join("base");
         fs::create_dir(&base).unwrap();
         set_mode(&base, 0o1777);
         let owner = file_owner(&fs::metadata(&base).unwrap());
@@ -817,8 +807,8 @@ mod tests {
 
     #[test]
     fn rejects_group_or_world_writable_non_sticky_base() {
-        let test = TestRoot::new("unsafe-modes");
-        let base = test.path.join("base");
+        let test = test_root("unsafe-modes");
+        let base = test.path().join("base");
         fs::create_dir(&base).unwrap();
         let owner = file_owner(&fs::metadata(&base).unwrap());
         for mode in [0o775, 0o757, 0o777] {
@@ -835,8 +825,8 @@ mod tests {
 
     #[test]
     fn rejects_base_inside_the_install_package() {
-        let test = TestRoot::new("install-base");
-        let package = test.path.join("package");
+        let test = test_root("install-base");
+        let package = test.path().join("package");
         let inner = package.join("tmp");
         fs::create_dir_all(&inner).unwrap();
         assert!(matches!(
@@ -847,8 +837,8 @@ mod tests {
 
     #[test]
     fn rejects_base_inside_versions_or_the_install_root() {
-        let test = TestRoot::new("versions-base");
-        let install = test.path.join("install");
+        let test = test_root("versions-base");
+        let install = test.path().join("install");
         let package = install.join("versions/1.0.0");
         fs::create_dir_all(&package).unwrap();
         let install_tmp = install.join("tmp");
@@ -870,14 +860,14 @@ mod tests {
             SandboxRoot::new(&package_sandbox, Some(&package)),
             Err(SandboxError::BaseInsideInstall)
         ));
-        assert!(SandboxRoot::new(&test.path, Some(&package)).is_ok());
+        assert!(SandboxRoot::new(test.path(), Some(&package)).is_ok());
     }
 
     #[test]
     fn refuses_to_reuse_an_existing_name() {
-        let test = TestRoot::new("existing");
-        let root = SandboxRoot::at(&test.path).expect("root");
-        let taken = test.path.join("taken");
+        let test = test_root("existing");
+        let root = SandboxRoot::at(test.path()).expect("root");
+        let taken = test.path().join("taken");
         fs::write(&taken, b"keep me").unwrap();
 
         assert!(matches!(
@@ -889,9 +879,9 @@ mod tests {
 
     #[test]
     fn rejects_a_non_empty_directory_and_keeps_its_contents() {
-        let test = TestRoot::new("nonempty");
-        let root = SandboxRoot::at(&test.path).expect("root");
-        let manual = test.path.join("manual");
+        let test = test_root("nonempty");
+        let root = SandboxRoot::at(test.path()).expect("root");
+        let manual = test.path().join("manual");
         fs::create_dir(&manual).unwrap();
         set_mode(&manual, 0o700);
         fs::write(manual.join("unexpected"), b"x").unwrap();
@@ -905,16 +895,16 @@ mod tests {
 
     #[test]
     fn probe_leaves_no_directory_behind() {
-        let test = TestRoot::new("probe");
-        let root = SandboxRoot::at(&test.path).expect("root");
+        let test = test_root("probe");
+        let root = SandboxRoot::at(test.path()).expect("root");
         root.probe().expect("probe");
-        assert_eq!(fs::read_dir(&test.path).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(test.path()).unwrap().count(), 0);
     }
 
     #[test]
     fn never_writes_the_install_tree() {
-        let test = TestRoot::new("install-tree");
-        let package = test.path.join("package");
+        let test = test_root("install-tree");
+        let package = test.path().join("package");
         for directory in [
             package.clone(),
             package.join("bin"),
@@ -929,7 +919,7 @@ mod tests {
         set_mode(&package.join("engine/lib/tsc"), 0o755);
         let before = fingerprint(&package);
 
-        let sandbox_base = test.path.join("sandboxes");
+        let sandbox_base = test.path().join("sandboxes");
         fs::create_dir(&sandbox_base).unwrap();
         set_mode(&sandbox_base, 0o700);
         let root = SandboxRoot::at(&sandbox_base).expect("root");
@@ -941,9 +931,9 @@ mod tests {
 
     #[test]
     fn factory_cleans_up_after_a_failed_session_start() {
-        let test = TestRoot::new("factory");
+        let test = test_root("factory");
         let factory =
-            SandboxSessionFactory::with_base(test.path.join("missing-engine"), &test.path)
+            SandboxSessionFactory::with_base(test.path().join("missing-engine"), test.path())
                 .expect("factory");
 
         let result = factory.start();
@@ -954,7 +944,7 @@ mod tests {
             })
         ));
         assert_eq!(
-            fs::read_dir(&test.path)
+            fs::read_dir(test.path())
                 .unwrap()
                 .filter_map(Result::ok)
                 .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
