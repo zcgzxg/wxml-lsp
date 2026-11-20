@@ -22,7 +22,9 @@ use wxml_backend_tsgo::input::{
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::handles::NodeHandle;
 use wxml_backend_tsgo::native::session::{AutoImportPreparation, NativeSession, SessionOptions};
-use wxml_backend_tsgo::native::strings::{Utf16Position, position_to_offset};
+use wxml_backend_tsgo::native::strings::{
+    Utf16Offset, Utf16Position, offset_to_position, position_to_offset,
+};
 use wxml_backend_tsgo::query::completion::{
     AutoImportContext, CompletionGap, CompletionQueryOptions, map_completions, map_completions_with,
 };
@@ -32,6 +34,12 @@ use wxml_backend_tsgo::query::documentation::map_documentation;
 use wxml_backend_tsgo::query::references::map_references;
 use wxml_backend_tsgo::query::symbol::map_symbol;
 use wxml_backend_tsgo::query::type_info::{TypeQuality, map_type_query};
+use wxml_backend_tsgo::shadow::layout::{
+    BuildStatus, BuiltShadow, FragmentSpec, JsCheckPolicy, RootKind, ShadowRequest,
+    build_in_place_shadow,
+};
+use wxml_backend_tsgo::shadow::locals::{LocalBinding, LocalRole};
+use wxml_backend_tsgo::shadow::mapping::{SourceRange, utf16_len, utf16_to_byte};
 
 const MAIN: &str = r#"import type { User } from "./model";
 /** A documented user. */
@@ -856,6 +864,261 @@ fn real_engine_unprepared_symbol_completion_fails_closed() {
             .iter()
             .map(|entry| entry.name.as_str())
             .collect::<Vec<_>>()
+    );
+
+    session.release().expect("release snapshot");
+    session.shutdown().expect("shutdown");
+}
+
+/* ------------------------------------------------- shadow/template fixtures */
+
+/// Path of the derived shadow script handed to the engine.
+const SHADOW_SCRIPT_PATH: &str = "pages/index/index.ts";
+/// Ambient shim for the asset-less legacy input.
+///
+/// A normal session gets the registrar and the standard library from the
+/// installed typings/assets; `AnalysisInput::new` has neither. Without the
+/// shim `this.data` inside the probe is `any` and array types do not resolve,
+/// so a type/completion assertion would fail for a reason unrelated to the
+/// shadow. The shim declares only what these tests read.
+const SHIM_PATH: &str = "wxml-globals.d.ts";
+const SHIM: &str = concat!(
+    "declare function Page<T extends object>(options: T): void;\n",
+    "interface Array<T> { readonly length: number }\n",
+    "interface ReadonlyArray<T> { readonly length: number }\n",
+    // The generated `__WxmlIndex` helper references `Extract`.
+    "type Extract<T, U> = T extends U ? T : never;\n",
+);
+
+/// Page whose `data` carries both roots used by the object-literal mustache.
+const OBJECT_LITERAL_SCRIPT: &str = r#"interface ElementIdOption {
+    AICreateForm: string;
+}
+interface TemplateUser {
+    name: string;
+}
+Page({
+    data: {
+        ElementIdConfig: { AICreateForm: "ai-create-form" } as ElementIdOption,
+        user: { name: "Ada" } as TemplateUser,
+    },
+});
+"#;
+
+/// The multiline mustache expression. It starts with `{`, the exact shape that
+/// TypeScript parses as a block when it is mounted as a bare statement.
+const OBJECT_LITERAL_EXPR: &str =
+    "{\n  elementId: ElementIdConfig.AICreateForm,\n  name: user.name,\n}";
+/// Original template carrying the object-literal mustache.
+const OBJECT_LITERAL_WXML: &str =
+    "<view>{{ {\n  elementId: ElementIdConfig.AICreateForm,\n  name: user.name,\n} }}</view>\n";
+
+/// Page whose `data.users` is a typed array for the `wx:for` local.
+const LOOP_LOCAL_SCRIPT: &str = r"interface LoopUser {
+    name: string;
+    Setting: { Badge: string };
+}
+Page({
+    data: {
+        users: [] as LoopUser[],
+    },
+});
+";
+
+/// Original template with a `wx:for` item and a trailing-dot member site.
+const LOOP_LOCAL_WXML: &str = "<view wx:for=\"{{ users }}\">{{ item. }}</view>\n";
+
+/// Synthetic member query the adapter appends after a mounted completion
+/// prefix (`wxml-lsp` keeps its own copy private).
+const COMPLETION_QUERY_SUFFIX: &str = ".__wxml_completion";
+
+fn shadow_build(script: &SourceFile, fragments: &[FragmentSpec]) -> BuiltShadow {
+    let mut request = ShadowRequest::new(script, RootKind::Page);
+    request.fragments = fragments;
+    request.js_check = JsCheckPolicy::Inherit;
+    build_in_place_shadow(&request).expect("in-place shadow")
+}
+
+fn shadow_input(tag: &str, text: &str) -> AnalysisInput {
+    let files = vec![
+        SourceFile::new(SHADOW_SCRIPT_PATH, text, DocumentRevision::new(1)).expect("shadow file"),
+        SourceFile::new(SHIM_PATH, SHIM, DocumentRevision::new(1)).expect("ambient shim"),
+    ];
+    AnalysisInput::new(
+        ProjectKey::new("real-engine-shadow"),
+        ProjectRoot::new(format!("/tmp/opencode/{}", unique(tag))).expect("project root"),
+        SnapshotRevision::new(1),
+        files,
+    )
+    .expect("analysis input")
+}
+
+fn start_shadow_engine(executable: &Path, tag: &str) -> (NativeSession, Cleanup) {
+    let sandbox = std::env::temp_dir().join(unique(tag));
+    std::fs::create_dir_all(&sandbox).expect("sandbox");
+    let guard = Cleanup(sandbox.clone());
+    let session =
+        NativeSession::start(SessionOptions::new(executable, sandbox)).expect("start real engine");
+    (session, guard)
+}
+
+#[test]
+fn real_engine_object_literal_mustache_reports_no_key_diagnostics() {
+    let Some(executable) = real_engine_bin() else {
+        return;
+    };
+    let script = SourceFile::new(
+        SHADOW_SCRIPT_PATH,
+        OBJECT_LITERAL_SCRIPT,
+        DocumentRevision::new(1),
+    )
+    .expect("object-literal script");
+    let start = OBJECT_LITERAL_WXML
+        .find(OBJECT_LITERAL_EXPR)
+        .expect("object-literal expression in the template");
+    let start = u32::try_from(start).expect("expression offset");
+    let end = start + u32::try_from(OBJECT_LITERAL_EXPR.len()).expect("expression length");
+    let fragment = FragmentSpec::new(
+        "object-literal#0",
+        OBJECT_LITERAL_EXPR,
+        SourceRange::new(start, end),
+    );
+    let built = shadow_build(&script, std::slice::from_ref(&fragment));
+
+    assert_eq!(built.status, BuildStatus::Supported);
+    let mount = built
+        .view
+        .mounts
+        .iter()
+        .find(|mount| mount.fragment_id == "object-literal#0")
+        .expect("object-literal mount");
+    assert!(
+        mount.text.starts_with('{'),
+        "the mount keeps the bare expression; the parentheses are generated text: {:?}",
+        mount.text
+    );
+    assert!(
+        built.view.text.contains(&format!("({})", mount.text)),
+        "a mustache object literal must be mounted as a parenthesized expression, not as a block"
+    );
+
+    let input = shadow_input("object-literal-project", &built.view.text);
+    let (mut session, _sandbox_guard) = start_shadow_engine(&executable, "object-literal-sandbox");
+    session.open_project(&input).expect("open shadow project");
+    let evidence = session
+        .diagnostics(SHADOW_SCRIPT_PATH)
+        .expect("shadow diagnostics");
+    let mapped = map_diagnostics(&evidence.semantic, &evidence.syntactic, &built.view.text);
+    let observed: Vec<(u32, &str)> = mapped
+        .diagnostics
+        .iter()
+        .map(|diagnostic| (diagnostic.code, diagnostic.message.as_str()))
+        .collect();
+    eprintln!("object-literal shadow diagnostics: {observed:?}");
+
+    // With the ambient shim the asset-less input is fully typed, so a
+    // correctly parenthesized object literal produces no diagnostics at all.
+    // A block-shaped parse adds `';' expected`/`Expression expected`, and the
+    // object keys would surface as missing names or bogus property errors.
+    assert!(
+        !observed
+            .iter()
+            .any(|(_, message)| message.contains("elementId")),
+        "object keys must never be reported as names: {observed:?}"
+    );
+    assert!(
+        !observed
+            .iter()
+            .any(|(_, message)| message.contains("';' expected")),
+        "the parenthesized literal must not parse as a block: {observed:?}"
+    );
+    assert!(
+        !observed.iter().any(|(code, _)| *code == 2339),
+        "object keys must not produce property errors: {observed:?}"
+    );
+    assert!(
+        observed.is_empty(),
+        "the object-literal shadow must be clean: {observed:?}"
+    );
+
+    session.release().expect("release snapshot");
+    session.shutdown().expect("shutdown");
+}
+
+#[test]
+fn real_engine_loop_local_member_completion_resolves_element_members() {
+    let Some(executable) = real_engine_bin() else {
+        return;
+    };
+    let script = SourceFile::new(
+        SHADOW_SCRIPT_PATH,
+        LOOP_LOCAL_SCRIPT,
+        DocumentRevision::new(1),
+    )
+    .expect("loop-local script");
+    let start = LOOP_LOCAL_WXML
+        .find("item.")
+        .expect("`item.` in the template");
+    let start = u32::try_from(start).expect("expression offset");
+    let end = start + u32::try_from("item".len()).expect("expression length");
+    let mut fragment = FragmentSpec::new("loop-local#0", "item", SourceRange::new(start, end));
+    fragment.bindings = vec![LocalBinding {
+        name: "item".to_owned(),
+        role: LocalRole::Item,
+        source_expr: "users".to_owned(),
+    }];
+    let built = shadow_build(&script, std::slice::from_ref(&fragment));
+
+    assert_eq!(built.status, BuildStatus::Supported);
+    assert!(
+        built
+            .view
+            .text
+            .contains("const item = __wxml_item(__wxml_root.users);"),
+        "the `wx:for` local must be tied to its typed data root"
+    );
+
+    // The completion-only shadow path mounts the valid prefix and inserts a
+    // synthetic member query after the mount, exactly like the adapter's
+    // completion plan (`.__wxml_completion`). Only the inserted dot is queried.
+    let mount = built
+        .view
+        .mounts
+        .iter()
+        .find(|mount| mount.fragment_id == "loop-local#0")
+        .expect("loop-local mount");
+    assert_eq!(mount.text, "item");
+    let mount_end = mount.start_utf16 + utf16_len(&mount.text);
+    let mount_end_byte =
+        utf16_to_byte(&built.view.text, mount_end).expect("mount end is a char boundary");
+    let mut derived = built.view.text.clone();
+    derived.insert_str(mount_end_byte, COMPLETION_QUERY_SUFFIX);
+    let query = mount_end + 1;
+    let position = offset_to_position(&derived, Utf16Offset::new(query))
+        .expect("completion position in the shadow");
+
+    let input = shadow_input("loop-local-project", &derived);
+    let (mut session, _sandbox_guard) = start_shadow_engine(&executable, "loop-local-sandbox");
+    session.open_project(&input).expect("open shadow project");
+    let raw = session
+        .completions(SHADOW_SCRIPT_PATH, position)
+        .expect("loop-local completions")
+        .expect("the trailing-dot query must return a completion list");
+    let mapped = map_completions(Some(&raw));
+    let labels: Vec<&str> = mapped
+        .entries
+        .iter()
+        .map(|entry| entry.label.as_str())
+        .collect();
+    eprintln!("loop-local completions: {labels:?}");
+
+    assert!(
+        !labels.is_empty(),
+        "`item.` must return candidates for the loop element type"
+    );
+    assert!(
+        labels.contains(&"name") && labels.contains(&"Setting"),
+        "`item.` must resolve the `LoopUser` element type: {labels:?}"
     );
 
     session.release().expect("release snapshot");

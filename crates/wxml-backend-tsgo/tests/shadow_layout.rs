@@ -1129,7 +1129,7 @@ fn keyword_like_object_key_and_member_targets_are_not_rejected() {
     )
     .expect("type key");
     assert_eq!(built.status, BuildStatus::Supported);
-    assert!(built.view.text.contains("{ type: __wxml_root.value };"));
+    assert!(built.view.text.contains("({ type: __wxml_root.value });"));
 }
 
 #[test]

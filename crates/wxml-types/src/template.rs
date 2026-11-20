@@ -175,6 +175,44 @@ pub fn analyze_template(
     TemplateAnalyzer::new(root, source_revision).analyze(tree)
 }
 
+/// Returns the `wx:for` bindings that are in scope at `offset`.
+///
+/// The result is ordered outermost to innermost, with every loop level
+/// contributing its item followed by its index: the same chain the analyzer
+/// attaches to a fragment located at `offset`. Names and validation come from
+/// the shared `wx:for` binding helper, so this query cannot drift from the
+/// analysis rules.
+///
+/// An element whose own `wx:for` attribute contains `offset` contributes no
+/// bindings: the loop expression is evaluated in the enclosing scope, so its
+/// item/index are not visible while the attribute itself is edited. Enclosing
+/// loops still apply.
+///
+/// Returns an empty list when no loop is in scope or a `wx:for` value is not
+/// exactly one complete mustache. This is a pure syntax query: it records no
+/// unsupported features and does not depend on an analyzer instance.
+#[must_use]
+pub fn loop_bindings_at(tree: &SyntaxTree, offset: u32) -> Vec<LocalBinding> {
+    let mut bindings = Vec::new();
+    // `Document::elements` visits elements in pre-order, so containing elements
+    // arrive outermost first and every level is appended in binding-stack order.
+    for element in tree.document().elements() {
+        if !element.text_range().contains(offset) {
+            continue;
+        }
+        if element
+            .attribute("wx:for")
+            .is_some_and(|attribute| attribute.text_range().contains(offset))
+        {
+            continue;
+        }
+        let attributes: Vec<Attribute<'_>> = element.attributes().collect();
+        let mut unsupported = Vec::new();
+        bindings.extend(loop_bindings_for_attributes(&attributes, &mut unsupported));
+    }
+    bindings
+}
+
 struct Engine<'a> {
     tree: &'a SyntaxTree,
     root: RootKind,
@@ -561,85 +599,16 @@ impl<'a> Engine<'a> {
 
     /// Builds the item/index bindings for one `wx:for` element.
     ///
-    /// Returns an empty list and records [`UnsupportedKind::DynamicForBinding`]
-    /// when the loop value is not exactly one parseable mustache, so no type is
-    /// guessed.
+    /// Delegates the shared naming and validation rules to
+    /// [`loop_bindings_for_attributes`] and records every rejected form, so a
+    /// loop value that is not exactly one parseable mustache yields no bindings.
     fn loop_bindings(&mut self, attributes: &[Attribute<'a>]) -> Vec<LocalBinding> {
-        let Some(attribute) = attributes
-            .iter()
-            .copied()
-            .find(|attribute| attribute.name() == Some("wx:for"))
-        else {
-            return Vec::new();
-        };
-        let Some(value) = attribute.value() else {
-            self.record(UnsupportedKind::DynamicForBinding, attribute.text_range());
-            return Vec::new();
-        };
-        let Some((expr_text, inner)) = single_mustache_source(value) else {
-            self.record(UnsupportedKind::DynamicForBinding, attribute.text_range());
-            return Vec::new();
-        };
-        let Some(source_range) = self.source_range(inner) else {
-            self.record(UnsupportedKind::DynamicForBinding, attribute.text_range());
-            return Vec::new();
-        };
-        let mut item = self.for_binding_name(attributes, "wx:for-item", "item");
-        let mut index = self.for_binding_name(attributes, "wx:for-index", "index");
-        if item == index {
-            // Node's level validator rejects a duplicate item/index pair, so
-            // make the names distinct instead of losing the whole document.
-            let range = attributes
-                .iter()
-                .copied()
-                .find(|candidate| candidate.name() == Some("wx:for-index"))
-                .map_or_else(|| attribute.text_range(), Attribute::text_range);
-            self.record(UnsupportedKind::DynamicForBinding, range);
-            if item == "index" {
-                "item".clone_into(&mut item);
-            } else {
-                "index".clone_into(&mut index);
-            }
+        let mut unsupported = Vec::new();
+        let bindings = loop_bindings_for_attributes(attributes, &mut unsupported);
+        for (kind, range) in unsupported {
+            self.record(kind, range);
         }
-        vec![
-            LocalBinding {
-                name: item,
-                role: LocalRole::Item,
-                source_expr: expr_text.to_owned(),
-                source_range,
-            },
-            LocalBinding {
-                name: index,
-                role: LocalRole::Index,
-                source_expr: expr_text.to_owned(),
-                source_range,
-            },
-        ]
-    }
-
-    fn for_binding_name(
-        &mut self,
-        attributes: &[Attribute<'a>],
-        attribute_name: &str,
-        default: &'static str,
-    ) -> String {
-        let Some(attribute) = attributes
-            .iter()
-            .copied()
-            .find(|attribute| attribute.name() == Some(attribute_name))
-        else {
-            return default.to_owned();
-        };
-        let static_name = attribute
-            .value()
-            .and_then(AttributeValue::literal_text)
-            .map(str::trim)
-            .filter(|name| valid_binding_name(name));
-        if let Some(static_name) = static_name {
-            return static_name.to_owned();
-        }
-        self.record(UnsupportedKind::DynamicForBinding, attribute.text_range());
-        default.to_owned()
+        bindings
     }
 
     /// Returns the full binding stack for one fragment.
@@ -808,6 +777,120 @@ fn single_mustache_source(value: AttributeValue<'_>) -> Option<(&str, TextRange)
         return None;
     }
     Some((expr_text, inner))
+}
+
+/// Builds the item/index bindings for one element's `wx:for` attributes.
+///
+/// This is the single naming and validation path shared by the analyzer's
+/// per-element bindings and [`loop_bindings_at`]. Rejected forms are pushed to
+/// `unsupported` instead of being recorded directly, so each caller decides
+/// whether to publish them; the analyzer records them, the offset query drops
+/// them.
+///
+/// Returns an empty list and reports [`UnsupportedKind::DynamicForBinding`] when
+/// the loop value is missing, is not exactly one parseable mustache, or does not
+/// produce a valid source range, so no type is guessed. Invalid or dynamic
+/// `wx:for-item`/`wx:for-index` names are reported and replaced by `item` and
+/// `index`; a colliding pair is reported and made distinct.
+fn loop_bindings_for_attributes(
+    attributes: &[Attribute<'_>],
+    unsupported: &mut Vec<(UnsupportedKind, TextRange)>,
+) -> Vec<LocalBinding> {
+    let Some(attribute) = attributes
+        .iter()
+        .copied()
+        .find(|attribute| attribute.name() == Some("wx:for"))
+    else {
+        return Vec::new();
+    };
+    let Some(value) = attribute.value() else {
+        unsupported.push((UnsupportedKind::DynamicForBinding, attribute.text_range()));
+        return Vec::new();
+    };
+    let Some((expr_text, inner)) = single_mustache_source(value) else {
+        unsupported.push((UnsupportedKind::DynamicForBinding, attribute.text_range()));
+        return Vec::new();
+    };
+    let Some(source_range) = expression_source_range(attribute, inner) else {
+        unsupported.push((UnsupportedKind::DynamicForBinding, attribute.text_range()));
+        return Vec::new();
+    };
+    let mut item = for_binding_name(attributes, "wx:for-item", "item", unsupported);
+    let mut index = for_binding_name(attributes, "wx:for-index", "index", unsupported);
+    if item == index {
+        // Node's level validator rejects a duplicate item/index pair, so make
+        // the names distinct instead of losing the whole document.
+        let range = attributes
+            .iter()
+            .copied()
+            .find(|candidate| candidate.name() == Some("wx:for-index"))
+            .map_or_else(|| attribute.text_range(), Attribute::text_range);
+        unsupported.push((UnsupportedKind::DynamicForBinding, range));
+        if item == "index" {
+            "item".clone_into(&mut item);
+        } else {
+            "index".clone_into(&mut index);
+        }
+    }
+    vec![
+        LocalBinding {
+            name: item,
+            role: LocalRole::Item,
+            source_expr: expr_text.to_owned(),
+            source_range,
+        },
+        LocalBinding {
+            name: index,
+            role: LocalRole::Index,
+            source_expr: expr_text.to_owned(),
+            source_range,
+        },
+    ]
+}
+
+/// Returns the published range of a `wx:for` expression.
+///
+/// The analyzer validated the range by slicing the document text; the shared
+/// helper only sees the attribute, so it enforces the same invariant locally:
+/// the expression must lie inside the attribute that produced it. A range that
+/// escapes the attribute is treated as invalid instead of being published.
+fn expression_source_range(attribute: Attribute<'_>, inner: TextRange) -> Option<SourceRange> {
+    let outer = attribute.text_range();
+    if outer.start() <= inner.start() && inner.end() <= outer.end() {
+        Some(SourceRange::new(inner))
+    } else {
+        None
+    }
+}
+
+/// Returns the binding name from `wx:for-item`/`wx:for-index`, or `default`.
+///
+/// A name is used only when the value is a static, valid identifier; dynamic
+/// values (mustaches) and reserved or malformed names are reported in
+/// `unsupported` and fall back to `default`.
+fn for_binding_name(
+    attributes: &[Attribute<'_>],
+    attribute_name: &str,
+    default: &'static str,
+    unsupported: &mut Vec<(UnsupportedKind, TextRange)>,
+) -> String {
+    let Some(attribute) = attributes
+        .iter()
+        .copied()
+        .find(|attribute| attribute.name() == Some(attribute_name))
+    else {
+        return default.to_owned();
+    };
+    let static_name = attribute
+        .value()
+        .and_then(AttributeValue::literal_text)
+        .map(str::trim)
+        .filter(|name| valid_binding_name(name));
+    if let Some(static_name) = static_name {
+        return static_name.to_owned();
+    }
+    unsupported.push((UnsupportedKind::DynamicForBinding, attribute.text_range()));
+    default.to_owned()
 }
 
 /// Returns `true` when the mustache covers the value between its quotes.
@@ -1079,10 +1162,12 @@ fn identifier_text(source: &str, range: TextRange) -> Option<String> {
 mod tests {
     use super::{
         TemplateAnalysis, TemplateAnalyzer, event_attribute, expression_text_is_complete,
-        is_empty_event_attribute, target_of, unsupported_element, valid_binding_name,
+        is_empty_event_attribute, loop_bindings_at, target_of, unsupported_element,
+        valid_binding_name,
     };
     use crate::check::{
-        AttributeValueKind, EventBindingKind, GuardBranch, LocalRole, RootKind, UnsupportedKind,
+        AttributeValueKind, EventBindingKind, GuardBranch, LocalBinding, LocalRole, RootKind,
+        UnsupportedKind,
     };
     use crate::contract::SourceRevision;
     use wxml_syntax::expr::parse_expression;
@@ -1111,6 +1196,38 @@ mod tests {
         let start = usize::try_from(range.start()).expect("range start");
         let end = usize::try_from(range.end()).expect("range end");
         &tree.text()[start..end]
+    }
+
+    fn parsed_tree(source: &str) -> wxml_syntax::SyntaxTree {
+        wxml_syntax::parse(source).tree
+    }
+
+    fn offset_of(source: &str, needle: &str) -> u32 {
+        u32::try_from(source.find(needle).expect("needle offset")).expect("u32 offset")
+    }
+
+    fn last_offset_of(source: &str, needle: &str) -> u32 {
+        u32::try_from(source.rfind(needle).expect("needle offset")).expect("u32 offset")
+    }
+
+    fn local_binding_names(bindings: &[LocalBinding]) -> Vec<(&str, LocalRole)> {
+        bindings
+            .iter()
+            .map(|binding| (binding.name.as_str(), binding.role))
+            .collect()
+    }
+
+    fn local_binding_chain(bindings: &[LocalBinding]) -> Vec<(&str, LocalRole, &str)> {
+        bindings
+            .iter()
+            .map(|binding| {
+                (
+                    binding.name.as_str(),
+                    binding.role,
+                    binding.source_expr.as_str(),
+                )
+            })
+            .collect()
     }
 
     #[test]
@@ -1391,6 +1508,133 @@ mod tests {
         assert!(
             occurrences[2].bindings.is_empty(),
             "bindings pop after loop"
+        );
+    }
+
+    #[test]
+    fn loop_bindings_at_defaults_apply_inside_a_loop() {
+        let source = r#"<view wx:for="{{ groups }}">{{ item.name }}</view>"#;
+        let tree = parsed_tree(source);
+        let bindings = loop_bindings_at(&tree, offset_of(source, "item.name"));
+        assert_eq!(
+            local_binding_names(&bindings),
+            vec![("item", LocalRole::Item), ("index", LocalRole::Index)]
+        );
+        assert_eq!(bindings[0].source_expr, "groups");
+        assert_eq!(text(&tree, bindings[0].source_range), "groups");
+        assert_eq!(bindings[1].source_range, bindings[0].source_range);
+    }
+
+    #[test]
+    fn loop_bindings_at_uses_custom_item_and_index_names() {
+        let source =
+            r#"<view wx:for="{{ rows }}" wx:for-item="row" wx:for-index="i">{{ row.name }}</view>"#;
+        let tree = parsed_tree(source);
+        let bindings = loop_bindings_at(&tree, offset_of(source, "row.name"));
+        assert_eq!(
+            local_binding_names(&bindings),
+            vec![("row", LocalRole::Item), ("i", LocalRole::Index)]
+        );
+        assert_eq!(bindings[0].source_expr, "rows");
+        assert_eq!(text(&tree, bindings[0].source_range), "rows");
+    }
+
+    #[test]
+    fn loop_bindings_at_collects_nested_loops_outermost_first() {
+        let source = r#"<view wx:for="{{ outer }}"><text wx:for="{{ item.children }}">{{ item.name }}</text></view>"#;
+        let tree = parsed_tree(source);
+        let bindings = loop_bindings_at(&tree, last_offset_of(source, "item.name"));
+        assert_eq!(
+            local_binding_chain(&bindings),
+            vec![
+                ("item", LocalRole::Item, "outer"),
+                ("index", LocalRole::Index, "outer"),
+                ("item", LocalRole::Item, "item.children"),
+                ("index", LocalRole::Index, "item.children"),
+            ]
+        );
+    }
+
+    #[test]
+    fn loop_bindings_at_excludes_the_element_owning_the_wx_for_attribute() {
+        let source = r#"<view wx:for="{{ outer }}"><text wx:for="{{ item.children }}">{{ item.name }}</text></view>"#;
+        let tree = parsed_tree(source);
+        // The loop expression is evaluated in the enclosing scope, so the
+        // element's own item/index are not in scope while editing the attribute.
+        let bindings = loop_bindings_at(&tree, offset_of(source, "item.children"));
+        assert_eq!(
+            local_binding_chain(&bindings),
+            vec![
+                ("item", LocalRole::Item, "outer"),
+                ("index", LocalRole::Index, "outer"),
+            ]
+        );
+
+        // A top-level loop attribute sees no bindings at all.
+        let top_level = r#"<view wx:for="{{ items }}">{{ item }}</view>"#;
+        let top_tree = parsed_tree(top_level);
+        assert!(loop_bindings_at(&top_tree, offset_of(top_level, "items")).is_empty());
+    }
+
+    #[test]
+    fn loop_bindings_at_applies_to_other_attributes_of_the_loop_element() {
+        let source = r#"<view wx:for="{{ items }}" title="{{ item.name }}">{{ item.name }}</view>"#;
+        let tree = parsed_tree(source);
+        let bindings = loop_bindings_at(&tree, offset_of(source, "item.name"));
+        assert_eq!(
+            local_binding_names(&bindings),
+            vec![("item", LocalRole::Item), ("index", LocalRole::Index)]
+        );
+    }
+
+    #[test]
+    fn loop_bindings_at_returns_nothing_outside_a_loop() {
+        let source = r#"<view wx:for="{{ items }}">{{ item }}</view>{{ item.name }}"#;
+        let tree = parsed_tree(source);
+        assert!(loop_bindings_at(&tree, last_offset_of(source, "item.name")).is_empty());
+
+        let empty = parsed_tree("");
+        assert!(loop_bindings_at(&empty, 0).is_empty());
+    }
+
+    #[test]
+    fn loop_bindings_at_mirrors_the_colliding_name_fallback() {
+        let source =
+            r#"<view wx:for="{{ items }}" wx:for-item="x" wx:for-index="x">{{ x }}</view>"#;
+        let tree = parsed_tree(source);
+        let bindings = loop_bindings_at(&tree, last_offset_of(source, "{{ x }}"));
+        assert_eq!(
+            local_binding_names(&bindings),
+            vec![("x", LocalRole::Item), ("index", LocalRole::Index)]
+        );
+    }
+
+    #[test]
+    fn loop_bindings_at_ignores_unusable_wx_for_values() {
+        for source in [
+            // Unclosed mustache in the attribute value.
+            r#"<view wx:for="{{ items">{{ item }}</view>"#,
+            // More than one mustache.
+            r#"<view wx:for="{{ a }}{{ b }}">{{ item }}</view>"#,
+            // Missing value.
+            r"<view wx:for>{{ item }}</view>",
+        ] {
+            let tree = parsed_tree(source);
+            assert!(
+                loop_bindings_at(&tree, offset_of(source, "{{ item }}")).is_empty(),
+                "source {source:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn loop_bindings_at_falls_back_for_dynamic_binding_names() {
+        let source = r#"<view wx:for="{{ items }}" wx:for-item="{{ name }}">{{ item }}</view>"#;
+        let tree = parsed_tree(source);
+        let bindings = loop_bindings_at(&tree, offset_of(source, "{{ item }}"));
+        assert_eq!(
+            local_binding_names(&bindings),
+            vec![("item", LocalRole::Item), ("index", LocalRole::Index)]
         );
     }
 

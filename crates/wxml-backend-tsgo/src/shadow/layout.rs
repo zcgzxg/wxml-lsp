@@ -850,8 +850,21 @@ fn build_in_place_shadow_inner(
 
         body.push(&scope.open());
         body.push(scope.mount_indent());
+        // A bare expression starting with `{` is parsed by TypeScript as a
+        // block, so wrap object literals in parentheses. The parentheses are
+        // generated text: `expression_start` still points at the expression's
+        // first character and every segment keeps its expression offset. The
+        // closing `)` is always outside the mount (see `mount_text` below for
+        // the folded case).
+        let needs_parens = planned.rewritten.text.trim_start().starts_with('{');
+        if needs_parens {
+            body.push("(");
+        }
         let expression_start = body.length_utf16;
         body.push(&planned.rewritten.text);
+        if needs_parens {
+            body.push(")");
+        }
         let mount_start = if fold { guards_start } else { expression_start };
         let prefix_len = expression_start.saturating_sub(mount_start);
         let origin = fragment.wxml_range.start.get();
@@ -873,8 +886,15 @@ fn build_in_place_shadow_inner(
                 }),
         );
         let mount_text = if fold {
+            // A folded mount starts at the guard block, so the wrapping `(`
+            // falls inside the mount's derived span. It must be part of
+            // `mount_text` to keep the mount text aligned with the derived
+            // body; the closing `)` stays outside (the mount ends at the
+            // expression). Without a fold the parentheses are both outside
+            // the mount and `text` remains the bare expression.
+            let open_paren = if needs_parens { "(" } else { "" };
             format!(
-                "{guard_text}{}{}",
+                "{guard_text}{}{open_paren}{}",
                 scope.mount_indent(),
                 planned.rewritten.text
             )
@@ -2524,6 +2544,175 @@ mod tests {
         )
         .expect("mapped");
         assert_eq!(mapped.range, Some(SourceRange::new(134 + 5, 134 + 9)));
+    }
+
+    #[test]
+    fn object_literal_fragments_are_parenthesized_and_map_back() {
+        // A multiline object literal is a statement-level `{` in the shadow
+        // unless it is parenthesized. `mount.text` must stay the expression
+        // alone so targets and segments keep their original offsets.
+        let text = "Page({ data: { user: { name: 'Ada', id: 7 } } });";
+        let script = source_file("index.ts", text);
+        let wxml =
+            "<view>\n  <text>{{ {\n    name: user.name,\n    id: user.id\n  } }}</text>\n</view>";
+        let expr = "{\n    name: user.name,\n    id: user.id\n  }";
+        let start = wxml.find(expr).expect("expression in wxml");
+        let fragment = FragmentSpec::new(
+            "f0",
+            expr,
+            SourceRange::new(
+                u32::try_from(start).expect("offset"),
+                u32::try_from(start + expr.len()).expect("offset"),
+            ),
+        );
+        let request = ShadowRequest {
+            script: &script,
+            root: RootKind::Page,
+            fragments: &[fragment],
+            js_check: JsCheckPolicy::Inherit,
+            check_js: false,
+        };
+        let built = build_in_place_shadow(&request).expect("layout");
+        assert_eq!(built.status, BuildStatus::Supported);
+        assert!(
+            built.view.text.contains("({\n"),
+            "the object literal is wrapped: {}",
+            built.view.text
+        );
+        let close = built
+            .view
+            .text
+            .find("});")
+            .expect("closing paren precedes the statement semicolon");
+        assert_eq!(
+            &built.view.text[close..close + 3],
+            "});",
+            "the parenthesis is written before the generated `;\\n`"
+        );
+
+        assert_eq!(built.view.mounts.len(), 1);
+        let mount = &built.view.mounts[0];
+        assert!(mount.text.starts_with('{'), "{}", mount.text);
+        assert!(mount.text.ends_with('}'), "{}", mount.text);
+        assert!(!mount.text.starts_with('('), "{}", mount.text);
+        assert!(!mount.text.ends_with(')'), "{}", mount.text);
+        assert!(mount.text.contains("__wxml_root.user.name"));
+
+        // The rightmost value identifier (`id`) still maps to its own WXML
+        // bytes; the generated parentheses never enter the mount.
+        let target = expr.rfind("id").expect("target identifier");
+        let mapped = crate::shadow::mapping::map_span_to_source(
+            mount,
+            crate::native::strings::Utf16Offset::new(mount.target_start_utf16),
+            mount.target_length_utf16,
+        )
+        .expect("mapped");
+        assert_eq!(
+            mapped.range,
+            Some(SourceRange::new(
+                u32::try_from(start + target).expect("offset"),
+                u32::try_from(start + target + "id".len()).expect("offset"),
+            ))
+        );
+    }
+
+    #[test]
+    fn guarded_object_literal_fragments_keep_guard_and_value_offsets() {
+        use crate::shadow::guards::{GuardCondition, GuardKind};
+
+        // Folded guards put `(` between the guard block and the expression.
+        // Guard segments are still relative to the guard start and expression
+        // segments still resolve through `prefix_len`.
+        let text = "Page({ data: { title: 'x', user: { name: 'Ada', id: 7 } } });";
+        let script = source_file("index.ts", text);
+        let wxml = "<view>\n  <view wx:if=\"{{ title.length }}\">\n    <text>{{ {\n      name: user.name,\n      id: user.id\n    } }}</text>\n  </view>\n</view>";
+        let condition = "title.length";
+        let expr = "{\n      name: user.name,\n      id: user.id\n    }";
+        let expr_start = wxml.find(expr).expect("expression in wxml");
+        let condition_start = wxml.find(condition).expect("condition in wxml");
+        let guard_range = SourceRange::new(
+            u32::try_from(condition_start).expect("offset"),
+            u32::try_from(condition_start + condition.len()).expect("offset"),
+        );
+        let mut value = FragmentSpec::new(
+            "value",
+            expr,
+            SourceRange::new(
+                u32::try_from(expr_start).expect("offset"),
+                u32::try_from(expr_start + expr.len()).expect("offset"),
+            ),
+        );
+        value.guards = vec![GuardChain {
+            conditions: vec![GuardCondition {
+                branch: GuardKind::If,
+                expr: condition.to_owned(),
+            }],
+            selected: 0,
+        }];
+        let guard = FragmentSpec::new("guard", condition, guard_range);
+        let request = ShadowRequest {
+            script: &script,
+            root: RootKind::Page,
+            fragments: &[value, guard],
+            js_check: JsCheckPolicy::Inherit,
+            check_js: false,
+        };
+        let built = build_in_place_shadow(&request).expect("layout");
+        assert_eq!(built.status, BuildStatus::Supported);
+
+        let mount = built
+            .view
+            .mounts
+            .iter()
+            .find(|mount| mount.fragment_id == "value")
+            .expect("value mount");
+        assert!(
+            mount
+                .text
+                .trim_start()
+                .starts_with("if (__wxml_root.title.length) {"),
+            "{}",
+            mount.text
+        );
+        assert!(
+            built.view.text.contains("({\n"),
+            "the object literal is wrapped in the shadow body: {}",
+            built.view.text
+        );
+        assert!(
+            mount.text.contains("({\n"),
+            "a folded mount starts at the guard block, so its text carries the opening paren: {}",
+            mount.text
+        );
+        assert!(built.view.text.contains("});"));
+
+        // The wrapper copy maps to the original `wx:if` bytes.
+        let wrapper_byte = mount.text.find("if (").expect("guard wrapper") + "if (".len();
+        let wrapper_start = mount.start_utf16 + utf16_len(&mount.text[..wrapper_byte]);
+        let wrapper = crate::shadow::mapping::map_span_to_source(
+            mount,
+            crate::native::strings::Utf16Offset::new(wrapper_start),
+            utf16_len("__wxml_root.title.length"),
+        )
+        .expect("mapped wrapper");
+        assert_eq!(wrapper.range, Some(guard_range));
+        assert!(!wrapper.trimmed_synthetic_prefix);
+
+        // The object value maps through the fold without an offset.
+        let target = expr.rfind("id").expect("target identifier");
+        let mapped = crate::shadow::mapping::map_span_to_source(
+            mount,
+            crate::native::strings::Utf16Offset::new(mount.target_start_utf16),
+            mount.target_length_utf16,
+        )
+        .expect("mapped value");
+        assert_eq!(
+            mapped.range,
+            Some(SourceRange::new(
+                u32::try_from(expr_start + target).expect("offset"),
+                u32::try_from(expr_start + target + "id".len()).expect("offset"),
+            ))
+        );
     }
 
     #[test]

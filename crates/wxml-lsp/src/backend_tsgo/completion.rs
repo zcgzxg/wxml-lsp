@@ -29,9 +29,12 @@
 //! through a completion-only shadow plan whose valid prefix is mounted and
 //! followed by a synthetic `.` and placeholder; the published replacement
 //! range is still computed from the original text and never covers the
-//! synthetic query bytes. An unclosed mustache with a typed member prefix
-//! (`{{ user.na`) mounts the bare data root and replaces only `na`; only a bare
-//! root is synthesized, never a member chain such as `user.name.`. An
+//! synthetic query bytes. The prefix may be any complete expression whose first
+//! identifier is a resolvable root: a bare data root, a template `wx:for` local
+//! (`item.`) or a member chain (`user.name.`, `item.Setting.`). An unclosed
+//! mustache with a typed member prefix (`{{ user.na`) mounts the complete
+//! prefix and replaces only `na`. Template locals are resolved before script
+//! data roots, so a `wx:for` local shadows a same-named `data` root. An
 //! expression that cannot be completed safely is an explicit
 //! `Unsupported`/`Partial` reason, never a silent empty list.
 
@@ -295,10 +298,12 @@ pub(crate) enum ExpressionSite {
         /// Range replaced by an inserted root; only the typed prefix.
         replace: SourceRange,
     },
-    /// A member access with a bare data root prefix.
+    /// A member access with a resolvable expression prefix.
     ///
     /// `{{ user.` has an empty typed prefix; `{{ user.na` (unclosed) has the
-    /// typed prefix `na`. Only the typed prefix is replaced.
+    /// typed prefix `na`. The prefix may be a bare root, a member chain
+    /// (`user.name`) or a template local (`item.Setting`). Only the typed
+    /// prefix is replaced.
     Member {
         /// Valid expression before the trailing dot.
         prefix: String,
@@ -319,7 +324,7 @@ pub(crate) enum ExpressionSite {
 ///
 /// A closed mustache with a complete expression keeps the ordinary mounted
 /// fragment path. An unclosed mustache is dropped by the template analyzer, so
-/// a typed member prefix (`{{ user.na`) is mounted as its bare data root and
+/// a typed member prefix (`{{ user.na`) is mounted as its complete prefix and
 /// queried through the same synthetic dot as `{{ user.`.
 pub(crate) fn expression_site(text: &str, offset: u32) -> Option<ExpressionSite> {
     let (expr_start, expr_end, closed) = mustache_expression_range(text, offset)?;
@@ -389,14 +394,9 @@ pub(crate) fn expression_site(text: &str, offset: u32) -> Option<ExpressionSite>
             "the expression before the cursor has no value to complete members on",
         ));
     }
-    // The synthetic query is safe only for a bare data root. `user.name.`
-    // would ask members of the value `user.name`, which the native member
-    // path deliberately does not synthesize.
-    if !is_identifier_text(prefix) {
-        return Some(ExpressionSite::Unsupported(
-            "only a bare data root can be completed as a member access",
-        ));
-    }
+    // The synthetic query mounts the whole prefix. It is safe as long as the
+    // prefix parses completely and its first identifier is a root the scope can
+    // resolve; `completion_member` decides which root actually applies.
     let parsed = parse_expression(prefix, 0);
     if !parsed.errors.is_empty() || parsed.expr.walk().any(Expr::is_missing) {
         return Some(ExpressionSite::Unsupported(
@@ -419,6 +419,17 @@ pub(crate) fn expression_site(text: &str, offset: u32) -> Option<ExpressionSite>
         prefix_range,
         replace,
     })
+}
+
+/// Returns the `wx:for` bindings in scope at `offset` in `text`.
+///
+/// The template analyzer drops an incomplete trailing-dot mustache, so member
+/// completion re-parses the current request text to recover the lexical loop
+/// scope. The result is outermost to innermost, exactly as the ordinary shadow
+/// plan attaches it to a fragment.
+pub(crate) fn loop_bindings(text: &str, offset: u32) -> Vec<wxml_types::LocalBinding> {
+    let parsed = parse(text);
+    wxml_types::template::loop_bindings_at(&parsed.tree, offset)
 }
 
 /// Splits the valid expression before a trailing dot or optional-chain dot.
@@ -477,11 +488,8 @@ fn typed_member_site(
             "the expression before the cursor has no value to complete members on",
         );
     }
-    if !is_identifier_text(prefix) {
-        return ExpressionSite::Unsupported(
-            "only a bare data root can be completed as a member access",
-        );
-    }
+    // The typed member is completed against the whole prefix before it, which
+    // may itself be a member chain such as `item.Setting.`.
     let parsed = parse_expression(prefix, 0);
     if !parsed.errors.is_empty() || parsed.expr.walk().any(Expr::is_missing) {
         return ExpressionSite::Unsupported(

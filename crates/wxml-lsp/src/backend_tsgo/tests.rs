@@ -1182,6 +1182,43 @@ fn derived_position(log: &Arc<Mutex<FakeLog>>, needle: &str, token: Option<&str>
     offset_to_position(text, Utf16Offset::new(utf16_len(&text[..start]))).expect("position")
 }
 
+/// Returns the shadow text of the first opened completion input.
+fn opened_shadow(log: &Arc<Mutex<FakeLog>>) -> String {
+    let log = log.lock().expect("log");
+    log.opened_inputs
+        .first()
+        .expect("opened input")
+        .file(SCRIPT_PATH)
+        .expect("shadow script")
+        .text()
+        .to_owned()
+}
+
+/// Returns the query position of `prefix` inside one shadow needle.
+fn shadow_query_position(shadow: &str, needle: &str, prefix: &str) -> Utf16Position {
+    let start = shadow.find(needle).expect("shadow needle") + prefix.len();
+    offset_to_position(shadow, Utf16Offset::new(utf16_len(&shadow[..start]))).expect("position")
+}
+
+/// Builds a member-completion behavior that returns the given labels.
+fn member_completion_behavior(names: &[&str]) -> FakeBehavior {
+    FakeBehavior {
+        completions: FakeCompletionOutcome::List {
+            entries: names
+                .iter()
+                .map(|name| RawCompletionEntry {
+                    name: (*name).to_owned(),
+                    kind: 5,
+                    sort_text: "11".to_owned(),
+                    ..RawCompletionEntry::default()
+                })
+                .collect(),
+            incomplete: false,
+        },
+        ..FakeBehavior::default()
+    }
+}
+
 #[test]
 fn hover_composes_type_documentation_and_jsdoc() {
     let (adapter, log) = adapter_with(
@@ -4978,7 +5015,9 @@ fn unsupported_unclosed_member_shapes_are_explicit() {
         ("<view>{{ .</view>", "{{ ."),
         ("<view>{{ user. </view>", "user. "),
         ("<view>{{ user.\n</view>", "user.\n"),
-        ("<view>{{ user.name.</view>", "user.name."),
+        // A resolvable chain (`{{ user.name.`) is now supported; only a chain
+        // that does not parse as one complete prefix stays unsupported.
+        ("<view>{{ user.name..</view>", "user.name.."),
         ("<view>{{ item.</view>", "item."),
     ] {
         let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, SCRIPT)]);
@@ -5259,6 +5298,395 @@ fn trailing_dot_completion_with_dynamic_data_is_partial() {
         "{reason}"
     );
     assert_eq!(log.lock().expect("log").starts, 0);
+}
+
+#[test]
+fn trailing_dot_completion_mounts_the_wx_for_local_chain() {
+    for (wxml, prefix, declaration, shadow_needle) in [
+        (
+            "<view wx:for=\"{{ users }}\">{{ item. }}</view>",
+            "item.",
+            "const item = __wxml_item(__wxml_root.users);",
+            "item.__wxml_completion",
+        ),
+        (
+            "<view wx:for=\"{{ users }}\" wx:for-item=\"row\">{{ row. }}</view>",
+            "row.",
+            "const row = __wxml_item(__wxml_root.users);",
+            "row.__wxml_completion",
+        ),
+        (
+            "<view wx:for=\"{{ users }}\">{{ index. }}</view>",
+            "index.",
+            "const index = __wxml_index(__wxml_root.users);",
+            "index.__wxml_completion",
+        ),
+    ] {
+        let script = "Page({ data: { users: [{ name: \"Ada\" }] } });";
+        let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, script)]);
+        let (adapter, log) = adapter_with(
+            Arc::new(FakeViews::new(view)),
+            member_completion_behavior(&["name"]),
+        );
+        let cursor = offset_of(wxml, prefix) + u32::try_from(prefix.len()).expect("length");
+        let result = adapter
+            .completion(CompletionRequest {
+                context: context(&adapter, wxml),
+                offset: cursor,
+                kind: CompletionKind::ExpressionMember,
+            })
+            .expect("local trailing-dot completion");
+        assert_eq!(
+            result
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["name"],
+            "{wxml}"
+        );
+        for item in &result.items {
+            assert_eq!(item.replace.start(), cursor, "{wxml}");
+            assert_eq!(item.replace.end(), cursor, "{wxml}");
+        }
+        let shadow = opened_shadow(&log);
+        assert!(shadow.contains(declaration), "{wxml}: {shadow}");
+        assert!(shadow.contains(shadow_needle), "{wxml}: {shadow}");
+        assert!(
+            !shadow.contains(&format!("__wxml_root.{shadow_needle}")),
+            "{wxml}: the query must mount the local, not a rewritten data root: {shadow}"
+        );
+        let expected = shadow_query_position(&shadow, shadow_needle, prefix);
+        let log = log.lock().expect("log");
+        assert_eq!(log.starts, 1, "{wxml}");
+        assert_eq!(
+            log.completion_calls,
+            vec![(SCRIPT_PATH.to_owned(), expected)],
+            "{wxml}"
+        );
+    }
+}
+
+#[test]
+fn wx_for_local_shadows_a_same_named_data_root() {
+    let wxml = "<view wx:for=\"{{ users }}\" wx:for-item=\"item\">{{ item. }}</view>";
+    let script = "Page({ data: { item: { wrong: true }, users: [{ name: \"Ada\" }] } });";
+    let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, script)]);
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(view)),
+        member_completion_behavior(&["name"]),
+    );
+    let cursor = offset_of(wxml, "item.") + u32::try_from("item.".len()).expect("length");
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: cursor,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("shadowed local completion");
+    assert_eq!(
+        result
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["name"],
+        "the loop element type must win over the same-named data root"
+    );
+    let shadow = opened_shadow(&log);
+    assert!(
+        shadow.contains("const item = __wxml_item(__wxml_root.users);"),
+        "the local must be derived from the loop source: {shadow}"
+    );
+    assert!(
+        !shadow.contains("const item = __wxml_item(__wxml_root.item);"),
+        "the same-named data root must not be used: {shadow}"
+    );
+    assert!(shadow.contains("item.__wxml_completion"), "{shadow}");
+    assert!(
+        !shadow.contains("__wxml_root.item.__wxml_completion"),
+        "the query must mount the shadowing local: {shadow}"
+    );
+}
+
+#[test]
+fn unknown_root_inside_a_wx_for_stays_explicitly_unsupported() {
+    let wxml = "<view wx:for=\"{{ users }}\">{{ missing. }}</view>";
+    let script = "Page({ data: { users: [{ name: \"Ada\" }] } });";
+    let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, script)]);
+    let (adapter, log) = adapter_with(Arc::new(FakeViews::new(view)), FakeBehavior::default());
+    let cursor = offset_of(wxml, "missing.") + u32::try_from("missing.".len()).expect("length");
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: cursor,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("unknown root completion");
+    assert_eq!(result.items, Vec::new());
+    assert!(matches!(
+        result.status,
+        CapabilityStatus::Unsupported { .. }
+    ));
+    let reason = result.status.reason().expect("unsupported reason");
+    assert!(reason.contains("not a data root"), "{reason}");
+    let log = log.lock().expect("log");
+    assert_eq!(log.starts, 0, "an unknown root needs no native session");
+    assert!(log.completion_calls.is_empty());
+    assert!(
+        log.opened_inputs.is_empty(),
+        "a non-matching local must not open a completion mount"
+    );
+}
+
+#[test]
+fn chained_local_prefix_is_mounted_whole() {
+    let wxml = "<view wx:for=\"{{ users }}\">{{ item.Setting. }}</view>";
+    let script = "Page({ data: { users: [{ Setting: { Name: \"Ada\" } }] } });";
+    let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, script)]);
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(view)),
+        member_completion_behavior(&["Name"]),
+    );
+    let prefix = "item.Setting.";
+    let cursor = offset_of(wxml, prefix) + u32::try_from(prefix.len()).expect("length");
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: cursor,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("chained local completion");
+    assert_eq!(
+        result
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Name"]
+    );
+    for item in &result.items {
+        assert_eq!(item.replace.start(), cursor);
+        assert_eq!(item.replace.end(), cursor);
+    }
+    let shadow = opened_shadow(&log);
+    assert!(
+        shadow.contains("const item = __wxml_item(__wxml_root.users);"),
+        "{shadow}"
+    );
+    assert!(
+        shadow.contains("item.Setting.__wxml_completion"),
+        "the whole chain must be mounted: {shadow}"
+    );
+    assert!(
+        !shadow.contains("__wxml_root.item.Setting.__wxml_completion"),
+        "the chain must start at the local, not a rewritten data root: {shadow}"
+    );
+    let expected = shadow_query_position(&shadow, "item.Setting.__wxml_completion", prefix);
+    assert_eq!(
+        log.lock().expect("log").completion_calls,
+        vec![(SCRIPT_PATH.to_owned(), expected)]
+    );
+}
+
+#[test]
+fn unclosed_typed_chained_prefix_replaces_only_the_typed_identifier() {
+    let wxml = "<view wx:for=\"{{ users }}\">{{ item.Setting.Na</view>";
+    let script = "Page({ data: { users: [{ Setting: { Name: \"Ada\" } }] } });";
+    let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, script)]);
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(view)),
+        member_completion_behavior(&["Name"]),
+    );
+    let cursor = offset_of(wxml, "Na") + 2;
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: cursor,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("unclosed chained member completion");
+    assert_eq!(result.items.len(), 1);
+    let item = &result.items[0];
+    assert_eq!(item.label, "Name");
+    assert_eq!(item.replace.start(), offset_of(wxml, "Na"));
+    assert_eq!(item.replace.end(), cursor);
+    let shadow = opened_shadow(&log);
+    assert!(
+        shadow.contains("const item = __wxml_item(__wxml_root.users);"),
+        "{shadow}"
+    );
+    assert!(
+        shadow.contains("item.Setting.__wxml_completion"),
+        "the whole prefix before the typed identifier must be mounted: {shadow}"
+    );
+    assert!(
+        !shadow.contains("__wxml_root.item.Setting.__wxml_completion"),
+        "the prefix must start at the local, not a rewritten data root: {shadow}"
+    );
+    let mut edited = wxml.to_owned();
+    edited.replace_range(
+        usize::try_from(item.replace.start()).expect("start")
+            ..usize::try_from(item.replace.end()).expect("end"),
+        &item.insert_text,
+    );
+    assert_eq!(
+        edited, "<view wx:for=\"{{ users }}\">{{ item.Setting.Name</view>",
+        "only the typed identifier may be replaced"
+    );
+}
+
+#[test]
+fn member_completion_replaces_only_the_typed_identifier_after_a_local_prefix() {
+    let wxml = "<view wx:for=\"{{ users }}\">😀{{ item.Na }}</view>";
+    let script = "Page({ data: { users: [{ name: \"Ada\" }] } });";
+    let binding_start = offset_of(wxml, "users");
+    let mut mounted = fragment(wxml, "item.Na", "f0");
+    mounted.bindings = vec![wxml_types::LocalBinding {
+        name: "item".to_owned(),
+        role: wxml_types::LocalRole::Item,
+        source_expr: "users".to_owned(),
+        source_range: SourceRange::from_bounds(
+            binding_start,
+            binding_start + u32::try_from("users".len()).expect("source length"),
+        )
+        .expect("binding range"),
+    }];
+    let view = prepared_view_with_fragments(
+        wxml,
+        vec![prepared_file(SCRIPT_PATH, script)],
+        vec![mounted],
+    );
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(view)),
+        member_completion_behavior(&["Name"]),
+    );
+    let cursor = offset_of(wxml, "Na") + 2;
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: cursor,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("typed member completion");
+    assert_eq!(result.items.len(), 1);
+    let item = &result.items[0];
+    assert_eq!(item.label, "Name");
+    assert_eq!(item.insert_text, "Name");
+    assert_eq!(item.replace.start(), offset_of(wxml, "Na"));
+    assert_eq!(item.replace.end(), cursor);
+    let mut edited = wxml.to_owned();
+    edited.replace_range(
+        usize::try_from(item.replace.start()).expect("start")
+            ..usize::try_from(item.replace.end()).expect("end"),
+        &item.insert_text,
+    );
+    assert_eq!(
+        edited, "<view wx:for=\"{{ users }}\">😀{{ item.Name }}</view>",
+        "only the typed identifier may be replaced; the prefix and dot stay"
+    );
+    assert_eq!(log.lock().expect("log").starts, 1);
+}
+
+#[test]
+fn data_root_member_completion_is_unchanged_by_local_resolution() {
+    let script = "Page({ data: { user: { name: \"Ada\", age: 42 }, users: [\"Ada\"] } });";
+    for (wxml, prefix, shadow_needle) in [
+        (
+            "<view>{{ user. }}</view>",
+            "user.",
+            "__wxml_root.user.__wxml_completion",
+        ),
+        (
+            "<view>😀{{ users. }}</view>",
+            "users.",
+            "__wxml_root.users.__wxml_completion",
+        ),
+        (
+            "<view>{{ user.name. }}</view>",
+            "user.name.",
+            "__wxml_root.user.name.__wxml_completion",
+        ),
+    ] {
+        let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, script)]);
+        let (adapter, log) = adapter_with(
+            Arc::new(FakeViews::new(view)),
+            member_completion_behavior(&["candidate"]),
+        );
+        let cursor = offset_of(wxml, prefix) + u32::try_from(prefix.len()).expect("length");
+        let result = adapter
+            .completion(CompletionRequest {
+                context: context(&adapter, wxml),
+                offset: cursor,
+                kind: CompletionKind::ExpressionMember,
+            })
+            .expect("data root completion");
+        assert_eq!(
+            result
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>(),
+            vec!["candidate"],
+            "{wxml}"
+        );
+        for item in &result.items {
+            assert_eq!(item.replace.start(), cursor, "{wxml}");
+            assert_eq!(item.replace.end(), cursor, "{wxml}");
+        }
+        let shadow = opened_shadow(&log);
+        assert!(shadow.contains(shadow_needle), "{wxml}: {shadow}");
+        assert!(
+            !shadow.contains("const item = __wxml_item"),
+            "a data root must not gain loop locals: {wxml}: {shadow}"
+        );
+        assert_eq!(log.lock().expect("log").starts, 1, "{wxml}");
+    }
+}
+
+#[test]
+fn nested_wx_for_locals_render_each_shadow_level() {
+    let wxml = "<view wx:for=\"{{ groups }}\"><view wx:for=\"{{ item.members }}\">{{ item. }}</view></view>";
+    let script = "Page({ data: { groups: [{ members: [{ name: \"Ada\" }] }] } });";
+    let view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, script)]);
+    let (adapter, log) = adapter_with(
+        Arc::new(FakeViews::new(view)),
+        member_completion_behavior(&["name"]),
+    );
+    let cursor = offset_of(wxml, "{{ item. }}") + u32::try_from("{{ item.".len()).expect("length");
+    let result = adapter
+        .completion(CompletionRequest {
+            context: context(&adapter, wxml),
+            offset: cursor,
+            kind: CompletionKind::ExpressionMember,
+        })
+        .expect("nested local completion");
+    assert_eq!(
+        result
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["name"]
+    );
+    let shadow = opened_shadow(&log);
+    assert!(
+        shadow.contains("const item = __wxml_item(__wxml_root.groups);"),
+        "the outer level must be rendered: {shadow}"
+    );
+    assert!(
+        shadow.contains("const __wxml_capture_item_0 = item;"),
+        "the inner same-name loop must capture the outer binding: {shadow}"
+    );
+    assert!(
+        shadow.contains("const item = __wxml_item(__wxml_capture_item_0.members);"),
+        "the inner level must derive from the outer local: {shadow}"
+    );
+    assert!(shadow.contains("item.__wxml_completion"), "{shadow}");
+    assert!(
+        !shadow.contains("__wxml_root.item.__wxml_completion"),
+        "the innermost local must be mounted: {shadow}"
+    );
 }
 
 #[test]

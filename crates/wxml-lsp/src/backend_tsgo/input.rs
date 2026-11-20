@@ -261,6 +261,13 @@ pub(crate) struct CompletionFragment {
     pub(crate) expr: String,
     /// Exact original byte range of `expr`.
     pub(crate) wxml_range: wxml_types::SourceRange,
+    /// Effective `wx:for` bindings at the completion cursor, outermost first.
+    ///
+    /// The shadow renderer turns these into nested declarations, so a template
+    /// local such as `item` resolves its real element type instead of falling
+    /// back to a `data` root. Completion carries no guards, so the declarations
+    /// only affect types and never narrow the expression.
+    pub(crate) bindings: Vec<wxml_types::LocalBinding>,
 }
 
 /// One request plan before a native snapshot revision is assigned.
@@ -694,18 +701,8 @@ fn build_request_plan_with_completion(
         .map(|fragment| fragment_spec(fragment))
         .collect::<Vec<_>>();
     if let Some(fragment) = completion {
-        fragments.push(FragmentSpec {
-            id: COMPLETION_FRAGMENT_ID.to_owned(),
-            expr: fragment.expr.clone(),
-            wxml_range: ShadowSourceRange::new(
-                fragment.wxml_range.start(),
-                fragment.wxml_range.end(),
-            ),
-            target: None,
-            locals: Vec::new(),
-            bindings: Vec::new(),
-            guards: Vec::new(),
-        });
+        let spec = completion_fragment_spec(fragment);
+        fragments.push(spec);
     }
     let shadow_root = match target.owner {
         RootKind::Page => ShadowRootKind::Page,
@@ -1284,6 +1281,29 @@ fn slice_relative(source: &str, range: wxml_text::TextRange) -> Option<&str> {
     source.get(start..end)
 }
 
+/// Builds the synthetic fragment spec for a trailing-dot completion request.
+///
+/// The completion fragment reuses the ordinary shadow local rendering: its
+/// `locals` and `bindings` mirror the effective `wx:for` scope at the cursor,
+/// so the mounted prefix can reference a template local. There is no target
+/// (the rightmost value identifier is queried) and no guard (completion never
+/// narrows), which keeps the published replacement range original.
+fn completion_fragment_spec(fragment: &CompletionFragment) -> FragmentSpec {
+    FragmentSpec {
+        id: COMPLETION_FRAGMENT_ID.to_owned(),
+        expr: fragment.expr.clone(),
+        wxml_range: ShadowSourceRange::new(fragment.wxml_range.start(), fragment.wxml_range.end()),
+        target: None,
+        locals: fragment
+            .bindings
+            .iter()
+            .map(|binding| binding.name.clone())
+            .collect(),
+        bindings: fragment.bindings.iter().map(local_binding).collect(),
+        guards: Vec::new(),
+    }
+}
+
 fn fragment_spec(fragment: &CheckFragment) -> FragmentSpec {
     FragmentSpec {
         id: fragment.fragment_id.clone(),
@@ -1398,5 +1418,109 @@ fn shadow_error(error: &wxml_backend_tsgo::shadow::ShadowError) -> PlanError {
         _ => PlanError::Backend(BackendError::Unavailable(format!(
             "shadow layout is unavailable: {error}"
         ))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn range(start: u32, end: u32) -> wxml_types::SourceRange {
+        wxml_types::SourceRange::from_bounds(start, end).expect("valid range")
+    }
+
+    fn binding(name: &str, role: LocalRole, source_expr: &str) -> wxml_types::LocalBinding {
+        wxml_types::LocalBinding {
+            name: name.to_owned(),
+            role,
+            source_expr: source_expr.to_owned(),
+            source_range: range(0, u32::try_from(source_expr.len()).expect("short expr")),
+        }
+    }
+
+    fn completion_fragment(
+        expr: &str,
+        bindings: Vec<wxml_types::LocalBinding>,
+    ) -> CompletionFragment {
+        CompletionFragment {
+            expr: expr.to_owned(),
+            wxml_range: range(0, u32::try_from(expr.len()).expect("short expr")),
+            bindings,
+        }
+    }
+
+    #[test]
+    fn completion_fragment_without_bindings_has_no_locals() {
+        let spec = completion_fragment_spec(&completion_fragment("item", Vec::new()));
+        assert_eq!(spec.id, COMPLETION_FRAGMENT_ID);
+        assert_eq!(spec.expr, "item");
+        assert_eq!(spec.wxml_range, ShadowSourceRange::new(0, 4));
+        assert!(spec.target.is_none());
+        assert_eq!(spec.bindings, Vec::<ShadowLocalBinding>::new());
+        assert_eq!(spec.locals, Vec::<String>::new());
+        assert_eq!(spec.guards, Vec::<ShadowGuardChain>::new());
+    }
+
+    #[test]
+    fn nested_bindings_keep_outermost_first_order() {
+        let spec = completion_fragment_spec(&completion_fragment(
+            "entry",
+            vec![
+                binding("row", LocalRole::Item, "groups"),
+                binding("rowKey", LocalRole::Index, "groups"),
+                binding("entry", LocalRole::Item, "row.members"),
+                binding("entryKey", LocalRole::Index, "row.members"),
+            ],
+        ));
+
+        let names = spec
+            .bindings
+            .iter()
+            .map(|binding| binding.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(names, ["row", "rowKey", "entry", "entryKey"]);
+
+        let roles = spec
+            .bindings
+            .iter()
+            .map(|binding| binding.role)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            roles,
+            [
+                ShadowLocalRole::Item,
+                ShadowLocalRole::Index,
+                ShadowLocalRole::Item,
+                ShadowLocalRole::Index,
+            ]
+        );
+
+        let sources = spec
+            .bindings
+            .iter()
+            .map(|binding| binding.source_expr.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(sources, ["groups", "groups", "row.members", "row.members"]);
+    }
+
+    #[test]
+    fn locals_mirror_binding_names_in_order() {
+        let spec = completion_fragment_spec(&completion_fragment(
+            "cell",
+            vec![
+                binding("row", LocalRole::Item, "groups"),
+                binding("rowIndex", LocalRole::Index, "groups"),
+                binding("cell", LocalRole::Item, "row.cells"),
+            ],
+        ));
+
+        assert_eq!(spec.locals, ["row", "rowIndex", "cell"]);
+        assert_eq!(
+            spec.locals,
+            spec.bindings
+                .iter()
+                .map(|binding| binding.name.clone())
+                .collect::<Vec<_>>()
+        );
     }
 }

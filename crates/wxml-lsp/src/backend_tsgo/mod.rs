@@ -776,10 +776,15 @@ impl TsgoBackendAdapter {
 
     /// Answers one member completion through a completion-only shadow plan.
     ///
-    /// `prefix` is the bare data root before a trailing dot (`user` in
-    /// `{{ user.`) or before an unclosed typed member prefix (`user` in
-    /// `{{ user.na`). The script overlay decides whether the root is a declared
-    /// data field first. An unknown root is an explicit `Unsupported`/`Partial`
+    /// `prefix` is the complete expression before a trailing dot (`user` in
+    /// `{{ user.`, `user.name` in `{{ user.name.` or `item` in `{{ item. }}`
+    /// inside `wx:for`) or before an unclosed typed member prefix (`user` in
+    /// `{{ user.na`). The `wx:for` scope at the cursor is resolved first: an
+    /// inner local shadows an outer one and every local shadows a same-named
+    /// script data root. The shadow renders the whole chain, so the mounted
+    /// prefix keeps the element type instead of a `data` type. Only when no
+    /// local matches is the script overlay asked whether the root is a declared
+    /// data field. An unknown root is an explicit `Unsupported`/`Partial`
     /// answer; it never falls through to a silent empty native list. A mounted
     /// prefix is queried at a synthetic `.` while the published replacement
     /// range stays the original typed prefix.
@@ -795,23 +800,31 @@ impl TsgoBackendAdapter {
                 "the expression before the trailing dot has no data root",
             ));
         };
-        match completion::member_root(self.views.as_ref(), request, root)? {
-            completion::MemberRoot::Known => {}
-            completion::MemberRoot::UnknownComplete => {
-                return Ok(completion::unsupported_completion(&format!(
-                    "`{root}` is not a data root of the template owner"
-                )));
+        // The chain is outermost to innermost, so the reversed search selects
+        // the innermost declaration of a shadowed name.
+        let scope = completion::loop_bindings(request.context.source().text(), request.offset);
+        let bindings = if scope.iter().rev().any(|binding| binding.name == root) {
+            scope
+        } else {
+            match completion::member_root(self.views.as_ref(), request, root)? {
+                completion::MemberRoot::Known => Vec::new(),
+                completion::MemberRoot::UnknownComplete => {
+                    return Ok(completion::unsupported_completion(&format!(
+                        "`{root}` is not a data root of the template owner"
+                    )));
+                }
+                completion::MemberRoot::UnknownIncomplete(reason) => {
+                    return Ok(completion::partial_completion(reason));
+                }
+                completion::MemberRoot::Unavailable(reason) => {
+                    return Ok(completion::unsupported_completion(&reason));
+                }
             }
-            completion::MemberRoot::UnknownIncomplete(reason) => {
-                return Ok(completion::partial_completion(reason));
-            }
-            completion::MemberRoot::Unavailable(reason) => {
-                return Ok(completion::unsupported_completion(&reason));
-            }
-        }
+        };
         let fragment = input::CompletionFragment {
             expr: prefix,
             wxml_range: prefix_range,
+            bindings,
         };
         let completion_plan = match input::build_completion_request_plan(
             self.views.as_ref(),
@@ -1115,7 +1128,7 @@ impl Backend for TsgoBackendAdapter {
             },
             completion: CapabilityStatus::Partial {
                 reason:
-                    "data-root completion from the Rust script overlay and native expression-member completion are wired; a bare data root before a trailing dot (`{{ user. }}`) and an unclosed typed member prefix (`{{ user.na`) are mounted through a completion-only shadow, while member chains before the dot (`user.name.`) and template-local roots (`item.` inside `wx:for`) are not resolved; prepared auto-import entries are queried but the pinned API exposes no origin or edit, so auto-import items stay Partial and no import edit is offered; the pinned API also has no per-entry documentation, so non-empty native results stay Partial; event-handler completion is served from the Rust script method table without a native session and can be Supported; `this.`/method-body completion, custom component event signatures and handler signature help are not implemented"
+                    "data-root completion from the Rust script overlay and native expression-member completion are wired; a trailing dot after a data root (`{{ user. }}`), a `wx:for` local (`{{ item. }}`, including custom `wx:for-item` names) and a chained prefix followed by a trailing dot (`{{ user.name. }}`, `{{ item.Setting. }}`) are mounted through a completion-only shadow; an unclosed typed member prefix (`{{ user.na`) is mounted the same way and only the typed identifier is replaced; template locals shadow same-named data roots and inner loops shadow outer ones; prepared auto-import entries are queried but the pinned API exposes no origin or edit, so auto-import items stay Partial and no import edit is offered; the pinned API also has no per-entry documentation, so non-empty native results stay Partial; event-handler completion is served from the Rust script method table without a native session and can be Supported; `this.`/method-body completion, custom component event signatures and handler signature help are not implemented"
                         .to_owned(),
             },
         }
