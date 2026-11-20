@@ -21,7 +21,7 @@
 
 ADR-0008 于 2026-11-20 在 owner scope waiver（C-lite）下最终关闭为 `accepted`，并随 P7 删除完成写入 **Node removed**：接受 native 默认后端和合理行为测试的验收口径，不声称旧 TS 逐条 parity。当前默认 `--stdio` 为 native，`NotInstalled` 时 HostOnly，损坏安装 fail closed。
 
-ADR-0009 删除 `wxml-delivery`、迁移期 native parity/ledger/Q2/性能/stdio 门禁、`wxml-fixtures`、`docs/evidence`、`docs/plans` 和交付/测试合同。ADR-0009 当时记录为 **2,142 passed / 0 failed / 0 ignored**；ADR-0010 实现后最近一次统一验证为 **2,164 passed / 3 ignored / 0 failed**。历史计划与证据保留在 tag `pre-slim-20261120`。
+ADR-0009 删除 `wxml-delivery`、迁移期 native parity/ledger/Q2/性能/stdio 门禁、`wxml-fixtures`、`docs/evidence`、`docs/plans` 和交付/测试合同。ADR-0009 当时记录为 **2,142 passed / 0 failed / 0 ignored**；ADR-0010 实现后最近一次统一验证为 **2,168 passed / 3 ignored / 0 failed**。历史计划与证据保留在 tag `pre-slim-20261120`。
 
 ## 阅读与维护约定
 

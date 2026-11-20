@@ -92,6 +92,7 @@ pub(crate) struct AppRoot {
     pub(crate) app_json: ProjectPath,
     pub(crate) tsconfig: ProjectPath,
     pub(crate) source_roots: Vec<ProjectPath>,
+    pub(crate) include_project_root: bool,
     pub(crate) dependency_paths: BTreeMap<String, Vec<ProjectPath>>,
 }
 
@@ -160,8 +161,9 @@ impl InitializationOptions {
             let app_json = ProjectPath::new(app_json.to_string_lossy().into_owned())
                 .map_err(|_| ConfigurationError::InvalidRoot)?;
             let tsconfig = resolve_tsconfig(&workspace, &project_root, app.tsconfig.as_deref())?;
+            let include_project_root = prefix.as_os_str().is_empty();
             let mut source_roots = Vec::new();
-            if !prefix.as_os_str().is_empty() {
+            if !include_project_root {
                 source_roots.push(project_relative(&project_root, &app_dir)?);
             }
             let mut dependency_paths = BTreeMap::new();
@@ -191,6 +193,7 @@ impl InitializationOptions {
                 app_json,
                 tsconfig,
                 source_roots,
+                include_project_root,
                 dependency_paths,
             });
         }
@@ -286,11 +289,14 @@ fn package_aliases(
         let Some(target) = export_target(value, 0) else {
             continue;
         };
-        if !target.starts_with("./") {
+        let Some(target) = target.strip_prefix("./") else {
             continue;
-        }
-        let target = target.trim_start_matches("./");
-        if target.is_empty() || target.split('/').any(|part| part == "..") {
+        };
+        let target = target.replace('\\', "/");
+        if target.is_empty()
+            || target.starts_with('/')
+            || target.split('/').any(|part| part == "..")
+        {
             return Err(ConfigurationError::InvalidRoot);
         }
         let alias = if key == "." {
@@ -303,7 +309,7 @@ fn package_aliases(
         } else {
             continue;
         };
-        let path = ProjectPath::resolve(Some(relative), target)
+        let path = ProjectPath::resolve(Some(relative), &target)
             .map_err(|_| ConfigurationError::InvalidRoot)?;
         aliases.entry(alias).or_default().push(path);
     }

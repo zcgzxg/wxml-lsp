@@ -65,7 +65,7 @@ ADR-0006 要求通过 `initializationOptions.apps` 显式声明小程序根和�
 
 - 根 `package.json#workspaces`（数组或 `{ "packages": [...] }`）；
 - 或 `pnpm-workspace.yaml` 的 `packages:` 列表；
-- 支持精确目录路径和单个整段 `*`（可带后缀，例如 `packages/*-sdk`）；不支持 `**`；
+- 支持精确目录路径和单个整段 `*`（`*` 必须是完整路径段，可后接 `/子路径`，例如 `packages/*/src`）；不支持段内前后缀或 `**`；pnpm-workspace 的 `!` 取反项忽略；
 - 对当前小程序包的 `dependencies` / `devDependencies` / `peerDependencies` 中同名的工作区包，加入 `source_roots`；
 - 读取包 `package.json#exports`，把 `"."` / `"./x"` 映射为包名 / `包名/x` 的 TypeScript `paths`，目标为 workspace 相对源文件路径；
 - 不读取第三方 `node_modules` 内容，不推断包图，不执行 npm/pnpm 解析。
@@ -134,7 +134,7 @@ ADR-0006 要求通过 `initializationOptions.apps` 显式声明小程序根和�
 本决策已落地到 `wxml-lsp` 的 lazy workspace mode，并用真实 jielong4 工作区验证：
 
 - `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` 通过；
-- `cargo test --workspace --all-features` 为 2164 passed / 3 ignored；
+- `cargo test --workspace --all-features` 为 2168 passed / 3 ignored；
 - `cargo doc --workspace --no-deps` 与 `cargo deny --offline check` 通过；
 - 主 checkout 与 `placid-strand` worktree 都使用**不含 `initializationOptions`** 的 `initialize`：
   - `apps/miniprogram/src/exam-online/pages/edit-question/index.wxml` 的 `QuestionTypeEnum` 返回 `typeof QuestionTypeEnum`；

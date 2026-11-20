@@ -17,6 +17,14 @@ use thiserror::Error;
 use crate::files::{FileError, MAX_MESSAGE_BYTES, PathError, ProjectPath, truncate_message};
 use crate::overlay::Overlay;
 
+/// Maximum number of merged `paths` patterns forwarded to the type backend.
+///
+/// The native input rejects a `paths` object with more than 256 entries before
+/// creating a session. Keeping the merged map at the same ceiling preserves
+/// the app's own patterns and drops extra dependency aliases instead of making
+/// every analysis request fail as unavailable.
+pub const MAX_MERGED_PATHS: usize = 256;
+
 /// Maximum number of chained `extends` files loaded.
 pub const MAX_EXTENDS_DEPTH: usize = 8;
 
@@ -138,7 +146,12 @@ impl TsConfig {
         if paths.is_empty() {
             return;
         }
-        self.paths.extend(paths.clone());
+        for (pattern, targets) in paths {
+            if self.paths.len() >= MAX_MERGED_PATHS && !self.paths.contains_key(pattern) {
+                continue;
+            }
+            self.paths.insert(pattern.clone(), targets.clone());
+        }
         let mut object = Map::new();
         for (pattern, targets) in &self.paths {
             object.insert(
@@ -367,7 +380,6 @@ pub fn load_ts_config(
     };
     let mut compiler_options = layer.compiler_options;
     rewrite_compiler_options(&mut compiler_options, &layer.paths);
-    rewrite_type_roots(&mut compiler_options, path)?;
     Ok(TsConfig {
         path: path.clone(),
         base_url,
@@ -544,7 +556,8 @@ impl<'a> Loader<'a> {
         let directory = path.parent();
         let compiler_options = compiler_options.unwrap_or_default();
         validate_extra_options(&compiler_options.extra)?;
-        let child_compiler_options = raw_compiler_options(&compiler_options);
+        let mut child_compiler_options = raw_compiler_options(&compiler_options);
+        rewrite_type_roots(&mut child_compiler_options, path)?;
         let declared_base_url = match compiler_options.base_url.as_deref() {
             Some(value) => Some(resolve_directory_value(directory.as_ref(), value, path)?),
             None => None,
@@ -678,14 +691,14 @@ fn rewrite_compiler_options(
     options.insert("paths".to_owned(), Value::Object(object));
 }
 
-/// Rebases relative `typeRoots` entries on the effective config's directory.
+/// Rebases relative `typeRoots` entries on the declaring config's directory.
 ///
-/// `extends` replaces whole array options, so only the merged array survives
-/// and its declaring file is not tracked. Resolving it against the config
-/// being loaded keeps the value project-root-relative, matching `baseUrl` and
-/// `paths`. Absolute entries are forwarded unchanged because
-/// [`ProjectPath`] cannot represent them, and malformed values are left
-/// untouched so the type backend reports them.
+/// Each layer rewrites its own `typeRoots` before `extends` merging, matching
+/// TypeScript: a relative entry belongs to the config that declared it, not to
+/// the child that inherits the array. The resulting values are project-root
+/// relative, like `baseUrl` and `paths`. Absolute entries are forwarded
+/// unchanged because [`ProjectPath`] cannot represent them, and malformed
+/// values are left untouched so the type backend reports them.
 fn rewrite_type_roots(
     options: &mut BTreeMap<String, Value>,
     config: &ProjectPath,
@@ -1013,6 +1026,22 @@ mod tests {
 
     fn path(raw: &str) -> ProjectPath {
         ProjectPath::new(raw).expect("valid path")
+    }
+
+    #[test]
+    fn merge_paths_caps_dependency_aliases_at_the_backend_limit() {
+        let mut existing = BTreeMap::new();
+        for index in 0..MAX_MERGED_PATHS - 1 {
+            existing.insert(format!("app{index}"), vec![path("src/*")]);
+        }
+        let mut config = TsConfig::from_paths(path("tsconfig.json"), &existing);
+        let mut dependencies = BTreeMap::new();
+        dependencies.insert("app0".to_owned(), vec![path("override/*")]);
+        dependencies.insert("dep".to_owned(), vec![path("packages/api/*")]);
+        config.merge_paths(&dependencies);
+        assert_eq!(config.paths.len(), MAX_MERGED_PATHS);
+        assert_eq!(config.paths.get("app0"), Some(&vec![path("override/*")]));
+        assert!(config.paths.contains_key("dep"));
     }
 
     #[test]
@@ -1634,7 +1663,7 @@ mod tests {
     }
 
     #[test]
-    fn rebases_inherited_type_roots_once_against_the_effective_config() {
+    fn rebases_inherited_type_roots_against_the_declaring_config() {
         let temp = TempDir::new("type-roots-extends");
         temp.write(
             "shared/tsconfig.base.json",
@@ -1653,7 +1682,7 @@ mod tests {
         .expect("load");
         assert_eq!(
             config.compiler_options["typeRoots"],
-            Value::Array(vec![Value::String("apps/miniprogram/typings".to_owned())])
+            Value::Array(vec![Value::String("shared/typings".to_owned())])
         );
     }
 

@@ -695,6 +695,18 @@ fn watched_app_json_change_rediscovers_and_drops_the_overlay() {
         host.view_for(&stale).is_ok(),
         "lazy view survives app.json removal"
     );
+    let app_json_file = host
+        .file_id(&project_path("app.json"))
+        .expect("app.json file");
+    let app_json = host.file_text(&app_json_file).expect("app.json text");
+    assert!(
+        app_json.contains("pages/third/third"),
+        "disk app.json must win after the overlay is dropped: {app_json}"
+    );
+    assert!(
+        !app_json.contains("pages/overlay/overlay"),
+        "the stale app.json overlay must not survive: {app_json}"
+    );
     assert!(
         update
             .dirty_views
@@ -1439,7 +1451,7 @@ fn json_overlay_removing_a_page_clears_the_old_view() {
 }
 
 #[test]
-fn default_options_load_only_the_workspace_root() {
+fn default_options_discover_nested_app_lazily() {
     let project = TempProject::new();
     project.write("apps/nested/app.json", r#"{"pages":["pages/index/index"]}"#);
     project.write("apps/nested/pages/index/index.wxml", "{{ title }}");
@@ -1625,5 +1637,51 @@ fn new_shared_tsconfig_reloads_the_non_owner_app() {
             .compiler_options
             .get("strict"),
         None
+    );
+}
+
+#[test]
+fn lazy_page_json_overlay_updates_using_components() {
+    let project = TempProject::new();
+    project.write("app.json", r#"{"pages":[]}"#);
+    project.write("pages/lazy/index.wxml", "<card /><badge />");
+    project.write("pages/lazy/index.ts", "Component({ data: {} });");
+    project.write(
+        "pages/lazy/index.json",
+        r#"{"usingComponents":{"card":"./components/card/card"}}"#,
+    );
+    for name in ["card", "badge"] {
+        project.write(
+            &format!("pages/lazy/components/{name}/{name}.wxml"),
+            "<view>item</view>",
+        );
+        project.write(
+            &format!("pages/lazy/components/{name}/{name}.ts"),
+            "Component({});",
+        );
+    }
+
+    let host = host_with(&project);
+    let page = project_path("pages/lazy/index.wxml");
+    let components = host.view_components(&page);
+    assert_eq!(components.len(), 1);
+    assert_eq!(components[0].name, "card");
+
+    host.open_document(opened(
+        &project.uri("pages/lazy/index.json"),
+        r#"{"usingComponents":{"badge":"./components/badge/badge"}}"#,
+    ))
+    .expect("open lazy page json overlay");
+
+    let components = host.view_components(&page);
+    assert_eq!(components.len(), 1);
+    assert_eq!(components[0].name, "badge");
+    let file = host
+        .file_id(&project_path("pages/lazy/index.json"))
+        .expect("page json file");
+    assert!(
+        host.file_text(&file)
+            .expect("overlay text")
+            .contains("badge")
     );
 }

@@ -113,7 +113,7 @@ impl SourceLimits {
     pub const fn workspace() -> Self {
         Self {
             max_files: 8192,
-            max_total_bytes: 64 * 1024 * 1024,
+            max_total_bytes: 32 * 1024 * 1024,
             max_file_bytes: 16 * 1024 * 1024,
         }
     }
@@ -219,9 +219,12 @@ impl Project {
 
     /// Returns whether an unsaved JSON buffer may become a project overlay.
     ///
-    /// Only configuration discovery consumes is accepted: the root `app.json`,
-    /// the root `tsconfig.json`, and the JSON of a discovered page or
-    /// component. Arbitrary project JSON such as `package.json` is ignored.
+    /// Only JSON that configuration discovery consumes is accepted: the root
+    /// `app.json`, the root `tsconfig.json`, the JSON of a discovered page or
+    /// component, and a JSON file adjacent to a WXML template with a page or
+    /// component script. The last form covers lazily discovered views, whose
+    /// `usingComponents` must follow unsaved editor buffers. Arbitrary project
+    /// JSON such as `package.json` is ignored.
     #[must_use]
     pub fn accepts_json_overlay(&self, path: &ProjectPath) -> bool {
         if path == &self.app_json || path == &self.tsconfig_path {
@@ -232,7 +235,8 @@ impl Project {
         }) {
             return true;
         }
-        self.discovery
+        if self
+            .discovery
             .pages
             .iter()
             .any(|page| page.json.as_ref() == Some(path))
@@ -241,6 +245,24 @@ impl Project {
                 .components
                 .iter()
                 .any(|component| component.json.as_ref() == Some(path))
+        {
+            return true;
+        }
+        let Some(base_text) = path.as_str().strip_suffix(".json") else {
+            return false;
+        };
+        let Ok(base) = ProjectPath::new(base_text) else {
+            return false;
+        };
+        let Ok(wxml) = base.with_appended_extension("wxml") else {
+            return false;
+        };
+        if self.file_size(&wxml).is_none() {
+            return false;
+        }
+        crate::script::resolve_script(&base, |candidate| self.file_size(candidate).is_some())
+            .script
+            .is_some()
     }
 
     /// Returns whether an unsaved buffer may become a project overlay.
@@ -416,16 +438,16 @@ fn collect_candidates_with_limit(
     max_entries: usize,
 ) -> (BTreeSet<ProjectPath>, bool) {
     let mut candidates = BTreeSet::new();
-    let starts: Vec<_> = if project.source_roots().is_empty() {
-        vec![(project.root().to_path_buf(), None)]
-    } else {
+    let mut stack = Vec::new();
+    if project.include_project_root || project.source_roots().is_empty() {
+        stack.push((project.root().to_path_buf(), None));
+    }
+    stack.extend(
         project
             .source_roots()
             .iter()
-            .map(|root| (project.root().join(root.as_str()), Some(root.clone())))
-            .collect()
-    };
-    let mut stack = starts;
+            .map(|root| (project.root().join(root.as_str()), Some(root.clone()))),
+    );
     let mut scanned = 0usize;
     while let Some((directory, relative)) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&directory) else {

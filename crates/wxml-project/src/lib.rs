@@ -139,6 +139,8 @@ pub struct Project {
     source_root: Option<ProjectPath>,
     /// Roots whose scripts join the type backend snapshot.
     source_roots: Vec<ProjectPath>,
+    /// Whether the project root itself is also a source root.
+    include_project_root: bool,
     tsconfig_path: ProjectPath,
     /// Extra TypeScript path aliases provided by configured workspace packages.
     dependency_paths: BTreeMap<String, Vec<ProjectPath>>,
@@ -202,12 +204,13 @@ impl Project {
         app_json: ProjectPath,
     ) -> Result<Self, ProjectError> {
         let source_roots = app_json.parent().into_iter().collect();
-        Self::open_with_config(
+        Self::open_with_config_scoped(
             root,
             app_json,
             source_roots,
             ProjectPath::new("tsconfig.json")?,
             BTreeMap::new(),
+            false,
         )
     }
 
@@ -227,6 +230,34 @@ impl Project {
         source_roots: Vec<ProjectPath>,
         tsconfig_path: ProjectPath,
         dependency_paths: BTreeMap<String, Vec<ProjectPath>>,
+    ) -> Result<Self, ProjectError> {
+        Self::open_with_config_scoped(
+            root,
+            app_json,
+            source_roots,
+            tsconfig_path,
+            dependency_paths,
+            false,
+        )
+    }
+
+    /// Opens a project with explicit script roots and a whole-root flag.
+    ///
+    /// `include_project_root` makes the project root itself a source root even
+    /// when `source_roots` also lists dependencies. This is required when the
+    /// Mini Program lives at the workspace root but depends on sibling
+    /// workspace packages.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same root errors as [`Project::open_with_app_json`].
+    pub fn open_with_config_scoped(
+        root: impl Into<PathBuf>,
+        app_json: ProjectPath,
+        source_roots: Vec<ProjectPath>,
+        tsconfig_path: ProjectPath,
+        dependency_paths: BTreeMap<String, Vec<ProjectPath>>,
+        include_project_root: bool,
     ) -> Result<Self, ProjectError> {
         let root = root.into();
         let canonical = std::fs::canonicalize(&root)
@@ -249,6 +280,7 @@ impl Project {
             app_json,
             source_root,
             source_roots,
+            include_project_root,
             tsconfig_path,
             dependency_paths,
             overlay,
@@ -330,7 +362,8 @@ impl Project {
 
     /// Returns whether `path` belongs to any script root in the snapshot.
     pub(crate) fn contains_source_root(&self, path: &ProjectPath) -> bool {
-        self.source_roots.is_empty()
+        self.include_project_root
+            || self.source_roots.is_empty()
             || self.source_roots.iter().any(|root| {
                 path == root
                     || path

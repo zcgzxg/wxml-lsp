@@ -11,9 +11,6 @@
 //! and scan is bounded so a hostile or accidental workspace cannot stall
 //! startup.
 
-// The lazy app-discovery consumer lands in a follow-up change; until then the
-// helper is exercised only by its unit tests.
-
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::path::{Path, PathBuf};
