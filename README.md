@@ -153,6 +153,7 @@ scripts/install-native.sh  # 组装 native 安装根
 tests/fixtures/            # AC-001..AC-013 验收样本
 docs/adr/                  # 架构决策记录
 docs/reference/            # 契约、诊断策略、功能基线、来源记录
+openspec/                  # spec-driven 变更流程（changes/、archive/、specs/）
 assets.lock.json           # 引擎与类型资产的固定输入
 ```
 
@@ -160,11 +161,10 @@ assets.lock.json           # 引擎与类型资产的固定输入
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
-cargo test --workspace --doc
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-cargo deny check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
+cargo doc --workspace --no-deps
+cargo deny --offline check   # 首次需先 cargo deny fetch db
 ```
 
 Zed 扩展是独立 workspace，需要 `wasm32-wasip2` target：
@@ -196,3 +196,4 @@ CI（`.github/workflows/ci.yml`）只有 `check` 作业，执行 fmt、clippy（
 - [C0 基础契约](docs/reference/contracts.md)、[模板类型诊断策略](docs/reference/type-diagnostics.md)
 - [tsgo 原生后端合同](docs/reference/tsgo-native-contract.md)
 - [来源与许可证记录](docs/reference/provenance.md)
+- 变更流程：[`openspec/`](openspec/)（活跃变更在 `changes/`，归档在 `changes/archive/`；`specs/` 尚未沉淀能力规格）

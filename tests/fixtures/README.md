@@ -203,7 +203,7 @@ query、expect、diagnostic 对象只应出现文档列出的字段；未知字�
 - `file` 可为 `.wxml`/`.ts`/`.js`；marker 唯一。
 - `expect == null` 表示“没有定义/不能安全映射时不得返回位置”。
 - 正例的 `expect.file` 必须在 root 内、可读，`expect.target` 在目标文件中唯一出现。
-- 只要求 definition；反向编辑/重命名在 C1/G4 前不实现，AC-012 用 `coverage.edits = "deferred-to-C1"` 记录。
+- 只要求 definition；反向编辑/重命名至今未实现，AC-012 用 `coverage.edits = "deferred-to-C1"` 记录（字段名保留为历史）。
 
 ## 7. 验收编号对应
 

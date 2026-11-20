@@ -140,7 +140,7 @@ hover：悬停在 handler token 上返回后端提供的脚本方法签名，范
 - `DefinitionResult.locations` 为空 + `Supported`：已检查，确实没有定义。
 - 空 + `Unsupported`/`Disabled`/`Unavailable`/`Unknown`：没有能力查，必须显示降级，不能显示成“无定义”。
 - 只有能安全映射回原文的目标才返回；无法映射时不返回，不贴到最近字符。
-- 正向编辑/重命名结果不在 C0 内，AC-012 的 `coverage.edits` 记录为 `deferred-to-C1`。
+- 反向编辑/重命名至今未实现；AC-012 的 `coverage.edits` 记录为 `deferred-to-C1`（字段名保留为历史）。
 
 ## 9. `any`、`unknown` 与缺少类型
 
@@ -169,7 +169,7 @@ hover：悬停在 handler token 上返回后端提供的脚本方法签名，范
 | WXS 模块与 `<wxs>` | `Unsupported` | 不把 WXS 名字当数据字段 |
 | `template` / `import` / `include` | `Partial`/`Unsupported` | 调用上下文未解析时不发布猜测诊断 |
 | Behavior / 封装注册 / 闭包内注册 | `Partial` | 识别失败报告原因，不静默取第一个候选 |
-| 多候选注册或类型来源不明 | `Partial` + 候选计数 | 使用首个注册、不合并；reason 必须包含候选数，见 [C1 类型桥契约](type-bridge-c1.md) §5.2 |
+| 多候选注册或类型来源不明 | `Partial` + 候选计数 | 使用首个注册、不合并；reason 必须包含候选数，见 [ADR-0008](../adr/0008-rust-tsgo-no-node-backend.md) 与[原生合同](tsgo-native-contract.md) |
 | 动态事件绑定 | `Unsupported` | 不发布存在性诊断 |
 | 复杂窄化守卫 | `Partial` | 不产生猜测性空值错误 |
 | 可选链等未覆盖表达式 | `Partial` | 记录支持范围，不把整段模板当字符串 |

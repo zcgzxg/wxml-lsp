@@ -1,6 +1,6 @@
 # tsgo 原生后端 F0/F1 合同
 
-**状态：accepted / frozen（2026-11-20，P7 删除完成后最终口径）。** F0 原生兼容合同与 F1 Backend 语义合同已随 ADR-0008 在 owner scope waiver 下最终关闭并冻结为 native 默认后端的现行合同；维护者此前对 `7.1.0-beta` 的条件接受（§2.1）是冻结基线的一部分。本文 2026-11-17 的 draft 表述和 §12 的 `planned` 测试坐标保留为历史/冻结计划，不再表示当前交付状态；当前实现与验收见 ADR-0008 与 [ADR-0009](../adr/0009-project-slimming.md)；交付/测试合同和过程证据已随 ADR-0009 删除，历史版本见 tag `pre-slim-20261120`。本文不修改任何源码、测试、Cargo、计划、ADR 或其它文档。
+**状态：accepted / frozen（2026-11-20，P7 删除完成后最终口径）。** F0 原生兼容合同与 F1 Backend 语义合同已随 ADR-0008 在 owner scope waiver 下最终关闭并冻结为 native 默认后端的现行合同；维护者此前对 `7.1.0-beta` 的条件接受（§2.1）是冻结基线的一部分。本文 2026-11-17 的 draft 表述、迁移期测试坐标与风险登记（§12/§13）保留为历史摘要，逐条明细见 tag `pre-slim-20261120`，不再表示当前交付状态；当前实现与验收见 ADR-0008 与 [ADR-0009](../adr/0009-project-slimming.md)；交付/测试合同和过程证据已随 ADR-0009 删除。本文不修改任何源码、测试、Cargo、计划、ADR 或其它文档。
 
 更新日期：2026-11-20（原 2026-11-17）。适用基线：ADR-0008（accepted (native default; Node removed)；P7 删除完成）、[ADR-0009](../adr/0009-project-slimming.md)；历史迁移计划与 P1-A 证据见 tag `pre-slim-20261120`（原 `docs/plans/2026-11-17-rust-tsgo-migration.md` 第 3–4、5、6 节、`docs/evidence/2026-11-17-tsgo-native-api-spike.md`）。
 
@@ -8,11 +8,11 @@
 
 ### 1.1 本文件的性质
 
-> **历史说明（2026-11-20）**：以下 2026-11-17 的 draft/planned 描述保留为决策历史；本文现为 accepted/frozen，测试实现状态以当前仓库和 §12 的冻结坐标为准。
+> **历史说明（2026-11-20）**：以下 2026-11-17 的 draft/planned 描述保留为决策历史；本文现为 accepted/frozen，测试实现状态以当前仓库和 §12 的覆盖位置为准。
 
 - 本文定义 **F0 原生兼容合同**与 **F1 Backend 语义合同**，供 P2 评审、拆分测试与实现包。
 - 规范词：**MUST / MUST NOT** 为强制项；**SHOULD** 为需要说明理由的默认项；**MAY** 为可选。中文“必须/不得”等同 MUST/MUST NOT。
-- 本文中的 `F0-xx`、`F1-xx` 是合同项 ID；第 12 节把它们映射到 Rust 测试文件和测试名。原表中的 `planned` 是 2026-11-17 的未实现标记，现作为冻结坐标保留；当前覆盖以实际测试和 native gates 为准。
+- 本文中的 `F0-xx`、`F1-xx` 是合同项 ID；第 12 节给出这些 ID 的当前覆盖位置，逐 ID 的原始测试坐标见 tag `pre-slim-20261120`。
 - 维护者的条件接受记录最初只针对**引擎候选与制品身份**（§2.1）；该限制已于 2026-11-20 随本文冻结和 P7 删除验收解除。任何 F0/F1 项的当前覆盖仍必须以真实测试/门禁证据为准，不能仅凭条目存在推断。
 - 2026-11-17 的 P2 追加探针已关闭 B-02/B-03/B-04/B-12 的原始未知项，其中 B-02 是**负结果**：`appendFile`/`chtimes` 没有可注册的回调；详见 §5.3 与证据 §15。
 - 本文不定义交付/安装 schema（F3）、测试迁移账本（F2）或具体语义切片的代码布局（P3/P4）；这些由各自 owner 冻结。
@@ -23,7 +23,7 @@
 
 1. 有效 ADR（ADR-0008 已于 2026-11-20 在 owner scope waiver 下 accepted，native 默认；版本接受与迁移方向以 ADR 为准）。
 2. 实施计划（阶段、门禁、共享文件 owner、测试迁移规则）。
-3. 本文件与既有 C0/C1 契约（`docs/reference/contracts.md`、`docs/reference/type-bridge-c1.md`）。
+3. 本文件与既有 C0 契约（`docs/reference/contracts.md`）。
 4. 证据记录（P1-A、P0/P1-C；只证明记录范围内的行为）。
 
 代码事实优先于文档；发现不一致时修订对应文档，不保留两套说法。本文件与 ADR/计划冲突时，不得用本文件覆盖 ADR/计划。
@@ -724,96 +724,19 @@ Hover 由三部分组成，顺序固定：
 
 ## 12. 合同 ID 与测试挂点
 
-以下测试文件和测试名是 2026-11-17 的**冻结计划坐标**；当时新 crate 尚未创建、状态为 `planned（未实现）`（历史）。crate 路径/文件名已按此细化，不得删除 ID 或降低断言。表中残余 `planned` 字样保留为冻结坐标，当前覆盖以仓库中的实际测试与 native gates 为准。
+F0-01..F0-20 与 F1-01..F1-27 是 2026-11-17 迁移期的合同 ID。原表把每个 ID 指向“未来 Rust 测试文件/测试名”并统一标记为 `planned`；这些文件（`f0_artifact.rs`、`f0_protocol.rs`、`f0_security.rs`、`f1_session.rs`、`f1_utf.rs`、`f1_query.rs`）最终没有按该粒度落地，逐 ID 明细只保留在 tag `pre-slim-20261120`。合同点本身不变，当前覆盖以仓库测试为准：
 
-### 12.1 F0
+- F0（引擎固定、握手、分帧、RPC、白名单、VFS 与回收）：`crates/wxml-backend-tsgo/tests/asset_loader.rs`、`type_assets.rs`，以及 `src/native/` 下 `ast`/`supervisor`/`framing`/`rpc`/`vfs` 的单元测试。
+- F1（会话/epoch/重启、UTF 与范围、查询 DTO）：`crates/wxml-backend-tsgo/tests/real_engine.rs`、`f1_hover.rs`、`shadow_*.rs`、`script_*.rs`。
+- LSP 端到端：`crates/wxml-lsp/tests/lsp.rs`、`native_lsp_document_symbols.rs`、`project_host.rs`；`native_parity` 与 `stdio_type_loop` 已随 ADR-0009 删除。
 
-| ID | 合同点 | 未来 Rust 测试文件 | 未来测试名 | 状态 |
-| --- | --- | --- | --- | --- |
-| F0-01 | 固定制品身份/SRI/sha256 | `crates/wxml-backend-tsgo/tests/f0_artifact.rs` | `accepts_pinned_linux_x64_artifact_identity` | planned |
-| F0-02 | 排除 7.0.2/浮动版本 | `crates/wxml-backend-tsgo/tests/f0_artifact.rs` | `rejects_7_0_2_and_unpinned_versions` | planned |
-| F0-03 | 版本/制品预检 | `crates/wxml-backend-tsgo/tests/f0_artifact.rs` | `version_probe_requires_exact_pinned_version` | planned |
-| F0-04 | 握手/schema/方法探针 | `crates/wxml-backend-tsgo/tests/f0_protocol.rs` | `handshake_probe_requires_7_1_shape_and_methods` | planned |
-| F0-05 | AST v9/header 64 校验 | `crates/wxml-backend-tsgo/src/native/ast.rs` | `tests::rejects_non_v9_or_wrong_header_size` | planned |
-| F0-06 | 启动参数/环境不变量 | `crates/wxml-backend-tsgo/src/native/supervisor.rs` | `tests::builds_only_frozen_startup_args` | planned |
-| F0-07 | Content-Length 分帧/坏帧 | `crates/wxml-backend-tsgo/src/native/framing.rs` | `tests::rejects_bad_content_length_and_short_body` | planned |
-| F0-08 | 帧/JSON/AST 预算 | `crates/wxml-backend-tsgo/src/native/framing.rs` | `tests::enforces_frame_depth_and_size_budgets` | planned |
-| F0-09 | 请求 ID/响应路由 | `crates/wxml-backend-tsgo/src/native/rpc.rs` | `tests::routes_server_callbacks_and_client_ids_separately` | planned |
-| F0-10 | 回调并发/未知回调 | `crates/wxml-backend-tsgo/src/native/rpc.rs` | `tests::services_callbacks_while_request_is_pending` | planned |
-| F0-11 | stderr/panic 清洗 | `crates/wxml-backend-tsgo/src/native/supervisor.rs` | `tests::drains_stderr_and_sanitizes_panic_stack` | planned |
-| F0-12 | 方法白名单 | `crates/wxml-backend-tsgo/tests/f0_protocol.rs` | `allowlist_contains_only_reviewed_methods` | planned |
-| F0-13 | 拒绝清单/写入口 | `crates/wxml-backend-tsgo/tests/f0_security.rs` | `denied_methods_never_reach_engine` | planned |
-| F0-14 | 未知/拒绝方法 fail-closed | `crates/wxml-backend-tsgo/tests/f0_protocol.rs` | `unknown_method_fails_closed_without_fallback` | planned |
-| F0-15 | 全虚拟快照/读回调注册 | `crates/wxml-backend-tsgo/src/native/vfs.rs` | `tests::serves_only_full_snapshot_and_registered_callbacks` | planned |
-| F0-16 | 禁止 OS 读回退 | `crates/wxml-backend-tsgo/tests/f0_security.rs` | `unregistered_read_cannot_fall_back_to_os` | planned |
-| F0-17 | write/remove noop；append/chtimes 无回调且必须不可达 | `crates/wxml-backend-tsgo/tests/f0_security.rs` | `write_callbacks_are_noops_and_append_chtimes_are_not_registrable` | planned |
-| F0-18 | 路径规范化/限制 | `crates/wxml-backend-tsgo/src/native/vfs.rs` | `tests::normalizes_and_confines_paths` | planned |
-| F0-19 | 标准库/类型资产读边界 | `crates/wxml-backend-tsgo/tests/f0_security.rs` | `stdlib_and_typings_reads_stay_in_asset_roots` | planned |
-| F0-20 | 关闭/杀进程/回收 | `crates/wxml-backend-tsgo/src/native/supervisor.rs` | `tests::shutdown_closes_stdin_then_kills_and_reaps` | planned |
-
-### 12.2 F1
-
-| ID | 合同点 | 未来 Rust 测试文件 | 未来测试名 | 状态 |
-| --- | --- | --- | --- | --- |
-| F1-01 | 虚拟项目创建/身份 | `crates/wxml-backend-tsgo/tests/f1_session.rs` | `creates_virtual_projects_without_disk_files` | planned |
-| F1-02 | closeFiles+openFiles 更新 | `crates/wxml-backend-tsgo/tests/f1_session.rs` | `unsaved_update_requires_close_and_open_in_same_snapshot` | planned |
-| F1-03 | epoch/stale 结果屏障 | `crates/wxml-backend-tsgo/tests/f1_session.rs` | `drops_results_from_invalidated_epochs` | planned |
-| F1-04 | node handle 绑定/跨 epoch 拒绝 | `crates/wxml-backend-tsgo/tests/f1_session.rs` | `rejects_node_handles_from_previous_snapshot` | planned |
-| F1-05 | symbol descriptor 校验 | `crates/wxml-backend-tsgo/tests/f1_session.rs` | `rejects_symbol_descriptor_with_stale_content_hash` | planned |
-| F1-06 | lease 生命周期 | `crates/wxml-backend-tsgo/tests/f1_session.rs` | `leases_are_released_on_drop_and_session_close` | planned |
-| F1-07 | snapshot release/use-after-release | `crates/wxml-backend-tsgo/tests/f1_session.rs` | `released_snapshot_cannot_be_queried` | planned |
-| F1-08 | 单子进程/有界会话 | `crates/wxml-backend-tsgo/tests/f1_session.rs` | `keeps_one_child_and_bounded_live_snapshots` | planned |
-| F1-09 | 重启/重放/有界重试 | `crates/wxml-backend-tsgo/tests/f1_session.rs` | `restarts_with_bounded_retries_and_replays_inputs` | planned |
-| F1-10 | UTF-8/UTF-16 newtype | `crates/wxml-backend-tsgo/tests/f1_utf.rs` | `distinguishes_utf8_and_utf16_offsets` | planned |
-| F1-11 | AST trivia/范围 | `crates/wxml-backend-tsgo/tests/f1_utf.rs` | `trims_ast_leading_trivia_for_ranges` | planned |
-| F1-12 | URI/FileId 规范化 | `crates/wxml-backend-tsgo/tests/f1_utf.rs` | `normalizes_file_uris_and_project_file_ids` | planned |
-| F1-13 | CRLF/BOM/hashbang/非 BMP | `crates/wxml-backend-tsgo/tests/f1_utf.rs` | `preserves_crlf_bom_and_non_bmp_offsets` | planned |
-| F1-14 | 孤立 surrogate/WTF-8 | `crates/wxml-backend-tsgo/tests/f1_utf.rs` | `preserves_lone_surrogates_without_replacement` | planned |
-| F1-15 | diagnostics DTO | `crates/wxml-backend-tsgo/tests/f1_query.rs` | `diagnostics_maps_category_and_range` | planned |
-| F1-16 | type DTO/quality | `crates/wxml-backend-tsgo/tests/f1_query.rs` | `type_query_distinguishes_any_error_and_known` | planned |
-| F1-17 | symbol DTO/declarations | `crates/wxml-backend-tsgo/tests/f1_query.rs` | `symbol_query_returns_declarations_and_docs` | planned |
-| F1-18 | 文档/JSDoc | `crates/wxml-backend-tsgo/tests/f1_query.rs` | `documentation_and_jsdoc_tags_are_composed` | planned |
-| F1-19 | definition 组合 | `crates/wxml-backend-tsgo/tests/f1_query.rs` | `definition_composes_declarations_and_references` | planned |
-| F1-20 | references/alias | `crates/wxml-backend-tsgo/tests/f1_query.rs` | `references_deduplicates_alias_and_target` | planned |
-| F1-21 | completion/详情/自动导入 | `crates/wxml-backend-tsgo/tests/f1_query.rs` | `completion_without_details_is_visibly_degraded` | planned |
-| F1-22 | hover 组合/重载 | `crates/wxml-backend-tsgo/tests/f1_query.rs` | `hover_composes_type_docs_and_overloads` | planned |
-| F1-23 | rename 保守拒绝 | `crates/wxml-backend-tsgo/tests/f1_query.rs` | `rename_refuses_when_evidence_or_expected_text_mismatches` | planned |
-| F1-24 | 取消语义 | `crates/wxml-backend-tsgo/tests/f1_session.rs` | `queued_cancel_skips_send_and_running_cancel_discards` | planned |
-| F1-25 | deadline/进程死亡/错误分类 | `crates/wxml-backend-tsgo/tests/f1_session.rs` | `deadline_process_death_and_error_categories` | planned |
-| F1-26 | cache invalidation key | `crates/wxml-backend-tsgo/tests/f1_session.rs` | `cache_keys_include_epoch_snapshot_and_dependency_fingerprint` | planned |
-| F1-27 | rename 编辑复检 | `crates/wxml-backend-tsgo/tests/f1_query.rs` | `rename_edits_revalidate_before_publication` | planned |
-
-LSP 端到端挂点：`crates/wxml-lsp/tests/native_lsp_document_symbols.rs`、`crates/wxml-lsp/tests/lsp.rs` 与 `crates/wxml-backend-tsgo/tests/real_engine.rs` 覆盖当前可执行的 native 行为；`native_parity` 与 `stdio_type_loop` 已随 ADR-0009 删除，历史版本见 tag `pre-slim-20261120`。这些测试不能替代真实原生合同探针。
-
-2026-11-17 的 P2 追加探针只关闭了 B-02/B-03/B-04/B-12 的**未知性**（并记录了 B-02 的负结果），**没有**直接把这些 ID 变成已实现测试；不得因探针通过而删除或降级任何 ID。表中 `planned` 是 2026-11-17 的冻结坐标（历史），2026-11-20 P7 删除验收后的当前覆盖见实际测试与 native gates。
+这些测试不能替代真实原生合同探针，也不得因测试通过而降低任何 F0/F1 合同点的断言。
 
 ## 13. 开放问题与阻塞项
 
-以下为 2026-11-17 的开放问题/阻塞记录（历史）。B-01 已于 2026-11-20 closed；B-05–B-07 保留为当时的风险登记，当前实现/覆盖以仓库测试和 native gates 为准，不能据本表推断仍全部未实现。PASS 只表示该探针范围内的未知项已关闭，不表示合同/测试已验收。
+B-01..B-20 是 2026-11-17 的迁移期风险登记，原表逐条记录状态与阻塞级别；完整内容见 tag `pre-slim-20261120`。这些条目不再表示当前阻塞：native 后端已按 ADR-0008 关闭，P7 删除由 ADR-0009 记录。仍成立的事实只剩两条：
 
-| 编号 | 问题 | 影响 | 阻塞级别 |
-| --- | --- | --- | --- |
-| B-01 | **closed（2026-11-20）**：维护者已接受 `7.1.0-beta`，`gitHead`/SRI/sha256 已固定；本文已冻结，native 默认已切换并完成 P7 删除（历史：2026-11-17 曾为条件接受、契约 draft、待 P2/G1） | F0 生效条件 | **closed**；保留历史条件接受记录 |
-| B-02 | 已实测：`appendFile`/`chtimes` 不是合法回调名；`name`、`name:error`、`name:noop` 均启动 panic；源码注释明确“always delegates to base (no callback support)”，是当前 API 的有意能力边界而非临时缺陷。无法回调 deny，只能依赖方法白名单不可达 + 最小权限 | 回调级写阻断不可实现；残余纵深风险 | **PARTIAL（负结果）**；维护者 2026-11-18 接受补偿控制，P3 可启动；不得声称 write-callback deny 已实现 |
-| B-03 | 已捕获 readFile/fileExists/directoryExists/getAccessibleEntries/realpath/writeFile/removeFile 的真实帧；`missing` 只对 readFile 合法；读回调 error/invalid kind 会 panic；writeFile error -> 5033/不写，removeFile error -> status 0/`filesDeleted` 仍列路径 | 回调可按精确形状实现，错误不可当 deny | **PASS**（形状/失败语义已冻结；测试仍 planned） |
-| B-04 | 已实测宿主 FS + 完整回调串：回调确实被调用，`useOS` 生效，readFile `missing` 生效，writeFile/removeFile noop 下 emit 不落盘，虚拟快照可组合；非 read 回调的 `missing` 是非法形状 | F0 写阻断/组合验收 | **PASS**（范围内；非 read `missing` 属 B-03 负例） |
-| B-05 | 完整 Page/Component 原位 shadow、Behavior/props/loops/guards 与原生 checker 未验证 | F1/P4 语义验收 | **F1/P4 阻塞** |
-| B-06 | hover 无 display parts/每 overload 文档；旧 QuickInfo 断言如何映射未决 | F1 hover 保真 | **F1 阻塞**（需产品/测试决定） |
-| B-07 | 补全详情/`prepareAutoImports`/`includeSymbol` 精确参数与可见降级未冻结 | F1 completion 验收 | **F1 阻塞**（若要求详情） |
-| B-08 | 标准库/typings 等外部 `.d.ts` 目标无法用现有 `SourceLocation(FileId)` 表示；旧 definitions 断言含 `.d.ts` | F1 definition 等价 | **F1 阻塞**（DTO 决策） |
-| B-09 | rename 完整性无原生 flag；旧 rename 行为/断言与保守拒绝的等价性未验证 | F1 rename 验收 | **F1 阻塞** |
-| B-10 | 完整 AST msgpack/binder/children 未实现；C0 definition 可用节点表扫描，但其它功能可能依赖 | 后续语义/AST 功能 | 非 C0 阻塞；P3/N 交付 |
-| B-11 | CRLF/BOM/hashbang/孤立 surrogate 的精确 AST 行为未校准 | F1 UTF 验收 | **F1 阻塞**（fixture） |
-| B-12 | 已实测 `tsconfig`、`extends`（项目外）、`package.json`、源码/依赖/项目外 import、`typeRoots`（显式 `types`）的回调读取路径；未注册回调会读宿主 FS；合法缺失形状可阻止 OS 回退；符号链接/自动 typeRoots 仍有残余 | F0/F1 读安全与项目路由 | **PASS（已测配置）**；符号链接/自动发现另测 |
-| B-13 | `updateSnapshot` 增量/project 列表/diff 语义、`openFiles` 重复 fileNames 的完整规则未验证 | F1 更新正确性 | F1 需测试；v1 用全量 VFS 规避 |
-| B-14 | Windows/macOS/ARM64 资产、ABI、大小写、路径语义未验证 | 平台支持范围 | 非 Linux 平台阻塞 |
-| B-15 | 项目级性能/RSS、长稳、并发预算未测 | P5 门禁 | P5 阻塞，非 F0 |
-| B-16 | `batchRequests` 分页/嵌套方法校验未验证 | 优化项 | v1 已拒绝，非阻塞 |
-| B-17 | SignatureHelp 无专用 API，错误 node kind 会 panic | 功能范围 | C0 明确排除；未来单独合同 |
-| B-18 | LSP-connected 共享快照路径未验证 | ADR 替代架构 | 当前不采用，非阻塞 |
-| B-19 | `lib/tsc.sig` PGP 验签未执行 | 供应链声明 | 不得声称已验签；非 F0 阻塞 |
-| B-20 | 宿主机 `--cwd`/资产根在真实项目中的布局与权限未做端到端安装验证 | F3/安装 | F3 阻塞 |
+- **B-02（PARTIAL）**：固定引擎 `7.1.0-beta` 上 `appendFile`/`chtimes` 不是可注册回调，无法做回调级写阻断；写安全依赖方法白名单不可达加运行目录最小权限，见 §11。
+- **B-19**：`lib/tsc.sig` 的 PGP 验签未执行，不得声称已验签。
 
-**最低关闭顺序建议：** B-01 已条件接受，B-02 补偿控制已于 2026-11-18 接受，B-03/B-04/B-12 的探针未知项已关闭；B-02 仍为 PARTIAL（回调 deny 不可实现，依赖方法白名单 + 最小权限）。F1 仍须先关闭 B-05/B-06/B-07/B-08/B-09/B-11，B-13 按测试处理；B-10/B-14–B-20 按阶段处理。任何一项若无法关闭，必须修订 ADR/计划并显式记录，不得用“已降级”或“暂不测试”代替。
-
-**P3 启动判断：** B-01 已条件接受，B-02 补偿控制已于 2026-11-18 接受，B-03/B-04/B-12 的探针未知项已关闭；自 2026-11-18 起可以启动 P3 的 native client/FS/AST 骨架（N）。但不得把当前文本称为“已冻结的 F0/F1”：B-02 仍为 PARTIAL，F1 的 B-05/B-06/B-07/B-08/B-09/B-11/B-13 仍未关闭，查询与语义切片继续阻塞；生产安装器属于 P3-D/F3。
+其余仍然成立的范围限制（仅 Linux x86_64、无大项目性能语料等）维护在项目 README 的“已知限制”。

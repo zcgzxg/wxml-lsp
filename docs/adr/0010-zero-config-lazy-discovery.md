@@ -147,5 +147,5 @@ ADR-0006 要求通过 `initializationOptions.apps` 显式声明小程序根和�
 
 - [ADR-0006：显式小程序根与类型项目根](0006-explicit-mini-program-roots.md)
 - [ADR-0008：Rust + tsgo 类型后端](0008-rust-tsgo-no-node-backend.md)
-- [C1 类型桥](../reference/type-bridge-c1.md)
+- [ADR-0008：native 类型后端](0008-rust-tsgo-no-node-backend.md)（原 C1 类型桥已删除，历史见 tag `pre-slim-20261120`）
 - [Zed 初始化选项](../../editors/zed/README.md#mini-program-roots-initialization-options)

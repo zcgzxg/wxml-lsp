@@ -98,6 +98,6 @@ Zed 在工作区 `.zed/settings.json` 的 `lsp.wxml-lsp.initialization_options` 
 
 - [项目快速开始](../../README.md#在-zed-中使用)
 - [Zed 配置指南](../../editors/zed/README.md#mini-program-roots-initialization-options)
-- [C1 类型桥：请求与项目路径边界](../reference/type-bridge-c1.md#61-请求rust--node)
+- [ADR-0008：native 类型后端](0008-rust-tsgo-no-node-backend.md)（原 C1 类型桥的请求与路径边界已随 Node 后端删除，历史见 tag `pre-slim-20261120`）
 - [ADR-0001：分层语言服务与模块依赖边界](0001-layered-language-service-architecture.md)
 - [ADR-0003：版本化文档同步与 Zed 接入](0003-versioned-document-synchronization.md)

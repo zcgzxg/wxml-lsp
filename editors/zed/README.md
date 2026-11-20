@@ -219,34 +219,10 @@ defaults to that entry's `root`:
 | `tsconfig` | Optional workspace-relative `tsconfig.json`; defaults to `projectRoot/tsconfig.json` with no ancestor search |
 | `dependencies` | Workspace package directories whose sources join the type snapshot and whose `package.json` exports become TypeScript path aliases |
 
-Paths are relative to the **LSP workspace root**, not the `.zed` directory. For
-a two-app layout with pinned roots:
-
-```json
-{
-  "lsp": {
-    "wxml-lsp": {
-      "initialization_options": {
-        "apps": [
-          {
-            "root": "apps/miniprogram/src",
-            "projectRoot": "apps/miniprogram"
-          },
-          {
-            "root": "apps/sub-merchant/src",
-            "projectRoot": "apps/sub-merchant"
-          }
-        ]
-      }
-    }
-  }
-}
-```
-
-The first app uses `apps/miniprogram/src/app.json` and
-`apps/miniprogram/tsconfig.json`; the second uses the corresponding files under
-`apps/sub-merchant`. This example illustrates the configuration shape; it is
-not evidence of a real Zed validation.
+Paths are relative to the **LSP workspace root**, not the `.zed` directory. The
+user-facing option summary and a two-app example live in the root
+[`README.md`](../../README.md); this file documents the extension-specific rules
+and failure modes only.
 
 Explicit mode does not perform upward discovery. If an app imports workspace
 packages outside its own directory, raise `projectRoot` to their common
@@ -380,33 +356,9 @@ To disable this server for WXML:
   above is based on Zed 1.28.1's language-buffer registration behavior and
   should be rechecked after Zed upgrades. Historical P8 evidence is available
   at tag `pre-slim-20261120`.
-
-## Runtime status (2026-11-16, before Node removal)
-
-Verified in isolated user-data directories with Zed 1.28.1, but **not** through
-the standard UI install:
-
-- Early smoke used a temporary HTML grammar renamed to `tree_sitter_wxml`.
-- The final isolated test loaded the real `tree-sitter-wxml` grammar built with
-  wasi-sdk 34 (~23,806 B); the extension id `wxml-lsp` was not overwritten by
-  the Marketplace `wxml` extension.
-- Zed registered the `WXML` language and started the real
-  `target/release/wxml-lsp --stdio` binary; the second launch log was stable,
-  with no unload/restart.
-- A `user.nmae` typo in a WXML sample produced an inline diagnostic.
-
-A manual dev symlink/index is present in the main Zed user-data directory
-(`~/.local/share/zed/extensions/installed/wxml-lsp -> <repo>/editors/zed`,
-`dev = true`). The main Zed process was restarted on 2026-11-16; it loaded the
-extension, started `wxml-lsp --stdio`, and spawned the Node backend for
-`tests/fixtures/page-basic`. The `user.nmae` typo shows a red diagnostic and the
-file tree shows an error badge; WXML syntax colours are visible. That smoke ran
-before the Node backend was removed; the current server has no Node fallback.
-
-Not confirmed: standard `zed: install dev extension`, hover/definition contents,
-real grammar query quality, Windows/macOS hosts, multi-worktree/remote projects,
-and long-running server lifecycle. KDE's EIS permission dialog blocked automated
-mouse/keyboard input.
+- Not confirmed: the standard `zed: install dev extension` UI flow, the contents
+  of hover/definition results, real grammar query quality, Windows/macOS hosts,
+  multi-worktree or remote projects, and long-running server lifecycle.
 
 ## Verification
 

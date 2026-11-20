@@ -44,27 +44,28 @@ W4 重跑。S 的逐项工具状态见 §2.2，Q2 调度/恢复见 §2.3，行�
 
 > **2026-11-20 项目瘦身说明**：ADR-0009 删除了 native parity、`stdio_type_loop`、Q2 稳定性和性能门禁，
 > 以及 `docs/evidence`。下表中这些文件名保留为历史标记，不再可执行；历史证据见 tag
-> `pre-slim-20261120`。当前默认覆盖以 `component_intelligence.rs`、`styles_resources.rs`、
+> `pre-slim-20261120`。表中标注“历史”的文件均已删除，正文见该 tag；未标注“历史”的链接指向当前仓库。
+> 当前默认覆盖以 `component_intelligence.rs`、`styles_resources.rs`、
 > `styles_diagnostics.rs`、`semantic_surface.rs`、`structural_editing.rs`、
 > `full_feature_matrix_editing.rs`、`project_host.rs`、`lsp.rs` 和
 > `native_lsp_document_symbols.rs` 为准。
 
 | 编号 | 状态 | 已实现范围 | 主要证据 | 仍待/限制 |
 | --- | --- | --- | --- | --- |
-| F-05 | 部分实现 | 数据化条件规则至少覆盖 `picker` 各 mode 和 `input` type；补全与本地诊断共用规则；未知/动态 mode 保留合法候选 | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、`full_feature_matrix.rs`（历史，P7 删除；IT-03） | 未覆盖全部组件的条件属性；规则表需继续数据化扩展 |
-| F-06 | 已实现（受限） | 页面/组件自身/app `usingComponents`、本地同名覆盖、`miniprogram_npm` 本地构建、组件标签/属性/事件补全、组件 definition | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、`full_feature_matrix.rs`（历史，P7 删除；IT-02） | 插件/远程组件仅在本地有可信元数据时建模；无远程下载或执行 |
-| F-07 | 已实现 | `wx:for` 作用域、表达式成员补全、事件处理函数补全；WXS 模块点号补全返回导出成员与签名，点号后的空白不阻止触发；后端离线时静态通道保留 | stdio_type_loop.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）、native_parity/real_matrix.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）、`real_node.rs`（历史，P7 删除）、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs) | 动态/不可解析类型保持降级 |
+| F-05 | 部分实现 | 数据化条件规则至少覆盖 `picker` 各 mode 和 `input` type；补全与本地诊断共用规则；未知/动态 mode 保留合法候选 | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、`full_feature_matrix.rs`（历史） | 未覆盖全部组件的条件属性；规则表需继续数据化扩展 |
+| F-06 | 已实现（受限） | 页面/组件自身/app `usingComponents`、本地同名覆盖、`miniprogram_npm` 本地构建、组件标签/属性/事件补全、组件 definition | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、`full_feature_matrix.rs`（历史） | 插件/远程组件仅在本地有可信元数据时建模；无远程下载或执行 |
+| F-07 | 已实现 | `wx:for` 作用域、表达式成员补全、事件处理函数补全；mustache 对象字面量按加括号表达式挂载，对象 key 不被当作变量名报错；尾点成员补全解析 `wx:for` 局部变量与链式前缀，同名局部变量遮蔽 data 根；WXS 模块点号补全返回导出成员与签名，点号后的空白不阻止触发；后端离线时静态通道保留 | stdio_type_loop.rs（历史）、native_parity/real_matrix.rs（历史）、`real_node.rs`（历史）、[real_engine.rs](../../crates/wxml-backend-tsgo/tests/real_engine.rs)、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs) | 动态/不可解析类型保持降级；真实引擎用例默认跳过，需 `TSGO_BIN` |
 | F-08 | 已实现（受限） | 表达式类型/JSDoc/声明归属；内置标签/属性/事件静态文档；组件属性、事件与来源 hover；WXS 模块 hover 的 range 落在 mustache token，导出列表带签名/类型；WXS 成员展示签名与多行 JSDoc（`@param`/`@returns` 的 `{}` 保持可读）；打开的 `.wxs` 内声明、导出键与文件内引用可 hover；不依赖 Node 的静态 hover | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、[metadata.rs](../../crates/wxml-lsp/src/metadata.rs)、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs) | 目录仍是手写子集；插件/远程组件仅显示降级说明；WXS 静态子集不执行、不推断动态导出，也不提供跨文件 rename |
-| F-09 | 已实现（受限） | 字段/事件/组件文件/组件属性/class/本地资源/template/import/WXS 导出 definition；S 增加 data、事件、组件属性、template 和 class 的 references，覆盖不完整时保守返回空 | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs)、ADR-0009（历史证据见 tag pre-slim-20261120）、ADR-0009（历史证据见 tag pre-slim-20261120） | 请求目标只接受已打开的 WXML；跨 app 不推断；插件/远程目标不猜测；partial coverage 不冒充完整 |
+| F-09 | 已实现（受限） | 字段/事件/组件文件/组件属性/class/本地资源/template/import/WXS 导出 definition；S 增加 data、事件、组件属性、template 和 class 的 references，覆盖不完整时保守返回空 | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs)、ADR-0009（历史） | 请求目标只接受已打开的 WXML；跨 app 不推断；插件/远程目标不猜测；partial coverage 不冒充完整 |
 | F-10 | 部分实现 | 未知字段/成员、绑定不兼容、picker/input mode、资源不存在、可证明 class 缺失诊断；修复后清除 | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、[styles_diagnostics.rs](../../crates/wxml-lsp/tests/styles_diagnostics.rs) | 不是完整模板语义检查；动态/不完整索引抑制猜测 |
-| F-11 | 已实现（受限） | WXSS/SCSS/CSS class 索引；同文件、`@import`/`@use`/`@forward`、app 样式、显式全局样式；`styleIsolation`；class 补全/hover/definition；S 增加 class references/rename | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[styles.rs](../../crates/wxml-project/tests/styles.rs)、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs)、ADR-0009（历史证据见 tag pre-slim-20261120） | 动态插值、mixin/`@extend` 生成类不猜测；预算截断标记不完整 |
-| F-12 | 已实现（受限） | 本地资源补全/documentLink/definition/存在性诊断；新增删除和 watched-file 更新；路径边界与 symlink 校验 | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[full_feature_matrix_editing.rs](../../crates/wxml-lsp/tests/full_feature_matrix_editing.rs)（IT-10） | 只处理本地资源；不访问远程 URL，不处理插件包内未落盘资源 |
-| F-13 | 部分实现 | 开始标签补全、`</` 栈补全、linkedEditingRange、Zed 括号/引号/Mustache 配对；S 增加 template、loop 绑定、class、组件属性、事件处理函数和 data 的安全 rename；自闭合与嵌套同名兄弟不误配 | [structural_editing.rs](../../crates/wxml-lsp/tests/structural_editing.rs)、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs)、ADR-0009（历史证据见 tag pre-slim-20261120）、ADR-0009（历史证据见 tag pre-slim-20261120） | 自定义组件 tag rename 和普通 tag rename 保守拒绝（没有完整 `usingComponents` 别名/项目用法覆盖）；没有 LSP on-type 自动闭合；跨文件事务/undo 不提供 |
+| F-11 | 已实现（受限） | WXSS/SCSS/CSS class 索引；同文件、`@import`/`@use`/`@forward`、app 样式、显式全局样式；`styleIsolation`；class 补全/hover/definition；S 增加 class references/rename | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[styles.rs](../../crates/wxml-project/tests/styles.rs)、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs)、ADR-0009（历史） | 动态插值、mixin/`@extend` 生成类不猜测；预算截断标记不完整 |
+| F-12 | 已实现（受限） | 本地资源补全/documentLink/definition/存在性诊断；新增删除和 watched-file 更新；路径边界与 symlink 校验 | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[full_feature_matrix_editing.rs](../../crates/wxml-lsp/tests/full_feature_matrix_editing.rs) | 只处理本地资源；不访问远程 URL，不处理插件包内未落盘资源 |
+| F-13 | 部分实现 | 开始标签补全、`</` 栈补全、linkedEditingRange、Zed 括号/引号/Mustache 配对；S 增加 template、loop 绑定、class、组件属性、事件处理函数和 data 的安全 rename；自闭合与嵌套同名兄弟不误配 | [structural_editing.rs](../../crates/wxml-lsp/tests/structural_editing.rs)、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs)、ADR-0009（历史） | 自定义组件 tag rename 和普通 tag rename 保守拒绝（没有完整 `usingComponents` 别名/项目用法覆盖）；没有 LSP on-type 自动闭合；跨文件事务/undo 不提供 |
 | F-14 | 已实现（受限） | 内置标签/属性 snippets、工作区/用户 snippets、`enabled`/`builtin` 覆盖、占位符插入安全、watched-file 热更 | [structural_editing.rs](../../crates/wxml-lsp/tests/structural_editing.rs) | 只读取 `snippetsPath` 或 `.wxml-lsp/snippets.json`；不读取 Zed 私有配置；无 marketplace 片段包 |
-| F-15 | 已实现（受限） | 保真 document/range formatting；只改开始标签内部 ASCII 空白；保留文本/注释/实体/Mustache/WXS/引号/重复属性；解析失败零编辑；CRLF/emoji/中文 | [structural_editing.rs](../../crates/wxml-lsp/tests/structural_editing.rs)、[full_feature_matrix_editing.rs](../../crates/wxml-lsp/tests/full_feature_matrix_editing.rs)（IT-11） | 不重排文本节点或整份文档缩进；多行标签中段无法安全推导时跳过 |
-| F-16 | 已实现（受限） | 显式 app registry、依赖图、overlay、缓存、watched files、tsconfig/样式/snippet 失效；无效配置保留错误状态 | [project_host.rs](../../crates/wxml-lsp/tests/project_host.rs)（含多 app 隔离；原 `multi_app_projects.rs` 已随 P7 删除） | 根配置只在启动时消费；无完整多 workspace 或跨 app 自动依赖图 |
-| F-17 | 已实现（受限） | Behavior/共享 data/props、复杂 props、guards/loops、JS/JSDoc、template/import/include、WXS 静态子集、未保存跨文件 overlay、native 引擎重启重放 | stdio_type_loop.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）、native_parity/real_matrix.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）、`real_node.rs`/`backends/typescript/test/`（历史，P7 删除） | 模板体不逐调用实例检查；WXS 不执行；动态 Behavior/WXS/template 明确降级 |
-| F-18 | 部分实现 | 单 workspace 内显式多 app、独立 tsconfig/projectId/overlay/缓存、重启稳定身份、最长目录匹配；S 增加多 app + imported template 的 `workspace/symbol`；Q2 增加根移除/重加 overlay 重放、资源/页面增删恢复和关闭/重开 | [project_host.rs](../../crates/wxml-lsp/tests/project_host.rs)、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs)、q2_stability.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）、ADR-0009（历史证据见 tag pre-slim-20261120）（原 `multi_app_projects.rs`/`q2_recovery.rs` 已随 P7 删除） | 不是完整多 workspace；无多根热加/根热更新；无跨 app 依赖归属推断；多 app 重放受 active project 限制；索引不完整/预算耗尽时 workspaceSymbol 返回空并写日志 |
+| F-15 | 已实现（受限） | 保真 document/range formatting；只改开始标签内部 ASCII 空白；保留文本/注释/实体/Mustache/WXS/引号/重复属性；解析失败零编辑；CRLF/emoji/中文 | [structural_editing.rs](../../crates/wxml-lsp/tests/structural_editing.rs)、[full_feature_matrix_editing.rs](../../crates/wxml-lsp/tests/full_feature_matrix_editing.rs) | 不重排文本节点或整份文档缩进；多行标签中段无法安全推导时跳过 |
+| F-16 | 已实现（受限） | 显式 app registry、依赖图、overlay、缓存、watched files、tsconfig/样式/snippet 失效；无效配置保留错误状态 | [project_host.rs](../../crates/wxml-lsp/tests/project_host.rs)（含多 app 隔离） | 根配置只在启动时消费；无完整多 workspace 或跨 app 自动依赖图 |
+| F-17 | 已实现（受限） | Behavior/共享 data/props、复杂 props、guards/loops、JS/JSDoc、template/import/include、WXS 静态子集、未保存跨文件 overlay、native 引擎重启重放 | stdio_type_loop.rs（历史）、native_parity/real_matrix.rs（历史）、`real_node.rs`/`backends/typescript/test/`（历史） | 模板体不逐调用实例检查；WXS 不执行；动态 Behavior/WXS/template 明确降级 |
+| F-18 | 部分实现 | 单 workspace 内显式多 app、独立 tsconfig/projectId/overlay/缓存、重启稳定身份、最长目录匹配；S 增加多 app + imported template 的 `workspace/symbol`；Q2 增加根移除/重加 overlay 重放、资源/页面增删恢复和关闭/重开 | [project_host.rs](../../crates/wxml-lsp/tests/project_host.rs)、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs)（历史：q2_stability.rs、multi_app_projects.rs、q2_recovery.rs） | 不是完整多 workspace；无多根热加/根热更新；无跨 app 依赖归属推断；多 app 重放受 active project 限制；索引不完整/预算耗尽时 workspaceSymbol 返回空并写日志 |
 
 ### 2.2 S 语义工具状态（W3 合入，W4 最终复验）
 
@@ -72,12 +73,11 @@ S 只广告有真实 handler 和失败安全测试的能力。客户端未声明
 时，`rename` 和 `codeAction` 不广告。两轮正式 Rust/安全审核结论均为 `CHANGES_REQUESTED`；
 `dd15bc1` 修复第 2 轮残留项并由集成探针复验，按用户上限未开第 3 轮正式审核，不标记为
 `APPROVED`。W4 没有再改 S 语义，最终 release 冒烟覆盖了 hover/definition/completion/
-diagnostics；证据见 ADR-0009（历史证据见 tag pre-slim-20261120） 与
-ADR-0009（历史证据见 tag pre-slim-20261120）。
+diagnostics；过程证据已随 ADR-0009 删除，历史见 tag `pre-slim-20261120`。
 
 | 工具 | 状态 | 已实现范围 | 主要证据 | 仍待/限制 |
 | --- | --- | --- | --- | --- |
-| references | 已实现（受限） | `textDocument/references` 与只读 `wxml.references` 命令；data、事件、组件属性、template、class；命令返回 `locations` + `coverage` | [semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs)、ADR-0009（历史证据见 tag pre-slim-20261120） | 目标 WXML 必须打开；覆盖不完整时普通请求返回空，命令返回 `partial`/`unsupported` |
+| references | 已实现（受限） | `textDocument/references` 与只读 `wxml.references` 命令；data、事件、组件属性、template、class；命令返回 `locations` + `coverage` | [semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs)、ADR-0009（历史） | 目标 WXML 必须打开；覆盖不完整时普通请求返回空，命令返回 `partial`/`unsupported` |
 | prepareRename / rename | 已实现（受限） | data、组件 `properties`、事件 handler、loop 绑定、class、template name/import；安全 `EditPlan` | 同上 | tag rename、静态 include 导致的 caller 覆盖不完整、动态访问、共享 importedData、快照截断/超限、跨视图冲突保守拒绝 |
 | codeAction | 已实现（受限） | 字段拼写 quickfix（编辑距离 ≤ 2）和创建事件 handler；Component `methods` 插入逗号安全 | 同上 | 只有 `quickfix`；不提供 refactor/组织 import |
 | semanticTokens/full | 已实现（受限） | UTF-16；WXML 结构、Mustache、WXS 静态 token；CRLF/emoji | 同上 | 只处理可完整解析模板；异常/超限返回空 token 流 |
@@ -95,13 +95,13 @@ Q2 验证的是协议、进程和调度行为，不包含真实编辑器 UI 或�
 
 | 项 | 状态 | 已实现/已验证 | 主要证据 | 仍待/限制 |
 | --- | --- | --- | --- | --- |
-| 诊断 debounce/coalescing | 已实现（受限） | 默认 120 ms；`wxml.diagnostics.debounceMs` 可设 0–5000；同一文档只保留最新 revision；打开/保存/配置立即调度 | q2_stability.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）、`server.rs`/`scheduler.rs` 单测（原 `q2_scheduler.rs` 已随 P7 删除） | 连续大流量下的 CPU 仍依赖宿主；大项目未单独测量 |
+| 诊断 debounce/coalescing | 已实现（受限） | 默认 120 ms；`wxml.diagnostics.debounceMs` 可设 0–5000；同一文档只保留最新 revision；打开/保存/配置立即调度 | q2_stability.rs（历史）、`server.rs`/`scheduler.rs` 单测（历史：`q2_scheduler.rs`） | 连续大流量下的 CPU 仍依赖宿主；大项目未单独测量 |
 | 交互/诊断队列 | 已实现（受限） | 交互队列 128、诊断队列 8；每 8 个交互任务让诊断前进；队列满时明确拒绝 | [scheduler.rs](../../crates/wxml-lsp/src/scheduler.rs) | 单 worker；运行中的同步 TypeScript 调用不可中断 |
-| 取消 | 已实现（受限） | 排队请求立即响应 `$/cancelRequest`；运行请求等后端返回/超时；attempt 防旧结果污染复用 id | q2_stability.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）（`typing burst + cancel`；原 `q2_scheduler.rs`/`q2_recovery.rs` 已随 P7 删除） | 运行中占用不作为取消延迟；late/duplicate cancel 仍有协议边界 |
-| 后端失败恢复 | 已实现（受限） | timeout/crash/protocol 不匹配时降级并报告，静态能力保留；恢复后重新请求 | q2_stability.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）、stdio_type_loop.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）、`real_node`（历史，P7 删除） | 真实 15 s 读超时未新增端到端等待用例 |
-| 工作区恢复 | 已实现（受限） | 根移除/重加重放 WXML snapshot 与 script/JSON/style overlay；资源/页面增删、关闭/重开；native 引擎重启重放 | q2_stability.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）、native_parity/native_engine_real.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）（原 `q2_recovery.rs` 已随 P7 删除） | 单 active root；多 app 重放受 active project 限制；配置/style 热更不在 Q2 组合测试 |
-| 性能门禁 | 已通过（受限） | static p95 0.178 ms、semantic 39.659 ms、diagnostics stop 164.894 ms、queued cancel 0.674 ms、single TS 402.126 ms、parent RSS 10,460 KiB；`thresholds.pass=true` | `perf/final-rust-perf.json`、ADR-0009（历史证据见 tag pre-slim-20261120） | JSON `git_head=5990126`；两个后续 commit 只改 Node 发布入口；benchmark 为单个小 fixture |
-| 稳定性门禁 | 已通过（受限） | strict 10 轮 + RSS baseline；`thresholds.pass=true`；Node/Rust RSS 比 1.0309/0.9928 | `test-logs/final-stability.json`、ADR-0009（历史证据见 tag pre-slim-20261120） | 同上；不能替代大项目/真实编辑器 UI 验收 |
+| 取消 | 已实现（受限） | 排队请求立即响应 `$/cancelRequest`；运行请求等后端返回/超时；attempt 防旧结果污染复用 id | q2_stability.rs（历史）（`typing burst + cancel`；历史：`q2_scheduler.rs`、`q2_recovery.rs`） | 运行中占用不作为取消延迟；late/duplicate cancel 仍有协议边界 |
+| 后端失败恢复 | 已实现（受限） | timeout/crash/protocol 不匹配时降级并报告，静态能力保留；恢复后重新请求 | q2_stability.rs（历史）、stdio_type_loop.rs（历史）、`real_node`（历史） | 真实 15 s 读超时未新增端到端等待用例 |
+| 工作区恢复 | 已实现（受限） | 根移除/重加重放 WXML snapshot 与 script/JSON/style overlay；资源/页面增删、关闭/重开；native 引擎重启重放 | q2_stability.rs（历史）、native_parity/native_engine_real.rs（历史）（历史：`q2_recovery.rs`） | 单 active root；多 app 重放受 active project 限制；配置/style 热更不在 Q2 组合测试 |
+| 性能门禁 | 已通过（受限） | static p95 0.178 ms、semantic 39.659 ms、diagnostics stop 164.894 ms、queued cancel 0.674 ms、single TS 402.126 ms、parent RSS 10,460 KiB；`thresholds.pass=true` | `perf/final-rust-perf.json`、ADR-0009（历史） | JSON `git_head=5990126`；两个后续 commit 只改 Node 发布入口；benchmark 为单个小 fixture |
+| 稳定性门禁 | 已通过（受限） | strict 10 轮 + RSS baseline；`thresholds.pass=true`；Node/Rust RSS 比 1.0309/0.9928 | `test-logs/final-stability.json`、ADR-0009（历史） | 同上；不能替代大项目/真实编辑器 UI 验收 |
 
 ## 3. 行为细则
 
@@ -125,6 +125,8 @@ Q2 验证的是协议、进程和调度行为，不包含真实编辑器 UI 或�
 ### 3.3 表达式、Hover 与定义（F-07–F-09）
 
 - `{{ }}` 内按模板作用域解析：页面/组件数据、组件属性、`wx:for` 项与索引、自定义循环变量、模板调用上下文、`wxs` 模块。
+- mustache 以 `{` 开头的表达式按对象字面量检查：`{{ { elementId: ElementIdConfig.AICreateForm, name: user.name } }}` 在 shadow 中挂载为加括号表达式，对象 key 不产生“找不到名称”或“缺少分号”诊断，key 的 value 仍按正常表达式检查并映射回原位置。
+- 尾点成员补全按模板作用域解析完整前缀：`{{ item. }}`、自定义 `wx:for-item`、`{{ item.Setting. }}` 和 `{{ user.name. }}` 都返回对应类型的成员；同名 `wx:for` 局部变量遮蔽脚本 data 根，替换范围只覆盖点号后已输入的标识符。
 - WXS 模块点号补全：`{{ m1. }}`（含点号后的空格、制表符或换行）返回 `module.exports` 的静态导出，候选 detail 为签名或类型、documentation 为非空 JSDoc；`{{ m1` 同时补全模块名；动态导出或索引截断标记不完整，由 `semantic_surface.rs` 的真实 stdio 用例覆盖。
 - 页面/组件的数据根来自脚本声明：页面为 `data`，自定义组件为 `data` 与 `properties`；字段在 WXML 中直接作为顶层标识符访问。独立 `interface`/`type` 只有被 `data`/`properties` 字段引用时才参与，不能作为模板根。
 - 成员补全使用真实类型，不用正则枚举字段。`any`、`unknown` 和缺失类型必须显示真实状态，不能生成看似确定的候选。
@@ -223,7 +225,7 @@ W2 已实现 F-01–F-04 的目录驱动补全，并把 F-05 的条件规则数�
 
 #### 3.8.4 Node 后端补全
 
-- Mustache 成员补全：`{{ user.na }}` 经 C1 虚拟文件布局复用 TypeScript `getCompletionsAtPosition`，候选来自页面/组件真实类型。
+- Mustache 成员补全：`{{ user.na }}` 经虚拟文件布局复用 TypeScript `getCompletionsAtPosition`，候选来自页面/组件真实类型。
 - 事件处理函数值补全：`bindtap="on"` 枚举 Page 选项上的顶层函数，或 Component `methods` 的成员；注册容器名（`data`、`properties`、`methods` 等）不进入候选。路由规则：属性名以 `bind`、`catch`、`capture-bind`、`capture-catch`、`mut-bind` 开头且后缀为 `:` 或小写字母/事件名时按事件值处理，因此目录中未逐一列出的 `bindcancel`、`bindcolumnchange` 等也能得到方法补全；`binding-mode` 之类普通属性不受影响。
 - 后端不可用、未实现、超时或不支持时返回空列表并记录日志，不返回协议错误，也不影响静态补全。
 
@@ -237,7 +239,7 @@ W2 已实现 F-01–F-04 的目录驱动补全，并把 F-05 的条件规则数�
 
 - 自定义组件标签来自页面/组件自身的 `usingComponents` 与 `app.json` 全局表；同名时页面/组件本地项生效，组件自身 WXML 也参与解析，组件属性名、类型、JSDoc 与事件参与补全/hover/definition。插件或远程组件缺少本地可信元数据时明确降级，不伪造属性。
 - 静态目录仍是手写受限子集，不是官方组件表的自动镜像；新增条目需同时补测试与本文档。`picker`/`input` 之外的 mode 条件规则尚未数据化。
-- class、资源和 WXS/template 的补全使用各自的索引/静态语义，不并入本节的标签目录；它们的降级边界见 §2.1 与 ADR-0009（历史证据见 tag pre-slim-20261120）。
+- class、资源和 WXS/template 的补全使用各自的索引/静态语义，不并入本节的标签目录；它们的降级边界见 §2.1 与 ADR-0009（历史）。
 
 目录溯源：条目定义在 `crates/wxml-lsp/src/completion/catalog.rs`，取值来源与许可证说明见[来源与许可证记录](provenance.md)；目录不下载、不执行外部元数据。
 
@@ -251,7 +253,7 @@ W2 已实现 F-01–F-04 的目录驱动补全，并把 F-05 的条件规则数�
 - semanticTokens 使用 UTF-16，覆盖 CRLF、emoji 和 WXS 静态 token；只对可完整解析的模板生成，异常/超限返回空 token 流。workspaceSymbol 聚合多 app 和 static imported template，索引不完整时返回空并写日志。
 - inlayHint、signatureHelp 和 codeLens 都基于静态事实；inlayHint 与 codeLens 默认开启，可通过 `initializationOptions.semanticTools` 关闭。codeLens 的 template/组件计数有上限，include 计数带当前文档锚点并明确 included 数量。
 - 不提供跨文件事务、原子提交或 undo；硬链接未检测。symlink 和生成目录已拒绝，但不等于完整文件身份安全。
-- W4 没有再改 S 语义；最终 release 的 Linux Zed 运行时冒烟覆盖 hover、definition、成员补全和诊断，见 ADR-0009（历史证据见 tag pre-slim-20261120）。
+- W4 没有再改 S 语义；最终 release 的 Linux Zed 运行时冒烟覆盖 hover、definition、成员补全和诊断，见 ADR-0009（历史）。
 
 ### 3.10 性能与恢复边界（Q2/W4）
 
