@@ -11,6 +11,9 @@ workspace. Linux x86_64 is the only verified platform.
   ADR > `docs/reference/` > README > provenance.
 - The `.opencode/` harness config (agents, commands, instructions) was removed
   from the repo; keep guidance in this file. History still has the old files.
+- `openspec/` holds OpenSpec change proposals and specs; `openspec/config.yaml`
+  carries the project context. Architectural decisions still belong in
+  `docs/adr/`.
 - Architecture context: `docs/adr/0001` (layering), `0006` (explicit roots),
   `0008` (native backend), `0009` (slimming), `0010` (zero-config lazy discovery).
 - `tests/fixtures/README.md` documents the current layout: every sample is a

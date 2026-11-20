@@ -1,0 +1,43 @@
+schema: spec-driven
+
+# Project context (optional)
+# Add only constraints that should guide OpenSpec artifacts and workflows.
+# Include constraints an agent cannot infer by reading the code.
+# Keep general project documentation and discoverable codebase facts out.
+# Example:
+#   context: |
+#     Designs and tasks must cover Windows, macOS, and Linux
+#     Write all artifacts in Spanish
+context: |
+  原生 Rust 的 WXML language server，无 Node 运行时；`editors/zed/` 是独立的
+  WASM workspace，根 workspace 的 cargo 命令不覆盖它。
+  文档权威顺序：代码/测试 > 已接受 ADR > `docs/reference/` > README > provenance；
+  架构决策写入 `docs/adr/NNNN-*.md`，项目文档主要以中文写作。
+  验收命令（与 CI 一致）：`cargo fmt --all -- --check`、
+  `cargo clippy --workspace --all-targets --all-features -- -D warnings`、
+  `cargo test --workspace --all-features`、`cargo doc --workspace --no-deps`、
+  `cargo deny --offline check`；默认 `cargo test` 不跑真实引擎，类型行为需
+  `TSGO_BIN`/`TSGO_TYPINGS_ROOT` 或安装原生布局后验证。
+  不要在仓库内留下临时文件或证据目录（ADR-0004/0005）。
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always state what is out of scope
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing
