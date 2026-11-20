@@ -634,6 +634,66 @@ fn hover_reads_open_wxs_source_document() {
 }
 
 #[test]
+fn wxs_dot_completion_lists_exports_with_whitespace_after_the_dot() {
+    let project = project();
+    let mut client = Client::start(project.root());
+    client.initialize(json!(null));
+
+    let inline = concat!(
+        "<wxs module=\"m1\">\n",
+        "function fmt(value) { return value; }\n",
+        "module.exports = { fmt };\n",
+        "</wxs>\n",
+        "<view>{{ m1.  }}</view>\n",
+    );
+    let uri = client.open("pages/index/completion-inline.wxml", inline);
+    let offset = inline.find("m1.  ").expect("inline site") + "m1.  ".len();
+    let completion = client.result(
+        "textDocument/completion",
+        json!({"textDocument": {"uri": uri}, "position": position_value(inline, offset)}),
+    );
+    let items = completion["items"].as_array().expect("inline items");
+    let fmt = items
+        .iter()
+        .find(|item| item["label"] == json!("fmt"))
+        .unwrap_or_else(|| panic!("inline export must be suggested: {completion}"));
+    assert!(
+        fmt["detail"]
+            .as_str()
+            .is_some_and(|detail| detail.contains("=>")),
+        "detail must carry the signature: {completion}"
+    );
+    assert_eq!(
+        fmt["textEdit"]["range"]["start"],
+        position_value(inline, offset),
+        "whitespace must not enter the edit range: {completion}"
+    );
+
+    let sourced = concat!(
+        "<wxs module=\"m1\" src=\"./utils.wxs\" />\n",
+        "<view>{{ m1.  }}</view>\n",
+    );
+    let uri = client.open("pages/index/completion-src.wxml", sourced);
+    let offset = sourced.find("m1.  ").expect("src site") + "m1.  ".len();
+    let completion = client.result(
+        "textDocument/completion",
+        json!({"textDocument": {"uri": uri}, "position": position_value(sourced, offset)}),
+    );
+    let items = completion["items"].as_array().expect("src items");
+    let some_func = items
+        .iter()
+        .find(|item| item["label"] == json!("someFunc"))
+        .unwrap_or_else(|| panic!("src export must be suggested: {completion}"));
+    assert_eq!(
+        some_func["detail"],
+        json!("(name: string) => string"),
+        "{completion}"
+    );
+
+    client.finish();
+}
+
+#[test]
 fn mustache_module_hover_targets_the_token() {
     let project = project();
     let mut client = Client::start(project.root());

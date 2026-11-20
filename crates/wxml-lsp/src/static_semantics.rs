@@ -799,9 +799,10 @@ fn wxs_member_completion(
     )
     .ok()?;
 
-    if let Some(dot) = before
+    let dot_source = before.trim_end();
+    if let Some(dot) = dot_source
         .strip_suffix("?.")
-        .or_else(|| before.strip_suffix('.'))
+        .or_else(|| dot_source.strip_suffix('.'))
     {
         let root = dot
             .trim_end()
@@ -837,7 +838,7 @@ fn wxs_member_completion(
     }
 
     // Module-name completion at the start of an expression.
-    if before.is_empty() {
+    if before.trim().is_empty() {
         let items: Vec<StaticCompletion> = index
             .wxs
             .iter()
@@ -2028,6 +2029,69 @@ module.exports = { format };</wxs>
         let result =
             completion("pages/index/index.wxml", wxml, offset, &no_access).expect("completion");
         assert!(result.items.iter().any(|item| item.label == "label"));
+    }
+
+    #[test]
+    fn wxs_dot_completion_tolerates_whitespace_after_the_dot() {
+        for hole in [".  ", ".\n  "] {
+            let wxml = format!(
+                r#"<wxs module="u">module.exports = {{ label: 1, fmt(a) {{ return a; }} }};</wxs><view>{{{{ u{hole}}}}}</view>"#
+            );
+            let start = wxml.find(&format!("u{hole}")).expect("site");
+            let offset = u32::try_from(start + 1 + hole.len()).expect("offset after whitespace");
+            let result = completion("pages/index/index.wxml", &wxml, offset, &no_access)
+                .expect("completion");
+            let labels: Vec<&str> = result
+                .items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect();
+            assert_eq!(labels, vec!["fmt", "label"], "hole {hole:?}");
+            assert!(
+                result
+                    .items
+                    .iter()
+                    .all(|item| { item.replace.start() == offset && item.replace.end() == offset })
+            );
+        }
+    }
+
+    #[test]
+    fn wxs_optional_chain_completion_tolerates_whitespace() {
+        let wxml = r#"<wxs module="u">module.exports = { label: 1 };</wxs><view>{{ u?.  }}</view>"#;
+        let start = wxml.find("u?.  ").expect("site");
+        let offset = u32::try_from(start + 5).expect("offset");
+        let result =
+            completion("pages/index/index.wxml", wxml, offset, &no_access).expect("completion");
+        assert!(result.items.iter().any(|item| item.label == "label"));
+    }
+
+    #[test]
+    fn wxs_completion_replaces_only_the_typed_prefix() {
+        let wxml = r#"<wxs module="u">module.exports = { label: 1 };</wxs><view>{{ u.la }}</view>"#;
+        let offset = u32::try_from(wxml.find("u.la").expect("site") + 4).expect("offset");
+        let result =
+            completion("pages/index/index.wxml", wxml, offset, &no_access).expect("completion");
+        assert_eq!(result.items.len(), 1);
+        assert_eq!(result.items[0].label, "label");
+        assert_eq!(
+            &wxml[result.items[0].replace.start() as usize..result.items[0].replace.end() as usize],
+            "la"
+        );
+    }
+
+    #[test]
+    fn wxs_module_completion_tolerates_leading_whitespace() {
+        let wxml = r#"<wxs module="m1">module.exports = { label: 1 };</wxs><view>{{ m"#;
+        let offset = u32::try_from(wxml.len()).expect("offset");
+        let result =
+            completion("pages/index/index.wxml", wxml, offset, &no_access).expect("completion");
+        let labels: Vec<&str> = result
+            .items
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["m1"]);
     }
 
     #[test]

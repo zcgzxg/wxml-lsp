@@ -53,7 +53,7 @@ W4 重跑。S 的逐项工具状态见 §2.2，Q2 调度/恢复见 §2.3，行�
 | --- | --- | --- | --- | --- |
 | F-05 | 部分实现 | 数据化条件规则至少覆盖 `picker` 各 mode 和 `input` type；补全与本地诊断共用规则；未知/动态 mode 保留合法候选 | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、`full_feature_matrix.rs`（历史，P7 删除；IT-03） | 未覆盖全部组件的条件属性；规则表需继续数据化扩展 |
 | F-06 | 已实现（受限） | 页面/组件自身/app `usingComponents`、本地同名覆盖、`miniprogram_npm` 本地构建、组件标签/属性/事件补全、组件 definition | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、`full_feature_matrix.rs`（历史，P7 删除；IT-02） | 插件/远程组件仅在本地有可信元数据时建模；无远程下载或执行 |
-| F-07 | 已实现 | `wx:for` 作用域、表达式成员补全、事件处理函数补全；后端离线时静态通道保留 | stdio_type_loop.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）、native_parity/real_matrix.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）、`real_node.rs`（历史，P7 删除） | 动态/不可解析类型保持降级 |
+| F-07 | 已实现 | `wx:for` 作用域、表达式成员补全、事件处理函数补全；WXS 模块点号补全返回导出成员与签名，点号后的空白不阻止触发；后端离线时静态通道保留 | stdio_type_loop.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）、native_parity/real_matrix.rs（历史，ADR-0009 删除；见 tag pre-slim-20261120）、`real_node.rs`（历史，P7 删除）、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs) | 动态/不可解析类型保持降级 |
 | F-08 | 已实现（受限） | 表达式类型/JSDoc/声明归属；内置标签/属性/事件静态文档；组件属性、事件与来源 hover；WXS 模块 hover 的 range 落在 mustache token，导出列表带签名/类型；WXS 成员展示签名与多行 JSDoc（`@param`/`@returns` 的 `{}` 保持可读）；打开的 `.wxs` 内声明、导出键与文件内引用可 hover；不依赖 Node 的静态 hover | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、[metadata.rs](../../crates/wxml-lsp/src/metadata.rs)、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs) | 目录仍是手写子集；插件/远程组件仅显示降级说明；WXS 静态子集不执行、不推断动态导出，也不提供跨文件 rename |
 | F-09 | 已实现（受限） | 字段/事件/组件文件/组件属性/class/本地资源/template/import/WXS 导出 definition；S 增加 data、事件、组件属性、template 和 class 的 references，覆盖不完整时保守返回空 | [styles_resources.rs](../../crates/wxml-lsp/tests/styles_resources.rs)、[semantic_surface.rs](../../crates/wxml-lsp/tests/semantic_surface.rs)、ADR-0009（历史证据见 tag pre-slim-20261120）、ADR-0009（历史证据见 tag pre-slim-20261120） | 请求目标只接受已打开的 WXML；跨 app 不推断；插件/远程目标不猜测；partial coverage 不冒充完整 |
 | F-10 | 部分实现 | 未知字段/成员、绑定不兼容、picker/input mode、资源不存在、可证明 class 缺失诊断；修复后清除 | [component_intelligence.rs](../../crates/wxml-lsp/tests/component_intelligence.rs)、[styles_diagnostics.rs](../../crates/wxml-lsp/tests/styles_diagnostics.rs) | 不是完整模板语义检查；动态/不完整索引抑制猜测 |
@@ -125,6 +125,7 @@ Q2 验证的是协议、进程和调度行为，不包含真实编辑器 UI 或�
 ### 3.3 表达式、Hover 与定义（F-07–F-09）
 
 - `{{ }}` 内按模板作用域解析：页面/组件数据、组件属性、`wx:for` 项与索引、自定义循环变量、模板调用上下文、`wxs` 模块。
+- WXS 模块点号补全：`{{ m1. }}`（含点号后的空格、制表符或换行）返回 `module.exports` 的静态导出，候选 detail 为签名或类型、documentation 为非空 JSDoc；`{{ m1` 同时补全模块名；动态导出或索引截断标记不完整，由 `semantic_surface.rs` 的真实 stdio 用例覆盖。
 - 页面/组件的数据根来自脚本声明：页面为 `data`，自定义组件为 `data` 与 `properties`；字段在 WXML 中直接作为顶层标识符访问。独立 `interface`/`type` 只有被 `data`/`properties` 字段引用时才参与，不能作为模板根。
 - 成员补全使用真实类型，不用正则枚举字段。`any`、`unknown` 和缺失类型必须显示真实状态，不能生成看似确定的候选。
 - 事件属性中的处理函数补全来自脚本声明：`Component` 读取 `methods`，`Page` 读取选项对象上的函数；方法引用、`data-*` 参数和绑定形式分别处理。
