@@ -1239,6 +1239,17 @@ fn fresh_install_is_atomic_and_writes_state_and_no_journal() {
     let outcome = install(&root, &staged, VERSION_1, &probe, &NoHooks).unwrap();
     assert_eq!(outcome, NativeInstallOutcome::Installed);
     assert_eq!(active_version(&root), VERSION_1);
+    let installed = root.versions_dir().join(VERSION_1);
+    assert_eq!(
+        fs::read(installed.join("THIRD_PARTY_LICENSES.md")).unwrap(),
+        b"# licenses\n",
+        "the installer must keep the package-root license inventory byte-identical"
+    );
+    assert_eq!(
+        fs::read(installed.join("engine/LICENSE")).unwrap(),
+        b"Apache License fixture\n",
+        "nested upstream license files must survive installation"
+    );
     assert!(probe.calls() >= 1);
     assert_tmp_empty(&root);
     assert!(Journal::list(&root).unwrap().is_empty());

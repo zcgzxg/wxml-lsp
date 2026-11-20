@@ -13,14 +13,15 @@ const LANGUAGE_SERVER_ID: &str = "wxml-lsp";
 /// Absolute host path to a locally built `wxml-lsp` binary.
 const BINARY_ENV: &str = "WXML_LSP_BIN";
 
-/// Non-legacy tuning variables forwarded to the server when the user has
-/// exported them in the shell Zed inherited.
+/// Environment variables added to the language server command.
 ///
-/// The legacy Node variables (`WXML_TYPE_BACKEND`, `WXML_BACKEND_DIR`,
-/// `WXML_NODE`) are deliberately absent: the delivery contract requires the
-/// extension to stop forwarding them, and the native package never needs
-/// them. Values here are not interpreted by the extension.
-const FORWARDED_ENV: [&str; 2] = ["WXML_ANALYZE_TIMEOUT_MS", "WXML_TEMPLATE_CHECK"];
+/// Intentionally empty. `WXML_LSP_BIN` is consumed by the extension itself
+/// (see [`resolve_binary`]) and is not passed through. The legacy Node
+/// variables (`WXML_TYPE_BACKEND`, `WXML_BACKEND_DIR`, `WXML_NODE`) and the
+/// removed Node-era tuning variables (`WXML_ANALYZE_TIMEOUT_MS`,
+/// `WXML_TEMPLATE_CHECK`) are never injected: `wxml-lsp` does not read them,
+/// so setting them has no effect.
+const FORWARDED_ENV: [&str; 0] = [];
 
 struct WxmlExtension;
 
@@ -223,10 +224,12 @@ fn env_lookup<'a>(shell_env: &'a [(String, String)], key: &str) -> Option<&'a st
         .map(|(_, value)| value.as_str())
 }
 
-/// Copies only the documented non-legacy tuning variables. This is not a
+/// Copies the documented forwarding variables from the shell environment.
+///
+/// [`FORWARDED_ENV`] is empty, so the result is always empty. This is not a
 /// redaction boundary: Zed may still merge the full shell environment when
-/// spawning the language server, and the server itself ignores the legacy
-/// Node variables.
+/// spawning the language server, and the server ignores the removed Node-era
+/// variables anyway.
 fn forwarded_env(shell_env: &[(String, String)]) -> Vec<(String, String)> {
     FORWARDED_ENV
         .iter()
@@ -677,7 +680,7 @@ mod tests {
     }
 
     #[test]
-    fn forwards_only_timeout_and_template_check() {
+    fn forwards_no_environment_variables() {
         let env = vec![
             (
                 "WXML_TYPE_BACKEND".to_owned(),
@@ -690,27 +693,23 @@ mod tests {
             ("WXML_TEMPLATE_CHECK".to_owned(), "off".to_owned()),
             ("PATH".to_owned(), "/usr/bin".to_owned()),
         ];
-        let forwarded = forwarded_env(&env);
-        assert_eq!(
-            forwarded,
-            vec![
-                ("WXML_ANALYZE_TIMEOUT_MS".to_owned(), "1500".to_owned()),
-                ("WXML_TEMPLATE_CHECK".to_owned(), "off".to_owned()),
-            ]
-        );
-    }
 
-    #[test]
-    fn never_forwards_legacy_node_variables() {
-        for legacy in ["WXML_TYPE_BACKEND", "WXML_BACKEND_DIR", "WXML_NODE"] {
+        assert!(
+            forwarded_env(&env).is_empty(),
+            "the extension must not inject any environment variable"
+        );
+        assert!(FORWARDED_ENV.is_empty());
+
+        for removed in [
+            "WXML_TYPE_BACKEND",
+            "WXML_BACKEND_DIR",
+            "WXML_NODE",
+            "WXML_ANALYZE_TIMEOUT_MS",
+            "WXML_TEMPLATE_CHECK",
+        ] {
             assert!(
-                !FORWARDED_ENV.contains(&legacy),
-                "{legacy} must not be forwarded by the Zed extension"
-            );
-            let env = vec![(legacy.to_owned(), "poison".to_owned())];
-            assert!(
-                forwarded_env(&env).is_empty(),
-                "{legacy} leaked into the language server command environment"
+                !FORWARDED_ENV.contains(&removed),
+                "{removed} must not be forwarded by the Zed extension"
             );
         }
     }

@@ -239,8 +239,11 @@ case 保持 `reviewed`，因此 closeout 计数不变：
 
 - 不声称性能 gate 的 cancel/occupancy 证明 native engine 的取消能力；它们是
   scheduler 级测试替身。
-- 不声称稳定性 gate 已等价覆盖旧 `q2_stability` 的全部场景；5 项 BLOCKED 已在
-  ledger 和本文列明。
+- 不声称稳定性 gate 已等价覆盖旧 `q2_stability` 的全部场景；本切片记录时 **5 项 BLOCKED** 已在
+  ledger 和本文列明。后续 `q2_stability_support` 场景证据把其中 4 项推进为 IMPLEMENTED
+  （typing burst/cancel、资源删除恢复、app.json overlay、40 请求 burst），仅外部 RSS baseline
+  仍 BLOCKED；**ledger 尚未回填**，仍把这 4 项记为 BLOCKED。见
+  `docs/evidence/2026-11-20-tsgo-stability-scenarios.md`。
 - 不声称 `TS-OVERLAY-0036` 已 exact；它仍是 `reviewed`。
 - 不声称 Node 已删除或 `/tmp/opencode/p7-node-removal.patch` 可直接应用；该
   patch 仍需去掉对两个 retarget 文件的删除 hunk。

@@ -6,7 +6,7 @@
 
 **Deciders**: 项目维护者
 
-**2026-11-17 后续**：[ADR-0008](0008-rust-tsgo-no-node-backend.md)（2026-11-20 已在 owner scope waiver 下最终关闭为 accepted，native 默认；P7 集成中）替代 Node 安装前置与相关包字段；本文的信任、离线、原子安装与回滚规则继续有效。
+**2026-11-17 后续**：[ADR-0008](0008-rust-tsgo-no-node-backend.md)（2026-11-20 已在 owner scope waiver 下最终关闭为 accepted，native 默认；P7 删除完成，Node removed）替代 Node 安装前置与相关包字段；本文的信任、离线、原子安装与回滚规则继续有效。
 
 ## Context
 

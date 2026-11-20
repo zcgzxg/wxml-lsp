@@ -1,8 +1,8 @@
 # Rust + tsgo 迁移测试契约（F2）
 
-日期：2026-11-17。状态：draft；P2 评审通过前不是最终门禁。
+日期：2026-11-17（2026-11-20 P7 删除完成后最终冻结）。状态：**accepted / frozen**；F2 用例账本终态为 **planned=0**（109 `green` / 130 `reviewed` / 29 `waived` / 71 `retired-with-decision`），C-lite owner-scope waiver 见 §9。
 
-本契约只定义“如何证明迁移没有回归”，不表示任何用例已经迁移。逐用例的唯一事实源是
+本契约定义“如何证明迁移没有回归”。原始 2026-11-17 版本只定义方法、不表示任何用例已经迁移；该历史状态已被 2026-11-20 P7-1 closeout 取代。逐用例的唯一事实源是
 [`docs/plans/tsgo-test-ledger.json`](../plans/tsgo-test-ledger.json)，审阅摘要见
 [`docs/plans/2026-11-17-tsgo-test-ledger.md`](../plans/2026-11-17-tsgo-test-ledger.md)。
 原生引擎与查询契约见 [`tsgo-native-contract.md`](tsgo-native-contract.md)。
@@ -251,5 +251,6 @@ Owner 决策：不需要严格按照原来的 TypeScript/Node 功能写测试，
 
 **不可用替代**：不能用“旧测试已删除”代替 waiver；不能把 `reviewed` 批量改成
 `green`；不能把 known defect 改成 `reviewed`；不能因为 `planned=0` 就删除
-Node/旧 TS。P7 删除仍需 23 个 gate 的 `mandatory_green`/`replacement_reviewed`、
-Frozen oracle、no-Node guard、G6/G7 和真实安装/升级/回滚验收。
+Node/旧 TS。P7 删除于 2026-11-20 在其前置门禁（23 个 gate 的
+`mandatory_green`/`replacement_reviewed`、Frozen oracle、no-Node guard、G6/G7 和
+真实安装/升级/回滚验收）完成后执行；上述规则仍是删除后的审计基线。

@@ -12,13 +12,13 @@
 | 功能基线 | [WXML 语言功能基线](reference/wxml-language-feature-baseline.md) | 通用 WXML 语言功能的默认行为、数据来源和验收要求 | 当前是否已实现 |
 | 基础契约 | [C0 基础契约](reference/contracts.md) | 坐标单位、文件与版本身份、能力状态、后端接口、mock 行为和共享样本 schema | 类型桥与协议的具体实现 |
 | 类型桥契约 | [C1 类型桥契约](reference/type-bridge-c1.md) | 候选 A 布局、数据根与 `properties` 覆盖、源码映射、C1 请求/响应和状态 | C0 坐标/身份/后端接口 |
-| 迁移契约 | [F0/F1 原生合同](reference/tsgo-native-contract.md)、[F2 测试契约](reference/tsgo-test-contract.md)、[F3 交付合同](reference/tsgo-delivery-contract.md) | Rust + tsgo 迁移的引擎固定、进程/FS/查询协议、oracle 台账与差分门禁、无 Node 包与升级回滚 | 把 draft 合同当作已实现功能 |
+| 迁移契约 | [F0/F1 原生合同](reference/tsgo-native-contract.md)、[F2 测试契约](reference/tsgo-test-contract.md)、[F3 交付合同](reference/tsgo-delivery-contract.md) | Rust + tsgo 迁移的引擎固定、进程/FS/查询协议、oracle 台账与差分门禁、无 Node 包与升级回滚 | 把合同状态声明当作实现验收 |
 | 诊断策略 | [模板类型诊断策略](reference/type-diagnostics.md) | 严格空值、运行时转换、属性绑定、`any`/`unknown` 和未支持形式的降级规则 | 当前实现进度或测试证据 |
 | 验收样本 | [共享验收样本](../tests/fixtures/README.md) | AC-001..AC-013 的正例、反例、runtime 场景、schema v2 与校验入口 | 类型分析实现 |
 | 执行计划 | [Wave 5 并行交付计划](plans/2026-11-16-wave5-parallel-delivery.md)、[Zed 标准安装与真实项目验收计划](plans/2026-11-16-zed-standard-acceptance.md)、[Rust + tsgo 去 Node 迁移](plans/2026-11-17-rust-tsgo-migration.md) | 并行 worktree、接口冻结、测试门禁与评审流程；Zed 标准安装和真实编辑器验收步骤；原生类型后端迁移阶段与 G1–G7 闸门 | 需求定义和最终状态 |
 | 架构决策 | [ADR 索引](adr/README.md) | 模块边界、类型检查与映射、文档同步、交付闸门等长期决策 | 日常进度 |
 | 证据 | [证据索引](evidence/README.md) | 实验环境、方法、结果、限制和最小原始数据 | 把实验结论当作已实现功能 |
-| 集成与编辑器证据 | [P7 真实集成](evidence/p7-integration.md)、[P8 Zed 扩展](evidence/p8-zed.md)、[W2 集成与 Q1 交付](evidence/full-feature-w2.md)、[W3 语义工具与安全编辑](evidence/full-feature-w3.md)、[W4 最终验收与发布](evidence/full-feature-final.md) | 真实 Node 端到端与 G1 门禁；Zed wasm 构建、隔离 smoke；W2 交叉矩阵与 Q1 本地安装器证据；W3 语义工具、评审修复与固定日志；W4 Q2 性能/恢复、覆盖率、安全、最终 release 与 Linux Zed 运行时冒烟 | 把部分证据当作完整验收 |
+| 集成与编辑器证据 | [P7 真实集成](evidence/p7-integration.md)（历史，Node 时代；已被 P7 删除取代）、[P8 Zed 扩展](evidence/p8-zed.md)、[W2 集成与 Q1 交付](evidence/full-feature-w2.md)、[W3 语义工具与安全编辑](evidence/full-feature-w3.md)、[W4 最终验收与发布](evidence/full-feature-final.md) | 历史 Node 端到端与 G1 门禁；Zed wasm 构建、隔离 smoke；W2 交叉矩阵与 Q1 本地安装器证据；W3 语义工具、评审修复与固定日志；W4 Q2 性能/恢复、覆盖率、安全、最终 release 与 Linux Zed 运行时冒烟 | 把部分证据当作完整验收；把历史 Node 证据当作当前后端 |
 | 来源与许可证 | [来源记录](reference/provenance.md) | 外部调研对象的版本、提交、许可证和归属 | 功能需求 |
 | 工具链说明 | [.opencode/README.md](../.opencode/README.md) | 本项目 OpenCode 配置的来源、安装、更新和卸载 | 产品架构或 WXML 需求 |
 
@@ -28,11 +28,11 @@
 
 1. 阅读[项目 README](../README.md)，确认目标、范围和当前状态。
 2. 阅读本索引，了解文档归属。
-3. 需要理解架构时，按 0001 → 0008 阅读 [ADR](adr/README.md)；ADR-0008 已于 2026-11-20 在 owner scope waiver 下最终关闭为 `accepted`（native 默认；Node removed）。默认 `--stdio` 已是 native（`NotInstalled` 时 HostOnly，损坏安装 fail closed）；Node、旧 TS 树与 v1 写路径已删除并通过删除后验收。验收口径为 native engine、native gates、F3 和合理行为测试，不声称旧 TS 逐条 parity；最终验收清单见 [2026-11-20 P7 最终文档](evidence/2026-11-20-tsgo-p7-final-docs.md)（已验收，F-02 已知 debug perf 残余）。
+3. 需要理解架构时，按 0001 → 0008 阅读 [ADR](adr/README.md)；ADR-0008 已于 2026-11-20 在 owner scope waiver 下最终关闭为 `accepted`（native 默认；Node removed）。默认 `--stdio` 已是 native（`NotInstalled` 时 HostOnly，损坏安装 fail closed）；Node、旧 TS 树与 v1 写路径已删除并通过删除后验收。验收口径为 native engine、native gates、F3 和合理行为测试，不声称旧 TS 逐条 parity；最终验收清单见 [2026-11-20 P7 最终文档](evidence/2026-11-20-tsgo-p7-final-docs.md)（**PASS-with-followup**：F-02 修复已落地、2592/0/73 待 `p7-final-verification` 追加、不是 tag 事实；functional P1 fixed / P2 known；stability 4/1；第三方许可 155/155，首方 LICENSE BLOCKED、对外发布 BLOCKED，内部安装可用）。
 4. 实现或评审跨模块接口时，阅读 [C0 基础契约](reference/contracts.md)、[C1 类型桥契约](reference/type-bridge-c1.md) 与[模板类型诊断策略](reference/type-diagnostics.md)。
-5. 实施 Rust + tsgo 迁移时，阅读 F0/F1 原生合同、F2 测试契约与 F3 交付合同；四者当前均为 draft，未实现项以其中 BLOCKED/planned 状态为准。
+5. 实施 Rust + tsgo 迁移时，阅读 F0/F1 原生合同、F2 测试契约与 F3 交付合同；F3 已收口 **16 closed / 0 partial / 0 blocked**，F2 台账终态为 **109 green / 0 planned / 130 reviewed / 29 waived / 71 retired**，具体实现与残余状态以合同和证据索引为准。
 6. 需要实现通用 WXML 功能时，阅读[功能基线](reference/wxml-language-feature-baseline.md)。
-7. 需要引用实验或集成依据时，阅读[证据索引](evidence/README.md)及 [P7 真实集成](evidence/p7-integration.md)、[P8 Zed 扩展](evidence/p8-zed.md)、[W2 集成与 Q1 交付](evidence/full-feature-w2.md)、[W3 语义工具与安全编辑](evidence/full-feature-w3.md)、[W4 最终验收与发布](evidence/full-feature-final.md) 记录，同时检查其限制。
+7. 需要引用实验或集成依据时，阅读[证据索引](evidence/README.md)及 [P7 真实集成](evidence/p7-integration.md)（历史，Node 时代）、[P8 Zed 扩展](evidence/p8-zed.md)、[W2 集成与 Q1 交付](evidence/full-feature-w2.md)、[W3 语义工具与安全编辑](evidence/full-feature-w3.md)、[W4 最终验收与发布](evidence/full-feature-final.md) 记录，同时检查其限制。
 8. 需要复用外部代码或数据时，先查[来源记录](reference/provenance.md)，再复核许可证。
 
 ## 3. 权威顺序
@@ -43,7 +43,7 @@
 2. 有效的 ADR，说明“架构上决定怎么做”。
 3. C0/C1 契约与类型诊断策略（[contracts.md](reference/contracts.md)、[type-bridge-c1.md](reference/type-bridge-c1.md)、[type-diagnostics.md](reference/type-diagnostics.md)），说明“接口和检查规则是什么”。
 4. 项目 README 和功能基线，说明“需求是什么”。
-5. 证据记录（包括 [P7](evidence/p7-integration.md)、[P8](evidence/p8-zed.md)、[W3](evidence/full-feature-w3.md)、[W4](evidence/full-feature-final.md)），说明“过去验证过什么、边界在哪里”。
+5. 证据记录（包括 [P7](evidence/p7-integration.md)（历史，Node 时代）、[P8](evidence/p8-zed.md)、[W3](evidence/full-feature-w3.md)、[W4](evidence/full-feature-final.md)），说明“过去验证过什么、边界在哪里”。
 6. 来源记录，只说明“历史来源和许可证是什么”。
 
 C1 与 C0 冲突时，类型桥部分以 C1 为准；C0 未覆盖的坐标、身份和后端接口仍以 `contracts.md` 为准。文档不能覆盖代码事实。发现文档与实现不一致时，记录差异并更新对应文档，不能静默选择一个来源。
@@ -66,18 +66,28 @@ docs/
 ├── README.md                      # 本索引
 ├── plans/
 │   ├── 2026-11-16-wave5-parallel-delivery.md
-│   └── 2026-11-16-zed-standard-acceptance.md
+│   ├── 2026-11-16-zed-standard-acceptance.md
+│   ├── 2026-11-17-rust-tsgo-migration.md   # Rust + tsgo 迁移计划（§12.16 为 P7 终态）
+│   ├── 2026-11-17-tsgo-test-ledger.md      # 测试迁移账本使用说明
+│   └── tsgo-test-ledger.json               # 339 case 台账（109/0/130/29/71）
 ├── reference/
 │   ├── wxml-language-feature-baseline.md
 │   ├── contracts.md
 │   ├── type-bridge-c1.md
 │   ├── type-diagnostics.md
-│   └── provenance.md
+│   ├── provenance.md
+│   ├── tsgo-native-contract.md             # F0/F1 原生合同
+│   ├── tsgo-test-contract.md               # F2 测试契约
+│   └── tsgo-delivery-contract.md           # F3 交付合同
 ├── evidence/
 │   ├── README.md
 │   ├── 2026-11-15-*.md
+│   ├── 2026-11-17-tsgo-*.md
+│   ├── 2026-11-18-tsgo-*.md
+│   ├── 2026-11-19-tsgo-*.md
+│   ├── 2026-11-20-tsgo-*.md
 │   ├── type-bridge-c1.md
-│   ├── p7-integration.md
+│   ├── p7-integration.md                    # 历史（Node 时代）
 │   ├── p8-zed.md
 │   ├── full-feature-w2.md
 │   ├── full-feature-w3.md

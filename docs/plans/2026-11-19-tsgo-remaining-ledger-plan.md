@@ -1,5 +1,7 @@
 # Implementation Plan: tsgo Remaining Ledger Backlog (270 planned)
 
+> **状态：历史归档（Superseded）**。P7 删除已完成；本文仅记录当时计划/证据，不再代表当前仓库状态。最终状态见 docs/plans/2026-11-17-rust-tsgo-migration.md §12.16。
+
 Date: 2026-11-19  
 Worktree: `/home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration`  
 Base HEAD: `60f4c6c` (ledger evidence head: `6ba407b`)  

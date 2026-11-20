@@ -9,7 +9,7 @@
 
 本 ADR 明确**不声称旧 TS/Node 测试逐条等价**，也不把 `reviewed` / `waived` / `retired-with-decision` 当作 `green` 或“已迁移”。功能验收以 native engine、native gates、F3 交付合同和合理行为测试为准；旧 TS/Node 的逐条对照保留为历史证据和残余风险登记。台账终态与 waiver 依据见 `docs/evidence/2026-11-20-tsgo-p7-closeout-ledger.md`、`docs/evidence/2026-11-20-tsgo-p7-scope-decision.md` 和 `docs/evidence/2026-11-20-tsgo-p7-ledger-waiver-policy.md`。
 
-2026-11-20 删除已完成并写入 `removed`：`backend_node`、`backends/typescript`、12 个 delete gate、v1 写路径和 legacy Node env 已删除；默认 `--stdio` 为 native，只有 `NotInstalled` 降级 `HostOnly`，损坏安装 fail closed，已无 `--backend node`。删除后验收：fmt/check/clippy/rustdoc 通过；native gates **40/40**（23 engine + 3 edit + 9 stdio + 1 perf + 1 stability + 3 real_matrix；`WXML_STABILITY_ALLOW_DIRTY=1` 仅用于 dirty 工作树本地证据）；release build/install/Zed smoke **5/5**，无 Node/server.js；F3 **16/0/0**；ledger **109/0/130/29/71**（reviewed/waived/retired 非 green）；matrix **22 exact/11 blocked**。workspace 为 2587 passed/1 failed/73 ignored，唯一失败是既有 `type_assets::fake_full_resend_ten_updates_stays_within_budget` debug p95 221–233ms >200ms，release 10/10 通过；未放宽预算。
+2026-11-20 删除已完成并写入 `removed`：实际删除提交为 **`c4ddf32`**（`p7-removed`/`b6c1ced` 只是旧 tag，不含本轮验收修复）；`backend_node`、`backends/typescript`、12 个 delete gate、v1 写路径和 legacy Node env 已删除；默认 `--stdio` 为 native，只有 `NotInstalled` 降级 `HostOnly`，损坏安装 fail closed，已无 `--backend node`。删除后验收：fmt/check/clippy/rustdoc 通过（F-01/F-03 为 self-reported）；native gates **40/40**（23 engine + 3 edit + 9 stdio + 1 perf + 1 stability + 3 real_matrix；`WXML_STABILITY_ALLOW_DIRTY=1` 仅用于 dirty 工作树本地证据）；release build/install/Zed smoke 通过（Zed **16/16**、截图 9 张），无 Node/server.js；F3 **16/0/0**；ledger **109/0/130/29/71**（reviewed/waived/retired 非 green）；matrix **22 exact/11 blocked**。F-02 修复已落地，`2592 passed / 0 failed / 73 ignored` **待 `p7-final-verification` 追加**（不是 tag `b6c1ced` 的事实）。functional smoke 为 **P1 fixed / P2 known / PASS-with-followup**：P1 由 `180fa42` 修复并真实复验，P2（Page-only `documentSymbol` `-32803`）保留为已知限制；stability 为 **4 implemented / 1 blocked**（ledger 未回填）。**第三方许可文本 P1 已解除**（155/155 有文本：144 本地 + 11 vendored SPDX，逐行 `text_source`；0 missing / 0 unlicensed）；首方 LICENSE 仍 **BLOCKED owner decision**，对外发布仍需 owner 决策，内部安装可用。此前 debug 下 `type_assets::fake_full_resend_ten_updates_stays_within_budget` p95 221–233ms >200ms 的 1 failed 经复核是构建 profile 造成的假失败（测的是纯 CPU/序列化路径的 release 延迟预算）；**F-02 修复已落地**：debug 只打印 p95、release 断言预算，未放宽 200ms 预算，见 ` docs/evidence/2026-11-20-tsgo-f02-debug-perf-fix.md`。
 
 ## Context
 
@@ -45,13 +45,13 @@ P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、Definit
 | --- | --- | --- |
 | 旧 TS/Node 逐条 parity | 不再要求 | 台账 `109 green / 0 planned / 130 reviewed / 29 waived / 71 retired`；`exact=109`、`never_green=38` |
 | 功能验收 | **native engine + native gates + F3 + 合理行为测试** | native gates **40/40**（23 engine + 3 edit + 9 stdio + 1 perf + 1 stability + 3 real_matrix，opt-in required job）；F3 **16 closed / 0 partial / 0 blocked**；matrix **22 exact / 11 blocked**（33 in-place） |
-| 最终验收清单 | workspace、native gates、release/install、Zed smoke、无 Node 进程、ADR/README 口径 | `docs/evidence/2026-11-20-tsgo-p7-final-docs.md`；**已验收**，结果与残余风险已填写 |
+| 最终验收清单 | workspace、native gates、release/install、Zed smoke、无 Node 进程、ADR/README 口径 | `docs/evidence/2026-11-20-tsgo-p7-final-docs.md`；**PASS-with-followup（工作树口径）**：F-02 修复已落地、2592/0/73 待 `p7-final-verification` 追加；functional P1 fixed / P2 known；R-03/N-02 PARTIAL；首方 LICENSE BLOCKED、对外发布 BLOCKED |
 | 默认后端 | native | `--stdio` 默认 native；仅 `EngineDiscoveryError::NotInstalled` 降级 `HostOnly`，损坏安装 fail closed |
 | 删除范围（P7） | Node 运行时、旧 TS 实现/测试、12 个 delete gate、v1 写路径、legacy Node env | 冻结范围见 `docs/evidence/2026-11-20-tsgo-p7-deletion-surface.md` 与 `docs/evidence/2026-11-20-tsgo-p7-predelete-freeze.md`；删除演练见 `docs/evidence/2026-11-20-tsgo-p7-delete-dryrun.md` |
-| retarget 状态 | 11 个 retarget gate 全部 native-only；不标记 `old_test_removed` | 9 个 stdio 在 `b0f6cc1`，perf/stability 在 `3e24c44`；5 项 stability BLOCKED 见 `docs/evidence/2026-11-20-tsgo-p7-retarget-native-tests.md` |
+| retarget 状态 | 11 个 retarget gate 全部 native-only；不标记 `old_test_removed` | 9 个 stdio 在 `b0f6cc1`，perf/stability 在 `3e24c44`；stability 后续经 scenario 证据收敛为 **4 implemented / 1 blocked**（外部 RSS baseline），ledger 未回填，见 `docs/evidence/2026-11-20-tsgo-stability-scenarios.md` |
 | 显式保留 | 业务 `.ts/.js/.d.ts` 与 JSDoc、WXS/WXML 语义、grammar、fixtures、typings/`assets.lock.json`、schema v1 只读识别 | 去 Node 不等于删除 TypeScript 语言支持；`verify_installed`、`read_legacy_manifest`、`build_native_package`、`list/current/verify/env` 只读边界保留 |
-| 已完成 | 实际删除、12 个 delete gate、11 个 retarget、删除后全量重验 | 2026-11-20 删除提交与验收证据；G7 逐条 parity 不声称 |
-| `removed` 写入条件 | 已满足：删除提交落地 + 删除后验收清单通过 | 2026-11-20 写入 `removed`；残余风险见最终验收清单 |
+| 已完成 | 实际删除、12 个 delete gate、11 个 retarget、删除后复验 | 2026-11-20 删除提交与验收证据；**删除后复验不含 upgrade/rollback 与 remove-engine 实跑**（R-03/N-02 PARTIAL）；G7 逐条 parity 不声称 |
+| `removed` 写入条件 | 已满足：删除提交落地 + 删除后验收记录完成（**PASS-with-followup**） | 2026-11-20 写入 `removed`；残余风险见最终验收清单 |
 
 **不声称**：本表不是 parity 报告，`reviewed`/`waived`/`retired` 不是 green；F3 16/0/0 只覆盖交付合同。native gates 是 opt-in required job，不是默认 CI 绿，也不是 `mandatory_green`。平台证据仍只有 Linux x86_64；G7 逐条 parity 未覆盖。
 
@@ -119,7 +119,7 @@ P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、Definit
 4. 在 Node 不可用且进程调用受监测的环境，构建、测试、发布、安装、升级、回滚和 Linux Zed 冒烟通过。
 5. 新 manifest/index schema、固定原生资产、类型声明许可证和摘要验证通过；离线模式不能隐式下载。
 6. 旧 Node 默认入口、实现和当前测试删除后重新执行完整门禁；保留业务 TS/JS、`.d.ts`、fixture、字节规则和历史证据。
-7. 删除完成后的最终验收按 `docs/evidence/2026-11-20-tsgo-p7-final-docs.md` 执行：workspace、native gates 40/40、release/install、Zed smoke、无 Node 进程和 ADR/README 口径已全部通过，并已写入 `removed`。
+7. 删除完成后的最终验收按 `docs/evidence/2026-11-20-tsgo-p7-final-docs.md` 执行：交付合同、native gates 40/40、release/install、Zed smoke（16/16）、无 Node 进程和 ADR/README 口径已记录为 **PASS-with-followup**，并已写入 `removed`；F-02 最终计数待 `p7-final-verification` 追加；functional smoke 为 P1 fixed / P2 known，R-03/N-02 为 PARTIAL，首方 LICENSE 仍 BLOCKED（内部安装可用）。
 
 截至 2026-11-17，P1-A 已实测原生进程、虚拟快照、类型/符号/文档/补全/引用、AST 关键字段、UTF-16 坐标和进程控制；稳定版 7.0.2 已排除，7.1.0-beta 为唯一候选。完整 shadow、Behavior/props/loops/guards、保守 rename、完整 AST 解码、无 Node 安装器和 clean-env 验收仍**待执行**。现有原生实验和旧后端测试记录只能作为阶段性证据。
 
@@ -131,7 +131,7 @@ P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、Definit
 - **交付**：F3 状态为 16 closed / 0 partial / 0 blocked。F3-06 已由 `fb6047e` 的真实 N1 `0.1.0` / N2 `0.2.0` 两次独立构建、安装/升级/回退/中断窗口关闭；F3-09 已由真实 v1 legacy 包（`e4fed4a`）关闭；F3-14 已由 `5020ae7` 默认 `--stdio` 重新构建的真实 v2 包 + 真实 Zed 默认路径冒烟关闭（Xvfb，16/16；无 wrapper、无 Node）。F3 合同收口不等于迁移完成。
 - **删除与功能覆盖**：P7-0 预删除冻结已在 `8bda306` 落盘并创建 `p7-pre-delete` tag；P7-1 台账按 owner waiver 归零；删除范围覆盖 `backend_node` 8 文件/102 单元测试、旧 TS 99 tracked 文件 + 34 个 dist、12 个 delete gate、15 个 v1 写路径和 5 个 legacy env，并保留业务 TS/JS/.d.ts、WXS/WXML、fixtures、grammar、typings/`assets.lock.json`、schema v1 只读识别与 3 个交付边界。真实 matrix 为 **22 exact / 11 blocked**（33 in-place；另有 4 个顶层 exact / 6 个 blocked），且 `4035bb7` 已把 scenario source 归档为 fixture，删除 `backends/typescript` 后默认 matrix 不依赖旧树。删除已完成：12 个 delete gate、旧 TS 树、`backend_node`、v1 写路径和 legacy Node env 均已移除；11 个 retarget gate 保留 native-only。
 
-因此本 ADR 于 2026-11-20 在 owner scope waiver 下关闭为 **accepted**，验收口径固定为 **native engine + native gates + F3 + 合理行为测试**，并写入 **Node removed / P7 removed**。删除后验收已完成，残余风险（Windows/macOS 实机、大项目语料、G7 逐条 parity、debug perf 已知 flake）保留在最终验收清单与 waiver 证据中；不声称旧 TS 逐条 parity。
+因此本 ADR 于 2026-11-20 在 owner scope waiver 下关闭为 **accepted**，验收口径固定为 **native engine + native gates + F3 + 合理行为测试**，并写入 **Node removed / P7 removed**。删除后验收为 **PASS-with-followup**：交付合同、40/40、F3、ledger 与内部安装可用；functional P2、R-03/N-02 的 PARTIAL、首方 LICENSE 保留为 followup，对外发布仍需 owner 决策。残余风险（Windows/macOS 实机、大项目语料、G7 逐条 parity、debug perf 已知 flake）保留在最终验收清单与 waiver 证据中；不声称旧 TS 逐条 parity。
 
 ## 与既有 ADR 的关系
 
@@ -160,9 +160,10 @@ P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、Definit
 - `docs/evidence/2026-11-20-tsgo-p7-ledger-waiver-policy.md`：`reviewed`/`waived`/`retired-with-decision` 的状态语义与不伪造 green 规则。
 - `docs/evidence/2026-11-20-tsgo-p7-deletion-surface.md`：P7 删除面（Node/旧 TS/12 delete gate/v1 写路径）与最小安全顺序。
 - `docs/evidence/2026-11-20-tsgo-p7-delete-dryrun.md`：12 个 delete gate 删除演练与 Frozen oracle 前置。
-- `docs/evidence/2026-11-20-tsgo-p7-retarget-native-tests.md`：9 个 stdio + perf/stability 共 11 个 retarget gate 的 native-only 薄壳、预算与 5 项 BLOCKED。
+- `docs/evidence/2026-11-20-tsgo-p7-retarget-native-tests.md`：9 个 stdio + perf/stability 共 11 个 retarget gate 的 native-only 薄壳与预算；stability 后续收敛为 4 implemented / 1 blocked。
 - `docs/evidence/2026-11-20-tsgo-real-matrix-archived-source.md`：`scenarios.ts` 归档 fixture，`backends/typescript` 缺失时 matrix 仍通过。
-- `docs/evidence/2026-11-20-tsgo-p7-final-docs.md`：删除后最终验收清单（workspace/native gates/release/Zed/no-Node/文档口径），已验收。
+- `docs/evidence/2026-11-20-tsgo-p7-final-docs.md`：删除后最终验收清单（workspace/native gates/release/Zed/no-Node/文档口径），**PASS-with-followup（工作树）**，不是全 PASS。
+- `docs/evidence/2026-11-20-tsgo-f02-debug-perf-fix.md`：F-02 debug full-resend 假失败修复；`2592 passed / 0 failed / 73 ignored` **待 `p7-final-verification` 追加**（非 tag 事实），未放宽预算。
 - `docs/evidence/2026-11-20-tsgo-p7-predeletion-baseline.md`：删除前 native 基线（35/35 gates、workspace 2813 passed）与 freeze 状态。
 - `docs/evidence/2026-11-20-tsgo-p7-predelete-freeze.md`：`8bda306` 冻结身份、`p7-pre-delete` tag 与 `deletion_allowed=false` 条件。
 - `docs/evidence/2026-11-20-tsgo-native-matrix-implementation.md`：真实 matrix **22 exact / 11 blocked** 的修正依据。

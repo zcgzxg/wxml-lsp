@@ -1,34 +1,34 @@
-# tsgo 无 Node 交付合同（草案）
+# tsgo 无 Node 交付合同
 
-**状态**：draft（草案），**未接受（not accepted）**，**未实现（not implemented）**。
+**状态**：**accepted / frozen**（2026-11-20 P7 删除完成后最终口径）；F3 验收 **16 closed / 0 partial / 0 blocked**，native 安装器与 schema v2 已实现并被删除后验收覆盖。2026-11-17 的 draft/not accepted/not implemented 描述保留为历史，不再表示当前状态。
 
-**日期**：2026-11-17。**合同版本**：`draft-0`。**适用发布**：Linux x86_64、原生引擎 `7.1.0-beta`、manifest/index schema v2。
+**日期**：2026-11-17（2026-11-20 冻结）。**合同版本**：`frozen-1`（由 `draft-0` 冻结；未改字段/算法/状态机）。**适用发布**：Linux x86_64、原生引擎 `7.1.0-beta`、manifest/index schema v2。
 
-> **2026-11-17 后续**：维护者已条件性接受 `7.1.0-beta`（gitHead
+> **2026-11-17 后续（历史）**：维护者已条件性接受 `7.1.0-beta`（gitHead
 > `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`、linux-x64 SRI/`lib/tsc` SHA-256 见 §2）作为唯一
 > 候选基线。临时 Python spike 已执行一次可执行安装器证明，见
-> [P1-C 证据 §11](../evidence/2026-11-17-tsgo-delivery-spike.md)；该证明**不是**生产安装器，
-> 不改变本文 draft/未接受状态。当前 F3 进度为 **16 closed / 0 partial / 0 blocked**
-> （F3-06 已由真实 N1/N2 构建与安装/升级/回滚证据关闭），见 §9.5。
+> [P1-C 证据 §11](../evidence/2026-11-17-tsgo-delivery-spike.md)；该证明**不是**生产安装器。
+> 当时不改变本文 draft/未接受状态；该状态已于 2026-11-20 由最终冻结终止。当前 F3 进度为
+> **16 closed / 0 partial / 0 blocked**（F3-06 已由真实 N1/N2 构建与安装/升级/回滚证据关闭），见 §9.5。
 
 **关系**：[ADR-0007](../adr/0007-local-delivery-trust-model.md)（accepted，信任/离线/原子安装/回滚规则继续有效）；
-[ADR-0008](../adr/0008-rust-tsgo-no-node-backend.md)（accepted，native 默认；P7 集成中）；实施计划
+[ADR-0008](../adr/0008-rust-tsgo-no-node-backend.md)（accepted (native default; Node removed)，P7 删除完成）；实施计划
 [§8～§9](../plans/2026-11-17-rust-tsgo-migration.md)；事实来源
 [P1-C 交付试验](../evidence/2026-11-17-tsgo-delivery-spike.md)；F0 常量对齐
-[F0 原生合同草案](tsgo-native-contract.md)。
+[F0 原生合同](tsgo-native-contract.md)。
 
-> 本文件是 **F3 交付合同草案**，不是实现完成报告、不是验收证据、也不是发布说明。它不表示 migration、
-> 无 Node 验收、安装器、schema v2 或 Zed 冒烟已经通过。F3 验收仍未通过；测试文件存在或默认
-> 测试为绿都不等于验收通过。在本文件被维护者接受前，实现不得声称“符合 F3 合同”。
+> 本文件是 **F3 交付合同**的冻结文本。它仍是合同而不是发布说明；F3 逐项验收证据见 §9.5。
+> 2026-11-17 的 draft 警告“F3 验收仍未通过、实现不得声称符合 F3 合同”保留为历史；F3 已于
+> 2026-11-20 按 §9.5 关闭为 **16/0/0**。
 
 ## 1. 状态、范围与权威
 
 ### 1.1 状态
 
-- 本文是**拟冻结文本**。字段名、算法和状态机可被评审修改；未接受的条款不是实现依据。
-- 本文**未**加入 [docs/README.md](../README.md) 的权威索引；索引更新由文档 owner 在合同接受后单独提交。
+- 本文自 2026-11-20 起为 **frozen**。下列 2026-11-17 的“拟冻结文本/未接受条款不是实现依据”说明保留为历史；字段名、算法和状态机以冻结文本为准，变更须按 §11 递增合同版本。
+- 本文在 [docs/README.md](../README.md) 的阅读顺序中被引用；索引状态与表述由文档 owner 维护。
 - 本文不修改 ADR、计划、源码、Cargo、脚本、CI 或 Zed 扩展；不在本轮产生构建产物。
-- 当前 `wxml-delivery` 仍是 schema v1/Node 链路。本文描述的是目标状态，不能引用为现状。
+- 2026-11-20 P7 删除后，`wxml-delivery` 的 native schema v2 路径是当前现状；schema v1 只保留只读识别与迁移。原“仍是 schema v1/Node 链路、本文只是目标状态”的说明已失效，保留于历史证据。
 
 ### 1.2 范围
 
@@ -55,7 +55,7 @@
 
 发生冲突时按以下顺序判断：
 
-1. 有效的 ADR（当前 ADR-0007 accepted；ADR-0008 accepted，native 默认，P7 集成中）；
+1. 有效的 ADR（当前 ADR-0007 accepted；ADR-0008 accepted (native default; Node removed)，P7 删除完成）；
 2. 实施计划 §8～§9（NF-01～NF-12、F3、§8.1 状态机）；
 3. 本文件；
 4. 证据记录（历史结论及其限制）。
@@ -80,9 +80,9 @@
 
 本文件中“必须/MUST”为合同要求，“应/SHOULD”为建议但不作为本轮门禁。
 
-### 1.5 生效条件
+### 1.5 生效条件（历史；已被 2026-11-20 冻结取代）
 
-本文件从 draft 变为 accepted 前，至少满足：
+下列 2026-11-17 条件保留为历史。本文已于 2026-11-20 冻结为 accepted；F3 的逐项关闭状态见 §9.5，残余未承诺事项与开放风险见 §10，它们不改变本文件的 accepted 状态。
 
 1. F0 草案冻结 `protocolVersion`、`engine.apiSchemaVersion`、`engine.astHeaderBytes`、`--version` 探针前缀和 `--api --async` 握手；
 2. `assets.lock.json` 已提交，含精确 URL、版本、SHA-512 SRI、大小、许可和 `extract` allowlist；
@@ -91,7 +91,7 @@
 4. 安全评审接受 ADR-0007 的“TLS+摘要、无发布者签名”残留风险；
 5. 本文 §10 的阻塞项有明确 owner 和退出条件。
 
-ADR-0008 已于 2026-11-20 在 owner scope waiver 下最终关闭为 `accepted (native default; P7 集成中)`；本文件不重复裁决该状态，也不改变 F3 验收事实。删除完成并通过 [P7 最终验收清单](../evidence/2026-11-20-tsgo-p7-final-docs.md) 前，不写 `removed`。
+ADR-0008 已于 2026-11-20 在 owner scope waiver 下最终关闭为 `accepted (native default; Node removed)`；本文件不重复裁决该状态，也不改变 F3 验收事实。P7 删除已完成并通过 [P7 最终验收清单](../evidence/2026-11-20-tsgo-p7-final-docs.md)，删除状态已写入 `removed`。
 
 ## 2. 事实分级
 
@@ -1157,6 +1157,12 @@ target 优先前滚，而不是再写一次 `current` 切回。这样避免第�
   `typings.json` 不进入 payload：它们分别是 npm 元数据、英文翻译和旧工具元数据，均不含完整 MIT
   许可文本；许可义务由随包 `LICENSE` 承担。
 - 本项目/Rust 二进制许可：按仓库现有许可；`THIRD_PARTY_LICENSES.md` 汇总。
+  **2026-11-20 状态（generator/2）**：第三方清单已由 `scripts/build-release.sh` 确定性生成，
+  **155/155** 个 crate 有文本（144 本地 + 11 个 Zed wasm 使用 vendored SPDX，逐行
+  `text_source`），0 missing / 0 unlicensed；`THIRD_PARTY_LICENSES.md` 467,493 B。
+  **首方 LICENSE 仍 `BLOCKED owner decision`**，对外发布仍需 owner 决策（内部安装可用）。见
+  [许可生成修复](../evidence/2026-11-20-tsgo-p7-license-generation-fix.md) 与
+  [发布许可审计](../evidence/2026-11-20-tsgo-p7-release-license-audit.md)。
 - `provenance.json` 必须包含：上游包名/版本/gitHead/SRI/shasum、tarball URL、归档 SHA-256/大小、
   文件数/总字节、逐文件 SHA-256/大小/模式、构建时间、构建环境摘要。
 - SBOM 至少由 `Cargo.lock`、`provenance.json` 和 `THIRD_PARTY_LICENSES.md` 追溯 Rust 依赖、
@@ -1231,28 +1237,31 @@ Zed UI、第二个真实 release 与若干边界用例曾缺；真实 legacy sch
 [`2026-11-20-tsgo-f3-legacy-real.md`](../evidence/2026-11-20-tsgo-f3-legacy-real.md) 作为
 **历史证据**补齐（P7 删除后测试与脚本已移除，当前 HEAD 不可重跑），真实第二版本 N2 已由
 [`2026-11-20-tsgo-f3-06-real-n2.md`](../evidence/2026-11-20-tsgo-f3-06-real-n2.md) 补齐。
-下表中的测试文件多数已存在
-（早期 `new` 标注是历史计划），但存在不等于通过；`extend` 的文件仍需新增/保留 schema v2 断言。
-状态以 §9.5 和证据为准，不能把“文件存在”或“默认测试绿”当作 F3 关闭。
+下表的“未来测试路径/现有覆盖”两列保留 2026-11-19 的计划与历史口径。标注“历史证据
+（P7 删除前，tag `p7-pre-delete`/commit `4dd62b1`）”的 v1 文件（`packager_cli.rs`、
+`installer_flow.rs`、`installer_security.rs`）已随 P7 删除，当前 HEAD 不可执行；
+`provisioning.rs` 等 `new` 计划路径最终未采用。行内未逐一标注的早期 v1 用例名（如
+`offline_rollback...`、`offline_install...`）同属 P7 删除前的历史覆盖。当前关闭证据以
+§9.5 为准，不能把“文件存在”“历史文件曾存在”或“默认测试绿”当作 F3 关闭。
 
 | ID | 验收内容 | 未来测试路径 | NF | 现有覆盖（不可替代） |
 | --- | --- | --- | --- | --- |
 | F3-01 | 无 node/npm 的干净 PATH 下完成 `install`/`verify`/`current`/`env`；`env` 只输出 `WXML_LSP_BIN`；全程无网络 | `crates/wxml-delivery/tests/native_delivery.rs`（new）`clean_path_install_without_node` | NF-01/02/06 | 无；现有 `verify` 会检查 Node |
 | F3-02 | 安装器/LSP 进程审计：`install`/`upgrade`/`rollback` 与 stdio LSP 会话均无 node/npm 子进程；只 exec `wxml-lsp-install`/`wxml-lsp`/`engine/lib/tsc`（及测试驱动） | `crates/wxml-delivery/tests/no_node_guard.rs`（new；P7 后为“无 Node 后端”静态 guard）+ `scripts/verify-no-node.sh`（new；同上） | NF-01/07 | 无；shim 不能排除绝对路径 |
-| F3-03 | 包内容/布局/许可/负向扫描：无 `node_modules`/JS/`wxml-type-backend`；`SHA256SUMS` 通过；两次构建归档 SHA-256 一致 | `crates/wxml-delivery/tests/native_package.rs`（new） | NF-05/09/11 | `packager_cli.rs` 仅 v1 |
-| F3-04 | 空安装成功：精确树、原子 current、state.json、tmp 为空、verify 通过 | `crates/wxml-delivery/tests/native_delivery.rs`（new）`installs_native_package_atomically` | NF-06/10 | `installer_flow.rs` 为 v1/Node |
+| F3-03 | 包内容/布局/许可/负向扫描：无 `node_modules`/JS/`wxml-type-backend`；`SHA256SUMS` 通过；两次构建归档 SHA-256 一致 | `crates/wxml-delivery/tests/native_package.rs`（new） | NF-05/09/11 | `packager_cli.rs` 仅 v1（历史证据：P7 删除前，tag `p7-pre-delete`/commit `4dd62b1`；文件已删除，该 v1 覆盖为 historical-only）；当前等价 native 证据：`crates/wxml-delivery/tests/native_package.rs` 与 §9.5 的 `crates/wxml-delivery/tests/f3_real_release/package.rs` |
+| F3-04 | 空安装成功：精确树、原子 current、state.json、tmp 为空、verify 通过 | `crates/wxml-delivery/tests/native_delivery.rs`（new）`installs_native_package_atomically` | NF-06/10 | `installer_flow.rs` 为 v1/Node（历史证据：P7 删除前，tag `p7-pre-delete`/commit `4dd62b1`；文件已删除，historical-only）；当前等价：`crates/wxml-delivery/tests/native_delivery.rs` 的 `fresh_install_is_atomic_and_writes_state_and_no_journal` 与 §9.5 的 `crates/wxml-delivery/tests/f3_real_release/runtime.rs` |
 | F3-05 | 安装失败：归档哈希/SRI 不符、缺标准库/typings、引擎探针失败；不产生 current/versions，tmp 清理 | `crates/wxml-delivery/tests/native_delivery.rs`（new）`failed_install_leaves_no_current` | NF-06/10 | `failed_runtime_check...` 仅 v1 |
-| F3-06 | `N1→N2` 升级失败/中断：switch 前 N1 digest/current 不变、N2 不激活；switch 后进程崩溃时对已验证 N2 前滚补 state；进程存活且 state 仍指 N1 时才允许切回已验证 N1（非崩溃语义）；无混合资产 | `crates/wxml-delivery/tests/f3_kill_window.rs`（new，真实 CLI SIGKILL）+ `crates/wxml-delivery/tests/native_delivery.rs`（new）`upgrade_failure_keeps_n1` + `crates/wxml-delivery/tests/native_rollback.rs`（new）`native_after_state_write_rolls_forward_without_switching_back` | NF-10 | `crates/wxml-delivery/tests/f3_acceptance/transactions.rs` 的 `InstallHooks` 四窗口（fixture/seam）；`installer_flow.rs` 部分 v1 |
+| F3-06 | `N1→N2` 升级失败/中断：switch 前 N1 digest/current 不变、N2 不激活；switch 后进程崩溃时对已验证 N2 前滚补 state；进程存活且 state 仍指 N1 时才允许切回已验证 N1（非崩溃语义）；无混合资产 | `crates/wxml-delivery/tests/f3_kill_window.rs`（new，真实 CLI SIGKILL）+ `crates/wxml-delivery/tests/native_delivery.rs`（new）`upgrade_failure_keeps_n1` + `crates/wxml-delivery/tests/native_rollback.rs`（new）`native_after_state_write_rolls_forward_without_switching_back` | NF-10 | `crates/wxml-delivery/tests/f3_acceptance/transactions.rs` 的 `InstallHooks` 四窗口（fixture/seam）；`installer_flow.rs` 部分 v1（历史证据：P7 删除前，tag `p7-pre-delete`/commit `4dd62b1`；文件已删除）；当前等价：同一 `f3_acceptance/transactions.rs` 与 `f3_kill_window.rs` 的 U1/U3/U5/U5-durable/U6 |
 | F3-07 | 离线回滚到 N1：重新完整校验/探针后切换；current=N1；state.previous=N2；不联网 | `crates/wxml-delivery/tests/native_delivery.rs`（new）`offline_rollback_reverifies_n1` | NF-06/10 | `offline_rollback...` 仅 v1 |
 | F3-08 | schema v1 回滚目标明确拒绝；v1 目录字节不变；原生 current 不变；不执行 Node | `crates/wxml-delivery/tests/native_delivery.rs`（new）`rollback_rejects_schema_v1` | NF-07/10 | 无 |
 | F3-09 | legacy current → 原生：成功一次切换、旧树字节不变、legacy 标记；switch 前失败/中断旧 current 与旧树不变且无 native state；switch 后失败（含进程崩溃）对已验证 target 前滚补 state，永不恢复/执行 Node | `crates/wxml-delivery/tests/f3_kill_window.rs`（new，真实 CLI SIGKILL）+ `crates/wxml-delivery/tests/native_rollback.rs`（new）+ `crates/wxml-delivery/tests/native_delivery.rs`（new）`legacy_migration_succeeds_once_and_keeps_legacy_read_only`；真实 v1 包验收曾由 `f3_legacy_real.rs` 覆盖（P7 已删除，仅见历史证据） | NF-10 | 无；真实 v1 包与失败/中断/回滚/恢复见 §9.5（历史证据，P7 删除后仅保留 schema v1 只读识别） |
-| F3-10 | 篡改检测：archive SRI/SHA-256、manifest、逐文件哈希、额外/缺失文件、许可文件；全部在激活前拒绝，current 不变 | `crates/wxml-delivery/tests/installer_security.rs`（extend）+ `crates/wxml-delivery/tests/provisioning.rs`（new） | NF-09/10 | `rejects_a_bad_archive_hash` 等仅 v1 |
-| F3-11 | 恶意归档：绝对路径、`..`、symlink、hardlink、FIFO/设备、重复、超长/超大；拒绝且不越界解包 | `crates/wxml-delivery/tests/installer_security.rs`（extend）`archive_rejects_traversal_links_and_budget` | NF-09/10 | 仅部分 PAX/redirect 用例 |
+| F3-10 | 篡改检测：archive SRI/SHA-256、manifest、逐文件哈希、额外/缺失文件、许可文件；全部在激活前拒绝，current 不变 | `crates/wxml-delivery/tests/installer_security.rs`（extend；历史证据：P7 删除前，tag `p7-pre-delete`/commit `4dd62b1`；文件已删除，historical-only）+ `crates/wxml-delivery/tests/provisioning.rs`（new；计划名未采用，当前无此文件）；当前等价：`crates/wxml-delivery/tests/f3_acceptance/package_guards.rs` 的 `f3_10_...` + `crates/wxml-delivery/tests/f3_real_release/runtime.rs` 的 `tampered_real_release_archive_fails_before_activation` | NF-09/10 | `rejects_a_bad_archive_hash` 等仅 v1（历史证据：P7 删除前，tag `p7-pre-delete`/commit `4dd62b1`；原文件 `installer_security.rs` 已删除，historical-only） |
+| F3-11 | 恶意归档：绝对路径、`..`、symlink、hardlink、FIFO/设备、重复、超长/超大；拒绝且不越界解包 | `crates/wxml-delivery/tests/installer_security.rs`（extend；历史证据：P7 删除前，tag `p7-pre-delete`/commit `4dd62b1`；文件已删除，historical-only）`archive_rejects_traversal_links_and_budget`（计划名，未采用）；当前等价：`crates/wxml-delivery/tests/f3_acceptance/package_guards.rs` 的 `f3_11_...` | NF-09/10 | 仅部分 PAX/redirect 用例（历史证据，原文件已删除） |
 | F3-12 | 离线 fail-closed：无缓存安装失败且无网络；有效缓存可安装/升级/回滚；损坏缓存失败；代理 sink 无连接 | `crates/wxml-delivery/tests/native_delivery.rs`（new）+ `scripts/verify-no-node.sh`（new） | NF-04/08 | `offline_install...` 仅 v1 |
 | F3-13 | 平台/ABI：错误 platform/arch 在写入前拒绝；记录 `readelf`/`ldd`/`GLIBC_*`；musl 明确不支持；glibc 下限写入证据 | `crates/wxml-delivery/tests/native_delivery.rs`（new）`rejects_unsupported_platform` + `docs/evidence/<run>-tsgo-delivery-acceptance.md`（new） | NF-05/09 | 无 |
 | F3-14 | 打包 Zed 冒烟：真实安装包 + `WXML_LSP_BIN` 启动 Zed；`pgrep` 显示 `wxml-lsp --stdio`；无 node；五语言注册；查询/未保存脚本可用 | ` scripts/f3-zed-smoke.sh`（new）+ ` docs/evidence/2026-11-20-tsgo-f3-14-zed-smoke.md`（new） | NF-01/07/12 | 默认路径 16/16；旧 stdio 测试不是 UI smoke |
-| F3-15 | legacy 变量/入口：设置 `WXML_TYPE_BACKEND`/`WXML_NODE`/`WXML_BACKEND_DIR` 不激活 Node；Zed 不转发；有效 `WXML_LSP_BIN` 阻止 install/upgrade/rollback；无效值 hard error | `crates/wxml-delivery/tests/installer_flow.rs`（extend）+ `editors/zed/src/lib.rs` 测试（extend） | NF-07/12 | `explicit_binary_wins...` 仅部分 |
-| F3-16 | 崩溃/并发：各 journal 状态注入进程消失；`staged` 只清 tmp、`committed` 不自动激活、`activated` 幂等；并发 install 串行；current 始终有效 | `crates/wxml-delivery/tests/installer_flow.rs`（extend）+ `crates/wxml-delivery/tests/native_delivery.rs`（new）`crash_recovery_and_lock` | NF-10 | `concurrent_installs...` 仅 v1 |
+| F3-15 | legacy 变量/入口：设置 `WXML_TYPE_BACKEND`/`WXML_NODE`/`WXML_BACKEND_DIR` 不激活 Node；Zed 不转发；有效 `WXML_LSP_BIN` 阻止 install/upgrade/rollback；无效值 hard error | `crates/wxml-delivery/tests/installer_flow.rs`（extend；历史证据：P7 删除前，tag `p7-pre-delete`/commit `4dd62b1`；文件已删除，historical-only）+ `editors/zed/src/lib.rs` 测试（extend；当前存在）；当前等价：`crates/wxml-delivery/tests/f3_acceptance/legacy.rs` 的 `f3_15_explicit_binary_precedence_for_install_upgrade_rollback` + `crates/wxml-delivery/tests/native_cli.rs` | NF-07/12 | `explicit_binary_wins...` 仅部分（历史证据：P7 删除前，tag `p7-pre-delete`/commit `4dd62b1`；原文件 `installer_flow.rs` 已删除） |
+| F3-16 | 崩溃/并发：各 journal 状态注入进程消失；`staged` 只清 tmp、`committed` 不自动激活、`activated` 幂等；并发 install 串行；current 始终有效 | `crates/wxml-delivery/tests/installer_flow.rs`（extend；历史证据：P7 删除前，tag `p7-pre-delete`/commit `4dd62b1`；文件已删除，historical-only）+ `crates/wxml-delivery/tests/native_delivery.rs` 的 `recovery_of_a_committed_upgrade_does_not_auto_activate_it` 等 journal 用例（`crash_recovery_and_lock` 为计划名，未采用）；当前等价：`crates/wxml-delivery/tests/f3_acceptance/transactions.rs` 的 `f3_16_...` | NF-10 | `concurrent_installs...` 仅 v1（历史证据：P7 删除前，tag `p7-pre-delete`/commit `4dd62b1`；原文件 `installer_flow.rs` 已删除） |
 
 ### 9.3 证据要求
 
@@ -1295,7 +1304,8 @@ Zed UI、第二个真实 release 与若干边界用例曾缺；真实 legacy sch
   `node --version`、不执行包内旧二进制或 Node 后端；`env` 只输出 `WXML_LSP_BIN`。
   `verify::check_node`/`resolve_node`/`verify_install` 已删除，v1 安装后的 Node 版本告警也移除。
   证据：`crates/wxml-delivery/tests/native_cli.rs` 的 legacy install/current/verify/env/migrate
-  shim 流程、`installer_flow.rs` 的 legacy poison-env 用例，以及 `no_node_guard.rs` 的进程树
+  shim 流程、`installer_flow.rs` 的 legacy poison-env 用例（历史证据：P7 删除前，tag
+  `p7-pre-delete`/commit `4dd62b1`；文件已删除），以及 `no_node_guard.rs` 的进程树
   采样（`/proc/<pid>/task/*/children`，无 Node 子进程）。`scripts/verify-no-node.sh --legacy`
   增加了 legacy 只读模式和 `WXML_NODE`/`WXML_TYPE_BACKEND`/`WXML_BACKEND_DIR` poison。
   **这些证据不关闭 F3-01/F3-08/F3-09/F3-12/F3-15**：没有 `strace -f -e trace=execve,execveat`
@@ -1325,8 +1335,9 @@ Zed UI、第二个真实 release 与若干边界用例曾缺；真实 legacy sch
   本次复核不修改任何历史证据；`closed` 只表示合同列出的条件已有可复查证据，不表示发布、
   签名、其他平台或 Zed UI 已完成。
 - 2026-11-20：新增 [F3-09 真实 legacy 包证据](../evidence/2026-11-20-tsgo-f3-legacy-real.md)。
-  该验收完成于 `p7-pre-delete` tag（`4dd62b1`）之前：`scripts/f3-legacy-real.sh` 从 `e4fed4a`
-  clean `git archive` 用生产 v1 packager、真实 release 二进制、真实 `backends/typescript`
+  该验收完成于 `p7-pre-delete` tag（`4dd62b1`）之前（历史证据；脚本已在 P7 删除）：
+  `scripts/f3-legacy-real.sh` 从 `e4fed4a` clean `git archive` 用生产 v1 packager、真实
+  release 二进制、真实 `backends/typescript`
   构建产物和真实 Zed wasm 打出 schema v1 包，生产 v1 安装器安装后用 `f3_legacy_real` 完成
   迁移/失败/中断/回滚/恢复验收。F3-09 由 partial 升为 closed；F3-06 的真实第二版本 N2 后续由
   [`2026-11-20-tsgo-f3-06-real-n2.md`](../evidence/2026-11-20-tsgo-f3-06-real-n2.md) 关闭。
@@ -1417,21 +1428,21 @@ v1/Node 文件。逐项清单见
 
 | ID | 2026-11-17 状态 | 阻塞 | 影响 | 退出条件 |
 | --- | --- | --- | --- | --- |
-| B1 | **closed**（2026-11-20：F3 16 closed / 0 partial / 0 blocked） | v2 库与 `wxml-lsp-install` 的 install/verify/upgrade/rollback/recover、本地 `--from-dir` 获取、state/journal、legacy 读取器已实现；F3-01～F3-16 已按证据关闭；F3-06 的真实第二版本 N2 与进程级 SIGKILL 窗口由 [`2026-11-20-tsgo-f3-06-real-n2.md`](../evidence/2026-11-20-tsgo-f3-06-real-n2.md) 补齐（F3-09 由真实 v1 包补齐） | 无（生产 native 安装/升级/回滚的 F3 合同项已验收） | D 包 Rust 实现并关闭 F3-01～F3-12；fixture 不能替代真实资产 |
+| B1 | **closed**（2026-11-20：F3 16 closed / 0 partial / 0 blocked） | v2 库与 `wxml-lsp-install` 的 install/verify/upgrade/rollback/recover、本地 `--from-dir` 获取、state/journal、legacy 读取器已实现；F3-01～F3-16 已按证据关闭；F3-06 的真实第二版本 N2 与进程级 SIGKILL 窗口由 [`2026-11-20-tsgo-f3-06-real-n2.md`](../evidence/2026-11-20-tsgo-f3-06-real-n2.md) 补齐（F3-09 由真实 v1 包补齐） | F3 合同项已验收；**F3-06 证据在删除前 `fb6047e`，删除后 R-03 upgrade/rollback 未重跑**（见 final-docs R-03 PARTIAL） | D 包 Rust 实现并关闭 F3-01～F3-12；fixture 不能替代真实资产 |
 | B2 | **PARTIAL**（spike clean-env） | 无 Node PATH、offline、ptrace exec 审计已在 spike 上执行；Rust build/test/CI/Zed 未在 clean-env 运行；F3-01/02 已关闭 | 生产无 Node 门禁未关闭 | Rust 构建/测试/发布/CI/Zed 在无 Node 环境通过 F3-01/02/12 |
 | B3 | **BLOCKED**（2026-11-20：Linux x86_64 ABI 已测） | 平台矩阵未测试；F3-13 已记录 Linux x86_64 的 `readelf`/`ldd`/GLIBC_2.39，其他平台仍无证据 | 只能宣称 Linux x86_64；aarch64/macOS/Windows/musl 无证据 | F3-13 记录 Rust glibc/ABI；其他平台保持“不支持” |
 | B4 | **PARTIAL**（2026-11-20：资产/ABI 证据已补） | 真实 tarball 的 SRI/SHA-256/size、122 文件、`lib/tsc` SHA/`--version` 已复核；F3-13 已记录 Rust glibc/ABI；F0 API/AST 握手、`tsc.sig` 用途仍未验证 | 资产身份与 ABI 可用，但安装器未消费真实 API/AST 探针 | F0/F3 安装器消费可重放 SRI/解包/探针/`readelf` 证据 |
-| B5 | **PARTIAL**（维护者条件性接受） | 7.1.0-beta 身份已条件性接受；F0 API/AST 合同仍是 draft，`apiSchemaVersion`/协议/探针期望值未正式冻结 | F0 合同未接受 | F0 记录冻结值并写入 lock/manifest，F3 评审接受 |
+| B5 | **closed（2026-11-20：F0/F1 合同冻结）** | `7.1.0-beta` 身份已接受；F0/F1 合同已冻结为 accepted。F0 API/AST 握手与探针期望值的**运行证据**缺口仍在 B4 记录，不在本行重复计为合同阻塞 | 合同冻结不再是阻塞 | 历史退出条件：F0 记录冻结值并写入 lock/manifest（运行证据见 B4） |
 | B6 | **closed**（2026-11-20：F3-03/F3-14 已关闭） | 真实 Rust 包已构建并完成两次构建同哈希、安装、离线回滚、ABI 与 F3-03 负向扫描；Zed 默认路径已在 HEAD `5020ae7` 重新构建的真实包上完成 UI/查询证据（`scripts/f3-zed-smoke.sh --direct`） | 无（F3-03/14 的包级验收已完成） | F3-03/14 在隔离 Linux 环境通过真实 Rust 包 |
 | B7 | **PARTIAL**（Rust 依赖许可门禁已通过） | `deny.toml` 的许可 allowlist 与 `cargo deny --offline check` 已通过 advisories/bans/sources/licenses；spike 已把 LICENSE/NOTICE/MIT 许可、`provenance.json`、`THIRD_PARTY_LICENSES.md` 打入包并 hash；发布包许可/provenance/SBOM 评审未做 | NF-09 不可关闭 | 许可文件、provenance、SBOM 评审通过 |
 | B8 | **ACCEPTED RISK** | 无发布者签名 | 只能证明“内容与元数据一致”，不能证明来源身份 | 接受 ADR-0007 残留风险，或新增签名 ADR |
 | B9 | **PARTIAL**（进程中断；2026-11-20：F3-16 partial） | F3-16 的 staged/committed/activated journal 注入、并发 install、损坏 active rollback 已有真实包证据；`activated` 幂等未测，断电/目录 fsync 持久性未测 | 不能宣称断电或全部崩溃窗口安全 | F3-16 补 activated 幂等与断电测试；未通过前只宣称“journal 注入与 commit 后进程中断可恢复” |
-| B10 | **OPEN** | 本文件未加入 docs 索引 | 读者可能不知道它是草案 | 合同接受后由文档 owner 更新索引 |
+| B10 | **closed（2026-11-20）** | 本文已在 [docs/README.md](../README.md) 的阅读顺序中引用；索引状态由文档 owner 维护（历史：2026-11-17 未加入索引） | 无 | 无 |
 
-### 10.2 明确不承诺
+### 10.2 明确不承诺（2026-11-17 历史条目）
 
-- 不承诺当前仓库已经无 Node；当前仍是 schema v1/Node 链路。
-- 不承诺 F3 合同已接受、F3 测试已实现或通过。
+- 2026-11-17 时不承诺仓库已经无 Node（当时仍是 schema v1/Node 链路）；该状态已于 2026-11-20 P7 删除终结。
+- 2026-11-17 时不承诺 F3 合同已接受、F3 测试已实现或通过；F3 已于 2026-11-20 冻结为 accepted 并 **16/0/0**。
 - 不承诺 Linux x86_64 以外的平台；不承诺 musl、aarch64、macOS、Windows。
 - 不承诺具体 glibc 下限；未测量前不得写猜测值。
 - 不承诺发布者签名、透明日志、证书固定或完整供应链安全。
@@ -1439,9 +1450,9 @@ v1/Node 文件。逐项清单见
 - 不承诺性能、启动时延或引擎查询结果；这些属于 F0/F1。
 - 不承诺临时 Python spike 等于生产安装器；其证明范围仅 Linux x86_64 的受限本地路径。
 
-### 10.3 F3 退出门禁
+### 10.3 F3 退出门禁（2026-11-17 历史）
 
-F3 合同可标记 accepted（不是实现完成）需：
+以下为 2026-11-17 的退出门禁文本；2026-11-20 已按 §9.5 验收为 **16 closed / 0 partial / 0 blocked**，本合同冻结为 accepted。保留原文以说明当时的关闭条件。
 
 1. 本文 §1.5 条件满足；
 2. §4 字段/§5 算法/§6 状态机无未决 TBD（F0 常量除外，必须标明 owner/日期）；
@@ -1451,9 +1462,9 @@ F3 合同可标记 accepted（不是实现完成）需：
 
 实现完成（G3/F3 测试通过）还需 §9 全部通过；两者不能混为一谈。
 
-### 10.4 G1-C 判定（2026-11-17）
+### 10.4 G1-C 判定（2026-11-17 历史）
 
-**G1-C 仍不能关闭。** 临时 Python spike 消除了“是否可实现 manifest v2/原子安装/回滚/无 Node
+**（历史）G1-C 在当时不能关闭。** 临时 Python spike 消除了“是否可实现 manifest v2/原子安装/回滚/无 Node
 本地流程”的关键未知，但：
 
 - 生产 Rust 安装器与 `wxml-delivery` 未改（B1）；
@@ -1463,13 +1474,12 @@ F3 合同可标记 accepted（不是实现完成）需：
 - 许可/provenance 未经发布评审（B7）；
 - 断电持久性未测（B9）。
 
-因此只能把“可执行安装器存在性”从 BLOCKED 降为 **PARTIAL PASS（临时证明）**；G1-C 仍是
-**OPEN**，不能以 spike 关闭。详见证据 §11。
+因此当时只能把“可执行安装器存在性”从 BLOCKED 降为 **PARTIAL PASS（临时证明）**；G1-C 当时仍是
+**OPEN**，不能以 spike 关闭。详见证据 §11。当前验收状态以 ADR-0008 与 P7 最终验收清单为准，不再使用本段的历史判定。
 
 ## 11. 变更控制
 
-- 本文件版本从 `draft-0` 开始；接受后任何字段/算法/状态机变更必须递增合同版本并记录 hash，
-  作为 `CONTRACT_BASE` 的一部分。
+- 本文件版本自 `frozen-1` 起生效（由 2026-11-17 的 `draft-0` 冻结；冻结未改字段/算法/状态机）。此后任何字段/算法/状态机变更必须递增合同版本并记录 hash，作为 `CONTRACT_BASE` 的一部分。
 - `assets.lock.json` 变更必须独立提交，附新 SRI/大小/许可、F0/F1 复跑结果和 release 重新生成。
 - 新增 manifest/index 字段必须同时更新 schema 版本、打包器、校验器、测试和迁移说明；不得利用
   `deny_unknown_fields` 之外的方式静默扩展。

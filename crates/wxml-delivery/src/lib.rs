@@ -6,6 +6,9 @@
 //!   provisioned asset cache into a deterministic schema v2 package with a
 //!   versioned directory, `.tar.gz` archive, `SHA256SUMS`, sidecar checksum and
 //!   `index.json`.
+//! - `wxml-lsp-package licenses` turns saved `cargo metadata` documents into a
+//!   deterministic third-party license inventory with crate names, versions,
+//!   license expressions and deduplicated local license texts.
 //! - `wxml-lsp-install` downloads or copies a native release, verifies its
 //!   hash, manifest, version, protocol, file digests and archive entry safety,
 //!   then atomically installs and activates it.
@@ -27,6 +30,7 @@ pub mod assets_lock;
 pub mod error;
 pub mod index_v2;
 pub mod install;
+pub mod licenses;
 pub mod manifest;
 pub mod manifest_v2;
 pub mod native_install;

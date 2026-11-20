@@ -21,7 +21,8 @@ Builds the Node-free schema v2 native package for linux-x86_64:
   3. wxml-lsp-package provision --lock assets.lock.json --cache DIR
      (only the verified content-addressed cache or --from-dir tarballs)
   4. stage bin/wxml-lsp, bin/wxml-lsp-install, zed-extension/, and a generated
-     THIRD_PARTY_LICENSES.md (engine/ and typings/ come from the cache)
+     THIRD_PARTY_LICENSES.md (engine/ and typings/ come from the cache; the
+     Rust dependency inventory comes from `cargo metadata --locked --offline`)
   5. wxml-lsp-package native --input <stage> --output DIR
   6. wxml-lsp-install verify-package --from-dir DIR and sha256sum -c SHA256SUMS
 
@@ -32,6 +33,8 @@ Artifacts:
   <output>/wxml-lsp-<version>-linux-x86_64.tar.gz.sha256
   <output>/index.json
   <output>/SHA256SUMS
+  <output>/release-provenance.json  (channel-level; archive hash is known only
+                                     after packaging, so it is not in the archive)
 
 Options:
   --output DIR       artifact directory outside the repository (required)
@@ -59,6 +62,10 @@ Environment:
                           (default: $XDG_CACHE_HOME/wxml-lsp-release)
   WXML_ASSET_CACHE        provisioned asset cache (default: <cache>/assets-cache)
   SOURCE_DATE_EPOCH       fixed build timestamp for reproducible archives
+
+  ALLOW_UNLICENSED=1      local-only escape hatch: accept Rust crates with
+                          neither a license expression nor a local license text.
+                          Never use it for a publishable release.
 
 Remote upload, tag creation and marketplace publishing are deliberately not
 implemented. Any --publish/--tag/--release/--upload option fails before
@@ -292,12 +299,19 @@ fi
 if [ -n "${SOURCE_DATE_EPOCH:-}" ]; then
     [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || die "SOURCE_DATE_EPOCH must be an integer"
     built_at="$(date -u -d "@$SOURCE_DATE_EPOCH" +%Y-%m-%dT%H:%M:%SZ)"
+    build_epoch="$SOURCE_DATE_EPOCH"
 else
     built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    build_epoch="$(date -u -d "$built_at" +%s)"
 fi
+case "${ALLOW_UNLICENSED:-0}" in
+    0|1) ;;
+    *) die "ALLOW_UNLICENSED must be 0 or 1" ;;
+esac
 
 check_prerequisites() {
     require_tool cargo
+    require_tool git
     require_tool realpath
     require_tool sha256sum
     require_tool awk
@@ -305,10 +319,14 @@ check_prerequisites() {
     require_tool find
     require_tool sort
     require_tool install
+    require_tool stat
+    require_tool tail
     [ -f "$assets_lock" ] || die "missing assets.lock.json"
     [ -f "$manifest_v2" ] || die "missing native manifest source"
     [ -f "$engine_rs" ] || die "missing native engine source"
     [ -f "$source_root/editors/zed/extension.toml" ] || die "missing Zed manifest"
+    git -C "$repo_root" rev-parse --verify HEAD >/dev/null 2>&1 \
+        || die "the release source is not a git worktree with a HEAD commit"
     if [ -z "$zed_wasm" ] && [ "$skip_zed" -eq 0 ] && command -v rustup >/dev/null 2>&1; then
         rustup target list --installed | grep -qx 'wasm32-wasip2' \
             || die "rustup target wasm32-wasip2 is not installed (or pass --zed-wasm)"
@@ -342,10 +360,10 @@ if [ "$dry_run" -eq 1 ]; then
         note "  2. cargo build --manifest-path editors/zed/Cargo.toml --release --target wasm32-wasip2 --locked"
     fi
     note "  3. wxml-lsp-package provision --lock assets.lock.json --cache $assets_cache [--from-dir DIR]"
-    note "  4. stage native allowlist + generated THIRD_PARTY_LICENSES.md"
+    note "  4. cargo metadata + wxml-lsp-package licenses → THIRD_PARTY_LICENSES.md"
     note "  5. wxml-lsp-package native --input <stage> --output $output_abs"
     note "  6. wxml-lsp-install verify-package --from-dir $output_abs --version $version --offline"
-    note "  7. sha256sum -c SHA256SUMS"
+    note "  7. sha256sum -c SHA256SUMS and release-provenance.json"
     exit 0
 fi
 
@@ -438,7 +456,57 @@ fi
 "$packager" "${provision_args[@]}" | tee "$provision_log"
 check_no_node
 
-note "generating THIRD_PARTY_LICENSES.md from the verified payload"
+note "generating Rust third-party license inventory from cargo metadata"
+source_commit="$(git -C "$repo_root" rev-parse --verify HEAD)" \
+    || die "could not read the source commit"
+[[ "$source_commit" =~ ^[0-9a-f]{7,64}$ ]] || die "unexpected git commit id: $source_commit"
+if [ -n "$(git -C "$repo_root" status --porcelain --untracked-files=no)" ]; then
+    note "warning: the source worktree has uncommitted tracked changes; provenance records HEAD $source_commit"
+fi
+metadata_root="$stage_root/cargo-metadata-root.json"
+metadata_zed="$stage_root/cargo-metadata-zed.json"
+cargo metadata --format-version 1 --locked --offline \
+    --manifest-path "$source_root/Cargo.toml" \
+    --filter-platform x86_64-unknown-linux-gnu > "$metadata_root"
+cargo metadata --format-version 1 --locked --offline \
+    --manifest-path "$source_root/editors/zed/Cargo.toml" \
+    --filter-platform wasm32-wasip2 > "$metadata_zed"
+check_no_node
+rust_licenses="$stage_root/rust-licenses.md"
+license_args=(licenses
+    --output "$rust_licenses"
+    --metadata "$metadata_root"
+    --label "root workspace"
+    --target x86_64-unknown-linux-gnu
+    --package wxml-lsp
+    --package wxml-delivery
+    --metadata "$metadata_zed"
+    --label "editors/zed workspace"
+    --target wasm32-wasip2
+    --package zed-wxml
+    --source-commit "$source_commit"
+    --source-date-epoch "$build_epoch")
+if [ "${ALLOW_UNLICENSED:-0}" -eq 1 ]; then
+    note "warning: ALLOW_UNLICENSED=1 accepts crates without a license expression and without local license text; this inventory is local-only and must not be published"
+    license_args+=(--allow-unlicensed)
+fi
+"$packager" "${license_args[@]}" | tee "$stage_root/licenses.log"
+check_no_node
+[ -s "$rust_licenses" ] || die "the license generator produced no inventory"
+grep -qx '<!-- generated-by: wxml-lsp-license-generator/2 -->' "$rust_licenses" \
+    || die "the license inventory is missing its generator marker"
+grep -q '^<!-- text-coverage: ' "$rust_licenses" \
+    || die "the license inventory is missing its text-coverage marker"
+if [ "${ALLOW_UNLICENSED:-0}" -eq 0 ]; then
+    grep -qx '<!-- text-coverage: .* missing=0 -->' "$rust_licenses" \
+        || die "the license inventory has third-party crates without license text"
+fi
+grep -qx '## Rust dependency inventory' "$rust_licenses" \
+    || die "the license inventory is missing the Rust dependency section"
+grep -qx '## First-party packages' "$rust_licenses" \
+    || die "the license inventory is missing the first-party section"
+
+note "appending verified upstream asset licenses"
 licenses="$stage/THIRD_PARTY_LICENSES.md"
 asset_keys="$stage_root/asset-keys.txt"
 awk '$1 == "asset:" {
@@ -456,9 +524,11 @@ awk '$1 == "asset:" {
 [ -s "$asset_keys" ] || die "provision report did not list any verified assets"
 {
     printf '# Third-party licenses\n\n'
-    printf 'Generated by `scripts/build-release.sh` from the verified provisioning\n'
-    printf 'cache of the committed `assets.lock.json`. This is a build-time\n'
-    printf 'aggregation, not a legal review.\n\n'
+    printf 'Generated by `scripts/build-release.sh`. This file has two parts: the\n'
+    printf 'verified upstream assets from the committed `assets.lock.json` cache, and\n'
+    printf 'the Rust dependency inventory from `cargo metadata` plus license texts in\n'
+    printf 'the local Cargo cache. It is a build-time aggregation, not a legal review.\n\n'
+    printf '## Upstream assets\n\n'
     while read -r name key; do
         payload="$assets_cache/assets/$name/$key/payload"
         [ -d "$payload" ] || die "missing verified payload entry: $payload"
@@ -468,20 +538,16 @@ awk '$1 == "asset:" {
             | LC_ALL=C sort > "$license_files"
         [ -s "$license_files" ] \
             || die "verified payload for \`$name\` contains no license file"
-        printf '## %s\n\n' "$name"
+        printf '### %s\n\n' "$name"
         while IFS= read -r file; do
             relative="${file#"$payload"/}"
-            printf '### `%s`\n\n```text\n' "$relative"
+            printf '#### `%s`\n\n```text\n' "$relative"
             cat "$file"
             printf '\n```\n\n'
         done < "$license_files"
     done < "$asset_keys"
     printf '## Rust dependencies\n\n'
-    printf 'The two Rust binaries are built from this workspace and `Cargo.lock`.\n'
-    printf 'Their transitive dependency licenses are limited by `deny.toml` to\n'
-    printf 'permissive SPDX identifiers (MIT, Apache-2.0, BSD-3-Clause, ISC,\n'
-    printf 'Unicode-3.0, Zlib, ...). Run `cargo deny --offline check` for the\n'
-    printf 'authoritative dependency graph.\n'
+    tail -n +2 "$rust_licenses"
 } > "$licenses"
 chmod 0644 "$licenses"
 
@@ -506,6 +572,8 @@ note "packaging versioned directory, archive, checksums, index and provenance"
     --platform "$platform" \
     --protocol-version "$protocol_version" \
     --built-at "$built_at" \
+    --source-commit "$source_commit" \
+    --source-date-epoch "$build_epoch" \
     --force
 check_no_node
 
@@ -534,6 +602,57 @@ for required in manifest.json SHA256SUMS provenance.json THIRD_PARTY_LICENSES.md
 done
 [ -f "$release_dir/engine/lib/tsc" ] || die "release is missing the native engine"
 [ -x "$release_dir/engine/lib/tsc" ] || die "native engine is not executable"
+grep -qx '## Rust dependency inventory' "$release_dir/THIRD_PARTY_LICENSES.md" \
+    || die "release license inventory lost the Rust dependency section"
+for field in sourceCommit sourceDateEpoch archivePayloadDigest; do
+    grep -q "\"$field\"" "$release_dir/provenance.json" \
+        || die "provenance.json is missing $field"
+done
+grep -q "\"sourceCommit\": \"$source_commit\"" "$release_dir/provenance.json" \
+    || die "provenance.json sourceCommit does not match HEAD"
+grep -q "\"sourceDateEpoch\": $build_epoch" "$release_dir/provenance.json" \
+    || die "provenance.json sourceDateEpoch does not match the build epoch"
+
+note "writing channel-level release-provenance.json (archive identity is known after packaging)"
+release_provenance="$output_abs/release-provenance.json"
+manifest_sha256="$(sha256sum "$release_dir/manifest.json" | awk '{print $1}')"
+provenance_sha256="$(sha256sum "$release_dir/provenance.json" | awk '{print $1}')"
+archive_sha256="$(awk '{print $1}' "$sidecar")"
+archive_size="$(stat -c '%s' "$archive")"
+archive_integrity="$(sed -n 's/^ *"archiveIntegrity": "\([^"]*\)",*$/\1/p' \
+    "$output_abs/index.json" | head -n1)"
+payload_digest="$(sed -n 's/^ *"archivePayloadDigest": "\([0-9a-f]*\)",*$/\1/p' \
+    "$release_dir/provenance.json" | head -n1)"
+[[ "$archive_sha256" =~ ^[0-9a-f]{64}$ ]] || die "invalid archive SHA-256"
+[[ "$payload_digest" =~ ^[0-9a-f]{64}$ ]] || die "invalid archivePayloadDigest"
+[[ "$archive_integrity" == sha512-* ]] || die "index.json is missing archiveIntegrity"
+release_provenance_stage="$stage_root/release-provenance.json"
+{
+    printf '{\n'
+    printf '  "schemaVersion": 1,\n'
+    printf '  "scope": "release-channel",\n'
+    printf '  "generator": "scripts/build-release.sh",\n'
+    printf '  "generatorVersion": "wxml-lsp-release-provenance/1",\n'
+    printf '  "package": "wxml-lsp",\n'
+    printf '  "packageVersion": "%s",\n' "$version"
+    printf '  "platform": "%s",\n' "$platform"
+    printf '  "sourceCommit": "%s",\n' "$source_commit"
+    printf '  "sourceDateEpoch": %s,\n' "$build_epoch"
+    printf '  "builtAt": "%s",\n' "$built_at"
+    printf '  "archive": {\n'
+    printf '    "name": "wxml-lsp-%s-%s.tar.gz",\n' "$version" "$platform"
+    printf '    "sha256": "%s",\n' "$archive_sha256"
+    printf '    "size": %s,\n' "$archive_size"
+    printf '    "integrity": "%s"\n' "$archive_integrity"
+    printf '  },\n'
+    printf '  "payload": {\n'
+    printf '    "archivePayloadDigest": "%s",\n' "$payload_digest"
+    printf '    "manifestSha256": "%s",\n' "$manifest_sha256"
+    printf '    "provenanceSha256": "%s"\n' "$provenance_sha256"
+    printf '  }\n'
+    printf '}\n'
+} > "$release_provenance_stage"
+install -m 0644 "$release_provenance_stage" "$release_provenance"
 check_no_node
 
 note ""
@@ -543,6 +662,7 @@ note "  archive:   $archive"
 note "  sha256:    $(awk '{print $1}' "$sidecar")"
 note "  manifest:  $release_dir/manifest.json"
 note "  provenance:$release_dir/provenance.json"
+note "  channel:   $release_provenance"
 note "  licenses:  $release_dir/THIRD_PARTY_LICENSES.md"
 note "  index:     $output_abs/index.json"
 note "  installer: $release_dir/bin/wxml-lsp-install"

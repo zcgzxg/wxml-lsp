@@ -1,10 +1,11 @@
-//! `wxml-lsp-package`: build a deterministic node-free release package or
-//! provision its locked assets.
+//! `wxml-lsp-package`: build a deterministic node-free release package,
+//! generate its third-party license inventory, or provision locked assets.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use wxml_delivery::manifest::rfc3339_from_unix;
+use wxml_delivery::licenses::{LicenseRequest, MetadataRoot, generate};
+use wxml_delivery::manifest::{atomic_write, rfc3339_from_unix};
 use wxml_delivery::manifest_v2::{NATIVE_PACKAGE_PLATFORM, SUPPORTED_NATIVE_PROTOCOL_VERSIONS};
 use wxml_delivery::package::{BuildOptionsV2, build_native_package};
 use wxml_delivery::semver::validate_strict;
@@ -14,6 +15,8 @@ Usage: wxml-lsp-package <COMMAND> [OPTIONS]
 
 Commands:
   native       build a schema v2 native package (`native --help`)
+  licenses     generate a deterministic third-party license inventory
+               (`licenses --help`)
   provision    provision the assets declared by `assets.lock.json`
 
 Options:
@@ -51,6 +54,36 @@ re-hashed against the submitted lock (size, SHA-256 and SHA-512 SRI); corrupt or
 foreign entries fail closed and are never repaired in place. This command never
 downloads and never executes node/npm/npx/pnpm/yarn.";
 
+const LICENSES_USAGE: &str = "\
+Usage: wxml-lsp-package licenses --output FILE --source-commit SHA [OPTIONS]
+
+Generates the deterministic `THIRD_PARTY_LICENSES.md` inventory from one or
+more saved `cargo metadata --format-version 1 --locked --offline` documents:
+
+  --output FILE             destination Markdown file (required)
+  --metadata FILE           cargo metadata JSON document (required; repeat for
+                            the root workspace and `editors/zed`)
+  --package NAME            root package to traverse from normal dependency
+                            edges (repeatable; applies to the last --metadata)
+  --label LABEL             workspace label for the last --metadata
+  --target TRIPLE           Cargo target triple for the last --metadata
+  --source-commit SHA       hexadecimal source commit id (required)
+  --source-date-epoch N     reproducible timestamp in Unix seconds (default:
+                            $SOURCE_DATE_EPOCH; required when both are absent)
+  --allow-unlicensed        accept crates with no license expression and no
+                            local license text; local-only, never publishable
+  --help                    print this message
+
+License texts are read from each package's `manifest_path` directory. Crates
+that ship no license file fall back to canonical SPDX texts vendored with this
+tool and selected by the recorded license expression; the inventory records the
+text source as `local` or `spdx`, and prints a `text-coverage` marker. Crates
+whose text is absent from both are listed explicitly; they are never silently
+omitted. A crate with neither a license expression nor a text fails generation
+unless --allow-unlicensed is passed. Output ordering and the only timestamp
+come from the inputs and SOURCE_DATE_EPOCH, so two runs with the same metadata
+and epoch are byte-identical.";
+
 const NATIVE_USAGE: &str = "\
 Usage: wxml-lsp-package native --input DIR --output DIR --assets-lock FILE --cache DIR [OPTIONS]
 
@@ -72,7 +105,8 @@ pinned upstream SHA-256 and size. The packager never downloads: a missing or
 stale cache fails closed.
 
 The packager generates `provenance.json` (measured per-file facts, the lock
-identity and per-asset payload tree digests); the prepared tree must not supply
+identity, per-asset payload tree digests, `archivePayloadDigest` and, when
+supplied, `sourceCommit`/`sourceDateEpoch`); the prepared tree must not supply
 it.
 
 Options:
@@ -84,6 +118,8 @@ Options:
   --platform P              fixed target platform (default and only value: linux-x86_64)
   --protocol-version N      Rust/engine protocol version (default: 2)
   --built-at TIME           RFC 3339 UTC build time (required unless SOURCE_DATE_EPOCH is set)
+  --source-commit SHA       hexadecimal source commit recorded in provenance.json
+  --source-date-epoch N     SOURCE_DATE_EPOCH recorded in provenance.json
   --force                   replace an existing versioned directory/archive
   --dry-run                 validate and describe without writing
   --help                    print this message
@@ -137,6 +173,28 @@ fn run() -> Result<(), String> {
                 wxml_delivery::provision::provision(&options).map_err(|error| error.to_string())?;
             print_provision_report(&report);
         }
+        return Ok(());
+    }
+    if first == "licenses" {
+        let Some((output, request)) = parse_licenses_options(args)? else {
+            return Ok(());
+        };
+        let (bytes, summary) = generate(&request).map_err(|error| error.to_string())?;
+        atomic_write(&output, &bytes, 0o644).map_err(|error| error.to_string())?;
+        println!(
+            "licenses: {} third-party crates ({} with text: {} local, {} vendored SPDX; {} without text, {} unlicensed), {} distinct texts",
+            summary.third_party_crates,
+            summary.crates_with_text,
+            summary.crates_with_local_text,
+            summary.crates_with_spdx_text,
+            summary.crates_without_text,
+            summary.unlicensed_crates,
+            summary.distinct_texts
+        );
+        if summary.first_party_blocked {
+            println!("first-party-license: BLOCKED owner decision");
+        }
+        println!("output: {}", output.display());
         return Ok(());
     }
     if matches!(first.as_str(), "native" | "v2") {
@@ -231,6 +289,91 @@ fn print_provision_report(report: &wxml_delivery::provision::ProvisionReport) {
     }
 }
 
+fn parse_licenses_options(
+    mut args: impl Iterator<Item = String>,
+) -> Result<Option<(PathBuf, LicenseRequest)>, String> {
+    let mut output: Option<PathBuf> = None;
+    let mut roots: Vec<MetadataRoot> = Vec::new();
+    let mut source_commit: Option<String> = None;
+    let mut source_date_epoch: Option<u64> = None;
+    let mut allow_unlicensed = false;
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--output" => output = Some(PathBuf::from(take_next(&mut args, "--output")?)),
+            "--metadata" => roots.push(MetadataRoot {
+                metadata: PathBuf::from(take_next(&mut args, "--metadata")?),
+                label: String::new(),
+                target: String::new(),
+                packages: Vec::new(),
+            }),
+            "--package" => {
+                let name = take_next(&mut args, "--package")?;
+                let root = roots.last_mut().ok_or_else(|| {
+                    "--package must follow the --metadata it belongs to".to_owned()
+                })?;
+                root.packages.push(name);
+            }
+            "--label" => {
+                let label = take_next(&mut args, "--label")?;
+                let root = roots
+                    .last_mut()
+                    .ok_or_else(|| "--label must follow the --metadata it belongs to".to_owned())?;
+                root.label = label;
+            }
+            "--target" => {
+                let target = take_next(&mut args, "--target")?;
+                let root = roots.last_mut().ok_or_else(|| {
+                    "--target must follow the --metadata it belongs to".to_owned()
+                })?;
+                root.target = target;
+            }
+            "--source-commit" => source_commit = Some(take_next(&mut args, "--source-commit")?),
+            "--source-date-epoch" => {
+                source_date_epoch = Some(
+                    take_next(&mut args, "--source-date-epoch")?
+                        .parse::<u64>()
+                        .map_err(|_| "--source-date-epoch must be a number".to_owned())?,
+                );
+            }
+            "--allow-unlicensed" => allow_unlicensed = true,
+            "--help" | "-h" => {
+                println!("{LICENSES_USAGE}");
+                return Ok(None);
+            }
+            other => return Err(format!("unexpected argument `{other}`\n\n{LICENSES_USAGE}")),
+        }
+    }
+    let output = output.ok_or_else(|| "--output is required".to_owned())?;
+    let source_commit = source_commit.ok_or_else(|| "--source-commit is required".to_owned())?;
+    let source_date_epoch = match source_date_epoch {
+        Some(epoch) => epoch,
+        None => std::env::var("SOURCE_DATE_EPOCH")
+            .map_err(|_| {
+                "--source-date-epoch is required for deterministic output (or set SOURCE_DATE_EPOCH)"
+                    .to_owned()
+            })?
+            .parse::<u64>()
+            .map_err(|_| "SOURCE_DATE_EPOCH must be an integer number of seconds".to_owned())?,
+    };
+    for (index, root) in roots.iter_mut().enumerate() {
+        if root.label.is_empty() {
+            root.label = format!("workspace {index}");
+        }
+        if root.target.is_empty() {
+            return Err("--target is required for every --metadata".to_owned());
+        }
+    }
+    Ok(Some((
+        output,
+        LicenseRequest {
+            roots,
+            source_commit,
+            source_date_epoch,
+            allow_unlicensed,
+        },
+    )))
+}
+
 fn parse_native_options(
     mut args: impl Iterator<Item = String>,
 ) -> Result<Option<BuildOptionsV2>, String> {
@@ -244,6 +387,8 @@ fn parse_native_options(
         .first()
         .ok_or_else(|| "no supported native protocol version".to_owned())?;
     let mut built_at: Option<String> = None;
+    let mut source_commit: Option<String> = None;
+    let mut source_date_epoch: Option<u64> = None;
     let mut force = false;
     let mut dry_run = false;
 
@@ -267,6 +412,14 @@ fn parse_native_options(
                     .map_err(|_| "--protocol-version must be a number".to_owned())?;
             }
             "--built-at" => built_at = Some(take_next(&mut args, "--built-at")?),
+            "--source-commit" => source_commit = Some(take_next(&mut args, "--source-commit")?),
+            "--source-date-epoch" => {
+                source_date_epoch = Some(
+                    take_next(&mut args, "--source-date-epoch")?
+                        .parse::<u64>()
+                        .map_err(|_| "--source-date-epoch must be a number".to_owned())?,
+                );
+            }
             "--force" => force = true,
             "--dry-run" => dry_run = true,
             "--help" | "-h" => {
@@ -286,6 +439,11 @@ fn parse_native_options(
     }
     validate_strict(&release_version).map_err(|error| error.to_string())?;
     let built_at = native_built_at(built_at)?;
+    if source_date_epoch.is_none() {
+        source_date_epoch = std::env::var("SOURCE_DATE_EPOCH")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok());
+    }
     let assets_lock = assets_lock
         .ok_or_else(|| "native builds require --assets-lock <repo>/assets.lock.json".to_owned())?;
     let assets_cache = assets_cache
@@ -298,6 +456,8 @@ fn parse_native_options(
         release_version,
         protocol_version,
         built_at,
+        source_commit,
+        source_date_epoch,
         force,
         dry_run,
     }))

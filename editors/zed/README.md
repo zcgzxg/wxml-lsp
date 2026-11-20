@@ -1,6 +1,6 @@
 # WXML LSP Zed extension (local development)
 
-Last updated: 2026-11-16.
+Last updated: 2026-11-20.
 
 Minimal, local-only Zed extension for WXML. It provides:
 
@@ -28,9 +28,9 @@ published to the Zed extension marketplace.
   reuse an existing install, set `WASI_SDK_PATH` to the directory containing
   `bin/clang`.
 - A built `wxml-lsp` binary from this repository.
-- For type-aware features with the current default backend: the TypeScript
-  backend and **Node.js >= 24**. The native package does not need Node, but the
-  extension itself never selects a backend; `wxml-lsp` owns that decision.
+- For type-aware features: an installed native `wxml-lsp` package with its
+  pinned TypeScript engine and type assets. Node.js is not required; the
+  extension itself never selects a backend, `wxml-lsp` owns that decision.
 
 ## 1. Build the language server
 
@@ -44,21 +44,12 @@ cargo build -p wxml-lsp --release
 
 The binary is at `target/debug/wxml-lsp` or `target/release/wxml-lsp`.
 
-For a local Node-backed development setup, type-aware features additionally
-require the TypeScript backend:
-
-```bash
-cd backends/typescript
-npm ci
-npm run build
-```
-
 Backend selection belongs to `wxml-lsp`, not to this extension. The extension
-starts the binary with `--stdio` and does **not** forward
-`WXML_TYPE_BACKEND`, `WXML_BACKEND_DIR` or `WXML_NODE`; the installed native
-package needs none of them. `WXML_ANALYZE_TIMEOUT_MS` (default 15000) and
-`WXML_TEMPLATE_CHECK` (`off`/`pragma`/`inherit`, default `pragma`) are the only
-variables the extension adds to the server command.
+starts the binary with `--stdio` and forwards **no** environment variables. In
+particular it does not forward the legacy Node variables `WXML_TYPE_BACKEND`,
+`WXML_BACKEND_DIR` or `WXML_NODE`, nor the removed Node-era tuning variables
+`WXML_ANALYZE_TIMEOUT_MS` and `WXML_TEMPLATE_CHECK`; the native package needs
+none of them, and setting them has no effect.
 
 ## 2. Install the dev extension
 
@@ -128,9 +119,11 @@ Zed started is not visible until Zed is restarted from that environment.
 `target/...` probing and no `PATH` lookup. Opening an untrusted project does
 not by itself make the extension run a project-controlled executable.
 
-The extension does not forward the legacy Node variables
-`WXML_TYPE_BACKEND`, `WXML_BACKEND_DIR` or `WXML_NODE`. Do not use them to
-select a backend; the native package requires none of them.
+The extension reads only `WXML_LSP_BIN` from the shell environment. It forwards
+no environment variables, and the removed Node variables
+`WXML_TYPE_BACKEND`, `WXML_BACKEND_DIR`, `WXML_NODE`,
+`WXML_ANALYZE_TIMEOUT_MS` and `WXML_TEMPLATE_CHECK` have no effect on the
+native server.
 
 `Worktree::shell_env` still includes Zed's shell environment. If direnv is
 enabled and a project's `.envrc` has been explicitly allowed, that `.envrc` is
@@ -162,26 +155,21 @@ string-based on purpose: the extension is compiled to `wasm32-wasip2`, whose
 path APIs have POSIX semantics and would misclassify Windows drive/UNC paths on
 a Windows host.
 
-## Server environment forwarding
+## Server environment
 
-The extension adds only these non-legacy tuning variables from the shell
-environment to the language server command when present:
+The extension forwards **no** environment variables to the language server
+command: `Command.env` is empty. `WXML_LSP_BIN` is read by the extension itself
+and is not passed through.
 
-| Variable | Constraint |
-| --- | --- |
-| `WXML_ANALYZE_TIMEOUT_MS` | Per-request timeout in milliseconds; default `15000` |
-| `WXML_TEMPLATE_CHECK` | `off` / `pragma` / `inherit`; default `pragma` |
-
-`WXML_TYPE_BACKEND`, `WXML_BACKEND_DIR` and `WXML_NODE` are deliberately not
-forwarded (delivery contract §8.6). The extension never injects them, and the
-native package must not need them.
-
-Their full semantics are documented in
+The legacy Node variables `WXML_TYPE_BACKEND`, `WXML_BACKEND_DIR` and
+`WXML_NODE`, and the removed Node-era tuning variables
+`WXML_ANALYZE_TIMEOUT_MS` and `WXML_TEMPLATE_CHECK`, are never injected. The
+native server does not read them, so setting them has no effect; see
 [crates/wxml-lsp/src/main.rs](../../crates/wxml-lsp/src/main.rs).
 
-`Command.env` is **not** a redaction boundary: it only adds these variables,
-while Zed still merges the full shell environment when spawning the language
-server. Other exported variables may therefore be visible to the process.
+`Command.env` is **not** a redaction boundary: Zed still merges the full shell
+environment when spawning the language server, so other exported variables may
+be visible to the process even though the extension adds none.
 
 ## Mini-program roots (initialization options)
 
@@ -332,7 +320,7 @@ To disable this server for WXML:
   should be rechecked after Zed upgrades. See
   [docs/evidence/p8-zed.md](../../docs/evidence/p8-zed.md).
 
-## Current runtime status (2026-11-16)
+## Runtime status (2026-11-16, before Node removal)
 
 Verified in isolated user-data directories with Zed 1.28.1, but **not** through
 the standard UI install:
@@ -351,7 +339,8 @@ A manual dev symlink/index is present in the main Zed user-data directory
 `dev = true`). The main Zed process was restarted on 2026-11-16; it loaded the
 extension, started `wxml-lsp --stdio`, and spawned the Node backend for
 `tests/fixtures/page-basic`. The `user.nmae` typo shows a red diagnostic and the
-file tree shows an error badge; WXML syntax colours are visible.
+file tree shows an error badge; WXML syntax colours are visible. That smoke ran
+before the Node backend was removed; the current server has no Node fallback.
 
 Not confirmed: standard `zed: install dev extension`, hover/definition contents,
 real grammar query quality, Windows/macOS hosts, multi-worktree/remote projects,
@@ -375,6 +364,6 @@ The last two commands require the `wasm32-wasip2` target. Zed performs the same
 build during `install dev extension`.
 
 Current snapshot (2026-11-20): all six commands pass; `cargo test --locked`
-reports 26 passed (1 suite). The built extension wasm is 7,633,946 B (debug)
-and 238,792 B (release); the real grammar artifact is about 23,806 B
+reports 25 passed (1 suite). The built extension wasm is 7,635,738 B (debug)
+and 238,672 B (release); the real grammar artifact is about 23,806 B
 (gitignored).

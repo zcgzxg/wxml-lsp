@@ -1,10 +1,18 @@
 # P7 删除后最终 native release/install/no-Node 验证（2026-11-20）
 
+> **历史快照/口径说明（2026-11-20 crosscheck）**：本文构建于“删除补丁已应用但未提交”
+> 的工作树，archive `b138d119…f30959` / 15,117,268 B 与 Zed 16/16 是**删除前/许可重建前**
+> 的数字，不代替 native gates、升级/回滚或许可审计。最终删除后复验以
+> [post-delete revalidation](2026-11-20-tsgo-p7-post-delete-revalidation.md)
+> （archive `7a51a3e9…dcd81b7` / 15,117,270 B）和
+> [license generation fix](2026-11-20-tsgo-p7-license-generation-fix.md)
+> （archive `793a4f21…2e4077` / 15,143,353 B、许可文本 155/155）为准；首方 LICENSE 仍 BLOCKED，对外发布仍需 owner 决策。
+
 ## 0. 结论先行
 
 在 P7 删除补丁已应用（未提交）的工作树上，按最终 native 路径重跑了
 release 构建、安装/校验、PATH-only 无 Node 检查、安装后 `--stdio` LSP
-冒烟和真实 Zed 冒烟。**五项全部通过，无 BLOCKED。**
+冒烟和真实 Zed 冒烟。**五项在本文范围内通过，本文不声称 F3-02 installer-scope residual 或升级/回滚已通过。**
 
 | # | 检查 | 结果 |
 | --- | --- | --- |

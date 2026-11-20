@@ -923,7 +923,7 @@ mod tests {
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner);
             let next = revision.clone().next();
-            *revision = next.clone();
+            *revision = next;
             Ok(HostUpdate {
                 project_revision: Some(revision.clone()),
                 project: Some(self.project.clone()),

@@ -3,7 +3,7 @@
 **Status**: accepted（2026-11-15，C1.1 增量版；布局/边界仍为第 4 轮）；**native 路径不实现 C1**（2026-11-20：C1 只保留为历史 Node 桥契约，native 见 [ADR-0008](../adr/0008-rust-tsgo-no-node-backend.md)）。
 **Last Updated**: 2026-11-20（native 版本段改为 TypeScript `7.1.0-beta` / typings `5.3.1`；显式 app/project 根边界见 [ADR-0006](../adr/0006-explicit-mini-program-roots.md)）。
 冻结动作由 P0 在合并本文件时执行；C0 契约仍以[基础契约](contracts.md)为准，本文件只补充类型桥部分。
-证据：[类型桥验证与 C1 建议](../evidence/type-bridge-c1.md)；实验实现见 [backends/typescript](../../backends/typescript/README.md)。
+证据：[类型桥验证与 C1 建议](../evidence/type-bridge-c1.md)；实验实现（历史 Node 树）见 `backends/typescript/`（P7 删除后不存在，仅保留于 `p7-pre-delete` 历史证据）。
 
 ## 0. 范围
 
@@ -420,7 +420,12 @@ invalid params `-32602`（`data.code` 为 `bad-protocol`/`bad-params`/`bad-limit
 | 模板 locals / 守卫 | 协议 v2 携带 `bindings`（item/index 名称、角色、源表达式与范围）和 `guards`；数组/元组/`ReadonlyArray` 取元素类型、`Record`/对象取值类型与键类型，`wx:if/elif/else` 由 TypeScript 控制流窄化；`any`/`unknown`/无法解析时降级而不误报 |
 | stdio 后端 | `src/server.ts` / `dist/server.js`；NDJSON JSON-RPC；20 MiB 行上限；`npm run build` 产出 `dist/server.js` |
 
-验证（WT-B，2026-11-16）：
+验证（WT-B，2026-11-16；**历史**）：
+
+> `backends/typescript` 与 `wave5_acceptance` 已随 P7 删除，以下命令当前不可执行，仅保留为历史证据。
+> 当前 native 等价覆盖见 `crates/wxml-lsp/tests/native_parity/native_engine_real.rs`（`loop-scope`、
+> `conditional-union`、`multi-view`、`alias-project`、`component-bindings`）与
+> `crates/wxml-lsp/tests/stdio_type_loop.rs`。
 
 ```bash
 (cd backends/typescript && npm ci && npm run build)

@@ -7,14 +7,16 @@
 //! The three real package tests are `#[ignore]`d and only run with
 //! `-- --ignored`. They read roots from `TSGO_ASSET_ROOT` (engine `lib` or
 //! `engine/lib` plus `typings/`) or `TSGO_BIN` plus `TSGO_TYPINGS_ROOT`, falling
-//! back to the repository typings fixture. `WXML_REQUIRE_REAL_ENGINE=1` or
+//! back to the committed `miniprogram-api-typings@5.3.1` fixture at
+//! `crates/wxml-delivery/tests/fixtures/miniprogram-api-typings-5.3.1`. The
+//! fixture is staged below the test temp base into the canonical
+//! `<root>/miniprogram-api-typings` layout. `WXML_REQUIRE_REAL_ENGINE=1` or
 //! `WXML_REQUIRE_REAL_ENGINE=true` (case-insensitive) turns a missing real root
 //! into a hard failure instead of a skip.
 //!
 //! [`repository_typings_runtime_closure_matches_821c93_stdlib_is_real_gate_only`]
-//! is also `#[ignore]`d because it requires the untracked repository
-//! `backends/typescript/node_modules` fixture (run `npm ci` first). When run
-//! explicitly with `--ignored`, it verifies the 20-file/2,522,752 B/`821c93…`
+//! is also `#[ignore]`d because it hashes the committed fixture directly. When
+//! run explicitly with `--ignored`, it verifies the 20-file/2,522,752 B/`821c93…`
 //! typings closure with an independent walk and digest implementation without
 //! calling the loader; a missing fixture is a hard failure there. The default
 //! suite verifies neither that fixture nor the standard-library digest
@@ -38,6 +40,9 @@ use wxml_backend_tsgo::input::{
     PINNED_TYPINGS_FILE_COUNT, PINNED_TYPINGS_VERSION, TypeAssetError, TypeAssetFile, TypeAssets,
     TypeAssetsPin,
 };
+
+#[path = "support/typings_fixture.rs"]
+mod typings_fixture;
 
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
@@ -817,8 +822,7 @@ fn rejects_non_regular_files_in_the_typings_package() {
 // ---------------------------------------------------------------------------
 
 fn repository_typings_package() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../backends/typescript/node_modules/miniprogram-api-typings")
+    typings_fixture::fixture_package()
 }
 
 fn collect_runtime_declarations(
@@ -872,7 +876,7 @@ fn repository_typings_runtime_closure_matches_821c93_stdlib_is_real_gate_only() 
     let package = repository_typings_package();
     assert!(
         package.is_dir(),
-        "repository typings fixture is missing at {}; run `npm ci --prefix backends/typescript` \
+        "committed typings fixture is missing at {}; restore it or set TSGO_TYPINGS_ROOT \
          (the standard-library digest 5e126e… is verified only by the opt-in real gate)",
         package.display()
     );
@@ -904,6 +908,7 @@ fn repository_typings_runtime_closure_matches_821c93_stdlib_is_real_gate_only() 
 struct RealRoots {
     engine: PathBuf,
     typings: PathBuf,
+    _staged: Option<typings_fixture::Staged>,
 }
 
 fn normalize_typings_root(path: &Path) -> Option<PathBuf> {
@@ -916,15 +921,6 @@ fn normalize_typings_root(path: &Path) -> Option<PathBuf> {
         .join("index.d.ts")
         .is_file()
         .then_some(root)
-}
-
-fn repository_typings_root() -> Option<PathBuf> {
-    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let node_modules = manifest
-        .parent()?
-        .parent()?
-        .join("backends/typescript/node_modules");
-    normalize_typings_root(&node_modules)
 }
 
 fn resolve_real_roots() -> Option<RealRoots> {
@@ -944,16 +940,25 @@ fn resolve_real_roots() -> Option<RealRoots> {
                 .is_file()
                 .then(|| parent.to_path_buf())
         })?;
-    let typings = std::env::var_os("TSGO_TYPINGS_ROOT")
+    let configured = std::env::var_os("TSGO_TYPINGS_ROOT")
         .map(PathBuf::from)
         .and_then(|path| normalize_typings_root(&path))
         .or_else(|| {
             packaged
                 .as_ref()
                 .and_then(|root| normalize_typings_root(&root.join("typings")))
-        })
-        .or_else(repository_typings_root)?;
-    Some(RealRoots { engine, typings })
+        });
+    let (typings, staged) = if let Some(path) = configured {
+        (path, None)
+    } else {
+        let staged = typings_fixture::stage()?;
+        (staged.root().to_path_buf(), Some(staged))
+    };
+    Some(RealRoots {
+        engine,
+        typings,
+        _staged: staged,
+    })
 }
 
 /// Returns whether the real gate must fail instead of skipping.
@@ -970,11 +975,12 @@ fn real_roots() -> Option<RealRoots> {
         assert!(
             !required,
             "real type-asset roots are required when WXML_REQUIRE_REAL_ENGINE is 1 or true; \
-             set TSGO_ASSET_ROOT or TSGO_BIN and TSGO_TYPINGS_ROOT"
+             set TSGO_ASSET_ROOT or TSGO_BIN (TSGO_TYPINGS_ROOT overrides the committed fixture)"
         );
         eprintln!(
             "real type-asset loader gate skipped: set TSGO_ASSET_ROOT or TSGO_BIN \
-             plus TSGO_TYPINGS_ROOT (or WXML_REQUIRE_REAL_ENGINE=1/true for a hard gate)"
+             (TSGO_TYPINGS_ROOT overrides the committed typings fixture; or \
+             WXML_REQUIRE_REAL_ENGINE=1/true for a hard gate)"
         );
     }
     roots

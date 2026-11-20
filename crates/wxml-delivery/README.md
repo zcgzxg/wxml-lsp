@@ -4,9 +4,9 @@
 
 ## 组件
 
-- `wxml-lsp-package`：从 staged 目录生成版本化目录、`.tar.gz`、`.sha256`、`SHA256SUMS`、`index.json` 和 `manifest.json`；`native` 子命令生成 Node-free 的 schema v2 包（含 `provenance.json`）。
+- `wxml-lsp-package`：从 staged 目录生成版本化目录、`.tar.gz`、`.sha256`、`SHA256SUMS`、`index.json` 和 `manifest.json`；`native` 子命令生成 Node-free 的 schema v2 包（含 `provenance.json`）；`licenses` 子命令从 `cargo metadata --locked --offline` 生成确定性的 `THIRD_PARTY_LICENSES.md`（crate 名称/版本/许可表达式 + 去重许可文本，缺失文本显式列出）。
 - `wxml-lsp-install`：从 HTTPS/localhost fixture/本地目录安装、升级、回退、校验和查询版本。
-- `scripts/build-release.sh`：构建 Rust 二进制与 wasm32-wasip2 Zed 扩展，从已校验的 asset cache（或 `--from-dir` 锁定的 tarball）调用 `wxml-lsp-package native`。构建过程不执行 node/npm/npx/pnpm/yarn/bun，也不从 `backends/typescript` 复制 JavaScript。
+- `scripts/build-release.sh`：构建 Rust 二进制与 wasm32-wasip2 Zed 扩展，从已校验的 asset cache（或 `--from-dir` 锁定的 tarball）调用 `wxml-lsp-package native`。构建过程不执行 node/npm/npx/pnpm/yarn/bun，也不从 `backends/typescript` 复制 JavaScript。发布目录另外生成 `release-provenance.json`（archive SHA-256/大小、`sourceCommit`、`SOURCE_DATE_EPOCH`、payload digest）；它位于 archive 之外，因为 archive 哈希只能在打包后得到。
 
 ## 构建
 

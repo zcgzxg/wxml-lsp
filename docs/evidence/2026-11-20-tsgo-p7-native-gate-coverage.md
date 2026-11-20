@@ -145,6 +145,12 @@ cargo fmt --all --check
 
 以下项目本切片没有补测，不能从 40/40 或 4 个语义测试推导为已覆盖：
 
+> 快照说明：本节状态是 2026-11-20 早先记录。其中 4 个 stability 场景
+> （typing burst/cancel、资源删除恢复、app.json overlay、40 请求 burst）后续已由
+> `q2_stability_support` 推进为 **IMPLEMENTED**，仅外部 RSS baseline 仍 **BLOCKED**；
+> **ledger 尚未回填**。其余缺口状态未变。见
+> `docs/evidence/2026-11-20-tsgo-stability-scenarios.md`。
+
 | 缺口 | 状态 | 原因 |
 | --- | --- | --- |
 | `definition` 读盘预算（8 文件 / 64 MiB） | **BLOCKED** | `handlers/hover.rs` 的预算仍生效；原 `lsp_p7.rs` 测试已删除，尚无 fake-backend 替代 |
@@ -167,8 +173,7 @@ cargo fmt --all --check
 2. 不声称 4 个语义测试覆盖 engine-backed hover/definition/completion；它们
    只覆盖 HostOnly 静态语义面。
 3. 不声称 GitHub `native-gates` job 已实际运行；只改了文案/组成，未触发 CI。
-4. 不声称 stability 的 5 个 BLOCKED 场景已补；`WXML_STABILITY_ALLOW_DIRTY=1`
-   只是本地脏树证据开关。
+4. 本切片记录时 stability 的 5 个 BLOCKED 场景尚未补；后续 `q2_stability_support` 场景证据已把其中 4 项推进为 IMPLEMENTED，仅外部 RSS baseline 仍 BLOCKED，且 **ledger 尚未回填**（见 `docs/evidence/2026-11-20-tsgo-stability-scenarios.md`）。`WXML_STABILITY_ALLOW_DIRTY=1` 始终只是本地脏树证据开关。
 5. 不声称 `p7-freeze --check`、F3-09 真实 v1 证据或 `--verify-no-node` 已通过。
 6. 本切片未执行 commit、未 review；并行 worker 的 `c4ddf32` 提交包含本切片的
    脚本/测试/CI 内容。未修改生产代码、ledger、README 或 `scripts/p7-freeze.sh`。

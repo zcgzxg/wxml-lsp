@@ -1,9 +1,13 @@
 //! F1-22 hover composition and evidence tests.
 //!
 //! The pure tests freeze the three-part Markdown order and the
-//! checked-empty / Unsupported / Partial distinction. The real-engine test is
+//! checked-empty / Unsupported / Partial distinction. The real-engine tests are
 //! opt-in through `TSGO_BIN`; `WXML_REQUIRE_REAL_ENGINE=1` turns a missing
-//! engine into a hard failure instead of a skip.
+//! engine into a hard failure instead of a skip. The pinned standard library
+//! comes from `TSGO_ASSET_ROOT` (or the engine's `lib` directory) and typings
+//! from `TSGO_TYPINGS_ROOT`, falling back to the committed
+//! `miniprogram-api-typings@5.3.1` fixture at
+//! `crates/wxml-delivery/tests/fixtures/miniprogram-api-typings-5.3.1`.
 
 #![allow(clippy::expect_used, clippy::too_many_lines)]
 
@@ -28,6 +32,9 @@ use wxml_backend_tsgo::query::type_info::{TypeInfo, TypeQuality};
 use wxml_backend_tsgo::script::symbols::Utf16Range;
 use wxml_backend_tsgo::shadow::mapping::SourceRange;
 use wxml_types::CapabilityStatus;
+
+#[path = "support/typings_fixture.rs"]
+mod typings_fixture;
 
 fn type_info(text: &str) -> TypeInfo {
     TypeInfo {
@@ -423,16 +430,25 @@ fn load_pinned_assets() -> Result<TypeAssets, String> {
         .ok_or_else(|| "no standard-library lib.d.ts near TSGO_BIN".to_owned())?;
     let standard_lib = std::fs::canonicalize(&standard_lib)
         .map_err(|error| format!("canonicalize {}: {error}", standard_lib.display()))?;
-    let typings_root = std::env::var_os("TSGO_TYPINGS_ROOT").map_or_else(
-        || Path::new(env!("CARGO_MANIFEST_DIR")).join("../../backends/typescript/node_modules"),
-        PathBuf::from,
-    );
+    let (typings_root, _staged) = if let Some(root) = std::env::var_os("TSGO_TYPINGS_ROOT") {
+        (PathBuf::from(root), None)
+    } else {
+        let staged = typings_fixture::stage().ok_or_else(|| {
+            format!(
+                "committed typings fixture is missing at {}; restore it or set \
+                 TSGO_TYPINGS_ROOT",
+                typings_fixture::fixture_package().display()
+            )
+        })?;
+        (staged.root().to_path_buf(), Some(staged))
+    };
     let typings_root = std::fs::canonicalize(&typings_root)
         .map_err(|error| format!("canonicalize {}: {error}", typings_root.display()))?;
     let typings_package = typings_root.join(MINIPROGRAM_TYPINGS);
     if !typings_package.join("index.d.ts").is_file() {
         return Err(format!(
-            "no pinned typings package at {}",
+            "no pinned typings package at {}; set TSGO_TYPINGS_ROOT to the directory \
+             containing {MINIPROGRAM_TYPINGS}",
             typings_package.display()
         ));
     }

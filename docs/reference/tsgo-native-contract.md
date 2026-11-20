@@ -1,17 +1,19 @@
-# tsgo 原生后端 F0/F1 合同（草案）
+# tsgo 原生后端 F0/F1 合同
 
-**状态：draft / not accepted。** 维护者已**条件接受** `7.1.0-beta` 作为唯一候选基线（见 §2.1），但本文仍是 P2 草案；**只有在 P2 评审通过且 G1 关闭后才有规范效力**。不得据此声称迁移、实现、测试或验收已经完成，也不得视为默认后端切换已批准。本文不修改任何源码、测试、Cargo、计划、ADR 或其它文档；对 beta 的条件接受不等于对本文的接受。
+**状态：accepted / frozen（2026-11-20，P7 删除完成后最终口径）。** F0 原生兼容合同与 F1 Backend 语义合同已随 ADR-0008 在 owner scope waiver 下最终关闭并冻结为 native 默认后端的现行合同；维护者此前对 `7.1.0-beta` 的条件接受（§2.1）是冻结基线的一部分。本文 2026-11-17 的 draft 表述和 §12 的 `planned` 测试坐标保留为历史/冻结计划，不再表示当前交付状态；当前实现与验收见 ADR-0008、`docs/reference/tsgo-delivery-contract.md` §9.5 与 `docs/evidence/2026-11-20-tsgo-p7-final-docs.md`。本文不修改任何源码、测试、Cargo、计划、ADR 或其它文档。
 
-更新日期：2026-11-17。适用基线：ADR-0008（accepted，native 默认；P7 集成中）、`docs/plans/2026-11-17-rust-tsgo-migration.md` 第 3–4、5、6 节、`docs/evidence/2026-11-17-tsgo-native-api-spike.md`（下称“P1-A 证据”；其 §15 为 2026-11-17 P2 追加探针 B-02/B-03/B-04/B-12）。
+更新日期：2026-11-20（原 2026-11-17）。适用基线：ADR-0008（accepted (native default; Node removed)；P7 删除完成）、`docs/plans/2026-11-17-rust-tsgo-migration.md` 第 3–4、5、6 节、`docs/evidence/2026-11-17-tsgo-native-api-spike.md`（下称“P1-A 证据”；其 §15 为 2026-11-17 P2 追加探针 B-02/B-03/B-04/B-12）。
 
 ## 1. 状态、权威顺序与证据边界
 
 ### 1.1 本文件的性质
 
-- 本文定义 **F0 原生兼容合同**与 **F1 Backend 语义合同**的草案文本，供 P2 评审、拆分测试与实现包。
+> **历史说明（2026-11-20）**：以下 2026-11-17 的 draft/planned 描述保留为决策历史；本文现为 accepted/frozen，测试实现状态以当前仓库和 §12 的冻结坐标为准。
+
+- 本文定义 **F0 原生兼容合同**与 **F1 Backend 语义合同**，供 P2 评审、拆分测试与实现包。
 - 规范词：**MUST / MUST NOT** 为强制项；**SHOULD** 为需要说明理由的默认项；**MAY** 为可选。中文“必须/不得”等同 MUST/MUST NOT。
-- 本文中的 `F0-xx`、`F1-xx` 是合同项 ID；第 12 节把它们映射到**未来** Rust 测试文件和测试名。所有测试状态均为 `planned（未实现）`。
-- 维护者的条件接受记录只针对**引擎候选与制品身份**（§2.1），不改变本文 draft 状态，也不关闭 G1；P2 评审通过前不得把任何 F0/F1 项标记为已实现或已验收。
+- 本文中的 `F0-xx`、`F1-xx` 是合同项 ID；第 12 节把它们映射到 Rust 测试文件和测试名。原表中的 `planned` 是 2026-11-17 的未实现标记，现作为冻结坐标保留；当前覆盖以实际测试和 native gates 为准。
+- 维护者的条件接受记录最初只针对**引擎候选与制品身份**（§2.1）；该限制已于 2026-11-20 随本文冻结和 P7 删除验收解除。任何 F0/F1 项的当前覆盖仍必须以真实测试/门禁证据为准，不能仅凭条目存在推断。
 - 2026-11-17 的 P2 追加探针已关闭 B-02/B-03/B-04/B-12 的原始未知项，其中 B-02 是**负结果**：`appendFile`/`chtimes` 没有可注册的回调；详见 §5.3 与证据 §15。
 - 本文不定义交付/安装 schema（F3）、测试迁移账本（F2）或具体语义切片的代码布局（P3/P4）；这些由各自 owner 冻结。
 
@@ -722,7 +724,7 @@ Hover 由三部分组成，顺序固定：
 
 ## 12. 合同 ID 与测试挂点
 
-以下测试文件和测试名均为**未来计划**；新 crate 尚未创建，所有状态为 `planned（未实现）`。实际 crate 路径/文件名在 P3 冻结时只能细化，不能删除 ID 或降低断言。
+以下测试文件和测试名是 2026-11-17 的**冻结计划坐标**；当时新 crate 尚未创建、状态为 `planned（未实现）`（历史）。crate 路径/文件名已按此细化，不得删除 ID 或降低断言。表中残余 `planned` 字样保留为冻结坐标，当前覆盖以仓库中的实际测试与 native gates 为准。
 
 ### 12.1 F0
 
@@ -781,17 +783,17 @@ Hover 由三部分组成，顺序固定：
 | F1-26 | cache invalidation key | `crates/wxml-backend-tsgo/tests/f1_session.rs` | `cache_keys_include_epoch_snapshot_and_dependency_fingerprint` | planned |
 | F1-27 | rename 编辑复检 | `crates/wxml-backend-tsgo/tests/f1_query.rs` | `rename_edits_revalidate_before_publication` | planned |
 
-LSP 端到端挂点（仍为计划）：`crates/wxml-lsp/tests/native_parity.rs` 覆盖 hover/diagnostics/definition/completion/references/rename 的原文件范围、版本屏障与安全拒绝；它不能替代上述真实原生合同测试，fake peer 也不能替代真实引擎门禁。
+LSP 端到端挂点：`crates/wxml-lsp/tests/native_parity.rs` 覆盖 hover/diagnostics/definition/completion/references/rename 的原文件范围、版本屏障与安全拒绝；它不能替代上述真实原生合同测试，fake peer 也不能替代真实引擎门禁。
 
-2026-11-17 的 P2 追加探针只关闭了 B-02/B-03/B-04/B-12 的**未知性**（并记录了 B-02 的负结果），**没有**把这些 ID 变成已实现测试；上述测试文件和测试名仍全部是 `planned`，不得因探针通过而删除或降级。
+2026-11-17 的 P2 追加探针只关闭了 B-02/B-03/B-04/B-12 的**未知性**（并记录了 B-02 的负结果），**没有**直接把这些 ID 变成已实现测试；不得因探针通过而删除或降级任何 ID。表中 `planned` 是 2026-11-17 的冻结坐标（历史），2026-11-20 P7 删除验收后的当前覆盖见实际测试与 native gates。
 
 ## 13. 开放问题与阻塞项
 
-以下列出仍开放或已由 2026-11-17 P2 追加探针处理的事项；状态列以追加证据（证据 §15）为准。PASS 只表示该探针范围内的未知项已关闭，不表示合同/测试已验收。
+以下为 2026-11-17 的开放问题/阻塞记录（历史）。B-01 已于 2026-11-20 closed；B-05–B-07 保留为当时的风险登记，当前实现/覆盖以仓库测试和 native gates 为准，不能据本表推断仍全部未实现。PASS 只表示该探针范围内的未知项已关闭，不表示合同/测试已验收。
 
 | 编号 | 问题 | 影响 | 阻塞级别 |
 | --- | --- | --- | --- |
-| B-01 | 维护者已条件接受 `7.1.0-beta`，`gitHead`/SRI/sha256 已固定；不切换默认后端，契约仍为 draft，待 P2 评审/G1 | F0 生效条件 | **条件接受（CONDITIONAL）**；契约仍待 P2/G1 |
+| B-01 | **closed（2026-11-20）**：维护者已接受 `7.1.0-beta`，`gitHead`/SRI/sha256 已固定；本文已冻结，native 默认已切换并完成 P7 删除（历史：2026-11-17 曾为条件接受、契约 draft、待 P2/G1） | F0 生效条件 | **closed**；保留历史条件接受记录 |
 | B-02 | 已实测：`appendFile`/`chtimes` 不是合法回调名；`name`、`name:error`、`name:noop` 均启动 panic；源码注释明确“always delegates to base (no callback support)”，是当前 API 的有意能力边界而非临时缺陷。无法回调 deny，只能依赖方法白名单不可达 + 最小权限 | 回调级写阻断不可实现；残余纵深风险 | **PARTIAL（负结果）**；维护者 2026-11-18 接受补偿控制，P3 可启动；不得声称 write-callback deny 已实现 |
 | B-03 | 已捕获 readFile/fileExists/directoryExists/getAccessibleEntries/realpath/writeFile/removeFile 的真实帧；`missing` 只对 readFile 合法；读回调 error/invalid kind 会 panic；writeFile error -> 5033/不写，removeFile error -> status 0/`filesDeleted` 仍列路径 | 回调可按精确形状实现，错误不可当 deny | **PASS**（形状/失败语义已冻结；测试仍 planned） |
 | B-04 | 已实测宿主 FS + 完整回调串：回调确实被调用，`useOS` 生效，readFile `missing` 生效，writeFile/removeFile noop 下 emit 不落盘，虚拟快照可组合；非 read 回调的 `missing` 是非法形状 | F0 写阻断/组合验收 | **PASS**（范围内；非 read `missing` 属 B-03 负例） |

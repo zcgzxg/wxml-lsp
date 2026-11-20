@@ -1,5 +1,9 @@
 # Rust + tsgo 测试迁移账本（P1-B + P3-S/P4-B + P5/P5.1 状态回填）
 
+> **状态：历史归档（Superseded）**。P7 删除已完成；本文仅记录当时计划/证据，不再代表当前仓库状态。最终状态见 docs/plans/2026-11-17-rust-tsgo-migration.md §12.16。
+>
+> 本文 §14–§27 保留历史回填快照与数字；其中 `planned`、G5 未通过等表述不代表最终台账。最终台账口径以 §12.16（109 green / 0 planned / 130 reviewed / 29 waived / 71 retired）及 ` docs/evidence/2026-11-20-tsgo-p7-closeout-ledger.md` 为准；ledger JSON 本轮未改动。
+
 生成时间：2026-11-17T23:08:57+08:00；P3-S/P4-B 证据与 P5 状态回填：2026-11-18；P5.1 适配器/定义/性能回填：2026-11-19；wave-8 断言补齐回填：2026-11-20；wave-9 台账回填：2026-11-20；wave-10 台账回填：2026-11-20；wave-10 near-exact 跟进：2026-11-20；wave-10 exact 回填：2026-11-20；wave-10b weaker 回填：2026-11-20；wave-10 conditional 回填：2026-11-20；wave-11 retire：2026-11-20；wave-11 exact 回填：2026-11-20；wave-11 blocked followup：2026-11-20；wave-11 matrix backfill：2026-11-20
 
 **2026-11-20 C-lite closeout（当前状态）**：**green 109 / planned 0 /

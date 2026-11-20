@@ -129,7 +129,7 @@ fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是
 
 hover：悬停在 handler token 上返回后端提供的脚本方法签名，范围精确到 handler token。
 
-补全：事件属性值（`bindtap="on"`）返回当前 Page 顶层方法或 Component `methods`，通过 Node `complete` 的 `eventHandler` kind 枚举；事件属性名补全仍属于静态目录，不在此链路重复。
+补全：事件属性值（`bindtap="on"`）返回当前 Page 顶层方法或 Component `methods`，由 native 后端脚本查询提供事件处理函数候选（对应原 Node `complete` 的 `eventHandler` kind）；事件属性名补全仍属于静态目录，不在此链路重复。
 
 ### 7.3 特殊属性
 
@@ -206,7 +206,11 @@ hover：悬停在 handler token 上返回后端提供的脚本方法签名，范
 | 旧结果与重启 | `stale-request`（runtime） | 旧结果不发布，重启后恢复 |
 | Zed 多文档 | `zed-multi-doc`（runtime） | 事件进入正确实例，不重复诊断 |
 
-WT-B 验证（2026-11-16）：
+WT-B 验证（2026-11-16；**历史**）：
+
+> `backends/typescript` 与 `wave5_acceptance` 已随 P7 删除，以下命令当前不可执行，仅保留为历史证据。
+> 当前 native 等价覆盖见 `crates/wxml-lsp/tests/native_parity/native_engine_real.rs`（`loop-scope`、
+> `conditional-union`、`multi-view`、`alias-project`、`component-bindings`）。
 
 ```bash
 (cd backends/typescript && npm ci && npm run build)
@@ -215,7 +219,7 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored
 
 上表中与 WT-B 相关的 `loop-scope`、`conditional-union`、`multi-view`、`alias-project`、`component-bindings` 已由该 runner 执行：`wx:for` locals 按元素/索引类型解析（嵌套、遮蔽、`wx:for-item`/`wx:for-index`、退出循环后不可见、`Record` 键为 `string`），`wx:if/elif/else` 分支窄化生效，不同页面/组件脚本的视图在交错请求下互不污染（发现模型为 1 WXML ↔ 1 脚本，同一脚本多视图不在模型内），`@models/*` hover 与 definition 可解析，组件属性绑定不匹配精确落在绑定表达式。该 runner 被 `#[ignore]` 保护（常规门禁只编译不执行），并且不覆盖属性名补全、重命名及其他未列出的 AC。
 
-WT-C 验证（2026-11-16）：同一 runner 现执行 `component-bindings` 的事件缺失诊断与正反 definition，以及 `events-basic` 的 Page/Component 方法、7 种绑定形式、缺失 handler 精确范围、动态/空/非标识符静默、多注册 `Partial`、非字面量根 `Unsupported`、事件值补全（`eventHandler` kind）。`real_node` 另有真实 Node 冒烟覆盖同一链路的诊断、definition 与补全。
+WT-C 验证（2026-11-16）：同一 runner 现执行 `component-bindings` 的事件缺失诊断与正反 definition，以及 `events-basic` 的 Page/Component 方法、7 种绑定形式、缺失 handler 精确范围、动态/空/非标识符静默、多注册 `Partial`、非字面量根 `Unsupported`、事件值补全（`eventHandler` kind）。`real_node` 另有真实 Node 冒烟覆盖同一链路的诊断、definition 与补全（历史，P7 删除）；当前 native 冒烟见 `crates/wxml-lsp/tests/stdio_type_loop.rs`。
 
 ## 12. 变更规则
 

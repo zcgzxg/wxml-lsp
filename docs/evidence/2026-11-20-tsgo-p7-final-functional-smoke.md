@@ -1,5 +1,9 @@
 # P7 删除后最终安装功能级 LSP 冒烟（2026-11-20）
 
+> **状态（crosscheck 后）**：P1 已由 [`180fa42`](2026-11-20-tsgo-p1-script-diagnostics-retry.md)
+> 修复并真实复验；P2 保留为已知限制。整体为 **P1 fixed / P2 known / PASS-with-followup**，
+> 不是全 PASS。原 P1/P2 描述保留为发现记录。
+
 ## 0. 结论先行
 
 在 P7 删除后的最终安装
@@ -10,19 +14,19 @@
 | 判定项 | 结果 |
 | --- | --- |
 | native 默认路径可用、无 Node | **PASS** |
-| 功能级 LSP 覆盖 | **PARTIAL**（native 主路径可用；1×P1 + 1×P2） |
-| 记录到的 LSP 操作 | 36 条：32 PASS、1 FAIL、3 INFO |
+| 功能级 LSP 覆盖 | **PASS-with-followup**（native 主路径可用；P1 已修复，P2 保留为已知限制） |
+| 记录到的 LSP 操作 | 36 条：32 PASS、1 FAIL（P2）、3 INFO |
 | 进程快照 | 4 条：全部 PASS，唯一后代可执行文件为 `engine/lib/tsc` |
 | fixture 磁盘内容 | 4 个关键文件 SHA-256 前后一致，未写入项目目录 |
-| 最高严重级别 | **P1** |
+| 最高严重级别 | **P1（已修复）**；剩余已知限制为 P2 |
 
 > **修复状态（2026-11-20）**：P1 已修复并有真实 LSP 回归，见
 > [`2026-11-20-tsgo-p1-script-diagnostics-retry.md`](2026-11-20-tsgo-p1-script-diagnostics-retry.md)。
 > 原 P1 描述保留为发现记录；P2 仍为已记录的已知限制。
 
-两个明确问题（详见 §6）：
+两个发现（P1 已修复，P2 保留为已知限制；详见 §6）：
 
-- **P1（高）**：当 JSON 文档在脚本首次诊断仍在进行时 `didOpen`，TS 脚本的
+- **P1（高，已修复）**：当 JSON 文档在脚本首次诊断仍在进行时 `didOpen`，TS 脚本的
   首次 `publishDiagnostics` 被静默丢弃且不再重试；之后编辑脚本才恢复。
   受控 probe 可稳定复现，等待 20 秒仍不发布。
 - **P2（中）**：只有 `Page(...)`/`Component(...)` 注册、没有顶层声明的脚本，
@@ -427,14 +431,15 @@ JS `2322` 和 WXML `2339` 都出现，说明 JS 诊断路径本身可用，不�
 | JS `@ts-check` 诊断 | PASS | 2322 |
 | TSX 语义 | **显式 Unsupported** | 警告 + 拒绝，不伪造 |
 | JSON didOpen | PASS（仅生命周期） | 无诊断 |
-| 脚本诊断在 JSON 并发打开时 | **P1 BLOCKED** | 静默丢弃，不重试 |
+| 脚本诊断在 JSON 并发打开时 | **P1 已修复** | 原静默丢弃已修；真实 LSP 回归见 [P1 证据](2026-11-20-tsgo-p1-script-diagnostics-retry.md) |
 | 无 Node / 进程树 | PASS | 仅 `engine/lib/tsc` |
 | shutdown / exit | PASS | 三个会话都 exit 0 |
 
-**总体判定**：native 默认路径可用且无 Node，**PASS**；功能级覆盖
-**PARTIAL**（主路径 32/36 PASS，1 FAIL，3 INFO；另有 P1 竞态）。
-不宣称“所有能力无缺口”，F1 需要后续修复
-（至少在 project revision 变化后重新调度脚本诊断），F2 需要产品决策
+**总体判定**：native 默认路径可用且无 Node，**PASS-with-followup**；功能级主路径
+32/36 PASS，1 FAIL（P2），3 INFO；原 P1 竞态已由
+[`180fa42` 的修复](2026-11-20-tsgo-p1-script-diagnostics-retry.md) 解决并真实复验。
+不宣称“所有能力无缺口”：P2（仅 `Page(...)`/`Component(...)` 的脚本
+`documentSymbol` 返回 `-32803`）保留为已知限制，需要产品决策
 （空 outline 还是注册级 outline）。
 
 ## 8. 复现命令
@@ -470,7 +475,7 @@ env -u WXML_LSP_BIN -u WXML_TYPE_BACKEND -u WXML_NODE -u WXML_BACKEND_DIR \
 ## 9. 限制与未覆盖
 
 - 只验证 Linux x86_64 安装包；没有 Windows/macOS、升级/回滚、跨机器复现。
-- 只通过 raw LSP 验证；没有 Zed GUI。真实 Zed 的 18/18 冒烟是另一份证据
+- 只通过 raw LSP 验证；没有 Zed GUI。真实 Zed 的 16/16 冒烟是另一份证据
   （` docs/evidence/2026-11-20-tsgo-p7-post-delete-revalidation.md` §6），
   本文件不重复。
 - TSX 是 overlay（磁盘不存在的 `pages/index/App.tsx`）；这足以验证显式

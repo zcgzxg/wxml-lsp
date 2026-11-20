@@ -1,5 +1,10 @@
 # tsgo P7 closeout ledger（2026-11-20）
 
+> **状态：历史归档（Superseded）。** 本文件记录 2026-11-20 P7 closeout 当时
+> 的状态与数字；P7 已由 tag `p7-removed` 完成删除，Node/旧 TS 已删除。下文
+> 所有“未删除 / `deletion_allowed=false` / 尚未完成”表述均为当时快照，不代表
+> 当前状态；当前状态见 `docs/plans/2026-11-17-rust-tsgo-migration.md` §12.16。
+
 ## 0. 结论
 
 P7-1 台账已按 **C-lite owner-scope waiver** 收口：
@@ -18,7 +23,8 @@ P7-1 台账已按 **C-lite owner-scope waiver** 收口：
 `parity=exact` 也只能是 `green`。
 
 Owner 决策：**不需要严格按照原来的 TypeScript/Node 功能写测试，功能合理即可**。
-本文件只记录收口分类和理由，不声称 parity、不声称 Node/旧 TS 已删除。
+本文件只记录收口分类和理由，不声称 parity、不声称 Node/旧 TS 已删除
+（closeout 当时口径；后续已由 tag `p7-removed` 完成删除）。
 
 ## 1. 计数与不变量
 
@@ -204,9 +210,13 @@ cargo fmt --all --check: clean
 ```
 
 `p7-freeze` 的 `deletion_allowed` 仍是 `false`；23 个旧 gate 仍是
-`gate_green`，不是 `mandatory_green`；Node/旧 TS 未删除。
+`gate_green`，不是 `mandatory_green`；Node/旧 TS 未删除
+（以上均为 closeout 当时快照；删除已由 tag `p7-removed` 完成）。
 
 ## 7. 不声称
+
+> 以下为 closeout 当时口径；P7 删除已由 tag `p7-removed` 完成，当前状态见
+> `docs/plans/2026-11-17-rust-tsgo-migration.md` §12.16。
 
 1. 不声称 192 个旧 planned 已迁移或通过；130 reviewed + 29 waived + 33
    retired 都是非 green。
@@ -215,4 +225,5 @@ cargo fmt --all --check: clean
 4. 不声称 22 个无证据 case 已被测试覆盖；它们是 owner 接受的 gap。
 5. 不声称 P7-1 的 gate 轴完成；23 个 gate 仍需 `mandatory_green`/
    `replacement_reviewed`。
-6. 不声称 Node/旧 TS 可以删除；`deletion_allowed` 仍为 false。
+6. 不声称 Node/旧 TS 可以删除；`deletion_allowed` 仍为 false
+   （closeout 当时；tag `p7-removed` 已完成删除）。

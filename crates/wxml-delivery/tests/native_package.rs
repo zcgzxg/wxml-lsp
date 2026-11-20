@@ -25,7 +25,9 @@ use std::time::{Duration, SystemTime};
 
 use support::TempDir;
 use wxml_delivery::archive::extract_tar_gz_allowlisted;
-use wxml_delivery::manifest::{MAX_FILE_BYTES, parse_sha256sums, set_mode, sha256_file};
+use wxml_delivery::manifest::{
+    MAX_FILE_BYTES, parse_sha256sums, set_mode, sha256_bytes, sha256_file,
+};
 use wxml_delivery::manifest_v2::{
     ENGINE_API_SCHEMA_VERSION, ENGINE_AST_HEADER_BYTES, ENGINE_DISTRIBUTION, ENGINE_SOURCE_COMMIT,
     ENGINE_VERSION, ExpectedManifestV2, MINIPROGRAM_TYPINGS_FILE_COUNT, NATIVE_PACKAGE_PLATFORM,
@@ -268,6 +270,8 @@ fn options(input: &Path, output: &Path, version: &str) -> BuildOptionsV2 {
         release_version: version.to_owned(),
         protocol_version: 2,
         built_at: "2026-01-01T00:00:00Z".to_owned(),
+        source_commit: Some("0123456789abcdef0123456789abcdef01234567".to_owned()),
+        source_date_epoch: Some(1_763_683_200),
         force: true,
         dry_run: false,
     }
@@ -499,6 +503,26 @@ fn two_builds_are_byte_identical_and_manifest_index_match_archive() {
         Some(lock_sha256.as_str())
     );
     assert_eq!(provenance["assets"].as_array().unwrap().len(), 2);
+    assert_eq!(
+        provenance["sourceCommit"].as_str(),
+        Some("0123456789abcdef0123456789abcdef01234567")
+    );
+    assert_eq!(provenance["sourceDateEpoch"].as_u64(), Some(1_763_683_200));
+    let mut preimage = String::new();
+    for file in manifest
+        .files
+        .iter()
+        .filter(|file| file.path != "provenance.json")
+    {
+        preimage.push_str(&file.path);
+        preimage.push('\0');
+        preimage.push_str(&file.sha256);
+        preimage.push('\n');
+    }
+    assert_eq!(
+        provenance["archivePayloadDigest"].as_str(),
+        Some(sha256_bytes(preimage.as_bytes()).as_str())
+    );
 }
 
 fn build_error(tree: &NativeTree, base: &Path, needle: &str) {
