@@ -1,0 +1,50 @@
+/* 页面样式（bench fixture）。
+   .card 在 app.wxss 也声明；query/class/definition 期望命中本文件。 */
+@import "index-extra.wxss";
+
+.card {
+  margin: 16rpx 24rpx;
+}
+
+.page-shell {
+  padding-bottom: 48rpx;
+}
+
+.card-highlight {
+  border-left: 6rpx solid #0e7490;
+}
+
+.card-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.card-kicker {
+  color: #0e7490;
+  font-size: 20rpx;
+  letter-spacing: 2rpx;
+}
+
+.card-caption {
+  color: #57606a;
+  font-size: 22rpx;
+}
+
+.anchor-note {
+  color: #86909c;
+}
+
+.form-row {
+  margin: 24rpx;
+}
+
+.form-input {
+  border: 1rpx solid #c9cdd4;
+  border-radius: 8rpx;
+  padding: 16rpx;
+}
+
+.form-input-focus {
+  border-color: #0e7490;
+}

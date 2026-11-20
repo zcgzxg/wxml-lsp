@@ -1,0 +1,5 @@
+<!-- 自定义组件模板：只用于解析组件属性与标签 hover。 -->
+<view class="outer-card">
+  <text class="outer-card-title">{{ title }}</text>
+  <text class="outer-card-summary">{{ summary }}</text>
+</view>

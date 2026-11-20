@@ -111,8 +111,14 @@ pub(crate) fn discover_from_current_exe() -> Result<DiscoveredInstall, EngineDis
     discover(&executable, PinnedEngine::pinned().executable_sha256())
 }
 
-/// Test-only discovery at an explicit executable path with the production pin.
-#[cfg(test)]
+/// Test and benchmark discovery at an explicit executable path with the
+/// production pin.
+///
+/// Production startup always uses [`discover_from_current_exe`]; this seam
+/// exists so `#[cfg(test)]` fixtures and the `bench-support` benchmarks can
+/// point discovery at an installed package without replacing the process
+/// executable.
+#[cfg(any(test, feature = "bench-support"))]
 pub(crate) fn discover_at(executable: &Path) -> Result<DiscoveredInstall, EngineDiscoveryError> {
     discover(executable, PinnedEngine::pinned().executable_sha256())
 }

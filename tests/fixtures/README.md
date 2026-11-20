@@ -308,3 +308,25 @@ manifest 的 `coverage` 只记录覆盖范围，不代表对应断言已经执�
 4. 在 `manifest.json` 增加 case，`positive`/`negative` 与 expected 的 marker 集合完全一致。
 5. 运行 `cargo test -p wxml-lsp --all-features`；需要真实引擎时按 `crates/wxml-backend-tsgo/tests/real_engine.rs` 的 `TSGO_BIN` 说明执行。
 6. 新增外部来源样本前先更新 `docs/reference/provenance.md`；默认只接受自造样本。
+
+## 10. 查询基准样本（bench-queries）
+
+`bench-queries/` 不是 AC 样本，而是 `crates/wxml-lsp/benches` 的查询基准工程：真实小程序目录，含 `app.json`（全局 `usingComponents`）、`app.wxss`（`@import "styles/theme.wxss"`）、`tsconfig.json`、`pages/index/index.{wxml,ts,wxss}`（`index.wxss` 再 `@import "index-extra.wxss"`）与 `components/outer-card/outer-card.{json,ts,wxml,wxss}`。它不进入 `manifest.json`，不改变 AC 覆盖关系。
+
+bench 按**唯一字面量子串**定位（与 §3.1 的 marker 规则一致），当前锚点：
+
+| 组 | 文件 | 唯一锚点 |
+| --- | --- | --- |
+| `query/type/root` | `pages/index/index.wxml` | `{{ title }}` |
+| `query/type/member` | `pages/index/index.wxml` | `{{ user.name }}` |
+| `query/type/local` | `pages/index/index.wxml` | `{{ item.label }}`（同块含 `wx:for="{{ rows }}" wx:for-item="item"`） |
+| `query/tag/builtin` | `pages/index/index.wxml` | `<view class="card">` |
+| `query/tag/component` | `pages/index/index.wxml` | `<outer-card title="基准卡片">` |
+| `query/tag/attribute` | `pages/index/index.wxml` | `<view class="page-shell"`（悬停 `class`） |
+| `query/tag/value` | `pages/index/index.wxml` | `<input type="text" />` |
+| `query/class/hover` | `pages/index/index.wxml` | `class="card"` |
+| `query/class/site` | `pages/index/index.wxml` | `class="card {{extra}}"` |
+
+`class="card"` 同时是内置标签锚点；`.card` 在 `app.wxss` 与 `pages/index/index.wxss` 各声明一次（带注释），`query/class/definition` 期望命中页面 WXSS。`card`、`card-title`、`card-footer`、`card-body`、`card-header`、`card-kicker`、`card-meta`、`card-highlight`、`card-caption`、`card-extra` 共享 `car` 前缀，供补全用例在光标前缀处取值。样式索引合计 33 个不同类名（含 partial；`app.wxss`/`index.wxss`/`theme.wxss` 本体为 31 个），`styles/theme.wxss` 与 `pages/index/index-extra.wxss` 用于覆盖 `@import` 链。
+
+修改该样本时必须同步 bench 锚点；本目录不提供 `expected/`，正确性断言写在 bench 场景内。

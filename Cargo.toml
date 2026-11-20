@@ -55,3 +55,6 @@ expect_used = "warn"
 dbg_macro = "deny"
 todo = "warn"
 unimplemented = "warn"
+# The benchmark feature of `wxml-lsp` is named `bench-support` by the
+# `add-query-benchmarks` change; keep the mandated name without a naming lint.
+redundant_feature_names = "allow"

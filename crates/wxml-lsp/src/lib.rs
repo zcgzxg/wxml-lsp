@@ -42,6 +42,10 @@
 #![allow(clippy::redundant_pub_crate)]
 
 pub(crate) mod backend_tsgo;
+// Benchmark-only entry points. Compiled only with the `bench-support` feature
+// (used by `benches/queries.rs`); production builds never see this module.
+#[cfg(feature = "bench-support")]
+pub mod bench_support;
 // Native backend only. `--stdio` without `--backend` selects it and falls back
 // to HostOnly only when the executable is not inside an installed package;
 // `--backend native` requires the verified install and fails closed. There is

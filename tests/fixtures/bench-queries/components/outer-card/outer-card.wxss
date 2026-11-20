@@ -1,0 +1,16 @@
+/* 组件样式：不参与页面 class 锚点统计。 */
+.outer-card {
+  margin: 0 24rpx;
+  background: #ffffff;
+  border-radius: 16rpx;
+}
+
+.outer-card-title {
+  font-size: 28rpx;
+  font-weight: 600;
+}
+
+.outer-card-summary {
+  color: #86909c;
+  font-size: 22rpx;
+}

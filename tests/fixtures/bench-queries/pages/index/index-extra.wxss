@@ -1,0 +1,8 @@
+/* 页面 partial：由 index.wxss 通过 @import 引入。 */
+.card-extra {
+  padding-bottom: 8rpx;
+}
+
+.list-row-extra {
+  border-bottom: 1rpx solid #f2f3f5;
+}

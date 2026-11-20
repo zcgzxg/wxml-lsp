@@ -1,0 +1,13 @@
+/* 主题层：由 app.wxss 通过 @import 引入。 */
+.theme-surface {
+  background: #ffffff;
+  border-radius: 12rpx;
+}
+
+.theme-border {
+  border: 1rpx solid #e5e6eb;
+}
+
+.theme-accent {
+  color: #0e7490;
+}

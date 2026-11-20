@@ -1,0 +1,9 @@
+{
+  "pages": ["pages/index/index"],
+  "usingComponents": {
+    "outer-card": "/components/outer-card/outer-card"
+  },
+  "window": {
+    "navigationBarTitleText": "查询基准样本"
+  }
+}

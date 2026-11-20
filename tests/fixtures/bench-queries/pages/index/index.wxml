@@ -1,0 +1,78 @@
+<!--
+  查询基准样本（bench-only）。
+  注释中的“锚点”由 crates/wxml-lsp/benches 按唯一子串定位，
+  不是业务逻辑；修改本文件时必须同步更新 tests/fixtures/README.md 与 bench。
+-->
+
+<!-- 锚点 query/tag/attribute：属性名 class 定位到下面的 page-shell 元素 -->
+<view class="page-shell">
+  <view class="toolbar">
+    <!-- 锚点 query/type/root：根 data 变量 title -->
+    <text class="toolbar-title">{{ title }}</text>
+    <text class="toolbar-action">查询基准</text>
+  </view>
+
+  <!-- 锚点 query/tag/builtin 与 query/class/hover：内置标签 view + 静态 class -->
+  <view class="card">
+    <view class="card-header">
+      <text class="card-kicker">BENCH</text>
+      <text class="card-title">概览</text>
+    </view>
+    <!-- 锚点 query/type/member：成员访问 user.name -->
+    <view class="card-body">
+      <text class="text-muted">{{ user.name }}</text>
+      <text class="text-strong">{{ user.role }}</text>
+    </view>
+    <view class="card-footer">
+      <text class="card-meta">成员访问与 class 锚点</text>
+    </view>
+  </view>
+
+  <!-- 锚点 query/type/local：wx:for 局部变量 item -->
+  <view class="list-row" wx:for="{{ rows }}" wx:for-item="item" wx:key="label">
+    <text class="list-label">{{ item.label }}</text>
+    <text class="list-value">{{ item.value }}</text>
+  </view>
+
+  <!-- 锚点 query/class/site：混合 mustache 的 class -->
+  <view class="card {{extra}}">
+    <text class="anchor-note">混合 class 锚点</text>
+  </view>
+
+  <!-- 锚点 query/tag/component：自定义组件 outer-card，title 属性见组件 TS -->
+  <outer-card title="基准卡片">
+    <text class="card-caption">组件插槽内容</text>
+  </outer-card>
+
+  <!-- 锚点 query/tag/value：documented enum value input[type=text] -->
+  <view class="form-row">
+    <input type="text" />
+  </view>
+
+  <!-- 以下内容不含 bench 锚点，只用于让样本规模接近真实页面。 -->
+  <view class="theme-surface theme-border">
+    <view class="flex flex-between">
+      <text class="theme-accent">主题表面</text>
+      <view class="badge">
+        <view class="badge-dot"></view>
+        <text>标记</text>
+      </view>
+    </view>
+    <view class="divider"></view>
+    <text class="card-caption">全局样式与 import 链</text>
+  </view>
+
+  <view class="card card-highlight">
+    <view class="card-header">
+      <text class="card-kicker">NOTE</text>
+      <text class="card-title">使用说明</text>
+    </view>
+    <view class="card-body">
+      <text class="text-muted">本页面只服务于查询基准，不参与业务逻辑。</text>
+      <text class="text-strong">所有锚点均保持唯一。</text>
+    </view>
+    <view class="card-footer">
+      <text class="card-meta">按字面量定位，不做正则匹配。</text>
+    </view>
+  </view>
+</view>

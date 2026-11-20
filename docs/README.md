@@ -14,6 +14,7 @@
 | 类型桥契约 | [C1 类型桥契约](reference/type-bridge-c1.md) | 布局、数据根与 `properties` 覆盖、源码映射、C1 请求/响应和状态 | C0 坐标/身份/后端接口 |
 | 原生合同 | [F0/F1 原生合同](reference/tsgo-native-contract.md) | 引擎固定、进程/FS/查询协议、AST 解码和回退边界 | 迁移期 oracle/ledger 过程 |
 | 诊断策略 | [模板类型诊断策略](reference/type-diagnostics.md) | 严格空值、运行时转换、属性绑定、`any`/`unknown` 和未支持形式的降级规则 | 当前实现进度或测试证据 |
+| 查询基准 | [查询基准](reference/benchmarks.md) | 查询路径的测量边界、运行方式、冷热语义和结果解读规则 | CI 耗时门禁或固定延迟预算 |
 | 验收样本 | [共享验收样本](../tests/fixtures/README.md) | AC-001..AC-013 的正例、反例、runtime 场景和 schema v2 记录 | 类型分析实现 |
 | 架构决策 | [ADR 索引](adr/README.md) | 模块边界、类型检查与映射、文档同步、交付闸门、瘦身和零配置惰性发现决策 | 日常进度 |
 | 来源与许可证 | [来源记录](reference/provenance.md) | 外部调研对象的版本、提交、许可证和归属 | 功能需求 |
@@ -61,6 +62,7 @@ docs/
 │   ├── template.md
 │   └── 0001-*.md ... 0010-zero-config-lazy-discovery.md
 └── reference/
+    ├── benchmarks.md
     ├── contracts.md
     ├── provenance.md
     ├── tsgo-native-contract.md
