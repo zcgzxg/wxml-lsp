@@ -1221,14 +1221,14 @@
       "old_reason": "performance gate: set WXML_TEST_NODE=1 and run with --ignored",
       "must_migrate": true,
       "target_gate": "P5 performance budget (native engine): cold/hot p50/p95/p99, CPU/RSS, 10-round growth, per plan section 5.",
-      "proposed_command": "cargo test -p wxml-lsp --test native_perf_gate --release -- --ignored (name TBD in P2)",
+      "proposed_command": "cargo test -p wxml-lsp --release --test performance_bench -- --ignored --test-threads=1",
       "fail_closed": "Missing native asset or unfinished sampling fails the gate; no Node/no env-var opt-in in the final command.",
       "related_ledger_cases": [],
       "status": "gate_green",
       "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_q2_performance_benchmark",
       "replacement_kind": "native_engine_real_stdio_perf",
       "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70), engine lib assets and pinned miniprogram-api-typings 5.3.1; Linux /proc sampling; release build required (debug is rejected); WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_BIN, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
-      "removal_condition": "Remove the old #[ignore] Node test only in P7 after this gate is mandatory_green (no --ignored) in the required native job; P6-2 does not delete any gate.",
+      "removal_condition": "This is a p7_action=retarget gate: the old #[ignore] test stays in the tree as a native-only shell and must never be marked old_test_removed. The deep oracle is the linked native_engine_real test; both stay green.",
       "gate_evidence": {
         "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/home/zxg/code/rust/wxml-lsp/backends/typescript/node_modules/miniprogram-api-typings cargo test -p wxml-lsp --test native_parity --release native_engine_real -- --ignored --test-threads=1",
         "run_date": "2026-11-20",
@@ -1317,6 +1317,51 @@
           "exact_wall_time_s": 41.11
         },
         "run_context": "clean detached worktree /tmp/opencode/p6-perf-stability-c5ee251 at c5ee251; only crates/wxml-lsp/tests/native_parity.rs, native_engine_real.rs, native_lsp.rs and native_measure.rs were copied in; the primary worktree's unrelated uncommitted production edits were not used. Canonical full native_engine_real release run (18 passed / 0 failed / 36 filtered); each gate_baseline also records its exact single-gate release run."
+      },
+      "retarget_evidence": {
+        "state": "native_only_shell",
+        "gate_id": "G-P5-PERF-01",
+        "file": "crates/wxml-lsp/tests/performance_bench.rs",
+        "test": "q2_performance_benchmark",
+        "since_head": "4dd62b119dc12d904324d2ad20f636ea2e69c70e",
+        "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE -u WXML_TEST_NATIVE_PACKAGE WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/backends/typescript/node_modules/miniprogram-api-typings WXML_PERF_LABEL=p7-retarget WXML_PERF_OUT=/tmp/opencode/p7-retarget/perf.json cargo test -p wxml-lsp --release --test performance_bench -- --ignored --test-threads=1 --nocapture",
+        "run_date": "2026-11-20",
+        "run_head": "4dd62b119dc12d904324d2ad20f636ea2e69c70e",
+        "result": "1 passed / 0 failed / 9 filtered",
+        "exit": 0,
+        "profile": "release (debug is rejected by the gate)",
+        "wall_time_s": 181.61,
+        "engine_identity": {
+          "version": "7.1.0-beta",
+          "git_head": "3e9236361fa97a9e6c685f4833ac457ae2d8c50a",
+          "ast_protocol": 9,
+          "executable_sha256": "a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70",
+          "executable_size_bytes": 24522912
+        },
+        "asserted": {
+          "static_completion_p95_ms": 0.058,
+          "semantic_completion_p95_ms": 0.501,
+          "semantic_hover_p95_ms": 1.118,
+          "diagnostics_stop_p95_ms": 88.431,
+          "cancel_queued_request_p95_ms": 0.325,
+          "cancel_running_response_p95_ms": 0.32,
+          "single_ts_call_occupancy_p50_ms": 400.48,
+          "server_tree_rss_growth_percent": -4.933,
+          "engine_processes": 1,
+          "clean_shutdown": true
+        },
+        "budgets": {
+          "static_completion_p95_ms": 50.0,
+          "semantic_completion_p95_ms": 200.0,
+          "semantic_hover_p95_ms": 200.0,
+          "diagnostics_stop_p95_ms": 500.0,
+          "cancel_queued_request_p95_ms": 100.0,
+          "cancel_running_response_p95_ms": 100.0,
+          "single_ts_call_occupancy_p50_min_ms": 300.0,
+          "rss_growth_percent_max": 15.0
+        },
+        "blocked": [],
+        "note": "The real-engine segment runs the pinned engine over --stdio --backend native with a tagged index page, so static completion is a real static attribute-name site. The cancel/queue/occupancy segment runs the same in-process server over a 400 ms test SlowBackend, exactly like the retired SlowTransport. It never starts Node or the engine, so it does not claim a native engine cancel-latency figure. The run used the modified test files in this worktree; WXML_PERF_REQUIRE_CLEAN was not set."
       }
     },
     {
@@ -1326,14 +1371,14 @@
       "old_reason": "stability gate: set WXML_TEST_NODE=1 and run with --ignored",
       "must_migrate": true,
       "target_gate": "P5 recovery/stability: 10 open/edit/close rounds, no monotonic RSS/process growth, no stale diagnostics.",
-      "proposed_command": "cargo test -p wxml-lsp --test native_stability -- --ignored (name TBD in P2)",
+      "proposed_command": "cargo test -p wxml-lsp --release --test q2_stability -- --ignored --test-threads=1",
       "fail_closed": "Missing native engine fails; leaked child processes or unbounded RSS fail.",
       "related_ledger_cases": [],
       "status": "gate_green",
       "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ten_round_lifecycle_stability",
       "replacement_kind": "native_engine_real_stdio_stability",
       "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70), engine lib assets and pinned miniprogram-api-typings 5.3.1; Linux /proc sampling and SIGKILL restart; release build used for evidence; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_BIN, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
-      "removal_condition": "Remove the old #[ignore] Node test only in P7 after this gate is mandatory_green (no --ignored) in the required native job; P6-2 does not delete any gate.",
+      "removal_condition": "This is a p7_action=retarget gate: the old #[ignore] test stays in the tree as a native-only shell and must never be marked old_test_removed. The deep oracle is the linked native_engine_real test; both stay green.",
       "gate_evidence": {
         "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/home/zxg/code/rust/wxml-lsp/backends/typescript/node_modules/miniprogram-api-typings cargo test -p wxml-lsp --test native_parity --release native_engine_real -- --ignored --test-threads=1",
         "run_date": "2026-11-20",
@@ -1410,6 +1455,74 @@
           "rss_kib_final": 208240
         },
         "run_context": "clean detached worktree /tmp/opencode/p6-perf-stability-c5ee251 at c5ee251; only crates/wxml-lsp/tests/native_parity.rs, native_engine_real.rs, native_lsp.rs and native_measure.rs were copied in; the primary worktree's unrelated uncommitted production edits were not used. Canonical full native_engine_real release run (18 passed / 0 failed / 36 filtered); each gate_baseline also records its exact single-gate release run."
+      },
+      "retarget_evidence": {
+        "state": "native_only_shell",
+        "gate_id": "G-P5-STABILITY-01",
+        "file": "crates/wxml-lsp/tests/q2_stability.rs",
+        "test": "ten_round_lifecycle_stability",
+        "since_head": "4dd62b119dc12d904324d2ad20f636ea2e69c70e",
+        "command": "env -u WXML_TYPE_BACKEND -u WXML_BACKEND_DIR -u WXML_NODE -u WXML_TEST_NATIVE_PACKAGE WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine TSGO_TYPINGS_ROOT=/home/zxg/.local/share/opencode/worktree/e15985/tsgo-migration/backends/typescript/node_modules/miniprogram-api-typings WXML_STABILITY_ALLOW_DIRTY=1 WXML_STABILITY_LABEL=retarget-p7 WXML_STABILITY_OUT=/tmp/opencode/p7-retarget/stability.json cargo test -p wxml-lsp --release --test q2_stability -- --ignored --test-threads=1",
+        "run_date": "2026-11-20",
+        "run_head": "4dd62b119dc12d904324d2ad20f636ea2e69c70e",
+        "result": "1 passed / 0 failed / 9 filtered",
+        "exit": 0,
+        "profile": "release",
+        "wall_time_s": 4.04,
+        "engine_identity": {
+          "version": "7.1.0-beta",
+          "git_head": "3e9236361fa97a9e6c685f4833ac457ae2d8c50a",
+          "ast_protocol": 9,
+          "executable_sha256": "a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70",
+          "executable_size_bytes": 24522912
+        },
+        "asserted": {
+          "cycles": 10,
+          "engine_restarts": 10,
+          "baseline_rss_kib": 158880,
+          "final_rss_kib": 156732,
+          "rss_growth_percent": -1.352,
+          "engine_processes": 1,
+          "clean_shutdown": true,
+          "detached_worker": false,
+          "sandbox_left": false
+        },
+        "budgets": {
+          "in_run_rss_growth_percent_max": 15.0
+        },
+        "blocked": [
+          {
+            "scenario": "typing burst plus in-flight cancel",
+            "status": "BLOCKED",
+            "reason": "the retarget shell does not duplicate the old 10-edit burst and immediate cancellation; the deep native oracle covers update cadence and the scheduler gate covers cancellation separately",
+            "follow_up": "add a burst/cancel round to native_engine_real or the retarget shell before claiming equivalence"
+          },
+          {
+            "scenario": "resource delete/restore and watched files",
+            "status": "BLOCKED",
+            "reason": "no native gate currently asserts the missing-resource diagnostic round-trip",
+            "follow_up": "add a bounded didChangeWatchedFiles delete/restore assertion"
+          },
+          {
+            "scenario": "app.json overlay removal/restore",
+            "status": "BLOCKED",
+            "reason": "the old gate was the only hover-null assertion for a removed page; native ownerless hover is proven by G-P5-E2E-09 but the app overlay combination is unproven",
+            "follow_up": "probe app.json overlay hover before adding the assertion"
+          },
+          {
+            "scenario": "40-request bounded queue burst",
+            "status": "BLOCKED",
+            "reason": "the deep native oracle keeps 16 serial hovers; a concurrent 40-request burst is not re-proven here",
+            "follow_up": "add a concurrent 40-hover burst over the native stdio session"
+          },
+          {
+            "scenario": "external RSS baseline ratio",
+            "status": "BLOCKED",
+            "reason": "the retired baseline mixes Rust parent RSS with a Node child; server-tree RSS is not comparable",
+            "follow_up": "re-baseline server-tree RSS in a dedicated native run before asserting a ratio"
+          }
+        ],
+        "note": "One fresh --stdio --backend native server performs 10 update/query/SIGKILL/replay/close-reopen cycles. Each cycle must see a new engine PID and the disk string again; round-1 to final server-tree RSS must stay inside the frozen 15% cap. The deep oracle still owns the 12-cycle overlay replay and settle-RSS tail. The run used WXML_STABILITY_ALLOW_DIRTY=1 because this worktree carries the uncommitted retarget edits; WXML_STABILITY_REQUIRE_CLEAN remains the default."
       }
     },
     {
@@ -24152,27 +24265,28 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "reviewed",
-        "note": "Oracle `backends/typescript/test/overlay.test.ts:36` changes only a JSDoc comment, then asserts the hover type stays `string` and the doc becomes the unsaved text in both layouts. Rust asserts hover type and doc composition and separately that an unsaved script overlay reaches WXML hover, but no test performs a doc-only edit; `docSource` and symbol-bridge are absent.",
+        "note": "Oracle `backends/typescript/test/overlay.test.ts:36` changes only a JSDoc comment, then asserts the hover type stays `string` and the doc becomes the unsaved text in both layouts. Rust asserts hover type and doc composition and, separately, that an unsaved native overlay reaches WXML hover and survives an engine restart. No test performs a doc-only edit; `docSource` and symbol-bridge are absent. The old zed_sync.rs overlay test was retired with the Node backend and replaced by the native overlay-replay gate, which uses a type-changing overlay rather than a JSDoc-only edit.",
         "rust_tests": [
           {
             "path": "crates/wxml-lsp/src/backend_tsgo/tests.rs",
-            "line": 1125,
+            "line": 1198,
             "test": "hover_composes_type_documentation_and_jsdoc",
             "fully_qualified": "wxml_lsp::backend_tsgo::tests::hover_composes_type_documentation_and_jsdoc",
             "note": "Asserts the native hover publishes the type fence, comment text and `@deprecated` tag in the documented order."
           },
           {
-            "path": "crates/wxml-lsp/tests/zed_sync.rs",
-            "line": 592,
-            "test": "unsaved_script_overlay_reaches_wxml_analysis",
-            "fully_qualified": "zed_sync::unsaved_script_overlay_reaches_wxml_analysis",
-            "note": "Asserts an unsaved script change reaches the WXML hover text and published diagnostics without a disk save."
+            "path": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs",
+            "line": 511,
+            "test": "native_non_owner_overlay_replay_survives_restart",
+            "fully_qualified": "native_engine_real::native_non_owner_overlay_replay_survives_restart",
+            "note": "Asserts an unsaved script/model overlay is visible through WXML hover and survives an engine restart. It uses a type-changing overlay, so it does not prove the JSDoc-only unchanged-type half of this case."
           }
-        ]
+        ],
+        "follow_up": "Add a native doc-only overlay assertion (hover type stays `string`, documentation changes) in native_parity/project_overlay.rs; this case must stay reviewed until then."
       },
       "review": {
         "group_id": "rg-weaker-subset",
-        "note": "Oracle `backends/typescript/test/overlay.test.ts:36` changes only a JSDoc comment, then asserts the hover type stays `string` and the doc becomes the unsaved text in both layouts. Rust asserts hover type and doc composition and separately that an unsaved script overlay reaches WXML hover, but no test performs a doc-only edit; `docSource` and symbol-bridge are absent."
+        "note": "Oracle `backends/typescript/test/overlay.test.ts:36` changes only a JSDoc comment, then asserts the hover type stays `string` and the doc becomes the unsaved text in both layouts. Rust asserts hover type and doc composition and, separately, that an unsaved native overlay reaches WXML hover and survives an engine restart. No test performs a doc-only edit; `docSource` and symbol-bridge are absent. The old zed_sync.rs overlay test was retired with the Node backend and replaced by the native overlay-replay gate, which uses a type-changing overlay rather than a JSDoc-only edit."
       }
     },
     {

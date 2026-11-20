@@ -36,8 +36,12 @@
 //! the delete/retarget split: only `p7_action=delete` gates may carry
 //! `old_test_removed=true`; a `retarget` gate that tries to leave the tree is a
 //! hard failure. Marking a still-present gate as removed, or removing a gate
-//! without that frozen evidence, is also a hard failure. No gate is removed by
-//! this slice.
+//! without that frozen evidence, is also a hard failure. P7 retargets the nine
+//! `stdio_type_loop` gates and the two `performance_bench`/`q2_stability`
+//! gates in place: all eleven keep their old `#[ignore]` test and must never
+//! carry `old_test_removed`. The deep oracle for every gate stays in
+//! `native_engine_real`; `retargeted_gates_are_native_only_and_keep_their_old_test`
+//! rejects a return to the retired Node boundary.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
@@ -1566,6 +1570,115 @@ fn old_test_removed_accepts_a_simulated_deletion_with_frozen_evidence() {
     .expect("the simulated deletion must pass with frozen evidence");
     assert_eq!(report.removed, BTreeSet::from(["G-SYNTH-07".to_owned()]));
     assert_eq!(report.present, BTreeSet::from(["G-SYNTH-06".to_owned()]));
+}
+
+/// Every P7 retarget gate must stay native-only in its old test file.
+///
+/// `validate_old_test_removals` already proves that a retarget gate keeps its
+/// old `#[ignore]` test. This test additionally pins the in-place replacement
+/// for all eleven retarget gates (nine `stdio_type_loop` shells plus
+/// `performance_bench` / `q2_stability`): the same gate id provisions the
+/// native package, no retired Node boundary string may return, and the deep
+/// oracle link must still resolve.
+#[test]
+fn retargeted_gates_are_native_only_and_keep_their_old_test() {
+    let ledger_value = ledger::load_ledger();
+    let root = ledger::object(&ledger_value, "ledger root");
+    let gates = ledger::required_array(root, "ignored_rust_tests", "ledger root");
+    let actions = load_p7_actions();
+    let workspace = ledger::workspace_root();
+    let mut checked = BTreeSet::new();
+
+    for gate_id in P7_RETARGET_GATE_IDS {
+        let gate = gates
+            .iter()
+            .find_map(|gate| {
+                let gate = gate.as_object()?;
+                (gate.get("gate_id").and_then(Value::as_str) == Some(*gate_id)).then_some(gate)
+            })
+            .unwrap_or_else(|| panic!("ledger is missing retarget gate {gate_id}"));
+        assert!(
+            !old_test_removed(gate, gate_id).expect("old_test_removed schema"),
+            "{gate_id} is a retarget gate and must keep its old #[ignore] test"
+        );
+        assert_eq!(
+            actions.get(*gate_id).map(String::as_str),
+            Some(P7_ACTION_RETARGET),
+            "{gate_id} must stay p7_action=retarget in {P7_FREEZE_RELATIVE_PATH}"
+        );
+        let file = ledger::required_str(gate, "file", gate_id);
+        let test = ledger::required_str(gate, "test", gate_id);
+        let source = read_source(&workspace.join(file));
+        for forbidden in [
+            "wxml_lsp::backend_node",
+            "NodeBackend",
+            "NodeTransport",
+            "WXML_TEST_NODE",
+            "dist/server.js",
+        ] {
+            assert!(
+                !source.contains(forbidden),
+                "{gate_id} {file} still carries the retired Node boundary {forbidden:?}"
+            );
+        }
+        assert!(
+            source.contains(&format!("NativeGate::require(\"{gate_id}\")")),
+            "{gate_id} {file} must provision the native package with its own gate id"
+        );
+        assert!(
+            source.contains("Session::start("),
+            "{gate_id} {file} must start a real native server session"
+        );
+        assert!(
+            source.contains(&format!("fn {test}(")),
+            "{gate_id} {file} lost the frozen test function {test}"
+        );
+
+        if matches!(*gate_id, "G-P5-PERF-01" | "G-P5-STABILITY-01") {
+            let retarget = ledger::required_object(gate, "retarget_evidence", gate_id);
+            assert_eq!(
+                ledger::required_str(retarget, "state", gate_id),
+                "native_only_shell",
+                "{gate_id} retarget evidence must record the native-only shell"
+            );
+            assert_eq!(ledger::required_str(retarget, "file", gate_id), file);
+            assert_eq!(ledger::required_str(retarget, "test", gate_id), test);
+            assert!(
+                retarget.get("blocked").and_then(Value::as_array).is_some(),
+                "{gate_id} retarget evidence must carry an explicit blocked list"
+            );
+        }
+
+        let replacement = ledger::required_str(gate, "replacement_test", gate_id);
+        let (replacement_file, replacement_function) = replacement
+            .split_once("::")
+            .unwrap_or_else(|| panic!("{gate_id} replacement lacks a Rust test path"));
+        assert_eq!(
+            replacement_file, NATIVE_GATE_FILE,
+            "{gate_id} deep oracle must stay in {NATIVE_GATE_FILE}"
+        );
+        let replacement_source = read_source(&workspace.join(replacement_file));
+        assert!(
+            replacement_source.contains(&format!("fn {replacement_function}(")),
+            "{gate_id} deep oracle {replacement} is missing"
+        );
+        assert!(
+            checked.insert(*gate_id),
+            "duplicate retarget gate {gate_id}"
+        );
+    }
+
+    assert_eq!(
+        checked.len(),
+        P7_RETARGET_GATE_IDS.len(),
+        "the retarget gate set drifted"
+    );
+    for gate_id in ["G-P5-PERF-01", "G-P5-STABILITY-01"] {
+        assert!(
+            checked.contains(gate_id),
+            "{gate_id} must remain in the perf/stability retarget set"
+        );
+    }
 }
 
 #[test]

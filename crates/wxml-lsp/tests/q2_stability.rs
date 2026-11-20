@@ -1,56 +1,113 @@
 #![cfg(target_os = "linux")]
 #![allow(
+    dead_code,
+    clippy::cast_precision_loss,
     clippy::expect_used,
-    clippy::unwrap_used,
+    clippy::needless_pass_by_value,
+    clippy::redundant_pub_crate,
     clippy::too_many_lines,
-    clippy::cast_possible_truncation,
-    clippy::cast_precision_loss
+    clippy::unwrap_used
 )]
 
-//! 10-round lifecycle stability gate: edits, cancellation, Node restart,
-//! overlay replay, resource delete/restore, app removal and close/reopen.
+//! P7 native-only shell for `G-P5-STABILITY-01`.
+//!
+//! The frozen gate name and `#[ignore]` coordinate are kept. The old Node
+//! child is replaced by the real `wxml-lsp --stdio --backend native` package
+//! from `native_parity/native_package.rs`:
+//!
+//! - one fresh server process;
+//! - 10 open/edit/query cycles;
+//! - one engine `SIGKILL` per cycle, a fresh engine PID, and a replayed query;
+//! - per-cycle server-tree RSS, thread and process accounting with the frozen
+//!   15% growth cap;
+//! - a close/reopen of the template every cycle;
+//! - clean `shutdown`/`exit` with no detached worker, leaked sandbox or child.
+//!
+//! The deep native oracle stays in
+//! `native_parity/native_engine_real.rs::native_ten_round_lifecycle_stability`
+//! (12 cycles, unsaved script overlay replay, settle-RSS tail); this shell does
+//! not duplicate it.
 //!
 //! ```bash
-//! (cd backends/typescript && npm ci && npm run build)
-//! WXML_TEST_NODE=1 WXML_STABILITY_REQUIRE_CLEAN=1 WXML_STABILITY_LABEL=strict \
-//! WXML_STABILITY_OUT=/tmp/opencode/q2-bench/stability-strict.json \
-//!   CARGO_TARGET_DIR=/home/zxg/.cache/wxml-targets/full-performance-local \
-//!   cargo test -p wxml-lsp --test q2_stability -- --ignored --nocapture
+//! WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 \
+//! TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc \
+//! TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine \
+//! TSGO_TYPINGS_ROOT=backends/typescript/node_modules/miniprogram-api-typings \
+//! cargo test -p wxml-lsp --release --test q2_stability -- \
+//!   --ignored --test-threads=1
 //! ```
 //!
-//! Strict recovery assertions are the default. `WXML_STABILITY_LENIENT=1` is
-//! only for the W3 old-code comparison and disables the overlay/restart/page
-//! assertions. `WXML_STABILITY_RSS_BASELINE=<json>` only selects an RSS
-//! comparison file and never changes strictness.
-//!
-//! Raw round data is written to `WXML_STABILITY_OUT` (default
-//! `/tmp/opencode/q2-bench/stability-<label>.json`). Generated evidence is
-//! never committed.
+//! Strict semantics are the only mode: the retired `WXML_STABILITY_LENIENT`
+//! escape hatch is not supported. A dirty worktree fails by default; set
+//! `WXML_STABILITY_ALLOW_DIRTY=1` only for a local evidence run. Raw rounds are
+//! written to `WXML_STABILITY_OUT` (default
+//! `/tmp/opencode/q2-bench/stability-<label>.json`).
 
-mod common;
-mod q2_support;
-
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
-use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
-use wxml_lsp::backend_node::{NodeBackend, NodeBackendConfig};
-use wxml_lsp::project_host::ProjectState;
+use wxml_backend_tsgo::config::{AST_PROTOCOL_VERSION, ENGINE_VERSION, PinnedEngine};
 
-use q2_support::{Client, WXML, app_fixture};
+#[path = "native_parity/native_gate_env.rs"]
+mod native_gate_env;
+#[path = "native_parity/native_lsp.rs"]
+mod native_lsp;
+#[path = "native_parity/native_package.rs"]
+mod native_package;
 
-const SCRIPT: &str = "pages/index/index.ts";
+#[cfg(target_os = "linux")]
+#[path = "native_parity/native_measure.rs"]
+mod native_measure;
+
+/// The harness modules only need the workspace root from this crate's ledger.
+mod ledger {
+    use std::path::PathBuf;
+
+    /// Returns the nearest ancestor containing the workspace `Cargo.toml`.
+    pub(crate) fn workspace_root() -> PathBuf {
+        let start = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for ancestor in start.ancestors() {
+            let manifest = ancestor.join("Cargo.toml");
+            let Ok(text) = std::fs::read_to_string(&manifest) else {
+                continue;
+            };
+            if text.lines().any(|line| line.trim() == "[workspace]") {
+                return ancestor.to_path_buf();
+            }
+        }
+        panic!("workspace root not found above {}", start.display());
+    }
+}
+
+use native_lsp::Session;
+use native_measure::{
+    engine_children, git_head, growth_percent, kill_process, sample_tree, u64_to_f64, wait_gone,
+};
+use native_package::NativeGate;
+
+const WXML: &str = "pages/index/index.wxml";
 const IMAGE: &str = "pages/index/images/logo.png";
+const ROUNDS: usize = 10;
+const RSS_GROWTH_PERCENT_MAX: f64 = 15.0;
+const NAME_RETRY_ATTEMPTS: usize = 5;
 
 fn page_text(comment: &str) -> String {
     format!("<view><image src=\"images/logo.png\" />{{{{ user.name }}}}</view>{comment}")
 }
 
-fn name_position() -> u32 {
-    let text = page_text("");
-    u32::try_from(text.find("name").expect("name") + 2).expect("position")
+fn write_fixture(gate: &NativeGate) {
+    gate.write(
+        "app.json",
+        r#"{"pages":["pages/index/index"],"usingComponents":{}}"#,
+    );
+    gate.write(WXML, &page_text(""));
+    gate.write(
+        "pages/index/index.ts",
+        "Page({ data: { user: { name: 'Ada' } } });",
+    );
+    gate.write(IMAGE, "png");
+    gate.write("tsconfig.json", r#"{"compilerOptions":{"strict":true}}"#);
 }
 
 fn repo_root() -> PathBuf {
@@ -59,88 +116,6 @@ fn repo_root() -> PathBuf {
         .and_then(std::path::Path::parent)
         .expect("repo root")
         .to_path_buf()
-}
-
-fn rss_kib() -> u64 {
-    let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
-    status
-        .lines()
-        .find_map(|line| line.strip_prefix("VmRSS:"))
-        .and_then(|value| value.split_whitespace().next())
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0)
-}
-
-fn threads() -> usize {
-    std::fs::read_dir("/proc/self/task").map_or(0, |entries| entries.filter_map(Result::ok).count())
-}
-
-/// A process started by this test whose command line mentions the backend.
-struct ChildInfo {
-    pid: u32,
-    rss_kib: u64,
-    threads: usize,
-}
-
-fn node_children() -> Vec<ChildInfo> {
-    let parent = std::process::id();
-    let mut children = Vec::new();
-    let Ok(entries) = std::fs::read_dir("/proc") else {
-        return children;
-    };
-    for entry in entries.flatten() {
-        let Some(pid) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<u32>().ok())
-        else {
-            continue;
-        };
-        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
-            continue;
-        };
-        let Some(close) = stat.rfind(')') else {
-            continue;
-        };
-        let mut fields = stat[close + 1..].split_whitespace();
-        let _state = fields.next();
-        let Some(parent_pid) = fields.next().and_then(|value| value.parse::<u32>().ok()) else {
-            continue;
-        };
-        if parent_pid != parent {
-            continue;
-        }
-        let cmdline = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-        let cmdline = String::from_utf8_lossy(&cmdline);
-        if !cmdline.contains("dist/server.js") {
-            continue;
-        }
-        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
-        let rss_kib = status
-            .lines()
-            .find_map(|line| line.strip_prefix("VmRSS:"))
-            .and_then(|value| value.split_whitespace().next())
-            .and_then(|value| value.parse().ok())
-            .unwrap_or(0);
-        let threads = std::fs::read_dir(format!("/proc/{pid}/task"))
-            .map_or(0, |entries| entries.filter_map(Result::ok).count());
-        children.push(ChildInfo {
-            pid,
-            rss_kib,
-            threads,
-        });
-    }
-    children
-}
-
-fn kill_node_children() -> usize {
-    let children = node_children();
-    for child in &children {
-        let _ = std::process::Command::new("kill")
-            .args(["-9", &child.pid.to_string()])
-            .status();
-    }
-    children.len()
 }
 
 fn output_path(label: &str) -> PathBuf {
@@ -160,391 +135,304 @@ fn git_output(args: &[&str]) -> String {
         .map_or_else(|| "unknown".to_owned(), |value| value.trim().to_owned())
 }
 
-fn wait_for_completion(client: &mut Client, uri: &str, position: (u32, u32)) -> Value {
-    let id = client.request(
-        "textDocument/completion",
-        json!({
-            "textDocument": {"uri": uri},
-            "position": {"line": position.0, "character": position.1},
-        }),
-    );
-    client.response(id)
+fn round(value: f64) -> f64 {
+    (value * 1000.0).round() / 1000.0
 }
 
-fn wait_for_hover(client: &mut Client, uri: &str, position: (u32, u32)) -> Value {
-    let id = client.request(
-        "textDocument/hover",
-        json!({
-            "textDocument": {"uri": uri},
-            "position": {"line": position.0, "character": position.1},
-        }),
-    );
-    client.response(id)
+fn engine_identity() -> Value {
+    let pin = PinnedEngine::pinned();
+    json!({
+        "version": ENGINE_VERSION,
+        "git_head": pin.git_head(),
+        "ast_protocol": AST_PROTOCOL_VERSION,
+        "executable_sha256": pin.executable_sha256(),
+    })
 }
 
-fn wait_for_hover_until(
-    client: &mut Client,
+/// Retries the post-restart hover until it observes the disk type.
+///
+/// The first request after `SIGKILL` may legitimately arrive before the engine
+/// respawns. The gate records that class and requires the replay, not a
+/// zero-latency first answer.
+fn hover_until_string(
+    session: &mut Session,
     uri: &str,
     position: (u32, u32),
-    mut predicate: impl FnMut(&Value) -> bool,
-) -> Value {
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let value = wait_for_hover(client, uri, position);
-        if predicate(&value) || Instant::now() >= deadline {
-            return value;
+) -> (Value, Vec<String>) {
+    let mut classes = Vec::with_capacity(NAME_RETRY_ATTEMPTS);
+    let mut last = Value::Null;
+    for _ in 0..NAME_RETRY_ATTEMPTS {
+        last = session.hover(uri, position);
+        let class = if last.get("error").is_some() {
+            "error".to_owned()
+        } else if native_lsp::hover_is_empty(&last) {
+            "empty".to_owned()
+        } else if last["result"]["contents"]["value"]
+            .as_str()
+            .is_some_and(|text| text.contains("string"))
+        {
+            "string".to_owned()
+        } else {
+            "other".to_owned()
+        };
+        classes.push(class.clone());
+        if class == "string" {
+            return (last, classes);
         }
-        thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(25));
     }
+    (last, classes)
 }
 
 #[test]
-#[ignore = "stability gate: set WXML_TEST_NODE=1 and run with --ignored"]
+#[ignore = "P7 native stability gate: set WXML_TEST_NATIVE=1 and WXML_REQUIRE_REAL_ENGINE=1 with a native package"]
 fn ten_round_lifecycle_stability() {
+    let Some(gate) = NativeGate::require("G-P5-STABILITY-01") else {
+        return;
+    };
+    write_fixture(&gate);
+    let allow_dirty = std::env::var("WXML_STABILITY_ALLOW_DIRTY").as_deref() == Ok("1");
+    let dirty = git_output(&["status", "--porcelain"]);
     assert!(
-        std::env::var("WXML_TEST_NODE").as_deref() == Ok("1"),
-        "set WXML_TEST_NODE=1 to run the stability gate"
-    );
-    // Strict is the default and final-gate mode. Only the W3 old-code
-    // comparison may set LENIENT=1; the RSS baseline path is independent.
-    let lenient = std::env::var("WXML_STABILITY_LENIENT").as_deref() == Ok("1");
-    let strict_semantics = !lenient;
-    let repo = repo_root();
-    let server_path = std::env::var_os("WXML_TEST_BACKEND_SERVER").map_or_else(
-        || repo.join("backends/typescript/dist/server.js"),
-        PathBuf::from,
-    );
-    let backend_dir = std::env::var_os("WXML_TEST_BACKEND_DIR")
-        .map_or_else(|| repo.join("backends/typescript"), PathBuf::from);
-    assert!(server_path.is_file(), "build the Node backend first");
-
-    let project = app_fixture();
-    project.write(IMAGE, "png");
-    let (server_stream, client_stream) = UnixStream::pair().expect("socket pair");
-    let server_read = server_stream.try_clone().expect("clone");
-    let host = std::sync::Arc::new(ProjectState::new());
-    let backend = std::sync::Arc::new(NodeBackend::new(
-        NodeBackendConfig {
-            server: Some(server_path),
-            backend_dir: Some(backend_dir),
-            timeout: Duration::from_secs(20),
-            ..NodeBackendConfig::default()
-        },
-        host.clone(),
-    ));
-    let handle =
-        thread::spawn(move || wxml_lsp::run_with_host(server_read, server_stream, backend, host));
-    let mut client = Client::new(client_stream);
-    client.initialize(
-        &project,
-        json!({"wxml": {"diagnostics": {"debounceMs": 120}}}),
+        allow_dirty || dirty.is_empty(),
+        "strict stability gate requires a clean worktree; dirty:\n{dirty}\n\
+         set WXML_STABILITY_ALLOW_DIRTY=1 only for a local evidence run"
     );
 
-    let uri = project.uri(WXML);
-    let script_uri = project.uri(SCRIPT);
-    let image_uri = project.uri(IMAGE);
-    let app_uri = project.uri("app.json");
-    let mut version = 1_u64;
-    client.open(&uri, &page_text(""), version);
-    client.wait_diagnostics(&uri, version);
+    let uri = gate.uri(WXML);
+    let text = page_text("");
+    let name_position = native_lsp::lsp_position(&text, "name");
 
     let started = Instant::now();
-    let mut rounds = Vec::new();
+    let mut session = Session::start(&gate);
+    let mut version = 1_u64;
+    let diagnostics = session.open_wxml(&uri, &text, version);
+    assert_eq!(
+        diagnostics,
+        json!([]),
+        "the stability page must start clean: {diagnostics}"
+    );
+    let initial = session.hover(&uri, name_position);
+    assert!(
+        initial["result"]["contents"]["value"]
+            .as_str()
+            .is_some_and(|text| text.contains("string")),
+        "the initial disk hover must be string: {}",
+        session.describe(&initial)
+    );
+
+    let cpu_start = sample_tree(session.pid()).cpu_ticks;
+    let mut rounds = Vec::with_capacity(ROUNDS);
     let mut baseline_rss = 0_u64;
-    let mut baseline_node_rss = 0_u64;
-    for round in 0..10 {
+    let mut final_rss = 0_u64;
+    for round_index in 0..ROUNDS {
         let round_started = Instant::now();
-        // Typing burst plus cancellation of an in-flight backend completion.
-        for _ in 0..10 {
-            version += 1;
-            client.change(
-                &uri,
-                &page_text(&format!("\n<!-- round {round} v{version} -->")),
-                version,
-            );
-        }
-        let id = client.request(
-            "textDocument/completion",
-            json!({
-                "textDocument": {"uri": uri},
-                "position": {"line": 0, "character": name_position()},
-            }),
+        version += 1;
+        let update = page_text(&format!("\n<!-- cycle {round_index} update -->"));
+        let diagnostics = session.change_wxml(&uri, &update, version);
+        assert_eq!(
+            diagnostics,
+            json!([]),
+            "round {round_index}: update must stay clean: {diagnostics}"
         );
-        client.notify("$/cancelRequest", json!({"id": id}));
-        let cancelled = client.response(id);
+        let disk = session.hover(&uri, name_position);
         assert!(
-            cancelled.get("result").is_some() || cancelled.get("error").is_some(),
-            "round {round}: cancellation answer: {cancelled}"
+            disk["result"]["contents"]["value"]
+                .as_str()
+                .is_some_and(|text| text.contains("string")),
+            "round {round_index}: disk hover must stay string: {}",
+            session.describe(&disk)
         );
-        client.wait_diagnostics(&uri, version);
 
-        // Unsaved script overlay: `name` becomes a number, which is visible in
-        // hover. It must survive the backend restart below.
-        version += 1;
-        client.open_language(
-            &script_uri,
-            "typescript",
-            &format!("Page({{ data: {{ user: {{ name: {round} }} }} }});"),
-            version,
+        let engines = engine_children(session.pid(), gate.package_root());
+        assert_eq!(
+            engines.len(),
+            1,
+            "round {round_index}: expected one engine before restart: {engines:?}"
         );
-        version += 1;
-        client.change(
-            &uri,
-            &page_text(&format!("\n<!-- overlay {round} -->")),
-            version,
-        );
-        client.wait_diagnostics(&uri, version);
-        let overlay_hover =
-            wait_for_hover_until(&mut client, &uri, (0, name_position()), |value| {
-                !strict_semantics || value.to_string().contains("number")
-            });
-        if strict_semantics {
-            assert!(
-                overlay_hover.to_string().contains("number"),
-                "round {round}: overlay not visible in hover: {overlay_hover}"
-            );
-        }
+        let old_engine = engines[0];
+        kill_process(old_engine);
+        wait_gone(&[old_engine], "killed engine");
 
-        // Kill the real Node process and recover through the epoch barrier.
-        let killed = kill_node_children();
-        assert!(killed >= 1, "round {round}: no Node child to kill");
-        thread::sleep(Duration::from_millis(50));
-        version += 1;
-        client.change(
-            &uri,
-            &page_text(&format!("\n<!-- crash {round} -->")),
-            version,
-        );
-        let _ = client.wait_diagnostics(&uri, version);
-        version += 1;
-        client.change(
-            &uri,
-            &page_text(&format!("\n<!-- recovered {round} -->")),
-            version,
-        );
-        let recovered = if strict_semantics {
-            client.wait_diagnostics_matching(&uri, |message| {
-                message["params"]["version"]
-                    .as_u64()
-                    .is_some_and(|seen| seen >= version)
-                    && message["params"]["diagnostics"]
-                        .as_array()
-                        .is_some_and(|diagnostics| {
-                            diagnostics.iter().all(|diagnostic| {
-                                !diagnostic["message"]
-                                    .as_str()
-                                    .unwrap_or_default()
-                                    .to_ascii_lowercase()
-                                    .contains("unavailable")
-                            })
-                        })
-            })
-        } else {
-            client.wait_diagnostics(&uri, version)
-        };
-        let recovered_hover =
-            wait_for_hover_until(&mut client, &uri, (0, name_position()), |value| {
-                !strict_semantics || value.to_string().contains("number")
-            });
-        if strict_semantics {
-            assert!(
-                recovered_hover.to_string().contains("number"),
-                "round {round}: overlay not replayed after restart: {recovered} / {recovered_hover}"
-            );
-        }
-
-        // Resource deletion and restoration.
-        std::fs::remove_file(project.root().join(IMAGE)).expect("delete resource");
-        client.watched(&image_uri, 3);
-        let missing = client.wait_diagnostics_matching(&uri, |message| {
-            message.to_string().contains("does not exist")
-        });
-        assert!(missing.to_string().contains("does not exist"));
-        project.write(IMAGE, "png");
-        client.watched(&image_uri, 1);
-        let _ = client.wait_diagnostics_matching(&uri, |message| {
-            !message.to_string().contains("does not exist")
-        });
-
-        // App removal and restore through an unsaved app.json overlay. A
-        // removed page has no hover target; restoring it brings the overlay
-        // type back.
-        client.open_language(&app_uri, "json", r#"{"pages":[]}"#, 1);
-        let _ = client.wait_next_diagnostics(&uri);
-        let removed_hover =
-            wait_for_hover_until(&mut client, &uri, (0, name_position()), |value| {
-                value["result"].is_null() || !strict_semantics
-            });
+        let (replay, first_request_classes) = hover_until_string(&mut session, &uri, name_position);
         assert!(
-            removed_hover["result"].is_null() || !strict_semantics,
-            "round {round}: removed page answered with types: {removed_hover}"
+            replay["result"]["contents"]["value"]
+                .as_str()
+                .is_some_and(|text| text.contains("string")),
+            "round {round_index}: hover did not recover after engine restart \
+             (observed {first_request_classes:?}): {}",
+            session.describe(&replay)
         );
-        client.close(&app_uri);
-        let _ = client.wait_next_diagnostics(&uri);
-        let restored_hover =
-            wait_for_hover_until(&mut client, &uri, (0, name_position()), |value| {
-                !strict_semantics || value.to_string().contains("number")
-            });
-        if strict_semantics {
-            assert!(
-                restored_hover.to_string().contains("number"),
-                "round {round}: restored page lost its overlay type: {restored_hover}"
-            );
-        }
+        let new_engines = engine_children(session.pid(), gate.package_root());
+        assert_eq!(
+            new_engines.len(),
+            1,
+            "round {round_index}: restart did not leave one live engine: {new_engines:?}"
+        );
+        assert_ne!(
+            new_engines[0], old_engine,
+            "round {round_index}: restart reused the killed engine process"
+        );
 
-        // Close/reopen the template; no state may survive the close.
-        client.close(&uri);
+        // Close and reopen the template: no old revision may survive the close.
+        session.notify(
+            "textDocument/didClose",
+            json!({"textDocument": {"uri": uri}}),
+        );
         version += 1;
-        client.open(&uri, &page_text(""), version);
-        client.wait_diagnostics(&uri, version);
-
-        let children = node_children();
-        assert!(
-            children.len() <= 1,
-            "round {round}: leaked Node processes: {children:?}",
-            children = children.iter().map(|child| child.pid).collect::<Vec<_>>()
+        let reopened = page_text(&format!("\n<!-- cycle {round_index} reopened -->"));
+        let diagnostics = session.open_wxml(&uri, &reopened, version);
+        assert_eq!(
+            diagnostics,
+            json!([]),
+            "round {round_index}: a reopened template must start clean: {diagnostics}"
         );
-        let node_rss = children.first().map_or(0, |child| child.rss_kib);
-        if round == 1 {
-            baseline_rss = rss_kib();
-            baseline_node_rss = node_rss;
+        let reopened_hover = session.hover(&uri, name_position);
+        assert!(
+            reopened_hover["result"]["contents"]["value"]
+                .as_str()
+                .is_some_and(|text| text.contains("string")),
+            "round {round_index}: a reopened template lost its disk type: {}",
+            session.describe(&reopened_hover)
+        );
+
+        let sample = sample_tree(session.pid());
+        assert!(
+            sample.rss_kib > 0,
+            "round {round_index}: server tree RSS must be non-zero"
+        );
+        if round_index == 1 {
+            baseline_rss = sample.rss_kib;
         }
+        final_rss = sample.rss_kib;
+        let growth = growth_percent(baseline_rss, sample.rss_kib);
         rounds.push(json!({
-            "round": round,
-            "rss_kib": rss_kib(),
-            "node_rss_kib": node_rss,
-            "threads": threads(),
-            "node_threads": children.first().map_or(0, |child| child.threads),
-            "node_processes": children.len(),
-            "wall_ms": round_started.elapsed().as_secs_f64() * 1000.0,
+            "round": round_index,
             "version": version,
+            "restart_first_request_classes": first_request_classes,
+            "rss_kib": sample.rss_kib,
+            "rss_growth_from_round1_percent": round(growth),
+            "threads": sample.threads,
+            "processes": sample.pids.len(),
+            "engine_pid": new_engines[0],
+            "wall_ms": round(round_started.elapsed().as_secs_f64() * 1000.0),
         }));
         println!(
-            "round {round}: rss={} KiB node_rss={} KiB threads={} took {:?}",
-            rss_kib(),
-            node_rss,
-            threads(),
-            round_started.elapsed()
+            "stability round {round_index}: v{version} rss={} KiB growth={growth:.2}% engine={} wall={:.1} ms",
+            sample.rss_kib,
+            new_engines[0],
+            round_started.elapsed().as_secs_f64() * 1000.0
         );
     }
 
-    // Bounded queue: a final burst must fit without `server is busy`.
-    let position = (0_u32, name_position());
-    let mut ids = Vec::new();
-    for _ in 0..40 {
-        ids.push(client.request(
-            "textDocument/hover",
-            json!({
-                "textDocument": {"uri": uri},
-                "position": {"line": position.0, "character": position.1},
-            }),
+    let final_engines = engine_children(session.pid(), gate.package_root());
+    assert_eq!(
+        final_engines.len(),
+        1,
+        "the final cycle must keep exactly one engine: {final_engines:?}"
+    );
+    let final_sample = sample_tree(session.pid());
+    assert!(
+        final_sample.rss_kib > 0,
+        "the final server tree RSS must be non-zero"
+    );
+
+    let pid = session.pid();
+    let descendants = session.descendant_pids();
+    let evidence = session.shutdown_with_evidence();
+    let detached = evidence.stderr.contains("detaching it");
+    assert!(
+        !detached,
+        "server detached a worker on shutdown; stderr:\n{}",
+        evidence.stderr
+    );
+    wait_gone(&[pid], "server after stability shutdown");
+    wait_gone(&descendants, "engine after stability shutdown");
+    gate.assert_no_native_sandbox();
+    gate.tripwire().assert_absent();
+
+    let rss_growth = growth_percent(baseline_rss, final_rss);
+    let mut failures = Vec::new();
+    if baseline_rss == 0 {
+        failures.push("round-1 RSS baseline is zero".to_owned());
+    } else if rss_growth > RSS_GROWTH_PERCENT_MAX {
+        failures.push(format!(
+            "server tree RSS grew {rss_growth:.2}% across {ROUNDS} cycles (cap {RSS_GROWTH_PERCENT_MAX:.0}%)"
         ));
     }
-    for id in ids {
-        let response = client.response(id);
-        assert!(
-            response.get("error").is_none()
-                || response["error"]["message"] != json!("server is busy"),
-            "queue rejected a bounded hover burst: {response}"
-        );
-    }
-    let _ = wait_for_completion(&mut client, &uri, position);
-    let _ = wait_for_hover(&mut client, &uri, position);
-
-    let final_rss = rss_kib();
-    let final_children = node_children();
-    let final_node_rss = final_children.first().map_or(0, |child| child.rss_kib);
-    let rss_growth = if baseline_rss == 0 {
-        0.0
-    } else {
-        (final_rss as f64 - baseline_rss as f64) / baseline_rss as f64 * 100.0
-    };
-    let node_rss_growth = if baseline_node_rss == 0 {
-        0.0
-    } else {
-        (final_node_rss as f64 - baseline_node_rss as f64) / baseline_node_rss as f64 * 100.0
-    };
-    let dirty = git_output(&["status", "--porcelain"]);
-    if strict_semantics || std::env::var("WXML_STABILITY_REQUIRE_CLEAN").as_deref() == Ok("1") {
-        assert!(
-            dirty.is_empty(),
-            "strict stability gate requires a clean worktree; dirty:\n{dirty}"
-        );
-    }
-    let mut failures = Vec::new();
-    if rss_growth > 15.0 {
-        failures.push(format!("rust rss grew {rss_growth:.2}% in 10 rounds"));
-    }
-    if node_rss_growth > 15.0 {
-        failures.push(format!("node rss grew {node_rss_growth:.2}% in 10 rounds"));
-    }
-    let baseline_value = std::env::var_os("WXML_STABILITY_RSS_BASELINE").and_then(|path| {
-        std::fs::read_to_string(&path).ok().map(|text| {
-            let parsed: Value = serde_json::from_str(&text).expect("baseline stability JSON");
-            (PathBuf::from(path), parsed)
-        })
-    });
-    let mut baseline_ratios = json!(null);
-    if let Some((_path, baseline)) = baseline_value.as_ref() {
-        let baseline_final_rss = baseline["summary"]["final_rss_kib"].as_u64().unwrap_or(0);
-        let baseline_final_node = baseline["summary"]["final_node_rss_kib"]
-            .as_u64()
-            .unwrap_or(0);
-        let rust_ratio = if baseline_final_rss == 0 {
-            1.0
-        } else {
-            final_rss as f64 / baseline_final_rss as f64
-        };
-        let node_ratio = if baseline_final_node == 0 {
-            1.0
-        } else {
-            final_node_rss as f64 / baseline_final_node as f64
-        };
-        if rust_ratio > 1.15 {
-            failures.push(format!(
-                "rust steady RSS {final_rss} KiB is {rust_ratio:.3}x baseline {baseline_final_rss} KiB"
-            ));
-        }
-        if node_ratio > 1.15 {
-            failures.push(format!(
-                "node steady RSS {final_node_rss} KiB is {node_ratio:.3}x baseline {baseline_final_node} KiB"
-            ));
-        }
-        baseline_ratios = json!({
-            "rust_final_ratio": rust_ratio,
-            "node_final_ratio": node_ratio,
-            "baseline_final_rss_kib": baseline_final_rss,
-            "baseline_final_node_rss_kib": baseline_final_node,
-        });
-    } else if std::env::var("WXML_STABILITY_REQUIRE_BASELINE").as_deref() == Ok("1") {
-        failures.push("WXML_STABILITY_RSS_BASELINE is required but missing/unreadable".to_owned());
-    }
+    let cpu_ticks = final_sample.cpu_ticks.saturating_sub(cpu_start);
     let report = json!({
         "label": std::env::var("WXML_STABILITY_LABEL").unwrap_or_else(|_| "run".to_owned()),
-        "harness": "q2-r3-stability",
-        "git_head": git_output(&["rev-parse", "HEAD"]),
+        "harness": "p7-native-retarget-stability",
+        "gate": "G-P5-STABILITY-01",
+        "git_head": git_head(&ledger::workspace_root()),
         "git_dirty": dirty,
-        "strict_semantics": strict_semantics,
-        "lenient": lenient,
-        "rss_baseline": baseline_value.as_ref().map(|(path, _)| path.display().to_string()),
+        "strict_semantics": true,
+        "allow_dirty": allow_dirty,
+        "engine": engine_identity(),
+        "environment": {
+            "transport": "--stdio --backend native",
+            "cycles": ROUNDS,
+            "restart": "SIGKILL the engine child every cycle; the replay must observe the disk type and a new engine PID",
+            "profile": if cfg!(debug_assertions) { "debug" } else { "release" },
+        },
         "rounds": rounds,
         "summary": {
             "baseline_rss_kib": baseline_rss,
             "final_rss_kib": final_rss,
-            "rss_growth_percent": rss_growth,
-            "baseline_node_rss_kib": baseline_node_rss,
-            "final_node_rss_kib": final_node_rss,
-            "node_rss_growth_percent": node_rss_growth,
-            "node_processes": final_children.len(),
-            "wall_ms": started.elapsed().as_secs_f64() * 1000.0,
+            "rss_growth_percent": round(rss_growth),
+            "engine_processes": final_engines.len(),
+            "cpu_ticks": cpu_ticks,
+            "cpu_seconds_at_100hz": round(u64_to_f64(cpu_ticks) / 100.0),
+            "wall_ms": round(started.elapsed().as_secs_f64() * 1000.0),
         },
-        "baseline_ratios": baseline_ratios,
+        "shutdown": {
+            "server_pid": evidence.pid,
+            "elapsed_ms": round(evidence.elapsed.as_secs_f64() * 1000.0),
+            "detached_worker": detached,
+            "sandbox_left": false,
+            "processes_left": 0,
+        },
         "thresholds": {
-            "in_run_rss_growth_percent_max": 15.0,
-            "steady_rss_ratio_max": 1.15,
+            "in_run_rss_growth_percent_max": RSS_GROWTH_PERCENT_MAX,
             "pass": failures.is_empty(),
             "failures": failures,
-        }
+        },
+        "blocked": [
+            {
+                "scenario": "typing burst plus in-flight cancel",
+                "status": "BLOCKED",
+                "reason": "the retarget shell does not duplicate the old 10-edit burst and immediate cancellation; the deep native oracle covers update cadence and the scheduler gate covers cancellation separately",
+            },
+            {
+                "scenario": "resource delete/restore and watched files",
+                "status": "BLOCKED",
+                "reason": "no native gate currently asserts the missing-resource diagnostic round-trip; this is a named follow-up, not a relaxed threshold",
+            },
+            {
+                "scenario": "app.json overlay removal/restore",
+                "status": "BLOCKED",
+                "reason": "the old gate was the only hover-null assertion for a removed page; native ownerless-hover is proven by G-P5-E2E-09 but the app overlay combination is unproven",
+            },
+            {
+                "scenario": "40-request bounded queue burst",
+                "status": "BLOCKED",
+                "reason": "the deep native oracle keeps 16 serial hovers; a concurrent 40-request burst is not re-proven here",
+            },
+            {
+                "scenario": "external RSS baseline ratio",
+                "status": "BLOCKED",
+                "reason": "the retired baseline mixes Rust parent RSS with a Node child; server-tree RSS is not comparable, so only the in-run 15% cap is asserted",
+            },
+        ],
+        "notes": [
+            "The old `#[ignore]` gate coordinate and test name are preserved; the Node boundary is replaced by `--stdio --backend native`.",
+            "The deep native oracle stays in native_parity/native_engine_real.rs::native_ten_round_lifecycle_stability (12 cycles, unsaved overlay replay, settle tail).",
+            "One server process performs 10 cycles; each cycle restarts the engine, not the server. This matches the retired gate shape.",
+            "RSS is the summed VmRSS of the server tree sampled from /proc with a hard process cap; the baseline is round 1 to exclude the one-time cold working set.",
+            "Strict assertions are always on; the retired WXML_STABILITY_LENIENT mode is not supported.",
+            "No Node process, Node shim or external sampler is used.",
+        ],
     });
     let path = output_path(report["label"].as_str().unwrap_or("run"));
     if let Some(parent) = path.parent() {
@@ -558,8 +446,4 @@ fn ten_round_lifecycle_stability() {
         "stability thresholds failed: {}",
         report["thresholds"]["failures"]
     );
-
-    client.finish();
-    let outcome = handle.join().expect("server thread").expect("outcome");
-    assert!(outcome.clean_shutdown);
 }
