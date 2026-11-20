@@ -4,14 +4,10 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use wxml_delivery::acquire::{AcquireMode, AcquireOptions, acquire};
 use wxml_delivery::acquire_v2::{AcquireModeV2, AcquireOptionsV2, acquire_v2};
 use wxml_delivery::archive::extract_tar_gz;
 use wxml_delivery::error::{DeliveryError, Result};
-use wxml_delivery::install::{
-    BINARY_ENV, InstallLock, InstallOutcome, InstallRoot, explicit_binary,
-};
-use wxml_delivery::manifest::ExpectedManifest;
+use wxml_delivery::install::{BINARY_ENV, InstallLock, InstallRoot, explicit_binary};
 use wxml_delivery::manifest_v2::{
     ExpectedManifestV2, LegacyManifestProjection, ManifestSchema, NATIVE_PACKAGE_PLATFORM,
     read_legacy_manifest, read_manifest_schema, read_manifest_v2,
@@ -24,7 +20,7 @@ use wxml_delivery::paths::{host_platform, shell_quote};
 use wxml_delivery::semver::compare_versions;
 use wxml_delivery::source::Source;
 use wxml_delivery::state::InstallState;
-use wxml_delivery::verify::{binary_version, check_backend, check_binary};
+use wxml_delivery::verify::binary_version;
 use wxml_delivery::verify_v2::verify_tree_v2;
 
 const USAGE: &str = "\
@@ -35,12 +31,12 @@ Commands:
   upgrade        Install the newest stable release from the source
   rollback       Switch to a previously installed verified version (--to)
   recover        Apply journal recovery rules without activating a new version
-  versions       List versions available from a source
+  versions       List native versions available from a source
   list           List installed versions (legacy schema v1 is read-only)
   current        Print the active binary path and package version
   verify         Fully verify the active installation and native engine
   env            Print the WXML_LSP_BIN export only
-  verify-package Verify a package archive without installing it
+  verify-package Verify a native package archive without installing it
 
 Options:
   --root DIR          Install root (default: $XDG_DATA_HOME/wxml-lsp or
@@ -54,10 +50,10 @@ Options:
   --help              Print this message
 
 Manifest schema 2 packages are native and never require Node. Schema 1
-packages remain readable for migration only: their manifest identity may be
-inspected and their tree may be hashed, but the installer never executes their
-binary or Node backend, never probes `node --version`, and never reactivates a
-legacy package as a rollback target. `env` prints only WXML_LSP_BIN.
+packages are read-only: their manifest identity may be inspected and their tree
+may be hashed, but they cannot be built, installed, upgraded or activated by
+this installer. The installer never executes a legacy binary or Node backend
+and never probes `node --version`. `env` prints only WXML_LSP_BIN.
 
 Download is disabled unless --enable-download is passed with a remote source.
 A local --from-dir is an explicit offline source. Every verified release
@@ -285,21 +281,19 @@ fn install(options: &Options) -> Result<()> {
     let lock = root.lock()?;
     if let Some(source) = source.as_ref() {
         let (schema, bytes) = read_source_schema(source)?;
-        if schema == 2 {
-            return install_native_version(
-                options,
-                &root,
-                &lock,
-                Some(source),
-                &bytes,
-                AcquireModeV2::Exact(version),
-            );
-        }
-        if schema != 1 {
+        if schema != 2 {
             return Err(unsupported_index_schema(schema));
         }
-        reject_v1_over_native(&root)?;
-    } else if let Some(bytes) = wxml_delivery::acquire_v2::read_cached_native_index(&root)? {
+        return install_native_version(
+            options,
+            &root,
+            &lock,
+            Some(source),
+            &bytes,
+            AcquireModeV2::Exact(version),
+        );
+    }
+    if let Some(bytes) = wxml_delivery::acquire_v2::read_cached_native_index(&root)? {
         return install_native_version(
             options,
             &root,
@@ -308,18 +302,8 @@ fn install(options: &Options) -> Result<()> {
             &bytes,
             AcquireModeV2::Exact(version),
         );
-    } else if active_is_native(&root)? {
-        return Err(native_source_required());
     }
-    // Legacy schema v1 package: keep the existing verified Node-package flow.
-    let acquired = acquire(&AcquireOptions {
-        root: &root,
-        source: source.as_ref(),
-        mode: AcquireMode::Exact(version.clone()),
-        allow_download: options.enable_download,
-        offline: options.offline,
-    })?;
-    install_and_report(&root, &acquired.tree, &version, acquired.cache_hit)
+    Err(native_source_required())
 }
 
 fn upgrade(options: &Options) -> Result<()> {
@@ -336,44 +320,22 @@ fn upgrade(options: &Options) -> Result<()> {
     let lock = root.lock()?;
     if let Some(source) = source.as_ref() {
         let (schema, bytes) = read_source_schema(source)?;
-        if schema == 2 {
-            return install_native_version(
-                options,
-                &root,
-                &lock,
-                Some(source),
-                &bytes,
-                AcquireModeV2::Latest,
-            );
-        }
-        if schema != 1 {
+        if schema != 2 {
             return Err(unsupported_index_schema(schema));
         }
-        reject_v1_over_native(&root)?;
-    } else if let Some(bytes) = wxml_delivery::acquire_v2::read_cached_native_index(&root)? {
+        return install_native_version(
+            options,
+            &root,
+            &lock,
+            Some(source),
+            &bytes,
+            AcquireModeV2::Latest,
+        );
+    }
+    if let Some(bytes) = wxml_delivery::acquire_v2::read_cached_native_index(&root)? {
         return install_native_version(options, &root, &lock, None, &bytes, AcquireModeV2::Latest);
-    } else if active_is_native(&root)? {
-        return Err(native_source_required());
     }
-    // Legacy schema v1 package: keep the existing verified Node-package flow.
-    let current = root.current_version()?;
-    let acquired = acquire(&AcquireOptions {
-        root: &root,
-        source: source.as_ref(),
-        mode: AcquireMode::Latest,
-        allow_download: options.enable_download,
-        offline: options.offline,
-    })?;
-    let version = acquired.manifest.package_version.clone();
-    if let Some(current) = current {
-        if compare_versions(&version, &current).is_lt() {
-            cleanup_staging(&root, &acquired.tree);
-            return Err(DeliveryError::InvalidArgument(format!(
-                "refusing to downgrade from {current} to {version}; use `rollback --to {version}` explicitly"
-            )));
-        }
-    }
-    install_and_report(&root, &acquired.tree, &version, acquired.cache_hit)
+    Err(native_source_required())
 }
 
 fn rollback(options: &Options) -> Result<()> {
@@ -427,43 +389,11 @@ fn rollback(options: &Options) -> Result<()> {
         );
         return Ok(());
     }
-    // Legacy schema v1 installation: keep the existing verified Node-package flow.
-    if !root.versions_dir().join(&target).is_dir() {
-        let source = source(options)?;
-        let acquired = acquire(&AcquireOptions {
-            root: &root,
-            source: source.as_ref(),
-            mode: AcquireMode::Exact(target.clone()),
-            allow_download: options.enable_download,
-            offline: options.offline,
-        })?;
-        let result = root.install_tree(&acquired.tree, &target);
-        cleanup_staging(&root, &acquired.tree);
-        result?;
-    }
-    let manifest = root.verify_installed(&target)?;
-    let target_dir = root.versions_dir().join(&target);
-    check_binary(&target_dir, &manifest)?;
-    check_backend(&target_dir, &manifest)?;
-    let previous = root.current_version()?;
-    root.switch_durable(&target)?;
-    let binary = root.current_binary()?;
-    let version = match binary_version(&binary) {
-        Ok(version) => version,
-        Err(error) => {
-            if let Some(previous) = previous {
-                let _ = root.switch_durable(&previous);
-                return Err(DeliveryError::Runtime(format!(
-                    "{error}; rolled back to {previous}"
-                )));
-            }
-            return Err(error);
-        }
-    };
-    println!("rolled back to {target}");
-    println!("binary: {}", binary.display());
-    println!("reported version: {version}");
-    Ok(())
+    Err(DeliveryError::InstallState(
+        "legacy schema v1 packages are read-only and cannot be activated as a rollback target; \
+         install a schema v2 native package instead"
+            .to_owned(),
+    ))
 }
 
 fn recover(options: &Options) -> Result<()> {
@@ -566,20 +496,7 @@ fn read_source_schema(source: &Source) -> Result<(u32, Vec<u8>)> {
 
 fn unsupported_index_schema(schema: u32) -> DeliveryError {
     DeliveryError::InvalidPackage(format!(
-        "unsupported release index schema {schema}; this installer supports schema 1 (legacy read-only) and 2 (native)"
-    ))
-}
-
-fn active_is_native(root: &InstallRoot) -> Result<bool> {
-    // `state.json` is the authoritative native marker. A legacy root may have a
-    // dangling `current` after a manual version removal; that must keep working
-    // with the schema v1 cache flow rather than becoming a native error.
-    if InstallState::read(root)?.is_some() {
-        return Ok(true);
-    }
-    Ok(matches!(
-        inspect_current(root),
-        Ok(CurrentInstall::Native { .. })
+        "unsupported release index schema {schema}; this installer installs schema 2 (native) only, and schema 1 (legacy Node) is read-only"
     ))
 }
 
@@ -606,17 +523,6 @@ fn legacy_projection(root: &InstallRoot, version: &str) -> Result<LegacyManifest
         )));
     }
     Ok(projection)
-}
-
-fn reject_v1_over_native(root: &InstallRoot) -> Result<()> {
-    if active_is_native(root)? {
-        return Err(DeliveryError::InstallState(
-            "refusing to install a legacy schema v1 package over an active native installation; \
-             roll back explicitly or remove the native root"
-                .to_owned(),
-        ));
-    }
-    Ok(())
 }
 
 fn native_source_required() -> DeliveryError {
@@ -662,27 +568,7 @@ fn versions(options: &Options) -> Result<()> {
         }
         return Ok(());
     }
-    if schema != 1 {
-        return Err(unsupported_index_schema(schema));
-    }
-    let index = wxml_delivery::manifest::parse_index(&bytes)?;
-    let mut available: Vec<_> = index
-        .releases
-        .iter()
-        .filter(|release| release.platform == platform)
-        .collect();
-    available.sort_by(|left, right| compare_versions(&left.version, &right.version));
-    if available.is_empty() {
-        println!("no releases for {platform}");
-        return Ok(());
-    }
-    for release in available {
-        println!(
-            "{}  protocol {}  node >= {}",
-            release.version, release.protocol_version, release.node_minimum_version
-        );
-    }
-    Ok(())
+    Err(unsupported_index_schema(schema))
 }
 
 fn list(options: &Options) -> Result<()> {
@@ -907,66 +793,10 @@ fn verify_package(options: &Options) -> Result<()> {
             println!("archive sha256: {}", release.sha256);
             return Ok(());
         }
-        if schema != 1 {
-            return Err(unsupported_index_schema(schema));
-        }
-        let index = wxml_delivery::manifest::parse_index(&bytes)?;
-        let release = index.find(&version, &platform)?;
-        source.fetch_archive(release, &archive)?;
-        let manifest = wxml_delivery::verify::verify_archive(
-            &archive,
-            &scratch.join("verify"),
-            ExpectedManifest {
-                version: Some(&release.version),
-                platform: Some(&platform),
-                protocol_version: Some(release.protocol_version),
-            },
-        )?;
-        println!(
-            "verified package {} {} ({})",
-            manifest.package, manifest.package_version, manifest.platform
-        );
-        println!(
-            "protocol: {}  node: >= {}  files: {}",
-            manifest.protocol_version,
-            manifest.node.minimum_version,
-            manifest.files.len()
-        );
-        println!("archive sha256: {}", release.sha256);
-        Ok(())
+        Err(unsupported_index_schema(schema))
     })();
     let _ = std::fs::remove_dir_all(&scratch);
     result
-}
-
-fn install_and_report(
-    root: &InstallRoot,
-    tree: &Path,
-    version: &str,
-    cache_hit: bool,
-) -> Result<()> {
-    let previous = root.current_version()?;
-    let result = root.install_tree(tree, version);
-    if let Err(error) = result {
-        let _ = std::fs::remove_dir_all(tree);
-        cleanup_staging(root, tree);
-        return Err(error);
-    }
-    let outcome = result?;
-    let report = print_install_result(root, version, outcome, cache_hit);
-    cleanup_staging(root, tree);
-    match report {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            if let Some(previous) = previous {
-                let _ = root.switch_durable(&previous);
-                return Err(DeliveryError::Runtime(format!(
-                    "{error}; rolled back to {previous}"
-                )));
-            }
-            Err(error)
-        }
-    }
 }
 
 fn cleanup_staging(root: &InstallRoot, tree: &Path) {
@@ -982,30 +812,6 @@ fn cleanup_staging(root: &InstallRoot, tree: &Path) {
     if parent.starts_with(&tmp) && parent != tmp {
         let _ = std::fs::remove_dir_all(parent);
     }
-}
-
-fn print_install_result(
-    root: &InstallRoot,
-    version: &str,
-    outcome: InstallOutcome,
-    cache_hit: bool,
-) -> Result<()> {
-    let directory = root.versions_dir().join(version);
-    let manifest = root.verify_installed(version)?;
-    check_binary(&directory, &manifest)?;
-    check_backend(&directory, &manifest)?;
-    let action = match outcome {
-        InstallOutcome::Installed => "installed",
-        InstallOutcome::AlreadyInstalled => "already installed",
-    };
-    let origin = if cache_hit { "cache" } else { "source" };
-    println!("{action} {version} ({origin})");
-    println!("binary: {}", root.current_binary()?.display());
-    println!(
-        "export {BINARY_ENV}={}",
-        shell_quote(root.current_binary()?.to_string_lossy().as_ref())
-    );
-    Ok(())
 }
 
 fn root_path(options: &Options) -> Result<PathBuf> {

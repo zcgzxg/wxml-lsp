@@ -39,6 +39,9 @@
     unreachable_pub
 )]
 
+#[path = "support/legacy_fixture.rs"]
+mod legacy_fixture;
+
 #[path = "real_asset/support.rs"]
 mod real_asset_support;
 

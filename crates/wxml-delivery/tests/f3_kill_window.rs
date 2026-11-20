@@ -89,6 +89,9 @@ mod gate;
 #[path = "f3_kill_window/support.rs"]
 mod support;
 
+#[path = "support/legacy_fixture.rs"]
+mod legacy_fixture;
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "f3_kill_window/real.rs"]
 mod real;

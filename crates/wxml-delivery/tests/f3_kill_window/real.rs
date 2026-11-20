@@ -846,14 +846,13 @@ impl LegacyFixture {
         let marker = fixture.base.path().join("LEGACY_ENTRY_EXECUTED");
         let release = build_legacy_release(&fixture.base, &marker);
         let root = fixture.root("root");
-        let install = install_legacy(
+        install_legacy(
             &fixture.install_bin,
             &release,
             &root,
             &fixture.tripwires,
             &fixture.work,
         );
-        assert_success(&install, "legacy v1 baseline");
         clear_marker(&marker);
         assert_legacy_current(&root);
         let fingerprint = legacy_fingerprint(&root, LEGACY_VERSION);

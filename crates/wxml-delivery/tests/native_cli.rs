@@ -743,8 +743,9 @@ fn legacy_v1_is_read_only_and_migrates_without_node() {
     let poison = base.path().join("poison");
     fs::create_dir_all(&poison).unwrap();
 
-    // Installing a legacy package must not execute Node either, even with the
-    // legacy variables poisoned and PATH containing only tripwire shims.
+    // A schema v1 source cannot be installed, and the attempt must not execute
+    // Node even with the legacy variables poisoned and PATH containing only
+    // tripwire shims.
     let mut legacy_install = installer();
     legacy_install
         .env("PATH", &shims)
@@ -762,11 +763,14 @@ fn legacy_v1_is_read_only_and_migrates_without_node() {
             "--offline",
         ]);
     let result = run(&mut legacy_install);
-    assert_success(&result);
-    assert!(stdout(&result).contains(&format!("installed {V1}")));
+    assert_failure(&result, "schema 2");
     assert!(!stdout(&result).contains("node:"), "{}", stdout(&result));
     assert_no_node(base.path());
-    assert_eq!(active_version(&root), V1);
+    assert!(!root.join("versions").exists());
+
+    // The read-only root shape left by a pre-P7 install is recreated directly.
+    let release_dir = support::pack(&v1_release, V1);
+    support::legacy_fixture::install_legacy_root(&root, &release_dir, V1);
     let legacy_dir = root.join("versions").join(V1);
     let legacy_fingerprint = tree_fingerprint(&legacy_dir).unwrap();
 
@@ -868,7 +872,7 @@ fn legacy_v1_is_read_only_and_migrates_without_node() {
         "--offline",
     ]);
     let result = run(&mut downgrade);
-    assert_failure(&result, "refusing to install a legacy");
+    assert_failure(&result, "schema 2");
     assert_eq!(active_version(&root), V2);
     assert_eq!(tree_fingerprint(&legacy_dir).unwrap(), legacy_fingerprint);
 }
@@ -877,7 +881,18 @@ fn legacy_v1_is_read_only_and_migrates_without_node() {
 fn native_manifest_v1_and_v2_are_never_reinterpreted() {
     let base = TempDir::new("native-cli-schema");
     let v1_release = base.path().join("v1-release");
-    support::pack(&v1_release, V1);
+    let release_dir = support::pack(&v1_release, V1);
+    let manifest = release_dir.join("manifest.json");
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    assert_eq!(value["schemaVersion"], 1);
+    assert!(value.get("engine").is_none());
+    assert_eq!(
+        value["node"],
+        json!({"minimumVersion": "24.0.0", "backendVersion": "0.1.0"})
+    );
+    assert!(value["unknownLegacyField"].is_null());
+
+    // The schema v1 index is detected and rejected, never reinterpreted as v2.
     let root = base.path().join("root");
     let mut command = installer();
     command.args([
@@ -891,18 +906,8 @@ fn native_manifest_v1_and_v2_are_never_reinterpreted() {
         "--offline",
     ]);
     let result = run(&mut command);
-    assert_success(&result);
-    assert!(!stdout(&result).contains("(native)"));
-
-    let manifest = root.join("versions").join(V1).join("manifest.json");
-    let value: serde_json::Value = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
-    assert_eq!(value["schemaVersion"], 1);
-    assert!(value.get("engine").is_none());
-    assert_eq!(
-        value["node"],
-        json!({"minimumVersion": "24.0.0", "backendVersion": "0.1.0"})
-    );
-    assert!(value["unknownLegacyField"].is_null());
+    assert_failure(&result, "schema 2");
+    assert!(!root.join("versions").exists());
 }
 
 fn rewrite_index(release: &Path, mutate: impl FnOnce(&mut serde_json::Value)) {
@@ -988,51 +993,6 @@ fn v2_archive_integrity_failures_stop_before_extraction() {
 }
 
 #[test]
-fn offline_remote_source_does_not_fall_back_to_legacy_cache() {
-    let base = TempDir::new("native-cli-offline-remote");
-    let v1_release = base.path().join("v1-release");
-    support::pack(&v1_release, V1);
-    let root = base.path().join("root");
-
-    let mut install = installer();
-    install.args([
-        "install",
-        "--root",
-        root.to_str().unwrap(),
-        "--from-dir",
-        v1_release.to_str().unwrap(),
-        "--version",
-        V1,
-        "--offline",
-    ]);
-    assert_success(&run(&mut install));
-    fs::remove_file(root.join("current")).unwrap();
-    fs::remove_dir_all(root.join("versions")).unwrap();
-
-    let mut command = installer();
-    command.args([
-        "install",
-        "--root",
-        root.to_str().unwrap(),
-        "--source",
-        "http://127.0.0.1:9/",
-        "--version",
-        V1,
-        "--offline",
-    ]);
-    let result = run(&mut command);
-    assert_failure(&result, "offline");
-    assert!(
-        fs::read_link(root.join("current")).is_err(),
-        "a cached legacy package must not be activated for an offline remote source"
-    );
-    assert!(
-        !root.join("versions").exists(),
-        "a cached legacy package must not be reinstalled"
-    );
-}
-
-#[test]
 fn concurrent_native_installs_are_serialized_without_losing_staging() {
     let base = TempDir::new("native-cli-concurrent");
     let release = pack_native_release(base.path(), &[(V1, Scripts::default())]);
@@ -1076,77 +1036,6 @@ fn concurrent_native_installs_are_serialized_without_losing_staging() {
         .unwrap();
     assert_eq!(state.active, V1);
     assert_no_node(base.path());
-}
-
-#[test]
-fn concurrent_legacy_and_native_install_cannot_wedge_state() {
-    let base = TempDir::new("native-cli-race");
-    let v1_release = base.path().join("v1-release");
-    support::pack(&v1_release, V1);
-    let v2_release = pack_native_release(base.path(), &[(V2, Scripts::default())]);
-    let root = base.path().join("root");
-    let install_root = wxml_delivery::install::InstallRoot::create(&root).unwrap();
-    let lock = install_root.lock().unwrap();
-
-    let mut legacy = installer();
-    legacy.args([
-        "install",
-        "--root",
-        root.to_str().unwrap(),
-        "--from-dir",
-        v1_release.to_str().unwrap(),
-        "--version",
-        V1,
-        "--offline",
-    ]);
-    let mut native = installer();
-    native.args([
-        "install",
-        "--root",
-        root.to_str().unwrap(),
-        "--from-dir",
-        v2_release.to_str().unwrap(),
-        "--version",
-        V2,
-        "--offline",
-    ]);
-    let legacy_child = legacy
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let native_child = native
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    drop(lock);
-
-    let legacy_output = legacy_child.wait_with_output().unwrap();
-    let native_output = native_child.wait_with_output().unwrap();
-    assert_success(&native_output);
-    if !legacy_output.status.success() {
-        let combined = format!(
-            "{}{}",
-            String::from_utf8_lossy(&legacy_output.stdout),
-            String::from_utf8_lossy(&legacy_output.stderr)
-        )
-        .to_lowercase();
-        assert!(
-            combined.contains("refusing to install a legacy"),
-            "legacy install failed for an unexpected reason: {combined}"
-        );
-    }
-
-    assert_eq!(active_version(&root), V2);
-    let state = InstallState::read(&wxml_delivery::install::InstallRoot::create(&root).unwrap())
-        .unwrap()
-        .unwrap();
-    assert_eq!(state.active, V2);
-    assert_eq!(state.previous, None);
-    assert_tmp_empty(&root);
-    let mut verify = command_for(&root, "verify");
-    assert_success(&run(&mut verify));
 }
 
 fn private_mode(path: &Path) -> u32 {

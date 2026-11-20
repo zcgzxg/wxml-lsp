@@ -10,10 +10,8 @@ use reqwest::redirect::Policy;
 
 use crate::error::{DeliveryError, Result};
 use crate::index_v2::{IndexV2, ReleaseV2};
-use crate::manifest::{
-    Index, MAX_ARCHIVE_BYTES, MAX_INDEX_BYTES, Release, parse_index, sha256_file,
-};
-use crate::paths::{validate_archive_name, validate_sha256};
+use crate::manifest::{MAX_ARCHIVE_BYTES, MAX_INDEX_BYTES};
+use crate::paths::validate_archive_name;
 
 /// A validated release source.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -103,21 +101,9 @@ impl Source {
         }
     }
 
-    /// Reads and validates `index.json` from the source.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the index is missing, too large, malformed or
-    /// fails validation.
-    pub fn read_index(&self) -> Result<Index> {
-        let bytes = self.read_index_bytes()?;
-        parse_index(&bytes)
-    }
-
     /// Reads the raw, size-bounded `index.json` bytes from the source.
     ///
-    /// Callers that support both schema versions inspect `schemaVersion` once
-    /// and then use [`crate::manifest::parse_index`] or
+    /// Callers inspect `schemaVersion` once and then use
     /// [`crate::index_v2::parse_index_v2`] on the same bytes.
     ///
     /// # Errors
@@ -147,110 +133,6 @@ impl Source {
     pub fn read_index_v2(&self) -> Result<IndexV2> {
         let bytes = self.read_index_bytes()?;
         crate::index_v2::parse_index_v2(&bytes)
-    }
-
-    /// Downloads or copies one release archive to `destination`.
-    ///
-    /// The caller must verify the archive hash and manifest afterwards.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an untrusted archive name, missing file, oversized
-    /// archive, network failure or truncated transfer.
-    pub fn fetch_archive(&self, release: &Release, destination: &Path) -> Result<()> {
-        release.validate()?;
-        validate_archive_name(&release.archive)?;
-        if let Some(parent) = destination.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| DeliveryError::io(parent, error))?;
-        }
-        match self {
-            Self::Remote(base) => {
-                let url = base
-                    .join(&release.archive)
-                    .map_err(|error| DeliveryError::UntrustedSource(error.to_string()))?;
-                ensure_same_origin(base, &url)?;
-                let client = http_client()?;
-                let response = client.get(url).send().map_err(|error| {
-                    DeliveryError::Network(format!("release download failed: {error}"))
-                })?;
-                if !response.status().is_success() {
-                    return Err(DeliveryError::HttpStatus {
-                        status: response.status().as_u16(),
-                        resource: release.archive.clone(),
-                    });
-                }
-                if let Some(length) = response.content_length() {
-                    if length > MAX_ARCHIVE_BYTES {
-                        return Err(DeliveryError::SizeLimit(
-                            "release archive exceeds the size limit".to_owned(),
-                        ));
-                    }
-                    if length != release.size {
-                        return Err(DeliveryError::Integrity(format!(
-                            "server declared {} bytes but the index says {}",
-                            length, release.size
-                        )));
-                    }
-                }
-                let mut output = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(destination)
-                    .map_err(|error| DeliveryError::io(destination, error))?;
-                let written = std::io::copy(&mut response.take(MAX_ARCHIVE_BYTES + 1), &mut output)
-                    .map_err(|error| {
-                        let _ = std::fs::remove_file(destination);
-                        DeliveryError::io(destination, error)
-                    })?;
-                if written > MAX_ARCHIVE_BYTES {
-                    let _ = std::fs::remove_file(destination);
-                    return Err(DeliveryError::SizeLimit(
-                        "release archive exceeds the size limit".to_owned(),
-                    ));
-                }
-                if written != release.size {
-                    let _ = std::fs::remove_file(destination);
-                    return Err(DeliveryError::Integrity(format!(
-                        "downloaded {written} bytes but the index says {}",
-                        release.size
-                    )));
-                }
-            }
-            Self::Local(directory) => {
-                let archive = directory.join(&release.archive);
-                let metadata = std::fs::symlink_metadata(&archive)
-                    .map_err(|error| DeliveryError::io(&archive, error))?;
-                if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
-                    return Err(DeliveryError::UnsafeArchive(
-                        "local release archive is not a regular file".to_owned(),
-                    ));
-                }
-                let canonical = std::fs::canonicalize(&archive)
-                    .map_err(|error| DeliveryError::io(&archive, error))?;
-                if !canonical.starts_with(directory) {
-                    return Err(DeliveryError::UnsafeArchive(
-                        "local release archive escapes its directory".to_owned(),
-                    ));
-                }
-                if metadata.len() != release.size {
-                    return Err(DeliveryError::Integrity(
-                        "local release archive size does not match the index".to_owned(),
-                    ));
-                }
-                std::fs::copy(&archive, destination)
-                    .map_err(|error| DeliveryError::io(destination, error))?;
-            }
-        }
-        let digest = sha256_file(destination)?;
-        if digest != release.sha256 {
-            let _ = std::fs::remove_file(destination);
-            return Err(DeliveryError::Integrity(format!(
-                "release archive SHA-256 mismatch for {}",
-                release.version
-            )));
-        }
-        validate_sha256(&release.sha256)?;
-        Ok(())
     }
 
     /// Downloads or copies one schema v2 release archive to `destination` and
@@ -473,125 +355,6 @@ mod tests {
         assert!(Source::local(&path).is_ok());
         std::fs::write(path.join("file"), b"x").unwrap();
         assert!(Source::local(&path.join("file")).is_err());
-        let _ = std::fs::remove_dir_all(&path);
-    }
-
-    #[test]
-    fn remote_loopback_source_reads_index_and_archive() {
-        use std::io::{Read, Write};
-        use std::net::TcpListener;
-
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let archive = b"archive".to_vec();
-        let release = Release {
-            version: "0.1.0".to_owned(),
-            platform: "linux-x86_64".to_owned(),
-            protocol_version: 2,
-            node_minimum_version: "24.0.0".to_owned(),
-            archive: "archive.tar.gz".to_owned(),
-            sha256: crate::manifest::sha256_bytes(&archive),
-            size: archive.len() as u64,
-        };
-        let index = serde_json::to_vec_pretty(&Index {
-            schema_version: 1,
-            package: "wxml-lsp".to_owned(),
-            releases: vec![release.clone()],
-        })
-        .unwrap();
-        let server = std::thread::spawn(move || {
-            for _ in 0..2 {
-                let (mut stream, _) = listener.accept().unwrap();
-                let mut request = Vec::new();
-                let mut buffer = [0_u8; 1024];
-                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
-                    let read = stream.read(&mut buffer).unwrap();
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buffer[..read]);
-                }
-                let text = String::from_utf8_lossy(&request);
-                let path = text
-                    .lines()
-                    .next()
-                    .and_then(|line| line.split_whitespace().nth(1))
-                    .unwrap_or("/");
-                let body = if path.ends_with("index.json") {
-                    index.clone()
-                } else {
-                    archive.clone()
-                };
-                let header = format!(
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                    body.len()
-                );
-                stream.write_all(header.as_bytes()).unwrap();
-                stream.write_all(&body).unwrap();
-            }
-        });
-        let source = Source::remote(&format!("http://{address}/")).unwrap();
-        let loaded = source.read_index().unwrap();
-        assert_eq!(loaded.releases[0].version, "0.1.0");
-        let base = std::env::var_os("WXML_TEST_TMPDIR")
-            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
-        let destination = base.join(format!(
-            "wxml-remote-source-{}-{}.tar.gz",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_nanos())
-        ));
-        source.fetch_archive(&release, &destination).unwrap();
-        assert_eq!(std::fs::read(&destination).unwrap(), b"archive");
-        let _ = std::fs::remove_file(&destination);
-        server.join().unwrap();
-    }
-
-    #[test]
-    fn local_source_reads_index_and_copies_archive() {
-        let base = std::env::var_os("WXML_TEST_TMPDIR")
-            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
-        let path = base.join(format!(
-            "wxml-local-source-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| duration.as_nanos())
-        ));
-        std::fs::create_dir_all(&path).unwrap();
-        std::fs::write(path.join("archive.tar.gz"), b"archive").unwrap();
-        let release = Release {
-            version: "0.1.0".to_owned(),
-            platform: "linux-x86_64".to_owned(),
-            protocol_version: 2,
-            node_minimum_version: "24.0.0".to_owned(),
-            archive: "archive.tar.gz".to_owned(),
-            sha256: sha256_file(&path.join("archive.tar.gz")).unwrap(),
-            size: 7,
-        };
-        let index = Index {
-            schema_version: 1,
-            package: "wxml-lsp".to_owned(),
-            releases: vec![release.clone()],
-        };
-        std::fs::write(
-            path.join("index.json"),
-            serde_json::to_vec_pretty(&index).unwrap(),
-        )
-        .unwrap();
-        let source = Source::local(&path).unwrap();
-        let loaded = source.read_index().unwrap();
-        assert_eq!(loaded.releases.len(), 1);
-        let destination = path.join("copy.tar.gz");
-        source.fetch_archive(&release, &destination).unwrap();
-        assert_eq!(std::fs::read(&destination).unwrap(), b"archive");
-        std::fs::write(path.join("archive.tar.gz"), b"tampered").unwrap();
-        assert!(
-            source
-                .fetch_archive(&release, &path.join("copy2.tar.gz"))
-                .is_err()
-        );
         let _ = std::fs::remove_dir_all(&path);
     }
 

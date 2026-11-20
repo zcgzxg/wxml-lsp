@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# P7-0 pre-delete freeze: generate or verify the legacy deletion inventory.
+# P7-0 freeze: generate or verify the legacy deletion inventory (Live or archived).
 #
 # The freeze is read-only with respect to the repository. It never runs Node,
 # npm, npx, cargo, a test binary or a packager. The only write is an explicit
@@ -10,14 +10,22 @@
 #   scripts/p7-freeze.sh --check         # compare the worktree to the frozen JSON
 #   scripts/p7-freeze.sh --output FILE   # write the JSON outside the repository
 #   scripts/p7-freeze.sh --allow-dirty   # generate from an intentionally dirty
-#                                        # retarget worktree (never with --check)
+#                                        # post-delete/retarget worktree (never with --check)
 #
 # `--check` reads docs/evidence/data/legacy-p7-freeze.json and fails when a
-# frozen path is missing, a file hash changed, a tree digest changed, an old
-# gate moved, or a recorded source anchor disappeared. It is a worktree
-# identity check, not a CI gate: the local `backends/typescript/dist` build
-# output is part of the frozen identity. A clean checkout must build that
-# directory before it can pass the full check.
+# present frozen path changed, a tree digest changed, an old gate moved, or a
+# recorded source anchor disappeared. It is a worktree identity check, not a
+# CI gate: the local `backends/typescript/dist` build output is part of the
+# frozen identity. A clean checkout must build that directory before it can
+# pass the live check.
+#
+# Archived mode: once `backends/typescript/test` is gone, the legacy oracle
+# manifest is authoritative in Frozen mode. A frozen path that was explicitly
+# deleted by the P7 scope may then be recorded as `archived` with its last
+# known identity from the previous freeze. An archived entry is never a match:
+# it is not re-hashed, its digest is null, and `deletion_allowed` still comes
+# from the ledger and gate state. Frozen paths that still exist are verified
+# byte-for-byte as before; unexpected or partially deleted paths fail.
 #
 # Identity algorithm (also recorded in the JSON):
 #   - regular files only; symlinks and special files are rejected;
@@ -37,14 +45,15 @@ export LC_ALL=C
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 FROZEN_JSON="$REPO_ROOT/docs/evidence/data/legacy-p7-freeze.json"
-DEFAULT_REQUESTED_HEAD='2ce462667b0309046829e8a7c29657fb968ae4b1'
+ORACLE_MANIFEST_RELATIVE='docs/plans/tsgo-legacy-oracle-manifest.json'
+DEFAULT_REQUESTED_HEAD='3e24c444e87de13a20d4a67367e4d8e99b940524'
 
 CHECK=0
 ALLOW_DIRTY=0
 OUTPUT=''
 
 usage() {
-  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,39p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 die() {
@@ -120,6 +129,131 @@ REQUESTED_HEAD=${P7_REQUESTED_HEAD:-$DEFAULT_REQUESTED_HEAD}
 git -C "$REPO_ROOT" cat-file -e "$REQUESTED_HEAD^{commit}" 2>/dev/null ||
   die "requested baseline commit is missing: $REQUESTED_HEAD"
 
+[[ -f $REPO_ROOT/$ORACLE_MANIFEST_RELATIVE && ! -L $REPO_ROOT/$ORACLE_MANIFEST_RELATIVE ]] ||
+  die "missing legacy oracle manifest: $ORACLE_MANIFEST_RELATIVE"
+
+# The same rule as ledger.rs: a live test root selects Live, its absence
+# selects Frozen. Frozen mode is only usable when the manifest explicitly
+# archives the two legacy fixture trees.
+if [[ -e $REPO_ROOT/backends/typescript/test ]]; then
+  ORACLE_MODE=Live
+else
+  ORACLE_MODE=Frozen
+  jq -e '.fixture_trees | any(.tree == "backends/typescript/test" and .archived_ok == true)' \
+    "$REPO_ROOT/$ORACLE_MANIFEST_RELATIVE" >/dev/null ||
+    die 'oracle manifest does not archive backends/typescript/test; refusing Frozen mode'
+  jq -e '.fixture_trees | any(.tree == "backends/typescript/samples" and .archived_ok == true)' \
+    "$REPO_ROOT/$ORACLE_MANIFEST_RELATIVE" >/dev/null ||
+    die 'oracle manifest does not archive backends/typescript/samples; refusing Frozen mode'
+fi
+
+ARCHIVED_TREE_PATHS=(
+  'backends/typescript'
+  'backends/typescript/src'
+  'backends/typescript/test'
+  'backends/typescript/dist'
+  'crates/wxml-lsp/src/backend_node'
+)
+ARCHIVED_FILE_PATHS=(
+  'crates/wxml-lsp/tests/real_node.rs'
+  'crates/wxml-lsp/tests/wave5_acceptance.rs'
+  'crates/wxml-lsp/tests/semantic_tools.rs'
+  'crates/wxml-lsp/src/backend_node/config.rs'
+  'crates/wxml-delivery/src/acquire.rs'
+  'crates/wxml-delivery/src/cache.rs'
+)
+
+is_archived_tree_path() {
+  local candidate=$1 known
+  for known in "${ARCHIVED_TREE_PATHS[@]}"; do
+    [[ $candidate == "$known" ]] && return 0
+  done
+  return 1
+}
+
+is_archived_file_path() {
+  local candidate=$1 known
+  for known in "${ARCHIVED_FILE_PATHS[@]}"; do
+    [[ $candidate == "$known" ]] && return 0
+  done
+  return 1
+}
+
+require_archive_mode() {
+  local path=$1
+  [[ $ORACLE_MODE == Frozen ]] ||
+    die "frozen path is missing but the oracle manifest mode is $ORACLE_MODE: $path"
+  [[ -f $FROZEN_JSON ]] ||
+    die "archived mode needs the previous freeze JSON for last-known identity: ${FROZEN_JSON#"$REPO_ROOT"/}"
+}
+
+# Last-known lookups read the previous freeze JSON. New archived entries keep
+# the same `last_known` shape so a later --check regenerates identical data.
+last_known_tree() {
+  local tree=$1 value
+  value=$(jq -c --arg p "$tree" '
+    .trees[$p] as $t
+    | if $t == null then null
+      elif ($t.state // "present") == "archived" then $t.last_known
+      else {file_count:$t.file_count, total_bytes:$t.total_bytes, tree_sha256:$t.tree_sha256}
+      end
+  ' "$FROZEN_JSON")
+  [[ -n $value && $value != null ]] || die "no last-known tree identity for archived path: $tree"
+  printf '%s' "$value"
+}
+
+last_known_reference() {
+  local path=$1 value
+  value=$(jq -c --arg p "$path" '
+    [.reference_files[] | select(.path == $p)] | first as $r
+    | if $r == null then null
+      elif ($r.state // "present") == "archived" then $r.last_known
+      else {bytes:$r.bytes, sha256:$r.sha256}
+      end
+  ' "$FROZEN_JSON")
+  [[ -n $value && $value != null ]] || die "no last-known file identity for archived path: $path"
+  printf '%s' "$value"
+}
+
+last_known_gate() {
+  local gate_id=$1 value
+  value=$(jq -c --arg id "$gate_id" '
+    [.old_ignored_gates.gates[] | select(.gate_id == $id)] | first as $g
+    | if $g == null then null
+      elif ($g.state // "present") == "archived" then $g.last_known
+      else {line_ignore:$g.line_ignore, line_fn:$g.line_fn, file_sha256:$g.file_sha256}
+      end
+  ' "$FROZEN_JSON")
+  [[ -n $value && $value != null ]] || die "no last-known gate identity for archived gate: $gate_id"
+  printf '%s' "$value"
+}
+
+last_known_v1() {
+  local file=$1 symbol=$2 value
+  value=$(jq -c --arg file "$file" --arg symbol "$symbol" '
+    [.v1_delivery.write_paths[] | select(.file == $file and .symbol == $symbol)] | first as $v
+    | if $v == null then null
+      elif ($v.state // "present") == "archived" then $v.last_known
+      else {line:$v.line, file_sha256:$v.file_sha256}
+      end
+  ' "$FROZEN_JSON")
+  [[ -n $value && $value != null ]] || die "no last-known v1 identity for archived symbol: $file::$symbol"
+  printf '%s' "$value"
+}
+
+last_known_env() {
+  local name=$1 value
+  value=$(jq -c --arg name "$name" '
+    [.legacy_env.runtime[] | select(.name == $name)] | first as $e
+    | if $e == null then null
+      elif ($e.state // "present") == "archived" then $e.last_known
+      else {line:$e.line, file_sha256:$e.file_sha256}
+      end
+  ' "$FROZEN_JSON")
+  [[ -n $value && $value != null ]] || die "no last-known legacy env identity for: $name"
+  printf '%s' "$value"
+}
+
 FROZEN_PATHS=(
   'backends/typescript'
   'crates/wxml-lsp/src/backend_node'
@@ -142,7 +276,12 @@ FROZEN_PATHS=(
   'crates/wxml-delivery/src'
 )
 
-if ! git -C "$REPO_ROOT" diff --quiet "$REQUESTED_HEAD" HEAD -- "${FROZEN_PATHS[@]}"; then
+DIFF_GUARD_PATHS=()
+if [[ $ORACLE_MODE == Live ]]; then
+  DIFF_GUARD_PATHS=("${FROZEN_PATHS[@]}")
+fi
+if ((${#DIFF_GUARD_PATHS[@]} > 0)) &&
+  ! git -C "$REPO_ROOT" diff --quiet "$REQUESTED_HEAD" HEAD -- "${DIFF_GUARD_PATHS[@]}"; then
   die "frozen paths changed between $REQUESTED_HEAD and $HEAD; freeze the reviewed baseline deliberately"
 fi
 FROZEN_STATUS=$(git -C "$REPO_ROOT" status --porcelain -- "${FROZEN_PATHS[@]}")
@@ -198,18 +337,71 @@ collect_untracked() {
 
 # Emits one JSON object for a tree. Paths in `files[]` and the digest input are
 # relative to the tree root, not to the repository.
+#
+# A tree is `present` only when every tracked entry exists. All entries missing
+# is `archived` (P7 archive scope + Frozen oracle only). A partial deletion is
+# a hard failure so a half-removed tree cannot be mistaken for identity.
 tree_json() {
   local tree=$1 kind=$2 list_files=$3 source=$4
   local -a files=()
   local -a entries=()
   local rel absolute sha bytes total=0 count=0 digest files_json entry
+  local state=present present_count=0 missing_count=0 reason last_known
 
   if [[ $source == tracked ]]; then
     mapfile -d '' files < <(collect_tracked "$tree")
-  else
+  elif [[ -d $REPO_ROOT/$tree ]]; then
     mapfile -d '' files < <(collect_untracked "$tree")
   fi
-  ((${#files[@]} > 0)) || die "empty or missing tree: $tree"
+
+  if ((${#files[@]} == 0)); then
+    state=archived
+  elif [[ $source == tracked ]]; then
+    for rel in "${files[@]}"; do
+      if [[ -f $REPO_ROOT/$rel && ! -L $REPO_ROOT/$rel ]]; then
+        present_count=$((present_count + 1))
+      else
+        missing_count=$((missing_count + 1))
+      fi
+    done
+    if ((missing_count == 0)); then
+      state=present
+    elif ((present_count == 0)); then
+      state=archived
+    else
+      die "partially deleted frozen tree: $tree ($present_count present, $missing_count missing)"
+    fi
+  fi
+
+  if [[ $state == archived ]]; then
+    is_archived_tree_path "$tree" ||
+      die "frozen tree is missing but is not in the P7 archive scope: $tree"
+    require_archive_mode "$tree"
+    last_known=$(last_known_tree "$tree")
+    if [[ $source == tracked ]]; then
+      reason='tracked tree deleted by the P7 archive scope; oracle manifest is Frozen'
+    else
+      reason='local build output absent after the P7 archive scope; oracle manifest is Frozen'
+    fi
+    jq -cn \
+      --arg path "$tree" \
+      --arg kind "$kind" \
+      --arg reason "$reason" \
+      --argjson last_known "$last_known" \
+      '{
+        path:$path,
+        kind:$kind,
+        state:"archived",
+        file_count:null,
+        total_bytes:null,
+        tree_sha256:null,
+        files_listed:false,
+        files:[],
+        last_known:$last_known,
+        archive_reason:$reason
+      }'
+    return
+  fi
 
   for rel in "${files[@]}"; do
     [[ $rel == "$tree"/* ]] || die "path escaped $tree: $rel"
@@ -255,6 +447,7 @@ tree_json() {
     '{
       path:$path,
       kind:$kind,
+      state:"present",
       file_count:$file_count,
       total_bytes:$total_bytes,
       tree_sha256:$tree_sha256,
@@ -263,13 +456,25 @@ tree_json() {
     }'
 }
 
-# Finds the unique line containing an exact anchor.
-anchor_line() {
+# Finds the unique line containing an exact anchor, or returns empty when the
+# anchor is absent. Multiple matches are always an error.
+try_anchor_line() {
   local file=$1 anchor=$2 absolute="$REPO_ROOT/$1"
   local count line
   count=$(grep -cF -- "$anchor" "$absolute" || true)
-  [[ $count == 1 ]] || die "anchor is missing or ambiguous in $file ($count matches): $anchor"
+  ((count <= 1)) || die "anchor is ambiguous in $file ($count matches): $anchor"
+  if ((count == 0)); then
+    return 0
+  fi
   line=$(grep -nF -- "$anchor" "$absolute" | cut -d: -f1)
+  printf '%s' "$line"
+}
+
+# Finds the unique line containing an exact anchor.
+anchor_line() {
+  local file=$1 anchor=$2 line
+  line=$(try_anchor_line "$file" "$anchor")
+  [[ -n $line ]] || die "anchor is missing in $file: $anchor"
   printf '%s' "$line"
 }
 
@@ -384,22 +589,75 @@ TREES_JSON=$(
 )
 
 GATES_JSON=$(
-  jq -r '.ignored_rust_tests[] | [.gate_id,.file,.test,.status,(.replacement_test // ""),(.replacement_kind // ""),(.old_reason // "")] | @tsv' \
+  jq -r '.ignored_rust_tests[] | [.gate_id,.file,.test,.status,(.replacement_test // ""),(.replacement_kind // ""),(.old_reason // ""),(.old_test_removed // false)] | @tsv' \
     "$REPO_ROOT/docs/plans/tsgo-test-ledger.json" |
-    while IFS=$'\t' read -r gate_id file test status replacement replacement_kind old_reason; do
+    while IFS=$'\t' read -r gate_id file test status replacement replacement_kind old_reason old_test_removed; do
       absolute="$REPO_ROOT/$file"
-      [[ -f $absolute ]] || die "gate source is missing: $file"
+      fully_qualified="$(basename -- "$file" .rs)::$test"
+      action=$(gate_action "$gate_id")
+      node_json=$(node_dependency_json "$file")
+
+      emit_archived_gate() {
+        local reason=$1 last_known
+        [[ $old_test_removed == true && $action == delete ]] ||
+          die "gate source is missing but the ledger does not mark a delete gate as removed: $file::$test"
+        is_archived_file_path "$file" ||
+          die "gate source is missing outside the P7 archive scope: $file"
+        require_archive_mode "$file"
+        last_known=$(last_known_gate "$gate_id")
+        jq -cn \
+          --arg gate_id "$gate_id" \
+          --arg file "$file" \
+          --arg test "$test" \
+          --arg fully_qualified "$fully_qualified" \
+          --arg status "$status" \
+          --arg replacement_test "$replacement" \
+          --arg replacement_kind "$replacement_kind" \
+          --arg old_reason "$old_reason" \
+          --arg p7_action "$action" \
+          --argjson node_dependency "$node_json" \
+          --argjson last_known "$last_known" \
+          --arg reason "$reason" \
+          '{
+            gate_id:$gate_id,
+            file:$file,
+            test:$test,
+            fully_qualified:$fully_qualified,
+            state:"archived",
+            line_ignore:null,
+            line_fn:null,
+            status:$status,
+            mandatory_green:false,
+            replacement_reviewed:false,
+            old_test_present:false,
+            old_test_removed:true,
+            replacement_test:$replacement_test,
+            replacement_kind:$replacement_kind,
+            old_reason:$old_reason,
+            p7_action:$p7_action,
+            node_dependency:$node_dependency,
+            file_sha256:null,
+            last_known:$last_known,
+            archive_reason:$reason
+          }'
+      }
+
+      if [[ ! -f $absolute ]]; then
+        emit_archived_gate 'gate source deleted with the P7 delete scope; oracle manifest is Frozen'
+        continue
+      fi
+
       function_matches=$(grep -nF "fn $test(" "$absolute" || true)
-      [[ -n $function_matches ]] || die "gate function is missing: $file::$test"
+      if [[ -z $function_matches ]]; then
+        emit_archived_gate 'gate function deleted from a present source file; oracle manifest is Frozen'
+        continue
+      fi
       [[ $(printf '%s\n' "$function_matches" | wc -l) -eq 1 ]] ||
         die "gate function is not unique: $file::$test"
       function_line=$(printf '%s\n' "$function_matches" | cut -d: -f1)
       ignore_line=$(ignore_line_before "$file" "$function_line")
       ((ignore_line > 0)) || die "gate #[ignore] is missing: $file::$test"
       ((ignore_line < function_line)) || die "gate #[ignore] is after the function: $file::$test"
-      fully_qualified="$(basename -- "$file" .rs)::$test"
-      action=$(gate_action "$gate_id")
-      node_json=$(node_dependency_json "$file")
       jq -cn \
         --arg gate_id "$gate_id" \
         --arg file "$file" \
@@ -419,12 +677,14 @@ GATES_JSON=$(
           file:$file,
           test:$test,
           fully_qualified:$fully_qualified,
+          state:"present",
           line_ignore:$line_ignore,
           line_fn:$line_fn,
           status:$status,
           mandatory_green:false,
           replacement_reviewed:false,
           old_test_present:true,
+          old_test_removed:false,
           replacement_test:$replacement_test,
           replacement_kind:$replacement_kind,
           old_reason:$old_reason,
@@ -481,6 +741,41 @@ SILENT_JSON=$(
     done | jq -s 'sort_by(.gate_id)'
 )
 
+# The ledger now retires the two silent-return gates with semantic_tools.rs.
+# Keep their last-known coordinates as archived evidence, never as a match.
+SILENT_ARCHIVED_JSON=$(
+  silent_count=$(jq '.silent_skip_gates | length' "$REPO_ROOT/docs/plans/tsgo-test-ledger.json")
+  if ((silent_count > 0)) || [[ -e $REPO_ROOT/crates/wxml-lsp/tests/semantic_tools.rs ]]; then
+    printf '[]'
+  else
+    require_archive_mode 'crates/wxml-lsp/tests/semantic_tools.rs'
+    jq -c '
+      def last:
+        if .state == "archived" then .last_known
+        else {line_fn, line_asset_lookup, line_silent_return,
+              line_tsc_branch, line_tsc_skip, file_sha256}
+        end;
+      [.semantic_tools.silent_returns[]?, .semantic_tools.archived_silent_returns[]?]
+      | unique_by(.gate_id)
+      | map(. as $e | ($e | last) as $l
+          | {
+              gate_id:$e.gate_id,
+              file:$e.file,
+              test:$e.test,
+              state:"archived",
+              line_fn:null,
+              line_asset_lookup:null,
+              line_silent_return:null,
+              line_tsc_branch:null,
+              line_tsc_skip:null,
+              file_sha256:null,
+              last_known:$l,
+              archive_reason:"semantic_tools.rs retired with the old Node gates; oracle manifest is Frozen"
+            })
+    ' "$FROZEN_JSON"
+  fi
+)
+
 LEGACY_ENV_JSON=$(
   cat <<'EOF' |
 crates/wxml-lsp/src/backend_node/config.rs|WXML_NODE|if let Some(node) = lookup("WXML_NODE") {|NodeBackendConfig::from_env|Node executable name or absolute path; node backend only
@@ -492,15 +787,55 @@ EOF
   while IFS='|' read -r file name anchor reader note; do
     [[ -n $file && -n $name && -n $anchor && -n $reader && -n $note ]] ||
       die "malformed legacy env row: $name"
-    jq -cn \
-      --arg name "$name" \
-      --arg file "$file" \
-      --argjson line "$(anchor_line "$file" "$anchor")" \
-      --arg anchor "$anchor" \
-      --arg reader "$reader" \
-      --arg note "$note" \
-      --arg file_sha256 "$(file_sha "$file")" \
-      '{name:$name,file:$file,line:$line,anchor:$anchor,reader:$reader,note:$note,file_sha256:$file_sha256}'
+    absolute="$REPO_ROOT/$file"
+    line=''
+    if [[ -f $absolute && ! -L $absolute ]]; then
+      line=$(try_anchor_line "$file" "$anchor")
+    fi
+    if [[ -z $line ]]; then
+      is_archived_file_path "$file" ||
+        die "legacy env anchor is missing outside the P7 archive scope: $file::$name"
+      require_archive_mode "$file"
+      last_known=$(last_known_env "$name")
+      jq -cn \
+        --arg name "$name" \
+        --arg file "$file" \
+        --arg anchor "$anchor" \
+        --arg reader "$reader" \
+        --arg note "$note" \
+        --argjson last_known "$last_known" \
+        '{
+          name:$name,
+          file:$file,
+          state:"archived",
+          line:null,
+          anchor:$anchor,
+          reader:$reader,
+          note:$note,
+          file_sha256:null,
+          last_known:$last_known,
+          archive_reason:"node backend config deleted; oracle manifest is Frozen"
+        }'
+    else
+      jq -cn \
+        --arg name "$name" \
+        --arg file "$file" \
+        --argjson line "$line" \
+        --arg anchor "$anchor" \
+        --arg reader "$reader" \
+        --arg note "$note" \
+        --arg file_sha256 "$(file_sha "$file")" \
+        '{
+          name:$name,
+          file:$file,
+          state:"present",
+          line:$line,
+          anchor:$anchor,
+          reader:$reader,
+          note:$note,
+          file_sha256:$file_sha256
+        }'
+    fi
   done | jq -s 'sort_by(.name)'
 )
 
@@ -544,16 +879,56 @@ EOF
   while IFS='|' read -r file symbol anchor action role; do
     [[ -n $file && -n $symbol && -n $anchor && -n $action && -n $role ]] ||
       die "malformed v1 delivery row: $file"
-    jq -cn \
-      --arg file "$file" \
-      --arg symbol "$symbol" \
-      --argjson line "$(anchor_line "$file" "$anchor")" \
-      --arg anchor "$anchor" \
-      --arg action "$action" \
-      --arg role "$role" \
-      --arg file_sha256 "$(file_sha "$file")" \
-      '{file:$file,symbol:$symbol,line:$line,anchor:$anchor,action:$action,role:$role,file_sha256:$file_sha256}'
-  done | jq -s 'sort_by(.file,.line)'
+    absolute="$REPO_ROOT/$file"
+    line=''
+    if [[ -f $absolute && ! -L $absolute ]]; then
+      line=$(try_anchor_line "$file" "$anchor")
+    fi
+    if [[ -z $line ]]; then
+      [[ $action == delete ]] ||
+        die "kept v1 boundary is missing: $file::$symbol"
+      require_archive_mode "$file"
+      last_known=$(last_known_v1 "$file" "$symbol")
+      jq -cn \
+        --arg file "$file" \
+        --arg symbol "$symbol" \
+        --arg anchor "$anchor" \
+        --arg action "$action" \
+        --arg role "$role" \
+        --argjson last_known "$last_known" \
+        '{
+          file:$file,
+          symbol:$symbol,
+          state:"archived",
+          line:null,
+          anchor:$anchor,
+          action:$action,
+          role:$role,
+          file_sha256:null,
+          last_known:$last_known,
+          archive_reason:"v1 write symbol removed by the P7 delete scope; oracle manifest is Frozen"
+        }'
+    else
+      jq -cn \
+        --arg file "$file" \
+        --arg symbol "$symbol" \
+        --argjson line "$line" \
+        --arg anchor "$anchor" \
+        --arg action "$action" \
+        --arg role "$role" \
+        --arg file_sha256 "$(file_sha "$file")" \
+        '{
+          file:$file,
+          symbol:$symbol,
+          state:"present",
+          line:$line,
+          anchor:$anchor,
+          action:$action,
+          role:$role,
+          file_sha256:$file_sha256
+        }'
+    fi
+  done | jq -s 'sort_by(.file, (.line // 0), .symbol)'
 )
 
 LEGACY_ORACLE_BINDINGS_JSON=$(
@@ -583,18 +958,18 @@ EOF
   done | jq -s 'sort_by(.file,.line)'
 )
 
-ORACLE_MANIFEST_RELATIVE='docs/plans/tsgo-legacy-oracle-manifest.json'
-[[ -f $REPO_ROOT/$ORACLE_MANIFEST_RELATIVE && ! -L $REPO_ROOT/$ORACLE_MANIFEST_RELATIVE ]] ||
-  die "missing legacy oracle manifest: $ORACLE_MANIFEST_RELATIVE"
 ORACLE_MANIFEST_JSON=$(
   jq -c \
     --arg path "$ORACLE_MANIFEST_RELATIVE" \
+    --arg mode "$ORACLE_MODE" \
     --argjson bytes "$(file_bytes "$ORACLE_MANIFEST_RELATIVE")" \
     --arg sha256 "$(file_sha "$ORACLE_MANIFEST_RELATIVE")" \
     '{
       path:$path,
       bytes:$bytes,
       sha256:$sha256,
+      mode:$mode,
+      live_tree_present:($mode == "Live"),
       schema,
       baseline,
       counts,
@@ -637,12 +1012,29 @@ REFERENCE_PATHS=(
 
 REFERENCES_JSON=$(
   for file in "${REFERENCE_PATHS[@]}"; do
-    [[ -f $REPO_ROOT/$file && ! -L $REPO_ROOT/$file ]] || die "not a regular file: $file"
-    jq -cn \
-      --arg path "$file" \
-      --argjson bytes "$(file_bytes "$file")" \
-      --arg sha256 "$(file_sha "$file")" \
-      '{path:$path,bytes:$bytes,sha256:$sha256}'
+    if [[ -f $REPO_ROOT/$file && ! -L $REPO_ROOT/$file ]]; then
+      jq -cn \
+        --arg path "$file" \
+        --argjson bytes "$(file_bytes "$file")" \
+        --arg sha256 "$(file_sha "$file")" \
+        '{path:$path,state:"present",bytes:$bytes,sha256:$sha256}'
+    else
+      is_archived_file_path "$file" ||
+        die "not a regular file outside the P7 archive scope: $file"
+      require_archive_mode "$file"
+      last_known=$(last_known_reference "$file")
+      jq -cn \
+        --arg path "$file" \
+        --argjson last_known "$last_known" \
+        '{
+          path:$path,
+          state:"archived",
+          bytes:null,
+          sha256:null,
+          last_known:$last_known,
+          archive_reason:"frozen file deleted by the P7 archive scope; oracle manifest is Frozen"
+        }'
+    fi
   done | jq -s 'sort_by(.path)'
 )
 
@@ -671,6 +1063,72 @@ else
   TAG_CREATED=false
 fi
 
+frozen_path_state_json() {
+  local path=$1 last_known
+  case "$path" in
+    backends/typescript | backends/typescript/src | backends/typescript/test | backends/typescript/dist | crates/wxml-lsp/src/backend_node)
+      jq -cn --argjson trees "$TREES_JSON" --arg p "$path" '
+        $trees[$p] as $t
+        | if $t.state == "archived" then
+            {path:$p, state:"archived", last_known:$t.last_known, reason:$t.archive_reason}
+          else
+            {path:$p, state:"present", tree_sha256:$t.tree_sha256,
+             file_count:$t.file_count, total_bytes:$t.total_bytes}
+          end
+      '
+      ;;
+    crates/wxml-delivery/src)
+      jq -cn --argjson v1 "$V1_DELIVERY_JSON" --arg p "$path" '
+        ($v1 | map(select(.action == "delete" and .state == "present"))) as $present
+        | ($v1 | map(select(.action == "delete" and .state == "archived"))) as $archived
+        | {
+            path:$p,
+            state:(if ($archived | length) == 0 then "present"
+                   elif ($present | length) == 0 then "archived"
+                   else "partially-archived" end),
+            reason:"v1 write symbols removed by the P7 delete scope; keep/read-only boundaries remain",
+            v1_present_symbols:($present | length),
+            v1_archived_symbols:($archived | length),
+            archived_entries:($archived | map({file, symbol, last_known}))
+          }
+      '
+      ;;
+    *)
+      if [[ -f $REPO_ROOT/$path && ! -L $REPO_ROOT/$path ]]; then
+        jq -cn --arg p "$path" \
+          --argjson bytes "$(file_bytes "$path")" \
+          --arg sha256 "$(file_sha "$path")" \
+          '{path:$p, state:"present", bytes:$bytes, sha256:$sha256}'
+      else
+        is_archived_file_path "$path" ||
+          die "frozen path is missing outside the P7 archive scope: $path"
+        require_archive_mode "$path"
+        last_known=$(last_known_reference "$path")
+        jq -cn --arg p "$path" --argjson last_known "$last_known" '
+          {path:$p, state:"archived", last_known:$last_known,
+           reason:"frozen file deleted by the P7 archive scope; oracle manifest is Frozen"}
+        '
+      fi
+      ;;
+  esac
+}
+
+FROZEN_PATHS_STATE_JSON=$(
+  {
+    for path in "${FROZEN_PATHS[@]}"; do
+      frozen_path_state_json "$path"
+    done
+  } | jq -s --arg mode "$ORACLE_MODE" '{
+    oracle_manifest_mode:$mode,
+    paths:.,
+    present:[.[] | select(.state == "present") | .path],
+    archived:[.[] | select(.state == "archived")],
+    partially_archived:[.[] | select(.state == "partially-archived")],
+    missing:[.[] | select(.state == "missing") | .path],
+    note:"archived entries record last-known identity only; they are not matches"
+  }'
+)
+
 JSON=$(
   jq -n \
     --arg generated_at "$GENERATED_AT" \
@@ -678,11 +1136,14 @@ JSON=$(
     --arg head_subject "$HEAD_SUBJECT" \
     --arg branch "$BRANCH" \
     --arg requested_head "$REQUESTED_HEAD" \
+    --arg archive_mode "$ORACLE_MODE" \
     --argjson frozen_paths_clean "$([[ -z $FROZEN_STATUS ]] && printf true || printf false)" \
     --argjson tag_created "$TAG_CREATED" \
+    --argjson frozen_paths_state "$FROZEN_PATHS_STATE_JSON" \
     --argjson trees "$TREES_JSON" \
     --argjson gates "$GATES_JSON" \
     --argjson silent "$SILENT_JSON" \
+    --argjson silent_archived "$SILENT_ARCHIVED_JSON" \
     --argjson legacy_env "$LEGACY_ENV_JSON" \
     --argjson gate_only_env "$GATE_ONLY_ENV_JSON" \
     --argjson v1 "$V1_DELIVERY_JSON" \
@@ -693,7 +1154,7 @@ JSON=$(
     --argjson references "$REFERENCES_JSON" \
     --argjson ledger_state "$LEDGER_STATE_JSON" \
     '{
-      schema:"wxml-tsgo-p7-freeze/1",
+      schema:"wxml-tsgo-p7-freeze/2",
       generated_at:$generated_at,
       generated_by:"scripts/p7-freeze.sh",
       algorithm:{
@@ -714,8 +1175,11 @@ JSON=$(
         head_subject:$head_subject,
         branch:$branch,
         frozen_paths_clean:$frozen_paths_clean,
-        frozen_path_diff_requested_to_head:"empty (verified with git diff --quiet)"
+        frozen_path_diff_requested_to_head:(if $archive_mode == "Frozen"
+          then "not enforced in Frozen archived mode; identity is verified against the worktree only"
+          else "empty (verified with git diff --quiet)" end)
       },
+      frozen_paths_state:$frozen_paths_state,
       trees:$trees,
       excluded:[
         {
@@ -728,14 +1192,19 @@ JSON=$(
         count:($gates | length),
         gates:$gates,
         summary:{
+          by_state:($gates | group_by(.state) | map({key:.[0].state,value:length}) | from_entries),
           by_status:($gates | group_by(.status) | map({key:.[0].status,value:length}) | from_entries),
           by_action:($gates | group_by(.p7_action) | map({key:.[0].p7_action,value:length}) | from_entries),
           by_file:($gates | group_by(.file) | map({key:.[0].file,value:length}) | from_entries)
         }
       },
       semantic_tools:{
+        state:(if ($silent | length) == 0 and ($silent_archived | length) > 0 then "archived" else "present" end),
         silent_returns:$silent,
-        note:"Two early returns on a missing dist/server.js plus one optional tsc branch; all still present at this commit."
+        archived_silent_returns:$silent_archived,
+        note:(if ($silent | length) == 0
+          then "semantic_tools.rs and its two silent returns were retired with the old Node gates; archived coordinates are last-known only."
+          else "silent-return gates are still listed in the ledger." end)
       },
       legacy_env:{
         runtime:$legacy_env,
@@ -749,13 +1218,17 @@ JSON=$(
       legacy_ts_oracle:{
         manifest:$oracle_manifest,
         bindings:$legacy_oracle_bindings,
-        mode:"archive-authoritative; the live tree is re-hashed only while present",
-        note:"P7-2 archive binding is committed at this head. The live backends/typescript tree still exists, but ledger.rs and fixture_hash.rs accept its absence through the frozen manifest."
+        mode:$archive_mode,
+        note:(if $archive_mode == "Frozen"
+          then "oracle manifest Frozen: ledger.rs and fixture_hash.rs accept the archived legacy trees; live bytes are not available."
+          else "oracle manifest Live: the legacy tree is re-hashed alongside the archive." end)
       },
       reference_files:$references,
       blocking_state:{
         ledger:$ledger_state,
-        old_gates_still_ignored:true,
+        old_gates_present:($gates | map(select(.state == "present")) | length),
+        old_gates_archived:($gates | map(select(.state == "archived")) | length),
+        old_gates_still_ignored:(($gates | map(select(.state == "present")) | length) > 0),
         mandatory_green:false,
         replacement_reviewed:false,
         old_ts_oracle_requires_live_tree:false,
@@ -764,35 +1237,57 @@ JSON=$(
           test:$ts_test_present,
           samples:$ts_samples_present
         },
-        v1_write_paths_present:true,
+        v1_write_paths_present:(($v1 | map(select(.action == "delete" and .state == "present")) | length) > 0),
+        v1_write_anchor_count:($v1 | map(select(.action == "delete" and .state == "present")) | length),
+        v1_write_archived_count:($v1 | map(select(.action == "delete" and .state == "archived")) | length),
+        v1_keep_anchor_count:($v1 | map(select(.action == "keep" and .state == "present")) | length),
         p7_0:{
           freeze_inventory:true,
           tag_created:$tag_created,
           legacy_node_tests_manifest:false,
           ledger_reads_archive_manifest:true,
           fixture_hash_archive_binding:true,
-          native_gates_old_test_removed:false,
+          native_gates_old_test_removed:true,
           complete:false
         },
-        deletion_allowed:false,
+        deletion_allowed:(
+          ($ledger_state.planned == 0 and $ledger_state.reviewed == 0 and $ledger_state.waived == 0)
+          and (($gates | map(select(.mandatory_green == false or .replacement_reviewed == false)) | length) == 0)
+        ),
         blocked_by:[
-          (if ($ledger_state.planned == 0 and $ledger_state.planned_target == 0)
-           then "ledger closeout target reached: \($ledger_state.green) green / \($ledger_state.reviewed) reviewed / \($ledger_state.waived) waived / \($ledger_state.retired) retired; reviewed/waived are not green"
-           else "ledger is \($ledger_state.green) green / \($ledger_state.planned) planned / \($ledger_state.reviewed) reviewed / \($ledger_state.waived) waived / \($ledger_state.retired) retired; planned target \($ledger_state.planned_target)"
-           end),
-          "all 23 old gates are still #[ignore]; gate_green is opt-in, not mandatory_green",
-          "no replacement_reviewed evidence exists for the 23 gates",
-          "native_gates.rs still requires the 23 old #[ignore] tests; old_test_removed is not implemented",
-          "the live backends/typescript test/samples trees are still present; P7-4 samples migration is not complete",
-          "v1 packager and install write paths are still reachable",
-          "the two semantic_tools early returns and the optional tsc branch are still present"
+          (if ($ledger_state.planned != 0 or $ledger_state.reviewed != 0 or $ledger_state.waived != 0)
+           then "ledger is \($ledger_state.green) green / \($ledger_state.planned) planned / \($ledger_state.reviewed) reviewed / \($ledger_state.waived) waived / \($ledger_state.retired) retired; reviewed/waived are not green"
+           else empty end),
+          (if (($gates | map(select(.state == "present")) | length) > 0)
+           then "\($gates | map(select(.state == "present")) | length) old gates still carry #[ignore]; gate_green is opt-in, not mandatory_green"
+           else empty end),
+          (if (($gates | map(select(.mandatory_green == false or .replacement_reviewed == false)) | length) > 0)
+           then "no replacement_reviewed evidence exists for the 23 gates"
+           else empty end),
+          (if (($gates | map(select(.state == "archived")) | length) > 0)
+           then "\($gates | map(select(.state == "archived")) | length) delete gates are archived with last-known identity; archived is not a live match"
+           else empty end),
+          (if $archive_mode == "Frozen"
+           then "oracle manifest is Frozen: backends/typescript test/samples are archive-only"
+           else empty end),
+          (if (($v1 | map(select(.action == "delete" and .state == "present")) | length) > 0)
+           then "\($v1 | map(select(.action == "delete" and .state == "present")) | length) v1 write anchors still exist and need review"
+           else empty end),
+          (if (($v1 | map(select(.action == "delete" and .state == "archived")) | length) > 0)
+           then "\($v1 | map(select(.action == "delete" and .state == "archived")) | length) v1 write symbols are archived; keep/read-only boundaries remain present"
+           else empty end),
+          (if (($silent | length) > 0 or ($silent_archived | length) > 0)
+           then "semantic_tools silent-return evidence is archived only; it is not a live pass"
+           else empty end)
         ]
       },
       scope_notes:[
         "This file freezes identity only; it does not authorize deletion.",
-        "backends/typescript is the tracked tree (99 files); dist is the untracked local build output (34 files).",
+        "Archived entries record last-known identity from the previous freeze; they are not matches and are not re-hashed.",
+        "Present frozen paths are still verified byte-for-byte; partial deletions fail.",
+        "backends/typescript is archived (tracked 99 files plus local dist 34); backend_node is archived (8 files).",
         "node_modules is an ignored npm install tree and is deliberately outside --check.",
-        "Line numbers are worktree line numbers at the recorded head."
+        "Line numbers are current worktree line numbers for present entries; archived entries carry last-known lines."
       ]
     }'
 )
@@ -800,12 +1295,13 @@ JSON=$(
 if ((CHECK == 1)); then
   [[ -f $FROZEN_JSON ]] || die "frozen JSON is missing: $FROZEN_JSON"
   jq empty "$FROZEN_JSON" 2>/dev/null || die "frozen JSON is not valid JSON: $FROZEN_JSON"
-  expected=$(jq -S 'del(.generated_at, .commit.head, .commit.head_subject, .commit.branch)' "$FROZEN_JSON")
-  current=$(printf '%s\n' "$JSON" | jq -S 'del(.generated_at, .commit.head, .commit.head_subject, .commit.branch)')
+  expected=$(jq -S 'del(.generated_at, .commit.head, .commit.head_subject, .commit.branch, .commit.frozen_paths_clean)' "$FROZEN_JSON")
+  current=$(printf '%s\n' "$JSON" | jq -S 'del(.generated_at, .commit.head, .commit.head_subject, .commit.branch, .commit.frozen_paths_clean)')
   if ! diff -u <(printf '%s\n' "$expected") <(printf '%s\n' "$current"); then
     fail 'frozen JSON drifted from the worktree; regenerate the evidence deliberately'
   fi
-  printf 'p7-freeze: OK (%s; tracked trees and local dist match %s)\n' "$HEAD" "${FROZEN_JSON#"$REPO_ROOT"/}"
+  printf 'p7-freeze: OK (%s; %s mode: present paths verified, archived paths are last-known only; %s)\n' \
+    "$HEAD" "$ORACLE_MODE" "${FROZEN_JSON#"$REPO_ROOT"/}"
   exit 0
 fi
 

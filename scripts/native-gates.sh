@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # P7 native gate runner.
 #
-# Runs the 35 opt-in native gates (23 native engine + 3 symbols/edits + 9 stdio
-# shells) against the pinned TypeScript 7.1.0-beta engine and fails closed when
-# any input, identity check, build or gate fails.
+# Runs the 40 opt-in native gates (23 native engine + 3 symbols/edits + 9 stdio
+# shells + 1 perf + 1 stability + 3 real_matrix scenarios) against the pinned
+# TypeScript 7.1.0-beta engine and fails closed when any input, identity check,
+# build or gate fails.
 #
 # Required:
 #   --package DIR    installed v2 native package containing engine/lib/tsc and
@@ -18,7 +19,7 @@
 #                    /tmp/opencode/native-gates/<UTC timestamp>); must be
 #                    outside the repository
 #   --skip-build     reuse an existing release build
-#   --verify-no-node run scripts/verify-no-node.sh after the 35 gates
+#   --verify-no-node run scripts/verify-no-node.sh after the 40 gates
 #   --installer FILE wxml-lsp-install binary (required with --verify-no-node)
 #   --install-root DIR install root (required with --verify-no-node)
 #   -h, --help       show this help
@@ -37,7 +38,7 @@
 # pinned engine and typings.
 #
 # Exit codes:
-#   0  all 35 gates passed (and the optional no-Node check, when requested)
+#   0  all 40 gates passed (and the optional no-Node check, when requested)
 #   1  the build, a gate, or the optional no-Node check failed
 #   2  a required input is missing, relative, unpinned, or unsafe
 
@@ -53,7 +54,11 @@ EXPECTED_ENGINE_SIZE=24522912
 NATIVE_ENGINE_GATES=23
 NATIVE_EDIT_GATES=3
 NATIVE_STDIO_GATES=9
-EXPECTED_NATIVE_GATES=$((NATIVE_ENGINE_GATES + NATIVE_EDIT_GATES + NATIVE_STDIO_GATES))
+NATIVE_PERF_GATES=1
+NATIVE_STABILITY_GATES=1
+NATIVE_MATRIX_GATES=3
+EXPECTED_NATIVE_GATES=$((NATIVE_ENGINE_GATES + NATIVE_EDIT_GATES + NATIVE_STDIO_GATES +
+    NATIVE_PERF_GATES + NATIVE_STABILITY_GATES + NATIVE_MATRIX_GATES))
 
 PACKAGE=''
 ENGINE=''
@@ -68,8 +73,10 @@ usage() {
     cat <<'EOF'
 P7 native gate runner.
 
-Runs the 23 native_engine_real gates, the 3 symbols_edits gates and the 9
-stdio_type_loop shells, in that order, with --ignored --test-threads=1.
+Runs the 23 native_engine_real gates, the 3 symbols_edits gates, the 9
+stdio_type_loop shells, the G-P5-PERF-01 and G-P5-STABILITY-01 retargets and
+the 3 real_matrix required-native tests, in that order, with --ignored
+--test-threads=1. All gates use the release profile.
 
 Required:
   --package DIR     installed v2 native package containing engine/lib/tsc and
@@ -87,10 +94,18 @@ Optional:
   --install-root DIR install root (required with --verify-no-node)
   -h, --help        show this help
 
+Gate groups: 23 native engine + 3 symbols/edits + 9 stdio + 1 perf +
+1 stability + 3 real_matrix = 40.
+
 The runner exports WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_BIN,
 TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT. It does not export
 WXML_TEST_NATIVE_PACKAGE: the unavailable-backend gate deletes its fixture
 engine, so every gate builds a disposable package from TSGO_* instead.
+
+The G-P5-STABILITY-01 shell keeps its strict clean-worktree contract. A local
+evidence run on a dirty integration tree must export
+WXML_STABILITY_ALLOW_DIRTY=1 explicitly; the runner neither sets nor documents
+that as a skip.
 
 Exit codes: 0 pass, 1 build/gate failure, 2 input or pinned-identity failure.
 EOF
@@ -377,6 +392,18 @@ if run_gate 'stdio_type_loop' 'stdio_type_loop' '' \
     "$NATIVE_STDIO_GATES" "$OUTPUT/03-stdio-type-loop.log"; then
     PASSED_GATE_TESTS=$((PASSED_GATE_TESTS + NATIVE_STDIO_GATES))
 fi
+if run_gate 'performance_bench::G-P5-PERF-01' 'performance_bench' '' \
+    "$NATIVE_PERF_GATES" "$OUTPUT/04-performance-bench.log"; then
+    PASSED_GATE_TESTS=$((PASSED_GATE_TESTS + NATIVE_PERF_GATES))
+fi
+if run_gate 'q2_stability::G-P5-STABILITY-01' 'q2_stability' '' \
+    "$NATIVE_STABILITY_GATES" "$OUTPUT/05-q2-stability.log"; then
+    PASSED_GATE_TESTS=$((PASSED_GATE_TESTS + NATIVE_STABILITY_GATES))
+fi
+if run_gate 'native_parity::real_matrix' 'native_parity' 'real_matrix' \
+    "$NATIVE_MATRIX_GATES" "$OUTPUT/06-real-matrix.log"; then
+    PASSED_GATE_TESTS=$((PASSED_GATE_TESTS + NATIVE_MATRIX_GATES))
+fi
 
 NO_NODE_STATUS='NOT_REQUESTED'
 NO_NODE_RC=0
@@ -384,7 +411,7 @@ if [ "$VERIFY_NO_NODE" = "1" ]; then
     (cd "$REPO_ROOT" && env -u WXML_TEST_NATIVE_PACKAGE \
         WXML_REQUIRE_REAL_ENGINE=1 "TSGO_BIN=$ENGINE" \
         scripts/verify-no-node.sh --installer "$INSTALLER" --root "$INSTALL_ROOT") \
-        >"$OUTPUT/04-verify-no-node.log" 2>&1 || NO_NODE_RC=$?
+        >"$OUTPUT/07-verify-no-node.log" 2>&1 || NO_NODE_RC=$?
     if [ "$NO_NODE_RC" -eq 0 ]; then
         NO_NODE_STATUS='PASS'
         printf 'NO_NODE_SCOPE: PASS (installer scope)\n'

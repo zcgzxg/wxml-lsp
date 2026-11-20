@@ -1,14 +1,19 @@
 # ADR-0008: Rust + tsgo 类型后端，移除 Node 依赖
 
-**Date**: 2026-11-17
-**Status**: proposed（用户已选择迁移方向，并已于 2026-11-17 有条件接受 7.1.0-beta 作为唯一候选基线；2026-11-18 接受 B-02 补偿控制；2026-11-20 默认 `--stdio` 已实现 native/HostOnly，F3 交付合同已 16 closed / 0 partial / 0 blocked，但 Node 保留显式 `--backend node`，P7 删除与 G5/G6/G7 未完成，仍不升级为 accepted）
+**Date**: 2026-11-17（2026-11-20 owner scope waiver 与最终验收口径）
+**Status**: accepted (native default; Node removed)
+**P7 删除状态**: removed（2026-11-20）；Node/旧 TS/v1 已删除并通过删除后验收
 **Deciders**: 项目维护者；planner、architect、Rust 测试及交付盘点参与设计
 
-本文记录已采用的迁移方向；接口与能力验证完成前保持 proposed。实施计划见 `docs/plans/2026-11-17-rust-tsgo-migration.md`。本文件不表示迁移、测试或交付已经完成。
+本文记录已采用的迁移方向。2026-11-20 owner 明确选择 **C-lite（owner-scoped functional waiver）**，原话：**“不需要严格按照原来的功能写测试。功能合理即可”**。据此本 ADR 最终关闭为 `accepted`，验收口径固定为 **native engine + native gates + F3 + 合理行为测试**，状态附注 **native default; Node removed**。`accepted` 接受的是架构方向、默认后端和功能验收口径，删除已落地；仍不表示 G7 的逐条 parity。
+
+本 ADR 明确**不声称旧 TS/Node 测试逐条等价**，也不把 `reviewed` / `waived` / `retired-with-decision` 当作 `green` 或“已迁移”。功能验收以 native engine、native gates、F3 交付合同和合理行为测试为准；旧 TS/Node 的逐条对照保留为历史证据和残余风险登记。台账终态与 waiver 依据见 `docs/evidence/2026-11-20-tsgo-p7-closeout-ledger.md`、`docs/evidence/2026-11-20-tsgo-p7-scope-decision.md` 和 `docs/evidence/2026-11-20-tsgo-p7-ledger-waiver-policy.md`。
+
+2026-11-20 删除已完成并写入 `removed`：`backend_node`、`backends/typescript`、12 个 delete gate、v1 写路径和 legacy Node env 已删除；默认 `--stdio` 为 native，只有 `NotInstalled` 降级 `HostOnly`，损坏安装 fail closed，已无 `--backend node`。删除后验收：fmt/check/clippy/rustdoc 通过；native gates **40/40**（23 engine + 3 edit + 9 stdio + 1 perf + 1 stability + 3 real_matrix；`WXML_STABILITY_ALLOW_DIRTY=1` 仅用于 dirty 工作树本地证据）；release build/install/Zed smoke **5/5**，无 Node/server.js；F3 **16/0/0**；ledger **109/0/130/29/71**（reviewed/waived/retired 非 green）；matrix **22 exact/11 blocked**。workspace 为 2587 passed/1 failed/73 ignored，唯一失败是既有 `type_assets::fake_full_resend_ten_updates_stays_within_budget` debug p95 221–233ms >200ms，release 10/10 通过；未放宽预算。
 
 ## Context
 
-现有 Rust LSP 自行启动 Node 后端，后端自行创建 TypeScript LanguageService，并未复用 Zed 的 JavaScript/TypeScript 服务。小程序上下文、原位 shadow、Behavior、属性、事件、源码映射和安全符号规则已经形成项目能力，迁移必须保留其可观察行为及正在修改的修复。用户决定采用 Rust + tsgo，去除产品运行、构建、当前测试及发布流程对 Node/npm 的要求，并将后端 TypeScript 测试迁入 Rust。
+现有 Rust LSP 自行启动 Node 后端，后端自行创建 TypeScript LanguageService，并未复用 Zed 的 JavaScript/TypeScript 服务。小程序上下文、原位 shadow、Behavior、属性、事件、源码映射和安全符号规则已经形成项目能力，迁移必须保留其可观察行为及正在修改的修复。用户决定采用 Rust + tsgo，去除产品运行、构建、当前测试及发布流程对 Node/npm 的要求，并将后端 TypeScript 测试迁入 Rust。2026-11-20 owner 将“逐条保留可观察行为”的验收口径收窄为**功能合理即可**（见 Decision 的 C-lite 裁决），不再要求旧测试逐条 parity。
 
 原生 TypeScript 提供进程协议和类型查询，但不能将旧 LanguageService 的 API 与原生 API 当作相同接口。当前源码调研只支持将原生 API 作为候选；尚未通过本项目完整 shadow、查询呈现、读写边界及恢复验证。
 
@@ -30,9 +35,25 @@ P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、Definit
 
 因此迁移不以“等待上游补回调”为前提，也不声称实现回调级写沙箱。采用方案 1 的补偿控制：方法白名单使写/append/chtimes 路径不可达，引擎以最小权限运行，禁止 emit/external code；若任何白名单方法实际触发 `AppendFile`/`Chtimes`，按 F0 阻塞缺陷处理，而不是当作可接受行为。该结论只对固定的 7.1.0-beta 成立；升级必须重新探测回调集合，不能把当前行为视为永久 API 承诺。
 
-采用精确的原生发行版本、源码提交、API/AST schema 及平台资产摘要。P1-A 实测稳定版 `7.0.2` 不具备 `createSnapshot`/租约/`createSourceFile`，AST protocol v5（header 44）与候选线不兼容，不能作为本架构基础；当前唯一满足快照、虚拟 FS、查询与 AST 要求的候选是 `7.1.0-beta`（gitHead `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`，AST protocol v9/header 64）。维护者已于 2026-11-17 有条件接受 beta 作为唯一候选基线并固定 integrity；在 P2 合同冻结、P1-C 收口与 G1 完成前保持 proposed，且不切换默认后端。`7.0.2` 不作为回退候选。不使用 `main`、`next` 或浮动版本。版本、协议与类型资产更新作为一个经过测试的变更交付；升级必须重跑 F0/F1 合同测试与 AST schema 探针。旧 Node 安装可在无 Node 条件下由受限旧 schema 读取器识别并迁入原生包；验证成功前保持旧 current 不变，原生版本之间支持校验后的回退，不自动回退激活 Node 包。
+采用精确的原生发行版本、源码提交、API/AST schema 及平台资产摘要。P1-A 实测稳定版 `7.0.2` 不具备 `createSnapshot`/租约/`createSourceFile`，AST protocol v5（header 44）与候选线不兼容，不能作为本架构基础；当前唯一满足快照、虚拟 FS、查询与 AST 要求的候选是 `7.1.0-beta`（gitHead `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`，AST protocol v9/header 64）。维护者已于 2026-11-17 有条件接受 beta 作为唯一候选基线并固定 integrity。该段是 2026-11-17 的 proposed 条件；2026-11-20 已按下方 waiver 升为 accepted，默认后端已为 native，删除状态见“最终验收范围（C-lite，accepted）”。`7.0.2` 不作为回退候选。不使用 `main`、`next` 或浮动版本。版本、协议与类型资产更新作为一个经过测试的变更交付；升级必须重跑 F0/F1 合同测试与 AST schema 探针。旧 Node 安装可在无 Node 条件下由受限旧 schema 读取器识别并迁入原生包；验证成功前保持旧 current 不变，原生版本之间支持校验后的回退，不自动回退激活 Node 包。
 
-现有 TS 测试按源测试、展开用例、关键断言逐项登记并迁入 Rust。迁移期允许在隔离的历史基线环境运行旧 Node 后端生成 oracle；最终构建、测试、安装包及运行过程不得依赖它。删除旧实现前必须完成全量等价、恢复、安全、性能及无 Node 交付验收；删除后再验一次。
+现有 TS 测试按源测试、展开用例、关键断言逐项登记并迁入 Rust。迁移期允许在隔离的历史基线环境运行旧 Node 后端生成 oracle；最终构建、测试、安装包及运行过程不得依赖它。删除旧实现前必须完成交付、恢复、安全、性能及无 Node 验收；删除后再验一次。2026-11-20 owner waiver 后，**逐条等价不再是关闭条件**：台账以 **109 green / 0 planned / 130 reviewed / 29 waived / 71 retired**（339 总数）收口，`green` 仅表示 `parity=exact` 且有真实 Rust 证据，`reviewed` / `waived` / `retired-with-decision` 均非 green。删除后仍须重跑 native 全量门禁与交付验收，但不再要求旧 TS 断言逐条重现。
+
+### 最终验收范围（C-lite，accepted）
+
+| 项 | 裁决 | 当前状态/证据 |
+| --- | --- | --- |
+| 旧 TS/Node 逐条 parity | 不再要求 | 台账 `109 green / 0 planned / 130 reviewed / 29 waived / 71 retired`；`exact=109`、`never_green=38` |
+| 功能验收 | **native engine + native gates + F3 + 合理行为测试** | native gates **40/40**（23 engine + 3 edit + 9 stdio + 1 perf + 1 stability + 3 real_matrix，opt-in required job）；F3 **16 closed / 0 partial / 0 blocked**；matrix **22 exact / 11 blocked**（33 in-place） |
+| 最终验收清单 | workspace、native gates、release/install、Zed smoke、无 Node 进程、ADR/README 口径 | `docs/evidence/2026-11-20-tsgo-p7-final-docs.md`；**已验收**，结果与残余风险已填写 |
+| 默认后端 | native | `--stdio` 默认 native；仅 `EngineDiscoveryError::NotInstalled` 降级 `HostOnly`，损坏安装 fail closed |
+| 删除范围（P7） | Node 运行时、旧 TS 实现/测试、12 个 delete gate、v1 写路径、legacy Node env | 冻结范围见 `docs/evidence/2026-11-20-tsgo-p7-deletion-surface.md` 与 `docs/evidence/2026-11-20-tsgo-p7-predelete-freeze.md`；删除演练见 `docs/evidence/2026-11-20-tsgo-p7-delete-dryrun.md` |
+| retarget 状态 | 11 个 retarget gate 全部 native-only；不标记 `old_test_removed` | 9 个 stdio 在 `b0f6cc1`，perf/stability 在 `3e24c44`；5 项 stability BLOCKED 见 `docs/evidence/2026-11-20-tsgo-p7-retarget-native-tests.md` |
+| 显式保留 | 业务 `.ts/.js/.d.ts` 与 JSDoc、WXS/WXML 语义、grammar、fixtures、typings/`assets.lock.json`、schema v1 只读识别 | 去 Node 不等于删除 TypeScript 语言支持；`verify_installed`、`read_legacy_manifest`、`build_native_package`、`list/current/verify/env` 只读边界保留 |
+| 已完成 | 实际删除、12 个 delete gate、11 个 retarget、删除后全量重验 | 2026-11-20 删除提交与验收证据；G7 逐条 parity 不声称 |
+| `removed` 写入条件 | 已满足：删除提交落地 + 删除后验收清单通过 | 2026-11-20 写入 `removed`；残余风险见最终验收清单 |
+
+**不声称**：本表不是 parity 报告，`reviewed`/`waived`/`retired` 不是 green；F3 16/0/0 只覆盖交付合同。native gates 是 opt-in required job，不是默认 CI 绿，也不是 `mandatory_green`。平台证据仍只有 Linux x86_64；G7 逐条 parity 未覆盖。
 
 ## Alternatives Considered
 
@@ -93,23 +114,24 @@ P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、Definit
 详细门禁以实施计划为准，至少包含：
 
 1. 固定版本的单进程能力试验：只读 VFS、原位 shadow、查询结果、AST/句柄及生命周期完整通过。
-2. 每个旧测试和关键断言都有 Rust 落点及结果；差分比较不得抹去类型、文档、范围、诊断、编辑目标或安全标志。
+2. 每个旧测试和关键断言都有 Rust 落点、显式 `reviewed`/`waived` 登记或 `retired-with-decision` 裁决；差分比较不得抹去类型、文档、范围、诊断、编辑目标或安全标志。2026-11-20 owner waiver 后，本条不再要求逐条 exact parity，但非 green 状态必须逐 case 有 owner/date/scope/evidence/replacement 或残余风险说明。
 3. 原有 Rust 全量测试、真实原生 E2E、状态恢复、UTF/CRLF、未保存跨文件更新及保守 rename 规则通过；缺少原生引擎必须使原生门禁失败，不能静默 skip。
 4. 在 Node 不可用且进程调用受监测的环境，构建、测试、发布、安装、升级、回滚和 Linux Zed 冒烟通过。
 5. 新 manifest/index schema、固定原生资产、类型声明许可证和摘要验证通过；离线模式不能隐式下载。
 6. 旧 Node 默认入口、实现和当前测试删除后重新执行完整门禁；保留业务 TS/JS、`.d.ts`、fixture、字节规则和历史证据。
+7. 删除完成后的最终验收按 `docs/evidence/2026-11-20-tsgo-p7-final-docs.md` 执行：workspace、native gates 40/40、release/install、Zed smoke、无 Node 进程和 ADR/README 口径已全部通过，并已写入 `removed`。
 
-截至 2026-11-17，P1-A 已实测原生进程、虚拟快照、类型/符号/文档/补全/引用、AST 关键字段、UTF-16 坐标和进程控制；稳定版 7.0.2 已排除，7.1.0-beta 为唯一候选。完整 shadow、Behavior/props/loops/guards、保守 rename、完整 AST 解码、无 Node 安装器和 clean-env 验收仍**待执行**。现有原生实验和旧后端测试记录只能作为阶段性证据，不能据此声称本 ADR 已通过验证或迁移完成。
+截至 2026-11-17，P1-A 已实测原生进程、虚拟快照、类型/符号/文档/补全/引用、AST 关键字段、UTF-16 坐标和进程控制；稳定版 7.0.2 已排除，7.1.0-beta 为唯一候选。完整 shadow、Behavior/props/loops/guards、保守 rename、完整 AST 解码、无 Node 安装器和 clean-env 验收仍**待执行**。现有原生实验和旧后端测试记录只能作为阶段性证据。
 
-截至 2026-11-20 的验证状态（仍为 proposed）：
+截至 2026-11-20 的删除后验证状态（**accepted；native default；Node removed**）：
 
-- **默认入口**：`5020ae7` 已把默认 `--stdio` 切到 native。验证安装存在时使用固定引擎；只有 `EngineDiscoveryError::NotInstalled` 降级 `HostOnly`，manifest/引擎/类型资产缺失、损坏或不匹配一律在 LSP handshake 前 fail closed。`--backend native` 仍是严格选择器，`--backend node` 保留为 deprecated 过渡路径。`7f9116a` 的 no-Node guard 只对默认分支做静态源码检查，不运行 live LSP，也不关闭 F3-02 的 `execve` 审计。
-- **门禁**：23 个旧 Node gate 的 native replacement 已全部 `gate_green`、`required_not_migrated` 为 0；但它们仍是 opt-in `--ignored` 结果，不是 `mandatory_green`，也不是默认 CI 通过。
-- **编辑安全与测试迁移**：`899a89a` 已实现 3 个 native edit gate（`G-P5-E2E-22/23`），但旧 23 个 gate、旧 `semantic_tools` 默认 Node 路径和可选 `tsc` 分支仍在；台账在 wave-9（`6fc7a00`）后为 58 `green` / 245 `planned` / 36 `retired-with-decision`（339 总数）。case `green` 与 gate `gate_green` 是两个状态轴，245 个 `planned` 仍未迁移。
+- **默认入口**：`5020ae7` 已把默认 `--stdio` 切到 native。验证安装存在时使用固定引擎；只有 `EngineDiscoveryError::NotInstalled` 降级 `HostOnly`，manifest/引擎/类型资产缺失、损坏或不匹配一律在 LSP handshake 前 fail closed。`--backend native` 仍是严格选择器，`--backend node` 已随 P7 删除；显式 Node 路径不再存在。
+- **门禁**：23 个旧 Node gate 的 native replacement 已全部 `gate_green`、`required_not_migrated` 为 0；`scripts/native-gates.sh` 的最终 native job 为 **40/40**（23 engine + 3 edit + 9 stdio + 1 perf + 1 stability + 3 real_matrix）。它们仍是 opt-in required job 结果，不是默认 CI 绿，也不是 `mandatory_green`；23 个旧 gate 在源码中仍为 `#[ignore]`，12 个 delete / 11 个 retarget 的 P7 动作已冻结。
+- **编辑安全与测试迁移**：3 个 native edit gate（`G-P5-E2E-22/23` 等）已实现；11 个 retarget gate 已全部 native-only：9 个 stdio 在 `b0f6cc1` 完成，`performance_bench`/`q2_stability` 在 `3e24c44` 改为 native-only 薄壳，旧 `#[ignore]` 测试名与文件坐标保留，不标记 `old_test_removed`。台账在 `2ce4626` 按 C-lite 收口为 **109 `green` / 0 `planned` / 130 `reviewed` / 29 `waived` / 71 `retired-with-decision`**（339 总数），其中 `exact=109`、`blocked=31`、`never_green=38`。`reviewed`/`waived`/`retired` 均非 green，`gate_green` 与 case `green` 仍是两个状态轴。
 - **交付**：F3 状态为 16 closed / 0 partial / 0 blocked。F3-06 已由 `fb6047e` 的真实 N1 `0.1.0` / N2 `0.2.0` 两次独立构建、安装/升级/回退/中断窗口关闭；F3-09 已由真实 v1 legacy 包（`e4fed4a`）关闭；F3-14 已由 `5020ae7` 默认 `--stdio` 重新构建的真实 v2 包 + 真实 Zed 默认路径冒烟关闭（Xvfb，16/16；无 wrapper、无 Node）。F3 合同收口不等于迁移完成。
-- **删除**：P7-0 预删除冻结已完成（冻结清单见 `75040c2` 证据），但 P7-1 台账归零与 P7-3..P7-7 删除均未开始。删除仍被以下事实阻塞：23 个旧 gate 仍全部 `#[ignore]`，只有 opt-in `gate_green`，没有 `mandatory_green`/替换审查；`semantic_tools` 的 2 个静默 return 和可选 `tsc` 分支仍在默认 Node 路径；v1 packager 写路径仍存在；legacy oracle 仍是 Live 而非 Frozen；`backend_node` 与旧 TS 源码/测试树未删除。`native_gates.rs` 已支持 `old_test_removed` fail-closed 语义，但实际标记 removed 的 gate 为 0/23。
+- **删除与功能覆盖**：P7-0 预删除冻结已在 `8bda306` 落盘并创建 `p7-pre-delete` tag；P7-1 台账按 owner waiver 归零；删除范围覆盖 `backend_node` 8 文件/102 单元测试、旧 TS 99 tracked 文件 + 34 个 dist、12 个 delete gate、15 个 v1 写路径和 5 个 legacy env，并保留业务 TS/JS/.d.ts、WXS/WXML、fixtures、grammar、typings/`assets.lock.json`、schema v1 只读识别与 3 个交付边界。真实 matrix 为 **22 exact / 11 blocked**（33 in-place；另有 4 个顶层 exact / 6 个 blocked），且 `4035bb7` 已把 scenario source 归档为 fixture，删除 `backends/typescript` 后默认 matrix 不依赖旧树。删除已完成：12 个 delete gate、旧 TS 树、`backend_node`、v1 写路径和 legacy Node env 均已移除；11 个 retarget gate 保留 native-only。
 
-因此 Validation 第 2、6 项仍未满足；第 3 项的 23 个 native replacement 虽已全部 `gate_green`，仍是 opt-in required job，不是 `mandatory_green` 或默认 CI 绿；第 4 项的平台证据仍只有 Linux x86_64。本 ADR 保持 proposed。不得写成 accepted，不得声称 Node 已移除、P7 已完成或迁移完成。
+因此本 ADR 于 2026-11-20 在 owner scope waiver 下关闭为 **accepted**，验收口径固定为 **native engine + native gates + F3 + 合理行为测试**，并写入 **Node removed / P7 removed**。删除后验收已完成，残余风险（Windows/macOS 实机、大项目语料、G7 逐条 parity、debug perf 已知 flake）保留在最终验收清单与 waiver 证据中；不声称旧 TS 逐条 parity。
 
 ## 与既有 ADR 的关系
 
@@ -131,6 +153,17 @@ P1-A 实测确认：原生 API 没有旧 LanguageService 的 QuickInfo、Definit
 - `docs/evidence/2026-11-20-tsgo-p6-edit-gates.md`：3 个 native edit gate 与 required job 运行记录。
 - `docs/evidence/2026-11-20-tsgo-f3-06-real-n2.md`：真实 N1 `0.1.0` / N2 `0.2.0` 双构建、安装/升级/回退/中断窗口与 F3-06 关闭依据。
 - `docs/evidence/2026-11-20-tsgo-f3-14-zed-smoke.md`：默认 `--stdio` 真实包的 Zed UI 冒烟；F3-14 关闭依据。
-- `docs/evidence/2026-11-20-tsgo-p7-gate-removal-readiness.md`：`old_test_removed` fail-closed 语义与 P7 删除就绪矩阵（0/23 可删）。
-- `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave9.md`：台账 wave-9 回填，58 `green` / 245 `planned` / 36 retired。
+- `docs/evidence/2026-11-20-tsgo-p7-gate-removal-readiness.md`：`old_test_removed` fail-closed 语义与 P7 删除就绪矩阵。
+- `docs/evidence/2026-11-20-tsgo-ledger-backfill-wave9.md`：台账 wave-9 回填历史快照。
+- `docs/evidence/2026-11-20-tsgo-p7-scope-decision.md`：2026-11-20 owner C-lite 裁决、128 green 上限与方案 A/B/C 对照。
+- `docs/evidence/2026-11-20-tsgo-p7-closeout-ledger.md`：台账终态 **109 green / 0 planned / 130 reviewed / 29 waived / 71 retired** 与 33 个退休、29 个 waiver 的逐组依据。
+- `docs/evidence/2026-11-20-tsgo-p7-ledger-waiver-policy.md`：`reviewed`/`waived`/`retired-with-decision` 的状态语义与不伪造 green 规则。
+- `docs/evidence/2026-11-20-tsgo-p7-deletion-surface.md`：P7 删除面（Node/旧 TS/12 delete gate/v1 写路径）与最小安全顺序。
+- `docs/evidence/2026-11-20-tsgo-p7-delete-dryrun.md`：12 个 delete gate 删除演练与 Frozen oracle 前置。
+- `docs/evidence/2026-11-20-tsgo-p7-retarget-native-tests.md`：9 个 stdio + perf/stability 共 11 个 retarget gate 的 native-only 薄壳、预算与 5 项 BLOCKED。
+- `docs/evidence/2026-11-20-tsgo-real-matrix-archived-source.md`：`scenarios.ts` 归档 fixture，`backends/typescript` 缺失时 matrix 仍通过。
+- `docs/evidence/2026-11-20-tsgo-p7-final-docs.md`：删除后最终验收清单（workspace/native gates/release/Zed/no-Node/文档口径），已验收。
+- `docs/evidence/2026-11-20-tsgo-p7-predeletion-baseline.md`：删除前 native 基线（35/35 gates、workspace 2813 passed）与 freeze 状态。
+- `docs/evidence/2026-11-20-tsgo-p7-predelete-freeze.md`：`8bda306` 冻结身份、`p7-pre-delete` tag 与 `deletion_allowed=false` 条件。
+- `docs/evidence/2026-11-20-tsgo-native-matrix-implementation.md`：真实 matrix **22 exact / 11 blocked** 的修正依据。
 - Microsoft TypeScript 官方源码，调研提交 `3e9236361fa97a9e6c685f4833ac457ae2d8c50a`：`packages/typescript/src/api/async/client.ts`、`api/options.ts`、`api/proto.generated.ts`、`tsc/internal/ipc/protocol_jsonrpc.go`、`tsc/internal/api/encoder/encoder.go`、`tsc/internal/api/callbackfs.go`。源码调研与本次二进制实测相互独立；未实测的字段不得当成已验证。

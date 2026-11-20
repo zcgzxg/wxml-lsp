@@ -2,7 +2,7 @@
 
 **状态：draft / not accepted。** 维护者已**条件接受** `7.1.0-beta` 作为唯一候选基线（见 §2.1），但本文仍是 P2 草案；**只有在 P2 评审通过且 G1 关闭后才有规范效力**。不得据此声称迁移、实现、测试或验收已经完成，也不得视为默认后端切换已批准。本文不修改任何源码、测试、Cargo、计划、ADR 或其它文档；对 beta 的条件接受不等于对本文的接受。
 
-更新日期：2026-11-17。适用基线：ADR-0008（proposed）、`docs/plans/2026-11-17-rust-tsgo-migration.md` 第 3–4、5、6 节、`docs/evidence/2026-11-17-tsgo-native-api-spike.md`（下称“P1-A 证据”；其 §15 为 2026-11-17 P2 追加探针 B-02/B-03/B-04/B-12）。
+更新日期：2026-11-17。适用基线：ADR-0008（accepted，native 默认；P7 集成中）、`docs/plans/2026-11-17-rust-tsgo-migration.md` 第 3–4、5、6 节、`docs/evidence/2026-11-17-tsgo-native-api-spike.md`（下称“P1-A 证据”；其 §15 为 2026-11-17 P2 追加探针 B-02/B-03/B-04/B-12）。
 
 ## 1. 状态、权威顺序与证据边界
 
@@ -19,7 +19,7 @@
 
 冲突时按以下顺序判断：
 
-1. 有效 ADR（当前 ADR-0008 仍为 proposed；版本接受与迁移方向以 ADR 为准）。
+1. 有效 ADR（ADR-0008 已于 2026-11-20 在 owner scope waiver 下 accepted，native 默认；版本接受与迁移方向以 ADR 为准）。
 2. 实施计划（阶段、门禁、共享文件 owner、测试迁移规则）。
 3. 本文件与既有 C0/C1 契约（`docs/reference/contracts.md`、`docs/reference/type-bridge-c1.md`）。
 4. 证据记录（P1-A、P0/P1-C；只证明记录范围内的行为）。

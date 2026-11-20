@@ -4,7 +4,7 @@
 **Status**: accepted  
 **Deciders**: 项目维护者、规划协作 agent
 
-**2026-11-17 后续**：[ADR-0008](0008-rust-tsgo-no-node-backend.md)（proposed）拟替代类型桥的实现归属；本文的原位 shadow、模板语义和映射原则继续有效。
+**2026-11-17 后续**：[ADR-0008](0008-rust-tsgo-no-node-backend.md)（2026-11-20 已在 owner scope waiver 下最终关闭为 accepted，native 默认；P7 集成中）替代类型桥的实现归属；本文的原位 shadow、模板语义和映射原则继续有效。
 
 ## Context
 

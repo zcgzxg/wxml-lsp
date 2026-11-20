@@ -47,11 +47,13 @@ fn prints_help() {
     let stdout = String::from_utf8(output.stdout).expect("utf-8 output");
     assert!(stdout.contains("Usage: wxml-lsp"), "{stdout}");
     assert!(stdout.contains("--stdio"), "{stdout}");
-    assert!(stdout.contains("--backend native|node"), "{stdout}");
+    assert!(stdout.contains("--backend native"), "{stdout}");
+    assert!(!stdout.contains("native|node"), "{stdout}");
     assert!(
-        stdout.contains("deprecated transitional Node backend"),
+        !stdout.contains("deprecated transitional Node backend"),
         "{stdout}"
     );
+    assert!(!stdout.contains("--backend node"), "{stdout}");
 }
 
 #[test]
@@ -221,24 +223,25 @@ fn default_without_install_serves_host_only() {
 }
 
 #[test]
-fn explicit_node_backend_still_initializes_without_install() {
-    let cwd = TempTree::new("node-backend-cwd");
-    let output = run_framed_session(
-        Path::new(BIN),
-        &["--stdio", "--backend", "node"],
-        &cwd.path,
-        POISON_ENV,
-        &standard_payloads(None),
-    );
-    let stderr = String::from_utf8_lossy(&output.stderr);
+fn rejects_the_removed_node_backend() {
+    let output = Command::new(BIN)
+        .args(["--stdio", "--backend", "node"])
+        .output()
+        .expect("spawn wxml-lsp");
+    assert!(!output.status.success());
     assert!(
-        output.status.success(),
-        "explicit Node backend must keep starting: {stderr}"
+        output.stdout.is_empty(),
+        "a rejected backend must not write to the LSP stream: {:?}",
+        output.stdout
     );
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8(output.stderr).expect("utf-8 output");
     assert!(
-        stdout.contains("\"id\":1") && stdout.contains("\"capabilities\""),
-        "initialize response missing: {stdout}"
+        stderr.contains("the `node` backend was removed"),
+        "explicit `--backend node` must be rejected: {stderr}"
+    );
+    assert!(
+        !stderr.to_ascii_lowercase().contains("server.js"),
+        "the removed Node backend must not be probed: {stderr}"
     );
 }
 

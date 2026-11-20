@@ -10,9 +10,9 @@
 //!   auxiliary evidence, not the `strace -f -e trace=execve,execveat` audit
 //!   required by F3-02. This test therefore does not close F3-02.
 //! - The native default selector is checked statically: `serve_default` must
-//!   not construct `NodeBackend`, while the deprecated `serve_node` branch must
-//!   still do so for `--backend node`. A missing or malformed selector is
-//!   `UNVERIFIED`, never PASS; this guard does not run a live LSP session.
+//!   not construct a Node backend and `main.rs` must not declare `serve_node`
+//!   or `NodeBackend`. A missing or malformed selector is `UNVERIFIED`, never
+//!   PASS; this guard does not run a live LSP session.
 //! - Two-version real-engine `upgrade`/`rollback` is not exercised here; the
 //!   CLI flow test uses a shell fixture engine and the real-asset harness covers
 //!   only one install version.
@@ -488,12 +488,6 @@ fn lsp_native_status() -> LspStatus {
             detail: format!("{} has no serve_default()", path.display()),
         };
     };
-    let Some(node_body) = function_body(&text, "fn serve_node()") else {
-        return LspStatus {
-            status: "UNVERIFIED",
-            detail: format!("{} has no serve_node()", path.display()),
-        };
-    };
     if default_body.contains("NodeBackend::new") {
         return LspStatus {
             status: "BLOCKED",
@@ -503,11 +497,11 @@ fn lsp_native_status() -> LspStatus {
             ),
         };
     }
-    if !node_body.contains("NodeBackend::new") {
+    if text.contains("fn serve_node()") || text.contains("NodeBackend::new") {
         return LspStatus {
             status: "BLOCKED",
             detail: format!(
-                "{} serve_node() must retain the explicit NodeBackend",
+                "{} still declares serve_node() or constructs NodeBackend",
                 path.display()
             ),
         };
@@ -515,7 +509,7 @@ fn lsp_native_status() -> LspStatus {
     LspStatus {
         status: "PASS",
         detail: format!(
-            "{} serve_default() is native; serve_node() retains explicit Node",
+            "{} has no Node backend: serve_default() is native and serve_node() is gone",
             path.display()
         ),
     }

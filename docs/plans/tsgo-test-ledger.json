@@ -1539,6 +1539,7 @@
         "TS-ANALYSIS-0161"
       ],
       "status": "gate_green",
+      "old_test_removed": true,
       "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_non_owner_overlay_replay_survives_restart",
       "replacement_kind": "native_engine_real_stdio_overlay_replay",
       "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
@@ -1596,6 +1597,7 @@
         "TS-COMPLETION-0175"
       ],
       "status": "gate_green",
+      "old_test_removed": true,
       "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_event_handler_hover_diagnostics_definition_completion",
       "replacement_kind": "native_engine_real_stdio_event",
       "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
@@ -1652,6 +1654,7 @@
         "TS-COMPLETION-0175"
       ],
       "status": "gate_green",
+      "old_test_removed": true,
       "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_expression_and_event_completion_smoke",
       "replacement_kind": "native_engine_real_stdio",
       "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings 5.3.1 payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
@@ -1702,6 +1705,7 @@
         "TS-MATRIX-0102-PAGE_BASIC-IN_PLACE_SHADOW"
       ],
       "status": "gate_green",
+      "old_test_removed": true,
       "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_hover_and_diagnostics_smoke",
       "replacement_kind": "native_engine_real_stdio",
       "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
@@ -1752,6 +1756,7 @@
         "TS-SYMBOLS-0116"
       ],
       "status": "gate_green",
+      "old_test_removed": true,
       "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_symbols_smoke",
       "replacement_kind": "native_engine_real_stdio_symbols",
       "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
@@ -2254,6 +2259,7 @@
         "TS-GUARDS-0174"
       ],
       "status": "gate_green",
+      "old_test_removed": true,
       "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac005_loop_scope_typed_locals",
       "replacement_kind": "native_engine_real_stdio",
       "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
@@ -2304,6 +2310,7 @@
         "TS-GUARDS-0128"
       ],
       "status": "gate_green",
+      "old_test_removed": true,
       "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac006_conditional_union_narrowing",
       "replacement_kind": "native_engine_real_stdio",
       "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings 5.3.1 payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
@@ -2354,6 +2361,7 @@
         "TS-MATRIX-0102-ALIAS_PROJECT-IN_PLACE_SHADOW"
       ],
       "status": "gate_green",
+      "old_test_removed": true,
       "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac008_alias_project_hover_and_definition",
       "replacement_kind": "native_engine_real_stdio",
       "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
@@ -2404,6 +2412,7 @@
         "TS-PROTOCOL-0450"
       ],
       "status": "gate_green",
+      "old_test_removed": true,
       "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac008_multi_view_fixture_isolation",
       "replacement_kind": "native_engine_real_stdio",
       "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
@@ -2453,6 +2462,7 @@
         "TS-ANALYSIS-0161"
       ],
       "status": "gate_green",
+      "old_test_removed": true,
       "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac008_simultaneous_views_do_not_pollute_each_other",
       "replacement_kind": "native_engine_real_stdio",
       "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
@@ -2503,6 +2513,7 @@
         "TS-COMPONENT-0206"
       ],
       "status": "gate_green",
+      "old_test_removed": true,
       "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac012_component_property_bindings",
       "replacement_kind": "native_engine_real_stdio_acceptance",
       "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
@@ -2559,6 +2570,7 @@
         "TS-EVENTS-0143"
       ],
       "status": "gate_green",
+      "old_test_removed": true,
       "replacement_test": "crates/wxml-lsp/tests/native_parity/native_engine_real.rs::native_ac012_event_handlers_basic",
       "replacement_kind": "native_engine_real_stdio_acceptance",
       "native_prerequisite": "pinned TypeScript 7.1.0-beta native engine (lib/tsc, SHA-256 a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70) plus engine lib assets and the pinned miniprogram-api-typings payload; WXML_TEST_NATIVE=1, WXML_REQUIRE_REAL_ENGINE=1, TSGO_ASSET_ROOT and TSGO_TYPINGS_ROOT; opt-in --ignored native job",
@@ -2602,92 +2614,9 @@
       }
     }
   ],
-  "silent_skip_gates": [
-    {
-      "gate_id": "G-P5-E2E-22",
-      "file": "crates/wxml-lsp/tests/semantic_tools.rs",
-      "test": "real_node_lsp_component_property_edit_applies_and_parses",
-      "old_reason": "silent return when dist/server.js is absent; optional tsc post-check",
-      "must_migrate": true,
-      "target_gate": "P5 real-native E2E + mandatory post-edit parse/typecheck on an isolated snapshot.",
-      "proposed_command": "cargo test -p wxml-lsp --test native_engine_real -- --ignored",
-      "fail_closed": "Missing engine or missing post-edit check fails; no tsc/Node prerequisite.",
-      "related_ledger_cases": [
-        "TS-SYMBOLS-0116",
-        "TS-SYMBOLS-0150"
-      ],
-      "status": "required_not_migrated",
-      "line": 2086,
-      "replacement_test": "crates/wxml-lsp/tests/native_parity/symbols_edits.rs::native_component_property_edit_applies_and_reparses",
-      "replacement_kind": "native real-engine LSP E2E",
-      "old_test_must_fail_when_engine_missing": true,
-      "required_old_test_change": "Replace Option/early-return asset lookup with a panicking precondition (or delete only after the native replacement is green and reviewed).",
-      "tsc_replacement": "crates/wxml-lsp/tests/native_parity/symbols_edits.rs::assert_native_edit_reparses_and_typechecks (mandatory, no tsc branch)"
-    },
-    {
-      "gate_id": "G-P5-E2E-23",
-      "file": "crates/wxml-lsp/tests/semantic_tools.rs",
-      "test": "real_node_lsp_rejects_cross_namespace_and_dynamic_edits",
-      "old_reason": "silent return when dist/server.js is absent",
-      "must_migrate": true,
-      "target_gate": "P5 security/safety: cross-namespace/dynamic rename rejected (-32803), no edit, source unchanged.",
-      "proposed_command": "cargo test -p wxml-lsp --test native_engine_real -- --ignored",
-      "fail_closed": "Any edit or success response fails; missing engine fails.",
-      "related_ledger_cases": [
-        "TS-SYMBOLS-0242",
-        "TS-SYMBOLS-0286",
-        "TS-SYMBOLS-0312"
-      ],
-      "status": "required_not_migrated",
-      "line": 2589,
-      "replacement_test": "crates/wxml-lsp/tests/native_parity/symbols_edits.rs::native_rejects_cross_namespace_and_dynamic_edits",
-      "replacement_kind": "native real-engine LSP E2E security gate",
-      "old_test_must_fail_when_engine_missing": true,
-      "required_old_test_change": "Replace Option/early-return asset lookup with a panicking precondition (or delete after the native replacement is green)."
-    }
-  ],
+  "silent_skip_gates": [],
   "silent_skips": {
-    "rust_silent_skips": [
-      {
-        "file": "crates/wxml-lsp/tests/semantic_tools.rs",
-        "line": 2086,
-        "test": "real_node_lsp_component_property_edit_applies_and_parses",
-        "behavior": "Returns early with 'skipping real Node LSP test: build backends/typescript first' when backends/typescript/dist/server.js is absent; the test is not #[ignore], so the ordinary suite reports it as passed without exercising real Node.",
-        "baseline_result": "passed (skipped body)",
-        "replacement_test": "crates/wxml-lsp/tests/native_parity/symbols_edits.rs::native_component_property_edit_applies_and_reparses",
-        "replacement_kind": "native real-engine LSP E2E",
-        "old_test_must_fail_when_engine_missing": true,
-        "required_old_test_change": "Replace the Option/early-return asset lookup with a panicking precondition (or delete the old test only after the native replacement is green and reviewed). The old test may never return green when the native engine is absent.",
-        "required_gate": "P5 real-native E2E: component property edit must apply to an isolated snapshot and reparse/typecheck with the native engine; missing engine is a hard failure.",
-        "target_rust_landing": "crates/wxml-lsp/tests/native_parity/symbols_edits.rs real-engine gate (or a separate native_engine integration test with a required asset check)"
-      },
-      {
-        "file": "crates/wxml-lsp/tests/semantic_tools.rs",
-        "line": 2184,
-        "test": "real_node_lsp_component_property_edit_applies_and_parses (post-edit check)",
-        "behavior": "If node_modules/typescript/bin/tsc is absent, prints 'tsc not installed; skipped post-edit type check' and continues. The typecheck after applying a WorkspaceEdit is therefore optional.",
-        "baseline_result": "typecheck ran because node_modules/typescript exists; the skip path is still reachable",
-        "replacement_test": "crates/wxml-lsp/tests/native_parity/symbols_edits.rs::assert_native_edit_reparses_and_typechecks",
-        "replacement_kind": "shared mandatory helper invoked by both native edit tests",
-        "old_test_must_fail_when_engine_missing": true,
-        "required_old_test_change": "Remove the tsc exists()/skipped branch. The native reparse/typecheck helper must be unconditional; the test fails if the native engine or its type information is unavailable.",
-        "required_gate": "P5/P4 slice D: applying an approved WorkspaceEdit must always reparse/typecheck via the native engine; no tsc/Node prerequisite and no optional branch.",
-        "target_rust_landing": "crates/wxml-lsp/tests/native_parity/symbols_edits.rs + native post-edit check helper"
-      },
-      {
-        "file": "crates/wxml-lsp/tests/semantic_tools.rs",
-        "line": 2589,
-        "test": "real_node_lsp_rejects_cross_namespace_and_dynamic_edits",
-        "behavior": "Returns early with the same 'skipping real Node LSP test' message when dist/server.js is absent; ordinary suite reports pass.",
-        "baseline_result": "passed (skipped body)",
-        "replacement_test": "crates/wxml-lsp/tests/native_parity/symbols_edits.rs::native_rejects_cross_namespace_and_dynamic_edits",
-        "replacement_kind": "native real-engine LSP E2E security gate",
-        "old_test_must_fail_when_engine_missing": true,
-        "required_old_test_change": "Replace the Option/early-return asset lookup with a panicking precondition (or delete after the native replacement is green). No green skip is allowed.",
-        "required_gate": "P5 security/safety gate: cross-namespace and dynamic rename requests must be rejected with -32803, no edit, files unchanged, native engine present.",
-        "target_rust_landing": "crates/wxml-lsp/tests/native_parity/symbols_edits.rs real-engine security gate"
-      }
-    ],
+    "rust_silent_skips": [],
     "ts_conditional_skips": [
       {
         "file": "backends/typescript/test/meta.test.ts",
@@ -30569,15 +30498,8 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "reviewed",
-        "note": "The de-Node installer no longer resolves Node backend directories at all, so the TS source/dist/packaged resolveBackendDir assertions have no one-to-one native counterpart. The native installer tests prove the replacement mechanism: verified native install/upgrade/rollback under a PATH without node, and legacy read-only commands that never consult node or backend environment variables.",
+        "note": "The de-Node installer no longer resolves Node backend directories at all, so the TS source/dist/packaged resolveBackendDir assertions have no one-to-one native counterpart. The native installer tests prove the replacement mechanism: verified native install/upgrade/rollback under a PATH without node, and legacy read-only commands that never consult node or backend environment variables. P7 deletes the legacy v1 installer-flow test; the native no-Node CLI test remains authoritative.",
         "rust_tests": [
-          {
-            "path": "crates/wxml-delivery/tests/installer_flow.rs",
-            "line": 598,
-            "test": "legacy_read_only_commands_never_consult_node",
-            "fully_qualified": "wxml_delivery::installer_flow::legacy_read_only_commands_never_consult_node",
-            "note": "Legacy verify/current/env ignore WXML_NODE, WXML_TYPE_BACKEND and WXML_BACKEND_DIR and do not execute the poison Node tripwire."
-          },
           {
             "path": "crates/wxml-delivery/tests/native_cli.rs",
             "line": 391,
@@ -30589,7 +30511,7 @@
       },
       "review": {
         "group_id": "rg-weaker-subset",
-        "note": "The de-Node installer no longer resolves Node backend directories at all, so the TS source/dist/packaged resolveBackendDir assertions have no one-to-one native counterpart. The native installer tests prove the replacement mechanism: verified native install/upgrade/rollback under a PATH without node, and legacy read-only commands that never consult node or backend environment variables."
+        "note": "The de-Node installer no longer resolves Node backend directories at all, so the TS source/dist/packaged resolveBackendDir assertions have no one-to-one native counterpart. The native installer tests prove the replacement mechanism: verified native install/upgrade/rollback under a PATH without node, and legacy read-only commands that never consult node or backend environment variables. P7 deletes the legacy v1 installer-flow test; the native no-Node CLI test remains authoritative."
       }
     },
     {
@@ -30656,15 +30578,8 @@
         "green_eligible": false,
         "status_recommendation": "planned",
         "status_applied": "reviewed",
-        "note": "Oracle `backends/typescript/test/server.test.ts:267` starts the server from a symlinked entry and expects a `ping` reply. Native resolves its install through the `current` symlink and answers stdio requests with matching ids, but has no Node `resolveBackendDir` entry detection and no `ping` method.",
+        "note": "Oracle `backends/typescript/test/server.test.ts:267` starts the server from a symlinked entry and expects a `ping` reply. Native resolves its install through the `current` symlink and answers stdio requests with matching ids, but has no Node `resolveBackendDir` entry detection and no `ping` method. P7 removes the v1 installer module; the native stdio session test remains.",
         "rust_tests": [
-          {
-            "path": "crates/wxml-delivery/src/install.rs",
-            "line": 721,
-            "test": "versions_are_sorted_and_current_requires_a_valid_link",
-            "fully_qualified": "wxml_delivery::install::tests::versions_are_sorted_and_current_requires_a_valid_link",
-            "note": "Switches the `current` symlink to a versioned directory and reads the version back through that link."
-          },
           {
             "path": "crates/wxml-lsp/tests/lsp.rs",
             "line": 233,

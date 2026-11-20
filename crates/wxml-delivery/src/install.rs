@@ -9,7 +9,7 @@ use crate::error::{DeliveryError, Result};
 use crate::manifest::{ExpectedManifest, Manifest, set_mode};
 use crate::paths::{host_platform, validate_version};
 use crate::semver::compare_versions;
-use crate::verify::{check_backend, check_binary, verify_tree};
+use crate::verify::verify_tree;
 
 /// Environment variable that always wins over the installed server.
 pub const BINARY_ENV: &str = "WXML_LSP_BIN";
@@ -273,77 +273,6 @@ impl InstallRoot {
         )
     }
 
-    /// Installs an already verified extraction tree and activates it.
-    ///
-    /// The tree must live under this root's `tmp/` directory so the rename is
-    /// atomic. On success the `current` link is switched after the version
-    /// directory is complete.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the tree is outside the root, verification fails,
-    /// or the atomic rename or link update fails.
-    pub fn install_tree(&self, tree: &Path, version: &str) -> Result<InstallOutcome> {
-        validate_version(version)?;
-        let platform = host_platform()?;
-        let canonical_tree =
-            std::fs::canonicalize(tree).map_err(|error| DeliveryError::io(tree, error))?;
-        let canonical_tmp = std::fs::canonicalize(self.tmp_dir())
-            .map_err(|error| DeliveryError::io(&self.tmp_dir(), error))?;
-        if !canonical_tree.starts_with(&canonical_tmp) {
-            return Err(DeliveryError::InstallState(
-                "staging tree is outside the install root".to_owned(),
-            ));
-        }
-        let manifest = verify_tree(
-            &canonical_tree,
-            ExpectedManifest {
-                version: Some(version),
-                platform: Some(&platform),
-                protocol_version: None,
-            },
-        )?;
-
-        // Runtime checks happen on the staged tree, before it can become
-        // active. A bad binary or backend must not replace a working version.
-        check_binary(&canonical_tree, &manifest)?;
-        check_backend(&canonical_tree, &manifest)?;
-
-        let versions = self.versions_dir();
-        ensure_real_directory_or_missing(&versions, "versions directory")?;
-        let versions_existed = versions.exists();
-        std::fs::create_dir_all(&versions).map_err(|error| DeliveryError::io(&versions, error))?;
-        if !versions_existed {
-            set_mode(&versions, 0o755)?;
-        }
-        let destination = versions.join(version);
-        if destination.exists() {
-            if let Ok(existing) = self.verify_installed(version) {
-                if same_payload(&existing, &manifest) {
-                    check_binary(&destination, &existing)?;
-                    check_backend(&destination, &existing)?;
-                    let _ = std::fs::remove_dir_all(&canonical_tree);
-                    self.switch_durable(version)?;
-                    return Ok(InstallOutcome::AlreadyInstalled);
-                }
-                return Err(DeliveryError::InstallState(format!(
-                    "version {version} is already installed with different contents; \
-                     remove that version or rebuild with a new version number"
-                )));
-            }
-            let broken = self.new_temp_dir("broken")?;
-            let _ = std::fs::remove_dir(&broken);
-            std::fs::rename(&destination, &broken)
-                .map_err(|error| DeliveryError::io(&destination, error))?;
-            let _ = std::fs::remove_dir_all(&broken);
-        }
-        std::fs::rename(&canonical_tree, &destination)
-            .map_err(|error| DeliveryError::io(&destination, error))?;
-        set_mode(&destination, 0o755)?;
-        self.switch_durable(version)?;
-        Ok(InstallOutcome::Installed)
-    }
-
     /// Atomically switches `current` and treats a missing fsync as an error.
     ///
     /// # Errors
@@ -433,25 +362,6 @@ fn is_forbidden_root(path: &Path) -> bool {
         .flatten()
         .filter_map(|value| std::fs::canonicalize(PathBuf::from(value)).ok())
         .any(|candidate| candidate == path)
-}
-
-/// Compares installed payloads without treating the build timestamp as content.
-fn same_payload(left: &Manifest, right: &Manifest) -> bool {
-    left.package_version == right.package_version
-        && left.platform == right.platform
-        && left.protocol_version == right.protocol_version
-        && left.node == right.node
-        && left.binaries == right.binaries
-        && left.files == right.files
-}
-
-/// Result of installing one version.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InstallOutcome {
-    /// A new version directory was created and activated.
-    Installed,
-    /// The same verified version was already installed.
-    AlreadyInstalled,
 }
 
 /// Result of an atomic `current` switch.
@@ -618,103 +528,6 @@ mod tests {
     #[test]
     fn rejects_canonical_aliases_of_the_filesystem_root() {
         assert!(InstallRoot::create(Path::new("/tmp/..")).is_err());
-    }
-
-    #[test]
-    fn install_tree_rejects_a_tree_outside_the_root() {
-        let base = scratch("outside");
-        let root = InstallRoot::create(&base.join("root")).unwrap();
-        let outside = base.join("tree");
-        std::fs::create_dir_all(&outside).unwrap();
-        assert!(root.install_tree(&outside, "0.1.0").is_err());
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn missing_backend_dependency_is_rejected_before_activation() {
-        use crate::manifest::{
-            ArtifactKind, BinaryArtifact, FileEntry, Manifest, NodeInfo, PACKAGE_NAME,
-            SCHEMA_VERSION, atomic_write, sha256_file,
-        };
-        use crate::verify::checksums_for_tree;
-
-        let base = scratch("backend-order");
-        let root = InstallRoot::create(&base.join("root")).unwrap();
-        let tree = root.new_temp_dir("stage").unwrap();
-        std::fs::create_dir_all(tree.join("bin")).unwrap();
-        std::fs::create_dir_all(tree.join("bin/wxml-type-backend")).unwrap();
-        std::fs::write(
-            tree.join("bin/wxml-lsp"),
-            b"#!/bin/sh\nprintf 'wxml-lsp 0.1.0\\n'\n",
-        )
-        .unwrap();
-        set_mode(&tree.join("bin/wxml-lsp"), 0o755).unwrap();
-        std::fs::write(
-            tree.join("bin/wxml-type-backend/server.js"),
-            b"console.log('backend');\n",
-        )
-        .unwrap();
-        let binary_hash = sha256_file(&tree.join("bin/wxml-lsp")).unwrap();
-        let backend_hash = sha256_file(&tree.join("bin/wxml-type-backend/server.js")).unwrap();
-        let manifest = Manifest {
-            schema_version: SCHEMA_VERSION,
-            package: PACKAGE_NAME.to_owned(),
-            package_version: "0.1.0".to_owned(),
-            platform: host_platform().unwrap(),
-            protocol_version: 2,
-            node: NodeInfo {
-                minimum_version: "24.0.0".to_owned(),
-                backend_version: "0.1.0".to_owned(),
-            },
-            built_at: "2026-01-01T00:00:00Z".to_owned(),
-            binaries: vec![
-                BinaryArtifact {
-                    kind: ArtifactKind::Rust,
-                    name: "wxml-lsp".to_owned(),
-                    path: "bin/wxml-lsp".to_owned(),
-                    version: "0.1.0".to_owned(),
-                    protocol_version: None,
-                    sha256: binary_hash,
-                },
-                BinaryArtifact {
-                    kind: ArtifactKind::NodeBackend,
-                    name: "node-backend".to_owned(),
-                    path: "bin/wxml-type-backend/server.js".to_owned(),
-                    version: "0.1.0".to_owned(),
-                    protocol_version: Some(2),
-                    sha256: backend_hash,
-                },
-            ],
-            files: vec![
-                FileEntry {
-                    path: "bin/wxml-lsp".to_owned(),
-                    sha256: sha256_file(&tree.join("bin/wxml-lsp")).unwrap(),
-                    size: std::fs::metadata(tree.join("bin/wxml-lsp")).unwrap().len(),
-                    mode: "0755".to_owned(),
-                },
-                FileEntry {
-                    path: "bin/wxml-type-backend/server.js".to_owned(),
-                    sha256: sha256_file(&tree.join("bin/wxml-type-backend/server.js")).unwrap(),
-                    size: std::fs::metadata(tree.join("bin/wxml-type-backend/server.js"))
-                        .unwrap()
-                        .len(),
-                    mode: "0644".to_owned(),
-                },
-            ],
-        };
-        atomic_write(
-            &tree.join("manifest.json"),
-            &manifest.to_json().unwrap(),
-            0o644,
-        )
-        .unwrap();
-        let checksums = checksums_for_tree(&tree, &manifest).unwrap();
-        atomic_write(&tree.join("SHA256SUMS"), &checksums, 0o644).unwrap();
-        let error = root.install_tree(&tree, "0.1.0").unwrap_err();
-        assert!(matches!(error, DeliveryError::Runtime(_)), "{error:?}");
-        assert!(root.current_version().unwrap().is_none());
-        assert!(!root.versions_dir().exists());
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

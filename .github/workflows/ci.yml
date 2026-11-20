@@ -153,6 +153,8 @@ jobs:
   # (for example when a private provisioning step writes it); the variable
   # takes precedence. When requested, a missing package fails the job
   # explicitly; it never skips.
+  # Gate composition (40): 23 native_engine_real + 3 symbols_edits + 9
+  # stdio_type_loop + 1 G-P5-PERF-01 + 1 G-P5-STABILITY-01 + 3 real_matrix.
   native-gates:
     name: native gates (opt-in, real engine)
     if: github.event_name == 'workflow_dispatch' && inputs.native_gates
@@ -185,7 +187,7 @@ jobs:
             echo "::error::TSGO_NATIVE_TYPINGS does not exist on this runner: $TSGO_NATIVE_TYPINGS"
             exit 1
           fi
-      - name: Run the 26 native gates
+      - name: Run the 40 native gates
         shell: bash
         run: |
           set -euo pipefail

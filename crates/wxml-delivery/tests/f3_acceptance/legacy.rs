@@ -47,8 +47,7 @@ fn f3_08_09_15_legacy_migration_inert_env_and_v1_rollback() {
 
     let make_legacy_root = |name: &str| {
         let root = private_root(&base, name);
-        let install = install_legacy(&install_bin, &legacy_release, &root, &tripwires, &work);
-        assert_success(&install, "legacy v1 fixture install");
+        install_legacy(&install_bin, &legacy_release, &root, &tripwires, &work);
         clear_marker(&marker);
         assert_legacy_current(&root);
         root

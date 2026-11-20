@@ -31,7 +31,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-use crate::harness::{BlockedGate, Partition};
+use crate::harness::Partition;
 use crate::native_lsp::{self, Session};
 use crate::native_package::NativeGate;
 
@@ -44,38 +44,6 @@ pub(crate) const MIGRATED_CASES: &[&str] = &[
     "assert_native_edit_reparses_and_typechecks",
     "native_rejects_cross_namespace_and_dynamic_edits",
 ];
-
-/// Old silent `semantic_tools` surfaces and the authored gate that covers each.
-///
-/// This is the explicit coverage map for the two silent returns plus the
-/// optional `tsc` branch. Every replacement named here must also appear in
-/// [`MIGRATED_CASES`] and in the ledger `replacement_test`/`tsc_replacement`
-/// fields, which `native_gates.rs` cross-checks.
-pub(crate) const COVERED_OLD_SURFACES: &[(&str, &str)] = &[
-    (
-        "G-P5-E2E-22 silent return when the legacy Node backend is absent",
-        "native_component_property_edit_applies_and_reparses",
-    ),
-    (
-        "G-P5-E2E-22 optional tsc post-edit branch",
-        "assert_native_edit_reparses_and_typechecks",
-    ),
-    (
-        "G-P5-E2E-23 silent return when the legacy Node backend is absent",
-        "native_rejects_cross_namespace_and_dynamic_edits",
-    ),
-];
-
-/// Future tests that must run before the old silent edit paths can be removed.
-///
-/// Empty: all three old silent surfaces (the two legacy backend early
-/// returns and the optional `tsc` branch) are already covered by
-/// [`COVERED_OLD_SURFACES`] and authored in [`MIGRATED_CASES`]. The old tests
-/// themselves stay in place: the ledger still records them as
-/// `required_not_migrated`, so deletion remains blocked by the required native
-/// job recording green evidence and by replacement review, not by an unauthored
-/// gate.
-pub(crate) const BLOCKED_NATIVE_GATES: &[BlockedGate] = &[];
 
 /// Workspace-relative file that declares the native edit gates.
 pub(crate) const NATIVE_EDIT_GATE_FILE: &str =

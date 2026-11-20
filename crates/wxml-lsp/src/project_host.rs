@@ -39,11 +39,11 @@ use crate::dependencies::DependencyIndex;
 /// Marker used by the synthetic host and the synthetic workspace project.
 pub const SYNTHETIC_PROJECT: &str = "lsp";
 
-/// Compiler options that the C1 Node backend accepts.
+/// Compiler options accepted by the native backend.
 ///
-/// This mirrors `REQUEST_COMPILER_OPTION_KEYS` in
+/// This mirrors `REQUEST_COMPILER_OPTION_KEYS` in the retired
 /// `backends/typescript/src/protocol.ts`. Unknown keys are filtered here and
-/// reported as a `Partial` hint instead of being sent to Node, which rejects
+/// reported as a `Partial` hint instead of being forwarded, which would reject
 /// unknown options.
 const SUPPORTED_COMPILER_OPTIONS: [&str; 33] = [
     "strict",

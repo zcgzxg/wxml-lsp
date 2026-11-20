@@ -1,4 +1,4 @@
-//! Tree verification and post-install runtime checks.
+//! Read-only tree verification and version probing.
 //!
 //! Schema v1 (legacy Node) trees are hashed read-only: this module never runs
 //! `node --version`, never resolves `WXML_NODE`, and never starts a Node
@@ -11,8 +11,8 @@ use std::time::Duration;
 
 use crate::error::{DeliveryError, Result, display_name};
 use crate::manifest::{
-    ExpectedManifest, MAX_MANIFEST_BYTES, Manifest, format_sha256sums, parse_sha256sums,
-    read_limited, read_manifest, sha256_file,
+    ExpectedManifest, MAX_MANIFEST_BYTES, Manifest, parse_sha256sums, read_limited, read_manifest,
+    sha256_file,
 };
 
 /// Verifies a complete package tree against its own manifest and checksums.
@@ -92,29 +92,6 @@ pub fn verify_tree(root: &Path, expected: ExpectedManifest<'_>) -> Result<Manife
     Ok(manifest)
 }
 
-/// Writes the checksum file for a completed package tree.
-///
-/// # Errors
-///
-/// Returns an error when a manifest file cannot be hashed.
-pub fn checksums_for_tree(root: &Path, manifest: &Manifest) -> Result<Vec<u8>> {
-    let mut entries = std::collections::BTreeMap::new();
-    for file in &manifest.files {
-        let path = root.join(&file.path);
-        let digest = sha256_file(&path)?;
-        if digest != file.sha256 {
-            return Err(DeliveryError::Integrity(format!(
-                "payload `{}` changed before checksum generation",
-                file.path
-            )));
-        }
-        entries.insert(file.path.clone(), digest);
-    }
-    let manifest_path = root.join("manifest.json");
-    entries.insert("manifest.json".to_owned(), sha256_file(&manifest_path)?);
-    Ok(format_sha256sums(&entries))
-}
-
 fn collect_files(root: &Path, directory: &Path, files: &mut BTreeSet<String>) -> Result<()> {
     let entries =
         std::fs::read_dir(directory).map_err(|error| DeliveryError::io(directory, error))?;
@@ -169,40 +146,6 @@ pub(crate) fn output_with_timeout(command: &mut Command, timeout: Duration) -> R
     crate::probe::run_probe(command, timeout)
 }
 
-/// Checks that the installed server reports the manifest version.
-///
-/// # Errors
-///
-/// Returns an error when the binary is missing, not executable, fails to run or
-/// reports a different version.
-pub fn check_binary(root: &Path, manifest: &Manifest) -> Result<String> {
-    let binary = root.join("bin/wxml-lsp");
-    let metadata =
-        std::fs::symlink_metadata(&binary).map_err(|error| DeliveryError::io(&binary, error))?;
-    if !metadata.file_type().is_file() {
-        return Err(DeliveryError::Runtime(
-            "installed wxml-lsp is not a regular file".to_owned(),
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o111 == 0 {
-            return Err(DeliveryError::Runtime(
-                "installed wxml-lsp is not executable".to_owned(),
-            ));
-        }
-    }
-    let reported = binary_version(&binary)?;
-    if reported != manifest.package_version {
-        return Err(DeliveryError::Runtime(format!(
-            "installed wxml-lsp reports `{reported}` but the package is `{}`",
-            manifest.package_version
-        )));
-    }
-    Ok(reported)
-}
-
 /// Executes `wxml-lsp --version` and returns the reported version.
 ///
 /// # Errors
@@ -231,67 +174,6 @@ pub fn binary_version(binary: &Path) -> Result<String> {
         .strip_prefix("wxml-lsp ")
         .ok_or_else(|| DeliveryError::Runtime("unexpected wxml-lsp --version output".to_owned()))?;
     Ok(reported.to_owned())
-}
-
-/// Checks that the legacy Node backend payload files exist.
-///
-/// This is a metadata check on the package tree. Nothing is executed and no
-/// Node runtime is started.
-///
-/// # Errors
-///
-/// Returns an error when a required backend file is missing or linked.
-pub fn check_backend(root: &Path, manifest: &Manifest) -> Result<()> {
-    let backend = root.join("bin/wxml-type-backend");
-    let required = [
-        backend.join("server.js"),
-        backend.join("node_modules/typescript/package.json"),
-        backend.join("node_modules/miniprogram-api-typings/package.json"),
-    ];
-    for path in required {
-        let metadata = match std::fs::symlink_metadata(&path) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Err(DeliveryError::Runtime(
-                    "the installed Node backend is missing a required file; reinstall the package"
-                        .to_owned(),
-                ));
-            }
-            Err(error) => return Err(DeliveryError::io(&path, error)),
-        };
-        if !metadata.file_type().is_file() {
-            return Err(DeliveryError::Runtime(
-                "the installed Node backend is missing a required file; reinstall the package"
-                    .to_owned(),
-            ));
-        }
-    }
-    if manifest.file("bin/wxml-type-backend/server.js").is_none() {
-        return Err(DeliveryError::Runtime(
-            "the manifest has no Node backend entry".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-/// Verifies a package archive by extracting it below `scratch` and checking
-/// every file.
-///
-/// # Errors
-///
-/// See [`verify_tree`] and [`crate::archive::extract_tar_gz`].
-pub fn verify_archive(
-    archive: &Path,
-    scratch: &Path,
-    expected: ExpectedManifest<'_>,
-) -> Result<Manifest> {
-    let result = (|| {
-        let tree = scratch.join("tree");
-        crate::archive::extract_tar_gz(archive, &tree)?;
-        verify_tree(&tree, expected)
-    })();
-    let _ = std::fs::remove_dir_all(scratch);
-    result
 }
 
 #[cfg(test)]
@@ -325,6 +207,27 @@ mod tests {
         std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
         std::fs::write(&destination, bytes).unwrap();
         set_mode(&destination, mode).unwrap();
+    }
+
+    fn write_checksums(root: &Path, manifest: &Manifest) {
+        use std::fmt::Write as _;
+
+        let mut entries = std::collections::BTreeMap::new();
+        for file in &manifest.files {
+            entries.insert(
+                file.path.clone(),
+                sha256_file(&root.join(&file.path)).unwrap(),
+            );
+        }
+        entries.insert(
+            "manifest.json".to_owned(),
+            sha256_file(&root.join("manifest.json")).unwrap(),
+        );
+        let mut text = String::new();
+        for (path, digest) in entries {
+            writeln!(text, "{digest}  {path}").unwrap();
+        }
+        atomic_write(&root.join("SHA256SUMS"), text.as_bytes(), 0o644).unwrap();
     }
 
     fn valid_tree(root: &Path) -> Manifest {
@@ -407,8 +310,7 @@ mod tests {
             0o644,
         )
         .unwrap();
-        let checksums = checksums_for_tree(root, &manifest).unwrap();
-        atomic_write(&root.join("SHA256SUMS"), &checksums, 0o644).unwrap();
+        write_checksums(root, &manifest);
         manifest
     }
 
@@ -432,8 +334,7 @@ mod tests {
             b"console.log('backend');\n",
             0o644,
         );
-        let checksums = checksums_for_tree(&base, &manifest).unwrap();
-        atomic_write(&base.join("SHA256SUMS"), &checksums, 0o644).unwrap();
+        write_checksums(&base, &manifest);
 
         std::fs::remove_file(
             base.join("bin/wxml-type-backend/node_modules/typescript/package.json"),
@@ -453,21 +354,6 @@ mod tests {
         std::fs::remove_file(&link).unwrap();
         set_mode(&base.join("bin/wxml-lsp"), 0o644).unwrap();
         assert!(verify_tree(&base, ExpectedManifest::default()).is_err());
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
-    #[test]
-    fn checks_binary_and_backend_payload() {
-        let base = scratch("runtime");
-        let manifest = valid_tree(&base);
-        assert_eq!(check_binary(&base, &manifest).unwrap(), "0.1.0");
-        check_backend(&base, &manifest).unwrap();
-
-        std::fs::remove_dir_all(base.join("bin/wxml-type-backend/node_modules/typescript"))
-            .unwrap();
-        assert!(check_backend(&base, &manifest).is_err());
-        set_mode(&base.join("bin/wxml-lsp"), 0o644).unwrap();
-        assert!(check_binary(&base, &manifest).is_err());
         let _ = std::fs::remove_dir_all(&base);
     }
 

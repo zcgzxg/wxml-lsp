@@ -16,7 +16,7 @@
 #                        TSGO_NATIVE_TARBALL is accepted as an alias)
 #   TSGO_BIN             extracted engine/lib/tsc (SHA-256/size checked)
 #   WXML_REQUIRE_REAL_ENGINE=1|true  fail closed when no real engine is supplied
-#   WXML_REQUIRE_LSP_NATIVE=1|true   fail closed while NodeBackend is still wired
+#   WXML_REQUIRE_LSP_NATIVE=1|true   fail closed unless main.rs has no Node backend
 #   WXML_TIMEOUT_SECS    per-command timeout (default 60; must be > 0)
 #   WXML_TEST_TMPDIR     temp base (default /tmp/opencode; must be under /tmp)
 #
@@ -57,7 +57,7 @@ Optional:
                        TSGO_NATIVE_TARBALL is accepted as an alias)
   TSGO_BIN             extracted engine/lib/tsc (SHA-256/size checked)
   WXML_REQUIRE_REAL_ENGINE=1|true  fail closed when no real engine is supplied
-  WXML_REQUIRE_LSP_NATIVE=1|true   fail closed while NodeBackend is still wired
+  WXML_REQUIRE_LSP_NATIVE=1|true   fail closed unless main.rs has no Node backend
   WXML_TIMEOUT_SECS    per-command timeout (default 60; must be > 0)
   WXML_TEST_TMPDIR     temp base (default /tmp/opencode; must be under /tmp)
 
@@ -396,15 +396,18 @@ printf 'NO_NODE: PASS (installer scope: verify/current/env)\n'
 LSP_LINE=""
 MAIN="$REPO_ROOT/crates/wxml-lsp/src/main.rs"
 if [ -f "$MAIN" ]; then
-    LSP_LINE=$(grep -n 'NodeBackend::new' "$MAIN" | head -n 1 || true)
+    LSP_LINE=$(grep -nE 'NodeBackend::new|fn serve_node\(\)' "$MAIN" | head -n 1 || true)
     LSP_LINE=${LSP_LINE%%:*}
 fi
-if [ -n "$LSP_LINE" ]; then
-    LSP_STATUS=BLOCKED
-    LSP_DETAIL="$MAIN:$LSP_LINE still wires NodeBackend"
-else
+if [ ! -f "$MAIN" ]; then
     LSP_STATUS=UNVERIFIED
-    LSP_DETAIL="$MAIN has no NodeBackend::new"
+    LSP_DETAIL="$MAIN does not exist"
+elif [ -n "$LSP_LINE" ]; then
+    LSP_STATUS=BLOCKED
+    LSP_DETAIL="$MAIN:$LSP_LINE still wires the Node backend"
+else
+    LSP_STATUS=PASS
+    LSP_DETAIL="$MAIN has no NodeBackend or serve_node(); --stdio is native-only"
 fi
 printf 'LSP_NATIVE: %s (%s)\n' "$LSP_STATUS" "$LSP_DETAIL"
 
@@ -470,7 +473,7 @@ if [ "$REAL_STATUS" = "SKIP" ]; then
 fi
 
 printf 'RESIDUAL: execve/strace process audit is not performed; PATH shims cannot exclude absolute paths\n'
-printf 'RESIDUAL: native stdio LSP session is not wired; wxml-lsp --stdio still constructs NodeBackend\n'
+printf 'RESIDUAL: native stdio LSP session is not exercised here; main.rs is statically checked for the removed Node backend\n'
 printf 'RESIDUAL: two-version real-engine upgrade/rollback is not exercised\n'
 printf 'F3-02: BLOCKED (installer scope only; no closure claim)\n'
 

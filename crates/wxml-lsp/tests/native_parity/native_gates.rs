@@ -1,10 +1,16 @@
 //! Mandatory future gates for ignored tests and silent returns.
 //!
 //! P3-T does not migrate these gates. It freezes their inventory and proves
-//! that the old Rust surface still contains exactly the 23 `#[ignore]` tests
-//! and the two `semantic_tools` early returns recorded by the ledger. The
-//! 23 gates and the two silent returns must become real native commands before
-//! the old Node-backed tests may be deleted or treated as green.
+//! that the old Rust surface still contains exactly the 23 ledger gates. The
+//! gates must become real native commands before the old Node-backed tests may
+//! be deleted or treated as green.
+//!
+//! P7 removes the twelve `p7_action=delete` gates (`G-P5-E2E-01..05/15..21`)
+//! and records `old_test_removed=true` for them in the ledger. The eleven
+//! `p7_action=retarget` gates stay in the ledger without that flag: the nine
+//! `stdio_type_loop` shells already run through `--stdio --backend native`;
+//! `G-P5-PERF-01` and `G-P5-STABILITY-01` still need their native retarget, so
+//! their old Node tests can only be removed together with `backend_node`.
 //!
 //! P6-2 now records twenty-three opt-in native gates as `gate_green`. The first
 //! wave (`G-P5-E2E-09/12/14`) needed only the selector and static semantics.
@@ -93,7 +99,8 @@ const REQUIRED_NOT_MIGRATED_IDS: &[&str] = &[];
 const GATE_GREEN_COUNT: usize = 23;
 /// Frozen `required_not_migrated` count after the fifth-wave promotion.
 const REQUIRED_NOT_MIGRATED_COUNT: usize = 0;
-/// Frozen ignored-gate inventory size; P6-2 never deletes a gate.
+/// Frozen ignored-gate inventory size; it counts ledger entries, not the old
+/// tests that remain in the tree after the P7 deletions.
 const IGNORED_GATE_COUNT: usize = 23;
 /// Frozen `p7_action=delete` count from the P7 freeze evidence.
 const P7_DELETE_GATE_COUNT: usize = 12;
@@ -567,38 +574,6 @@ fn validate_old_test_removals(
     Ok(report)
 }
 
-fn native_parity_function(target: &str, gate_id: &str) -> String {
-    let (file, rest) = target
-        .split_once("::")
-        .unwrap_or_else(|| panic!("{gate_id} replacement lacks a Rust test path: {target}"));
-    assert_eq!(
-        file, "crates/wxml-lsp/tests/native_parity/symbols_edits.rs",
-        "{gate_id} replacement must land in the symbols_edits partition"
-    );
-    let function = rest.split_whitespace().next().unwrap_or(rest);
-    assert!(
-        !function.is_empty(),
-        "{gate_id} replacement has an empty function name"
-    );
-    function.to_owned()
-}
-
-fn assert_native_edit_gate(function: &str, gate_id: &str) {
-    let migrated = crate::symbols_edits::MIGRATED_CASES.contains(&function);
-    let blocked = crate::symbols_edits::BLOCKED_NATIVE_GATES
-        .iter()
-        .any(|gate| gate.test_id == function);
-    assert!(
-        migrated || blocked,
-        "{gate_id} replacement {function} is neither an authored \
-         symbols_edits::MIGRATED_CASES entry nor a registered BLOCKED_NATIVE_GATES entry"
-    );
-}
-
-fn normalize_whitespace(text: &str) -> String {
-    text.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
 #[test]
 fn all_ignored_rust_tests_are_mandatory_gates_with_frozen_status() {
     let ledger_value = ledger::load_ledger();
@@ -1053,291 +1028,6 @@ fn native_edit_gates_are_declared_ignored_and_fail_closed() {
                 );
             }
         }
-    }
-}
-
-#[test]
-fn semantic_tools_silent_returns_are_mandatory_unmigrated_gates() {
-    let ledger_value = ledger::load_ledger();
-    let root = ledger::object(&ledger_value, "ledger root");
-    let gates = ledger::required_array(root, "silent_skip_gates", "ledger root");
-    assert_eq!(
-        gates.len(),
-        2,
-        "the ledger must keep both semantic_tools early returns"
-    );
-
-    let workspace = ledger::workspace_root();
-    let cases = ledger::required_array(root, "cases", "ledger root");
-    let case_ids = ledger::case_ids(cases);
-    let mut replacements = BTreeSet::new();
-
-    for gate in gates {
-        let gate = ledger::object(gate, "ledger.silent_skip_gates[]");
-        let gate_id = ledger::required_str(gate, "gate_id", "silent gate");
-        assert!(
-            ledger::required_bool(gate, "must_migrate", gate_id),
-            "{gate_id} must remain a required migration gate"
-        );
-        assert!(
-            ledger::required_bool(gate, "old_test_must_fail_when_engine_missing", gate_id),
-            "{gate_id} must fail when the native engine is missing"
-        );
-        assert_eq!(
-            ledger::required_str(gate, "status", gate_id),
-            "required_not_migrated",
-            "{gate_id} must not be marked migrated"
-        );
-        assert_required_text(
-            gate,
-            gate_id,
-            &[
-                "old_reason",
-                "target_gate",
-                "proposed_command",
-                "fail_closed",
-                "required_old_test_change",
-            ],
-        );
-        assert_related_cases_exist(gate, gate_id, &case_ids);
-
-        let file = ledger::required_str(gate, "file", gate_id);
-        let test = ledger::required_str(gate, "test", gate_id);
-        let line = usize::try_from(ledger::required_u64(gate, "line", gate_id))
-            .expect("silent gate line fits usize");
-        assert!(line > 0, "{gate_id} has line 0");
-        let source_path = workspace.join(file);
-        let source = read_source(&source_path);
-        let lines: Vec<&str> = source.lines().collect();
-        let declaration = lines
-            .get(line - 1)
-            .unwrap_or_else(|| panic!("{gate_id} points past the end of {file}:{line}"));
-        assert!(
-            declaration.contains(&format!("fn {test}(")),
-            "{file}:{line} must be the {test} declaration: {declaration:?}"
-        );
-        assert!(
-            !source_scan::attribute_block_contains(&lines, line - 1, "#[ignore"),
-            "{file}::{test} must not be #[ignore] while the ledger records a silent return"
-        );
-
-        let body = source_scan::function_body(&source, line)
-            .unwrap_or_else(|| panic!("{gate_id} function body was not found at {file}:{line}"));
-        assert!(
-            body.contains("common::native_edit::requested()"),
-            "{file}::{test} must derive the native gate request from both \
-             WXML_TEST_NATIVE and WXML_REQUIRE_REAL_ENGINE"
-        );
-        assert!(
-            body.contains(&format!("common::native_edit::require(\"{gate_id}\")")),
-            "{file}::{test} must validate the native package/engine before any silent skip"
-        );
-        let else_block = source_scan::else_block_after(body, "real_node_paths()")
-            .unwrap_or_else(|| panic!("{gate_id} has no real_node_paths() else block"));
-        let normalized = normalize_whitespace(else_block);
-        assert!(
-            normalized.contains("return;"),
-            "{file}::{test} must return early when the old assets are absent"
-        );
-        assert!(
-            normalized.contains("eprintln!"),
-            "{file}::{test} must report the silent skip"
-        );
-        assert!(
-            normalized.contains("skipping real Node LSP test"),
-            "{file}::{test} no longer records the silent-return message"
-        );
-        assert!(
-            normalized.contains("panic!"),
-            "{file}::{test} must fail closed when the native edit gate is requested"
-        );
-
-        let replacement = ledger::required_str(gate, "replacement_test", gate_id);
-        let replacement = native_parity_function(replacement, gate_id);
-        assert_native_edit_gate(&replacement, gate_id);
-        assert!(
-            replacements.insert(replacement),
-            "{gate_id} reuses a replacement test"
-        );
-
-        if let Some(tsc) = gate.get("tsc_replacement").and_then(|value| value.as_str()) {
-            let tsc = native_parity_function(tsc, gate_id);
-            assert_native_edit_gate(&tsc, gate_id);
-            assert!(
-                replacements.insert(tsc),
-                "{gate_id} reuses the tsc replacement test"
-            );
-        }
-    }
-    assert_eq!(replacements.len(), 3);
-    let covered: BTreeSet<String> = crate::symbols_edits::COVERED_OLD_SURFACES
-        .iter()
-        .map(|(_, replacement)| (*replacement).to_owned())
-        .collect();
-    assert_eq!(
-        crate::symbols_edits::COVERED_OLD_SURFACES.len(),
-        3,
-        "the coverage map must keep exactly the two silent returns plus the tsc branch"
-    );
-    assert_eq!(
-        covered, replacements,
-        "the explicit coverage map must match the ledger replacements exactly"
-    );
-    for gate in crate::symbols_edits::BLOCKED_NATIVE_GATES {
-        assert!(
-            !gate.reason.is_empty(),
-            "{} must document why the native gate is blocked",
-            gate.test_id
-        );
-    }
-    let migrated: BTreeSet<String> = crate::symbols_edits::MIGRATED_CASES
-        .iter()
-        .map(|name| (*name).to_owned())
-        .collect();
-    assert_eq!(
-        migrated, replacements,
-        "the authored native edit gates must exactly cover the three silent surfaces"
-    );
-    for gate in crate::symbols_edits::BLOCKED_NATIVE_GATES {
-        assert!(
-            !migrated.contains(gate.test_id),
-            "{} is both migrated and blocked",
-            gate.test_id
-        );
-    }
-
-    let silent = ledger::required_object(root, "silent_skips", "ledger root");
-    let rust_entries = ledger::required_array(silent, "rust_silent_skips", "ledger.silent_skips");
-    assert_eq!(
-        rust_entries.len(),
-        3,
-        "the ledger must keep two early returns plus the optional tsc branch"
-    );
-    for entry in rust_entries {
-        let entry = ledger::object(entry, "ledger.silent_skips.rust_silent_skips[]");
-        let line = ledger::required_u64(entry, "line", "rust silent skip");
-        assert!(line > 0);
-        assert!(
-            ledger::required_bool(
-                entry,
-                "old_test_must_fail_when_engine_missing",
-                "rust silent skip"
-            ),
-            "every recorded silent skip must fail when the engine is missing"
-        );
-        for key in [
-            "file",
-            "test",
-            "behavior",
-            "baseline_result",
-            "replacement_test",
-            "replacement_kind",
-            "required_old_test_change",
-            "required_gate",
-            "target_rust_landing",
-        ] {
-            assert!(!ledger::required_str(entry, key, "rust silent skip").is_empty());
-        }
-    }
-
-    let tsc_entry = rust_entries
-        .iter()
-        .map(|entry| ledger::object(entry, "rust silent skip"))
-        .find(|entry| ledger::required_str(entry, "behavior", "rust silent skip").contains("tsc"))
-        .expect("the ledger must record the optional tsc branch");
-    let tsc_file = ledger::required_str(tsc_entry, "file", "tsc silent skip");
-    let tsc_line = usize::try_from(ledger::required_u64(tsc_entry, "line", "tsc silent skip"))
-        .expect("tsc line fits usize");
-    assert!(tsc_line > 0);
-    let tsc_source = read_source(&workspace.join(tsc_file));
-    let tsc_lines: Vec<&str> = tsc_source.lines().collect();
-    let tsc_declaration = tsc_lines.get(tsc_line - 1).expect("tsc line must exist");
-    assert!(
-        tsc_declaration.trim_start().starts_with("if tsc.exists()"),
-        "the tsc ledger line moved: {tsc_declaration:?}"
-    );
-    let (_, tsc_else) = source_scan::if_else_blocks(&tsc_source, tsc_line)
-        .expect("the tsc if/else structure must parse");
-    let normalized_tsc = normalize_whitespace(tsc_else);
-    assert!(
-        normalized_tsc.contains("eprintln!"),
-        "the tsc branch must still report the optional skip in the default Node mode"
-    );
-    assert!(
-        normalized_tsc.contains("tsc not installed; skipped post-edit type check"),
-        "the default Node skip branch must stay visible until the native helper replaces it"
-    );
-    assert!(
-        normalized_tsc.contains("if native_edit_gate"),
-        "the tsc branch must fail closed only when the native edit gate is requested"
-    );
-    assert!(
-        normalized_tsc.contains("panic!"),
-        "the tsc branch must not silently skip when the native edit gate is requested"
-    );
-
-    let tsc_replacement = ledger::required_str(tsc_entry, "replacement_test", "tsc silent skip");
-    let tsc_replacement = native_parity_function(tsc_replacement, "tsc silent skip");
-    assert_native_edit_gate(&tsc_replacement, "tsc silent skip");
-}
-
-#[test]
-fn native_edit_guard_honors_both_opt_in_flags() {
-    let workspace = ledger::workspace_root();
-    let file = "crates/wxml-lsp/tests/common/native_edit.rs";
-    let source = read_source(&workspace.join(file));
-    for variable in ["WXML_TEST_NATIVE", "WXML_REQUIRE_REAL_ENGINE"] {
-        assert!(
-            source.contains(&format!("\"{variable}\"")),
-            "{file} must read {variable}; the old Node tests may not ignore either opt-in flag"
-        );
-    }
-
-    let requested_line = source
-        .lines()
-        .position(|line| line.contains("fn requested()"))
-        .map_or_else(
-            || panic!("{file} must declare requested()"),
-            |index| index + 1,
-        );
-    let requested = source_scan::function_body(&source, requested_line)
-        .unwrap_or_else(|| panic!("{file}::requested body is missing"));
-    for constant in ["NATIVE_GATE_ENV", "REQUIRE_REAL_ENGINE_ENV"] {
-        assert!(
-            requested.contains(constant),
-            "{file}::requested must consult {constant}"
-        );
-    }
-
-    let flag_line = source
-        .lines()
-        .position(|line| line.contains("fn flag("))
-        .map_or_else(|| panic!("{file} must declare flag()"), |index| index + 1);
-    let flag = source_scan::function_body(&source, flag_line)
-        .unwrap_or_else(|| panic!("{file}::flag body is missing"));
-    assert!(
-        flag.contains("== \"1\"") && flag.contains("eq_ignore_ascii_case(\"true\")"),
-        "{file}::flag must accept exactly 1/true"
-    );
-
-    let require_line = source
-        .lines()
-        .position(|line| line.contains("fn require(gate_id: &str)"))
-        .map_or_else(
-            || panic!("{file} must declare require()"),
-            |index| index + 1,
-        );
-    let require = source_scan::function_body(&source, require_line)
-        .unwrap_or_else(|| panic!("{file}::require body is missing"));
-    assert!(
-        require.contains("panic!"),
-        "{file}::require must panic when no native package/engine is configured"
-    );
-    for source_env in ["NATIVE_PACKAGE_ENV", "TSGO_ASSET_ROOT_ENV", "TSGO_BIN_ENV"] {
-        assert!(
-            require.contains(source_env),
-            "{file}::require must accept {source_env}"
-        );
     }
 }
 

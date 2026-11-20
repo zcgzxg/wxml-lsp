@@ -82,7 +82,10 @@ pub(crate) const PROJECTION_RELATIVE_PATH: &str =
     "crates/wxml-lsp/tests/native_parity/fixtures/real_matrix/projection.json";
 /// Historical oracle artifact; never read at native runtime, only hashed.
 pub(crate) const ORACLE_RELATIVE_PATH: &str = "docs/evidence/data/type-bridge-c1/matrix.json";
-/// Fixture sample root copied byte-for-byte from `backends/typescript/samples`.
+/// Fixture sample root copied from `backends/typescript/samples` before P7.
+///
+/// 33 of 35 sample directories are byte-for-byte; the two `alias-project`
+/// `tsconfig*.json` files are synthesized by the projection instead.
 pub(crate) const SAMPLES_RELATIVE_PATH: &str =
     "crates/wxml-lsp/tests/native_parity/fixtures/real_matrix/samples";
 /// Historical scenario manifest path recorded by the frozen projection.
@@ -1792,9 +1795,15 @@ struct EnginePaths {
 }
 
 fn resolve_standard_lib_root(asset_root: &Path) -> Option<PathBuf> {
-    [asset_root.to_path_buf(), asset_root.join("engine/lib")]
-        .into_iter()
-        .find(|candidate| candidate.join("lib.d.ts").is_file())
+    [
+        // The runner passes the engine root (`.../engine`), while a direct
+        // TSGO_BIN fallback may pass the lib directory itself.
+        asset_root.join("lib"),
+        asset_root.to_path_buf(),
+        asset_root.join("engine/lib"),
+    ]
+    .into_iter()
+    .find(|candidate| candidate.join("lib.d.ts").is_file())
 }
 
 fn resolve_typings_root(root: &Path) -> Option<PathBuf> {
@@ -1879,7 +1888,8 @@ fn resolve_engine() -> Option<EnginePaths> {
     let Some(asset_root) = asset_root.and_then(|root| resolve_standard_lib_root(&root)) else {
         assert!(
             !required,
-            "{JOB}: {TSGO_ASSET_ROOT_ENV} (or the engine's lib directory) must contain lib.d.ts"
+            "{JOB}: {TSGO_ASSET_ROOT_ENV} (or the engine's lib directory) must contain lib.d.ts \
+             directly or under lib/"
         );
         eprintln!(
             "SKIP({JOB}): no pinned standard library near {TSGO_BIN_ENV}; explicit optional-mode \

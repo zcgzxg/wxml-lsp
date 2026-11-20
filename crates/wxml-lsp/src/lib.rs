@@ -8,8 +8,8 @@
 //! `exit`, text document synchronization, `textDocument/hover`, optional
 //! `textDocument/definition`, push diagnostics and `$/cancelRequest` over
 //! stdio. Backend work runs on one background thread with revision barriers,
-//! cancellation and bounded queues. Project discovery and the real Node
-//! backend land in later waves; [`run_stdio`] is generic over
+//! cancellation and bounded queues. Project discovery and the native backend
+//! live in the sibling crates; [`run_stdio`] is generic over
 //! [`wxml_types::Backend`] so they can be plugged in without changing the
 //! protocol layer.
 //!
@@ -41,12 +41,11 @@
 // so `pub(crate)` is the accurate visibility and `pub` would be unreachable.
 #![allow(clippy::redundant_pub_crate)]
 
-pub mod backend_node;
-// Native backend. `--stdio` without `--backend` selects it and falls back to
-// HostOnly only when the executable is not inside an installed package;
-// `--backend native` requires the verified install and fails closed. The
-// legacy Node backend is reachable only through `--backend node`.
 pub(crate) mod backend_tsgo;
+// Native backend only. `--stdio` without `--backend` selects it and falls back
+// to HostOnly only when the executable is not inside an installed package;
+// `--backend native` requires the verified install and fails closed. There is
+// no legacy Node backend and `--backend node` is rejected.
 pub(crate) mod completion;
 pub mod configuration;
 pub(crate) mod dependencies;

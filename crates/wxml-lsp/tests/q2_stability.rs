@@ -32,7 +32,7 @@
 //! WXML_TEST_NATIVE=1 WXML_REQUIRE_REAL_ENGINE=1 \
 //! TSGO_BIN=/tmp/opencode/tsgo-native-pkg/engine/lib/tsc \
 //! TSGO_ASSET_ROOT=/tmp/opencode/tsgo-native-pkg/engine \
-//! TSGO_TYPINGS_ROOT=backends/typescript/node_modules/miniprogram-api-typings \
+//! TSGO_TYPINGS_ROOT=/tmp/opencode/tsgo-native-pkg/typings/miniprogram-api-typings \
 //! cargo test -p wxml-lsp --release --test q2_stability -- \
 //!   --ignored --test-threads=1
 //! ```

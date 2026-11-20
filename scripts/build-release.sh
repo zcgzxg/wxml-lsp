@@ -4,7 +4,7 @@
 # The script never publishes, tags or uploads anything. It writes only below
 # the user-selected --output directory and caches outside the repository. It
 # never executes node/nodejs/npm/npx/pnpm/yarn/bun and never copies JavaScript
-# from backends/typescript: the only inputs are the built Rust binaries, the
+# from a legacy backend tree: the only inputs are the built Rust binaries, the
 # wasm32-wasip2 Zed extension and an already verified asset cache (or the exact
 # locked tarballs through `--from-dir`).
 set -euo pipefail

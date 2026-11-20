@@ -1,13 +1,17 @@
-//! Reproducible local packaging and a verified installer for WXML LSP.
+//! Reproducible native packaging and a verified installer for WXML LSP.
 //!
 //! The crate has two binaries:
 //!
-//! - `wxml-lsp-package` turns a staged build tree into a deterministic
+//! - `wxml-lsp-package native` turns a prepared, Node-free tree plus a
+//!   provisioned asset cache into a deterministic schema v2 package with a
 //!   versioned directory, `.tar.gz` archive, `SHA256SUMS`, sidecar checksum and
 //!   `index.json`.
-//! - `wxml-lsp-install` downloads or copies a release, verifies its hash,
-//!   manifest, version, protocol, file digests and archive entry safety, then
-//!   atomically installs and activates it.
+//! - `wxml-lsp-install` downloads or copies a native release, verifies its
+//!   hash, manifest, version, protocol, file digests and archive entry safety,
+//!   then atomically installs and activates it.
+//!
+//! Schema v1 (legacy Node) packages are read-only: their identity and tree may
+//! be inspected, but they are never built, installed or activated.
 //!
 //! Neither binary uploads anything, creates remote tags or contacts a service
 //! other than the explicitly supplied release source.
@@ -17,11 +21,9 @@
 // cannot be unified without pinning unrelated dependencies.
 #![allow(clippy::multiple_crate_versions)]
 
-pub mod acquire;
 pub mod acquire_v2;
 pub mod archive;
 pub mod assets_lock;
-pub mod cache;
 pub mod error;
 pub mod index_v2;
 pub mod install;

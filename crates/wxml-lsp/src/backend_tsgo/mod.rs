@@ -9,8 +9,8 @@
 //! an installed package and falls back to [`run_stdio_host_only`] **only** when
 //! discovery reports [`EngineDiscoveryError::NotInstalled`]. Every other
 //! discovery or asset failure fails closed. `--backend native` uses the strict
-//! [`run_stdio_native`] selector, and `--backend node` is the only path that
-//! constructs the legacy Node backend.
+//! [`run_stdio_native`] selector. There is no legacy Node backend: `--backend
+//! node` is rejected and the runtime never constructs a Node process.
 //!
 //! The adapter owns a [`NativeSession`](wxml_backend_tsgo::native::session::NativeSession)
 //! lazily. Every request converts the host's effective template snapshot into
@@ -224,10 +224,10 @@ pub fn run_stdio_native_default() -> Result<crate::ServerOutcome, NativeStartupE
 /// Serves the LSP over stdio with the native `HostOnly` adapter.
 ///
 /// `HostOnly` never discovers an engine, never loads type assets, never creates a
-/// sandbox and never reads `WXML_NODE`, `WXML_TYPE_BACKEND` or
-/// `WXML_BACKEND_DIR`. Static template, style, event and script-symbol features
-/// keep working; every session-backed query returns `Unavailable` with
-/// [`HOST_ONLY_REASON`]. It is not a Node fallback.
+/// sandbox and never reads the removed `WXML_NODE`, `WXML_TYPE_BACKEND` or
+/// `WXML_BACKEND_DIR` variables. Static template, style, event and
+/// script-symbol features keep working; every session-backed query returns
+/// `Unavailable` with `native engine is not installed`. It is not a Node fallback.
 ///
 /// # Errors
 ///
@@ -331,7 +331,7 @@ impl TsgoBackendAdapter {
     /// created. The legacy [`Environment::Legacy`] mode is reused deliberately:
     /// it carries no assets, so a session can never be opened with a partial
     /// type environment. [`Self::ensure_open`] short-circuits every
-    /// session-backed query with [`HOST_ONLY_REASON`].
+    /// session-backed query with `native engine is not installed`.
     #[must_use]
     pub(crate) fn without_engine(host: Arc<dyn crate::project_host::ProjectHost>) -> Self {
         Self {

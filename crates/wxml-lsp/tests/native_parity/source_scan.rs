@@ -120,37 +120,6 @@ pub(crate) fn function_body(source: &str, line: usize) -> Option<&str> {
     Some(&source[open_brace + 1..close_brace])
 }
 
-/// Returns the two blocks of an `if (...) { ... } else { ... }` statement.
-pub(crate) fn if_else_blocks(source: &str, line: usize) -> Option<(&str, &str)> {
-    let start = first_non_whitespace(source, line)?;
-    let open = source.get(start..)?.find('{')? + start;
-    let close = matching_delimiter(source, open, b'{', b'}')?;
-    let mut index = close + 1;
-    let bytes = source.as_bytes();
-    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
-        index += 1;
-    }
-    if !source.get(index..)?.starts_with("else") {
-        return None;
-    }
-    index += 4;
-    while index < bytes.len() && bytes[index].is_ascii_whitespace() {
-        index += 1;
-    }
-    let else_open = source.get(index..)?.find('{')? + index;
-    let else_close = matching_delimiter(source, else_open, b'{', b'}')?;
-    Some((&source[open + 1..close], &source[else_open + 1..else_close]))
-}
-
-/// Returns the `else` block that follows the first `anchor` occurrence.
-pub(crate) fn else_block_after<'a>(body: &'a str, anchor: &str) -> Option<&'a str> {
-    let anchor_offset = body.find(anchor)?;
-    let else_offset = body.get(anchor_offset..)?.find("else")? + anchor_offset;
-    let open = body.get(else_offset..)?.find('{')? + else_offset;
-    let close = matching_delimiter(body, open, b'{', b'}')?;
-    Some(&body[open + 1..close])
-}
-
 /// Returns true when the full attribute/doc block above `function_index`
 /// contains `needle`.
 pub(crate) fn attribute_block_contains<S: AsRef<str>>(

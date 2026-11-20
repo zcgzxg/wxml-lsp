@@ -28,7 +28,7 @@
 
 1. 阅读[项目 README](../README.md)，确认目标、范围和当前状态。
 2. 阅读本索引，了解文档归属。
-3. 需要理解架构时，按 0001 → 0008 阅读 [ADR](adr/README.md)；0008 仍为 proposed。默认 `--stdio` 已在 `5020ae7` 切到 native（`NotInstalled` 时 HostOnly，损坏安装 fail closed），但 Node 仍保留为显式 `--backend node`，P7 删除未完成。
+3. 需要理解架构时，按 0001 → 0008 阅读 [ADR](adr/README.md)；ADR-0008 已于 2026-11-20 在 owner scope waiver 下最终关闭为 `accepted`（native 默认；Node removed）。默认 `--stdio` 已是 native（`NotInstalled` 时 HostOnly，损坏安装 fail closed）；Node、旧 TS 树与 v1 写路径已删除并通过删除后验收。验收口径为 native engine、native gates、F3 和合理行为测试，不声称旧 TS 逐条 parity；最终验收清单见 [2026-11-20 P7 最终文档](evidence/2026-11-20-tsgo-p7-final-docs.md)（已验收，F-02 已知 debug perf 残余）。
 4. 实现或评审跨模块接口时，阅读 [C0 基础契约](reference/contracts.md)、[C1 类型桥契约](reference/type-bridge-c1.md) 与[模板类型诊断策略](reference/type-diagnostics.md)。
 5. 实施 Rust + tsgo 迁移时，阅读 F0/F1 原生合同、F2 测试契约与 F3 交付合同；四者当前均为 draft，未实现项以其中 BLOCKED/planned 状态为准。
 6. 需要实现通用 WXML 功能时，阅读[功能基线](reference/wxml-language-feature-baseline.md)。

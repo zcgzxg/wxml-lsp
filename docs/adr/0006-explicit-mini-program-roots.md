@@ -6,7 +6,7 @@
 
 **Deciders**: 项目维护者
 
-**2026-11-17 后续**：[ADR-0008](0008-rust-tsgo-no-node-backend.md)（proposed）拟调整后端资产路径配置；本文的小程序根与类型项目根边界继续有效。
+**2026-11-17 后续**：[ADR-0008](0008-rust-tsgo-no-node-backend.md)（2026-11-20 已在 owner scope waiver 下最终关闭为 accepted，native 默认；P7 集成中）调整后端资产路径配置；本文的小程序根与类型项目根边界继续有效。
 
 ## Context
 

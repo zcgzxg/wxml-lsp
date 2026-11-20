@@ -107,6 +107,9 @@ mod real;
 #[path = "real_asset/support.rs"]
 mod real_asset_support;
 
+#[path = "support/legacy_fixture.rs"]
+mod legacy_fixture;
+
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[path = "f3_real_release/support.rs"]
 mod release;

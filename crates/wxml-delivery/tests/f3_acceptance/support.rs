@@ -1022,106 +1022,21 @@ pub fn rollback_with_failpoint(
     )
 }
 
-/// Builds a legacy schema v1 Node-package fixture through the production v1
-/// packager. The `wxml-lsp` entry point is a tripwire that records execution.
+/// Builds a static legacy schema v1 fixture (test-only writer, no Node).
 pub fn build_legacy_release(base: &TestDir, marker: &Path) -> PathBuf {
-    let input = base.path().join("legacy-input");
-    fs::create_dir_all(input.join("bin/wxml-type-backend/node_modules/typescript"))
-        .expect("create legacy input");
-    fs::create_dir_all(input.join("bin/wxml-type-backend/node_modules/miniprogram-api-typings"))
-        .expect("create legacy input");
-    fs::create_dir_all(input.join("zed-extension")).expect("create legacy input");
-    let script = format!(
-        "#!/bin/sh\n: > {}\nif [ \"$1\" = \"--version\" ]; then printf 'wxml-lsp {LEGACY_VERSION}\\n'; exit 0; fi\nexit 0\n",
-        shell_quote(marker)
-    );
-    write_file(&input.join("bin/wxml-lsp"), script.as_bytes(), 0o755);
-    write_file(
-        &input.join("bin/wxml-lsp-install"),
-        format!("#!/bin/sh\nprintf 'wxml-lsp-install {LEGACY_VERSION}\\n'\n").as_bytes(),
-        0o755,
-    );
-    write_file(
-        &input.join("bin/wxml-type-backend/server.js"),
-        b"console.log('legacy fixture');\n",
-        0o644,
-    );
-    write_file(
-        &input.join("bin/wxml-type-backend/node_modules/typescript/package.json"),
-        b"{}\n",
-        0o644,
-    );
-    write_file(
-        &input.join("bin/wxml-type-backend/node_modules/miniprogram-api-typings/package.json"),
-        b"{}\n",
-        0o644,
-    );
-    write_file(
-        &input.join("zed-extension/extension.wasm"),
-        b"\0asm-legacy-fixture",
-        0o644,
-    );
-    write_file(
-        &input.join("zed-extension/extension.toml"),
-        b"id = \"wxml-lsp\"\nversion = \"0.0.1\"\n",
-        0o644,
-    );
-    write_file(
-        &input.join("THIRD_PARTY_LICENSES.md"),
-        b"# licenses\n",
-        0o644,
-    );
-    let output = base.path().join("legacy-release");
-    wxml_delivery::package::build_package(&wxml_delivery::package::BuildOptions {
-        input,
-        output: output.clone(),
-        release_version: LEGACY_VERSION.to_owned(),
-        platform: NATIVE_PACKAGE_PLATFORM.to_owned(),
-        protocol_version: 2,
-        node_minimum: "24.0.0".to_owned(),
-        backend_version: "0.1.0".to_owned(),
-        zed_version: Some("0.0.1".to_owned()),
-        built_at: BUILT_AT.to_owned(),
-        mtime: 0,
-        force: true,
-        dry_run: false,
-    })
-    .expect("build legacy v1 fixture package");
-    output
+    crate::legacy_fixture::build_legacy_release(base.path(), LEGACY_VERSION, Some(marker))
+        .release_dir
 }
 
-fn write_file(path: &Path, bytes: &[u8], mode: u32) {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).expect("create legacy file parent");
-    }
-    fs::write(path, bytes).expect("write legacy fixture file");
-    set_mode(path, mode).expect("legacy fixture file mode");
-}
-
-/// Installs the legacy fixture with the production schema-v1 flow.
+/// Writes the legacy release as the read-only root shape a pre-P7 install left.
 pub fn install_legacy(
-    install_bin: &Path,
+    _install_bin: &Path,
     legacy_release: &Path,
     root: &Path,
-    tripwires: &Tripwires,
-    work: &Path,
-) -> Output {
-    run_installer(
-        install_bin,
-        &[
-            "install",
-            "--root",
-            root.to_str().expect("UTF-8 root"),
-            "--from-dir",
-            legacy_release.to_str().expect("UTF-8 legacy release"),
-            "--version",
-            LEGACY_VERSION,
-            "--offline",
-        ],
-        tripwires,
-        work,
-        "install legacy v1 fixture",
-    )
+    _tripwires: &Tripwires,
+    _work: &Path,
+) {
+    crate::legacy_fixture::install_legacy_root(root, legacy_release, LEGACY_VERSION);
 }
 
 /// Clears the legacy tripwire marker after the install's own `--version` check.

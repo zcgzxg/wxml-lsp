@@ -1,4 +1,8 @@
-//! Release manifest and index schemas, plus integrity helpers.
+//! Schema v1 (legacy Node) manifest schema and shared integrity helpers.
+//!
+//! The v1 writer, index parser and release index types were removed in P7.
+//! [`Manifest`], [`ExpectedManifest`] and [`read_manifest`] remain so an
+//! already installed legacy tree can be verified read-only.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
@@ -11,20 +15,14 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::error::{DeliveryError, Result};
-use crate::paths::{
-    validate_archive_name, validate_platform, validate_relative_path, validate_sha256,
-    validate_version,
-};
-use crate::semver::{Semver, compare_versions, is_prerelease};
+use crate::paths::{validate_platform, validate_relative_path, validate_sha256, validate_version};
+use crate::semver::Semver;
 
 /// Package identity written into manifests and index files.
 pub const PACKAGE_NAME: &str = "wxml-lsp";
-/// Current manifest/index schema version.
+/// Legacy schema v1 manifest version accepted for read-only verification.
 pub const SCHEMA_VERSION: u32 = 1;
-/// Type-bridge protocol versions this installer accepts.
-///
-/// This must be updated together with `wxml-lsp` and the Node backend when the
-/// Rust/Node protocol changes.
+/// Type-bridge protocol versions accepted by the legacy manifest reader.
 pub const SUPPORTED_PROTOCOL_VERSIONS: &[u64] = &[2];
 
 /// Maximum accepted archive file size.
@@ -405,164 +403,6 @@ impl Manifest {
     }
 }
 
-/// One release available from an index.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Release {
-    /// Release version.
-    pub version: String,
-    /// Target platform.
-    pub platform: String,
-    /// Type-bridge protocol version.
-    pub protocol_version: u64,
-    /// Minimum Node.js version.
-    pub node_minimum_version: String,
-    /// Archive file name relative to the source.
-    pub archive: String,
-    /// Lowercase SHA-256 of the archive.
-    pub sha256: String,
-    /// Archive size in bytes.
-    pub size: u64,
-}
-
-impl Release {
-    /// Validates one release record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for malformed versions, paths, hashes or sizes.
-    pub fn validate(&self) -> Result<()> {
-        validate_version(&self.version)?;
-        validate_platform(&self.platform)?;
-        if !SUPPORTED_PROTOCOL_VERSIONS.contains(&self.protocol_version) {
-            return Err(DeliveryError::InvalidPackage(format!(
-                "release protocol {} is not supported",
-                self.protocol_version
-            )));
-        }
-        Semver::parse(&self.node_minimum_version)?;
-        validate_archive_name(&self.archive)?;
-        validate_sha256(&self.sha256)?;
-        if self.size == 0 || self.size > MAX_ARCHIVE_BYTES {
-            return Err(DeliveryError::SizeLimit(format!(
-                "release `{}` archive size is outside the accepted range",
-                self.version
-            )));
-        }
-        Ok(())
-    }
-}
-
-/// The release index published next to archives.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Index {
-    /// Index schema.
-    pub schema_version: u32,
-    /// Package identity.
-    pub package: String,
-    /// Known releases.
-    pub releases: Vec<Release>,
-}
-
-impl Index {
-    /// Creates an empty index for this package.
-    #[must_use]
-    pub fn empty() -> Self {
-        Self {
-            schema_version: SCHEMA_VERSION,
-            package: PACKAGE_NAME.to_owned(),
-            releases: Vec::new(),
-        }
-    }
-
-    /// Validates the index and every release.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for schema, package, duplicate or malformed releases.
-    pub fn validate(&self) -> Result<()> {
-        if self.schema_version != SCHEMA_VERSION {
-            return Err(DeliveryError::InvalidPackage(format!(
-                "unsupported index schema {}",
-                self.schema_version
-            )));
-        }
-        if self.package != PACKAGE_NAME {
-            return Err(DeliveryError::InvalidPackage(format!(
-                "unexpected package `{}`",
-                self.package
-            )));
-        }
-        let mut seen = BTreeSet::new();
-        for release in &self.releases {
-            release.validate()?;
-            if !seen.insert((release.version.as_str(), release.platform.as_str())) {
-                return Err(DeliveryError::InvalidPackage(format!(
-                    "duplicate release {}/{}",
-                    release.version, release.platform
-                )));
-            }
-        }
-        Ok(())
-    }
-
-    /// Finds one release by exact version and platform.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when no matching release exists.
-    pub fn find(&self, version: &str, platform: &str) -> Result<&Release> {
-        self.releases
-            .iter()
-            .find(|release| release.version == version && release.platform == platform)
-            .ok_or_else(|| {
-                DeliveryError::InvalidPackage(format!(
-                    "no release {version} for platform {platform}"
-                ))
-            })
-    }
-
-    /// Returns the highest version for a platform.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the platform has no releases.
-    pub fn latest(&self, platform: &str) -> Result<&Release> {
-        self.releases
-            .iter()
-            .filter(|release| release.platform == platform && !is_prerelease(&release.version))
-            .max_by(|left, right| compare_versions(&left.version, &right.version))
-            .ok_or_else(|| {
-                DeliveryError::InvalidPackage(format!("no stable releases for platform {platform}"))
-            })
-    }
-
-    /// Inserts or replaces one release, keeping a deterministic order.
-    pub fn upsert(&mut self, release: Release) {
-        self.releases
-            .retain(|entry| entry.version != release.version || entry.platform != release.platform);
-        self.releases.push(release);
-        self.releases.sort_by(|left, right| {
-            left.platform
-                .cmp(&right.platform)
-                .then_with(|| compare_versions(&left.version, &right.version))
-        });
-    }
-
-    /// Serializes the index as pretty JSON with a trailing newline.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when serialization fails.
-    pub fn to_json(&self) -> Result<Vec<u8>> {
-        let mut bytes = serde_json::to_vec_pretty(self)
-            .map_err(|error| DeliveryError::InvalidPackage(error.to_string()))?;
-        bytes.push(b'\n');
-        Ok(bytes)
-    }
-}
-
 /// Reads a size-bounded file.
 ///
 /// # Errors
@@ -612,29 +452,6 @@ pub fn read_manifest(root: &Path, expected: ExpectedManifest<'_>) -> Result<Mani
     })?;
     manifest.validate(expected)?;
     Ok(manifest)
-}
-
-/// Reads and validates an index file.
-///
-/// # Errors
-///
-/// Returns an error when the file is missing, too large, malformed or fails
-/// validation.
-pub fn read_index(path: &Path) -> Result<Index> {
-    parse_index(&read_limited(path, MAX_INDEX_BYTES)?)
-}
-
-/// Parses and validates a size-bounded schema v1 index.
-///
-/// # Errors
-///
-/// Returns an error when the bytes are malformed or fail validation.
-pub fn parse_index(bytes: &[u8]) -> Result<Index> {
-    let index: Index = serde_json::from_slice(bytes).map_err(|error| {
-        DeliveryError::InvalidPackage(format!("index.json is malformed: {error}"))
-    })?;
-    index.validate()?;
-    Ok(index)
 }
 
 /// Computes the SHA-256 of a file.
@@ -976,38 +793,6 @@ mod tests {
     }
 
     #[test]
-    fn index_upsert_is_deterministic_and_rejects_duplicates() {
-        let mut index = Index::empty();
-        for (version, archive) in [("0.2.0", "b.tar.gz"), ("0.1.0", "a.tar.gz")] {
-            index.upsert(Release {
-                version: version.to_owned(),
-                platform: "linux-x86_64".to_owned(),
-                protocol_version: 2,
-                node_minimum_version: "24.0.0".to_owned(),
-                archive: archive.to_owned(),
-                sha256: "0".repeat(64),
-                size: 10,
-            });
-        }
-        index.validate().unwrap();
-        assert_eq!(index.latest("linux-x86_64").unwrap().version, "0.2.0");
-        index.upsert(Release {
-            version: "0.2.0".to_owned(),
-            platform: "linux-x86_64".to_owned(),
-            protocol_version: 2,
-            node_minimum_version: "24.0.0".to_owned(),
-            archive: "c.tar.gz".to_owned(),
-            sha256: "1".repeat(64),
-            size: 11,
-        });
-        assert_eq!(index.releases.len(), 2);
-        assert_eq!(
-            index.find("0.2.0", "linux-x86_64").unwrap().archive,
-            "c.tar.gz"
-        );
-    }
-
-    #[test]
     fn rejects_bad_checksum_lines() {
         for text in [
             "deadbeef  file",
@@ -1036,9 +821,6 @@ mod tests {
         assert!(read_manifest(&path, ExpectedManifest::default()).is_err());
         std::fs::write(path.join("manifest.json"), b"{").unwrap();
         assert!(read_manifest(&path, ExpectedManifest::default()).is_err());
-        assert!(read_index(&path.join("missing.json")).is_err());
-        std::fs::write(path.join("index.json"), b"{").unwrap();
-        assert!(read_index(&path.join("index.json")).is_err());
         let _ = std::fs::remove_dir_all(&path);
     }
 
