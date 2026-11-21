@@ -123,20 +123,25 @@ pub struct PropertyOverlay {
 }
 
 /// Builds both overlays for one selected registration.
+///
+/// The script is lexed once and shared by both overlays; each overlay still
+/// degrades on its own when the shared scan is unavailable.
 pub(crate) fn build(
     snapshot: &Snapshot<'_>,
     file: &SourceFile,
     registration: &ParsedRegistration,
     behavior: &BehaviorResolution,
 ) -> (DataOverlay, PropertyOverlay) {
-    let data = build_data(snapshot, file, registration, behavior);
-    let properties = build_properties(snapshot, file, registration, behavior);
+    let script = Script::new(file.text()).ok();
+    let data = build_data(snapshot, file, script.as_ref(), registration, behavior);
+    let properties = build_properties(snapshot, file, script.as_ref(), registration, behavior);
     (data, properties)
 }
 
 fn build_data(
     snapshot: &Snapshot<'_>,
     file: &SourceFile,
+    script: Option<&Script<'_>>,
     registration: &ParsedRegistration,
     behavior: &BehaviorResolution,
 ) -> DataOverlay {
@@ -183,15 +188,15 @@ fn build_data(
             problems,
         };
     };
-    let Ok(script) = Script::new(file.text()) else {
+    let Some(script) = script else {
         return data_partial(DataRootKind::Unsupported, fields, problems);
     };
     if member.kind != MemberKind::Property {
         problems.push("`data` member is not a property assignment".to_owned());
         return data_partial(DataRootKind::Unsupported, fields, problems);
     }
-    let Some((open, close)) = object_bounds(&script, member) else {
-        if is_same_file_type(&script, member) {
+    let Some((open, close)) = object_bounds(script, member) else {
+        if is_same_file_type(script, member) {
             problems.push(
                 "data root is a type-only reference (interface/type alias); no runtime data object exists"
                     .to_owned(),
@@ -206,7 +211,7 @@ fn build_data(
     };
 
     let (own_fields, incomplete, mut expansion_problems) =
-        expand_static_fields(snapshot, file, &script, open, close + 1);
+        expand_static_fields(snapshot, file, script, open, close + 1);
     problems.append(&mut expansion_problems);
     complete &= !incomplete;
     for field in own_fields {
@@ -245,6 +250,7 @@ fn build_data(
 fn build_properties(
     _snapshot: &Snapshot<'_>,
     file: &SourceFile,
+    script: Option<&Script<'_>>,
     registration: &ParsedRegistration,
     behavior: &BehaviorResolution,
 ) -> PropertyOverlay {
@@ -290,15 +296,15 @@ fn build_properties(
         problems.push("component `properties` is not a property assignment".to_owned());
         return property_partial(properties, problems, false);
     }
-    let Ok(script) = Script::new(file.text()) else {
+    let Some(script) = script else {
         return property_partial(properties, problems, false);
     };
-    let Some((open, close)) = object_bounds(&script, member) else {
+    let Some((open, close)) = object_bounds(script, member) else {
         problems.push("component `properties` is not an object literal".to_owned());
         return property_partial(properties, problems, false);
     };
     let mut own_complete = true;
-    let entries = scan_members(&script, open + 1, close);
+    let entries = scan_members(script, open + 1, close);
     if entries.len() > MAX_OWN_MEMBERS {
         problems.push(format!(
             "component `properties` exceeds the {MAX_OWN_MEMBERS}-member processing budget"
@@ -324,15 +330,15 @@ fn build_properties(
             own_complete = false;
             continue;
         };
-        let Some((option_open, option_close)) = object_bounds(&script, &entry) else {
+        let Some((option_open, option_close)) = object_bounds(script, &entry) else {
             problems.push(format!(
                 "property `{name}` is not declared with an object literal"
             ));
             own_complete = false;
             continue;
         };
-        let options = scan_members(&script, option_open + 1, option_close);
-        let Some((type_text, union_complete)) = values::union_text(&script, &options) else {
+        let options = scan_members(script, option_open + 1, option_close);
+        let Some((type_text, union_complete)) = values::union_text(script, &options) else {
             problems.push(format!(
                 "property `{name}` has no readable `type` declaration"
             ));
@@ -345,12 +351,12 @@ fn build_properties(
             ));
             own_complete = false;
         }
-        let Some(range) = property_range(&script, &entry) else {
+        let Some(range) = property_range(script, &entry) else {
             own_complete = false;
             continue;
         };
         let default_text = member_last(&options, "value")
-            .and_then(|value| value.value_range(&script))
+            .and_then(|value| value.value_range(script))
             .and_then(|range| text_of(file.text(), range))
             .map(|text| text.trim().to_owned());
         let own_override = properties.iter().any(|existing| existing.name == *name);
@@ -525,7 +531,8 @@ mod tests {
         let registration = registration::select(&file, &scan, RegistrationKind::Component)
             .expect("select")
             .expect("component registration");
-        build_properties(&snapshot, &file, &registration, behavior)
+        let script = Script::new(file.text()).expect("lex");
+        build_properties(&snapshot, &file, Some(&script), &registration, behavior)
     }
 
     fn incomplete_behavior() -> BehaviorResolution {

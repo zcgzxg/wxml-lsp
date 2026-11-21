@@ -383,6 +383,54 @@ fn m5_unreadable_optional_types_degrade_instead_of_claiming_complete() {
     assert!(property(&result, "b").has_optional_types);
 }
 #[test]
+fn data_and_properties_are_built_from_one_scan_and_degrade_independently() {
+    // One component declaring both members: a single lex must still produce
+    // each overlay exactly as before. `properties` has a computed key, so its
+    // degradation must not leak into `data`.
+    let result = analysis(
+        &[(
+            "index.ts",
+            "const key = \"dynamic\";\nComponent({\n  data: {\n    /** 计数 */\n    count: 1,\n    label: \"x\",\n  },\n  properties: {\n    /** 标题文本 */\n    title: { type: String, value: \"\" },\n    [key]: { type: String },\n  },\n});",
+        )],
+        "index.ts",
+        RegistrationKind::Component,
+    );
+
+    let data_fields = result
+        .data
+        .fields
+        .iter()
+        .map(|field| field.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(data_fields, ["count", "label"]);
+    assert_eq!(result.data.fields[0].type_text, "number");
+    assert_eq!(result.data.fields[0].documentation, "计数");
+    assert_eq!(result.data.fields[1].type_text, "string");
+    assert!(result.data.status.is_supported());
+    assert!(result.data.complete);
+    assert!(result.data.problems.is_empty());
+
+    let property_names = result
+        .properties
+        .properties
+        .iter()
+        .map(|property| property.name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(property_names, ["title"]);
+    let title = property(&result, "title");
+    assert_eq!(title.type_text, "string");
+    assert_eq!(title.default_text.as_deref(), Some("\"\""));
+    assert_eq!(title.documentation, "标题文本");
+    assert!(!result.properties.status.is_supported());
+    assert!(!result.properties.complete);
+    assert!(!result.properties.own_complete);
+    assert_eq!(
+        result.properties.problems,
+        vec!["`properties` has a computed member name".to_owned()]
+    );
+}
+
+#[test]
 fn h4_own_property_processing_is_capped_and_partial() {
     let properties = (0..2_000)
         .map(|index| format!("prop{index}: {{ type: String }}"))
