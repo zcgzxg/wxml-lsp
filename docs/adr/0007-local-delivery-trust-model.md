@@ -6,7 +6,7 @@
 
 **Deciders**: 项目维护者
 
-**2026-11-17 后续**：[ADR-0008](0008-rust-tsgo-no-node-backend.md)（2026-11-20 已在 owner scope waiver 下最终关闭为 accepted，native 默认；P7 删除完成，Node removed）替代 Node 安装前置与相关包字段；本文的信任、离线、原子安装与回滚规则继续有效。
+**2026-11-17 后续**：[ADR-0012](0012-in-process-tsrs-session.md)（2026-11-21 accepted；native 默认、生产路径无 Node 运行时、进程内类型会话）替代 Node 安装前置与相关包字段；本文的信任、离线、原子安装与回滚规则继续有效。
 
 **2026-11-20 后续**：安装机制已由 [ADR-0009](0009-project-slimming.md) 替代。`wxml-delivery` 及其 manifest v2、`versions/<version>` + `current` 布局已删除；安装改由 `scripts/install-native.sh` 完成，布局为 `<root>/bin/wxml-lsp`、`<root>/engine/lib/tsc`、`<root>/typings/`。本文保留的运行时信任边界、引擎/类型资产 pin 和 fail-closed 原则仍然有效；原子升级、回滚、归档缓存和许可证生成不再是当前能力。
 

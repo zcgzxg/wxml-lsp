@@ -3514,20 +3514,6 @@ mod tests {
         ));
         dispatch.take();
 
-        let too_many: Vec<serde_json::Value> = (0..1_024).map(|_| json!({"text": ""})).collect();
-        server.handle_incoming(notification(
-            "textDocument/didChange",
-            json!({
-                "textDocument": {"uri": URI, "version": 2},
-                "contentChanges": too_many,
-            }),
-        ));
-        assert!(dispatch.take().is_empty());
-        assert_eq!(
-            server.workspace.get(URI).expect("document").text().len(),
-            text.len()
-        );
-
         let expensive: Vec<serde_json::Value> = (0..256)
             .map(|_| {
                 json!({

@@ -62,26 +62,18 @@ pub const MAX_MARKUP_TOKENS: usize = 500_000;
 /// [`ParseResult::truncated`] set.
 #[must_use]
 pub fn parse(text: &str) -> ParseResult {
-    parse_with_limits(text, u32::MAX, MAX_MARKUP_TOKENS)
-}
-
-#[cfg(test)]
-fn parse_inner(text: &str, byte_limit: u32) -> ParseResult {
-    parse_with_limits(text, byte_limit, MAX_MARKUP_TOKENS)
+    parse_with_limits(text, MAX_MARKUP_TOKENS)
 }
 
 #[cfg(test)]
 fn parse_with_token_limit(text: &str, token_limit: usize) -> ParseResult {
-    parse_with_limits(text, u32::MAX, token_limit)
+    parse_with_limits(text, token_limit)
 }
 
-fn parse_with_limits(text: &str, byte_limit: u32, token_limit: usize) -> ParseResult {
+fn parse_with_limits(text: &str, token_limit: usize) -> ParseResult {
     let Ok(text_len) = u32::try_from(text.len()) else {
         return input_too_large();
     };
-    if text_len > byte_limit {
-        return input_too_large();
-    }
     let (tokens, tokens_truncated) = tokenize_bounded(text, token_limit);
     let eof = tokens
         .last()
@@ -1252,8 +1244,7 @@ impl<'a> Parser<'a> {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_MARKUP_TOKENS, MAX_NODES, NodeId, NodeKind, SyntaxTree, parse, parse_inner,
-        parse_with_token_limit,
+        MAX_MARKUP_TOKENS, MAX_NODES, NodeId, NodeKind, SyntaxTree, parse, parse_with_token_limit,
     };
     use crate::ParseErrorKind;
     use crate::ast::Mustache;
@@ -1884,15 +1875,6 @@ mod tests {
                 .iter()
                 .any(|error| error.kind() == ParseErrorKind::TooManyTokens)
         );
-    }
-
-    #[test]
-    fn oversized_input_is_rejected_before_building_a_tree() {
-        let result = parse_inner("hello", 4);
-        assert!(result.truncated);
-        assert_eq!(result.tree.text(), "");
-        assert_eq!(result.errors.len(), 1);
-        assert_eq!(result.errors[0].kind(), ParseErrorKind::InputTooLarge);
     }
 
     #[test]

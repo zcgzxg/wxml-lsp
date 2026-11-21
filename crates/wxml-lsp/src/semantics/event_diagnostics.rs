@@ -3,7 +3,7 @@
 //! `bindtap="onMissing"` (and every other static event-binding form) is
 //! checked against the method table of the view's owning `Page`/`Component`
 //! script, including statically resolved `Behavior` methods. The table comes
-//! from [`analyze_script`](wxml_backend_tsgo::script::analyze_script), so this
+//! from [`analyze_script`](wxml_backend_tsrs::script::analyze_script), so this
 //! path never builds an in-place shadow, never opens a native session and never
 //! asks the type backend whether a handler exists.
 //!
@@ -27,7 +27,7 @@
 //! this check when the backend does not claim a complete diagnostics
 //! capability.
 
-use wxml_backend_tsgo::script::events::EventBinding;
+use wxml_backend_tsrs::script::events::EventBinding;
 use wxml_project::typing::{ComponentTypingFacts, TypingComponent};
 use wxml_project::typing_contract::{HandlerTypeCheck, check_handler};
 use wxml_types::{CapabilityStatus, Diagnostic, DiagnosticSeverity, EventHandler, RootKind};
@@ -121,7 +121,7 @@ pub(crate) fn diagnostics(
             event.attribute.clone(),
             event.event.clone(),
             event.handler.clone(),
-            wxml_backend_tsgo::shadow::mapping::SourceRange::new(range.start(), range.end()),
+            wxml_backend_tsrs::shadow::mapping::SourceRange::new(range.start(), range.end()),
         ));
         origins.push(index);
     }
@@ -217,7 +217,7 @@ fn event_contract_diagnostic(
     source: &EventHandler,
     tag: &str,
     typing: &TypingComponent,
-    methods: &[wxml_backend_tsgo::script::events::EventMethod],
+    methods: &[wxml_backend_tsrs::script::events::EventMethod],
 ) -> Option<Diagnostic> {
     let declared_events_complete = typing.complete && !typing.events.is_empty();
     if declared_events_complete && typing.event_named(&binding.event).is_none() {
@@ -307,7 +307,7 @@ pub(crate) fn unannotated_handler_reason(
     if bindings.is_empty() {
         return None;
     }
-    let methods = crate::backend_tsgo::event_completion::owner_methods(
+    let methods = crate::backend_tsrs::event_completion::owner_methods(
         files,
         project_root,
         project,
@@ -420,7 +420,7 @@ fn incompatible_handler_message(handler: &str, event: &str, expected: &str, foun
 
 /// Returns the coverage status for a truncated event batch.
 fn collection_skipped_status(
-    collection: &wxml_backend_tsgo::script::events::EventCollection,
+    collection: &wxml_backend_tsrs::script::events::EventCollection,
 ) -> CapabilityStatus {
     if collection.skipped == 0 {
         CapabilityStatus::Supported
@@ -1202,7 +1202,7 @@ mod tests {
             source.attribute.clone(),
             source.event.clone(),
             source.handler.clone(),
-            wxml_backend_tsgo::shadow::mapping::SourceRange::new(
+            wxml_backend_tsrs::shadow::mapping::SourceRange::new(
                 source.handler_range.start(),
                 source.handler_range.end(),
             ),

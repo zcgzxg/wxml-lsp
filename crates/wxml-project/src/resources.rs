@@ -15,17 +15,11 @@ use std::path::PathBuf;
 use crate::files::{self, PathError, ProjectPath};
 use crate::{Project, ProjectSnapshot};
 
-/// Longest accepted resource specifier.
-pub const MAX_RESOURCE_SPECIFIER_BYTES: usize = 1024;
-
 /// Maximum candidates returned for one directory completion.
 pub const MAX_RESOURCE_CANDIDATES: usize = 256;
 
 /// Maximum directory entries examined for one completion.
 pub const MAX_RESOURCE_SCAN_ENTRIES: usize = 4096;
-
-/// Maximum symlink statistics performed for one completion.
-pub const MAX_RESOURCE_STATS: usize = 2048;
 
 /// Whether a candidate is a file or a directory.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -144,10 +138,7 @@ impl ProjectSnapshot {
         if specifier.is_empty() {
             return ResourceResolution::Invalid;
         }
-        if specifier.len() > MAX_RESOURCE_SPECIFIER_BYTES
-            || specifier.contains('\0')
-            || specifier.chars().any(char::is_control)
-        {
+        if specifier.contains('\0') || specifier.chars().any(char::is_control) {
             return ResourceResolution::Invalid;
         }
         if specifier.contains("{{") || specifier.contains("}}") {
@@ -168,11 +159,7 @@ impl ProjectSnapshot {
             let Some(decoded) = decode_percent_specifier(specifier) else {
                 return ResourceResolution::Invalid;
             };
-            if decoded.len() > MAX_RESOURCE_SPECIFIER_BYTES
-                || is_remote_specifier(&decoded)
-                || decoded.contains('?')
-                || decoded.contains('#')
-            {
+            if is_remote_specifier(&decoded) || decoded.contains('?') || decoded.contains('#') {
                 return if is_remote_specifier(&decoded) {
                     ResourceResolution::Remote
                 } else {
@@ -218,8 +205,7 @@ impl ProjectSnapshot {
     pub fn resource_candidates(&self, wxml: &ProjectPath, prefix: &str) -> ResourceCandidates {
         let mut result = ResourceCandidates::default();
         let prefix = prefix.trim();
-        if prefix.len() > MAX_RESOURCE_SPECIFIER_BYTES
-            || prefix.contains('\0')
+        if prefix.contains('\0')
             || prefix.chars().any(char::is_control)
             || prefix.contains("{{")
             || prefix.contains("}}")
@@ -232,11 +218,7 @@ impl ProjectSnapshot {
         let Some(decoded) = decode_percent_specifier(prefix) else {
             return result;
         };
-        if decoded.len() > MAX_RESOURCE_SPECIFIER_BYTES
-            || is_remote_specifier(&decoded)
-            || decoded.contains('?')
-            || decoded.contains('#')
-        {
+        if is_remote_specifier(&decoded) || decoded.contains('?') || decoded.contains('#') {
             return result;
         }
         let normalized = decoded.replace('\\', "/");
@@ -266,11 +248,10 @@ impl ProjectSnapshot {
             return result;
         };
         let mut scanned = 0_usize;
-        let mut stats = 0_usize;
         let mut seen = std::collections::BTreeSet::new();
         for entry in entries {
             scanned += 1;
-            if scanned > MAX_RESOURCE_SCAN_ENTRIES || stats > MAX_RESOURCE_STATS {
+            if scanned > MAX_RESOURCE_SCAN_ENTRIES {
                 result.truncated = true;
                 break;
             }
@@ -296,7 +277,6 @@ impl ProjectSnapshot {
                 continue;
             }
             let kind = if file_type.is_symlink() {
-                stats = stats.saturating_add(2);
                 let Ok(target) = std::fs::canonicalize(entry.path()) else {
                     continue;
                 };

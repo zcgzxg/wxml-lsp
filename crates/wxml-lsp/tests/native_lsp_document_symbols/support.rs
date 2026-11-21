@@ -8,11 +8,11 @@
 //!
 //! Gate semantics:
 //!
-//! - `TSGO_TYPINGS_ROOT` is optional. Only a *missing* input
+//! - `TSRS_TYPINGS_ROOT` is optional. Only a *missing* input
 //!   ([`ProvisionError::Missing`]) becomes an explicit `SKIP` print plus
 //!   `None` in optional mode; there is no silent pass.
 //! - A present but invalid input is always fatal, even in optional mode:
-//!   a relative path, an unusable `TSGO_TYPINGS_ROOT`, a package without the
+//!   a relative path, an unusable `TSRS_TYPINGS_ROOT`, a package without the
 //!   required declarations, or a temporary base inside the repository.
 //! - `WXML_REQUIRE_REAL_ENGINE=1|true` turns every missing input into a panic.
 //!   The variable name is legacy; the engine itself is in-process.
@@ -57,7 +57,7 @@ pub(crate) use package::{
 };
 
 pub(crate) const REQUIRE_ENV: &str = "WXML_REQUIRE_REAL_ENGINE";
-pub(crate) const TSGO_TYPINGS_ROOT_ENV: &str = "TSGO_TYPINGS_ROOT";
+pub(crate) const TSRS_TYPINGS_ROOT_ENV: &str = "TSRS_TYPINGS_ROOT";
 pub(crate) const TEST_TMPDIR_ENV: &str = "WXML_TEST_TMPDIR";
 pub(crate) const DEFAULT_TMP_BASE: &str = "/tmp/opencode";
 
@@ -80,7 +80,7 @@ impl ProvisionEnv {
     pub(crate) fn from_process() -> Self {
         Self {
             require_real_engine: std::env::var_os(REQUIRE_ENV),
-            typings_root: std::env::var_os(TSGO_TYPINGS_ROOT_ENV),
+            typings_root: std::env::var_os(TSRS_TYPINGS_ROOT_ENV),
             tmp_base: std::env::var_os(TEST_TMPDIR_ENV),
         }
     }
@@ -108,7 +108,7 @@ pub(crate) fn non_empty(value: Option<&OsString>) -> Option<&OsString> {
 /// mode.
 pub(crate) fn provisioning_hint() -> String {
     format!(
-        "set {TSGO_TYPINGS_ROOT_ENV} to the directory containing miniprogram-api-typings \
+        "set {TSRS_TYPINGS_ROOT_ENV} to the directory containing miniprogram-api-typings \
          (the package directory itself is also accepted); the TypeScript standard library \
          is embedded in the in-process engine; {REQUIRE_ENV}=1 makes every missing input fatal"
     )
@@ -240,7 +240,7 @@ pub(crate) fn repo_root() -> PathBuf {
 
 /// Resolves the pinned `miniprogram-api-typings` package.
 ///
-/// Only an explicit `TSGO_TYPINGS_ROOT` is accepted. When it is unset the input
+/// Only an explicit `TSRS_TYPINGS_ROOT` is accepted. When it is unset the input
 /// is absent and optional mode skips it.
 fn resolve_typings(env: &ProvisionEnv) -> Result<PathBuf, ProvisionError> {
     if let Some(root) = non_empty(env.typings_root.as_ref()) {
@@ -248,7 +248,7 @@ fn resolve_typings(env: &ProvisionEnv) -> Result<PathBuf, ProvisionError> {
         if !root.is_absolute() {
             return Err(ProvisionError::Invalid {
                 reason: format!(
-                    "{TSGO_TYPINGS_ROOT_ENV} must be absolute: {}",
+                    "{TSRS_TYPINGS_ROOT_ENV} must be absolute: {}",
                     root.display()
                 ),
             });
@@ -260,7 +260,7 @@ fn resolve_typings(env: &ProvisionEnv) -> Result<PathBuf, ProvisionError> {
         } else {
             return Err(ProvisionError::Invalid {
                 reason: format!(
-                    "{TSGO_TYPINGS_ROOT_ENV} has no miniprogram-api-typings/index.d.ts: {}",
+                    "{TSRS_TYPINGS_ROOT_ENV} has no miniprogram-api-typings/index.d.ts: {}",
                     root.display()
                 ),
             });
@@ -269,7 +269,7 @@ fn resolve_typings(env: &ProvisionEnv) -> Result<PathBuf, ProvisionError> {
     }
     let reason = format!(
         "the pinned miniprogram-api-typings package is unavailable: set \
-         {TSGO_TYPINGS_ROOT_ENV} to the directory containing miniprogram-api-typings"
+         {TSRS_TYPINGS_ROOT_ENV} to the directory containing miniprogram-api-typings"
     );
     Err(ProvisionError::Missing { reason })
 }

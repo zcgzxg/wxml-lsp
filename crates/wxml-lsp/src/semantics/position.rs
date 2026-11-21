@@ -2,13 +2,9 @@
 //!
 //! `LineIndex::position` rescans from the line start on every call. A single
 //! very long line therefore makes token/hint/location encoding quadratic. This
-//! cursor advances monotonically over the text once per file and enforces a
-//! scan budget for hostile inputs.
+//! cursor advances monotonically over the text once per file.
 
 use wxml_text::Position;
-
-/// Maximum bytes scanned by one cursor.
-pub(crate) const MAX_POSITION_SCAN_BYTES: usize = 16 * 1024 * 1024;
 
 /// A monotonic byte-offset to UTF-16 position mapper.
 #[derive(Debug)]
@@ -17,39 +13,26 @@ pub(crate) struct Utf16Cursor<'a> {
     pos: usize,
     line: u32,
     column: u32,
-    scanned: usize,
-    limit: usize,
 }
 
 impl<'a> Utf16Cursor<'a> {
     /// Creates a cursor at the start of `text`.
     pub(crate) const fn new(text: &'a str) -> Self {
-        Self::with_limit(text, MAX_POSITION_SCAN_BYTES)
-    }
-
-    /// Creates a cursor with an explicit scan budget.
-    pub(crate) const fn with_limit(text: &'a str, limit: usize) -> Self {
         Self {
             text,
             pos: 0,
             line: 0,
             column: 0,
-            scanned: 0,
-            limit,
         }
     }
 
     /// Maps a non-decreasing byte offset to a zero-based UTF-16 position.
     ///
     /// Returns `None` when the offset is outside the text, is not on a character
-    /// boundary, moves backwards, or exceeds the scan budget.
+    /// boundary, or moves backwards.
     pub(crate) fn position(&mut self, offset: u32) -> Option<Position> {
         let offset = usize::try_from(offset).ok()?;
         if offset < self.pos || offset > self.text.len() || !self.text.is_char_boundary(offset) {
-            return None;
-        }
-        self.scanned = self.scanned.checked_add(offset - self.pos)?;
-        if self.scanned > self.limit {
             return None;
         }
         for character in self.text[self.pos..offset].chars() {
@@ -68,7 +51,6 @@ impl<'a> Utf16Cursor<'a> {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
 mod tests {
     use std::time::{Duration, Instant};
 

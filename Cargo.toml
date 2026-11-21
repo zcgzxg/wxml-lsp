@@ -62,7 +62,7 @@ debug = "line-tables-only"
 strip = "none"
 
 # `test` inherits `dev`, so this covers both. The in-process type engine is the
-# hot path of every real-engine suite (enabled by `TSGO_TYPINGS_ROOT`), and an
+# hot path of every real-engine suite (enabled by `TSRS_TYPINGS_ROOT`), and an
 # unoptimised `tsrs_*` dependency tree makes those runs one to two orders of
 # magnitude slower. `debug-assertions` stays on because it is a separate knob.
 [profile.dev.package."*"]

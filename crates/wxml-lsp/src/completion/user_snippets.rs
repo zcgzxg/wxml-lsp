@@ -57,15 +57,6 @@ pub(crate) const DEFAULT_CONFIG_PATH: &str = ".wxml-lsp/snippets.json";
 /// Largest accepted snippet configuration file.
 pub(crate) const MAX_CONFIG_BYTES: u64 = 256 * 1024;
 
-/// Largest number of user snippets accepted from one file.
-pub(crate) const MAX_USER_SNIPPETS: usize = 256;
-
-/// Largest accepted body for one user snippet.
-pub(crate) const MAX_BODY_BYTES: usize = 8 * 1024;
-
-/// Largest accepted number of body lines.
-pub(crate) const MAX_BODY_LINES: usize = 64;
-
 /// Largest accepted label length in characters.
 pub(crate) const MAX_LABEL_CHARS: usize = 128;
 
@@ -328,7 +319,7 @@ fn parse_catalog(text: &str) -> Result<Catalog, String> {
     };
     let mut invalid = 0_usize;
     if let Some(entries) = object.get("snippets").and_then(Value::as_array) {
-        for entry in entries.iter().take(MAX_USER_SNIPPETS) {
+        for entry in entries {
             match parse_entry(entry) {
                 Some(snippet) => {
                     // Later entries with the same identity win.
@@ -339,11 +330,6 @@ fn parse_catalog(text: &str) -> Result<Catalog, String> {
                 }
                 None => invalid = invalid.saturating_add(1),
             }
-        }
-        if entries.len() > MAX_USER_SNIPPETS {
-            log(format_args!(
-                "user snippets: only the first {MAX_USER_SNIPPETS} entries are used"
-            ));
         }
     }
     if invalid > 0 {
@@ -407,9 +393,6 @@ fn parse_body(value: &Value) -> Option<String> {
         text.to_owned()
     } else {
         let lines = value.as_array()?;
-        if lines.len() > MAX_BODY_LINES {
-            return None;
-        }
         let mut body = String::new();
         for line in lines {
             let line = line.as_str()?;
@@ -421,7 +404,7 @@ fn parse_body(value: &Value) -> Option<String> {
         body
     };
     let body = body.replace("\r\n", "\n");
-    if body.is_empty() || body.len() > MAX_BODY_BYTES || body.lines().count() > MAX_BODY_LINES {
+    if body.is_empty() {
         return None;
     }
     Some(body)
@@ -491,13 +474,14 @@ mod tests {
     }
 
     #[test]
-    fn malformed_top_level_fails_and_limits_apply() {
+    fn malformed_top_level_fails_and_long_bodies_are_kept() {
         assert!(parse_catalog("not json").is_err());
         assert!(parse_catalog("[]").is_err());
-        let body = "x".repeat(MAX_BODY_BYTES + 1);
+        let body = "x".repeat(8 * 1024 + 1);
         let text = format!(r#"{{"snippets": [{{"label": "big", "body": "{body}"}}]}}"#);
         let catalog = parse_catalog(&text).expect("catalog");
-        assert!(catalog.snippets.is_empty());
+        assert_eq!(catalog.snippets.len(), 1);
+        assert_eq!(catalog.snippets[0].body.len(), 8 * 1024 + 1);
     }
 
     #[test]

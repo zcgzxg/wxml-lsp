@@ -3,7 +3,7 @@
 //! `bindtap="onTap"` and the other WXML event-binding forms are matched
 //! against the literal method table of the view's owning `Page`/`Component`
 //! script, including statically resolved `Behavior` methods. The table comes
-//! from [`ScriptAnalysis::methods`](wxml_backend_tsgo::script::ScriptAnalysis),
+//! from [`ScriptAnalysis::methods`](wxml_backend_tsrs::script::ScriptAnalysis),
 //! so this module never builds the in-place shadow, never opens a native
 //! session and never queries the type backend.
 //!
@@ -18,12 +18,12 @@
 //! backend answers them from the in-place shadow, so there is a single source
 //! of types, `JSDoc` and declaration positions.
 
-use wxml_backend_tsgo::input::{
+use wxml_backend_tsrs::input::{
     AnalysisInput, DocumentRevision, ProjectKey, ProjectRoot, SnapshotRevision, SourceFile,
 };
-use wxml_backend_tsgo::script::registration::RegistrationKind;
-use wxml_backend_tsgo::script::{ScriptAnalysis, ScriptRequest, analyze_script};
-use wxml_backend_tsgo::shadow::expression::is_identifier_name;
+use wxml_backend_tsrs::script::registration::RegistrationKind;
+use wxml_backend_tsrs::script::{ScriptAnalysis, ScriptRequest, analyze_script};
+use wxml_backend_tsrs::shadow::expression::is_identifier_name;
 use wxml_text::SourceRange;
 use wxml_types::{CapabilityStatus, RootKind};
 
@@ -31,8 +31,6 @@ use crate::completion::catalog::{self, EventAttributeClass};
 use crate::project_host::{PreparedFile, PreparedView};
 use crate::semantics::tsconfig_paths::TsconfigPaths;
 
-/// Maximum byte length of a static handler name, matching the template layer.
-const MAX_HANDLER_NAME_BYTES: usize = 256;
 /// Stable reason for a missing declaration file.
 const MISSING_FILE_REASON: &str = "the declaring script is not part of the prepared view";
 
@@ -88,8 +86,7 @@ fn static_handler(text: &str, value: wxml_syntax::AttributeValue<'_>) -> EventVa
         return EventValueSite::NotStatic;
     };
     let handler = literal.trim();
-    if handler.is_empty() || handler.len() > MAX_HANDLER_NAME_BYTES || !is_identifier_name(handler)
-    {
+    if handler.is_empty() || !is_identifier_name(handler) {
         return EventValueSite::NotStatic;
     }
     let Some(range) = handler_range(value, literal, handler) else {
@@ -225,8 +222,8 @@ mod tests {
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use wxml_backend_tsgo::script::ModuleResolver;
-    use wxml_backend_tsgo::script::events::EventMethod;
+    use wxml_backend_tsrs::script::ModuleResolver;
+    use wxml_backend_tsrs::script::events::EventMethod;
     use wxml_project::ProjectPath;
     use wxml_types::{FileId, ProjectId, ViewRevision};
 

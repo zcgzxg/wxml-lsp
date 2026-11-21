@@ -6,7 +6,7 @@
 
 **Deciders**: 项目维护者
 
-**2026-11-17 后续**：[ADR-0008](0008-rust-tsgo-no-node-backend.md)（2026-11-20 已在 owner scope waiver 下最终关闭为 accepted，native 默认；P7 删除完成，Node removed）调整后端资产路径配置；本文的小程序根与类型项目根边界继续有效。
+**2026-11-17 后续**：[ADR-0012](0012-in-process-tsrs-session.md)（2026-11-21 accepted；native 默认、生产路径无 Node 运行时、进程内类型会话）调整后端资产路径配置；本文的小程序根与类型项目根边界继续有效。
 
 **2026-11-20 后续**：新增 `apps[].tsconfig`（显式 tsconfig 文件，默认 `projectRoot/tsconfig.json`）与 `apps[].dependencies`（显式工作区包目录）。依赖源码进入类型快照，`package.json#exports` 转为 TypeScript `paths`；仍不读取 `node_modules`、不推断包图。依赖目录与 tsconfig 文件必须留在 `projectRoot` 内，每 app 最多 64 个依赖，`package.json` 最多 256 KiB / 512 个 exports 项。
 
@@ -98,6 +98,6 @@ Zed 在工作区 `.zed/settings.json` 的 `lsp.wxml-lsp.initialization_options` 
 
 - [项目快速开始](../../README.md#在-zed-中使用)
 - [Zed 配置指南](../../editors/zed/README.md#mini-program-roots-initialization-options)
-- [ADR-0008：native 类型后端](0008-rust-tsgo-no-node-backend.md)（原 C1 类型桥的请求与路径边界已随 Node 后端删除，历史见 tag `pre-slim-20261120`）
+- [ADR-0012：进程内 tsrs 类型引擎会话](0012-in-process-tsrs-session.md)（原 C1 类型桥的请求与路径边界已随 Node 后端删除，历史见 tag `pre-slim-20261120`）
 - [ADR-0001：分层语言服务与模块依赖边界](0001-layered-language-service-architecture.md)
 - [ADR-0003：版本化文档同步与 Zed 接入](0003-versioned-document-synchronization.md)

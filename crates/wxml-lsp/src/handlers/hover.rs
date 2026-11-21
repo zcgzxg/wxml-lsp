@@ -131,12 +131,6 @@ const fn failure_message(error: &BackendError) -> &'static str {
     }
 }
 
-/// Maximum number of distinct definition target files read per request.
-const MAX_DEFINITION_FILES: usize = 8;
-
-/// Maximum estimated text + line-index bytes read for definition targets.
-const MAX_DEFINITION_INDEX_BYTES: usize = 64 * 1024 * 1024;
-
 /// Mapped LSP locations plus whether any target could not be mapped.
 struct MappedDefinition {
     locations: Vec<Value>,
@@ -192,7 +186,7 @@ fn definition_value(
             };
             Arc::clone(index)
         } else {
-            if indexes.len() >= MAX_DEFINITION_FILES || budget_exhausted {
+            if indexes.len() >= crate::workspace::MAX_QUERY_FILES || budget_exhausted {
                 indexes.insert(location.file.clone(), None);
                 log(format_args!("definition target budget reached"));
                 unmappable = true;
@@ -207,7 +201,7 @@ fn definition_value(
             let cost = text
                 .len()
                 .saturating_add(8_usize.saturating_mul(newline_count(&text)));
-            if index_bytes.saturating_add(cost) > MAX_DEFINITION_INDEX_BYTES {
+            if index_bytes.saturating_add(cost) > crate::workspace::MAX_QUERY_INDEX_BYTES {
                 // No later file is read once the budget is exhausted.
                 budget_exhausted = true;
                 indexes.insert(location.file.clone(), None);

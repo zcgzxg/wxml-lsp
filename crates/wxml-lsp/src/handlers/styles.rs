@@ -24,26 +24,8 @@ use crate::server::{Server, log};
 use crate::styles::{self, ClassSite, ResourceSite};
 use crate::workspace::Document;
 
-/// Maximum distinct style files read while mapping locations.
-const MAX_LOCAL_FILES: usize = 8;
-
-/// Maximum estimated text plus line-index bytes read for local locations.
-const MAX_LOCAL_INDEX_BYTES: usize = 64 * 1024 * 1024;
-
-/// Maximum definitions returned by one definition request.
-const MAX_LOCAL_DEFINITIONS: usize = 16;
-
 /// Maximum distinct class comments shown in one hover.
 const MAX_HOVER_COMMENTS: usize = 4;
-
-/// Maximum document links returned for one template.
-const MAX_DOCUMENT_LINKS: usize = 512;
-
-/// Maximum URI length stored in a link or location.
-const MAX_LOCAL_URI_BYTES: usize = 8 * 1024;
-
-/// Longest class name shown in hover.
-const MAX_HOVER_CLASS_BYTES: usize = 128;
 
 /// Longest class comment shown in hover.
 const MAX_HOVER_COMMENT_BYTES: usize = 512;
@@ -74,7 +56,7 @@ impl<'a> Targets<'a> {
         if let Some(cached) = self.files.get(path) {
             return cached.clone();
         }
-        if self.exhausted || self.files.len() >= MAX_LOCAL_FILES {
+        if self.exhausted || self.files.len() >= crate::workspace::MAX_QUERY_FILES {
             self.exhausted = true;
             self.files.insert(path.clone(), None);
             log(format_args!("local target file budget reached"));
@@ -83,14 +65,14 @@ impl<'a> Targets<'a> {
         let loaded = (|| {
             let file = self.server.host.file_id_in(&self.project, path).ok()?;
             let uri = self.server.host.uri_for(&file)?;
-            if uri.len() > MAX_LOCAL_URI_BYTES {
+            if uri.len() > crate::workspace::MAX_URI_BYTES {
                 return None;
             }
             let text = self.server.host.file_text(&file)?;
             let cost = text
                 .len()
                 .saturating_add(8_usize.saturating_mul(text.match_indices('\n').count()));
-            if self.bytes.saturating_add(cost) > MAX_LOCAL_INDEX_BYTES {
+            if self.bytes.saturating_add(cost) > crate::workspace::MAX_QUERY_INDEX_BYTES {
                 return None;
             }
             self.bytes = self.bytes.saturating_add(cost);
@@ -135,7 +117,7 @@ fn class_hover_value(document: &Document, facts: &StyleViewFacts, site: &ClassSi
     }
     let mut lines = vec![format!(
         "`{}` — WXSS class",
-        code_text(&site.name, MAX_HOVER_CLASS_BYTES)
+        code_text(&site.name, wxml_project::styles::MAX_CLASS_NAME_BYTES)
     )];
     let mut comments = 0_usize;
     let mut seen = HashSet::new();
@@ -196,7 +178,7 @@ fn local_definition_locations(
         for definition in facts
             .definitions(&site.name)
             .into_iter()
-            .take(MAX_LOCAL_DEFINITIONS)
+            .take(crate::workspace::MAX_DEFINITION_TARGETS)
         {
             if let Some(location) = targets.location(definition.file(), definition.range()) {
                 locations.push(location);
@@ -220,7 +202,7 @@ fn local_definition_locations(
     let Some(uri) = server.host.uri_for(&target_file) else {
         return Some(empty_links());
     };
-    if uri.len() > MAX_LOCAL_URI_BYTES {
+    if uri.len() > crate::workspace::MAX_URI_BYTES {
         return Some(empty_links());
     }
     Some(Value::Array(vec![json!({
@@ -441,13 +423,7 @@ impl Server {
         let text = document.text();
         let mut links = Vec::new();
         let mut seen = HashSet::new();
-        let mut resolutions = 0_usize;
-        for site in styles::resource_sites(text, styles::MAX_WXML_RESOURCE_SITES) {
-            if resolutions >= styles::MAX_RESOURCE_RESOLUTIONS {
-                log(format_args!("document link resolution budget reached"));
-                break;
-            }
-            resolutions = resolutions.saturating_add(1);
+        for site in styles::resource_sites(text) {
             let Some(ResourceResolution::File(target)) =
                 self.host.resource_resolution_for(&file, &site.text)
             else {
@@ -462,7 +438,7 @@ impl Server {
             let Some(target_uri) = self.host.uri_for(&target_file) else {
                 continue;
             };
-            if target_uri.len() > MAX_LOCAL_URI_BYTES {
+            if target_uri.len() > crate::workspace::MAX_URI_BYTES {
                 continue;
             }
             let Some(range) = source_range_value(document, SourceRange::new(site.value)) else {
@@ -477,10 +453,6 @@ impl Server {
                 "target": target_uri,
                 "tooltip": target.as_str(),
             }));
-            if links.len() >= MAX_DOCUMENT_LINKS {
-                log(format_args!("document link budget reached"));
-                break;
-            }
         }
         vec![Outgoing::success(id, Value::Array(links))]
     }

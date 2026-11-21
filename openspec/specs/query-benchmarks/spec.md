@@ -77,7 +77,7 @@
 
 #### Scenario: 缺少引擎环境变量
 
-- **GIVEN** 未启用真实类型门禁或缺少 `TSGO_TYPINGS_ROOT`
+- **GIVEN** 未启用真实类型门禁或缺少 `TSRS_TYPINGS_ROOT`
 - **WHEN** 运行变量类型组
 - **THEN** 基准报告跳过原因
 - **AND** 不产生该组的耗时数据

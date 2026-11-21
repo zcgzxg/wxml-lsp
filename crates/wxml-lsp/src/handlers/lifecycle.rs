@@ -187,7 +187,7 @@ fn style_initialization_options(params: Option<&Value>) -> (StyleConfig, StyleDi
         .or_else(|| options.get("style").and_then(Value::as_object))
         .unwrap_or(options);
     if let Some(paths) = options.get("globalStyles").and_then(Value::as_array) {
-        for path in paths.iter().take(64) {
+        for path in paths {
             let Some(path) = path.as_str() else {
                 config
                     .invalid_global_styles
@@ -918,7 +918,6 @@ fn workspace_folder_uris(value: Option<&Value>) -> Vec<String> {
         .map_or_else(Vec::new, |folders| {
             folders
                 .iter()
-                .take(64)
                 .filter_map(|folder| {
                     let uri = folder.get("uri")?.as_str()?;
                     if uri.is_empty() || uri.len() > crate::workspace::MAX_URI_BYTES {
@@ -984,9 +983,6 @@ const WATCH_GLOBS: [&str; 30] = [
     "**/*.ttf",
 ];
 
-/// Largest number of `didChangeWatchedFiles` entries processed per call.
-const MAX_WATCHED_CHANGES: usize = 4_096;
-
 /// Reads the document URI of a `didSave` notification.
 fn saved_uri(params: &Value) -> Option<&str> {
     params
@@ -999,8 +995,7 @@ fn saved_uri(params: &Value) -> Option<&str> {
 
 /// Parses the `changes` array of a `didChangeWatchedFiles` notification.
 ///
-/// Malformed entries are skipped and the processed count is bounded so a
-/// hostile client cannot force unbounded rediscovery work.
+/// Malformed entries are skipped.
 fn watched_changes(params: &Value) -> Vec<WatchedFileChange> {
     let Some(changes) = params
         .as_object()
@@ -1011,7 +1006,6 @@ fn watched_changes(params: &Value) -> Vec<WatchedFileChange> {
     };
     changes
         .iter()
-        .take(MAX_WATCHED_CHANGES)
         .filter_map(|change| {
             let change = change.as_object()?;
             let uri = change.get("uri")?.as_str()?;
@@ -1032,8 +1026,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        MAX_WATCHED_CHANGES, diagnostics_debounce_override, same_root_uri, saved_uri,
-        style_initialization_options, watched_changes, workspace_folder_uris,
+        diagnostics_debounce_override, same_root_uri, saved_uri, style_initialization_options,
+        watched_changes, workspace_folder_uris,
     };
     use crate::project_host::WatchedChangeKind;
 
@@ -1118,16 +1112,16 @@ mod tests {
     }
 
     #[test]
-    fn bounds_the_number_of_watched_changes() {
-        let changes: Vec<_> = (0..=MAX_WATCHED_CHANGES)
+    fn parses_every_watched_change() {
+        let changes: Vec<_> = (0..4_096)
             .map(|_| json!({"uri": "file:///a.ts", "type": 2}))
             .collect();
         let parsed = watched_changes(&json!({"changes": changes}));
-        assert_eq!(parsed.len(), MAX_WATCHED_CHANGES);
+        assert_eq!(parsed.len(), 4_096);
     }
 
     #[test]
-    fn reads_bounded_workspace_folder_uris() {
+    fn reads_workspace_folder_uris() {
         let folders = workspace_folder_uris(Some(&json!([
             {"uri": "file:///workspace/a"},
             {"uri": "file:///workspace/b/"},

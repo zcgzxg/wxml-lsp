@@ -1,7 +1,7 @@
 //! Opt-in native-engine LSP gate for a static WXS module used from a template.
 //!
 //! The gate reuses the shared `documentSymbol` fixture (`support::provision`):
-//! it builds the disposable typings-only package from `TSGO_TYPINGS_ROOT`, replaces the
+//! it builds the disposable typings-only package from `TSRS_TYPINGS_ROOT`, replaces the
 //! sample project with one page that imports a `src`-backed WXS module, starts
 //! `<package>/bin/wxml-lsp --stdio --backend native` and drives real
 //! `textDocument/publishDiagnostics` and `textDocument/hover` traffic.
@@ -19,7 +19,7 @@
 //! Other template diagnostics are tolerated: the gate asserts the absence of
 //! the specific WXS-root false positive, not an empty list.
 //!
-//! Without `TSGO_TYPINGS_ROOT` the fixture prints an explicit `SKIP` reason through
+//! Without `TSRS_TYPINGS_ROOT` the fixture prints an explicit `SKIP` reason through
 //! [`provision`] and returns `None`; `WXML_REQUIRE_REAL_ENGINE=1|true` turns a
 //! missing input into a panic. Only a *missing* input is skippable.
 

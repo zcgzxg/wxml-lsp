@@ -230,8 +230,8 @@ mod tests {
 
     #[test]
     fn rejects_unknown_backend() {
-        let error = parse(["--stdio", "--backend", "tsgo"]).unwrap_err();
-        assert!(error.contains("unsupported backend `tsgo`"), "{error}");
+        let error = parse(["--stdio", "--backend", "tsrs"]).unwrap_err();
+        assert!(error.contains("unsupported backend `tsrs`"), "{error}");
     }
 
     #[test]

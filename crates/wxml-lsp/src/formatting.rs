@@ -34,13 +34,6 @@ use wxml_text::{SourceRange, TextRange};
 use crate::jsonrpc::{self, Outgoing};
 use crate::server::{Server, log};
 
-/// Largest number of edits one formatting request may produce.
-///
-/// A request that would exceed this budget is answered with no edits instead
-/// of a partial rewrite. The bound is intentionally generous: a typical page
-/// produces one edit per attribute gap, so this covers very large templates.
-pub(crate) const MAX_FORMAT_EDITS: usize = 16_384;
-
 /// Formatting options that affect attribute indentation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct FormatOptions {
@@ -136,12 +129,6 @@ fn format_scope(text: &str, scope: Option<TextRange>, options: FormatOptions) ->
             skipped = skipped.saturating_add(1);
             continue;
         };
-        if edits.len().saturating_add(tag_edits.len()) > MAX_FORMAT_EDITS {
-            log(format_args!(
-                "formatting skipped: more than {MAX_FORMAT_EDITS} edits would be required"
-            ));
-            return Vec::new();
-        }
         edits.extend(tag_edits);
     }
     if skipped > 0 {
@@ -672,18 +659,14 @@ mod tests {
     }
 
     #[test]
-    fn refuses_requests_above_the_edit_budget() {
+    fn formats_every_start_tag_of_a_large_document() {
         let mut text = String::new();
-        for _ in 0..(MAX_FORMAT_EDITS + 10) {
+        for _ in 0..(16_384 + 10) {
             text.push_str("<view  a=\"1\"></view>");
         }
         let parsed = wxml_syntax::parse(&text);
         assert!(parsed.is_clean(), "fixture must parse cleanly");
         let edits = format_document(&text, FormatOptions::default());
-        assert!(
-            edits.is_empty(),
-            "expected all-or-nothing refusal, got {} edits",
-            edits.len()
-        );
+        assert_eq!(edits.len(), 16_384 + 10);
     }
 }

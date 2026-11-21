@@ -27,14 +27,8 @@ use super::context::{Context, Site, is_attribute_name, is_tag_name};
 use super::static_items::matches;
 use super::user_snippets::{Catalog, Scope};
 
-/// Largest line-prefix indentation copied into a snippet.
-const MAX_INDENT_CHARS: usize = 64;
-
 /// Bytes scanned on each side when detecting the document newline style.
 const NEWLINE_SCAN_BYTES: usize = 2_048;
-
-/// Largest tail after a tag-name prefix considered for a tag snippet.
-const MAX_TAG_SNIPPET_TAIL: usize = 4_096;
 
 /// Indentation context used to lay out an inserted tag snippet.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,7 +53,6 @@ impl SnippetEnv {
         let line_prefix = text.get(line_start..offset).unwrap_or_default();
         let closing_indent: String = line_prefix
             .chars()
-            .take(MAX_INDENT_CHARS)
             .take_while(|character| *character == ' ' || *character == '\t')
             .collect();
         let unit = if line_prefix.contains('\t') || closing_indent.contains('\t') {
@@ -279,7 +272,7 @@ fn tag_items(
     let Some(tail) = text.get(end..) else {
         return Vec::new();
     };
-    if tail.len() > MAX_TAG_SNIPPET_TAIL || !tail.trim().is_empty() {
+    if !tail.trim().is_empty() {
         return Vec::new();
     }
     let Some(analysis) = analyze_tag(text, end) else {

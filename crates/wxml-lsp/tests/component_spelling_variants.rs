@@ -33,7 +33,7 @@
 //!   spellings, which that fixture does not express.
 //!
 //! Property *diagnostics* for undeclared attributes are owned by the native
-//! engine adapter (`backend_tsgo/component_bindings.rs`); `HostOnly` publishes
+//! engine adapter (`backend_tsrs/component_bindings.rs`); `HostOnly` publishes
 //! no attribute diagnostics at all, so this file proves the shared lookup
 //! through the static providers and asserts that no local warning is invented
 //! for either spelling. The engine-side path is covered by the component

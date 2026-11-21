@@ -337,12 +337,12 @@ fn default_ignores_a_legacy_engine_layout_but_needs_typings() {
 #[test]
 fn rejects_unknown_backend_value() {
     let output = Command::new(BIN)
-        .args(["--stdio", "--backend", "tsgo"])
+        .args(["--stdio", "--backend", "tsrs"])
         .output()
         .expect("spawn wxml-lsp");
     assert!(!output.status.success());
     let stderr = String::from_utf8(output.stderr).expect("utf-8 output");
-    assert!(stderr.contains("unsupported backend `tsgo`"), "{stderr}");
+    assert!(stderr.contains("unsupported backend `tsrs`"), "{stderr}");
 }
 
 #[test]
@@ -379,7 +379,7 @@ fn env_path(name: &str) -> Option<PathBuf> {
 }
 
 fn real_typings_root() -> Option<PathBuf> {
-    let root = env_path("TSGO_TYPINGS_ROOT")?;
+    let root = env_path("TSRS_TYPINGS_ROOT")?;
     let package =
         if root.file_name().and_then(|name| name.to_str()) == Some("miniprogram-api-typings") {
             root.clone()
@@ -393,7 +393,7 @@ fn real_inputs() -> Option<PathBuf> {
     let required = required_engine();
     let Some(typings) = real_typings_root() else {
         skip_or_fail(
-            "TSGO_TYPINGS_ROOT must provide miniprogram-api-typings",
+            "TSRS_TYPINGS_ROOT must provide miniprogram-api-typings",
             required,
         );
         return None;

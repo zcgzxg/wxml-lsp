@@ -1,7 +1,7 @@
 //! WXML symbol identities, exact tokens and reference coverage.
 //!
 //! Every identity starts from the parsed syntax tree or from T's template
-//! analysis; script facts are added later through the native tsgo symbol query. The
+//! analysis; script facts are added later through the native tsrs symbol query. The
 //! module distinguishes data paths, loop locals, component properties, event
 //! handlers, tag pairs, template names and style classes so a same-named token
 //! in another context is never edited.

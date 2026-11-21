@@ -317,10 +317,7 @@ pub struct PreparedFile {
 const EDIT_EXCLUDED_DIRECTORIES: [&str; 3] = ["generated", "__generated__", "gen"];
 
 /// Maximum project WXML files returned for one semantic query.
-const MAX_VIEW_TEMPLATES: usize = 512;
-
-/// Maximum estimated bytes of project WXML text returned for one query.
-const MAX_VIEW_TEMPLATE_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const MAX_PROJECT_VIEWS: usize = 512;
 
 /// One WXML file of the project, with its effective text.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -336,7 +333,7 @@ pub struct ProjectViewTemplate {
 pub struct ProjectViewTemplates {
     /// Discovered page/component templates, sorted by path.
     pub templates: Vec<ProjectViewTemplate>,
-    /// `false` when a count/byte budget or unreadable file hid templates.
+    /// `false` when the count budget or an unreadable file hid templates.
     pub complete: bool,
     /// Short path-free reason for an incomplete list.
     pub reason: Option<&'static str>,
@@ -354,9 +351,6 @@ const MAX_STYLE_VIEW_CACHE: usize = 256;
 
 /// Maximum estimated class-reference bytes kept per project.
 const MAX_STYLE_FACT_BYTES: usize = 8 * 1024 * 1024;
-
-/// Maximum class references kept per project.
-const MAX_STYLE_FACT_CLASSES: usize = 200_000;
 
 /// Maximum project style caches retained in one host.
 const MAX_STYLE_PROJECTS: usize = 4;
@@ -843,7 +837,6 @@ struct ProjectStyleCache {
     index: StyleIndex,
     facts: BTreeMap<ProjectPath, Arc<StyleViewFacts>>,
     order: VecDeque<ProjectPath>,
-    fact_classes: usize,
     fact_bytes: usize,
 }
 
@@ -852,14 +845,12 @@ impl ProjectStyleCache {
     fn clear_facts(&mut self) {
         self.facts.clear();
         self.order.clear();
-        self.fact_classes = 0;
         self.fact_bytes = 0;
     }
 
     /// Removes one cached view and updates the budget counters.
     fn remove_fact(&mut self, view: &ProjectPath) {
         if let Some(previous) = self.facts.remove(view) {
-            self.fact_classes = self.fact_classes.saturating_sub(previous.classes.len());
             self.fact_bytes = self.fact_bytes.saturating_sub(previous.estimated_bytes());
         }
         self.order.retain(|entry| entry != view);
@@ -868,28 +859,23 @@ impl ProjectStyleCache {
     /// Inserts one view's facts within the cache budgets.
     fn insert(&mut self, view: ProjectPath, facts: Arc<StyleViewFacts>) {
         if let Some(previous) = self.facts.remove(&view) {
-            self.fact_classes = self.fact_classes.saturating_sub(previous.classes.len());
             self.fact_bytes = self.fact_bytes.saturating_sub(previous.estimated_bytes());
             self.order.retain(|entry| entry != &view);
         }
-        let classes = facts.classes.len();
         let bytes = facts.estimated_bytes();
-        if classes > MAX_STYLE_FACT_CLASSES || bytes > MAX_STYLE_FACT_BYTES {
+        if bytes > MAX_STYLE_FACT_BYTES {
             return;
         }
         while self.order.len() >= MAX_STYLE_VIEW_CACHE
-            || self.fact_classes.saturating_add(classes) > MAX_STYLE_FACT_CLASSES
             || self.fact_bytes.saturating_add(bytes) > MAX_STYLE_FACT_BYTES
         {
             let Some(evicted) = self.order.pop_front() else {
                 break;
             };
             if let Some(old) = self.facts.remove(&evicted) {
-                self.fact_classes = self.fact_classes.saturating_sub(old.classes.len());
                 self.fact_bytes = self.fact_bytes.saturating_sub(old.estimated_bytes());
             }
         }
-        self.fact_classes = self.fact_classes.saturating_add(classes);
         self.fact_bytes = self.fact_bytes.saturating_add(bytes);
         self.order.push_back(view.clone());
         self.facts.insert(view, facts);
@@ -1538,10 +1524,9 @@ impl ProjectHost for ProjectState {
                 .collect()
         };
         let mut templates = Vec::new();
-        let mut bytes = 0usize;
         let mut complete = true;
         for path in paths {
-            if templates.len() >= MAX_VIEW_TEMPLATES {
+            if templates.len() >= MAX_PROJECT_VIEWS {
                 complete = false;
                 break;
             }
@@ -1553,11 +1538,6 @@ impl ProjectHost for ProjectState {
                 complete = false;
                 continue;
             };
-            bytes = bytes.saturating_add(text.len());
-            if bytes > MAX_VIEW_TEMPLATE_BYTES {
-                complete = false;
-                break;
-            }
             templates.push(ProjectViewTemplate { file: target, text });
         }
         templates.sort_by(|left, right| left.file.cmp(&right.file));
@@ -1747,15 +1727,7 @@ impl ProjectHost for ProjectState {
             }
         }
         if policy.resources {
-            let mut resolved = 0_usize;
-            for site in crate::styles::resource_sites(
-                snapshot.text(),
-                crate::styles::MAX_WXML_RESOURCE_SITES,
-            ) {
-                if resolved >= crate::styles::MAX_RESOURCE_RESOLUTIONS {
-                    break;
-                }
-                resolved = resolved.saturating_add(1);
+            for site in crate::styles::resource_sites(snapshot.text()) {
                 if !crate::styles::looks_like_path(&site.text) {
                     continue;
                 }
@@ -3476,7 +3448,7 @@ fn static_wxs_modules(tree: &wxml_syntax::SyntaxTree) -> Arc<[String]> {
         let Some(module) = block.module.as_deref() else {
             continue;
         };
-        if !wxml_backend_tsgo::shadow::expression::is_binding_identifier(module) {
+        if !wxml_backend_tsrs::shadow::expression::is_binding_identifier(module) {
             continue;
         }
         if modules.iter().any(|existing| existing.as_str() == module) {
@@ -3924,9 +3896,7 @@ fn syntax_only_view(
 }
 
 fn push_diagnostic(diagnostics: &mut Vec<Diagnostic>, diagnostic: Diagnostic) {
-    if diagnostics.len() < 512 {
-        diagnostics.push(diagnostic);
-    }
+    diagnostics.push(diagnostic);
 }
 
 /// Returns `true` for unsupported records that must stay silent.
@@ -4968,7 +4938,7 @@ mod tests {
         }
         assert_eq!(cache.order.len(), MAX_STYLE_VIEW_CACHE);
         assert_eq!(cache.facts.len(), MAX_STYLE_VIEW_CACHE);
-        assert!(cache.fact_classes <= MAX_STYLE_FACT_CLASSES);
+        assert!(cache.fact_bytes <= MAX_STYLE_FACT_BYTES);
 
         let oversized = ProjectPath::new("pages/big/index.wxml").expect("view");
         cache.insert(
@@ -4976,11 +4946,11 @@ mod tests {
             fake_facts("pages/big/index.wxml", 200_001),
         );
         assert!(!cache.facts.contains_key(&oversized));
-        assert!(cache.fact_classes <= MAX_STYLE_FACT_CLASSES);
+        assert!(cache.fact_bytes <= MAX_STYLE_FACT_BYTES);
     }
 
     #[test]
-    fn local_resource_diagnostics_are_bounded() {
+    fn local_resource_diagnostics_cover_every_site() {
         let base = std::env::var_os("TMPDIR")
             .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
         let stamp = std::time::SystemTime::now()
@@ -5006,7 +4976,7 @@ mod tests {
             text,
         ));
         let diagnostics = host.style_diagnostics(&snapshot);
-        assert_eq!(diagnostics.len(), 2048);
+        assert_eq!(diagnostics.len(), 2_200);
         let _ = std::fs::remove_dir_all(root);
     }
 

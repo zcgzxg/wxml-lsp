@@ -24,12 +24,6 @@ use crate::status::CapabilityStatus;
 /// script symbol answer.
 pub const MAX_SYMBOL_ENTRIES: usize = 4096;
 
-/// Maximum number of path segments accepted in one data path query.
-pub const MAX_SYMBOL_PATH: usize = 16;
-
-/// Maximum UTF-8 bytes accepted for one symbol name.
-pub const MAX_SYMBOL_NAME_BYTES: usize = 256;
-
 /// Which script symbol a caller asks about.
 #[non_exhaustive]
 #[derive(Clone, Debug, Eq, PartialEq)]

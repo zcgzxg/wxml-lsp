@@ -381,7 +381,7 @@ fn attribute_items(
         .iter()
         .find(|component| component.name == tag)
         .and_then(|component| {
-            crate::backend_tsgo::event_completion::declared_event_items(
+            crate::backend_tsrs::event_completion::declared_event_items(
                 component,
                 context.prefix.as_str(),
                 replace.start(),

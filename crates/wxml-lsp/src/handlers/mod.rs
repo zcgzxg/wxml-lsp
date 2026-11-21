@@ -42,9 +42,6 @@ pub(crate) fn template_document(server: &crate::server::Server, uri: &str) -> bo
     }
 }
 
-/// Largest accepted number of edits in one `didChange`.
-const MAX_CONTENT_CHANGES: usize = 256;
-
 /// Longest backend-supplied reason shown to the client.
 const MAX_DISPLAY_REASON_CHARS: usize = 200;
 
@@ -133,9 +130,6 @@ pub(crate) fn line_index_range_value(
 /// Parses the `contentChanges` array of a `didChange` notification.
 pub(crate) fn content_changes(params: &Value) -> Option<Vec<ContentChange>> {
     let changes = params.as_object()?.get("contentChanges")?.as_array()?;
-    if changes.len() > MAX_CONTENT_CHANGES {
-        return None;
-    }
     let mut parsed = Vec::with_capacity(changes.len());
     for change in changes {
         let change = change.as_object()?;
@@ -577,12 +571,15 @@ mod tests {
         ] {
             assert_eq!(content_changes(&params), None, "params {params}");
         }
-        let too_many = json!({
-            "contentChanges": (0..=MAX_CONTENT_CHANGES)
+        let many = json!({
+            "contentChanges": (0..1_024)
                 .map(|_| json!({"text": ""}))
                 .collect::<Vec<_>>(),
         });
-        assert_eq!(content_changes(&too_many), None);
+        assert_eq!(
+            content_changes(&many).map(|changes| changes.len()),
+            Some(1_024)
+        );
     }
 
     #[test]

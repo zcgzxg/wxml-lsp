@@ -130,9 +130,6 @@ pub(crate) fn is_identifier(text: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$'))
 }
 
-/// Largest number of edits accepted in one plan.
-pub(crate) const MAX_PLAN_EDITS: usize = 4096;
-
 /// One exact replacement in an original file.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct PlannedEdit {
@@ -182,10 +179,6 @@ impl EditPlan {
             replacement: replacement.into(),
             rule,
         };
-        let total: usize = self.files.values().map(|file| file.edits.len()).sum();
-        if total >= MAX_PLAN_EDITS {
-            return Err(PlanError::Overlap);
-        }
         let entry = self.files.entry(file.clone()).or_default();
         if let Some(existing) = entry.edits.iter().find(|edit| edit.range == planned.range) {
             if existing.expected == planned.expected

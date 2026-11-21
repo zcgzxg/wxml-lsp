@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use wxml_types::Backend;
 
-use crate::backend_tsgo::{TsgoBackendAdapter, engine};
+use crate::backend_tsrs::{TsrsBackendAdapter, engine};
 use crate::project_host::{ProjectHost, ProjectState};
 
 /// A backend plus the host instance it was built from.
@@ -59,7 +59,7 @@ pub fn backend_from_install(root: &Path) -> Result<BenchBackend, String> {
     let host: Arc<dyn ProjectHost> = Arc::new(ProjectState::new());
     let executable = root.join("bin/wxml-lsp");
     let install = engine::discover_at(&executable).map_err(|error| error.to_string())?;
-    let adapter = TsgoBackendAdapter::with_install(host.clone(), &install)
+    let adapter = TsrsBackendAdapter::with_install(host.clone(), &install)
         .map_err(|error| error.to_string())?;
     Ok(BenchBackend {
         backend: Arc::new(adapter),
@@ -75,7 +75,7 @@ pub fn backend_from_install(root: &Path) -> Result<BenchBackend, String> {
 #[must_use]
 pub fn host_only_backend() -> BenchBackend {
     let host: Arc<dyn ProjectHost> = Arc::new(ProjectState::new());
-    let adapter = TsgoBackendAdapter::without_engine(host.clone());
+    let adapter = TsrsBackendAdapter::without_engine(host.clone());
     BenchBackend {
         backend: Arc::new(adapter),
         host,

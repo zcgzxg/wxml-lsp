@@ -17,8 +17,9 @@ workspace. Linux x86_64 is the only verified platform.
   OpenCode picks them up; re-move after `openspec update`). Architectural
   decisions still belong in `docs/adr/`.
 - Architecture context: `docs/adr/0001` (layering), `0006` (explicit roots),
-  `0008` (native backend), `0009` (slimming), `0010` (zero-config lazy
-  discovery), `0012` (in-process type session).
+  `0009` (slimming), `0010` (zero-config lazy discovery), `0012` (in-process
+  type session). ADR-0008 was deleted; its still-valid decisions live in
+  `0012`, and the number is not reused.
 - `tests/fixtures/README.md` documents the current layout: every sample is a
   real mini-program project read directly by crate tests. The `wxml-fixtures`
   crate and the Node `wave5_acceptance` runner are deleted; do not recreate them.
@@ -39,7 +40,7 @@ cargo deny --offline check
 The workspace MSRV is Rust 1.100 (`rust-version` in the root `Cargo.toml`);
 `rust-toolchain.toml` tracks stable with clippy/rustfmt.
 Focused checks: `cargo test -p wxml-text`, `cargo test -p wxml-syntax`, etc.;
-a single test: `cargo test -p wxml-backend-tsgo --test shadow_mapping <name>`.
+a single test: `cargo test -p wxml-backend-tsrs --test shadow_mapping <name>`.
 
 The Zed extension is **not** covered by root cargo commands; it has its own
 lockfile and `[workspace]`:
@@ -79,7 +80,7 @@ This needs the `wasm32-wasip2` target; grammar builds may need `wasi-sdk` or
 - `tsrs_api`, `tsrs_core` and `tsrs_vfs` are pinned exactly
   (`=7.1.0-beta.tsrs4`), and `miniprogram-api-typings@5.3.1` is pinned in
   `assets.lock.json` with hardcoded digests in
-  `crates/wxml-backend-tsgo/src/{config,input}.rs`. Keep pins and lockfile in
+  `crates/wxml-backend-tsrs/src/{config,input}.rs`. Keep pins and lockfile in
   sync; a mismatch fails closed before the LSP handshake. TypeScript standard
   library comes from `tsrs_vfs`; do not read `TSRS_LIB_PATH` or install
   `lib*.d.ts` into the package.
@@ -91,7 +92,7 @@ This needs the `wasm32-wasip2` target; grammar builds may need `wasi-sdk` or
 - Failure model: a single request panic fails that request; an unrecoverable
   session becomes `SessionPoisoned` and type features are unavailable while the
   rest of the LSP keeps serving. There is no timeout cancellation, no process
-  restart and no backoff. `TSGO_BIN`/`TSGO_ASSET_ROOT` are removed; do not
+  restart and no backoff. `TSRS_BIN`/`TSRS_ASSET_ROOT` are removed; do not
   reintroduce an external engine override.
 
 - The Node backend is gone. `--backend node` and `WXML_NODE`,
@@ -101,12 +102,12 @@ This needs the `wasm32-wasip2` target; grammar builds may need `wasi-sdk` or
 ## Architecture constraints
 
 - Allowed dependencies (ADR-0001): `wxml-text` <- `wxml-syntax` <-
-  `wxml-types`; `wxml-project` -> `wxml-text`; `wxml-backend-tsgo` ->
+  `wxml-types`; `wxml-project` -> `wxml-text`; `wxml-backend-tsrs` ->
   `wxml-types`; `wxml-lsp` -> all. Never add reverse dependencies, and never
   make `wxml-types` depend on `wxml-project`.
 - Keep `wxml-lsp` a protocol/adapter layer. Parsing belongs in `wxml-syntax`,
   project facts in `wxml-project`, template/type semantics in `wxml-types`, and
-  the in-process type session/shadow/query work in `wxml-backend-tsgo`.
+  the in-process type session/shadow/query work in `wxml-backend-tsrs`.
 - Use `wxml-text` for byte/UTF-16/LSP position conversion. Do not hand-roll
   offsets; Unicode and CRLF fixtures assert exact byte behavior.
 - The LSP server's stdout is JSON-RPC only. Logging and diagnostics must go
@@ -125,7 +126,7 @@ This needs the `wasm32-wasip2` target; grammar builds may need `wasi-sdk` or
 ## Tests and fixtures
 
 - A default `cargo test` is green without the type engine: real-type suites
-  skip unless `TSGO_TYPINGS_ROOT` is set. `WXML_REQUIRE_REAL_ENGINE=1` turns a
+  skip unless `TSRS_TYPINGS_ROOT` is set. `WXML_REQUIRE_REAL_ENGINE=1` turns a
   missing engine/typings gate into a hard failure; the names are legacy, the
   engine itself is in-process. Do not claim native type behavior was verified
   from a green default run.
@@ -133,7 +134,7 @@ This needs the `wasm32-wasip2` target; grammar builds may need `wasi-sdk` or
   for normal `.wxml` files and byte-exact CRLF for `*-crlf.wxml`; do not
   normalize line endings.
 - `crates/wxml-lsp/tests/` holds stdio/LSP integration tests;
-  `crates/wxml-backend-tsgo/tests/` holds native/shadow/script tests.
+  `crates/wxml-backend-tsrs/tests/` holds native/shadow/script tests.
 - Performance budgets are opt-in and timing-sensitive. Run them serially
   (`--test-threads=1`) on a quiet machine, not shared CI.
 

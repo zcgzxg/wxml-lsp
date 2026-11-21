@@ -18,9 +18,6 @@ use thiserror::Error;
 /// Maximum size of a file returned by [`read_file`].
 pub const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
-/// Maximum bytes kept from a user-supplied diagnostic string.
-pub(crate) const MAX_MESSAGE_BYTES: usize = 256;
-
 /// A canonical, project-relative path.
 ///
 /// Construction normalizes `\` to `/`, removes leading `./` segments and
@@ -628,27 +625,6 @@ pub(crate) fn path_within(root: &Path, candidate: &Path) -> bool {
     }
 }
 
-/// Truncates owned diagnostic text to `max_bytes` on a UTF-8 boundary.
-pub(crate) fn truncate_owned(mut input: String, max_bytes: usize) -> String {
-    if input.len() > max_bytes {
-        let end = truncate_message(&input, max_bytes).len();
-        input.truncate(end);
-    }
-    input
-}
-
-/// Truncates a diagnostic string to `max_bytes` on a UTF-8 boundary.
-pub(crate) fn truncate_message(input: &str, max_bytes: usize) -> &str {
-    if input.len() <= max_bytes {
-        return input;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !input.is_char_boundary(end) {
-        end -= 1;
-    }
-    &input[..end]
-}
-
 /// Converts `/C:/path` into `C:/path` on Windows.
 #[cfg(windows)]
 fn strip_windows_drive_prefix(path: &str) -> String {
@@ -1150,16 +1126,6 @@ mod tests {
                 size: MAX_FILE_BYTES + 1
             })
         );
-    }
-
-    #[test]
-    fn truncates_messages_on_utf8_boundaries() {
-        assert_eq!(truncate_message("abcdef", 3), "abc");
-        assert_eq!(truncate_message("abc", 10), "abc");
-        assert_eq!(truncate_message("中文", 4), "中");
-        assert_eq!(truncate_message("中文", 5), "中");
-        assert_eq!(truncate_message("中文", 6), "中文");
-        assert_eq!(truncate_message("中文", 0), "");
     }
 
     #[cfg(windows)]

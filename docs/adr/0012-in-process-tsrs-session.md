@@ -6,17 +6,17 @@
 
 **Deciders**: 项目维护者
 
-**局部替代**：[ADR-0008](0008-rust-tsgo-no-node-backend.md) 中「独立 tsgo 子进程、引擎发行物摘要校验、stdio JSON-RPC 传输、回调泵、进程重启与退避」部分。ADR-0008 的以下决定继续有效：Rust 侧拥有 WXML/小程序语义与源码映射；不自行实现 TypeScript 类型系统；生产路径无 Node 运行时；方法白名单、只读虚拟文件系统与保守 rename 规则。ADR-0009 的瘦身边界不变。
+**取代**：已删除的原 ADR-0008（Rust + tsgo 类型后端，移除 Node 依赖；内容并入本文，编号不复用）中「独立 tsgo 子进程、引擎发行物摘要校验、stdio JSON-RPC 传输、回调泵、进程重启与退避」部分。以下决定继续有效：Rust 侧拥有 WXML/小程序语义与源码映射；不自行实现 TypeScript 类型系统；生产路径无 Node 运行时；方法白名单、只读虚拟文件系统与保守 rename 规则。ADR-0009 的瘦身边界不变。
 
 ## Context
 
-ADR-0008 采用的是 **Rust 语义适配器 + 独立 tsgo 子进程**：安装包分发约 28 MB 的 `engine/lib/tsc` 与标准库，启动时校验可执行文件/`package.json` 的摘要、执行 `--version`、跑 `initialize` 与能力探针，运行期维护 Content-Length 帧、服务端回调泵、stdout/stderr 排空、超时和重启退避。
+此前的方案采用的是 **Rust 语义适配器 + 独立 tsgo 子进程**：安装包分发约 28 MB 的 `engine/lib/tsc` 与标准库，启动时校验可执行文件/`package.json` 的摘要、执行 `--version`、跑 `initialize` 与能力探针，运行期维护 Content-Length 帧、服务端回调泵、stdout/stderr 排空、超时和重启退避。
 
 `tsrs` 提供了与 tsgo 同协议、同 AST schema 的 `tsrs_api::Session`：查询方法、`initialize` 形状、AST protocol v9/header 64/node stride 28 与现有实现一致，并且通过 `tsrs_vfs` 内嵌 TypeScript 标准库。把 `Session` 直接嵌入语言服务器进程，可以在保留全部查询语义的同时删除整个子进程传输层和引擎资产分发。
 
 同时有三条既定约束决定了本次形态：
 
-- 生产路径仍然没有 Node 运行时，也不能把 TypeScript 包当作运行时依赖（ADR-0008）。
+- 生产路径仍然没有 Node 运行时，也不能把 TypeScript 包当作运行时依赖（无 Node 运行时是既有结论）。
 - 语言服务对用户工作区只读：业务文件不落盘，类型引擎不得读取或写入宿主文件。
 - 默认 `cargo test` 不要求真实类型引擎；真实类型行为必须由显式门禁证明，不能用默认绿代替。
 
@@ -64,7 +64,7 @@ ADR-0008 采用的是 **Rust 语义适配器 + 独立 tsgo 子进程**：安装�
 
 - workspace `rust-version` 从 `1.85` 提升到 `1.100`；`deny.toml` 随实际依赖复核重复版本族与许可证，二进制分发保留 Apache-2.0/Unicode-3.0 NOTICE。
 - 供应链从“单个 npm tarball + 摘要校验”变为“Cargo 精确 pin 的多个 crate（含 compiler/checker/project/ICU 依赖图）”：依赖身份由 `Cargo.lock` 与精确版本锁定，`cargo deny` 是强制检查，`cargo vendor` 可选。
-- 不再支持外部引擎覆盖：`TSGO_BIN`、`TSGO_ASSET_ROOT` 及子进程重启语义移除。`TSGO_TYPINGS_ROOT` 与 `WXML_REQUIRE_REAL_ENGINE=1` 名称保留，但语义改为“进程内真实类型门禁”：提供 typings 根并按需把缺失门禁升级为硬失败。
+- 不再支持外部引擎覆盖：`TSRS_BIN`、`TSRS_ASSET_ROOT` 及子进程重启语义移除。`TSRS_TYPINGS_ROOT` 与 `WXML_REQUIRE_REAL_ENGINE=1` 名称保留，但语义改为“进程内真实类型门禁”：提供 typings 根并按需把缺失门禁升级为硬失败。
 
 ## Alternatives Considered
 
@@ -95,7 +95,7 @@ ADR-0008 采用的是 **Rust 语义适配器 + 独立 tsgo 子进程**：安装�
 ### 继续用 Node/TypeScript 语言服务
 
 - **Pros**: 生态成熟，QuickInfo/Definition/Rename 等接口齐全。
-- **Cons**: 重新引入 Node 运行时与 npm 供应链，违背 ADR-0008 的删除结论。
+- **Cons**: 重新引入 Node 运行时与 npm 供应链，违背本 ADR 的无 Node 运行时结论。
 - **Why not**: 已删除的 Node 路径不恢复。
 
 ## Consequences
@@ -131,18 +131,18 @@ ADR-0008 采用的是 **Rust 语义适配器 + 独立 tsgo 子进程**：安装�
 - `cargo fmt`、`cargo clippy -D warnings`、`cargo test --workspace --all-features`、`cargo doc`、`cargo deny --offline check` 一次通过。
 - 进程内引擎单测覆盖：正常请求、版本不匹配、构造 panic、关闭幂等、`SessionPoisoned` 降级、stale snapshot/handle、unsupported 方法与内部错误映射。
 - VFS 单测覆盖：命中、缺失、路径穿越、写/追加/删除/chtimes 拒绝、目录枚举、真实 `stat`、`realpath` 不回退宿主。
-- 真实类型门禁：设置 `TSGO_TYPINGS_ROOT` 与 `WXML_REQUIRE_REAL_ENGINE=1` 时运行端到端类型用例；未设置时跳过且不得据此声称类型行为已验证。
+- 真实类型门禁：设置 `TSRS_TYPINGS_ROOT` 与 `WXML_REQUIRE_REAL_ENGINE=1` 时运行端到端类型用例；未设置时跳过且不得据此声称类型行为已验证。
 - 差分测试：类型字符串、hover 文档、JSDoc、引用、补全、诊断与 tsgo 历史结果对比，差异为零或记录为已知差异。
 - 长会话 soak：重复 open-update-close，记录 RSS、线程数和失败请求，确认没有持续增长或不可恢复的中毒状态。
 - 按文档从零安装后 `wxml-lsp --stdio` 可启动并返回类型查询，安装根只需 `bin/wxml-lsp` 与 `typings/miniprogram-api-typings`。
 
-实现与任务拆分见 `openspec/changes/replace-tsgo-with-tsrs-session/`（归档后见 `openspec/changes/archive/`）。
+实现与任务拆分见 `openspec/changes/archive/2026-11-21-replace-tsgo-with-tsrs-session/`（归档后见 `openspec/changes/archive/`）。
 
 ## References
 
 - [ADR-0001：分层语言服务与模块依赖边界](0001-layered-language-service-architecture.md)
 - [ADR-0002：模板类型检查、类型后端与源码映射](0002-template-type-checking-and-source-maps.md)
-- [ADR-0008：Rust + tsgo 类型后端与移除 Node 依赖](0008-rust-tsgo-no-node-backend.md)
+- 原 ADR-0008（Rust + tsgo 类型后端，移除 Node 依赖）：已删除，仍有效的决定并入本文，编号不复用
 - [ADR-0009：项目瘦身](0009-project-slimming.md)
-- [原生类型后端合同](../reference/tsgo-native-contract.md)
+- [原生类型后端合同](../reference/tsrs-native-contract.md)
 - [共享验收样本说明](../../tests/fixtures/README.md)

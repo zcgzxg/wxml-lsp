@@ -6,9 +6,8 @@
 //! instead of failing the whole collection.
 
 use std::collections::BTreeSet;
-use std::path::Path;
 
-use crate::files::{MAX_FILE_BYTES, ProjectPath};
+use crate::files::ProjectPath;
 use crate::{FileError, Project};
 
 /// Directory names skipped by [`Project::collect_sources`].
@@ -82,15 +81,15 @@ pub struct SourceFile {
 }
 
 /// Bounds applied to one [`Project::collect_sources`] call.
+///
+/// One file is bounded by [`crate::files::MAX_FILE_BYTES`] in the read layer; these limits
+/// bound how many files and bytes one collection retains.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SourceLimits {
     /// Maximum number of collected files.
     pub max_files: usize,
     /// Maximum total bytes across all collected file texts.
     pub max_total_bytes: usize,
-    /// Maximum size of one file. Values above the crate-wide 16 MiB read limit
-    /// are additionally clamped to that limit.
-    pub max_file_bytes: usize,
 }
 
 impl Default for SourceLimits {
@@ -98,7 +97,6 @@ impl Default for SourceLimits {
         Self {
             max_files: 2048,
             max_total_bytes: 16 * 1024 * 1024,
-            max_file_bytes: 16 * 1024 * 1024,
         }
     }
 }
@@ -114,7 +112,6 @@ impl SourceLimits {
         Self {
             max_files: 8192,
             max_total_bytes: 32 * 1024 * 1024,
-            max_file_bytes: 16 * 1024 * 1024,
         }
     }
 }
@@ -123,8 +120,8 @@ impl SourceLimits {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum SourceIssueKind {
-    /// The file exceeds [`SourceLimits::max_file_bytes`] (or the crate-wide
-    /// 16 MiB read limit) and was not collected.
+    /// The file exceeds the crate-wide [`crate::files::MAX_FILE_BYTES`] read limit and was
+    /// not collected.
     TooLarge,
     /// The file is a symlink, failed to read, or is not valid UTF-8.
     Unreadable,
@@ -324,18 +321,18 @@ impl Project {
     /// them.
     ///
     /// Overlay text always wins over disk, and overlay files that do not exist
-    /// on disk are included. Files are processed in sorted path order. When a
-    /// file, total-byte, scanned-entry or issue limit is reached, collection
-    /// stops with [`SourceSet::truncated`] and a single
-    /// [`SourceIssueKind::Truncated`] entry. Scanning is additionally bounded
-    /// by [`MAX_SCANNED_ENTRIES`] and issues by [`MAX_SOURCE_ISSUES`].
+    /// on disk are included. Files are processed in sorted path order. One
+    /// unreadable file is skipped with an issue; a file above
+    /// [`crate::files::MAX_FILE_BYTES`] fails in the read layer and is reported as
+    /// [`SourceIssueKind::TooLarge`]. When a file, total-byte, scanned-entry or
+    /// issue limit is reached, collection stops with [`SourceSet::truncated`]
+    /// and a single [`SourceIssueKind::Truncated`] entry. Scanning is
+    /// additionally bounded by [`MAX_SCANNED_ENTRIES`] and issues by
+    /// [`MAX_SOURCE_ISSUES`].
     #[must_use]
     pub fn collect_sources(&self, limits: SourceLimits) -> SourceSet {
         let mut issues = SourceIssues::new();
         let (candidates, scan_truncated) = collect_candidates(self, &mut issues);
-        let max_file_bytes = limits
-            .max_file_bytes
-            .min(usize::try_from(MAX_FILE_BYTES).unwrap_or(usize::MAX));
 
         let mut files = Vec::new();
         let mut total = 0usize;
@@ -356,19 +353,6 @@ impl Project {
                 };
                 text.to_owned()
             } else {
-                if let Some(size) = disk_size(self.root(), &path)
-                    && size > u64::try_from(max_file_bytes).unwrap_or(u64::MAX)
-                {
-                    issues.push(SourceIssue {
-                        path,
-                        kind: SourceIssueKind::TooLarge,
-                    });
-                    if issues.truncated {
-                        truncated = true;
-                        break;
-                    }
-                    continue;
-                }
                 match self.read(&path) {
                     Ok(text) => text,
                     Err(error) => {
@@ -384,17 +368,6 @@ impl Project {
                     }
                 }
             };
-            if text.len() > max_file_bytes {
-                issues.push(SourceIssue {
-                    path,
-                    kind: SourceIssueKind::TooLarge,
-                });
-                if issues.truncated {
-                    truncated = true;
-                    break;
-                }
-                continue;
-            }
             let Some(new_total) = total.checked_add(text.len()) else {
                 issues.mark_truncated(path);
                 truncated = true;
@@ -544,13 +517,6 @@ fn source_kind(path: &ProjectPath) -> Option<SourceKind> {
     }
 }
 
-/// Returns the on-disk size without reading file contents.
-fn disk_size(root: &Path, path: &ProjectPath) -> Option<u64> {
-    std::fs::metadata(root.join(path.as_str()))
-        .ok()
-        .map(|metadata| metadata.len())
-}
-
 /// Maps a read error to a source issue kind.
 const fn source_issue_kind(error: &FileError) -> SourceIssueKind {
     match error {
@@ -688,7 +654,6 @@ mod tests {
         let limits = SourceLimits::default();
         assert_eq!(limits.max_files, 2048);
         assert_eq!(limits.max_total_bytes, 16 * 1024 * 1024);
-        assert_eq!(limits.max_file_bytes, 16 * 1024 * 1024);
     }
 
     #[test]

@@ -10,10 +10,10 @@
 //! - `<wxs module>` blocks (inline and local `src`), their exports and
 //!   `require("./x.wxs")` edges.
 //!
-//! Everything is bounded: the module reads at most [`MAX_STATIC_FILES`] files,
-//! keeps imports non-transitive (matching WXML scope), and ignores URL or
-//! absolute specifiers. Dynamic template names and computed WXS exports are
-//! reported by the core analysis (`wxml_types`), never guessed here.
+//! The module reads at most [`MAX_STATIC_FILES`] files, keeps imports
+//! non-transitive (matching WXML scope), and ignores URL or absolute
+//! specifiers. Dynamic template names and computed WXS exports are reported by
+//! the core analysis (`wxml_types`), never guessed here.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
@@ -35,12 +35,6 @@ use crate::workspace::Document;
 
 /// Largest number of files read while resolving one template/WXS query.
 pub(crate) const MAX_STATIC_FILES: usize = 32;
-/// Largest number of template definitions indexed for one query.
-pub(crate) const MAX_INDEXED_TEMPLATES: usize = 512;
-/// Largest WXS source accepted for one module summary.
-const MAX_WXS_SOURCE_BYTES: usize = 1024 * 1024;
-/// Largest number of definition locations returned for one query.
-const MAX_DEFINITION_LOCATIONS: usize = 16;
 /// Largest documentation chunk copied into a hover.
 const MAX_HOVER_DOC_CHARS: usize = 512;
 /// Largest number of export rows shown in one module hover.
@@ -148,7 +142,7 @@ fn build_index(path: &str, text: &str, access: &Access<'_>) -> StaticIndex {
     let tree = parse(text).tree;
     index.semantics = analyze_template_semantics(&tree);
     for definition in &index.semantics.definitions {
-        if index.templates.len() >= MAX_INDEXED_TEMPLATES {
+        if index.templates.len() >= crate::project_host::MAX_PROJECT_VIEWS {
             index.semantics.truncated = true;
             index.semantics.issues.push(StaticIssue {
                 kind: StaticIssueKind::LimitReached,
@@ -247,11 +241,16 @@ fn collect_imports(
         let Some(resolved) = resolve_static_specifier(path, &import.src) else {
             continue;
         };
+        if !visited.contains(&resolved) && visited.len() >= MAX_STATIC_FILES {
+            index.semantics.truncated = true;
+            index.semantics.issues.push(StaticIssue {
+                kind: StaticIssueKind::LimitReached,
+                range: import.element_range,
+            });
+            return;
+        }
         if !visited.insert(resolved.clone()) {
             continue;
-        }
-        if visited.len() > MAX_STATIC_FILES {
-            break;
         }
         let Some(text) = access(&resolved) else {
             continue;
@@ -259,7 +258,7 @@ fn collect_imports(
         let imported_tree = parse(&text).tree;
         let semantics = analyze_template_semantics(&imported_tree);
         for definition in semantics.definitions {
-            if index.templates.len() >= MAX_INDEXED_TEMPLATES {
+            if index.templates.len() >= crate::project_host::MAX_PROJECT_VIEWS {
                 index.semantics.truncated = true;
                 index.semantics.issues.push(StaticIssue {
                     kind: StaticIssueKind::LimitReached,
@@ -304,9 +303,6 @@ fn load_wxs(
         let body = current_text.get(start..end)?;
         (None, body.to_owned(), range.start())
     };
-    if text.len() > MAX_WXS_SOURCE_BYTES {
-        return None;
-    }
     Some(LocatedWxs {
         module,
         path,
@@ -385,10 +381,7 @@ fn index_incomplete(index: &StaticIndex) -> bool {
             .issues
             .iter()
             .any(|issue| issue.kind == StaticIssueKind::LimitReached)
-        || index
-            .wxs
-            .iter()
-            .any(|wxs| wxs.summary.truncated || wxs.summary.dynamic.is_some())
+        || index.wxs.iter().any(|wxs| wxs.summary.dynamic.is_some())
 }
 
 /// Cheap gate: building the index reads imported files and parses WXS bodies.
@@ -551,9 +544,6 @@ fn module_hover(wxs: &LocatedWxs, path: &str, block: &WxsBlock) -> StaticHover {
     if let Some(dynamic) = &wxs.summary.dynamic {
         let _ = write!(contents, "\n\nPartial: {dynamic}");
     }
-    if wxs.summary.truncated {
-        contents.push_str("\n\nPartial: WXS summary truncated; later members were skipped.");
-    }
     let positions = wxs.path.as_ref().map_or_else(
         || {
             block.body_range.map_or_default(|body| {
@@ -604,9 +594,6 @@ fn member_markdown(
         && let Some(specifier) = &member.module_specifier
     {
         let _ = write!(contents, "\n\nRequires `{specifier}`");
-    }
-    if summary.truncated {
-        contents.push_str("\n\nPartial: WXS summary truncated; later members were skipped.");
     }
     if !member_is_exported(summary, member) {
         contents.push_str("\n\nLocal declaration; not exported from this module.");
@@ -1023,7 +1010,7 @@ fn position_in_tree(
                     path: template.path.clone(),
                     range: template.definition.name_range,
                 })
-                .take(MAX_DEFINITION_LOCATIONS)
+                .take(crate::workspace::MAX_DEFINITION_TARGETS)
                 .collect();
             return Some(positions);
         }
@@ -1042,7 +1029,7 @@ fn position_in_tree(
                                     path: template.path.clone(),
                                     range: use_.range,
                                 })
-                                .take(MAX_DEFINITION_LOCATIONS)
+                                .take(crate::workspace::MAX_DEFINITION_TARGETS)
                                 .collect::<Vec<_>>()
                         })
                         .collect::<Vec<_>>();
@@ -1565,7 +1552,10 @@ pub(crate) fn definition_value(
     let mut locations = Vec::new();
     let mut indexes: HashMap<String, Option<wxml_text::LineIndex>> = HashMap::new();
     let current = document.file().path().to_owned();
-    for position in positions.iter().take(MAX_DEFINITION_LOCATIONS) {
+    for position in positions
+        .iter()
+        .take(crate::workspace::MAX_DEFINITION_TARGETS)
+    {
         if position.path == current {
             if let Some(range) = source_range_value(document, position.range) {
                 locations.push(json!({"uri": document.uri(), "range": range}));
@@ -1644,16 +1634,6 @@ pub(crate) fn host_access(server: &Server) -> impl Fn(&str) -> Option<String> + 
     move |path: &str| {
         let path = ProjectPath::new(path).ok()?;
         let file = server.host.file_id(&path).ok()?;
-        if !path
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("wxml"))
-            && server
-                .host
-                .file_size(&file)
-                .is_some_and(|size| size > u64::try_from(MAX_WXS_SOURCE_BYTES).unwrap_or(u64::MAX))
-        {
-            return None;
-        }
         if let Some(document) = server.workspace.get_by_file(&file) {
             return Some(document.snapshot().text().to_owned());
         }
@@ -2004,8 +1984,8 @@ module.exports = { format };</wxs>
     #[test]
     fn template_budget_marks_completion_incomplete() {
         let mut wxml = String::new();
-        for index in 0..1025 {
-            let _ = write!(wxml, "<template is=\"t{index}\" />");
+        for index in 0..=crate::project_host::MAX_PROJECT_VIEWS {
+            let _ = write!(wxml, "<template name=\"t{index}\">x</template>");
         }
         wxml.push_str("<template is=\"x");
         let offset = u32::try_from(wxml.len()).expect("offset");

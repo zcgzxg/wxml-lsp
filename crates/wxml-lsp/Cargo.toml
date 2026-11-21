@@ -10,7 +10,7 @@ description = "Language server for WeChat Mini Program WXML templates"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
-wxml-backend-tsgo = { path = "../wxml-backend-tsgo" }
+wxml-backend-tsrs = { path = "../wxml-backend-tsrs" }
 wxml-project = { path = "../wxml-project" }
 wxml-syntax = { path = "../wxml-syntax" }
 wxml-text = { path = "../wxml-text" }

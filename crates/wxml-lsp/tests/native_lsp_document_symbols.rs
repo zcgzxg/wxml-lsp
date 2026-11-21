@@ -1,13 +1,13 @@
 //! Opt-in in-process-engine LSP `textDocument/documentSymbol` gate.
 //!
 //! The gate builds a disposable typings-only package from
-//! `TSGO_TYPINGS_ROOT`, starts `<package>/bin/wxml-lsp --stdio --backend
+//! `TSRS_TYPINGS_ROOT`, starts `<package>/bin/wxml-lsp --stdio --backend
 //! native`, and drives real Content-Length JSON-RPC frames. It proves the
 //! script outline is produced by the in-process type engine (not by the static
 //! WXML path) and that the static WXML outline still answers while the native
 //! backend is active.
 //!
-//! Without `TSGO_TYPINGS_ROOT` the end-to-end test prints an explicit `SKIP`
+//! Without `TSRS_TYPINGS_ROOT` the end-to-end test prints an explicit `SKIP`
 //! reason and passes; `WXML_REQUIRE_REAL_ENGINE=1|true` turns that into a panic.
 //! Only a *missing* input is skippable; a present but invalid typings input is
 //! always fatal. The fail-closed package tests do not need the typings gate.

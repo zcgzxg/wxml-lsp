@@ -13,9 +13,8 @@
 //! This module collects those facts as plain data with exact byte ranges. It
 //! never reads other files; callers resolve `src` with
 //! [`resolve_static_specifier`] (which rejects paths escaping the project) and
-//! merge definitions themselves. The analysis is bounded and tolerant of
-//! malformed input: what cannot be proven is reported as a [`StaticIssue`], not
-//! guessed.
+//! merge definitions themselves. The analysis is tolerant of malformed input:
+//! what cannot be proven is reported as a [`StaticIssue`], not guessed.
 //!
 //! The WXS *body* is summarized separately by [`crate::wxs`].
 
@@ -27,17 +26,6 @@ use wxml_syntax::{
 use wxml_text::{SourceRange, TextRange};
 
 use crate::wxs::WxsSummary;
-
-/// Maximum template definitions collected from one document.
-pub const MAX_TEMPLATE_DEFINITIONS: usize = 512;
-/// Maximum template calls collected from one document.
-pub const MAX_TEMPLATE_CALLS: usize = 1024;
-/// Maximum import/include/WXS elements collected from one document.
-pub const MAX_STATIC_MODULES: usize = 256;
-/// Maximum data keys per template instance or definition.
-pub const MAX_TEMPLATE_DATA_KEYS: usize = 256;
-/// Maximum data uses collected for one template definition.
-pub const MAX_TEMPLATE_DATA_USES_PER_TEMPLATE: usize = 256;
 
 /// Which WXML statement imported a template or markup fragment.
 #[non_exhaustive]
@@ -74,7 +62,7 @@ pub struct TemplateDefinition {
     pub data_uses: Vec<TemplateDataUse>,
     /// `true` when the body contains a construct that prevents a complete
     /// data-key summary (nested template definition, dynamic loop binding,
-    /// budget truncation).
+    /// unparseable expression).
     pub incomplete: Option<String>,
 }
 
@@ -108,7 +96,7 @@ pub struct TemplateData {
     /// Byte range of the expression inside `{{ }}`.
     pub range: SourceRange,
     /// Set when keys cannot be determined completely (non-object `data`,
-    /// spread syntax, parse recovery or budget truncation).
+    /// spread syntax, parse recovery).
     pub dynamic: Option<String>,
 }
 
@@ -176,7 +164,7 @@ pub enum StaticIssueKind {
     EmptyWxsBlock,
     /// A `<wxs>` block has both `src` and an inline body.
     AmbiguousWxsBlock,
-    /// A collection budget was reached; later facts are missing.
+    /// A caller's collection budget was reached; later facts are missing.
     LimitReached,
 }
 
@@ -224,7 +212,7 @@ pub struct TemplateSemantics {
     pub wxs: Vec<WxsBlock>,
     /// Degraded forms with exact ranges.
     pub issues: Vec<StaticIssue>,
-    /// `true` when a collection limit stopped the analysis.
+    /// `true` when a caller's collection budget stopped merging facts.
     pub truncated: bool,
 }
 
@@ -363,9 +351,7 @@ impl Engine<'_> {
     }
 
     fn issue(&mut self, kind: StaticIssueKind, range: SourceRange) {
-        if self.semantics.issues.len() < 4096 {
-            self.semantics.issues.push(StaticIssue { kind, range });
-        }
+        self.semantics.issues.push(StaticIssue { kind, range });
     }
 
     fn visit_children(&mut self, children: &[AstNode<'_>], locals: &HashSet<String>) {
@@ -457,14 +443,6 @@ impl Engine<'_> {
     }
 
     fn collect_definition(&mut self, element: Element<'_>, attribute: Attribute<'_>) {
-        if self.semantics.definitions.len() >= MAX_TEMPLATE_DEFINITIONS {
-            self.semantics.truncated = true;
-            self.issue(
-                StaticIssueKind::LimitReached,
-                as_source_range(element.text_range()),
-            );
-            return;
-        }
         let Some((value, value_range)) = static_value(attribute) else {
             self.issue(
                 StaticIssueKind::MissingTemplateName,
@@ -507,14 +485,6 @@ impl Engine<'_> {
         is_attribute: Attribute<'_>,
         attributes: &[Attribute<'_>],
     ) {
-        if self.semantics.calls.len() >= MAX_TEMPLATE_CALLS {
-            self.semantics.truncated = true;
-            self.issue(
-                StaticIssueKind::LimitReached,
-                as_source_range(element.text_range()),
-            );
-            return;
-        }
         let Some((name, name_range)) =
             static_value(is_attribute).and_then(|(value, range)| range.map(|range| (value, range)))
         else {
@@ -596,9 +566,8 @@ impl Engine<'_> {
             };
         };
         let mut keys = Vec::new();
-        let mut dynamic =
-            (entries.len() > MAX_TEMPLATE_DATA_KEYS).then(|| "too many `data` keys".to_owned());
-        for entry in entries.iter().take(MAX_TEMPLATE_DATA_KEYS) {
+        let mut dynamic = None;
+        for entry in entries {
             let Some((name, range)) = object_key(&entry.key, self.text) else {
                 dynamic.get_or_insert_with(|| "`data` has a computed key".to_owned());
                 continue;
@@ -619,7 +588,7 @@ impl Engine<'_> {
     }
 
     fn collect_body_uses(
-        &mut self,
+        &self,
         children: &[AstNode<'_>],
         locals: &HashSet<String>,
         seen: &mut HashSet<String>,
@@ -668,7 +637,7 @@ impl Engine<'_> {
     }
 
     fn push_mustache_uses(
-        &mut self,
+        &self,
         mustache: wxml_syntax::Mustache<'_>,
         locals: &HashSet<String>,
         seen: &mut HashSet<String>,
@@ -685,11 +654,6 @@ impl Engine<'_> {
             if locals.contains(&name) || is_global(&name) {
                 continue;
             }
-            if uses.len() >= MAX_TEMPLATE_DATA_USES_PER_TEMPLATE {
-                incomplete.get_or_insert_with(|| "too many data keys".to_owned());
-                self.semantics.truncated = true;
-                return;
-            }
             if seen.insert(name.clone()) {
                 uses.push(TemplateDataUse { name, range });
             }
@@ -697,14 +661,6 @@ impl Engine<'_> {
     }
 
     fn collect_import(&mut self, element: Element<'_>, kind: StaticImportKind) {
-        if self.semantics.imports.len() >= MAX_STATIC_MODULES {
-            self.semantics.truncated = true;
-            self.issue(
-                StaticIssueKind::LimitReached,
-                as_source_range(element.text_range()),
-            );
-            return;
-        }
         let Some(attribute) = element.attribute("src") else {
             self.issue(
                 StaticIssueKind::MissingImportSrc,
@@ -737,14 +693,6 @@ impl Engine<'_> {
     }
 
     fn collect_wxs(&mut self, element: Element<'_>) {
-        if self.semantics.wxs.len() >= MAX_STATIC_MODULES {
-            self.semantics.truncated = true;
-            self.issue(
-                StaticIssueKind::LimitReached,
-                as_source_range(element.text_range()),
-            );
-            return;
-        }
         let module_attribute = element.attribute("module");
         let module = module_attribute.and_then(static_value);
         let src_attribute = element.attribute("src");
@@ -973,7 +921,6 @@ fn find_tag_end(text: &str) -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fmt::Write as _;
     use wxml_syntax::parse;
 
     fn analyze(source: &str) -> (TemplateSemantics, SyntaxTree) {
@@ -1072,19 +1019,6 @@ module.exports = { format };
                 "{specifier:?}"
             );
         }
-    }
-
-    #[test]
-    fn per_template_data_use_budget_marks_the_result_incomplete() {
-        let mut source = "<template name=\"t\">".to_owned();
-        for index in 0..300 {
-            let _ = write!(source, "{{{{v{index}}}}}");
-        }
-        source.push_str("</template>");
-        let (semantics, _) = analyze(&source);
-        assert!(semantics.truncated);
-        assert!(semantics.definitions[0].incomplete.is_some());
-        assert!(semantics.definitions[0].data_uses.len() <= 256);
     }
 
     #[test]

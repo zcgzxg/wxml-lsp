@@ -27,37 +27,7 @@ use std::collections::BTreeMap;
 use crate::files::ProjectPath;
 use crate::sources::{SourceFile, SourceKind, SourceSet};
 
-/// Maximum number of WXML tags kept from one declaration set.
-///
-/// When more tags are declared, the first [`MAX_TYPING_COMPONENTS`] names in
-/// tag order survive and one issue records the truncation.
-pub const MAX_TYPING_COMPONENTS: usize = 512;
-
-/// Maximum number of members kept for one component segment.
-///
-/// Applies separately to `props` and `events` of each component, after the
-/// members are ordered by name.
-pub const MAX_TYPING_MEMBERS: usize = 1024;
-
-/// Maximum issues recorded for one declaration set.
-///
-/// The last slot becomes an issue-limit marker, so a pathological declaration
-/// file cannot grow the fact object without bound.
-const MAX_TYPING_ISSUES: usize = 64;
-
-/// Maximum characters kept from one type expression.
-///
-/// Longer expressions stay usable for display in truncated form, but the
-/// member is marked unproven instead of being silently cut.
-const MAX_TYPE_TEXT_CHARS: usize = 512;
-
-/// Maximum characters kept from one member's `JSDoc` description.
-///
-/// Documentation is display-only, so a long description is truncated instead of
-/// degrading the member.
-const MAX_DOCUMENTATION_CHARS: usize = 512;
-
-/// Maximum nesting accepted while scanning a declaration file.
+/// Maximum nested declaration scopes followed by the scanner.
 const MAX_SCAN_DEPTH: usize = 256;
 
 /// Maximum local declarations chained before a type reference is rejected.
@@ -349,12 +319,6 @@ pub enum TypingIssueKind {
     UnresolvedComponent,
     /// A map or component declaration is outside the supported subset.
     IncompleteDeclaration,
-    /// [`MAX_TYPING_COMPONENTS`] dropped further tags.
-    ComponentLimit,
-    /// [`MAX_TYPING_MEMBERS`] dropped further members.
-    MemberLimit,
-    /// The issue cap dropped further issues.
-    IssueLimit,
 }
 
 impl TypingIssueKind {
@@ -366,9 +330,6 @@ impl TypingIssueKind {
             Self::DuplicateTag => "duplicate-tag",
             Self::UnresolvedComponent => "unresolved-component",
             Self::IncompleteDeclaration => "incomplete-declaration",
-            Self::ComponentLimit => "component-limit",
-            Self::MemberLimit => "member-limit",
-            Self::IssueLimit => "issue-limit",
         }
     }
 }
@@ -426,9 +387,10 @@ pub fn parse_component_typing_facts(sources: &SourceSet) -> ComponentTypingFacts
     ordered.sort_by(|left, right| left.path.cmp(&right.path));
     facts.sources = ordered.iter().map(|file| file.path.clone()).collect();
 
-    let mut issues = IssueLog::new();
+    let mut issues = Vec::new();
     if sources.truncated && !facts.sources.is_empty() {
-        issues.push(
+        push_issue(
+            &mut issues,
             TypingIssueKind::TruncatedSources,
             None,
             "source collection was truncated; some declaration files were not read".to_owned(),
@@ -452,21 +414,11 @@ pub fn parse_component_typing_facts(sources: &SourceSet) -> ComponentTypingFacts
     }
 
     components.sort_by(|left, right| left.0.cmp(&right.0));
-    if components.len() > MAX_TYPING_COMPONENTS {
-        components.truncate(MAX_TYPING_COMPONENTS);
-        issues.push(
-            TypingIssueKind::ComponentLimit,
-            None,
-            format!(
-                "component limit ({MAX_TYPING_COMPONENTS}) reached; remaining tags were dropped"
-            ),
-        );
-    }
 
     facts.complete =
         components.iter().all(|(_, component)| component.complete) && issues.is_empty();
     facts.components = components.into_iter().collect();
-    facts.issues = issues.into_vec();
+    facts.issues = issues;
     facts
 }
 
@@ -477,10 +429,11 @@ fn collect_map_components(
     declarations: &FileDeclarations,
     declared: &mut BTreeMap<String, ProjectPath>,
     components: &mut Vec<(String, TypingComponent)>,
-    issues: &mut IssueLog,
+    issues: &mut Vec<TypingIssue>,
 ) {
     if map.unsupported {
-        issues.push(
+        push_issue(
+            issues,
             TypingIssueKind::IncompleteDeclaration,
             Some(&file.path),
             format!(
@@ -490,7 +443,8 @@ fn collect_map_components(
         );
     }
     let Some(members) = resolve_object_members(declarations, &map.text, 0) else {
-        issues.push(
+        push_issue(
+            issues,
             TypingIssueKind::IncompleteDeclaration,
             Some(&file.path),
             format!(
@@ -505,7 +459,8 @@ fn collect_map_components(
             continue;
         }
         if let Some(first) = declared.get(&member.name) {
-            issues.push(
+            push_issue(
+                issues,
                 TypingIssueKind::DuplicateTag,
                 Some(&file.path),
                 format!(
@@ -534,7 +489,7 @@ fn build_component(
     target_text: &str,
     declarations: &FileDeclarations,
     source: &ProjectPath,
-    issues: &mut IssueLog,
+    issues: &mut Vec<TypingIssue>,
 ) -> TypingComponent {
     let mut component = TypingComponent {
         props: Vec::new(),
@@ -620,7 +575,7 @@ fn build_component(
             _ => {}
         }
     }
-    finalize_members(&mut component, tag, source, issues);
+    finalize_members(&mut component);
     component
 }
 
@@ -628,68 +583,52 @@ fn build_component(
 fn incomplete_component(
     mut component: TypingComponent,
     kind: TypingIssueKind,
-    issues: &mut IssueLog,
+    issues: &mut Vec<TypingIssue>,
     tag: &str,
     source: &ProjectPath,
     reason: &str,
 ) -> TypingComponent {
     component.complete = false;
-    issues.push(kind, Some(source), format!("component '{tag}' {reason}"));
+    push_issue(
+        issues,
+        kind,
+        Some(source),
+        format!("component '{tag}' {reason}"),
+    );
     component
 }
 
 /// Marks one component incomplete with a segment-level reason.
 fn mark_incomplete(
     component: &mut TypingComponent,
-    issues: &mut IssueLog,
+    issues: &mut Vec<TypingIssue>,
     tag: &str,
     source: &ProjectPath,
     reason: &str,
 ) {
     component.complete = false;
-    issues.push(
+    push_issue(
+        issues,
         TypingIssueKind::IncompleteDeclaration,
         Some(source),
         format!("component '{tag}' {reason}"),
     );
 }
 
-/// Sorts component members by name and applies the member budget.
-fn finalize_members(
-    component: &mut TypingComponent,
-    tag: &str,
-    source: &ProjectPath,
-    issues: &mut IssueLog,
-) {
+/// Sorts component members by name and drops duplicate names.
+fn finalize_members(component: &mut TypingComponent) {
     component
         .props
         .sort_by(|left, right| left.name.cmp(&right.name));
     component
         .props
         .dedup_by(|left, right| left.name == right.name);
-    if component.props.len() > MAX_TYPING_MEMBERS {
-        component.props.truncate(MAX_TYPING_MEMBERS);
-        push_member_limit(issues, tag, source);
-    }
     component
         .events
         .sort_by(|left, right| left.name.cmp(&right.name));
     component
         .events
         .dedup_by(|left, right| left.name == right.name);
-    if component.events.len() > MAX_TYPING_MEMBERS {
-        component.events.truncate(MAX_TYPING_MEMBERS);
-        push_member_limit(issues, tag, source);
-    }
-}
-
-/// Records the member-truncation issue for one component.
-fn push_member_limit(issues: &mut IssueLog, tag: &str, source: &ProjectPath) {
-    issues.push(
-        TypingIssueKind::MemberLimit,
-        Some(source),
-        format!("member limit ({MAX_TYPING_MEMBERS}) reached for tag '{tag}'; remaining members were dropped"),
-    );
 }
 
 /// Builds attribute declarations from one parsed object type.
@@ -698,18 +637,13 @@ fn build_properties(members: Vec<RawMember>) -> Vec<TypingProperty> {
         .into_iter()
         .filter(|member| !member.name.is_empty())
         .map(|member| {
-            let (type_text, bounded) = bounded_type_text(&member.type_text);
-            let mut ty = TypeText::parse(&type_text);
-            let proven = bounded && ty.is_proven();
-            if !bounded {
-                ty = TypeText::Unproven;
-            }
+            let ty = TypeText::parse(&member.type_text);
             TypingProperty {
                 name: member.name,
                 documentation: member.documentation,
-                type_text,
+                type_text: member.type_text,
                 optional: member.optional,
-                proven,
+                proven: ty.is_proven(),
                 ty,
             }
         })
@@ -727,9 +661,8 @@ fn build_events(members: Vec<RawMember>, declarations: &FileDeclarations) -> Vec
                 EventDetail::None => (None, None, true),
                 EventDetail::Unproven => (None, None, false),
                 EventDetail::Text(text) => {
-                    let (text, bounded) = bounded_type_text(&text);
                     let detail = TypeText::parse(&text);
-                    let proven = bounded && detail.is_proven();
+                    let proven = detail.is_proven();
                     (Some(text), Some(detail), proven)
                 }
             };
@@ -773,16 +706,6 @@ fn event_detail(declarations: &FileDeclarations, text: &str) -> EventDetail {
                 |member| EventDetail::Text(member.type_text),
             )
     })
-}
-
-/// Keeps a type expression within [`MAX_TYPE_TEXT_CHARS`].
-///
-/// Returns the retained text and whether it is the complete original.
-fn bounded_type_text(text: &str) -> (String, bool) {
-    if text.chars().count() <= MAX_TYPE_TEXT_CHARS {
-        return (text.to_owned(), true);
-    }
-    (text.chars().take(MAX_TYPE_TEXT_CHARS).collect(), false)
 }
 
 /// One object member read from a type literal.
@@ -972,9 +895,8 @@ fn block_comment_end(bytes: &[u8], open: usize, limit: usize) -> usize {
 
 /// Folds one `JSDoc` body into a single trimmed line.
 ///
-/// Strips the leading whitespace and `*` of every line, collapses whitespace,
-/// returns `None` for an empty body and caps the result at
-/// [`MAX_DOCUMENTATION_CHARS`] characters.
+/// Strips the leading whitespace and `*` of every line, collapses whitespace
+/// and returns `None` for an empty body.
 fn normalize_jsdoc(body: &str) -> Option<String> {
     let mut folded = String::new();
     for line in body.lines() {
@@ -989,14 +911,7 @@ fn normalize_jsdoc(body: &str) -> Option<String> {
     if normalized.is_empty() {
         return None;
     }
-    if normalized.chars().count() <= MAX_DOCUMENTATION_CHARS {
-        return Some(normalized);
-    }
-    let truncated = normalized
-        .chars()
-        .take(MAX_DOCUMENTATION_CHARS)
-        .collect::<String>();
-    Some(truncated.trim_end().to_owned())
+    Some(normalized)
 }
 
 /// Reads one member name, keeping quoted names verbatim.
@@ -1294,55 +1209,18 @@ fn scan_alias(
     next
 }
 
-/// Accumulates issues with a hard cap.
-struct IssueLog {
-    /// Collected issues.
-    items: Vec<TypingIssue>,
-    /// Whether the cap replaced further issues with one marker.
-    capped: bool,
-}
-
-impl IssueLog {
-    /// Creates an empty log.
-    const fn new() -> Self {
-        Self {
-            items: Vec::new(),
-            capped: false,
-        }
-    }
-
-    /// Records one issue, keeping the last slot for a cap marker.
-    fn push(&mut self, kind: TypingIssueKind, source: Option<&ProjectPath>, message: String) {
-        if self.capped {
-            return;
-        }
-        if self.items.len() >= MAX_TYPING_ISSUES.saturating_sub(1) {
-            self.items.push(TypingIssue {
-                kind: TypingIssueKind::IssueLimit,
-                source: source.cloned(),
-                message: format!(
-                    "issue limit ({MAX_TYPING_ISSUES}) reached; remaining issues were dropped"
-                ),
-            });
-            self.capped = true;
-            return;
-        }
-        self.items.push(TypingIssue {
-            kind,
-            source: source.cloned(),
-            message,
-        });
-    }
-
-    /// Returns whether no issue was recorded.
-    const fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-
-    /// Consumes the log.
-    fn into_vec(self) -> Vec<TypingIssue> {
-        self.items
-    }
+/// Records one declaration issue.
+fn push_issue(
+    issues: &mut Vec<TypingIssue>,
+    kind: TypingIssueKind,
+    source: Option<&ProjectPath>,
+    message: String,
+) {
+    issues.push(TypingIssue {
+        kind,
+        source: source.cloned(),
+        message,
+    });
 }
 
 /// Recursive-descent parser for the supported type subset.
@@ -1766,12 +1644,7 @@ fn find_matching(bytes: &[u8], open: usize, limit: usize) -> Option<usize> {
             continue;
         }
         match bytes[index] {
-            byte @ (b'{' | b'[' | b'(') => {
-                if pending.len() >= MAX_SCAN_DEPTH {
-                    return None;
-                }
-                pending.push(matching_close(byte)?);
-            }
+            byte @ (b'{' | b'[' | b'(') => pending.push(matching_close(byte)?),
             b'}' | b']' | b')' => {
                 if pending.last() != Some(&bytes[index]) {
                     return None;
@@ -2386,7 +2259,7 @@ mod tests {
     }
 
     #[test]
-    fn truncates_components_by_tag_order() {
+    fn keeps_every_declared_tag() {
         use std::fmt::Write as _;
 
         let mut text = String::from("interface WxmlComponentMap {\n");
@@ -2398,24 +2271,15 @@ mod tests {
             writeln!(text, "interface C{index} {{ props: {{ a: string }} }}").expect("write type");
         }
         let facts = facts(&[("types/many.d.ts", text.as_str())]);
-        assert_eq!(facts.components.len(), MAX_TYPING_COMPONENTS);
+        assert_eq!(facts.components.len(), 600);
         assert!(facts.component("tag-000").is_some());
-        assert!(facts.component("tag-511").is_some());
-        assert!(facts.component("tag-512").is_none());
-        assert!(!facts.complete);
-        let issue = facts
-            .issues
-            .iter()
-            .find(|issue| issue.kind == TypingIssueKind::ComponentLimit)
-            .expect("component limit issue");
-        assert_eq!(
-            issue.message,
-            "component limit (512) reached; remaining tags were dropped"
-        );
+        assert!(facts.component("tag-599").is_some());
+        assert!(facts.complete);
+        assert_eq!(facts.issues, Vec::new());
     }
 
     #[test]
-    fn truncates_members_by_name_order() {
+    fn keeps_every_component_member() {
         use std::fmt::Write as _;
 
         let mut text = String::from(
@@ -2426,17 +2290,12 @@ mod tests {
         }
         text.push_str("  };\n}\n");
         let facts = facts(&[("types/wide.d.ts", text.as_str())]);
-        assert!(facts.issues.iter().any(|issue| {
-            issue.kind == TypingIssueKind::MemberLimit
-                && issue.message
-                    == "member limit (1024) reached for tag 'wide-box'; remaining members were dropped"
-        }));
+        assert_eq!(facts.issues, Vec::new());
         let component = facts.component("wide-box").expect("component");
-        assert_eq!(component.props.len(), MAX_TYPING_MEMBERS);
+        assert_eq!(component.props.len(), 1100);
         assert!(component.prop("p0000").is_some());
-        assert!(component.prop("p1023").is_some());
-        assert!(component.prop("p1024").is_none());
-        assert!(!facts.complete);
+        assert!(component.prop("p1099").is_some());
+        assert!(facts.complete);
     }
 
     #[test]
@@ -2636,7 +2495,7 @@ mod tests {
     }
 
     #[test]
-    fn long_jsdoc_is_truncated_to_the_character_budget() {
+    fn long_jsdoc_is_kept_whole() {
         let long = "文".repeat(600);
         let component = component_facts(&format!(" /** {long} */ kind: string;"), "");
         let documentation = component
@@ -2645,7 +2504,7 @@ mod tests {
             .documentation
             .clone()
             .expect("documentation");
-        assert_eq!(documentation.chars().count(), MAX_DOCUMENTATION_CHARS);
+        assert_eq!(documentation.chars().count(), 600);
         assert!(documentation.chars().all(|character| character == '文'));
     }
 

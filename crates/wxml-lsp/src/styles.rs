@@ -7,29 +7,11 @@
 use std::collections::BTreeSet;
 use std::ops::Range;
 
+use wxml_project::styles::MAX_CLASS_NAME_BYTES;
 use wxml_syntax::AttributeValue;
 use wxml_text::TextRange;
 
 use crate::completion::context::{Context as Detected, Site};
-
-/// Maximum resource attribute sites inspected for one document.
-pub(crate) const MAX_WXML_RESOURCE_SITES: usize = 4096;
-
-/// Maximum class attribute sites inspected for one document.
-pub(crate) const MAX_WXML_CLASS_SITES: usize = 4096;
-
-/// Class names longer than the style index limit are ignored.
-const MAX_CLASS_NAME_BYTES: usize = 128;
-
-/// Maximum static runs or class tokens inspected for one value.
-const MAX_STATIC_RUNS: usize = 4096;
-const MAX_CLASS_TOKENS_PER_RUN: usize = 4096;
-
-/// Maximum resource host resolutions performed for one request.
-pub(crate) const MAX_RESOURCE_RESOLUTIONS: usize = 2048;
-
-/// Maximum resource value bytes inspected for one attribute.
-const MAX_RESOURCE_VALUE_BYTES: usize = 1024;
 
 /// Resource kind for tag/attribute-driven path handling.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -232,13 +214,8 @@ fn class_token_at(text: &str, range: TextRange, offset: u32) -> Option<(TextRang
 /// treated as a class.
 pub(crate) fn class_site_at(text: &str, offset: u32) -> Option<ClassSite> {
     let parsed = wxml_syntax::parse(text);
-    let mut inspected = 0_usize;
     for element in parsed.tree.document().elements() {
         for attribute in element.attributes() {
-            inspected = inspected.saturating_add(1);
-            if inspected > MAX_WXML_CLASS_SITES {
-                return None;
-            }
             if attribute.name() != Some("class") {
                 continue;
             }
@@ -337,22 +314,14 @@ pub(crate) fn class_completion_site(
     .ok()?;
     let prefix = text.get(token_start..cursor)?.to_owned();
     let mut existing = BTreeSet::new();
-    let mut inspected_tokens = 0_usize;
     for run in &runs {
-        for (start, end) in class_tokens_in_run(text, run, MAX_CLASS_TOKENS_PER_RUN) {
-            inspected_tokens = inspected_tokens.saturating_add(1);
-            if inspected_tokens > MAX_WXML_CLASS_SITES {
-                break;
-            }
+        for (start, end) in class_tokens_in_run(text, run) {
             if start == token_start && end == token_end {
                 continue;
             }
             if let Some(name) = text.get(start..end) {
                 existing.insert(name.to_owned());
             }
-        }
-        if inspected_tokens > MAX_WXML_CLASS_SITES {
-            break;
         }
     }
     Some(ClassCompletionSite {
@@ -365,11 +334,11 @@ pub(crate) fn class_completion_site(
 }
 
 /// Splits one static value run into whitespace-separated class tokens.
-fn class_tokens_in_run(text: &str, run: &Range<usize>, limit: usize) -> Vec<(usize, usize)> {
+fn class_tokens_in_run(text: &str, run: &Range<usize>) -> Vec<(usize, usize)> {
     let bytes = text.as_bytes();
     let mut tokens = Vec::new();
     let mut index = run.start;
-    while index < run.end && tokens.len() < limit {
+    while index < run.end {
         while index < run.end && bytes[index].is_ascii_whitespace() {
             index += 1;
         }
@@ -395,7 +364,7 @@ fn static_runs(text: &str, start: usize, end: usize) -> Vec<Range<usize>> {
     let mut index = start;
     while index < end {
         if bytes.get(index) == Some(&b'{') && bytes.get(index + 1) == Some(&b'{') {
-            if run_start < index && runs.len() < MAX_STATIC_RUNS {
+            if run_start < index {
                 runs.push(run_start..index);
             }
             let Some(close) = text
@@ -411,7 +380,7 @@ fn static_runs(text: &str, start: usize, end: usize) -> Vec<Range<usize>> {
         }
         index += 1;
     }
-    if run_start < end && runs.len() < MAX_STATIC_RUNS {
+    if run_start < end {
         runs.push(run_start..end);
     }
     runs
@@ -495,20 +464,15 @@ pub(crate) fn looks_like_path(value: &str) -> bool {
         || value.contains('\\')
 }
 
-/// Returns every literal resource value in a document, bounded by `limit`.
-pub(crate) fn resource_sites(text: &str, limit: usize) -> Vec<ResourceSite> {
+/// Returns every literal resource value in a document.
+pub(crate) fn resource_sites(text: &str) -> Vec<ResourceSite> {
     let parsed = wxml_syntax::parse(text);
     let mut sites = Vec::new();
-    let mut inspected = 0_usize;
     for element in parsed.tree.document().elements() {
         let Some(tag) = element.name() else {
             continue;
         };
         for attribute in element.attributes() {
-            inspected = inspected.saturating_add(1);
-            if inspected > limit {
-                return sites;
-            }
             let Some(name) = attribute.name() else {
                 continue;
             };
@@ -527,9 +491,6 @@ pub(crate) fn resource_sites(text: &str, limit: usize) -> Vec<ResourceSite> {
             let Some((range, trimmed)) = trimmed_value(text, inner) else {
                 continue;
             };
-            if trimmed.len() > MAX_RESOURCE_VALUE_BYTES {
-                continue;
-            }
             sites.push(ResourceSite {
                 tag: tag.to_owned(),
                 attribute: name.to_owned(),
@@ -545,16 +506,11 @@ pub(crate) fn resource_sites(text: &str, limit: usize) -> Vec<ResourceSite> {
 /// Finds the literal resource value at `offset`.
 pub(crate) fn resource_site_at(text: &str, offset: u32) -> Option<ResourceSite> {
     let parsed = wxml_syntax::parse(text);
-    let mut inspected = 0_usize;
     for element in parsed.tree.document().elements() {
         let Some(tag) = element.name() else {
             continue;
         };
         for attribute in element.attributes() {
-            inspected = inspected.saturating_add(1);
-            if inspected > MAX_WXML_RESOURCE_SITES {
-                return None;
-            }
             let Some(name) = attribute.name() else {
                 continue;
             };
@@ -573,9 +529,6 @@ pub(crate) fn resource_site_at(text: &str, offset: u32) -> Option<ResourceSite> 
             let Some((range, trimmed)) = trimmed_value(text, inner) else {
                 continue;
             };
-            if trimmed.len() > MAX_RESOURCE_VALUE_BYTES {
-                continue;
-            }
             if offset >= range.start() && offset <= range.end() {
                 return Some(ResourceSite {
                     tag: tag.to_owned(),
@@ -594,16 +547,8 @@ pub(crate) fn resource_site_at(text: &str, offset: u32) -> Option<ResourceSite> 
 /// reference in a class attribute.
 pub(crate) fn has_external_class_reference(text: &str) -> bool {
     let parsed = wxml_syntax::parse(text);
-    let mut inspected = 0_usize;
     for element in parsed.tree.document().elements() {
         for attribute in element.attributes() {
-            inspected = inspected.saturating_add(1);
-            if inspected > MAX_WXML_CLASS_SITES {
-                // The scan is truncated, so an external reference may exist
-                // beyond the cap. Report the possibility rather than claiming
-                // completeness.
-                return true;
-            }
             if attribute.name() != Some("class") {
                 continue;
             }
@@ -616,7 +561,7 @@ pub(crate) fn has_external_class_reference(text: &str) -> bool {
             let start = usize::try_from(inner.start()).unwrap_or(0);
             let end = usize::try_from(inner.end()).unwrap_or(0);
             for run in static_runs(text, start, end) {
-                if class_tokens_in_run(text, &run, MAX_CLASS_TOKENS_PER_RUN)
+                if class_tokens_in_run(text, &run)
                     .into_iter()
                     .any(|(start, end)| text.get(start..end).is_some_and(is_external_class))
                 {
@@ -632,14 +577,8 @@ pub(crate) fn has_external_class_reference(text: &str) -> bool {
 pub(crate) fn class_tokens(text: &str) -> Vec<ClassSite> {
     let parsed = wxml_syntax::parse(text);
     let mut tokens = Vec::new();
-    let mut inspected = 0_usize;
-    let mut token_budget = MAX_WXML_CLASS_SITES;
     for element in parsed.tree.document().elements() {
         for attribute in element.attributes() {
-            inspected = inspected.saturating_add(1);
-            if inspected > MAX_WXML_CLASS_SITES {
-                return tokens;
-            }
             if attribute.name() != Some("class") {
                 continue;
             }
@@ -652,10 +591,7 @@ pub(crate) fn class_tokens(text: &str) -> Vec<ClassSite> {
             let start = usize::try_from(inner.start()).unwrap_or(0);
             let end = usize::try_from(inner.end()).unwrap_or(0);
             for run in static_runs(text, start, end) {
-                if token_budget == 0 {
-                    return tokens;
-                }
-                for (token_start, token_end) in class_tokens_in_run(text, &run, token_budget) {
+                for (token_start, token_end) in class_tokens_in_run(text, &run) {
                     let (Ok(start), Ok(end)) =
                         (u32::try_from(token_start), u32::try_from(token_end))
                     else {
@@ -672,7 +608,6 @@ pub(crate) fn class_tokens(text: &str) -> Vec<ClassSite> {
                             token,
                             name: name.to_owned(),
                         });
-                        token_budget = token_budget.saturating_sub(1);
                     }
                 }
             }
@@ -792,7 +727,7 @@ mod tests {
     #[test]
     fn resource_sites_are_literal_and_trimmed() {
         let text = "<image src=\" images/logo.png \" /><video poster='p.png' src='v.mp4'/><view background=\"bg.png\"/><navigator url=\"a\"/><my-card src=\"c.png\"/>";
-        let sites = resource_sites(text, MAX_WXML_RESOURCE_SITES);
+        let sites = resource_sites(text);
         assert_eq!(sites.len(), 3);
         assert_eq!(sites[0].text, "images/logo.png");
         assert_eq!(
@@ -809,9 +744,9 @@ mod tests {
     }
 
     #[test]
-    fn resource_sites_and_class_tokens_are_bounded() {
+    fn resource_sites_and_class_tokens_cover_every_occurrence() {
         let text = "<image src=\"a.png\"/>".repeat(100);
-        assert_eq!(resource_sites(&text, 10).len(), 10);
+        assert_eq!(resource_sites(&text).len(), 100);
         let text = "<view class=\"a b c\"/>".repeat(100);
         assert_eq!(class_tokens(&text).len(), 300);
     }
@@ -879,7 +814,7 @@ mod tests {
     #[test]
     fn dynamic_resource_values_are_not_sites() {
         let text = "<image src=\"{{url}}\"/><image src=\"a/{{name}}.png\"/>";
-        assert_eq!(resource_sites(text, MAX_WXML_RESOURCE_SITES), Vec::new());
+        assert_eq!(resource_sites(text), Vec::new());
     }
 
     #[test]
@@ -921,6 +856,6 @@ mod tests {
     #[test]
     fn comments_and_other_attributes_are_not_resource_sites() {
         let text = "<view class=\"a.png\" title=\"b.png\"><!-- <image src=\"c.png\"/> --></view>";
-        assert_eq!(resource_sites(text, MAX_WXML_RESOURCE_SITES), Vec::new());
+        assert_eq!(resource_sites(text), Vec::new());
     }
 }

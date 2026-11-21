@@ -55,23 +55,11 @@ use crate::project_host::DocumentRoute;
 use crate::scheduler::{DocumentSymbolsScope, Job, JobKind, Outcome, SubmitError, WorkDone};
 use crate::server::{Server, log};
 
-/// Largest number of folding ranges returned for one document.
-pub(crate) const MAX_FOLDING_RANGES: usize = 2_000;
-
 /// Largest number of positions accepted by one `selectionRange` request.
 ///
 /// Multi-cursor selection requests commonly exceed a handful of positions;
 /// 256 covers realistic editor use while keeping the one-parse request bounded.
 pub(crate) const MAX_SELECTION_POSITIONS: usize = 256;
-
-/// Largest ancestor chain returned for one selection position.
-pub(crate) const MAX_SELECTION_DEPTH: usize = 32;
-
-/// Largest number of document symbols returned for one document.
-pub(crate) const MAX_DOCUMENT_SYMBOLS: usize = 2_000;
-
-/// Largest element nesting depth represented in document symbols.
-pub(crate) const MAX_DOCUMENT_SYMBOL_DEPTH: usize = 32;
 
 /// One folding range in zero-based lines.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -183,7 +171,7 @@ fn add_fold(
     range: TextRange,
     kind: &'static str,
 ) {
-    if range.is_empty() || folds.len() >= MAX_FOLDING_RANGES {
+    if range.is_empty() {
         return;
     }
     let Ok(start) = usize::try_from(range.start()) else {
@@ -242,9 +230,6 @@ fn folding_ranges_in(tree: &SyntaxTree, line_index: &LineIndex) -> Vec<Fold> {
             }
             _ => {}
         }
-        if folds.len() >= MAX_FOLDING_RANGES {
-            break;
-        }
     }
     folds.sort_by(|left, right| {
         left.start_line
@@ -254,7 +239,6 @@ fn folding_ranges_in(tree: &SyntaxTree, line_index: &LineIndex) -> Vec<Fold> {
     folds.dedup_by(|left, right| {
         left.start_line == right.start_line && left.end_line == right.end_line
     });
-    folds.truncate(MAX_FOLDING_RANGES);
     folds
 }
 
@@ -407,9 +391,6 @@ fn selection_chain_in(tree: &SyntaxTree, offset: u32) -> Vec<TextRange> {
                 range != *inner && range.start() <= inner.start() && range.end() >= inner.end()
             });
             if keep {
-                if chain.len() >= MAX_SELECTION_DEPTH {
-                    break;
-                }
                 chain.push(range);
             }
         }
@@ -423,7 +404,7 @@ fn selection_chain_in(tree: &SyntaxTree, offset: u32) -> Vec<TextRange> {
 
 /// Document-symbol implementation over an already parsed tree.
 fn document_symbols_in(tree: &SyntaxTree) -> Vec<DocumentSymbol> {
-    let mut budget = MAX_DOCUMENT_SYMBOLS;
+    let mut budget = wxml_types::MAX_DOCUMENT_SYMBOLS;
     let mut truncated = false;
     let mut symbols = Vec::new();
     for node in tree.document().children() {
@@ -440,7 +421,9 @@ fn document_symbols_in(tree: &SyntaxTree) -> Vec<DocumentSymbol> {
     }
     if truncated {
         log(format_args!(
-            "document symbols truncated at {MAX_DOCUMENT_SYMBOLS} symbols or {MAX_DOCUMENT_SYMBOL_DEPTH} levels"
+            "document symbols truncated at {} symbols or {} levels",
+            wxml_types::MAX_DOCUMENT_SYMBOLS,
+            wxml_types::MAX_DOCUMENT_SYMBOL_DEPTH
         ));
     }
     symbols
@@ -469,7 +452,7 @@ fn element_symbol(
     *budget = budget.saturating_sub(1);
     let detail = element_detail(element);
     let mut children = Vec::new();
-    if depth < MAX_DOCUMENT_SYMBOL_DEPTH {
+    if depth < wxml_types::MAX_DOCUMENT_SYMBOL_DEPTH {
         for node in element.children() {
             let wxml_syntax::AstNode::Element(child) = node else {
                 continue;
@@ -611,7 +594,7 @@ fn flatten_symbol(
     container: Option<&str>,
     output: &mut Vec<Value>,
 ) -> bool {
-    if output.len() >= MAX_DOCUMENT_SYMBOLS {
+    if output.len() >= wxml_types::MAX_DOCUMENT_SYMBOLS {
         return false;
     }
     let Some(range) = crate::handlers::source_range_value(document, SourceRange::new(symbol.range))
@@ -1529,7 +1512,7 @@ mod tests {
     }
 
     #[test]
-    fn folding_is_bounded_and_sorted() {
+    fn folding_is_sorted() {
         let text = format!(
             "{}\n{}",
             (0..40)
@@ -1540,7 +1523,6 @@ mod tests {
         );
         let line_index = LineIndex::new(text.as_str());
         let folds = facts(&text).folding_ranges(&line_index);
-        assert!(folds.len() <= MAX_FOLDING_RANGES);
         assert!(folds.windows(2).all(|pair| {
             pair[0].start_line < pair[1].start_line
                 || (pair[0].start_line == pair[1].start_line
@@ -1701,11 +1683,15 @@ mod tests {
     #[test]
     fn document_symbols_are_bounded_and_detail_is_truncated() {
         let mut text = String::new();
-        for _ in 0..(MAX_DOCUMENT_SYMBOLS + 20) {
+        for _ in 0..(wxml_types::MAX_DOCUMENT_SYMBOLS + 20) {
             text.push_str("<view></view>");
         }
         let symbols = facts(&text).document_symbols();
-        assert!(symbols.len() <= MAX_DOCUMENT_SYMBOLS, "{}", symbols.len());
+        assert!(
+            symbols.len() <= wxml_types::MAX_DOCUMENT_SYMBOLS,
+            "{}",
+            symbols.len()
+        );
 
         let classes = (0..40)
             .map(|index| format!("class{index}"))
@@ -1949,8 +1935,8 @@ mod tests {
     }
 
     #[test]
-    fn selection_chains_are_depth_bounded() {
-        let depth = MAX_SELECTION_DEPTH + 8;
+    fn selection_chains_include_every_ancestor() {
+        let depth = 40_usize;
         let mut text = String::new();
         for _ in 0..depth {
             text.push_str("<view>");
@@ -1961,24 +1947,24 @@ mod tests {
         }
         let offset = u32::try_from(text.find('x').expect("content")).expect("offset");
         let chain = facts(&text).selection_chain(offset);
-        assert!(chain.len() <= MAX_SELECTION_DEPTH, "{}", chain.len());
+        assert_eq!(chain.len(), depth + 1);
         assert_strictly_nested(&chain);
     }
 
     #[test]
-    fn folding_ranges_are_capped() {
+    fn folding_ranges_cover_every_multiline_element() {
         use std::fmt::Write as _;
 
+        let count = 2_010_usize;
         let mut text = String::new();
-        for index in 0..(MAX_FOLDING_RANGES + 10) {
+        for index in 0..count {
             writeln!(text, "<view id=\"v{index}\">").expect("write");
             text.push_str("</view>");
             text.push('\n');
         }
         let line_index = LineIndex::new(text.as_str());
         let folds = facts(&text).folding_ranges(&line_index);
-        assert!(folds.len() <= MAX_FOLDING_RANGES, "{}", folds.len());
-        assert!(!folds.is_empty());
+        assert_eq!(folds.len(), count);
     }
 
     #[test]

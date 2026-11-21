@@ -2,7 +2,7 @@
 
 更新日期：2026-11-16。
 
-本文件记录第一轮实现（P0/C0）修订后的公共契约：坐标与范围类型、项目/文件/版本身份、请求上下文、能力状态、后端错误与接口、mock 行为、共享样本 schema，以及哪些内容**尚未**冻结。C0 之外的片段布局和线协议曾由 C1 类型桥冻结；native 后端（[ADR-0008](../adr/0008-rust-tsgo-no-node-backend.md)）不实现 C1，该契约已删除，历史版本见 tag `pre-slim-20261120`，背景见 [ADR-0002](../adr/0002-template-type-checking-and-source-maps.md) 与 [ADR-0004](../adr/0004-parallel-delivery-and-validation-gates.md)。
+本文件记录第一轮实现（P0/C0）修订后的公共契约：坐标与范围类型、项目/文件/版本身份、请求上下文、能力状态、后端错误与接口、mock 行为、共享样本 schema，以及哪些内容**尚未**冻结。C0 之外的片段布局和线协议曾由 C1 类型桥冻结；native 后端（[ADR-0012](../adr/0012-in-process-tsrs-session.md)）不实现 C1，该契约已删除，历史版本见 tag `pre-slim-20261120`，背景见 [ADR-0002](../adr/0002-template-type-checking-and-source-maps.md) 与 [ADR-0004](../adr/0004-parallel-delivery-and-validation-gates.md)。
 
 **状态（2026-11-16，C1 删除后更新）**：C0 契约仍有效；原 C1 类型桥增量已随 native 后端删除，历史版本见 tag `pre-slim-20261120`。本文第 12 节“未冻结（C1 及后续）”保留为 C0 时点的边界记录。Wave 4 模板作用域、补全和事件链路已在 Wave 5 完成；反向编辑、组件内 `usingComponents` 和多根工作区仍按本文的限制处理。
 
@@ -117,7 +117,7 @@ JSON 使用自描述标签，例如 `{"status":"partial","reason":"…"}`；`Unk
 | `Cancelled` | `type backend request cancelled` | 请求被取消 |
 | `Internal(String)` | `type backend internal error: …` | 后端内部失败 |
 
-`BackendError` 表示“请求失败”；`CapabilityStatus` 表示“检查质量/可用性”。两者不能互相替代。`Protocol`/`Internal` 的文本只用于日志和诊断，不直接展示给最终用户。`BackendError` 不实现 serde；跨进程错误码在 native 后端协议中定义，见[原生合同](tsgo-native-contract.md)。
+`BackendError` 表示“请求失败”；`CapabilityStatus` 表示“检查质量/可用性”。两者不能互相替代。`Protocol`/`Internal` 的文本只用于日志和诊断，不直接展示给最终用户。`BackendError` 不实现 serde；跨进程错误码在 native 后端协议中定义，见[原生合同](tsrs-native-contract.md)。
 
 ## 8. 后端接口与 DTO
 
@@ -208,7 +208,7 @@ pub trait Backend: Send + Sync {
 
 未冻结（C1 及后续）：
 
-- `CheckFragment` 的 JS/TS 方言、helper ABI、shadow 布局和片段身份，以及 Rust–Node 私有协议帧、消息集合、请求 ID/ACK/超时与错误码：随 C1 契约删除；native 侧以[原生合同](tsgo-native-contract.md)为准。
+- `CheckFragment` 的 JS/TS 方言、helper ABI、shadow 布局和片段身份，以及 Rust–Node 私有协议帧、消息集合、请求 ID/ACK/超时与错误码：随 C1 契约删除；native 侧以[原生合同](tsrs-native-contract.md)为准。
 - `AnalysisStamp`、`BackendFileVersion` 的具体结构与组合方式。
 - LSP 调度、防抖、发布屏障实现和编辑替换范围。
 - AC-012 的反向编辑/重命名结果：manifest 以 `coverage.edits = "deferred-to-C1"` 记录；反向编辑至今未实现。

@@ -4,8 +4,8 @@
 
 use wxml_syntax::{SyntaxTree, parse};
 use wxml_types::{
-    CheckFragment, EventBindingKind, MAX_BINDINGS, MAX_FRAGMENTS, RootKind, SourceRevision,
-    TemplateAnalysis, TemplateAnalyzer, UnsupportedFeature, UnsupportedKind, analyze_template,
+    CheckFragment, EventBindingKind, MAX_FRAGMENTS, RootKind, SourceRevision, TemplateAnalysis,
+    TemplateAnalyzer, UnsupportedFeature, UnsupportedKind, analyze_template,
 };
 
 const REVISION: u64 = 7;
@@ -572,53 +572,6 @@ fn fragment_budget_truncates_and_marks_analysis() {
     assert_eq!(analysis.fragments[0].fragment_id, "f0");
     let last = format!("f{}", MAX_FRAGMENTS - 1);
     assert_eq!(analysis.fragments[MAX_FRAGMENTS - 1].fragment_id, last);
-}
-
-#[test]
-fn deep_scopes_stop_at_the_binding_cap_with_bounded_work() {
-    let mut source = String::new();
-    for level in 0..256 {
-        source.push_str("<view wx:for=\"{{ xs }}\" wx:for-item=\"item");
-        source.push_str(&level.to_string());
-        source.push_str("\" wx:for-index=\"index");
-        source.push_str(&level.to_string());
-        source.push_str("\">");
-        for _ in 0..8 {
-            source.push_str("{{ a.b }}");
-        }
-    }
-    source.push_str(&"</view>".repeat(256));
-
-    let start = std::time::Instant::now();
-    let (analysis, _) = analyze(&source);
-    let elapsed = start.elapsed();
-    // Node rejects a request whose fragment bindings exceed `MAX_BINDINGS`,
-    // which would invalidate the whole document, so the analyzer stops first.
-    assert!(analysis.fragments.len() < MAX_FRAGMENTS);
-    assert!(!analysis.truncated);
-    assert_eq!(
-        unsupported_count(&analysis, UnsupportedKind::FragmentLimit),
-        1
-    );
-    let deepest = analysis
-        .fragments
-        .iter()
-        .map(|fragment| fragment.bindings.len())
-        .max()
-        .unwrap_or(0);
-    assert_eq!(deepest, MAX_BINDINGS);
-    assert!(
-        analysis
-            .fragments
-            .iter()
-            .all(|fragment| fragment.bindings.len() <= MAX_BINDINGS)
-    );
-    // Generous debug bound; the previous implementation took seconds and
-    // gigabytes for a smaller input.
-    assert!(
-        elapsed < std::time::Duration::from_secs(5),
-        "deep analysis took {elapsed:?}"
-    );
 }
 
 #[test]

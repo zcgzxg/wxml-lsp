@@ -7,7 +7,7 @@
 
 use std::path::Path;
 
-use wxml_backend_tsgo::script::ModuleResolver;
+use wxml_backend_tsrs::script::ModuleResolver;
 
 use crate::project_host::{PreparedFile, PreparedView};
 

@@ -151,18 +151,6 @@ impl ComponentPropertyFacts {
     }
 }
 
-/// Maximum component properties kept from one project discovery.
-pub const MAX_COMPONENT_PROPERTIES: usize = 512;
-
-/// Maximum characters kept from one property documentation comment.
-const MAX_PROPERTY_DOC_CHARS: usize = 512;
-
-/// Maximum characters kept from one property type or default expression.
-const MAX_PROPERTY_TYPE_CHARS: usize = 64;
-
-/// Maximum characters kept from one component property name.
-const MAX_PROPERTY_NAME_CHARS: usize = 128;
-
 /// Location and raw source of one registration data root.
 ///
 /// The extractor records where the value expression starts and ends; it does
@@ -501,9 +489,8 @@ fn matching_delimiter(bytes: &[u8], open: usize, left: u8, right: u8) -> Option<
 ///
 /// The scanner understands line/block comments, single-, double- and
 /// backtick-quoted strings (including `${}` expressions), and balanced
-/// brackets. It is bounded by a nesting limit and never panics on malformed
-/// input. Regex literals are not recognized; a `}` inside a regex literal can
-/// truncate scanning of that script.
+/// brackets. Regex literals are not recognized; a `}` inside a regex literal
+/// can truncate scanning of that script.
 #[must_use]
 pub fn extract_data_roots(script: &ProjectPath, text: &str) -> Vec<DataRoot> {
     let bytes = text.as_bytes();
@@ -517,9 +504,6 @@ pub fn extract_data_roots(script: &ProjectPath, text: &str) -> Vec<DataRoot> {
         }
         match bytes[index] {
             byte @ (b'(' | b'[' | b'{') => {
-                if brackets.len() >= MAX_SCAN_DEPTH {
-                    return roots;
-                }
                 brackets.push(byte);
                 index += 1;
             }
@@ -576,9 +560,6 @@ enum Registration {
     Page,
     Component,
 }
-
-/// Windows-like maximum nesting accepted while scanning a script.
-const MAX_SCAN_DEPTH: usize = 256;
 
 /// Maximum nested `${ ... }` template literals followed by the scanner.
 const MAX_TEMPLATE_DEPTH: usize = 32;
@@ -661,12 +642,7 @@ fn skip_template_expression(bytes: &[u8], index: usize, depth: usize) -> usize {
             continue;
         }
         match bytes[cursor] {
-            b'{' => {
-                if pending.len() >= MAX_SCAN_DEPTH {
-                    return bytes.len();
-                }
-                pending.push(b'}');
-            }
+            b'{' => pending.push(b'}'),
             b'}' => {
                 pending.pop();
                 if pending.is_empty() {
@@ -725,12 +701,7 @@ fn find_matching(bytes: &[u8], open: usize, limit: usize) -> Option<usize> {
             continue;
         }
         match bytes[cursor] {
-            byte @ (b'{' | b'[' | b'(') => {
-                if pending.len() >= MAX_SCAN_DEPTH {
-                    return None;
-                }
-                pending.push(matching_close(byte)?);
-            }
+            byte @ (b'{' | b'[' | b'(') => pending.push(matching_close(byte)?),
             b'}' | b']' | b')' => {
                 if pending.last() != Some(&bytes[cursor]) {
                     cursor += 1;
@@ -777,9 +748,6 @@ fn extract_object(
         }
         match bytes[index] {
             byte @ (b'{' | b'[' | b'(') => {
-                if pending.len() >= MAX_SCAN_DEPTH {
-                    return;
-                }
                 pending.push(matching_close(byte).unwrap_or(byte));
                 index += 1;
             }
@@ -831,9 +799,6 @@ fn expression_end(bytes: &[u8], start: usize, limit: usize) -> Option<usize> {
                 }
                 match bytes[cursor] {
                     byte @ (b'{' | b'[' | b'(') => {
-                        if pending.len() >= MAX_SCAN_DEPTH {
-                            return None;
-                        }
                         pending.push(matching_close(byte).unwrap_or(byte));
                     }
                     b'}' | b']' | b')' => {
@@ -931,12 +896,6 @@ pub fn extract_component_property_facts(roots: &[DataRoot]) -> ComponentProperty
         }
         found_root = true;
         collect_component_properties(root, &mut facts);
-        if facts.properties.len() >= MAX_COMPONENT_PROPERTIES {
-            facts.properties.truncate(MAX_COMPONENT_PROPERTIES);
-            facts.complete = false;
-            facts.reason = Some("component property limit reached");
-            break;
-        }
     }
     if !found_root {
         facts.complete = false;
@@ -1020,7 +979,7 @@ fn collect_component_properties(root: &DataRoot, facts: &mut ComponentPropertyFa
         return;
     };
     let mut index = 1_usize;
-    while index + 1 < object_end && facts.properties.len() < MAX_COMPONENT_PROPERTIES {
+    while index + 1 < object_end {
         index = skip_trivia(bytes, index);
         if index >= object_end {
             break;
@@ -1171,7 +1130,6 @@ fn component_property(
 /// Returns whether `name` can be shown as a WXML attribute.
 fn is_valid_property_name(name: &str) -> bool {
     !name.is_empty()
-        && name.len() <= MAX_PROPERTY_NAME_CHARS
         && !name
             .chars()
             .any(|character| character.is_control() || character.is_whitespace())
@@ -1189,7 +1147,7 @@ fn property_type(value: &str) -> (String, Option<String>) {
         let default = object_member(trimmed, "value")
             .map(str::trim)
             .filter(|text| !text.is_empty())
-            .map(|text| truncate_chars(text, MAX_PROPERTY_TYPE_CHARS));
+            .map(str::to_owned);
         let mut types = Vec::new();
         if let Some(expression) = type_expression {
             push_constructor(&mut types, expression);
@@ -1235,10 +1193,9 @@ fn constructor_name(expression: &str) -> String {
         "null" => "null",
         "" => "any",
         other
-            if other.len() <= MAX_PROPERTY_TYPE_CHARS
-                && other.chars().all(|character| {
-                    character.is_ascii_alphanumeric() || matches!(character, '_' | '$' | '.')
-                }) =>
+            if other.chars().all(|character| {
+                character.is_ascii_alphanumeric() || matches!(character, '_' | '$' | '.')
+            }) =>
         {
             other
         }
@@ -1356,7 +1313,7 @@ fn leading_documentation(text: &str, key_start: usize) -> Option<String> {
         return None;
     }
     lines.reverse();
-    Some(truncate_chars(&lines.join("\n"), MAX_PROPERTY_DOC_CHARS))
+    Some(lines.join("\n"))
 }
 
 /// Strips the leading `*` decoration from a block documentation comment.
@@ -1377,12 +1334,7 @@ fn clean_block_documentation(text: &str) -> Option<String> {
     if lines.is_empty() {
         return None;
     }
-    Some(truncate_chars(&lines.join("\n"), MAX_PROPERTY_DOC_CHARS))
-}
-
-/// Truncates text to `limit` characters.
-fn truncate_chars(text: &str, limit: usize) -> String {
-    text.chars().take(limit).collect()
+    Some(lines.join("\n"))
 }
 
 #[cfg(test)]
@@ -1552,10 +1504,11 @@ mod tests {
     }
 
     #[test]
-    fn deep_nesting_is_bounded() {
+    fn deep_nesting_is_balanced() {
         let script = path("a.ts");
         let deep = format!("Page({{ data: {}{} }});", "{".repeat(400), "}".repeat(400));
-        assert_eq!(extract_data_roots(&script, &deep), Vec::new());
+        let roots = extract_data_roots(&script, &deep);
+        assert_eq!(roots.len(), 1);
 
         let unrelated = format!("{}{}", "(".repeat(400), ")".repeat(400));
         assert_eq!(extract_data_roots(&script, &unrelated), Vec::new());

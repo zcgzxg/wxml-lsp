@@ -17,7 +17,7 @@
 
 同时有三条既定约束决定了实现形态：
 
-- 生产路径没有 Node 运行时（[ADR-0008](0008-rust-tsgo-no-node-backend.md)），不能引入 `typescript` 包做声明解析或生成。
+- 生产路径没有 Node 运行时（[ADR-0012](0012-in-process-tsrs-session.md)），不能引入 `typescript` 包做声明解析或生成。
 - 语言服务对用户工作区只读：不能为了事件校验给 handler 形参注入类型，也不能把生成的 `.d.ts` 写回磁盘。
 - 诊断必须可解释降级：按 [类型诊断参考](../reference/type-diagnostics.md) 的约定，能力不完整时状态为 `Partial` 并给出原因，不能静默猜测类型。
 
@@ -31,7 +31,7 @@
 - 不读取 tsconfig 的 `files`/`include`/`exclude`/`paths` 来决定声明文件，不实现 glob 匹配，不扫描 `node_modules`、`bower_components`、`jspm_packages` 或编译输出目录，也不做向上/向下多目录查找。
 - 启用 = 新增该文件；关闭 = 删除该文件。用户不需要改 tsconfig，也不需要理解 tsconfig 的匹配语义。
 - 候选集仍来自既有 `SourceSet`（因此 overlay 中的 `components.d.ts` 与磁盘文件同等可见），只做「路径等于 `<tsconfig 目录>/components.d.ts`」的精确过滤，不引入第二套遍历、预算或排除表。
-- 声明文件本身受成员级上限约束：`MAX_TYPING_COMPONENTS`、`MAX_TYPING_MEMBERS` 超出按路径序截断并记录 issue；截断或解析不完整时降级为 `Partial`。
+- 声明文件的规模不单独设上限：文件数与总字节由 `SourceSet` 的既有预算（`SourceLimits`）约束，单个 `components.d.ts` 受 `files::MAX_FILE_BYTES` 限制。
 - `components.d.ts` 缺失、为空或无法读取时不产生任何组件事实，也不发布诊断——没有声明文件的项目行为与本次改动前完全一致。
 
 ### 2. 声明格式以全局映射表为入口，类型只接受自包含子集
@@ -91,7 +91,7 @@ export {};
 | 约定固定目录（如 `typings/components.d.ts`） | 位置明确 | 多一层目录，且与「项目根只有一个 tsconfig」的直觉不一致；`tsconfig.json` 同级更直观 |
 | 扫描项目内所有 `.d.ts` 并解析其中的 `WxmlComponentMap` | 用户无需新增文件 | 需要遍历与预算控制，且会命中 engine typings、生成产物和无关库声明；解析成本与误报面都不可控 |
 | 引入 glob crate 实现模式匹配 | 少写代码 | 触发 `cargo deny` 许可与重复版本评估；在固定单文件规则下完全没有必要 |
-| 让引擎挂载 `node_modules` 或用 Node 解析声明 | 类型信息最完整，无需自研解析器 | 破坏 ADR-0010 的「不扫 `node_modules`」与快照确定性，并重新引入 Node 运行时（ADR-0008 已删除） |
+| 让引擎挂载 `node_modules` 或用 Node 解析声明 | 类型信息最完整，无需自研解析器 | 破坏 ADR-0010 的「不扫 `node_modules`」与快照确定性，并重新引入 Node 运行时（Node 后端已删除，见 ADR-0012） |
 | 只扩展脚本推断，不引入声明文件 | 无新格式 | 第三方库组件没有项目内脚本，永远拿不到属性与事件契约 |
 | 事件校验用 shadow 形参注入 + 引擎类型比较 | 复用真实类型检查器，语义最准 | 服务只读，注入需要改写用户脚本；且默认门禁不启动引擎，该行为无法用普通单测覆盖 |
 
@@ -135,7 +135,7 @@ export {};
 
 - [ADR-0001：分层语言服务与模块依赖边界](0001-layered-language-service-architecture.md)
 - [ADR-0002：模板类型检查、类型后端与源码映射](0002-template-type-checking-and-source-maps.md)
-- [ADR-0008：Rust + tsgo 类型后端与移除 Node 依赖](0008-rust-tsgo-no-node-backend.md)
+- [ADR-0012：进程内 tsrs 类型引擎会话与故障隔离](0012-in-process-tsrs-session.md)
 - [ADR-0009：项目瘦身](0009-project-slimming.md)
 - [ADR-0010：零配置惰性小程序发现与工作区包挂载](0010-zero-config-lazy-discovery.md)
 - [类型诊断参考](../reference/type-diagnostics.md)

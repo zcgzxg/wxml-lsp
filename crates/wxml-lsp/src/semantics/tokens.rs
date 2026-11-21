@@ -40,9 +40,6 @@ const TOKEN_TYPES: [&str; 23] = [
     "wxs",
 ];
 
-/// Largest number of tokens emitted for one document.
-const MAX_SEMANTIC_TOKENS: usize = 20_000;
-
 const NAMESPACE: u8 = 0;
 const VARIABLE: u8 = 8;
 const PROPERTY: u8 = 9;
@@ -231,7 +228,6 @@ fn encode(facts: &ViewFacts, mut tokens: Vec<(u32, u32, u8)>) -> Vec<u64> {
     let mut data = Vec::with_capacity(tokens.len().saturating_mul(5));
     let mut last_line = 0_u32;
     let mut last_character = 0_u32;
-    let mut emitted = 0_usize;
     let mut last_end = 0_u32;
     for (start, end, token_type) in tokens {
         if start < last_end {
@@ -247,9 +243,7 @@ fn encode(facts: &ViewFacts, mut tokens: Vec<(u32, u32, u8)>) -> Vec<u64> {
             cursor.position(u32::try_from(start_usize).unwrap_or(u32::MAX)),
             cursor.position(u32::try_from(end_usize).unwrap_or(u32::MAX)),
         ) else {
-            log(format_args!(
-                "semantic tokens stopped at the position scan budget"
-            ));
+            log(format_args!("semantic token position is not mappable"));
             break;
         };
         if end_position.line != start_position.line {
@@ -277,13 +271,6 @@ fn encode(facts: &ViewFacts, mut tokens: Vec<(u32, u32, u8)>) -> Vec<u64> {
         last_line = start_position.line;
         last_character = start_position.character;
         last_end = end;
-        emitted += 1;
-        if emitted >= MAX_SEMANTIC_TOKENS {
-            log(format_args!(
-                "semantic tokens truncated at {MAX_SEMANTIC_TOKENS} tokens"
-            ));
-            break;
-        }
     }
     data
 }

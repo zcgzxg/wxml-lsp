@@ -288,7 +288,6 @@ fn collect_sources_respects_file_and_total_limits() {
     let by_files = project.collect_sources(SourceLimits {
         max_files: 2,
         max_total_bytes: 100,
-        max_file_bytes: 16 * 1024 * 1024,
     });
     let paths: Vec<&str> = by_files
         .files
@@ -313,7 +312,6 @@ fn collect_sources_respects_file_and_total_limits() {
     let by_total = project.collect_sources(SourceLimits {
         max_files: 10,
         max_total_bytes: 15,
-        max_file_bytes: 16 * 1024 * 1024,
     });
     let paths: Vec<&str> = by_total
         .files
@@ -329,27 +327,6 @@ fn collect_sources_respects_file_and_total_limits() {
             .filter(|issue| issue.kind == SourceIssueKind::Truncated)
             .count(),
         1
-    );
-
-    let by_file_size = project.collect_sources(SourceLimits {
-        max_files: 10,
-        max_total_bytes: 100,
-        max_file_bytes: 4,
-    });
-    let paths: Vec<&str> = by_file_size
-        .files
-        .iter()
-        .map(|file| file.path.as_str())
-        .collect();
-    assert_eq!(paths, ["d.d.ts"]);
-    assert!(!by_file_size.truncated);
-    assert_eq!(
-        by_file_size
-            .issues
-            .iter()
-            .filter(|issue| issue.kind == SourceIssueKind::TooLarge)
-            .count(),
-        3
     );
 }
 

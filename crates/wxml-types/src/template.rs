@@ -72,26 +72,6 @@ use crate::contract::SourceRevision;
 /// must not present it as complete.
 pub const MAX_FRAGMENTS: usize = 2048;
 
-/// Maximum `wx:for` bindings (one nesting chain) sent for one fragment.
-///
-/// Mirrors `MAX_LOCAL_BINDINGS` in `backends/typescript/src/protocol.ts`.
-pub const MAX_BINDINGS: usize = 64;
-
-/// Maximum conditions in one `wx:if`/`wx:elif`/`wx:else` chain.
-///
-/// Mirrors `MAX_GUARD_CONDITIONS` in `backends/typescript/src/protocol.ts`.
-pub const MAX_GUARD_CONDITIONS: usize = 64;
-
-/// Maximum nested guard chains applied to one fragment.
-///
-/// Mirrors `MAX_GUARD_CHAINS` in `backends/typescript/src/protocol.ts`.
-pub const MAX_GUARD_CHAINS: usize = 32;
-
-/// Maximum custom-component usages collected for one document.
-///
-/// The request byte budget also bounds the attributes of these usages.
-pub const MAX_COMPONENTS: usize = 512;
-
 /// Reusable configuration for template analysis.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TemplateAnalyzer {
@@ -159,7 +139,6 @@ impl TemplateAnalyzer {
             events: Vec::new(),
             unsupported: Vec::new(),
             truncated: false,
-            components_truncated: false,
         }
         .run()
     }
@@ -225,7 +204,6 @@ struct Engine<'a> {
     events: Vec<EventHandler>,
     unsupported: Vec<UnsupportedFeature>,
     truncated: bool,
-    components_truncated: bool,
 }
 
 /// State of one `wx:if`/`wx:elif`/`wx:else` chain while its siblings are
@@ -300,11 +278,6 @@ impl<'a> Engine<'a> {
                     *state = ChainState::Unresolvable;
                     return None;
                 };
-                if chain.conditions.len() >= MAX_GUARD_CONDITIONS {
-                    self.record(UnsupportedKind::FragmentLimit, element.text_range());
-                    *state = ChainState::Unresolvable;
-                    return None;
-                }
                 let Some(condition) = self.guard_condition(element, GuardBranch::Elif) else {
                     self.record_guard_condition(element, GuardBranch::Elif);
                     *state = ChainState::Unresolvable;
@@ -359,10 +332,6 @@ impl<'a> Engine<'a> {
             self.record(kind, element.text_range());
             return;
         }
-        if self.guards.len() >= MAX_GUARD_CHAINS {
-            self.record(UnsupportedKind::FragmentLimit, element.text_range());
-            return;
-        }
         let attributes: Vec<Attribute<'a>> = element.attributes().collect();
         let has_for = attributes
             .iter()
@@ -381,12 +350,6 @@ impl<'a> Engine<'a> {
         } else {
             Vec::new()
         };
-        if self.bindings.len().saturating_add(bindings.len()) > MAX_BINDINGS {
-            // Node rejects an oversized chain, which would fail the whole
-            // document, so stop before emitting one.
-            self.record(UnsupportedKind::FragmentLimit, element.text_range());
-            return;
-        }
         let pushed_bindings = bindings.len();
         for binding in bindings {
             self.bindings.push(binding);
@@ -445,12 +408,7 @@ impl<'a> Engine<'a> {
             }
         }
 
-        if self.components.len() < MAX_COMPONENTS {
-            self.collect_component(name, &attributes);
-        } else if !self.components_truncated && self.component_tags.contains(name) {
-            self.components_truncated = true;
-            self.record(UnsupportedKind::FragmentLimit, element.text_range());
-        }
+        self.collect_component(name, &attributes);
 
         let children: Vec<AstNode<'a>> = element.children().collect();
         self.analyze_children(&children);
@@ -966,12 +924,6 @@ fn is_empty_event_attribute(name: &str) -> bool {
     )
 }
 
-/// Maximum byte length of a static event handler name.
-///
-/// The name becomes a virtual method lookup in the script, so the request must
-/// stay bounded even for hostile templates.
-const MAX_HANDLER_NAME_BYTES: usize = 256;
-
 /// Returns `true` when `handler` is a plain static method name.
 ///
 /// Event handlers are resolved as property names on the page/component
@@ -981,9 +933,6 @@ const MAX_HANDLER_NAME_BYTES: usize = 256;
 /// handler" diagnostic. Unicode identifiers, `_` and `$` are accepted, matching
 /// `isIdentifierText` in `backends/typescript/src/events.ts`.
 fn is_static_handler_name(handler: &str) -> bool {
-    if handler.is_empty() || handler.len() > MAX_HANDLER_NAME_BYTES {
-        return false;
-    }
     let mut characters = handler.chars();
     let Some(first) = characters.next() else {
         return false;

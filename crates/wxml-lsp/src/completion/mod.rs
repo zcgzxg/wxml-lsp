@@ -21,7 +21,7 @@ use std::sync::atomic::AtomicBool;
 use serde_json::{Value, json};
 use wxml_types::{
     BackendEpoch, CapabilityStatus, CompletionItem, CompletionItemKind, CompletionKind,
-    CompletionResult, InsertTextFormat, MAX_COMPLETION_ITEMS,
+    CompletionResult, InsertTextFormat,
 };
 
 use self::context::Context as Detected;
@@ -140,14 +140,13 @@ fn item_value(document: &crate::workspace::Document, item: &CompletionItem) -> O
 
 /// Builds a `CompletionList` from a C0 result.
 ///
-/// `isIncomplete` is true whenever the backend truncated the list, whenever
-/// this edge caps an over-long list itself, or when one item cannot be mapped
-/// to a valid source range. A `Partial` status alone is semantic degradation,
-/// not a reason to retrigger the client.
+/// `isIncomplete` is true whenever the backend truncated the list or when one
+/// item cannot be mapped to a valid source range. A `Partial` status alone is
+/// semantic degradation, not a reason to retrigger the client.
 fn completion_list(document: &crate::workspace::Document, result: &CompletionResult) -> Value {
     let mut items = Vec::new();
     let mut dropped = false;
-    for item in result.items.iter().take(MAX_COMPLETION_ITEMS) {
+    for item in &result.items {
         if let Some(value) = item_value(document, item) {
             items.push(value);
         } else {
@@ -157,8 +156,7 @@ fn completion_list(document: &crate::workspace::Document, result: &CompletionRes
             ));
         }
     }
-    let capped = result.items.len() > MAX_COMPLETION_ITEMS;
-    let is_incomplete = result.truncated || capped || dropped;
+    let is_incomplete = result.truncated || dropped;
     json!({
         "isIncomplete": is_incomplete,
         "items": items,
@@ -452,24 +450,6 @@ mod tests {
         let value = completion_list(&document, &result);
         assert_eq!(value["isIncomplete"], Value::Bool(true));
         assert_eq!(value["items"].as_array().map(Vec::len), Some(1));
-    }
-
-    #[test]
-    fn over_cap_completion_is_capped_and_incomplete() {
-        let document = completion_document("abc");
-        let result = CompletionResult {
-            items: (0..=MAX_COMPLETION_ITEMS)
-                .map(|_| method_item(0, 1))
-                .collect(),
-            status: CapabilityStatus::Supported,
-            truncated: false,
-        };
-        let value = completion_list(&document, &result);
-        assert_eq!(value["isIncomplete"], Value::Bool(true));
-        assert_eq!(
-            value["items"].as_array().map(Vec::len),
-            Some(MAX_COMPLETION_ITEMS)
-        );
     }
 
     #[test]

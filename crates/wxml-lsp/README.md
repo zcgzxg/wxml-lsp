@@ -71,12 +71,12 @@ Test-only seams used by the opt-in real-type gates:
 
 | Variable | Meaning |
 | --- | --- |
-| `TSGO_TYPINGS_ROOT` | Pinned `miniprogram-api-typings` root for real-type tests |
+| `TSRS_TYPINGS_ROOT` | Pinned `miniprogram-api-typings` root for real-type tests |
 | `WXML_REQUIRE_REAL_ENGINE=1` | Turn a missing/unusable typings gate into a hard failure instead of a skip |
 | `WXML_TEST_TMPDIR` | Absolute temporary root used by sandbox tests |
 
-`TSGO_TYPINGS_ROOT` and `WXML_REQUIRE_REAL_ENGINE` keep their historical names;
-the type engine itself is in-process. `TSGO_BIN` and `TSGO_ASSET_ROOT` are
+`TSRS_TYPINGS_ROOT` and `WXML_REQUIRE_REAL_ENGINE` keep their historical names;
+the type engine itself is in-process. `TSRS_BIN` and `TSRS_ASSET_ROOT` are
 removed and have no effect.
 
 ## Architecture
@@ -84,7 +84,7 @@ removed and have no effect.
 - `src/project_host.rs`: `ProjectHost`/`ProjectState`; real root, `FileId`,
   page/component views, script/JSON overlays, WXML snapshots, compiler-option
   filtering and `PreparedView` assembly.
-- `src/backend_tsgo/`: in-process type adapter; typings discovery and layout
+- `src/backend_tsrs/`: in-process type adapter; typings discovery and layout
   checks, pinned type-asset loading, read-only virtual filesystem, session
   lifecycle, shadow/query mapping, hover/definition/diagnostics/completion/
   document symbols and event-handler facts.
@@ -112,8 +112,8 @@ RUSTDOCFLAGS="-D warnings" cargo doc -p wxml-lsp --no-deps
 
 `cargo test -p wxml-lsp` works without an installed layout; real-type tests in
 `tests/native_lsp_document_symbols.rs` and the backend's
-`crates/wxml-backend-tsgo/tests/real_engine.rs` skip unless
-`TSGO_TYPINGS_ROOT` is provided, and `WXML_REQUIRE_REAL_ENGINE=1` turns a
+`crates/wxml-backend-tsrs/tests/real_engine.rs` skip unless
+`TSRS_TYPINGS_ROOT` is provided, and `WXML_REQUIRE_REAL_ENGINE=1` turns a
 missing typings gate into a failure instead of a green skip.
 
 The former `scripts/native-gates.sh` 40/40 gate and the Q2/performance/stdio
@@ -143,7 +143,7 @@ suites were removed by ADR-0009; their historical versions are available at tag
 ## Security notes
 
 - Typings discovery is path-pinned to the running executable's package; `PATH`,
-  cwd and environment cannot redirect it, and `TSGO_BIN`/`TSGO_ASSET_ROOT` are
+  cwd and environment cannot redirect it, and `TSRS_BIN`/`TSRS_ASSET_ROOT` are
   not recognised.
 - Typings are re-verified against the crate pin and `assets.lock.json` before a
   session exists; symlinks, hard links, non-regular files and platform

@@ -2,7 +2,7 @@
 
 更新日期：2026-11-20。
 
-本文件说明 `wxml-lsp` 的查询基准（Criterion `queries` bench）测什么、如何运行、结果如何解读。它是**本地基线工具**，不是验收门禁，也不定义延迟预算。查询语义和协议契约仍以[基础契约](contracts.md)、[原生类型后端合同](tsgo-native-contract.md)和[模板类型诊断策略](type-diagnostics.md)为准；样本约定见[共享验收样本](../../tests/fixtures/README.md)。
+本文件说明 `wxml-lsp` 的查询基准（Criterion `queries` bench）测什么、如何运行、结果如何解读。它是**本地基线工具**，不是验收门禁，也不定义延迟预算。查询语义和协议契约仍以[基础契约](contracts.md)、[原生类型后端合同](tsrs-native-contract.md)和[模板类型诊断策略](type-diagnostics.md)为准；样本约定见[共享验收样本](../../tests/fixtures/README.md)。
 
 ## 1. 测量内容
 

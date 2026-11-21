@@ -18,19 +18,10 @@
 //! `eval`, `new Function`, unknown require specifiers) are reported through
 //! [`WxsSummary::dynamic`] instead of being guessed. Source is never executed.
 //!
-//! The scanner is bounded in bytes, tokens, members and nesting and never
-//! panics on malformed input; [`WxsSummary::truncated`] marks a partial result.
+//! The scanner never panics on malformed input; forms it cannot prove are
+//! reported through [`WxsSummary::dynamic`].
 
 use wxml_text::{SourceRange, TextRange};
-
-/// Maximum bytes scanned for one WXS module.
-pub const MAX_WXS_BYTES: usize = 1024 * 1024;
-/// Maximum members collected for one WXS module.
-pub const MAX_WXS_MEMBERS: usize = 512;
-/// Maximum lexer tokens kept for one WXS module.
-pub const MAX_WXS_TOKENS: usize = 200_000;
-/// Maximum nesting accepted while skipping statements.
-pub const MAX_WXS_DEPTH: usize = 128;
 
 /// The declaration shape of one WXS member.
 #[non_exhaustive]
@@ -110,8 +101,6 @@ pub struct WxsSummary {
     /// Set when the module contains an export form that cannot be summarized
     /// statically. The summary is then incomplete, never wrong.
     pub dynamic: Option<String>,
-    /// `true` when a bound stopped the scan; `members` is incomplete.
-    pub truncated: bool,
 }
 
 impl WxsSummary {
@@ -148,24 +137,11 @@ impl WxsSummary {
 
 /// Summarizes a WXS module from its source text.
 ///
-/// The scan is read-only and bounded. Malformed input produces a summary of
-/// what could be proven plus [`WxsSummary::truncated`] or
-/// [`WxsSummary::dynamic`]; it never throws.
+/// The scan is read-only. Malformed input produces a summary of what could be
+/// proven plus [`WxsSummary::dynamic`]; it never throws.
 #[must_use]
 pub fn summarize_wxs(text: &str) -> WxsSummary {
-    let limit = MAX_WXS_BYTES.min(text.len());
-    // `limit <= text.len()` and byte 0 is always a character boundary, so the
-    // walk terminates without a fallback. Cutting on a boundary keeps `sliced`
-    // valid UTF-8.
-    let mut end = limit;
-    while !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    let sliced = &text[..end];
-    let (tokens, token_truncated) = lex(sliced);
-    // The lexer stops before adding a token past the cap; an input that ends
-    // exactly at the cap is complete.
-    let truncated = end < text.len() || token_truncated;
+    let tokens = lex(text);
     let mut parser = Parser {
         tokens: &tokens,
         summary: WxsSummary::default(),
@@ -173,9 +149,6 @@ pub fn summarize_wxs(text: &str) -> WxsSummary {
         local_by_name: Vec::new(),
     };
     parser.run();
-    if truncated {
-        parser.summary.truncated = true;
-    }
     parser.summary
 }
 
@@ -201,17 +174,12 @@ struct Token<'a> {
     doc_comment: bool,
 }
 
-fn lex(text: &str) -> (Vec<Token<'_>>, bool) {
+fn lex(text: &str) -> Vec<Token<'_>> {
     let bytes = text.as_bytes();
     let mut tokens = Vec::new();
     let mut index = 0_usize;
     let mut at_line_start = true;
-    let mut truncated = false;
     while index < bytes.len() {
-        if tokens.len() >= MAX_WXS_TOKENS {
-            truncated = true;
-            break;
-        }
         let byte = bytes[index];
         if byte.is_ascii_whitespace() {
             if byte == b'\n' {
@@ -301,7 +269,7 @@ fn lex(text: &str) -> (Vec<Token<'_>>, bool) {
         });
         at_line_start = false;
     }
-    (tokens, truncated)
+    tokens
 }
 
 const fn is_ident_start(byte: u8) -> bool {
@@ -451,10 +419,6 @@ impl<'a> Parser<'a> {
     }
 
     fn push_member(&mut self, member: WxsMember) {
-        if self.summary.members.len() >= MAX_WXS_MEMBERS {
-            self.summary.truncated = true;
-            return;
-        }
         self.local_by_name.push((
             member.name.clone(),
             member.kind,
@@ -477,10 +441,6 @@ impl<'a> Parser<'a> {
             match token.kind {
                 TokenKind::Punct(b'{' | b'(' | b'[') => {
                     local_depth += 1;
-                    if local_depth.unsigned_abs() as usize > MAX_WXS_DEPTH {
-                        *depth = 0;
-                        return index;
-                    }
                 }
                 TokenKind::Punct(b'}' | b')' | b']') => {
                     local_depth -= 1;
@@ -1190,7 +1150,6 @@ impl<'a> Parser<'a> {
             }
             index += 1;
         }
-        self.summary.truncated = true;
         index
     }
 
@@ -1400,11 +1359,11 @@ fn valid_range(start: usize, end: usize) -> TextRange {
 
 /// Narrows a scanner byte offset or width to `u32`.
 ///
-/// [`summarize_wxs`] truncates the scanned text to [`MAX_WXS_BYTES`] (1 MiB)
-/// before lexing, and every offset the parser reports is a position in that
-/// truncated text; a quote width is a `char::len_utf8()` of at most 4. The cast
-/// therefore cannot truncate. `wxml-text` byte ranges are `u32`, so the scanner
-/// narrows exactly once here instead of carrying a fallback per conversion.
+/// Input files are capped at 16 MiB by the reader before reaching this crate,
+/// and every offset the parser reports is a position in that text; a quote
+/// width is a `char::len_utf8()` of at most 4. The cast therefore cannot
+/// truncate. `wxml-text` byte ranges are `u32`, so the scanner narrows exactly
+/// once here instead of carrying a conversion per call site.
 #[allow(clippy::cast_possible_truncation)]
 const fn byte_offset(offset: usize) -> u32 {
     offset as u32
@@ -1875,13 +1834,13 @@ module.exports = {
     }
 
     #[test]
-    fn malformed_input_stays_bounded() {
+    fn malformed_input_terminates() {
         let text = "function broken(a, b { return ";
         let summary = summarize_wxs(text);
-        assert!(!summary.members.is_empty() || summary.dynamic.is_some() || summary.truncated);
+        assert!(summary.members.len() <= 1, "{summary:?}");
         let deep = format!("const x = {}1;", "[".repeat(200));
         let summary = summarize_wxs(&deep);
-        assert!(summary.truncated || summary.members.len() <= MAX_WXS_MEMBERS);
+        assert!(summary.member("x").is_some(), "{summary:?}");
     }
 
     #[test]
@@ -1893,51 +1852,14 @@ module.exports = {
     }
 
     #[test]
-    fn byte_and_member_budgets_are_visible() {
-        let mut text = "a".repeat(MAX_WXS_BYTES - 1);
-        text.push('😀');
-        text.push_str("module.exports = { label: 1 };");
-        let summary = summarize_wxs(&text);
-        assert!(summary.truncated, "a non-UTF-8-boundary cut must truncate");
-
+    fn many_exports_are_all_collected() {
         let mut many = String::new();
         for index in 0..600 {
             let _ = writeln!(many, "exports.m{index} = {index};");
         }
         let summary = summarize_wxs(&many);
-        assert!(summary.truncated, "member budget must set truncated");
-        assert!(summary.members.len() <= MAX_WXS_MEMBERS);
-    }
-
-    #[test]
-    fn byte_budget_cuts_only_on_character_boundaries() {
-        // Exactly at the cap and on a boundary: nothing is dropped.
-        let exact = format!("/*{}*/", "a".repeat(MAX_WXS_BYTES - 4));
-        assert_eq!(exact.len(), MAX_WXS_BYTES);
-        assert_eq!(summarize_wxs(&exact), WxsSummary::default());
-
-        // The cap lands inside a four-byte character: the scan backs off to the
-        // previous boundary, so members before the cut stay visible and members
-        // after it do not.
-        let prefix = "const kept = 1;\n/*";
-        let padding = MAX_WXS_BYTES - prefix.len() - 2;
-        let mut text = String::with_capacity(MAX_WXS_BYTES + 32);
-        text.push_str(prefix);
-        text.push_str(&"a".repeat(padding));
-        assert_eq!(text.len(), MAX_WXS_BYTES - 2);
-        text.push('😀');
-        text.push_str("*/\nconst dropped = 2;");
-        assert!(text.len() > MAX_WXS_BYTES);
-        assert!(
-            !text.is_char_boundary(MAX_WXS_BYTES),
-            "the cap must split the emoji"
-        );
-
-        let summary = summarize_wxs(&text);
-        assert!(summary.truncated);
-        assert_eq!(member(&summary, "kept").type_text, "number");
-        assert!(summary.member("dropped").is_none());
-        assert_eq!(summary, summarize_wxs(&text), "the cut is deterministic");
+        assert_eq!(summary.exported().count(), 600);
+        assert!(summary.dynamic.is_none(), "{summary:?}");
     }
 
     #[test]

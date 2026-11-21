@@ -24,6 +24,15 @@ const PROJECT: &str = "lsp";
 /// Largest accepted document URI.
 pub(crate) const MAX_URI_BYTES: usize = 8 * 1024;
 
+/// Maximum distinct files indexed for one definition or style query.
+pub(crate) const MAX_QUERY_FILES: usize = 8;
+
+/// Maximum estimated text plus line-index bytes read for one query index.
+pub(crate) const MAX_QUERY_INDEX_BYTES: usize = 64 * 1024 * 1024;
+
+/// Maximum definition targets returned for one query.
+pub(crate) const MAX_DEFINITION_TARGETS: usize = 16;
+
 /// Default number of documents the server keeps open.
 const DEFAULT_MAX_DOCUMENTS: usize = 256;
 

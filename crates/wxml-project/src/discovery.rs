@@ -6,27 +6,15 @@
 //! usable while the user edits it.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
 use serde::Deserialize;
 use thiserror::Error;
 
-use crate::files::{self, MAX_MESSAGE_BYTES, ProjectPath, truncate_message, truncate_owned};
+use crate::files::{self, ProjectPath};
 use crate::overlay::Overlay;
 use crate::script::{self, ComponentPropertyFacts, DataRoot, DataRootKind, ScriptStyleHints};
-
-/// Maximum component-reference depth followed through `usingComponents`.
-pub const MAX_COMPONENT_DEPTH: usize = 16;
-
-/// Maximum number of page and component entries kept from one `app.json`.
-///
-/// Subpackage roots and pages count toward the same budget.
-pub const MAX_APP_ENTRIES: usize = 10_000;
-
-/// Maximum number of pages kept by one discovery run.
-pub const MAX_PAGES: usize = 20_000;
 
 /// Maximum number of components kept by one discovery run.
 pub const MAX_COMPONENTS: usize = 20_000;
@@ -40,12 +28,6 @@ pub const MAX_ISSUES: usize = 1_000;
 /// reuse a large JSON file (for example via symlinks) and multiply its local
 /// table by the page count.
 pub const MAX_TOTAL_LOCAL_COMPONENTS: usize = 20_000;
-
-/// Maximum page-local `usingComponents` entries kept for a single page.
-///
-/// Real pages rarely exceed a hundred custom components; this single-page cap
-/// stops one page from consuming the entire project budget.
-pub const MAX_PAGE_LOCAL_COMPONENTS: usize = 1_024;
 
 /// Maximum JSON bytes parsed by one discovery run.
 ///
@@ -63,8 +45,7 @@ pub const MAX_DISCOVERY_JSON_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_COMPONENT_SCRIPT_BYTES: usize = 32 * 1024 * 1024;
 
 /// Maximum page-script bytes read by one discovery run for registration and
-/// style-isolation hints. Each page reads at most
-/// `MAX_REGISTRATION_SCRIPT_BYTES`; this project-wide budget bounds the total.
+/// style-isolation hints.
 pub const MAX_PAGE_SCRIPT_HINT_BYTES: usize = 32 * 1024 * 1024;
 
 /// Top-level `app.json` facts.
@@ -122,9 +103,9 @@ pub enum ComponentTargetKind {
 /// - Consumers should use [`PageConfig::get`] or [`PageConfig::iter`] instead
 ///   of merging the two maps.
 ///
-/// Discovery bounds `local` per page ([`MAX_PAGE_LOCAL_COMPONENTS`]) and
-/// across the project ([`MAX_TOTAL_LOCAL_COMPONENTS`]); truncation is reported
-/// once through a `Truncated` discovery issue.
+/// Discovery bounds `local` across the project
+/// ([`MAX_TOTAL_LOCAL_COMPONENTS`]); truncation is reported once through a
+/// `Truncated` discovery issue.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct PageConfig {
@@ -304,30 +285,15 @@ pub fn parse_app_config(
         using_components: raw_using_components,
     } = raw;
     let mut issues = Vec::new();
-    let mut remaining = MAX_APP_ENTRIES;
-    let mut truncated = false;
 
-    let (pages, page_issues) = app_pages(file, raw_pages, &mut remaining, &mut truncated);
+    let (pages, page_issues) = app_pages(file, raw_pages);
     issues.extend(page_issues);
-    let (sub_packages, sub_package_issues) =
-        app_sub_packages(file, raw_sub_packages, &mut remaining, &mut truncated);
+    let (sub_packages, sub_package_issues) = app_sub_packages(file, raw_sub_packages);
     issues.extend(sub_package_issues);
 
-    let (using_components, component_issues, components_truncated) = resolve_components(
-        file,
-        raw_using_components,
-        remaining,
-        file.parent().as_ref(),
-    );
+    let (using_components, component_issues) =
+        resolve_components(file, raw_using_components, file.parent().as_ref());
     issues.extend(component_issues);
-    truncated |= components_truncated;
-    if truncated {
-        issues.push(issue(
-            file,
-            DiscoveryIssueKind::Truncated,
-            format!("app.json entries truncated to {MAX_APP_ENTRIES}"),
-        ));
-    }
 
     Ok(Parsed {
         value: AppConfig {
@@ -340,29 +306,16 @@ pub fn parse_app_config(
 }
 
 /// Normalizes the main-package page list.
-fn app_pages(
-    file: &ProjectPath,
-    raw_pages: Vec<String>,
-    remaining: &mut usize,
-    truncated: &mut bool,
-) -> (Vec<String>, Vec<DiscoveryIssue>) {
+fn app_pages(file: &ProjectPath, raw_pages: Vec<String>) -> (Vec<String>, Vec<DiscoveryIssue>) {
     let mut pages = Vec::new();
     let mut issues = Vec::new();
     for route in raw_pages {
-        if *remaining == 0 {
-            *truncated = true;
-            break;
-        }
-        *remaining -= 1;
         match ProjectPath::new(&route) {
             Ok(path) => pages.push(path.as_str().to_owned()),
             Err(error) => issues.push(issue(
                 file,
                 DiscoveryIssueKind::InvalidRoute,
-                format!(
-                    "invalid page route `{}`: {error}",
-                    truncate_message(&route, MAX_MESSAGE_BYTES)
-                ),
+                format!("invalid page route `{route}`: {error}"),
             )),
         }
     }
@@ -373,42 +326,23 @@ fn app_pages(
 fn app_sub_packages(
     file: &ProjectPath,
     raw_sub_packages: Vec<RawSubPackage>,
-    remaining: &mut usize,
-    truncated: &mut bool,
 ) -> (Vec<SubPackage>, Vec<DiscoveryIssue>) {
     let mut sub_packages = Vec::new();
     let mut issues = Vec::new();
-    'sub_packages: for sub_package in raw_sub_packages {
-        if *remaining == 0 {
-            *truncated = true;
-            break;
-        }
-        *remaining -= 1;
+    for sub_package in raw_sub_packages {
         let root = match ProjectPath::new(&sub_package.root) {
             Ok(root) => root,
             Err(error) => {
                 issues.push(issue(
                     file,
                     DiscoveryIssueKind::InvalidRoute,
-                    format!(
-                        "invalid subpackage root `{}`: {error}",
-                        truncate_message(&sub_package.root, MAX_MESSAGE_BYTES)
-                    ),
+                    format!("invalid subpackage root `{}`: {error}", sub_package.root),
                 ));
                 continue;
             }
         };
         let mut routes = Vec::new();
         for page in sub_package.pages {
-            if *remaining == 0 {
-                *truncated = true;
-                sub_packages.push(SubPackage {
-                    root,
-                    pages: routes,
-                });
-                break 'sub_packages;
-            }
-            *remaining -= 1;
             let route = ProjectPath::new(&page)
                 .and_then(|relative| ProjectPath::resolve(Some(&root), relative.as_str()));
             match route {
@@ -416,10 +350,7 @@ fn app_sub_packages(
                 Err(error) => issues.push(issue(
                     file,
                     DiscoveryIssueKind::InvalidRoute,
-                    format!(
-                        "invalid subpackage page `{}`: {error}",
-                        truncate_message(&page, MAX_MESSAGE_BYTES)
-                    ),
+                    format!("invalid subpackage page `{page}`: {error}"),
                 )),
             }
         }
@@ -450,15 +381,7 @@ fn parse_page_config_in(
     app_dir: Option<&ProjectPath>,
 ) -> Result<Parsed<PageConfig>, DiscoveryError> {
     let raw: RawPageConfig = parse_json(file, text)?;
-    let (using_components, mut issues, truncated) =
-        resolve_components(file, raw.using_components, MAX_APP_ENTRIES, app_dir);
-    if truncated {
-        issues.push(issue(
-            file,
-            DiscoveryIssueKind::Truncated,
-            format!("usingComponents truncated to {MAX_APP_ENTRIES} entries"),
-        ));
-    }
+    let (using_components, issues) = resolve_components(file, raw.using_components, app_dir);
     Ok(Parsed {
         value: PageConfig {
             global: Arc::new(BTreeMap::new()),
@@ -674,12 +597,12 @@ impl RegistrationScriptBudget {
 /// disk for every file that discovery reads. Missing or malformed inputs are
 /// reported in [`Discovery::issues`] instead of failing the whole project.
 ///
-/// Results are bounded by [`MAX_PAGES`], [`MAX_COMPONENTS`],
-/// [`MAX_ISSUES`], [`MAX_APP_ENTRIES`], [`MAX_TOTAL_LOCAL_COMPONENTS`],
-/// [`MAX_DISCOVERY_JSON_BYTES`] and [`MAX_COMPONENT_SCRIPT_BYTES`].
+/// Results are bounded by [`MAX_COMPONENTS`], [`MAX_ISSUES`],
+/// [`MAX_TOTAL_LOCAL_COMPONENTS`], [`MAX_DISCOVERY_JSON_BYTES`] and
+/// [`MAX_COMPONENT_SCRIPT_BYTES`].
 #[must_use]
 pub fn discover(root: &Path, overlay: &Overlay, app_json: &ProjectPath) -> Discovery {
-    discover_with_limits(root, overlay, app_json, MAX_PAGES, MAX_COMPONENTS)
+    discover_with_limits(root, overlay, app_json, MAX_COMPONENTS)
 }
 
 /// Reads and parses `app.json`, converting failures into issues.
@@ -747,15 +670,13 @@ fn load_app(
     }
 }
 
-/// Discovery with explicit page/component limits, used by tests and future
-/// incremental analysis. The public entry point uses [`MAX_PAGES`] and
-/// [`MAX_COMPONENTS`].
+/// Discovery with an explicit component limit, used by tests and future
+/// incremental analysis. The public entry point uses [`MAX_COMPONENTS`].
 #[allow(clippy::too_many_lines)] // discovery pipeline is intentionally linear
 fn discover_with_limits(
     root: &Path,
     overlay: &Overlay,
     app_json: &ProjectPath,
-    max_pages: usize,
     max_components: usize,
 ) -> Discovery {
     let mut issues = Issues::new(app_json.clone());
@@ -778,8 +699,6 @@ fn discover_with_limits(
     for sub_package in &app.sub_packages {
         routes.extend(sub_package.pages.iter().cloned());
     }
-    let pages_truncated = routes.len() > max_pages;
-    routes.truncate(max_pages);
 
     let mut registration_budget = RegistrationScriptBudget::new();
     let mut context = PageContext {
@@ -809,13 +728,6 @@ fn discover_with_limits(
         ) {
             pages.push(page);
         }
-    }
-    if pages_truncated {
-        issues.push(issue(
-            app_json,
-            DiscoveryIssueKind::Truncated,
-            format!("pages truncated to {max_pages} entries"),
-        ));
     }
     if context.registration_budget.truncated {
         issues.push(issue(
@@ -908,24 +820,19 @@ where
         file: file.clone(),
         line: error.line(),
         column: error.column(),
-        message: truncate_message(&error.to_string(), MAX_MESSAGE_BYTES).to_owned(),
+        message: error.to_string(),
     })
 }
 
 /// Resolves `usingComponents` entries, collecting per-entry issues.
-///
-/// At most `limit` entries are processed. Returns the map, the issues and
-/// whether entries were dropped.
 fn resolve_components(
     file: &ProjectPath,
     entries: BTreeMap<String, String>,
-    limit: usize,
     app_dir: Option<&ProjectPath>,
-) -> (BTreeMap<String, UsingComponent>, Vec<DiscoveryIssue>, bool) {
-    let truncated = entries.len() > limit;
+) -> (BTreeMap<String, UsingComponent>, Vec<DiscoveryIssue>) {
     let mut issues = Vec::new();
     let mut resolved = BTreeMap::new();
-    for (name, specifier) in entries.into_iter().take(limit) {
+    for (name, specifier) in entries {
         if name.is_empty() {
             issues.push(issue(
                 file,
@@ -946,10 +853,7 @@ fn resolve_components(
             issues.push(issue(
                 file,
                 DiscoveryIssueKind::InvalidComponentRef,
-                format!(
-                    "component name `{}` is not a valid WXML tag",
-                    truncate_message(&name, MAX_MESSAGE_BYTES)
-                ),
+                format!("component name `{name}` is not a valid WXML tag"),
             ));
             continue;
         }
@@ -968,15 +872,11 @@ fn resolve_components(
             Err(error) => issues.push(issue(
                 file,
                 DiscoveryIssueKind::InvalidComponentRef,
-                format!(
-                    "cannot resolve component `{}` from `{}`: {error}",
-                    truncate_message(&name, MAX_MESSAGE_BYTES),
-                    truncate_message(&specifier, MAX_MESSAGE_BYTES)
-                ),
+                format!("cannot resolve component `{name}` from `{specifier}`: {error}"),
             )),
         }
     }
-    (resolved, issues, truncated)
+    (resolved, issues)
 }
 
 /// Classifies one component specifier and resolves local paths.
@@ -1099,7 +999,7 @@ fn is_local_specifier(specifier: &str) -> bool {
 
 /// Builds one page entry, recording missing files and script conflicts.
 ///
-/// Page-local components are capped per page and by the shared project budget.
+/// Page-local components are capped by the shared project budget.
 /// Once the project budget is exhausted, later page JSON files are only probed
 /// for existence and are not parsed, so a large shared JSON cannot multiply
 /// memory or CPU across thousands of pages.
@@ -1124,10 +1024,7 @@ fn build_page(
             issues.push(issue(
                 source,
                 DiscoveryIssueKind::InvalidRoute,
-                format!(
-                    "invalid page route `{}`: {error}",
-                    truncate_message(route, MAX_MESSAGE_BYTES)
-                ),
+                format!("invalid page route `{route}`: {error}"),
             ));
             return None;
         }
@@ -1138,10 +1035,7 @@ fn build_page(
             issues.push(issue(
                 source,
                 DiscoveryIssueKind::InvalidRoute,
-                format!(
-                    "invalid page template path for `{}`: {error}",
-                    truncate_message(route, MAX_MESSAGE_BYTES)
-                ),
+                format!("invalid page template path for `{route}`: {error}"),
             ));
             return None;
         }
@@ -1150,11 +1044,7 @@ fn build_page(
         issues.push(issue(
             &wxml,
             DiscoveryIssueKind::MissingFile,
-            format!(
-                "page template `{}` was not found for route `{}`",
-                truncate_message(wxml.as_str(), MAX_MESSAGE_BYTES),
-                truncate_message(route, MAX_MESSAGE_BYTES)
-            ),
+            format!("page template `{wxml}` was not found for route `{route}`"),
         ));
     }
 
@@ -1164,11 +1054,7 @@ fn build_page(
         issues.push(issue(
             &conflict_file,
             DiscoveryIssueKind::ScriptConflict,
-            format!(
-                "both `{}.ts` and `{}.js` exist; using TypeScript",
-                truncate_message(base.as_str(), MAX_MESSAGE_BYTES),
-                truncate_message(base.as_str(), MAX_MESSAGE_BYTES)
-            ),
+            format!("both `{base}.ts` and `{base}.js` exist; using TypeScript"),
         ));
     }
 
@@ -1321,19 +1207,12 @@ fn finish_page_local(
             let style_isolation = parsed.value.style_isolation;
             let add_global_class = parsed.value.add_global_class;
             let mut local = parsed.value.local;
-            let page_cap_hit = local.len() > MAX_PAGE_LOCAL_COMPONENTS;
-            if page_cap_hit {
-                local = local.into_iter().take(MAX_PAGE_LOCAL_COMPONENTS).collect();
-            }
             let keep = local.len().min(*local_budget);
             if keep < local.len() {
                 local = local.into_iter().take(keep).collect();
                 *local_truncated = true;
             }
             *local_budget -= keep;
-            if page_cap_hit {
-                *local_truncated = true;
-            }
             report_missing_components(root, overlay, &candidate, &local, reported_missing, issues);
             (Some(candidate), local, style_isolation, add_global_class)
         }
@@ -1386,25 +1265,25 @@ fn report_missing_components(
 /// Queue of component bases still to visit.
 #[derive(Default)]
 struct PendingComponents {
-    queue: VecDeque<(ProjectPath, usize)>,
+    queue: VecDeque<ProjectPath>,
     queued: BTreeSet<ProjectPath>,
 }
 
 impl PendingComponents {
     /// Enqueues every resolved local component in `components`.
-    fn push_from(&mut self, components: &BTreeMap<String, UsingComponent>, depth: usize) {
+    fn push_from(&mut self, components: &BTreeMap<String, UsingComponent>) {
         for component in components.values() {
             let Some(base) = &component.component else {
                 continue;
             };
             if self.queued.insert(base.clone()) {
-                self.queue.push_back((base.clone(), depth));
+                self.queue.push_back(base.clone());
             }
         }
     }
 
     /// Returns the next component to visit.
-    fn pop(&mut self) -> Option<(ProjectPath, usize)> {
+    fn pop(&mut self) -> Option<ProjectPath> {
         self.queue.pop_front()
     }
 }
@@ -1419,14 +1298,14 @@ fn discover_components(
     script_budget: &mut ComponentScriptBudget,
 ) -> (Vec<Component>, bool) {
     let mut pending = PendingComponents::default();
-    pending.push_from(context.global_components, 0);
+    pending.push_from(context.global_components);
     for page in pages {
-        pending.push_from(&page.config.local, 0);
+        pending.push_from(&page.config.local);
     }
 
     let mut components = Vec::new();
     let mut truncated = false;
-    while let Some((base, depth)) = pending.pop() {
+    while let Some(base) = pending.pop() {
         if components.len() >= max_components {
             truncated = true;
             break;
@@ -1434,7 +1313,6 @@ fn discover_components(
         if let Some(component) = visit_component(
             context,
             &base,
-            depth,
             &mut pending,
             reported_missing,
             issues,
@@ -1451,7 +1329,6 @@ fn discover_components(
 fn visit_component(
     context: &mut PageContext<'_>,
     base: &ProjectPath,
-    depth: usize,
     pending: &mut PendingComponents,
     reported_missing: &mut BTreeSet<ProjectPath>,
     issues: &mut Issues,
@@ -1459,14 +1336,6 @@ fn visit_component(
 ) -> Option<Component> {
     let root = context.root;
     let overlay = context.overlay;
-    if depth > MAX_COMPONENT_DEPTH {
-        issues.push(issue(
-            base,
-            DiscoveryIssueKind::InvalidComponentRef,
-            format!("component reference depth exceeded at `{base}`"),
-        ));
-        return None;
-    }
     let wxml = base.with_appended_extension("wxml").ok()?;
     if !exists(root, overlay, &wxml) {
         return None;
@@ -1478,16 +1347,12 @@ fn visit_component(
         issues.push(issue(
             &conflict_file,
             DiscoveryIssueKind::ScriptConflict,
-            format!(
-                "both `{}.ts` and `{}.js` exist; using TypeScript",
-                truncate_message(base.as_str(), MAX_MESSAGE_BYTES),
-                truncate_message(base.as_str(), MAX_MESSAGE_BYTES)
-            ),
+            format!("both `{base}.ts` and `{base}.js` exist; using TypeScript"),
         ));
     }
 
     let (json, local, style_isolation, add_global_class) =
-        load_component_json(context, base, depth, pending, reported_missing, issues);
+        load_component_json(context, base, pending, reported_missing, issues);
     let (properties, script_hints) =
         component_properties(root, overlay, script.script.as_ref(), issues, script_budget);
     let property_facts = script::extract_component_property_facts(&properties);
@@ -1518,7 +1383,6 @@ fn visit_component(
 fn load_component_json(
     context: &mut PageContext<'_>,
     base: &ProjectPath,
-    depth: usize,
     pending: &mut PendingComponents,
     reported_missing: &mut BTreeSet<ProjectPath>,
     issues: &mut Issues,
@@ -1585,7 +1449,7 @@ fn load_component_json(
                         reported_missing,
                         issues,
                     );
-                    pending.push_from(&parsed.value.local, depth + 1);
+                    pending.push_from(&parsed.value.local);
                     parsed_local = parsed.value.local;
                 }
                 Err(error) => {
@@ -1617,10 +1481,7 @@ fn load_component_json(
     }
 }
 
-/// Maximum bytes read from a page script for registration/isolation hints.
-const MAX_REGISTRATION_SCRIPT_BYTES: usize = 64 * 1024;
-
-/// Reads a bounded page-script prefix and extracts registration hints.
+/// Reads a page script and extracts registration hints.
 fn load_page_script_hints(
     root: &Path,
     overlay: &Overlay,
@@ -1631,56 +1492,25 @@ fn load_page_script_hints(
     let Some(script) = script else {
         return ScriptStyleHints::default();
     };
-    if let Some(text) = overlay.text(script) {
-        let prefix = prefix_text(text, MAX_REGISTRATION_SCRIPT_BYTES);
-        if !budget.charge(prefix.len()) {
-            return ScriptStyleHints::unknown();
-        }
-        return script::registration_style_hints(prefix);
-    }
     if !budget.has_capacity() {
         return ScriptStyleHints::unknown();
     }
-    let Ok(file) = std::fs::File::open(root.join(script.as_str())) else {
-        issues.push(issue(
-            script,
-            DiscoveryIssueKind::UnreadableFile,
-            "page script could not be read for registration hints".to_owned(),
-        ));
-        return ScriptStyleHints::unknown();
+    let text = match overlay.read_text(root, script) {
+        Ok(Some(text)) => text,
+        Ok(None) => return ScriptStyleHints::default(),
+        Err(error) => {
+            issues.push(issue(
+                script,
+                DiscoveryIssueKind::UnreadableFile,
+                error.to_string(),
+            ));
+            return ScriptStyleHints::unknown();
+        }
     };
-    let mut bytes = Vec::new();
-    if file
-        .take(u64::try_from(MAX_REGISTRATION_SCRIPT_BYTES).unwrap_or(u64::MAX))
-        .read_to_end(&mut bytes)
-        .is_err()
-    {
-        issues.push(issue(
-            script,
-            DiscoveryIssueKind::UnreadableFile,
-            "page script could not be read for registration hints".to_owned(),
-        ));
+    if !budget.charge(text.len()) {
         return ScriptStyleHints::unknown();
     }
-    if !budget.charge(bytes.len()) {
-        return ScriptStyleHints::unknown();
-    }
-    std::str::from_utf8(&bytes).map_or_else(
-        |_| ScriptStyleHints::unknown(),
-        script::registration_style_hints,
-    )
-}
-
-/// Truncates text to a byte limit on a UTF-8 boundary.
-fn prefix_text(text: &str, limit: usize) -> &str {
-    if text.len() <= limit {
-        return text;
-    }
-    let mut end = limit;
-    while end > 0 && !text.is_char_boundary(end) {
-        end -= 1;
-    }
-    &text[..end]
+    script::registration_style_hints(&text)
 }
 
 /// Extracts `properties` roots from a component script.
@@ -1765,7 +1595,7 @@ pub(crate) fn issue(
     DiscoveryIssue {
         file: file.clone(),
         kind,
-        message: truncate_owned(message, MAX_MESSAGE_BYTES),
+        message,
     }
 }
 
@@ -2456,18 +2286,16 @@ mod tests {
     }
 
     #[test]
-    fn truncates_app_entries_at_the_budget() {
-        let routes: Vec<String> = (0..=MAX_APP_ENTRIES)
+    fn keeps_every_app_entry() {
+        const ROUTES: usize = 10_001;
+        let routes: Vec<String> = (0..ROUTES)
             .map(|index| format!("\"pages/p{index}/p{index}\""))
             .collect();
         let json = format!("{{\"pages\": [{}]}}", routes.join(","));
 
         let parsed = parse_app_config(&path("app.json"), &json).expect("parse");
-        assert_eq!(parsed.value.pages.len(), MAX_APP_ENTRIES);
-        assert_eq!(
-            parsed.issues.last().map(|issue| issue.kind),
-            Some(DiscoveryIssueKind::Truncated)
-        );
+        assert_eq!(parsed.value.pages.len(), ROUTES);
+        assert!(parsed.issues.is_empty(), "{:?}", parsed.issues);
     }
 
     #[test]
@@ -2491,7 +2319,7 @@ mod tests {
     }
 
     #[test]
-    fn discovery_limits_pages_and_components() {
+    fn discovery_limits_components() {
         let temp = TempDir::new("result-limits");
         temp.write(
             "app.json",
@@ -2514,9 +2342,8 @@ mod tests {
             );
         }
 
-        let discovery =
-            discover_with_limits(&temp.root(), &Overlay::new(), &path("app.json"), 2, 2);
-        assert_eq!(discovery.pages.len(), 2);
+        let discovery = discover_with_limits(&temp.root(), &Overlay::new(), &path("app.json"), 2);
+        assert_eq!(discovery.pages.len(), 3);
         assert_eq!(discovery.components.len(), 2);
         assert!(discovery.truncated);
         assert_eq!(
@@ -2525,7 +2352,7 @@ mod tests {
                 .iter()
                 .filter(|issue| issue.kind == DiscoveryIssueKind::Truncated)
                 .count(),
-            2
+            1
         );
     }
 
@@ -2600,10 +2427,7 @@ mod tests {
             .map(|page| page.config.local.len())
             .sum();
         assert_eq!(total, MAX_TOTAL_LOCAL_COMPONENTS);
-        assert_eq!(
-            project.pages()[0].config.local.len(),
-            MAX_PAGE_LOCAL_COMPONENTS
-        );
+        assert_eq!(project.pages()[0].config.local.len(), ENTRIES);
         assert!(
             project
                 .issues()

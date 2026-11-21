@@ -18,7 +18,7 @@ use wxml_types::{
     analyze_template_semantics,
 };
 
-use crate::project_host::{ViewComponent, ViewTarget};
+use crate::project_host::{MAX_PROJECT_VIEWS, ViewComponent, ViewTarget};
 use crate::server::Server;
 use crate::structure::StructureFacts;
 use crate::workspace::Document;
@@ -26,17 +26,8 @@ use crate::workspace::Document;
 /// Maximum WXML documents included through `<include>` for one view.
 pub(crate) const MAX_INCLUDED_DOCS: usize = 32;
 
-/// Maximum project views scanned for references and workspace symbols.
-pub(crate) const MAX_PROJECT_VIEWS: usize = 512;
-
-/// Maximum estimated bytes of project WXML parsed for one query.
-pub(crate) const MAX_PROJECT_WXML_BYTES: usize = 16 * 1024 * 1024;
-
 /// Maximum distinct imported template documents read for one request.
 pub(crate) const MAX_IMPORT_DOCS: usize = 64;
-
-/// Maximum imported template bytes read for one request.
-pub(crate) const MAX_IMPORT_BYTES: usize = 4 * 1024 * 1024;
 
 /// One request-scoped imported template document.
 #[derive(Debug)]
@@ -52,13 +43,12 @@ pub(crate) struct ImportedDoc {
 /// Request-scoped cache for statically imported template documents.
 ///
 /// Lookups are keyed by `FileId` and happen before any read or parse. The
-/// cache enforces a total document/byte budget; once either bound is reached,
-/// every later miss fails and callers must mark their result incomplete instead
-/// of continuing to touch the filesystem.
+/// cache enforces a document budget; once it is reached, every later miss fails
+/// and callers must mark their result incomplete instead of continuing to touch
+/// the filesystem.
 #[derive(Debug, Default)]
 pub(crate) struct ImportCache {
     docs: BTreeMap<wxml_types::FileId, Option<ImportedDoc>>,
-    bytes: usize,
     exhausted: bool,
 }
 
@@ -82,11 +72,6 @@ impl ImportCache {
                 return None;
             }
             let loaded = server.host.file_text(&file).and_then(|text| {
-                if self.bytes.saturating_add(text.len()) > MAX_IMPORT_BYTES {
-                    self.exhausted = true;
-                    return None;
-                }
-                self.bytes = self.bytes.saturating_add(text.len());
                 parse_doc(file.clone(), &text).map(|doc| {
                     let semantics = analyze_template_semantics(doc.tree());
                     ImportedDoc {
@@ -428,7 +413,6 @@ pub(crate) fn project_views(server: &Server, current: &ViewFacts) -> ProjectView
     let mut complete;
     let mut reason;
     let mut seen = BTreeSet::new();
-    let mut bytes = 0_usize;
     seen.insert(current.doc.file.clone());
     views.push(ProjectView {
         doc: QueryDoc {
@@ -445,14 +429,11 @@ pub(crate) fn project_views(server: &Server, current: &ViewFacts) -> ProjectView
             if seen.contains(&template.file) {
                 continue;
             }
-            if views.len() >= MAX_PROJECT_VIEWS
-                || bytes.saturating_add(template.text.len()) > MAX_PROJECT_WXML_BYTES
-            {
+            if views.len() >= MAX_PROJECT_VIEWS {
                 complete = false;
                 reason = Some("the project WXML list is truncated");
                 break;
             }
-            bytes = bytes.saturating_add(template.text.len());
             let Some(doc) = parse_doc(template.file.clone(), &template.text) else {
                 complete = false;
                 reason = Some("a project template could not be parsed");

@@ -17,7 +17,7 @@ context: |
   `cargo clippy --workspace --all-targets --all-features -- -D warnings`、
   `cargo test --workspace --all-features`、`cargo doc --workspace --no-deps`、
   `cargo deny --offline check`；默认 `cargo test` 不跑真实引擎，类型行为需
-  `TSGO_BIN`/`TSGO_TYPINGS_ROOT` 或安装原生布局后验证。
+  `TSRS_BIN`/`TSRS_TYPINGS_ROOT` 或安装原生布局后验证。
   不要在仓库内留下临时文件或证据目录（ADR-0004/0005）。
 
 # Per-artifact rules (optional)

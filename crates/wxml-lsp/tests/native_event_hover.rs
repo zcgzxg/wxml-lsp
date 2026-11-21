@@ -1,7 +1,7 @@
 //! Opt-in native-engine LSP gate for event-handler hover and definition.
 //!
 //! The gate reuses the `documentSymbol` fixture (`support::provision`): it
-//! builds the disposable typings-only package from `TSGO_TYPINGS_ROOT`, replaces the
+//! builds the disposable typings-only package from `TSRS_TYPINGS_ROOT`, replaces the
 //! sample project with four pages, starts `<package>/bin/wxml-lsp --stdio
 //! --backend native` and drives real `textDocument/hover` and
 //! `textDocument/definition` requests.
@@ -15,7 +15,7 @@
 //!   by a `Page` behavior degrades to an empty hover and definition instead of
 //!   fabricating a type, signature or location.
 //!
-//! Without `TSGO_TYPINGS_ROOT` the fixture prints an explicit `SKIP` reason through
+//! Without `TSRS_TYPINGS_ROOT` the fixture prints an explicit `SKIP` reason through
 //! [`provision`] and returns `None`; `WXML_REQUIRE_REAL_ENGINE=1|true` turns a
 //! missing input into a panic. Only a *missing* input is skippable.
 

@@ -31,8 +31,6 @@ use crate::server::{Inflight, Server, log};
 const MAX_REFERENCE_LOCATIONS: usize = 4096;
 /// Maximum target files indexed for one references answer.
 const MAX_REFERENCE_FILES: usize = 64;
-/// Maximum estimated text/index bytes read for references.
-const MAX_REFERENCE_INDEX_BYTES: usize = 64 * 1024 * 1024;
 /// Maximum bounded edit distance considered by a typo quick fix.
 const MAX_SUGGESTION_DISTANCE: usize = 2;
 
@@ -225,7 +223,7 @@ impl Server {
                 "missing newName",
             )];
         };
-        if new_name.is_empty() || new_name.len() > wxml_types::MAX_SYMBOL_NAME_BYTES {
+        if new_name.is_empty() {
             return vec![Outgoing::failure(
                 id,
                 jsonrpc::error_codes::INVALID_PARAMS,
@@ -1053,7 +1051,7 @@ fn locations_value(server: &Server, tokens: &Tokens) -> (Vec<Value>, bool) {
             let cost = text
                 .len()
                 .saturating_add(8_usize.saturating_mul(text.match_indices('\n').count()));
-            if bytes.saturating_add(cost) > MAX_REFERENCE_INDEX_BYTES {
+            if bytes.saturating_add(cost) > crate::workspace::MAX_QUERY_INDEX_BYTES {
                 complete = false;
                 break;
             }

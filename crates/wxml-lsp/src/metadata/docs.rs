@@ -188,7 +188,7 @@ fn event_document(name: &str, detail: &str) -> String {
 /// and says so explicitly. A declared `JSDoc` description, when present, is
 /// appended as its own paragraph.
 fn declared_event_document(component: &ViewComponent, name: &str) -> Option<String> {
-    let (_, event) = wxml_backend_tsgo::script::events::parse_event_attribute(name)?;
+    let (_, event) = wxml_backend_tsrs::script::events::parse_event_attribute(name)?;
     let typing = component.typing.as_deref()?;
     let declared = typing.event_named(&event)?;
     let signature = expected_signature(declared.detail_text.as_deref());

@@ -14,7 +14,7 @@ ADR-0006 要求通过 `initializationOptions.apps` 显式声明小程序根和�
 
 1. 构建期生成页面路由。`app.json` 只保留源码中可静态列出的页面，生成式页面（例如 `feedback/pages/feedback-detail/index`）不在其中，LSP 因找不到 view 而无法提供类型 hover。
 2. 同一仓库的多个 worktree 需要同步 `.zed/settings.json`。worktree 中没有该文件时，默认 `{ "root": "." }` 指向仓库根，找不到 `app.json`，所有模板都退化为无类型。
-3. monorepo 工作区包。小程序通过 `node_modules/jl-api -> packages/api` 引用工作区包，而类型快照的边界是 `projectRoot`；包源码未进入快照时，tsgo 无法解析其中的枚举和类型。
+3. monorepo 工作区包。小程序通过 `node_modules/jl-api -> packages/api` 引用工作区包，而类型快照的边界是 `projectRoot`；包源码未进入快照时，tsrs 无法解析其中的枚举和类型。
 
 同时，Zed 扩展已经能通过 `Worktree.root-path` 获得工作区根，LSP 也已从 `initialize.rootUri` / `workspaceFolders` 获得同一根目录。继续要求用户重复声明根目录，收益低于维护成本。
 
@@ -141,11 +141,10 @@ ADR-0006 要求通过 `initializationOptions.apps` 显式声明小程序根和�
   - `apps/miniprogram/src/feedback/pages/feedback-detail/index.wxml` 的 `Thread` 返回 `ThreadDetail`，`Thread.GroupId` / `Thread.Subject` 返回 `number` / `string` 及字段文档；
   - `right-fx-input` 返回 `` `right-fx-input` — WXSS class ``，不存在的类名对照返回 `null`。
 
-已知但不阻塞本决策的残留：工作区包的第三方依赖不在快照内，tsgo 会报告部分 `typeRoots`/模块解析降级；模板 hover 的目标行为不受影响。
+已知但不阻塞本决策的残留：工作区包的第三方依赖不在快照内，tsrs 会报告部分 `typeRoots`/模块解析降级；模板 hover 的目标行为不受影响。
 
 ## References
 
 - [ADR-0006：显式小程序根与类型项目根](0006-explicit-mini-program-roots.md)
-- [ADR-0008：Rust + tsgo 类型后端](0008-rust-tsgo-no-node-backend.md)
-- [ADR-0008：native 类型后端](0008-rust-tsgo-no-node-backend.md)（原 C1 类型桥已删除，历史见 tag `pre-slim-20261120`）
+- [ADR-0012：进程内 tsrs 类型引擎会话](0012-in-process-tsrs-session.md)（原 C1 类型桥与 Node 后端已删除，历史见 tag `pre-slim-20261120`）
 - [Zed 初始化选项](../../editors/zed/README.md#mini-program-roots-initialization-options)

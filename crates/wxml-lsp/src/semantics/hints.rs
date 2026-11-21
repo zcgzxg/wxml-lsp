@@ -16,17 +16,6 @@ use super::target::{collect_template_refs_with_views, for_each_element};
 use crate::server::Server;
 use crate::workspace::Document;
 
-/// Maximum symbols returned by `workspace/symbol`.
-const MAX_WORKSPACE_SYMBOLS: usize = 512;
-/// Maximum inlay hints returned for one document.
-const MAX_INLAY_HINTS: usize = 1_000;
-/// Maximum template lens entries before the response is marked partial.
-const MAX_TEMPLATE_LENSES: usize = 64;
-/// Maximum component lens entries.
-const MAX_COMPONENT_LENSES: usize = 64;
-/// Maximum project WXML documents inspected for one workspace query.
-const MAX_SYMBOL_DOCUMENTS: usize = 1_024;
-
 #[derive(Clone, Debug)]
 struct RawSymbol {
     file: wxml_types::FileId,
@@ -43,7 +32,6 @@ pub(crate) fn workspace_symbols(server: &Server, query: &str) -> Value {
     let mut texts: BTreeMap<wxml_types::FileId, std::sync::Arc<str>> = BTreeMap::new();
     let mut seen = BTreeSet::new();
     let mut complete = true;
-    let mut inspected = 0_usize;
     let mut imports = ImportCache::default();
     let original_project = server.host.project_id();
     for project in server.host.project_ids() {
@@ -63,11 +51,6 @@ pub(crate) fn workspace_symbols(server: &Server, query: &str) -> Value {
             break;
         }
         for template in templates.templates {
-            if inspected >= MAX_SYMBOL_DOCUMENTS {
-                complete = false;
-                break;
-            }
-            inspected += 1;
             let Some(doc) = parse_doc(template.file.clone(), &template.text) else {
                 complete = false;
                 break;
@@ -129,12 +112,6 @@ pub(crate) fn workspace_symbols(server: &Server, query: &str) -> Value {
     raw.dedup_by(|left, right| {
         left.file == right.file && left.range == right.range && left.name == right.name
     });
-    if raw.len() > MAX_WORKSPACE_SYMBOLS {
-        raw.truncate(MAX_WORKSPACE_SYMBOLS);
-        crate::server::log(format_args!(
-            "workspace symbols truncated at {MAX_WORKSPACE_SYMBOLS}"
-        ));
-    }
     let mut symbols = Vec::with_capacity(raw.len());
     let mut current_file = None;
     let mut cursor: Option<Utf16Cursor<'_>> = None;
@@ -201,14 +178,8 @@ fn add_template_definitions(
     visited.insert(doc.file.clone());
     let mut queue: Vec<(wxml_types::FileId, wxml_types::TemplateSemantics)> =
         vec![(doc.file.clone(), semantics.clone())];
-    let mut budget = 64_usize;
     while let Some((file, semantics)) = queue.pop() {
         for import in &semantics.imports {
-            if budget == 0 {
-                *complete = false;
-                return;
-            }
-            budget = budget.saturating_sub(1);
             let Some(path) = wxml_types::resolve_static_specifier(file.path(), &import.src) else {
                 *complete = false;
                 continue;
@@ -305,9 +276,6 @@ pub(crate) fn inlay_hints(
     let end = start.max(end);
     let mut raw: Vec<(u32, String)> = Vec::new();
     for_each_element(facts.doc.tree(), &mut |element| {
-        if raw.len() >= MAX_INLAY_HINTS {
-            return;
-        }
         let Some(name) = element.name() else {
             return;
         };
@@ -322,9 +290,6 @@ pub(crate) fn inlay_hints(
             return;
         }
         for attribute in element.attributes() {
-            if raw.len() >= MAX_INLAY_HINTS {
-                return;
-            }
             let Some(attribute_name) = attribute.name() else {
                 continue;
             };
@@ -368,9 +333,7 @@ pub(crate) fn inlay_hints(
     let mut hints = Vec::with_capacity(raw.len());
     for (offset, label) in raw {
         let Some(position) = cursor.position(offset) else {
-            crate::server::log(format_args!(
-                "inlay hints stopped at the position scan budget"
-            ));
+            crate::server::log(format_args!("inlay hint position is not mappable"));
             break;
         };
         hints.push(json!({
@@ -436,16 +399,10 @@ pub(crate) fn code_lens(server: &Server, document: &Document) -> Value {
     let mut imports = ImportCache::default();
     let mut raw: Vec<(u32, String, Value)> = Vec::new();
     let mut seen_templates = BTreeSet::new();
-    let mut template_count = 0_usize;
-    let template_truncated = facts.semantics.distinct_definitions().count() > MAX_TEMPLATE_LENSES;
     for definition in facts.semantics.distinct_definitions() {
         if !seen_templates.insert(definition.name.clone()) {
             continue;
         }
-        if template_count >= MAX_TEMPLATE_LENSES {
-            break;
-        }
-        template_count += 1;
         let collected = collect_template_refs_with_views(
             server,
             &facts,
@@ -454,14 +411,11 @@ pub(crate) fn code_lens(server: &Server, document: &Document) -> Value {
             &definition.name,
         );
         let count = collected.calls.len();
-        let mut title = if collected.complete {
+        let title = if collected.complete {
             format!("{count} template call{}", plural(count))
         } else {
             format!("{count}+ indexed template call{}", plural(count))
         };
-        if template_truncated {
-            title.push_str(" (lens list truncated)");
-        }
         raw.push((
             definition.name_range.start(),
             title,
@@ -469,20 +423,15 @@ pub(crate) fn code_lens(server: &Server, document: &Document) -> Value {
                 "kind": "template",
                 "name": definition.name,
                 "count": count,
-                "complete": collected.complete && !template_truncated,
+                "complete": collected.complete,
             }),
         ));
     }
     let mut seen_components = BTreeSet::new();
-    let mut component_count = 0_usize;
     for component in &facts.components {
         if !seen_components.insert(component.name.clone()) {
             continue;
         }
-        if component_count >= MAX_COMPONENT_LENSES {
-            break;
-        }
-        component_count += 1;
         let mut file_count = 0_usize;
         let mut first_in_file = None;
         let mut first_include = None;
@@ -541,9 +490,7 @@ pub(crate) fn code_lens(server: &Server, document: &Document) -> Value {
     let mut lenses = Vec::with_capacity(raw.len());
     for (offset, title, data) in raw {
         let Some(position) = cursor.position(offset) else {
-            crate::server::log(format_args!(
-                "code lenses stopped at the position scan budget"
-            ));
+            crate::server::log(format_args!("code lens position is not mappable"));
             break;
         };
         let start = crate::handlers::position_value(position);

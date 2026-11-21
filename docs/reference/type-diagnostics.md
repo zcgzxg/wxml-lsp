@@ -286,7 +286,7 @@ export {};
 | WXS 模块与 `<wxs>` | `Unsupported` | 不把 WXS 名字当数据字段 |
 | `template` / `import` / `include` | `Partial`/`Unsupported` | 调用上下文未解析时不发布猜测诊断 |
 | Behavior / 封装注册 / 闭包内注册 | `Partial` | 识别失败报告原因，不静默取第一个候选 |
-| 多候选注册或类型来源不明 | `Partial` + 候选计数 | 使用首个注册、不合并；reason 必须包含候选数，见 [ADR-0008](../adr/0008-rust-tsgo-no-node-backend.md) 与[原生合同](tsgo-native-contract.md) |
+| 多候选注册或类型来源不明 | `Partial` + 候选计数 | 使用首个注册、不合并；reason 必须包含候选数，见 [ADR-0012](../adr/0012-in-process-tsrs-session.md) 与[原生合同](tsrs-native-contract.md) |
 | 组件声明文件不可读（目录、越界、超限） | `Partial` | 不产生组件事实，不发布猜测诊断，原因不含绝对路径 |
 | 组件声明不完整（截断、重复映射、解析失败） | `Partial` | 受影响的组件或成员不参与检查，其他组件照常生效 |
 | handler 参数未标注（或标注未证明） | `Partial` | 不发布签名诊断，原因可读 |
@@ -332,7 +332,7 @@ WT-B 验证（2026-11-16；**历史**）：
 
 > `backends/typescript` 与 `wave5_acceptance` 已随 P7 删除，以下命令当前不可执行，仅保留为历史证据。
 > 当前 native 覆盖见 `crates/wxml-lsp/tests/native_lsp_document_symbols.rs` 与
-> `crates/wxml-backend-tsgo/tests/real_engine.rs`；`native_parity` 已随 ADR-0009 删除，历史版本见
+> `crates/wxml-backend-tsrs/tests/real_engine.rs`；`native_parity` 已随 ADR-0009 删除，历史版本见
 > tag `pre-slim-20261120`。
 
 ```bash

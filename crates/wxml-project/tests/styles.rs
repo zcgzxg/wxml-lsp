@@ -429,7 +429,7 @@ fn symlinked_view_style_root_reports_escape() {
 }
 
 #[test]
-fn budgets_limit_file_size_and_file_count() {
+fn budgets_limit_file_count() {
     let project = TempProject::new();
     project.write("app.json", r#"{"pages":["pages/index/index"]}"#);
     project.write("pages/index/index.wxml", "<view/>");
@@ -438,31 +438,8 @@ fn budgets_limit_file_size_and_file_count() {
         "pages/index/index.wxss",
         "@import \"../../shared/big.scss\";\n.page { }\n",
     );
-    let mut big = String::from(".big { }\n");
-    big.push_str(&"x".repeat(128));
-    project.write("shared/big.scss", &big);
+    project.write("shared/big.scss", ".big { }\n");
     let project = open(&project);
-
-    let mut index = StyleIndex::with_limits(StyleLimits {
-        max_file_bytes: 32,
-        ..StyleLimits::default()
-    });
-    let limited = facts(
-        &project,
-        &mut index,
-        "pages/index/index.wxml",
-        &StyleConfig::default(),
-    );
-    assert!(!limited.complete);
-    assert!(limited.primary("big").is_none());
-    assert!(
-        limited
-            .issues
-            .iter()
-            .any(|issue| issue.kind == StyleIssueKind::TooLarge),
-        "{:?}",
-        limited.issues
-    );
 
     let mut index = StyleIndex::with_limits(StyleLimits {
         max_files: 1,

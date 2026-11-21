@@ -18,7 +18,7 @@
 //! - [`template`]: `wx:for`/event/mustache analysis that produces check
 //!   fragments, bounded by [`MAX_FRAGMENTS`].
 //!
-//! The native tsgo backend is the only backend.
+//! The native tsrs backend is the only backend.
 
 pub mod backend;
 pub mod check;
@@ -56,14 +56,11 @@ pub use document_symbols::{
 pub use mock::{BackendCall, MockBackend};
 pub use status::CapabilityStatus;
 pub use symbols::{
-    HandlerInsertion, MAX_SYMBOL_ENTRIES, MAX_SYMBOL_NAME_BYTES, MAX_SYMBOL_PATH, SymbolError,
-    SymbolField, SymbolOccurrence, SymbolOccurrenceKind, SymbolQuery, SymbolReference,
-    SymbolReferenceRole, SymbolRequest, SymbolResult, SymbolToken,
+    HandlerInsertion, MAX_SYMBOL_ENTRIES, SymbolError, SymbolField, SymbolOccurrence,
+    SymbolOccurrenceKind, SymbolQuery, SymbolReference, SymbolReferenceRole, SymbolRequest,
+    SymbolResult, SymbolToken,
 };
-pub use template::{
-    MAX_BINDINGS, MAX_COMPONENTS, MAX_FRAGMENTS, MAX_GUARD_CHAINS, MAX_GUARD_CONDITIONS,
-    TemplateAnalyzer, analyze_template,
-};
+pub use template::{MAX_FRAGMENTS, TemplateAnalyzer, analyze_template};
 pub use template_semantics::{
     StaticImport, StaticImportKind, StaticIssue, StaticIssueKind, TemplateCall, TemplateData,
     TemplateDataKey, TemplateDataUse, TemplateDefinition, TemplateSemantics, WxsBlock,

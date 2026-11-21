@@ -12,37 +12,12 @@
 //! startup.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use wxml_project::ProjectPath;
 
 use crate::configuration::export_target;
-
-/// Maximum number of workspace patterns considered from all manifests.
-const MAX_PATTERNS: usize = 256;
-
-/// Maximum number of directory entries visited while expanding patterns.
-const MAX_SCANNED_ENTRIES: usize = 4096;
-
-/// Maximum number of workspace packages kept after duplicate-name resolution.
-const MAX_PACKAGES: usize = 512;
-
-/// Maximum size of one `package.json` read during discovery.
-const MAX_PACKAGE_JSON_BYTES: u64 = 256 * 1024;
-
-/// Maximum size of `pnpm-workspace.yaml`.
-const MAX_WORKSPACE_YAML_BYTES: u64 = 256 * 1024;
-
-/// Maximum number of `exports` entries consumed from one package.
-const MAX_PACKAGE_EXPORTS: usize = 512;
-
-/// Maximum number of dependency names considered for one manifest.
-const MAX_DEPENDENCIES: usize = 4096;
-
-/// Maximum number of YAML lines inspected in `pnpm-workspace.yaml`.
-const MAX_YAML_LINES: usize = 4096;
 
 /// Directory names that never contain workspace packages.
 const EXCLUDED_DIRECTORIES: [&str; 9] = [
@@ -79,9 +54,9 @@ pub(crate) struct WorkspacePackages {
 impl WorkspacePackages {
     /// Discovers workspace packages below `workspace_root`.
     ///
-    /// A missing root, unreadable manifests or an exhausted scan budget all
-    /// yield an empty or partial index instead of an error. Packages are keyed
-    /// by name and iterated in name order.
+    /// A missing root or unreadable manifest yields an empty or partial index
+    /// instead of an error. Packages are keyed by name and iterated in name
+    /// order.
     #[must_use]
     pub(crate) fn discover(workspace_root: &Path) -> Self {
         let Ok(root) = std::fs::canonicalize(workspace_root) else {
@@ -91,9 +66,6 @@ impl WorkspacePackages {
         let candidates = candidate_directories(&root, &patterns);
         let mut packages = BTreeMap::new();
         for relative in candidates {
-            if packages.len() >= MAX_PACKAGES {
-                break;
-            }
             if let Some(package) = load_package(&root, &relative) {
                 // Candidates are sorted, so the first path wins duplicates.
                 packages.entry(package.name.clone()).or_insert(package);
@@ -130,8 +102,7 @@ impl WorkspacePackages {
             let Some(object) = value.get(field).and_then(Value::as_object) else {
                 continue;
             };
-            let remaining = MAX_DEPENDENCIES.saturating_sub(names.len());
-            for dependency in object.keys().take(remaining) {
+            for dependency in object.keys() {
                 names.insert(dependency.as_str());
             }
         }
@@ -162,7 +133,6 @@ fn workspace_patterns(root: &Path) -> Vec<String> {
         manifest_patterns(&value, &mut patterns);
     }
     pnpm_patterns(root, &mut patterns);
-    patterns.truncate(MAX_PATTERNS);
     patterns
 }
 
@@ -177,9 +147,6 @@ fn manifest_patterns(value: &Value, patterns: &mut Vec<String>) {
         return;
     };
     for item in items {
-        if patterns.len() >= MAX_PATTERNS {
-            break;
-        }
         if let Some(pattern) = item.as_str().map(str::trim).filter(|item| !item.is_empty()) {
             patterns.push(pattern.to_owned());
         }
@@ -188,14 +155,11 @@ fn manifest_patterns(value: &Value, patterns: &mut Vec<String>) {
 
 /// Collects the top-level `packages` list from `pnpm-workspace.yaml`.
 fn pnpm_patterns(root: &Path, patterns: &mut Vec<String>) {
-    let Some(text) = read_text(&root.join("pnpm-workspace.yaml"), MAX_WORKSPACE_YAML_BYTES) else {
+    let Some(text) = read_text(&root.join("pnpm-workspace.yaml")) else {
         return;
     };
     let mut in_packages = false;
-    for line in text.lines().take(MAX_YAML_LINES) {
-        if patterns.len() >= MAX_PATTERNS {
-            break;
-        }
+    for line in text.lines() {
         let trimmed = yaml_without_comment(line).trim();
         if trimmed.is_empty() {
             continue;
@@ -221,9 +185,6 @@ fn pnpm_patterns(root: &Path, patterns: &mut Vec<String>) {
             .and_then(|rest| rest.strip_suffix(']'))
         {
             for item in inner.split(',') {
-                if patterns.len() >= MAX_PATTERNS {
-                    break;
-                }
                 push_pattern(item, patterns);
             }
         }
@@ -267,7 +228,6 @@ fn yaml_scalar(raw: &str) -> &str {
 /// Expands patterns into sorted, unique workspace-relative directories.
 fn candidate_directories(root: &Path, patterns: &[String]) -> BTreeSet<ProjectPath> {
     let mut candidates = BTreeSet::new();
-    let mut remaining_entries = MAX_SCANNED_ENTRIES;
     for raw in patterns {
         let Some(pattern) = parse_pattern(raw) else {
             continue;
@@ -282,13 +242,7 @@ fn candidate_directories(root: &Path, patterns: &[String]) -> BTreeSet<ProjectPa
                 if parent.as_ref().is_some_and(is_excluded) {
                     continue;
                 }
-                scan_children(
-                    root,
-                    parent.as_ref(),
-                    &suffix,
-                    &mut candidates,
-                    &mut remaining_entries,
-                );
+                scan_children(root, parent.as_ref(), &suffix, &mut candidates);
             }
         }
     }
@@ -339,7 +293,6 @@ fn scan_children(
     parent: Option<&ProjectPath>,
     suffix: &str,
     candidates: &mut BTreeSet<ProjectPath>,
-    remaining_entries: &mut usize,
 ) {
     let directory = parent.map_or_else(|| root.to_path_buf(), |parent| root.join(parent.as_str()));
     let Ok(entries) = std::fs::read_dir(&directory) else {
@@ -348,10 +301,6 @@ fn scan_children(
     // Sorting names makes duplicate-name resolution independent of read order.
     let mut names = Vec::new();
     for entry in entries {
-        if *remaining_entries == 0 {
-            break;
-        }
-        *remaining_entries -= 1;
         let Ok(entry) = entry else {
             continue;
         };
@@ -438,7 +387,7 @@ fn package_aliases(
         return BTreeMap::new();
     };
     let mut aliases: BTreeMap<String, Vec<ProjectPath>> = BTreeMap::new();
-    for (key, exposure) in exports.iter().take(MAX_PACKAGE_EXPORTS) {
+    for (key, exposure) in exports {
         let Some(target) = export_target(exposure, 0) else {
             continue;
         };
@@ -472,26 +421,19 @@ fn package_aliases(
     aliases
 }
 
-/// Reads and parses a JSON file with the discovery size bound.
+/// Reads and parses a JSON file within the shared per-file limit.
 fn read_json(path: &Path) -> Option<Value> {
-    let text = read_text(path, MAX_PACKAGE_JSON_BYTES)?;
+    let text = read_text(path)?;
     serde_json::from_str(&text).ok()
 }
 
-/// Reads a regular file, returning `None` when it exceeds `limit` bytes.
-fn read_text(path: &Path, limit: u64) -> Option<String> {
+/// Reads one regular file within the project's per-file byte limit.
+fn read_text(path: &Path) -> Option<String> {
     let metadata = std::fs::metadata(path).ok()?;
-    if !metadata.is_file() || metadata.len() > limit {
+    if !metadata.is_file() || metadata.len() > wxml_project::files::MAX_FILE_BYTES {
         return None;
     }
-    let file = std::fs::File::open(path).ok()?;
-    let mut text = String::new();
-    let mut reader = file.take(limit.saturating_add(1));
-    reader.read_to_string(&mut text).ok()?;
-    if u64::try_from(text.len()).ok()? > limit {
-        return None;
-    }
-    Some(text)
+    std::fs::read_to_string(path).ok()
 }
 
 #[cfg(test)]
@@ -750,7 +692,9 @@ mod tests {
     fn ignores_oversized_manifests() {
         let temp = TestDir::new();
         temp.write("package.json", r#"{"workspaces":["packages/*"]}"#);
-        let padding = " ".repeat(256 * 1024);
+        let padding = " ".repeat(
+            usize::try_from(wxml_project::files::MAX_FILE_BYTES).expect("limit fits usize") + 1,
+        );
         temp.write(
             "packages/large/package.json",
             &format!(r#"{{"name":"large"}}{padding}"#),

@@ -41,7 +41,7 @@
 // so `pub(crate)` is the accurate visibility and `pub` would be unreachable.
 #![allow(clippy::redundant_pub_crate)]
 
-pub(crate) mod backend_tsgo;
+pub(crate) mod backend_tsrs;
 // Benchmark-only entry points. Compiled only with the `bench-support` feature
 // (used by `benches/queries.rs`); production builds never see this module.
 #[cfg(feature = "bench-support")]
@@ -75,7 +75,7 @@ pub use server::{ServerError, ServerOutcome, run_stdio, run_stdio_with_host, run
 // `run_stdio_host_only` serves static WXML features without an engine and
 // answers type queries as unavailable. All exports report typed, path-free
 // failures.
-pub use backend_tsgo::{
+pub use backend_tsrs::{
     EngineDiscoveryError, EnvironmentLoadError, NativeStartupError, run_stdio_host_only,
     run_stdio_native, run_stdio_native_default,
 };

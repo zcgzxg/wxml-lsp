@@ -11,26 +11,17 @@ use std::sync::Arc;
 use wxml_text::SourceRange;
 
 use super::{
-    ClassToken, MAX_CLASS_NAME_BYTES, MAX_DOC_COMMENT_BYTES, MAX_IMPORT_SPECIFIER_BYTES,
-    MAX_STYLE_IMPORTS_PER_SHEET, MAX_STYLE_ISSUES, StyleImport, StyleImportKind, StyleIssue,
-    StyleIssueKind, StyleSheet,
+    ClassToken, MAX_CLASS_NAME_BYTES, StyleImport, StyleImportKind, StyleIssue, StyleIssueKind,
+    StyleSheet,
 };
 use crate::files::ProjectPath;
-
-/// Maximum selector list items kept for one rule.
-const MAX_SELECTOR_ITEMS: usize = 64;
 
 /// Maximum expanded selectors produced for one nested selector.
 const MAX_SELECTOR_EXPANSIONS: usize = 8;
 
-/// Longest effective selector stored for display.
-const MAX_SELECTOR_BYTES: usize = 512;
-
 /// Parses one style sheet.
-///
-/// `max_classes` bounds the class list; reaching it marks the sheet incomplete.
 #[must_use]
-pub fn parse_style_sheet(path: &ProjectPath, text: &str, max_classes: usize) -> StyleSheet {
+pub fn parse_style_sheet(path: &ProjectPath, text: &str) -> StyleSheet {
     let mut parser = Parser {
         text,
         bytes: text.as_bytes(),
@@ -40,8 +31,6 @@ pub fn parse_style_sheet(path: &ProjectPath, text: &str, max_classes: usize) -> 
         prelude_start: 0,
         pending_comment: None,
         paren_depth: 0,
-        max_classes,
-        class_limit_hit: false,
     };
     parser.run();
     parser.sheet.bytes = text.len();
@@ -74,8 +63,6 @@ struct Parser<'a> {
     prelude_start: usize,
     pending_comment: Option<String>,
     paren_depth: usize,
-    max_classes: usize,
-    class_limit_hit: bool,
 }
 
 impl Parser<'_> {
@@ -108,13 +95,11 @@ impl Parser<'_> {
         }
     }
 
-    /// Records one issue within the sheet budget.
+    /// Records one issue.
     fn issue(&mut self, kind: StyleIssueKind, message: impl Into<String>) {
-        if self.sheet.issues.len() < MAX_STYLE_ISSUES {
-            self.sheet
-                .issues
-                .push(StyleIssue::new(self.path, kind, message));
-        }
+        self.sheet
+            .issues
+            .push(StyleIssue::new(self.path, kind, message));
     }
 
     /// Scans the whole sheet.
@@ -122,9 +107,6 @@ impl Parser<'_> {
         let len = self.text.len();
         let mut index = 0_usize;
         while index < len {
-            if self.class_limit_hit {
-                break;
-            }
             let byte = self.bytes[index];
             if starts_url_function(self.bytes, index) {
                 if let Some(end) = skip_url_function(self.bytes, index, len) {
@@ -355,19 +337,6 @@ impl Parser<'_> {
         if trimmed.is_empty() {
             return;
         }
-        if trimmed.len() > MAX_IMPORT_SPECIFIER_BYTES {
-            self.mark_incomplete("style import specifier is too long");
-            self.issue(
-                StyleIssueKind::Truncated,
-                "style import specifier exceeds the index limit",
-            );
-            return;
-        }
-        if self.sheet.imports.len() >= MAX_STYLE_IMPORTS_PER_SHEET {
-            self.mark_incomplete("style import budget reached");
-            self.issue(StyleIssueKind::Truncated, "style import budget reached");
-            return;
-        }
         let (Some(start), Some(end)) = (u32::try_from(start).ok(), u32::try_from(end).ok()) else {
             return;
         };
@@ -429,12 +398,7 @@ impl Parser<'_> {
         let base = self.current_selectors().to_vec();
         let mut expanded = Vec::new();
         let mut tokens = Vec::new();
-        let (items, truncated) = split_selector_list(trimmed);
-        if truncated {
-            self.mark_incomplete("selector list budget reached");
-            self.issue(StyleIssueKind::Truncated, "selector list budget reached");
-        }
-        for (selector, relative) in items {
+        for (selector, relative) in split_selector_list(trimmed) {
             let (mut selectors, mut items) =
                 expand_selector(selector, offset + relative, &base, &mut self.sheet);
             expanded.append(&mut selectors);
@@ -529,16 +493,10 @@ impl Parser<'_> {
         }
     }
 
-    /// Appends one class token within the sheet budget.
+    /// Appends one class token.
     fn push_class(&mut self, token: ClassToken) {
         if token.name.is_empty() || token.name.len() > MAX_CLASS_NAME_BYTES {
             self.mark_incomplete("class name exceeds the index limit");
-            return;
-        }
-        if self.sheet.classes.len() >= self.max_classes {
-            self.class_limit_hit = true;
-            self.mark_incomplete("class budget reached");
-            self.issue(StyleIssueKind::Truncated, "class budget reached");
             return;
         }
         self.sheet.classes.push(Arc::new(token));
@@ -572,13 +530,11 @@ fn expand_selector(
                 sheet.complete = false;
                 sheet.reason = Some("selector expansion budget reached".to_owned());
             }
-            if sheet.issues.len() < MAX_STYLE_ISSUES {
-                sheet.issues.push(StyleIssue::new(
-                    &sheet.path,
-                    StyleIssueKind::Truncated,
-                    "selector expansion budget reached",
-                ));
-            }
+            sheet.issues.push(StyleIssue::new(
+                &sheet.path,
+                StyleIssueKind::Truncated,
+                "selector expansion budget reached",
+            ));
         }
         expanded
     } else {
@@ -587,7 +543,6 @@ fn expand_selector(
             .collect()
     };
     let display = selectors.join(", ");
-    let display = truncate_selector(&display);
     let mut tokens = Vec::new();
     scan_selector_classes(selector, offset, base, &display, &mut tokens, sheet);
     (selectors, tokens)
@@ -630,7 +585,7 @@ fn expand_parent_references(selector: &str, base: &[String]) -> (Vec<String>, bo
     (
         results
             .into_iter()
-            .map(|item| truncate_selector(&normalize_selector(&item)))
+            .map(|item| normalize_selector(&item))
             .collect(),
         truncated,
     )
@@ -843,7 +798,7 @@ fn contains_top_level_ampersand(selector: &str) -> bool {
 }
 
 /// Splits a selector list at top-level commas.
-fn split_selector_list(text: &str) -> (Vec<(&str, usize)>, bool) {
+fn split_selector_list(text: &str) -> Vec<(&str, usize)> {
     let bytes = text.as_bytes();
     let mut items = Vec::new();
     let mut start = 0_usize;
@@ -867,9 +822,6 @@ fn split_selector_list(text: &str) -> (Vec<(&str, usize)>, bool) {
             b',' if paren_depth == 0 && bracket_depth == 0 => {
                 if let Some(item) = selector_item(text, start, index) {
                     items.push(item);
-                    if items.len() >= MAX_SELECTOR_ITEMS {
-                        return (items, true);
-                    }
                 }
                 start = index + 1;
             }
@@ -880,7 +832,7 @@ fn split_selector_list(text: &str) -> (Vec<(&str, usize)>, bool) {
     if let Some(item) = selector_item(text, start, text.len()) {
         items.push(item);
     }
-    (items, false)
+    items
 }
 
 /// Trims one selector item and returns it with its relative offset.
@@ -990,21 +942,9 @@ fn skip_interpolation(bytes: &[u8], start: usize, limit: usize) -> Option<usize>
     None
 }
 
-/// Collapses whitespace and truncates a selector for display.
+/// Collapses whitespace in a selector.
 fn normalize_selector(selector: &str) -> String {
-    truncate_selector(&selector.split_whitespace().collect::<Vec<_>>().join(" "))
-}
-
-/// Truncates a selector on a UTF-8 boundary.
-fn truncate_selector(selector: &str) -> String {
-    if selector.len() <= MAX_SELECTOR_BYTES {
-        return selector.to_owned();
-    }
-    let mut end = MAX_SELECTOR_BYTES;
-    while end > 0 && !selector.is_char_boundary(end) {
-        end -= 1;
-    }
-    selector[..end].to_owned()
+    selector.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// Cleans a block comment for class documentation.
@@ -1021,15 +961,7 @@ fn clean_comment(comment: &str) -> String {
     while lines.last().is_some_and(|line| line.is_empty()) {
         lines.pop();
     }
-    let mut text = lines.join("\n");
-    if text.len() > MAX_DOC_COMMENT_BYTES {
-        let mut end = MAX_DOC_COMMENT_BYTES;
-        while end > 0 && !text.is_char_boundary(end) {
-            end -= 1;
-        }
-        text.truncate(end);
-    }
-    text
+    lines.join("\n")
 }
 
 #[cfg(test)]
@@ -1041,11 +973,7 @@ mod tests {
     }
 
     fn parse(text: &str) -> StyleSheet {
-        parse_style_sheet(
-            &path("styles/test.scss"),
-            text,
-            crate::styles::MAX_STYLE_CLASSES,
-        )
+        parse_style_sheet(&path("styles/test.scss"), text)
     }
 
     fn names(sheet: &StyleSheet) -> Vec<&str> {
@@ -1168,21 +1096,18 @@ mod tests {
     }
 
     #[test]
-    fn selector_list_truncation_marks_the_sheet_incomplete() {
+    fn long_selector_lists_keep_every_class() {
         use std::fmt::Write as _;
         let mut text = String::new();
-        for index in 0..(MAX_SELECTOR_ITEMS + 2) {
+        for index in 0..300 {
             write!(text, ".c{index}, ").expect("selector");
         }
         text.push_str(".last { }");
         let sheet = parse(&text);
-        assert!(!sheet.complete);
-        assert!(
-            sheet
-                .issues
-                .iter()
-                .any(|issue| issue.kind == StyleIssueKind::Truncated)
-        );
+        assert!(sheet.complete, "{:?}", sheet.issues);
+        assert_eq!(sheet.classes.len(), 301);
+        assert!(names(&sheet).contains(&"c299"));
+        assert!(names(&sheet).contains(&"last"));
     }
 
     #[test]
@@ -1216,36 +1141,17 @@ mod tests {
     }
 
     #[test]
-    fn twenty_thousand_unique_classes_parse_within_the_class_budget() {
+    fn twenty_thousand_unique_classes_parse() {
         use std::fmt::Write as _;
         let mut text = String::new();
         for index in 0..20_000 {
             writeln!(text, ".c{index} {{ color: red; }}").expect("class");
         }
-        let sheet = parse_style_sheet(&path("large.scss"), &text, crate::styles::MAX_STYLE_CLASSES);
+        let sheet = parse_style_sheet(&path("large.scss"), &text);
         assert_eq!(sheet.classes.len(), 20_000);
         assert!(sheet.complete);
         assert_eq!(sheet.classes[0].name, "c0");
         assert_eq!(sheet.classes[19_999].name, "c19999");
-    }
-
-    #[test]
-    fn caps_classes_and_marks_truncation() {
-        use std::fmt::Write as _;
-
-        let mut text = String::new();
-        for index in 0..8 {
-            writeln!(text, ".c{index} {{ }}").expect("write selector");
-        }
-        let sheet = parse_style_sheet(&path("a.wxss"), &text, 3);
-        assert_eq!(names(&sheet), vec!["c0", "c1", "c2"]);
-        assert!(!sheet.complete);
-        assert!(
-            sheet
-                .issues
-                .iter()
-                .any(|issue| issue.kind == StyleIssueKind::Truncated)
-        );
     }
 
     #[test]
@@ -1326,36 +1232,26 @@ mod tests {
     }
 
     #[test]
-    fn rejects_import_specifiers_above_the_limit() {
-        let long = "x".repeat(MAX_IMPORT_SPECIFIER_BYTES + 1);
+    fn keeps_long_import_specifiers() {
+        let long = "x".repeat(2_000);
         let sheet = parse(&format!("@import \"{long}\";\n.a {{ }}\n"));
-        assert_eq!(sheet.imports, Vec::new());
-        assert!(!sheet.complete);
-        assert!(
-            sheet
-                .issues
-                .iter()
-                .any(|issue| issue.kind == StyleIssueKind::Truncated)
-        );
+        assert_eq!(sheet.imports.len(), 1);
+        assert_eq!(sheet.imports[0].specifier, long);
+        assert!(sheet.complete, "{:?}", sheet.issues);
         assert!(names(&sheet).contains(&"a"));
     }
 
     #[test]
-    fn caps_imports_and_specifier_length() {
+    fn keeps_every_import() {
+        use std::fmt::Write as _;
         let mut text = String::new();
-        for index in 0..(MAX_STYLE_IMPORTS_PER_SHEET + 2) {
-            use std::fmt::Write as _;
+        for index in 0..600 {
             writeln!(text, "@import \"m{index}\";").expect("import");
         }
         let sheet = parse(&text);
-        assert_eq!(sheet.imports.len(), MAX_STYLE_IMPORTS_PER_SHEET);
-        assert!(!sheet.complete);
-        assert!(
-            sheet
-                .issues
-                .iter()
-                .any(|issue| issue.kind == StyleIssueKind::Truncated)
-        );
+        assert_eq!(sheet.imports.len(), 600);
+        assert!(sheet.complete, "{:?}", sheet.issues);
+        assert_eq!(sheet.imports[599].specifier, "m599");
     }
 
     #[test]

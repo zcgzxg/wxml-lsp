@@ -14,16 +14,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use thiserror::Error;
 
-use crate::files::{FileError, MAX_MESSAGE_BYTES, PathError, ProjectPath, truncate_message};
+use crate::files::{FileError, PathError, ProjectPath};
 use crate::overlay::Overlay;
-
-/// Maximum number of merged `paths` patterns forwarded to the type backend.
-///
-/// The native input rejects a `paths` object with more than 256 entries before
-/// creating a session. Keeping the merged map at the same ceiling preserves
-/// the app's own patterns and drops extra dependency aliases instead of making
-/// every analysis request fail as unavailable.
-pub const MAX_MERGED_PATHS: usize = 256;
 
 /// Maximum number of chained `extends` files loaded.
 pub const MAX_EXTENDS_DEPTH: usize = 8;
@@ -39,24 +31,11 @@ pub const MAX_CONFIG_LOADS: usize = 64;
 /// not count again.
 pub const MAX_CONFIG_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Maximum number of `extends` edges processed in one call.
-///
-/// The file-load budget does not bound cache-hit edges: a small config can
-/// list a huge `extends` array that repeatedly mounts a cached parent. This
-/// limit keeps merge work and transient layer clones bounded.
-pub const MAX_CONFIG_EXTENDS_EDGES: usize = 4_096;
-
 /// Maximum serialized bytes of the merged `compilerOptions` in one layer.
 ///
 /// Every cached layer keeps a merged copy; without this budget a small set of
 /// large `extends` files can multiply into hundreds of MiB of cached options.
 pub const MAX_MERGED_OPTION_BYTES: usize = 2 * 1024 * 1024;
-
-/// Maximum number of unknown `compilerOptions` keys retained per config file.
-pub const MAX_EXTRA_OPTION_KEYS: usize = 512;
-
-/// Maximum serialized bytes for one unknown `compilerOptions` value.
-pub const MAX_OPTION_VALUE_BYTES: usize = 64 * 1024;
 
 /// The resolved, minimal view of one `tsconfig.json`.
 // serde_json::Value is not Eq because it can contain floats; PartialEq is the
@@ -147,9 +126,6 @@ impl TsConfig {
             return;
         }
         for (pattern, targets) in paths {
-            if self.paths.len() >= MAX_MERGED_PATHS && !self.paths.contains_key(pattern) {
-                continue;
-            }
             self.paths.insert(pattern.clone(), targets.clone());
         }
         let mut object = Map::new();
@@ -293,30 +269,13 @@ pub enum ConfigError {
         /// Per-call byte budget.
         limit: u64,
     },
-    /// One call processed more than [`MAX_CONFIG_EXTENDS_EDGES`] `extends`
-    /// edges.
-    #[error("configuration extends graph is too large at {path}")]
-    TooManyExtends {
-        /// Project-relative path that declared the excess edge.
-        path: ProjectPath,
-        /// Per-call edge budget.
-        limit: usize,
-    },
-    /// Merged or single-value `compilerOptions` exceeded its serialized byte
-    /// budget. The message intentionally omits paths and values.
+    /// Merged `compilerOptions` exceeded its serialized byte budget. The
+    /// message intentionally omits paths and values.
     #[error("compilerOptions exceeded its {limit}-byte budget ({bytes} bytes)")]
     TooManyOptions {
         /// Observed serialized size in bytes.
         bytes: usize,
         /// Applicable budget in bytes.
-        limit: usize,
-    },
-    /// One config declared too many unknown `compilerOptions` keys.
-    #[error("compilerOptions has too many unknown keys ({keys}, limit {limit})")]
-    TooManyOptionKeys {
-        /// Observed unknown key count.
-        keys: usize,
-        /// Applicable key budget.
         limit: usize,
     },
     /// The configuration file is larger than the project read limit.
@@ -354,9 +313,8 @@ pub enum ConfigError {
 /// are rejected with [`ConfigError::UnsupportedExtends`].
 ///
 /// One call loads at most [`MAX_CONFIG_LOADS`] distinct files, reads at most
-/// [`MAX_CONFIG_BYTES`] of source, processes at most
-/// [`MAX_CONFIG_EXTENDS_EDGES`] `extends` edges, is at most
-/// [`MAX_EXTENDS_DEPTH`] levels deep, and detects cycles. Loaded layers are
+/// [`MAX_CONFIG_BYTES`] of source, is at most [`MAX_EXTENDS_DEPTH`] levels
+/// deep, and detects cycles. Loaded layers are
 /// memoized for the duration of the call, so shared parents in a diamond graph
 /// are read once. The cache is **not** shared across calls and therefore never
 /// leaks overlay revisions between [`load_ts_config`] invocations.
@@ -474,7 +432,6 @@ struct Loader<'a> {
     cache: BTreeMap<ProjectPath, Layer>,
     loads: usize,
     bytes: u64,
-    edges: usize,
 }
 
 impl<'a> Loader<'a> {
@@ -487,7 +444,6 @@ impl<'a> Loader<'a> {
             cache: BTreeMap::new(),
             loads: 0,
             bytes: 0,
-            edges: 0,
         }
     }
 
@@ -544,7 +500,7 @@ impl<'a> Loader<'a> {
                 path: path.clone(),
                 line: error.line(),
                 column: error.column(),
-                message: truncate_message(&error.to_string(), MAX_MESSAGE_BYTES).to_owned(),
+                message: error.to_string(),
             })?;
         let RawConfig {
             extends,
@@ -555,7 +511,6 @@ impl<'a> Loader<'a> {
 
         let directory = path.parent();
         let compiler_options = compiler_options.unwrap_or_default();
-        validate_extra_options(&compiler_options.extra)?;
         let mut child_compiler_options = raw_compiler_options(&compiler_options);
         rewrite_type_roots(&mut child_compiler_options, path)?;
         let declared_base_url = match compiler_options.base_url.as_deref() {
@@ -572,13 +527,6 @@ impl<'a> Loader<'a> {
         let mut direct_extends = Vec::new();
         let mut applied = BTreeSet::new();
         for specifier in extends.map_or_default(RawExtends::into_vec) {
-            if self.edges >= MAX_CONFIG_EXTENDS_EDGES {
-                return Err(ConfigError::TooManyExtends {
-                    path: path.clone(),
-                    limit: MAX_CONFIG_EXTENDS_EDGES,
-                });
-            }
-            self.edges += 1;
             let target = resolve_extends(directory.as_ref(), &specifier, path)?;
             // Repeated `extends` targets are idempotent: load and merge each
             // distinct parent once, in first-appearance order.
@@ -741,26 +689,6 @@ fn is_absolute_path(value: &str) -> bool {
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
-/// Validates unknown option keys and values from one config file.
-fn validate_extra_options(extra: &BTreeMap<String, Value>) -> Result<(), ConfigError> {
-    if extra.len() > MAX_EXTRA_OPTION_KEYS {
-        return Err(ConfigError::TooManyOptionKeys {
-            keys: extra.len(),
-            limit: MAX_EXTRA_OPTION_KEYS,
-        });
-    }
-    for value in extra.values() {
-        let bytes = serde_json::to_vec(value).map_or(usize::MAX, |serialized| serialized.len());
-        if bytes > MAX_OPTION_VALUE_BYTES {
-            return Err(ConfigError::TooManyOptions {
-                bytes,
-                limit: MAX_OPTION_VALUE_BYTES,
-            });
-        }
-    }
-    Ok(())
-}
-
 /// Validates a fully merged option map before it is cached.
 fn validate_merged_options(options: &BTreeMap<String, Value>) -> Result<(), ConfigError> {
     let bytes = serde_json::to_vec(options).map_or(usize::MAX, |serialized| serialized.len());
@@ -836,7 +764,7 @@ fn resolve_extends(
     {
         return Err(ConfigError::UnsupportedExtends {
             path: config.clone(),
-            specifier: truncate_message(specifier, MAX_MESSAGE_BYTES).to_owned(),
+            specifier: specifier.to_owned(),
         });
     }
     let (base, directory_form) = match specifier.strip_suffix('/') {
@@ -985,7 +913,7 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::files::{MAX_FILE_BYTES, MAX_MESSAGE_BYTES};
+    use crate::files::MAX_FILE_BYTES;
 
     /// Base for temporary directories: `TMPDIR` when set, otherwise `/tmp/opencode`.
     fn temp_base() -> PathBuf {
@@ -1027,17 +955,15 @@ mod tests {
     }
 
     #[test]
-    fn merge_paths_caps_dependency_aliases_at_the_backend_limit() {
+    fn merge_paths_overrides_existing_patterns_and_adds_new_ones() {
         let mut existing = BTreeMap::new();
-        for index in 0..MAX_MERGED_PATHS - 1 {
-            existing.insert(format!("app{index}"), vec![path("src/*")]);
-        }
+        existing.insert("app0".to_owned(), vec![path("src/*")]);
         let mut config = TsConfig::from_paths(path("tsconfig.json"), &existing);
         let mut dependencies = BTreeMap::new();
         dependencies.insert("app0".to_owned(), vec![path("override/*")]);
         dependencies.insert("dep".to_owned(), vec![path("packages/api/*")]);
         config.merge_paths(&dependencies);
-        assert_eq!(config.paths.len(), MAX_MERGED_PATHS);
+        assert_eq!(config.paths.len(), 2);
         assert_eq!(config.paths.get("app0"), Some(&vec![path("override/*")]));
         assert!(config.paths.contains_key("dep"));
     }
@@ -1369,24 +1295,6 @@ mod tests {
     }
 
     #[test]
-    fn truncates_long_unsupported_extends_values() {
-        let temp = TempDir::new("truncate-extends");
-        let long = format!("pkg/{}", "a".repeat(300));
-        temp.write("tsconfig.json", &format!("{{\"extends\": \"{long}\"}}"));
-
-        let error = load_ts_config(&temp.root(), &path("tsconfig.json"), &Overlay::new())
-            .expect_err("package extends is unsupported");
-        let ConfigError::UnsupportedExtends { specifier, .. } = error else {
-            panic!("expected UnsupportedExtends");
-        };
-        assert!(
-            specifier.len() <= MAX_MESSAGE_BYTES,
-            "len={}",
-            specifier.len()
-        );
-    }
-
-    #[test]
     fn enforces_config_byte_budget() {
         let temp = TempDir::new("byte-budget");
         let padding = "a".repeat(usize::try_from(MAX_CONFIG_BYTES / 2).expect("fits usize") + 1);
@@ -1400,26 +1308,6 @@ mod tests {
         assert!(
             matches!(error, ConfigError::TooManyConfigBytes { .. }),
             "expected TooManyConfigBytes, got {error:?}"
-        );
-    }
-
-    #[test]
-    fn enforces_extends_edge_budget() {
-        let temp = TempDir::new("edge-budget");
-        temp.write("leaf.json", "{}");
-        let entries: Vec<String> = (0..=MAX_CONFIG_EXTENDS_EDGES)
-            .map(|_| "\"./leaf.json\"".to_owned())
-            .collect();
-        temp.write(
-            "tsconfig.json",
-            &format!("{{\"extends\": [{}]}}", entries.join(",")),
-        );
-
-        let error = load_ts_config(&temp.root(), &path("tsconfig.json"), &Overlay::new())
-            .expect_err("edge budget must reject the fan-in");
-        assert!(
-            matches!(error, ConfigError::TooManyExtends { .. }),
-            "expected TooManyExtends, got {error:?}"
         );
     }
 
@@ -1480,44 +1368,9 @@ mod tests {
     }
 
     #[test]
-    fn extra_option_key_and_value_limits() {
-        let temp = TempDir::new("extra-option-limits");
-
-        let mut options = Map::new();
-        for index in 0..=MAX_EXTRA_OPTION_KEYS {
-            options.insert(format!("k{index}"), Value::Bool(true));
-        }
-        temp.write(
-            "tsconfig.json",
-            &format!("{{\"compilerOptions\": {}}}", Value::Object(options)),
-        );
-        let error = load_ts_config(&temp.root(), &path("tsconfig.json"), &Overlay::new())
-            .expect_err("key budget must reject the config");
-        assert_eq!(
-            error,
-            ConfigError::TooManyOptionKeys {
-                keys: MAX_EXTRA_OPTION_KEYS + 1,
-                limit: MAX_EXTRA_OPTION_KEYS
-            }
-        );
-
-        let huge = "x".repeat(MAX_OPTION_VALUE_BYTES + 1);
-        temp.write(
-            "tsconfig.json",
-            &format!("{{\"compilerOptions\": {{\"huge\": \"{huge}\"}}}}"),
-        );
-        let error = load_ts_config(&temp.root(), &path("tsconfig.json"), &Overlay::new())
-            .expect_err("value budget must reject the config");
-        let ConfigError::TooManyOptions { bytes, limit } = error else {
-            panic!("expected TooManyOptions");
-        };
-        assert_eq!(limit, MAX_OPTION_VALUE_BYTES);
-        assert!(bytes > limit);
-    }
-
-    #[test]
     fn repeated_extends_edges_are_deduplicated() {
         use std::time::{Duration, Instant};
+        const DUPLICATES: usize = 4_096;
 
         let temp = TempDir::new("dedup-extends");
         temp.write("app.json", r#"{"pages": []}"#);
@@ -1536,9 +1389,7 @@ mod tests {
                 Value::Object(paths)
             ),
         );
-        let duplicates: Vec<&str> = (0..MAX_CONFIG_EXTENDS_EDGES)
-            .map(|_| "\"./base.json\"")
-            .collect();
+        let duplicates: Vec<&str> = (0..DUPLICATES).map(|_| "\"./base.json\"").collect();
         temp.write(
             "tsconfig.json",
             &format!("{{\"extends\": [{}]}}", duplicates.join(",")),

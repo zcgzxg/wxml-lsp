@@ -17,9 +17,9 @@
 //! classes the index cannot prove.
 //!
 //! Files are read through [`Project::read_optional`], so unsaved style buffers
-//! win over disk and symlink escapes are rejected by the file layer. Every
-//! read is bounded by [`StyleLimits`]; imports are bounded by depth, file count
-//! and total bytes, and cycles are reported instead of followed.
+//! win over disk and symlink escapes are rejected by the file layer. Import
+//! chains are bounded by [`StyleLimits`]: depth, file count and total bytes,
+//! and cycles are reported instead of followed.
 
 mod parse;
 
@@ -36,9 +36,6 @@ use crate::{Component, Page, Project, ProjectSnapshot};
 
 pub use parse::parse_style_sheet;
 
-/// Maximum bytes read from one style file by the index.
-pub const MAX_STYLE_FILE_BYTES: usize = 2 * 1024 * 1024;
-
 /// Maximum bytes read for one view's style chain.
 pub const MAX_STYLE_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 
@@ -48,26 +45,8 @@ pub const MAX_STYLE_FILES: usize = 256;
 /// Maximum `@import`/`@use`/`@forward` depth.
 pub const MAX_IMPORT_DEPTH: usize = 16;
 
-/// Maximum classes kept for one style sheet.
-pub const MAX_STYLE_CLASSES: usize = 20_000;
-
-/// Maximum classes merged for one view across all style files.
-pub const MAX_VIEW_CLASSES: usize = 50_000;
-
-/// Maximum issues kept for one style sheet or view.
-pub const MAX_STYLE_ISSUES: usize = 64;
-
 /// Longest class name recorded from a selector.
 pub const MAX_CLASS_NAME_BYTES: usize = 128;
-
-/// Longest documentation comment kept for a class.
-pub const MAX_DOC_COMMENT_BYTES: usize = 512;
-
-/// Maximum static imports kept for one sheet.
-pub const MAX_STYLE_IMPORTS_PER_SHEET: usize = 512;
-
-/// Maximum bytes kept from one import specifier.
-pub const MAX_IMPORT_SPECIFIER_BYTES: usize = 1024;
 
 /// Maximum imports resolved for one view chain.
 pub const MAX_STYLE_IMPORTS_PER_VIEW: usize = 1024;
@@ -81,8 +60,6 @@ pub const MAX_CACHED_SHEETS: usize = 256;
 /// Budgets for one style index.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StyleLimits {
-    /// Maximum bytes of one style file.
-    pub max_file_bytes: usize,
     /// Maximum bytes read for one view's style chain.
     pub max_total_bytes: usize,
     /// Maximum style files followed for one view.
@@ -91,19 +68,15 @@ pub struct StyleLimits {
     pub max_import_depth: usize,
     /// Maximum imports resolved for one view.
     pub max_imports_per_view: usize,
-    /// Maximum classes kept per sheet.
-    pub max_classes: usize,
 }
 
 impl Default for StyleLimits {
     fn default() -> Self {
         Self {
-            max_file_bytes: MAX_STYLE_FILE_BYTES,
             max_total_bytes: MAX_STYLE_TOTAL_BYTES,
             max_files: MAX_STYLE_FILES,
             max_import_depth: MAX_IMPORT_DEPTH,
             max_imports_per_view: MAX_STYLE_IMPORTS_PER_VIEW,
-            max_classes: MAX_STYLE_CLASSES,
         }
     }
 }
@@ -311,7 +284,7 @@ impl StyleIssue {
         Self {
             file: file.clone(),
             kind,
-            message: files::truncate_owned(message.into(), files::MAX_MESSAGE_BYTES),
+            message: message.into(),
         }
     }
 }
@@ -683,7 +656,7 @@ impl StyleIndex {
         if let Some(sheet) = self.sheets.get(path) {
             return Arc::clone(sheet);
         }
-        let sheet = Arc::new(self.parse(project, path));
+        let sheet = Arc::new(Self::parse(project, path));
         if self.sheets.len() >= MAX_CACHED_SHEETS
             || self.cached_bytes.saturating_add(sheet.estimated_bytes) > MAX_CACHED_STYLE_BYTES
         {
@@ -697,32 +670,17 @@ impl StyleIndex {
     }
 
     /// Parses one file without touching the cache.
-    fn parse(&self, project: &ProjectSnapshot, path: &ProjectPath) -> StyleSheet {
+    fn parse(project: &ProjectSnapshot, path: &ProjectPath) -> StyleSheet {
         let mut sheet = StyleSheet::new(path);
         match project.read_optional(path) {
             Ok(Some(text)) => {
                 sheet.bytes = text.len();
-                if text.len() > self.limits.max_file_bytes {
-                    sheet.issues.push(StyleIssue::new(
-                        path,
-                        StyleIssueKind::TooLarge,
-                        format!(
-                            "style file exceeds the {} byte index limit",
-                            self.limits.max_file_bytes
-                        ),
-                    ));
-                    sheet.complete = false;
-                    sheet.reason = Some("style file exceeds the index size limit".to_owned());
-                } else {
-                    let parsed = parse_style_sheet(path, &text, self.limits.max_classes);
-                    sheet.classes = parsed.classes;
-                    sheet.imports = parsed.imports;
-                    for issue in parsed.issues {
-                        push_issue(&mut sheet.issues, issue);
-                    }
-                    sheet.complete = parsed.complete;
-                    sheet.reason = parsed.reason;
-                }
+                let parsed = parse_style_sheet(path, &text);
+                sheet.classes = parsed.classes;
+                sheet.imports = parsed.imports;
+                sheet.issues = parsed.issues;
+                sheet.complete = parsed.complete;
+                sheet.reason = parsed.reason;
             }
             Ok(None) => {
                 sheet.issues.push(StyleIssue::new(
@@ -824,7 +782,7 @@ impl StyleIndex {
         }
         for issue in root_issues {
             collector.mark_incomplete(issue.message.clone());
-            push_issue(&mut collector.issues, issue);
+            collector.issues.push(issue);
         }
         for root in roots {
             collector.collect(&root.path, root.scope, true, 0, None);
@@ -938,10 +896,7 @@ fn style_roots(
             issues.push(StyleIssue::new(
                 view,
                 StyleIssueKind::MissingImport,
-                format!(
-                    "configured global style path is invalid: {}",
-                    files::truncate_message(raw, 256)
-                ),
+                format!("configured global style path is invalid: {raw}"),
             ));
         }
     }
@@ -1125,9 +1080,9 @@ impl Collector<'_> {
         }
     }
 
-    /// Records one issue within the view budget.
+    /// Records one issue.
     fn issue(&mut self, file: &ProjectPath, kind: StyleIssueKind, message: impl Into<String>) {
-        push_issue(&mut self.issues, StyleIssue::new(file, kind, message));
+        self.issues.push(StyleIssue::new(file, kind, message));
     }
 
     /// Follows one file and its imports.
@@ -1174,7 +1129,7 @@ impl Collector<'_> {
         self.total_bytes = self.total_bytes.saturating_add(sheet.bytes);
         self.visited.insert(path.clone());
         for issue in &sheet.issues {
-            push_issue(&mut self.issues, issue.clone());
+            self.issues.push(issue.clone());
         }
         if !sheet.complete {
             self.mark_incomplete(
@@ -1199,11 +1154,6 @@ impl Collector<'_> {
         let mut class_index = 0_usize;
         let mut import_index = 0_usize;
         while class_index < sheet.classes.len() || import_index < sheet.imports.len() {
-            if self.classes.len() >= MAX_VIEW_CLASSES {
-                self.mark_incomplete("view class budget reached");
-                self.issue(path, StyleIssueKind::Truncated, "view class budget reached");
-                break;
-            }
             let import_first = sheet.imports.get(import_index).is_some_and(|import| {
                 sheet
                     .classes
@@ -1385,13 +1335,6 @@ fn import_candidates(path: &ProjectPath, from: &ProjectPath) -> Vec<ProjectPath>
     candidates
 }
 
-/// Adds one issue within the per-view budget.
-fn push_issue(issues: &mut Vec<StyleIssue>, issue: StyleIssue) {
-    if issues.len() < MAX_STYLE_ISSUES {
-        issues.push(issue);
-    }
-}
-
 /// Optional style/resource existence diagnostics.
 ///
 /// The conservative default enables only provable missing local resources and
@@ -1534,7 +1477,7 @@ mod tests {
     #[test]
     fn sheet_estimate_counts_structure_not_only_source() {
         let text = ".a { /* long comment */ }\n.b, .c { color: red; }\n";
-        let sheet = parse_style_sheet(&path("a.scss"), text, 100);
+        let sheet = parse_style_sheet(&path("a.scss"), text);
         assert!(sheet.estimated_bytes > sheet.bytes);
         assert!(sheet.estimated_bytes > text.len());
     }

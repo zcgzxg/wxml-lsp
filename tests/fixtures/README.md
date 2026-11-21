@@ -240,7 +240,7 @@ WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored
 | `multi-view` | 7 条 hover 分别命中 card/badge/a/b 自己的声明与 JSDoc；`card.wxml` 的 `user.nmae` 只在该文件报错；同时打开两个页面、card 组件和两个脚本时互不污染 |
 | `alias-project` | `@models/*` 别名下 `user.name` hover 为 string；`user.nmae` 在 `nmae` 报错；definition 跨别名解析到 `models/user.ts` 的 `name` |
 
-该 runner 当时被 `#[ignore]` 保护，默认门禁只编译不执行；它覆盖 WT-B 的 AC-005/006/008/012，以及 WT-C 在 `component-bindings` 与 `events-basic` 中的事件诊断、definition 和事件值补全。这些行为现在由 native 引擎测试按需覆盖（如 `crates/wxml-lsp/src/backend_tsgo/tests.rs` 中的 events-basic / component-bindings 用例，以及 `crates/wxml-backend-tsgo/tests/real_engine.rs` 的 opt-in 真实引擎用例）。
+该 runner 当时被 `#[ignore]` 保护，默认门禁只编译不执行；它覆盖 WT-B 的 AC-005/006/008/012，以及 WT-C 在 `component-bindings` 与 `events-basic` 中的事件诊断、definition 和事件值补全。这些行为现在由 native 引擎测试按需覆盖（如 `crates/wxml-lsp/src/backend_tsrs/tests.rs` 中的 events-basic / component-bindings 用例，以及 `crates/wxml-backend-tsrs/tests/real_engine.rs` 的 opt-in 真实引擎用例）。
 
 ### 7.2 事件处理函数样本（WT-C）
 
@@ -306,7 +306,7 @@ manifest 的 `coverage` 只记录覆盖范围，不代表对应断言已经执�
 2. 至少提供 `app.json`、`tsconfig.json`、模板与脚本、`expected/hover.json`、`expected/diagnostics.json`。
 3. 每个正例和反例都要有唯一 marker 和明确 target；不要用“存在任意 hover”代替具体断言。
 4. 在 `manifest.json` 增加 case，`positive`/`negative` 与 expected 的 marker 集合完全一致。
-5. 运行 `cargo test -p wxml-lsp --all-features`；需要真实类型时按 `crates/wxml-backend-tsgo/tests/real_engine.rs` 的说明设置 `TSGO_TYPINGS_ROOT`（必要时设 `WXML_REQUIRE_REAL_ENGINE=1`）。
+5. 运行 `cargo test -p wxml-lsp --all-features`；需要真实类型时按 `crates/wxml-backend-tsrs/tests/real_engine.rs` 的说明设置 `TSRS_TYPINGS_ROOT`（必要时设 `WXML_REQUIRE_REAL_ENGINE=1`）。
 6. 新增外部来源样本前先更新 `docs/reference/provenance.md`；默认只接受自造样本。
 
 ## 10. 查询基准样本（bench-queries）

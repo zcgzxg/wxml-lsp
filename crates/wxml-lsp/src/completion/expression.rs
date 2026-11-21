@@ -164,7 +164,7 @@ fn event_value_prefix(
     let token = text
         .get(trim_start..trim_end)
         .ok_or(EventValueRejection::Unrepresentable)?;
-    if !wxml_backend_tsgo::shadow::expression::is_identifier_name(token) {
+    if !wxml_backend_tsrs::shadow::expression::is_identifier_name(token) {
         return Err(EventValueRejection::InvalidHandlerToken);
     }
     if cursor < trim_start {

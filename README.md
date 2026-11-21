@@ -7,7 +7,7 @@
 - 形态：本地安装、自用；没有 marketplace 发布、远端 release 或发布者签名。
 - 平台：仅在 Linux x86_64 验证；Windows/macOS 未验证。
 - 工具链：MSRV 1.100（workspace `Cargo.toml` 的 `rust-version`），edition 2024。
-- 决策背景：[ADR 索引](docs/adr/README.md)，重点见 [ADR-0008](docs/adr/0008-rust-tsgo-no-node-backend.md)（native 默认，Node 已移除）和 [ADR-0012](docs/adr/0012-in-process-tsrs-session.md)（进程内类型会话）。
+- 决策背景：[ADR 索引](docs/adr/README.md)，重点见 [ADR-0012](docs/adr/0012-in-process-tsrs-session.md)（native 默认、Node 已移除、进程内类型会话）和 [ADR-0009](docs/adr/0009-project-slimming.md)（瘦身范围）。
 
 ## 架构与分层
 
@@ -16,16 +16,16 @@ Zed 扩展（editors/zed，Rust/WASM）
   │  LSP over stdio
   ▼
 wxml-lsp            传输、多项目宿主、请求路由、调度与降级
-  ├─ wxml-backend-tsgo   进程内类型会话适配：只读 VFS、shadow、查询、源码映射
+  ├─ wxml-backend-tsrs   进程内类型会话适配：只读 VFS、shadow、查询、源码映射
   ├─ wxml-types          C0 契约、模板语义、WXS/静态摘要、后端接口
   ├─ wxml-project        URI/路径、overlay、多 app/惰性发现、tsconfig、样式/资源索引
   ├─ wxml-syntax         容错 lexer/parser、Mustache、WXS rawtext
   └─ wxml-text           UTF-8 字节偏移 ↔ LSP UTF-16 位置、行索引
 ```
 
-依赖方向：`wxml-text` → `wxml-syntax` → `wxml-types` / `wxml-project` → `wxml-backend-tsgo` → `wxml-lsp`。禁止反向依赖，也不允许 `wxml-types → wxml-project`；边界见 [ADR-0001](docs/adr/0001-layered-language-service-architecture.md)。
+依赖方向：`wxml-text` → `wxml-syntax` → `wxml-types` / `wxml-project` → `wxml-backend-tsrs` → `wxml-lsp`。禁止反向依赖，也不允许 `wxml-types → wxml-project`；边界见 [ADR-0001](docs/adr/0001-layered-language-service-architecture.md)。
 
-类型路径：`wxml-lsp` 把 WXML、关联脚本与配置投影成内存快照交给 `wxml-backend-tsgo`，后者在进程内驱动类型会话完成类型查询，再把结果映射回模板的 UTF-16 范围。业务文件不写盘，也不需要修改 `Page({...})`/`Component({...})` 写法。
+类型路径：`wxml-lsp` 把 WXML、关联脚本与配置投影成内存快照交给 `wxml-backend-tsrs`，后者在进程内驱动类型会话完成类型查询，再把结果映射回模板的 UTF-16 范围。业务文件不写盘，也不需要修改 `Page({...})`/`Component({...})` 写法。
 
 ## 构建
 
@@ -52,7 +52,7 @@ profile 只面向交付的原生二进制（Linux x86_64）与基准循环，`ed
   且反向一轮出现 2–4% 的回退，因此不写进仓库默认配置。想自行试验时用环境变量，
   不要改成 `[build] rustflags`（那会传给 `wasm32-wasip2` 的 Zed 扩展构建并使其失败）：
   `RUSTFLAGS="-C target-cpu=native" cargo build --release`。
-- `test` 继承 `dev`，依赖以 `opt-level = 2` 构建：`TSGO_TYPINGS_ROOT` 下的真实引擎用例
+- `test` 继承 `dev`，依赖以 `opt-level = 2` 构建：`TSRS_TYPINGS_ROOT` 下的真实引擎用例
   不再因未优化代码而失真。
 - 需要 `perf`/flamegraph：`cargo build --profile profiling -p wxml-lsp`，保留符号与行表，
   产物在 `target/profiling/`。
@@ -87,7 +87,7 @@ scripts/install-native.sh --root "$root"
 # 其他选项（--binary、--assets）见 scripts/install-native.sh --help
 ```
 
-运行时发现规则：`wxml-lsp` 只从自身可执行文件（canonical 后的 `current_exe`）出发，要求可执行文件位于 `<package>/bin/wxml-lsp`，且同根下存在 `typings/miniprogram-api-typings`；不读 `PATH`、不读工作目录，也不再识别 `TSGO_BIN`/`TSGO_ASSET_ROOT` 等引擎覆盖变量。typings 摘要必须与内建 pin 一致，否则在 LSP 握手前 fail closed。安装发现阶段唯一的降级是 `NotInstalled`：从 `target/release/` 直接运行或布局不完整时退化为 `HostOnly`（静态能力可用，类型查询返回 `Unavailable`）。运行期类型会话初始化失败或中毒时，类型能力降级为 `Unavailable`/`SessionPoisoned`，语言服务器其余功能继续工作。
+运行时发现规则：`wxml-lsp` 只从自身可执行文件（canonical 后的 `current_exe`）出发，要求可执行文件位于 `<package>/bin/wxml-lsp`，且同根下存在 `typings/miniprogram-api-typings`；不读 `PATH`、不读工作目录，也不再识别 `TSRS_BIN`/`TSRS_ASSET_ROOT` 等引擎覆盖变量。typings 摘要必须与内建 pin 一致，否则在 LSP 握手前 fail closed。安装发现阶段唯一的降级是 `NotInstalled`：从 `target/release/` 直接运行或布局不完整时退化为 `HostOnly`（静态能力可用，类型查询返回 `Unavailable`）。运行期类型会话初始化失败或中毒时，类型能力降级为 `Unavailable`/`SessionPoisoned`，语言服务器其余功能继续工作。
 
 ## 在 Zed 中使用
 
@@ -166,7 +166,7 @@ crates/
 ├── wxml-syntax            # lexer/parser、Mustache、源码映射
 ├── wxml-project           # 项目/页面/组件、usingComponents、tsconfig、样式/资源索引
 ├── wxml-types             # C0 契约、模板语义、WXS/静态摘要、后端接口与 mock
-├── wxml-backend-tsgo      # 进程内类型会话适配（native/script/shadow/query）
+├── wxml-backend-tsrs      # 进程内类型会话适配（native/script/shadow/query）
 └── wxml-lsp               # LSP 二进制
 editors/zed/               # Zed Dev Extension（独立 workspace）
 scripts/install-native.sh  # 组装 native 安装根
@@ -203,12 +203,12 @@ CI（`.github/workflows/ci.yml`）只有 `check` 作业，执行 fmt、clippy（
 默认 `cargo test` 不需要真实类型引擎：真实类型用例在未设置门禁时跳过。要运行进程内真实类型门禁，提供 typings 根并要求缺失即失败：
 
 ```bash
-TSGO_TYPINGS_ROOT="$HOME/.local/share/wxml-lsp/typings/miniprogram-api-typings" \
+TSRS_TYPINGS_ROOT="$HOME/.local/share/wxml-lsp/typings/miniprogram-api-typings" \
 WXML_REQUIRE_REAL_ENGINE=1 \
 cargo test --workspace --all-features
 ```
 
-两个变量名称沿用历史门禁，但语义已是“进程内引擎 + 外部 typings”：不会启动外部引擎，也没有 `TSGO_BIN`/`TSGO_ASSET_ROOT` 覆盖入口。
+两个变量名称沿用历史门禁，但语义已是“进程内引擎 + 外部 typings”：不会启动外部引擎，也没有 `TSRS_BIN`/`TSRS_ASSET_ROOT` 覆盖入口。
 
 ## 已知限制
 
@@ -224,8 +224,8 @@ cargo test --workspace --all-features
 ## 文档
 
 - [文档索引](docs/README.md)
-- [ADR 索引](docs/adr/README.md)：0001 分层、0002 类型检查与源码映射、0003 文档同步、0004 交付闸门、0005 文档自包含、0006 显式根、0007 交付信任、0008 native 后端、0009 瘦身、0010 零配置惰性发现、0012 进程内类型会话
+- [ADR 索引](docs/adr/README.md)：0001 分层、0002 类型检查与源码映射、0003 文档同步、0004 交付闸门、0005 文档自包含、0006 显式根、0007 交付信任、0009 瘦身、0010 零配置惰性发现、0012 进程内类型会话
 - [C0 基础契约](docs/reference/contracts.md)、[模板类型诊断策略](docs/reference/type-diagnostics.md)
-- [原生类型后端合同](docs/reference/tsgo-native-contract.md)（tsrs 进程内会话口径）
+- [原生类型后端合同](docs/reference/tsrs-native-contract.md)（tsrs 进程内会话口径）
 - [来源与许可证记录](docs/reference/provenance.md)
 - 变更流程：[`openspec/`](openspec/)（活跃变更在 `changes/`，归档在 `changes/archive/`；`specs/` 尚未沉淀能力规格）

@@ -1506,7 +1506,7 @@ mod tests {
             );
             // Value routing must stay a subset of the script parser's forms.
             assert!(
-                wxml_backend_tsgo::script::events::parse_event_attribute(attribute).is_some(),
+                wxml_backend_tsrs::script::events::parse_event_attribute(attribute).is_some(),
                 "{attribute}"
             );
         }
