@@ -70,6 +70,7 @@ fn prepared_view(owner: RootKind, files: Vec<PreparedFile>) -> PreparedView {
         files: Arc::from(files),
         compiler_options: serde_json::Map::new(),
         fragments: Arc::from(Vec::new()),
+        wxs_modules: Arc::from(Vec::new()),
         components: Arc::from(Vec::new()),
         typing: None,
         events: Arc::from(Vec::new()),

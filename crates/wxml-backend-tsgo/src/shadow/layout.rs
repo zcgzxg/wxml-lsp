@@ -187,6 +187,13 @@ pub struct FragmentSpec {
     pub locals: Vec<String>,
     /// Structured `wx:for` bindings, outermost first.
     pub bindings: Vec<LocalBinding>,
+    /// Static WXS module names declared by the owning template.
+    ///
+    /// A `<wxs module="m1">` name is a file-level value, not a data field, so
+    /// it is kept unprefixed and declared once as `any` in the probe. The
+    /// entries must be valid binding identifiers; the renderer re-validates
+    /// defensively.
+    pub wxs_modules: Vec<String>,
     /// Enclosing guard chains, outermost first.
     pub guards: Vec<GuardChain>,
     /// Mount `expr` as a member of the registration instance instead of
@@ -215,6 +222,7 @@ impl FragmentSpec {
             target: None,
             locals: Vec::new(),
             bindings: Vec::new(),
+            wxs_modules: Vec::new(),
             guards: Vec::new(),
             member: false,
         }
@@ -661,6 +669,24 @@ fn build_in_place_shadow_inner(
     body.push(" = this.");
     body.mark_root_expression = body.length_utf16;
     body.push("data;\n");
+
+    // Static WXS module names are values, not data fields. Declare each one
+    // once so a template call such as `m1.getLimitSettingText(...)` is checked
+    // against `any` instead of `__wxml_root.m1`. This is generated text without
+    // a source mapping and it deliberately does not mark the fragment as
+    // unresolved: a valid static module is complete coverage, not a gap.
+    for name in probe_wxs_modules(request.fragments) {
+        match syntax {
+            Syntax::TypeScript => {
+                body.push(&format!("{BODY_INDENT}const {name}: any = null as any;\n"));
+            }
+            Syntax::JavaScript => {
+                body.push(&format!(
+                    "{BODY_INDENT}const {name} = /** @type {{any}} */ (null);\n"
+                ));
+            }
+        }
+    }
 
     if !properties.properties.is_empty() {
         if syntax == Syntax::TypeScript {
@@ -1218,22 +1244,58 @@ struct PlannedFragment {
 }
 
 /// Effective local names of one fragment, in the same order as [`RewriteOptions`].
+///
+/// WXS module names are template-level values, so they stay unprefixed exactly
+/// like `wx:for` locals. Invalid names and the reserved `__wxml_` namespaces
+/// are dropped, which keeps a caller-built `FragmentSpec` from emitting invalid
+/// probe text.
 fn effective_local_names(fragment: &FragmentSpec) -> BTreeSet<String> {
+    let mut names: BTreeSet<String> = fragment
+        .wxs_modules
+        .iter()
+        .filter(|name| expression::is_binding_identifier(name))
+        .cloned()
+        .collect();
     if fragment.bindings.is_empty() {
-        fragment
-            .locals
-            .iter()
-            .filter(|name| expression::is_binding_identifier(name))
-            .cloned()
-            .collect()
+        names.extend(
+            fragment
+                .locals
+                .iter()
+                .filter(|name| expression::is_binding_identifier(name))
+                .cloned(),
+        );
     } else {
-        fragment
-            .bindings
-            .iter()
-            .filter(|binding| expression::is_binding_identifier(&binding.name))
-            .map(|binding| binding.name.clone())
-            .collect()
+        names.extend(
+            fragment
+                .bindings
+                .iter()
+                .filter(|binding| expression::is_binding_identifier(&binding.name))
+                .map(|binding| binding.name.clone()),
+        );
     }
+    names
+}
+
+/// Deduplicated WXS module names declared once at the top of the probe.
+///
+/// The union spans every fragment of the request, in first-occurrence order.
+/// Invalid names (including the reserved `__wxml_` namespaces) are skipped so
+/// hand-built requests cannot inject arbitrary probe text. Nothing here touches
+/// the unresolved-binding counter.
+fn probe_wxs_modules(fragments: &[FragmentSpec]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for fragment in fragments {
+        for name in &fragment.wxs_modules {
+            if !expression::is_binding_identifier(name) {
+                continue;
+            }
+            if names.iter().any(|existing| existing == name) {
+                continue;
+            }
+            names.push(name.clone());
+        }
+    }
+    names
 }
 
 fn plan_fragment(

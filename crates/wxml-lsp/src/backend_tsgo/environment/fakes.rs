@@ -140,6 +140,7 @@ pub(super) fn prepared_view_with_files(
         files: Arc::from(files),
         compiler_options: options,
         fragments: Arc::from(vec![fragment()]),
+        wxs_modules: Arc::from(Vec::new()),
         components: Arc::from(Vec::new()),
         typing: None,
         events: Arc::from(Vec::new()),

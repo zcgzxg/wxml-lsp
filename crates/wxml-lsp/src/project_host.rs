@@ -374,6 +374,15 @@ pub struct PreparedView {
     pub compiler_options: serde_json::Map<String, serde_json::Value>,
     /// Template fragments in source order.
     pub fragments: Arc<[CheckFragment]>,
+    /// Static WXS module names declared by the template, in first-occurrence
+    /// order and deduplicated.
+    ///
+    /// A `<wxs module="m1">` name is a file-level value, not a page/component
+    /// data field. The shadow keeps the name unprefixed and declares it once in
+    /// the probe so `{{ m1.call() }}` is not reported as a missing data
+    /// property. Non-identifier names and the reserved `__wxml_` /
+    /// `__WxmlProps_` namespaces are never included.
+    pub wxs_modules: Arc<[String]>,
     /// Custom-component usages with resolved local component scripts.
     pub components: Arc<[ComponentUsage]>,
     /// Component declaration facts for this view's project, when the fixed
@@ -3463,6 +3472,31 @@ fn components_from_config(
     components
 }
 
+/// Collects the static WXS module names of one template.
+///
+/// Only valid binding identifiers are kept: non-identifier `module` values
+/// cannot be declared in the probe, and `is_binding_identifier` also rejects
+/// the reserved `__wxml_` / `__WxmlProps_` namespaces (`__wxml_root`,
+/// `__wxml_props_0`, `__wxml_props_raw_0`, `__wxml_check_0`). Duplicates keep
+/// the first occurrence so the shadow declares each module once.
+fn static_wxs_modules(tree: &wxml_syntax::SyntaxTree) -> Arc<[String]> {
+    let semantics = wxml_types::analyze_template_semantics(tree);
+    let mut modules: Vec<String> = Vec::new();
+    for block in &semantics.wxs {
+        let Some(module) = block.module.as_deref() else {
+            continue;
+        };
+        if !wxml_backend_tsgo::shadow::expression::is_binding_identifier(module) {
+            continue;
+        }
+        if modules.iter().any(|existing| existing.as_str() == module) {
+            continue;
+        }
+        modules.push(module.to_owned());
+    }
+    Arc::from(modules)
+}
+
 /// Builds one prepared view from an immutable slot snapshot.
 #[allow(clippy::too_many_lines)] // one linear analysis pipeline
 fn build_prepared(
@@ -3479,6 +3513,9 @@ fn build_prepared(
     let analysis = TemplateAnalyzer::new(owner, snapshot.revision())
         .with_component_tags(view_components.keys().cloned())
         .analyze(&parsed.tree);
+    // WXS module names are template-level values. The shadow needs them to keep
+    // `m1` unprefixed instead of turning it into a data root.
+    let wxs_modules = static_wxs_modules(&parsed.tree);
     let mut hint = None;
     if analysis.truncated {
         merge_hint(
@@ -3563,6 +3600,7 @@ fn build_prepared(
             files: Arc::from(Vec::new()),
             compiler_options: serde_json::Map::new(),
             fragments: Arc::from(analysis.fragments),
+            wxs_modules: Arc::clone(&wxs_modules),
             components: Arc::from(Vec::new()),
             typing,
             events,
@@ -3717,6 +3755,7 @@ fn build_prepared(
         files: Arc::from(files),
         compiler_options,
         fragments: Arc::from(analysis.fragments),
+        wxs_modules,
         components: Arc::from(components),
         typing,
         events,
@@ -3885,6 +3924,7 @@ fn syntax_only_view(
         files: Arc::from(Vec::new()),
         compiler_options: serde_json::Map::new(),
         fragments: Arc::from(Vec::new()),
+        wxs_modules: Arc::from(Vec::new()),
         components: Arc::from(Vec::new()),
         typing: None,
         events: Arc::from(Vec::new()),
@@ -5587,6 +5627,29 @@ export {};
             text,
         ));
         host.analysis(&snapshot).expect("analysis")
+    }
+
+    #[test]
+    fn prepared_view_collects_deduplicated_wxs_module_names() {
+        let (_dir, root) = typing_host(None);
+        let host = open_typing_host(&root);
+        let template = concat!(
+            r#"<wxs module="m1">module.exports = { format(t) { return t; } };</wxs>"#,
+            r#"<wxs module="m1">module.exports = { format(t) { return t; } };</wxs>"#,
+            // Reserved shadow names must never reach the probe.
+            r#"<wxs module="__wxml_root">module.exports = {};</wxs>"#,
+            r#"<wxs module="__wxml_check_0">module.exports = {};</wxs>"#,
+            // Not a binding identifier.
+            r#"<wxs module="bad-name">module.exports = {};</wxs>"#,
+            r#"<view>{{ m1.format(title) }}</view>"#,
+        );
+        let view = analyze_page(&host, template, 7);
+        let modules = view
+            .wxs_modules
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(modules, ["m1"]);
     }
 
     /// Returns the parse counter and snapshot identity of the declaration cache.

@@ -853,6 +853,21 @@ impl<'a> Parser<'a> {
                 None,
             );
         }
+        // Bare identifier alias (`{ f: f }`) inherits the local declaration so
+        // function exports keep their parameters. Module aliases stay
+        // conservative: `local_by_name` does not carry their specifier.
+        if first.kind == TokenKind::Identifier && self.skip_comments(start + 1) == end {
+            let alias = self
+                .local_by_name
+                .iter()
+                .find(|entry| entry.0 == first.text)
+                .cloned();
+            if let Some((_local_name, kind, type_text, signature)) = alias {
+                if kind != WxsMemberKind::Module {
+                    return (kind, type_text, signature, None);
+                }
+            }
+        }
         (
             WxsMemberKind::Value,
             infer_tokens(&self.tokens[start..end], &self.local_by_name),
@@ -1896,5 +1911,74 @@ module.exports = {
         let summary = summarize_wxs(text);
         assert_eq!(member(&summary, "alias").type_text, "number");
         assert!(member(&summary, "alias").exported);
+    }
+
+    #[test]
+    fn function_alias_export_keeps_parameter_names() {
+        let text = r#"
+function getLimitSettingText(attendLimitSetting, userAppointLimit) {
+  return "x";
+}
+module.exports = { getLimitSettingText: getLimitSettingText };
+"#;
+        let summary = summarize_wxs(text);
+        assert!(summary.dynamic.is_none(), "{summary:?}");
+        let exported = member(&summary, "getLimitSettingText");
+        assert!(exported.exported);
+        assert_eq!(exported.kind, WxsMemberKind::Function);
+        assert_eq!(exported.type_text, "string");
+        assert_eq!(
+            exported.signature.as_deref(),
+            Some("(attendLimitSetting: any, userAppointLimit: any) => string")
+        );
+    }
+
+    #[test]
+    fn value_alias_export_stays_a_value() {
+        let text = "const version = \"1.0\";\nmodule.exports = { version: version };";
+        let summary = summarize_wxs(text);
+        assert!(summary.dynamic.is_none(), "{summary:?}");
+        let exported = member(&summary, "version");
+        assert!(exported.exported);
+        assert_eq!(exported.kind, WxsMemberKind::Value);
+        assert_eq!(exported.type_text, "string");
+        assert_eq!(exported.signature, None);
+    }
+
+    #[test]
+    fn shorthand_export_keeps_its_function_signature() {
+        let text = r"
+function someFunc(first, second) {
+  return first;
+}
+module.exports = { someFunc };
+";
+        let summary = summarize_wxs(text);
+        let exported = member(&summary, "someFunc");
+        assert!(exported.exported);
+        assert_eq!(exported.kind, WxsMemberKind::Function);
+        assert_eq!(
+            exported.signature.as_deref(),
+            Some("(first: any, second: any) => any")
+        );
+    }
+
+    #[test]
+    fn alias_declared_after_module_exports_stays_conservative() {
+        let text = r"
+module.exports = { later: later };
+function later(first, second) {
+  return first;
+}
+";
+        let summary = summarize_wxs(text);
+        let exported = member(&summary, "later");
+        assert!(exported.exported);
+        assert_eq!(exported.kind, WxsMemberKind::Value);
+        assert_eq!(exported.type_text, "any");
+        assert_eq!(
+            exported.signature, None,
+            "no signature may be fabricated before the local is known"
+        );
     }
 }

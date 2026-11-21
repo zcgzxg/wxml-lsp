@@ -469,6 +469,7 @@ mod tests {
             files: Arc::from(files),
             compiler_options: serde_json::Map::new(),
             fragments: Arc::from(Vec::new()),
+            wxs_modules: Arc::from(Vec::new()),
             components: Arc::from(Vec::new()),
             typing: None,
             events: Arc::from(Vec::new()),

@@ -746,7 +746,7 @@ fn build_request_plan_with_completion(
     let (included, omitted_literal, omitted_malformed) = eligible_fragments(&view.fragments);
     let mut fragments = included
         .iter()
-        .map(|fragment| fragment_spec(fragment))
+        .map(|fragment| fragment_spec(fragment, &view.wxs_modules))
         .collect::<Vec<_>>();
     if let Some(fragment) = completion {
         let spec = completion_fragment_spec(fragment);
@@ -1369,6 +1369,7 @@ fn completion_fragment_spec(fragment: &CompletionFragment) -> FragmentSpec {
             .map(|binding| binding.name.clone())
             .collect(),
         bindings: fragment.bindings.iter().map(local_binding).collect(),
+        wxs_modules: Vec::new(),
         guards: Vec::new(),
         member: false,
     }
@@ -1438,12 +1439,18 @@ fn event_point_fragment_spec(fragment: &EventPointFragment) -> FragmentSpec {
         target: None,
         locals: Vec::new(),
         bindings: Vec::new(),
+        wxs_modules: Vec::new(),
         guards: Vec::new(),
         member: true,
     }
 }
 
-fn fragment_spec(fragment: &CheckFragment) -> FragmentSpec {
+/// Builds the fragment spec for one template fragment.
+///
+/// Every fragment carries the view's static WXS module names: the shadow keeps
+/// them unprefixed and declares them once, so an expression whose only root is
+/// a module is still mounted and never rewritten to a data root.
+fn fragment_spec(fragment: &CheckFragment, wxs_modules: &[String]) -> FragmentSpec {
     FragmentSpec {
         id: fragment.fragment_id.clone(),
         expr: fragment.expr_text.clone(),
@@ -1455,6 +1462,7 @@ fn fragment_spec(fragment: &CheckFragment) -> FragmentSpec {
             .map(|binding| binding.name.clone())
             .collect(),
         bindings: fragment.bindings.iter().map(local_binding).collect(),
+        wxs_modules: wxs_modules.to_vec(),
         guards: fragment.guards.iter().map(guard_chain).collect(),
         member: false,
     }
@@ -1810,6 +1818,75 @@ mod tests {
                     offset + u32::try_from("handler".len()).expect("handler length")
                 ))
                 .is_none()
+        );
+    }
+
+    fn wxs_fragment(wxml: &str, expr: &str) -> CheckFragment {
+        let start = u32::try_from(wxml.find(expr).expect("expression in template"))
+            .expect("expression start");
+        CheckFragment {
+            fragment_id: "wxs#0".to_owned(),
+            expr_text: expr.to_owned(),
+            target: None,
+            bindings: Vec::new(),
+            guards: Vec::new(),
+            wxml_range: range(
+                start,
+                start + u32::try_from(expr.len()).expect("expression length"),
+            ),
+            fragment_revision: 1,
+            root: RootKind::Page,
+        }
+    }
+
+    #[test]
+    fn a_wxs_module_only_expression_remains_eligible() {
+        // `m1` is not a `wx:for` local, so the free-root scan keeps the
+        // fragment eligible instead of dropping it as `NoFreeRoot`; the shadow
+        // then declares `m1` and keeps it unprefixed.
+        let fragment = wxs_fragment("<view>{{ m1.someValue }}</view>", "m1.someValue");
+        assert_eq!(
+            fragment_eligibility(&fragment),
+            FragmentEligibility::Eligible
+        );
+    }
+
+    #[test]
+    fn a_wxs_module_fragment_is_mounted_unprefixed_in_the_plan() {
+        let wxml = "<view>{{ m1.someValue }}</view>";
+        let script = "Page({ data: { title: 'x' } });";
+        let mut view = empty_view(wxml, vec![prepared_file(SCRIPT_PATH, script)]);
+        view.wxs_modules = Arc::from(vec!["m1".to_owned()]);
+        view.fragments = Arc::from(vec![wxs_fragment(wxml, "m1.someValue")]);
+        let plan = build_request_plan(
+            &PointViews(view),
+            &point_context(wxml),
+            &Environment::Legacy,
+        )
+        .expect("plan");
+
+        assert!(
+            plan.layout
+                .derived()
+                .contains("const m1: any = null as any;"),
+            "{}",
+            plan.layout.derived()
+        );
+        let start = u32::try_from(wxml.find("m1.someValue").expect("expression")).expect("start");
+        let mount = plan
+            .layout
+            .mount_for_range(range(
+                start,
+                start + u32::try_from("m1.someValue".len()).expect("expression length"),
+            ))
+            .expect("wxs mount");
+        assert_eq!(mount.text, "m1.someValue");
+        assert!(
+            plan.degradation
+                .as_deref()
+                .is_none_or(|reason| !reason.contains("free-root")),
+            "{:?}",
+            plan.degradation
         );
     }
 }

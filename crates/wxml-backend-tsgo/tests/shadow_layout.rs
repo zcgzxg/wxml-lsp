@@ -1148,6 +1148,192 @@ fn hashbang_scripts_are_scanned_without_hashbang_tokens() {
 }
 
 #[test]
+fn wxs_module_calls_stay_unprefixed_and_are_declared_once() {
+    let script = "Page({ data: { formData: { attendLimit: 1, userLimit: 2 } } });";
+    let expr = "m1.getLimitSettingText(formData.attendLimit)";
+    let mut fragment = FragmentSpec::new(
+        "wxs#0",
+        expr,
+        SourceRange::new(0, u32::try_from(expr.len()).expect("expression length")),
+    );
+    fragment.wxs_modules = vec!["m1".to_owned()];
+    let built = build(
+        "index.ts",
+        script,
+        RootKind::Page,
+        &[fragment],
+        JsCheckPolicy::Inherit,
+        false,
+    )
+    .expect("layout");
+    assert_eq!(built.status, BuildStatus::Supported);
+    assert_eq!(
+        built
+            .view
+            .text
+            .matches("const m1: any = null as any;")
+            .count(),
+        1,
+        "{}",
+        built.view.text
+    );
+    assert_eq!(built.view.mounts.len(), 1);
+    assert_eq!(
+        built.view.mounts[0].text,
+        "m1.getLimitSettingText(__wxml_root.formData.attendLimit)"
+    );
+    assert!(
+        built.reason.is_none(),
+        "a static WXS module is complete coverage: {:?}",
+        built.reason
+    );
+    assert!(
+        built.notes.iter().all(|note| !note.contains("unresolved")),
+        "{:?}",
+        built.notes
+    );
+}
+
+#[test]
+fn wxs_module_declarations_are_deduplicated_across_fragments() {
+    let script = "Page({ data: { formData: { attendLimit: 1 } } });";
+    let mut first = FragmentSpec::new("wxs#0", "m1.alpha", SourceRange::new(0, 8));
+    let mut second = FragmentSpec::new("wxs#1", "m1.beta", SourceRange::new(9, 16));
+    first.wxs_modules = vec!["m1".to_owned()];
+    second.wxs_modules = vec!["m1".to_owned()];
+    let built = build(
+        "index.ts",
+        script,
+        RootKind::Page,
+        &[first, second],
+        JsCheckPolicy::Inherit,
+        false,
+    )
+    .expect("layout");
+    assert_eq!(built.status, BuildStatus::Supported);
+    assert_eq!(
+        built
+            .view
+            .text
+            .matches("const m1: any = null as any;")
+            .count(),
+        1,
+        "{}",
+        built.view.text
+    );
+    let mounts = built
+        .view
+        .mounts
+        .iter()
+        .map(|mount| mount.text.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(mounts, ["m1.alpha", "m1.beta"]);
+}
+
+#[test]
+fn wxs_module_and_loop_bindings_share_one_probe() {
+    let script = "Page({ data: { users: [{ name: 'x' }] } });";
+    let expr = "m1.format(item.name)";
+    let mut fragment = FragmentSpec::new(
+        "loop#0",
+        expr,
+        SourceRange::new(0, u32::try_from(expr.len()).expect("expression length")),
+    );
+    fragment.wxs_modules = vec!["m1".to_owned()];
+    fragment.bindings = vec![LocalBinding {
+        name: "item".to_owned(),
+        role: LocalRole::Item,
+        source_expr: "users".to_owned(),
+    }];
+    let built = build(
+        "index.ts",
+        script,
+        RootKind::Page,
+        &[fragment],
+        JsCheckPolicy::Inherit,
+        false,
+    )
+    .expect("layout");
+    assert_eq!(built.status, BuildStatus::Supported);
+    assert!(built.view.text.contains("const m1: any = null as any;"));
+    assert!(
+        built
+            .view
+            .text
+            .contains("const item = __wxml_item(__wxml_root.users);")
+    );
+    assert_eq!(built.view.mounts.len(), 1);
+    assert_eq!(built.view.mounts[0].text, "m1.format(item.name)");
+}
+
+#[test]
+fn a_loop_binding_shadows_a_same_named_wxs_module() {
+    // The module is a top-level value; a `wx:for` item of the same name is a
+    // block-local declaration, so the loop body resolves the local while the
+    // rest of the probe still sees the module.
+    let script = "Page({ data: { m1: [{ name: 'x' }] } });";
+    let mut fragment = FragmentSpec::new("loop#0", "m1.name", SourceRange::new(0, 7));
+    fragment.wxs_modules = vec!["m1".to_owned()];
+    fragment.bindings = vec![LocalBinding {
+        name: "m1".to_owned(),
+        role: LocalRole::Item,
+        source_expr: "m1".to_owned(),
+    }];
+    let built = build(
+        "index.ts",
+        script,
+        RootKind::Page,
+        &[fragment],
+        JsCheckPolicy::Inherit,
+        false,
+    )
+    .expect("layout");
+    assert_eq!(built.status, BuildStatus::Supported);
+    assert_eq!(
+        built
+            .view
+            .text
+            .matches("const m1: any = null as any;")
+            .count(),
+        1
+    );
+    assert!(
+        built
+            .view
+            .text
+            .contains("const m1 = __wxml_item(__wxml_root.m1);")
+    );
+    assert_eq!(built.view.mounts[0].text, "m1.name");
+}
+
+#[test]
+fn wxs_module_declarations_follow_the_probe_syntax() {
+    // A `.js` probe cannot carry a type annotation, so the same declaration is
+    // rendered as a JSDoc cast; the module still stays unprefixed.
+    let script = "Page({ data: { title: 'x' } });";
+    let mut fragment = FragmentSpec::new("wxs#0", "m1.alpha", SourceRange::new(0, 8));
+    fragment.wxs_modules = vec!["m1".to_owned()];
+    let built = build(
+        "index.js",
+        script,
+        RootKind::Page,
+        &[fragment],
+        JsCheckPolicy::Inherit,
+        false,
+    )
+    .expect("layout");
+    assert!(
+        built
+            .view
+            .text
+            .contains("const m1 = /** @type {any} */ (null);"),
+        "{}",
+        built.view.text
+    );
+    assert_eq!(built.view.mounts[0].text, "m1.alpha");
+}
+
+#[test]
 fn blocked_cases_are_documented_and_not_claimed() {
     assert!(
         BLOCKED_CASES

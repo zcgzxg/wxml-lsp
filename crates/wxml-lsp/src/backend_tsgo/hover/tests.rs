@@ -665,6 +665,7 @@ mod adapter {
             target: None,
             locals: Vec::new(),
             bindings: Vec::new(),
+            wxs_modules: Vec::new(),
             guards: Vec::new(),
             member: true,
         };
@@ -901,6 +902,7 @@ Component({ behaviors: [shared], data: {} });"#;
             files,
             compiler_options: serde_json::Map::new(),
             fragments,
+            wxs_modules: Arc::from(Vec::new()),
             components: Arc::from(Vec::new()),
             typing: None,
             events: Arc::from(Vec::new()),
