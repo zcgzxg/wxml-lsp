@@ -172,7 +172,7 @@ editors/zed/               # Zed Dev Extension（独立 workspace）
 scripts/install-native.sh  # 组装 native 安装根
 tests/fixtures/            # AC-001..AC-013 验收样本
 docs/adr/                  # 架构决策记录
-docs/reference/            # 契约、诊断策略、功能基线、来源记录
+docs/reference/            # 契约、诊断策略、功能基线
 openspec/                  # spec-driven 变更流程（changes/、archive/、specs/）
 assets.lock.json           # typings 类型资产的固定输入
 ```
@@ -227,5 +227,4 @@ cargo test --workspace --all-features
 - [ADR 索引](docs/adr/README.md)：0001 分层、0002 类型检查与源码映射、0003 文档同步、0004 交付闸门、0005 文档自包含、0006 显式根、0007 交付信任、0009 瘦身、0010 零配置惰性发现、0012 进程内类型会话
 - [C0 基础契约](docs/reference/contracts.md)、[模板类型诊断策略](docs/reference/type-diagnostics.md)
 - [原生类型后端合同](docs/reference/tsrs-native-contract.md)（tsrs 进程内会话口径）
-- [来源与许可证记录](docs/reference/provenance.md)
 - 变更流程：[`openspec/`](openspec/)（活跃变更在 `changes/`，归档在 `changes/archive/`；`specs/` 尚未沉淀能力规格）

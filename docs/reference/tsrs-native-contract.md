@@ -22,7 +22,6 @@
 2. 有效的 ADR（ADR-0012 与 ADR-0009）。
 3. 本文件与既有 C0 契约（`docs/reference/contracts.md`）。
 4. 项目 README 与 `docs/reference/` 其它参考。
-5. 来源与许可证记录（`docs/reference/provenance.md`），以及历史证据。
 
 代码事实优先于文档；发现不一致时修订对应文档，不保留两套说法。本文件与 ADR 冲突时，不得用本文件覆盖 ADR。
 

@@ -16,7 +16,6 @@
 | 查询基准 | [查询基准](reference/benchmarks.md) | 查询路径的测量边界、运行方式、冷热语义和结果解读规则 | CI 耗时门禁或固定延迟预算 |
 | 验收样本 | [共享验收样本](../tests/fixtures/README.md) | AC-001..AC-013 的正例、反例、runtime 场景和 schema v2 记录 | 类型分析实现 |
 | 架构决策 | [ADR 索引](adr/README.md) | 模块边界、类型检查与映射、文档同步、交付闸门、瘦身、零配置惰性发现和进程内类型会话决策 | 日常进度 |
-| 来源与许可证 | [来源记录](reference/provenance.md) | 外部调研对象的版本、提交、许可证和归属 | 功能需求 |
 
 ## 2. 阅读顺序
 
@@ -28,7 +27,6 @@
 4. 实现或评审跨模块接口时，阅读 [C0 基础契约](reference/contracts.md)与[模板类型诊断策略](reference/type-diagnostics.md)。
 5. 修改 native 后端时，阅读[F0/F1 原生合同](reference/tsrs-native-contract.md)。
 6. 需要实现通用 WXML 功能时，阅读[功能基线](reference/wxml-language-feature-baseline.md)。
-7. 需要复用外部代码或数据时，先查[来源记录](reference/provenance.md)，再复核许可证。
 
 ## 3. 权威顺序
 
@@ -38,7 +36,6 @@
 2. 已接受的 ADR。
 3. `docs/reference/` 中的契约与诊断策略。
 4. 项目 README 和功能基线。
-5. 来源记录。
 
 过程性证据、迁移计划、旧 Node 时代的验收记录和 C1 类型桥契约不再作为当前事实来源（C1 文案已删除，native 后端不实现它）。需要追溯时使用 tag `pre-slim-20261120`。
 
@@ -47,7 +44,6 @@
 - 需求变化先改项目 README 或功能基线；跨模块取舍新增 ADR。
 - 临时实验只在仓库外运行，不在项目目录生成临时文件。
 - 实验结论、环境、限制和最小可复查数据写入 ADR、reference 或提交说明；不再恢复 `docs/evidence/`。
-- 外部来源和许可证变化同步到 `docs/reference/provenance.md`。
 - 已删除的交付 crate、迁移 parity/ledger、Q2/性能/stdio 门禁、C1 类型桥和过程文档不再重建；历史版本见 tag `pre-slim-20261120`。
 - 新增 ADR 使用下一个四位编号，手写可复制 [template.md](adr/template.md)。
 
@@ -63,7 +59,6 @@ docs/
 └── reference/
     ├── benchmarks.md
     ├── contracts.md
-    ├── provenance.md
     ├── tsrs-native-contract.md
     ├── type-diagnostics.md
     └── wxml-language-feature-baseline.md

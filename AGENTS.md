@@ -8,7 +8,7 @@ workspace. Linux x86_64 is the only verified platform.
 
 - `README.md` is the current behavior/build/install baseline.
 - `docs/README.md` defines doc ownership and authority: code/tests > accepted
-  ADR > `docs/reference/` > README > provenance.
+  ADR > `docs/reference/` > README.
 - The `.opencode/` harness config (agents, commands, instructions) was removed
   from the repo; keep guidance in this file. History still has the old files.
 - `openspec/` holds OpenSpec change proposals and specs; `openspec/config.yaml`

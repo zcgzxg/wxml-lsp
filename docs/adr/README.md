@@ -33,7 +33,7 @@ ADR-0012 取代已删除的 ADR-0008：类型引擎改为进程内 `tsrs_api::Se
 3. 架构边界以有效的 ADR 为准；需求以项目 README 为依据；已支持能力必须以实际代码、测试及编辑器验证记录为依据。
 4. ADR-0001 统一原 README 与 Cargo 注释中相互冲突的 crate 依赖描述。该决策没有自动添加 Cargo 依赖。
 5. 工作包表是决策时的交付基线，日常实施进度维护在项目 README；不要通过改写 ADR 将待验证设计追记为既有事实。
-6. 需求与功能基线维护在 `docs/reference/`，外部来源和许可证集中记录在 `docs/reference/provenance.md`；临时实验只在仓库外运行，结论写入 ADR/reference/提交说明，不再使用 `docs/evidence/`。
+6. 需求与功能基线维护在 `docs/reference/`；临时实验只在仓库外运行，结论写入 ADR/reference/提交说明，不再使用 `docs/evidence/`。
 7. 后续改变已采用的关键决策时新增 ADR；整体替代时将原记录标为 `superseded by ADR-NNNN`，局部补充或替代时仅在相关条目链接新记录，保留原来的决策背景和其余有效决定。ADR-0006 仅补充/替代 0001、0003 的根配置及项目选择部分，ADR-0010 部分替代 ADR-0006 的默认根选择和默认扫描/向上查找行为；ADR-0009 替代 ADR-0007 的安装机制和 ADR-0004 的证据留存方式，保留运行时信任、类型 pin 和验收原则；ADR-0011 局部补充 ADR-0002、ADR-0010 的组件类型来源，不改变其分层、快照和发现边界；ADR-0012 取代已删除的 ADR-0008，固定进程内会话、Rust 侧语义所有权、无 Node、只读 VFS 与白名单结论。
 
 新增记录使用下一个四位编号；手工编写可复制 [template.md](template.md)。可用状态为 `proposed`、`accepted`、`deprecated`、`superseded by ADR-NNNN`。
