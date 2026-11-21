@@ -36,6 +36,27 @@ cargo build --release
 # 产物：target/release/wxml-lsp
 ```
 
+### 构建 profile
+
+profile 只面向交付的原生二进制（Linux x86_64）与基准循环，`editors/zed/` 是独立 workspace，
+不受根 profile 影响。
+
+- `[profile.release]`：`lto = "thin"`，workspace 成员 `codegen-units = 1`，`strip = "symbols"`。
+  依赖用 `codegen-units = 16`（thin LTO 仍在链接期跨 crate 优化），构建脚本与 proc-macro
+  用 `opt-level = 0`；两者都只影响构建时间。
+- `panic` 保持默认 `unwind`：scheduler、server 与进程内引擎用 `catch_unwind` 做单请求隔离，
+  `panic = "abort"` 会让一次 panic 带走整个服务器。
+- 本机指令集**不是**默认开启项：在 `query/class`、`query/tag`、`query/type` 与
+  `first-query` 上做过 `-C target-cpu=x86-64-v3` 的 A/B（同一台机器、同一次构建参数，
+  两个方向各测一轮），差异落在运行间噪声内（`query/type/root` 两次同配置重复即相差 6%），
+  且反向一轮出现 2–4% 的回退，因此不写进仓库默认配置。想自行试验时用环境变量，
+  不要改成 `[build] rustflags`（那会传给 `wasm32-wasip2` 的 Zed 扩展构建并使其失败）：
+  `RUSTFLAGS="-C target-cpu=native" cargo build --release`。
+- `test` 继承 `dev`，依赖以 `opt-level = 2` 构建：`TSGO_TYPINGS_ROOT` 下的真实引擎用例
+  不再因未优化代码而失真。
+- 需要 `perf`/flamegraph：`cargo build --profile profiling -p wxml-lsp`，保留符号与行表，
+  产物在 `target/profiling/`。
+
 服务入口：
 
 ```bash

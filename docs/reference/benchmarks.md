@@ -47,6 +47,8 @@ cargo bench -p wxml-lsp --bench queries -- "first-query"
 
 Criterion 的采样产物写入 `target/criterion/`；对比同一台机器上的改动时使用它的 baseline 参数（如 `--save-baseline` / `--baseline`），不要在项目目录另建结果目录。
 
+`cargo bench` 使用 `bench` profile，它继承 `release`（含 thin LTO、`strip`、依赖 16 CGU、`x86-64-v3`），因此基准数字反映交付二进制的形态。改动根 `Cargo.toml` 的 profile 或 `.cargo/config.toml` 的 `rustflags` 后，旧 baseline 不再可比：先重建 baseline 再对比，并且一次只改一项（`codegen-units` 与 `target-cpu` 分别归因），否则无法区分来源。
+
 ## 4. 类型组与 typings 要求
 
 `query/type/*` 和 `first-query/type` 需要已安装的 typings 布局；类型引擎在进程内运行，不需要引擎可执行文件，TypeScript 标准库随二进制内嵌。基准读取 `WXML_BENCH_INSTALL_ROOT`，默认 `$HOME/.local/share/wxml-lsp`，并要求该根目录下存在：
