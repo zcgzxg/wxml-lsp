@@ -154,11 +154,14 @@ impl WxsSummary {
 #[must_use]
 pub fn summarize_wxs(text: &str) -> WxsSummary {
     let limit = MAX_WXS_BYTES.min(text.len());
-    let end = (0..=limit)
-        .rev()
-        .find(|&index| text.is_char_boundary(index))
-        .unwrap_or(0);
-    let sliced = text.get(..end).unwrap_or_default();
+    // `limit <= text.len()` and byte 0 is always a character boundary, so the
+    // walk terminates without a fallback. Cutting on a boundary keeps `sliced`
+    // valid UTF-8.
+    let mut end = limit;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    let sliced = &text[..end];
     let (tokens, token_truncated) = lex(sliced);
     // The lexer stops before adding a token past the cap; an input that ends
     // exactly at the cap is complete.
@@ -1266,10 +1269,10 @@ impl<'a> Parser<'a> {
         module_specifier: Option<String>,
         alias_of: Option<SourceRange>,
     ) {
-        let decl_end = self.tokens.get(end.saturating_sub(1)).map_or_else(
-            || name_range.end(),
-            |token| u32::try_from(token.end).unwrap_or(0),
-        );
+        let decl_end = self
+            .tokens
+            .get(end.saturating_sub(1))
+            .map_or_else(|| name_range.end() as usize, |token| token.end);
         let local = self
             .summary
             .members
@@ -1301,7 +1304,7 @@ impl<'a> Parser<'a> {
             doc,
             exported: true,
             name_range,
-            decl_range: Self::range(name_range.start() as usize, decl_end as usize),
+            decl_range: Self::range(name_range.start() as usize, decl_end),
             module_specifier,
             alias_of,
         });
@@ -1387,14 +1390,24 @@ impl<'a> Parser<'a> {
 
 /// Builds a byte range from scanner offsets.
 ///
-/// Scanner offsets are ordered by construction; the fallback only satisfies
-/// the range invariant without panicking on hostile input.
+/// Scanner offsets are ordered by construction; the empty-range fallback still
+/// satisfies the range invariant without panicking.
 fn valid_range(start: usize, end: usize) -> TextRange {
-    let start = u32::try_from(start).unwrap_or(u32::MAX);
-    let end = u32::try_from(end).unwrap_or(start);
-    TextRange::new(start, end).unwrap_or_else(|_| {
+    TextRange::new(byte_offset(start), byte_offset(end)).unwrap_or_else(|_| {
         TextRange::new(0, 0).unwrap_or_else(|_| unreachable!("an empty text range is valid"))
     })
+}
+
+/// Narrows a scanner byte offset or width to `u32`.
+///
+/// [`summarize_wxs`] truncates the scanned text to [`MAX_WXS_BYTES`] (1 MiB)
+/// before lexing, and every offset the parser reports is a position in that
+/// truncated text; a quote width is a `char::len_utf8()` of at most 4. The cast
+/// therefore cannot truncate. `wxml-text` byte ranges are `u32`, so the scanner
+/// narrows exactly once here instead of carrying a fallback per conversion.
+#[allow(clippy::cast_possible_truncation)]
+const fn byte_offset(offset: usize) -> u32 {
+    offset as u32
 }
 
 /// Decodes the small escape subset meaningful in a static export key.
@@ -1433,7 +1446,7 @@ fn key_literal(token: Token<'_>, token_range: SourceRange) -> (String, SourceRan
                 .and_then(|raw| raw.strip_suffix(quote))
                 .unwrap_or(raw),
         );
-        let start = token_range.start() + u32::try_from(quote.len_utf8()).unwrap_or(0);
+        let start = token_range.start() + byte_offset(quote.len_utf8());
         let end = token_range.end().saturating_sub(1);
         (
             name,
@@ -1894,6 +1907,37 @@ module.exports = {
         let summary = summarize_wxs(&many);
         assert!(summary.truncated, "member budget must set truncated");
         assert!(summary.members.len() <= MAX_WXS_MEMBERS);
+    }
+
+    #[test]
+    fn byte_budget_cuts_only_on_character_boundaries() {
+        // Exactly at the cap and on a boundary: nothing is dropped.
+        let exact = format!("/*{}*/", "a".repeat(MAX_WXS_BYTES - 4));
+        assert_eq!(exact.len(), MAX_WXS_BYTES);
+        assert_eq!(summarize_wxs(&exact), WxsSummary::default());
+
+        // The cap lands inside a four-byte character: the scan backs off to the
+        // previous boundary, so members before the cut stay visible and members
+        // after it do not.
+        let prefix = "const kept = 1;\n/*";
+        let padding = MAX_WXS_BYTES - prefix.len() - 2;
+        let mut text = String::with_capacity(MAX_WXS_BYTES + 32);
+        text.push_str(prefix);
+        text.push_str(&"a".repeat(padding));
+        assert_eq!(text.len(), MAX_WXS_BYTES - 2);
+        text.push('😀');
+        text.push_str("*/\nconst dropped = 2;");
+        assert!(text.len() > MAX_WXS_BYTES);
+        assert!(
+            !text.is_char_boundary(MAX_WXS_BYTES),
+            "the cap must split the emoji"
+        );
+
+        let summary = summarize_wxs(&text);
+        assert!(summary.truncated);
+        assert_eq!(member(&summary, "kept").type_text, "number");
+        assert!(summary.member("dropped").is_none());
+        assert_eq!(summary, summarize_wxs(&text), "the cut is deterministic");
     }
 
     #[test]

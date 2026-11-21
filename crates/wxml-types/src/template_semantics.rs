@@ -264,11 +264,10 @@ pub fn resolve_static_specifier(current: &str, specifier: &str) -> Option<String
     {
         return None;
     }
+    // `str::split` always yields at least one item, so the directory prefix
+    // exists even for a file name without a separator.
     let directory: Vec<&str> = current.split('/').collect();
-    let mut components: Vec<&str> = directory
-        .get(..directory.len().saturating_sub(1))
-        .unwrap_or_default()
-        .to_vec();
+    let mut components: Vec<&str> = directory[..directory.len().saturating_sub(1)].to_vec();
     let normalized = specifier.replace('\\', "/");
     for component in normalized.split('/') {
         match component {
