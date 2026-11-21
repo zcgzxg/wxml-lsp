@@ -51,6 +51,12 @@ const MAX_TYPING_ISSUES: usize = 64;
 /// member is marked unproven instead of being silently cut.
 const MAX_TYPE_TEXT_CHARS: usize = 512;
 
+/// Maximum characters kept from one member's `JSDoc` description.
+///
+/// Documentation is display-only, so a long description is truncated instead of
+/// degrading the member.
+const MAX_DOCUMENTATION_CHARS: usize = 512;
+
 /// Maximum nesting accepted while scanning a declaration file.
 const MAX_SCAN_DEPTH: usize = 256;
 
@@ -217,6 +223,8 @@ impl TypeText {
 pub struct TypingProperty {
     /// Attribute name as declared.
     pub name: String,
+    /// `JSDoc` description from the declaration, when present.
+    pub documentation: Option<String>,
     /// Original type expression text, kept for hover.
     pub type_text: String,
     /// Whether the declaration used a `?` marker.
@@ -232,6 +240,8 @@ pub struct TypingProperty {
 pub struct TypingEvent {
     /// Event name as declared.
     pub name: String,
+    /// `JSDoc` description from the declaration, when present.
+    pub documentation: Option<String>,
     /// Detail type text, or `None` when the event carries no detail.
     pub detail_text: Option<String>,
     /// Parsed detail type, or `None` when the event carries no detail.
@@ -696,6 +706,7 @@ fn build_properties(members: Vec<RawMember>) -> Vec<TypingProperty> {
             }
             TypingProperty {
                 name: member.name,
+                documentation: member.documentation,
                 type_text,
                 optional: member.optional,
                 proven,
@@ -724,6 +735,7 @@ fn build_events(members: Vec<RawMember>, declarations: &FileDeclarations) -> Vec
             };
             TypingEvent {
                 name: member.name,
+                documentation: member.documentation,
                 detail_text,
                 detail,
                 proven,
@@ -778,6 +790,8 @@ fn bounded_type_text(text: &str) -> (String, bool) {
 struct RawMember {
     /// Member name without quotes.
     name: String,
+    /// `JSDoc` description declared before the member, normalized.
+    documentation: Option<String>,
     /// Whether the member carries a `?` marker.
     optional: bool,
     /// Type expression text, trimmed.
@@ -874,7 +888,9 @@ fn parse_object_members(inner: &str) -> Option<Vec<RawMember>> {
     let mut members = Vec::new();
     let mut index = 0_usize;
     while index < bytes.len() {
+        let before = index;
         index = skip_trivia(bytes, index);
+        let documentation = last_jsdoc(inner, before, index);
         match bytes.get(index) {
             None => break,
             Some(b';' | b',') => {
@@ -896,12 +912,91 @@ fn parse_object_members(inner: &str) -> Option<Vec<RawMember>> {
         let (start, end, next) = read_type_range(bytes, index + 1, bytes.len())?;
         members.push(RawMember {
             name,
+            documentation,
             optional,
             type_text: inner.get(start..end)?.to_owned(),
         });
         index = next;
     }
     Some(members)
+}
+
+/// Extracts the last `/** ... */` description from the trivia before a member.
+///
+/// `skip_trivia` skips whitespace and every comment form, so the range carries
+/// both. Only the last `JSDoc` block counts; line comments and plain `/* */`
+/// blocks are not descriptions.
+fn last_jsdoc(text: &str, start: usize, end: usize) -> Option<String> {
+    let bytes = text.as_bytes();
+    let limit = end.min(bytes.len());
+    let mut index = start.min(limit);
+    let mut found = None;
+    while index < limit {
+        if bytes.get(index) != Some(&b'/') {
+            index += 1;
+            continue;
+        }
+        match bytes.get(index + 1) {
+            Some(b'/') => {
+                index += 2;
+                while index < limit && bytes.get(index) != Some(&b'\n') {
+                    index += 1;
+                }
+            }
+            Some(b'*') => {
+                let open = index;
+                let close = block_comment_end(bytes, open, limit);
+                if bytes.get(open + 2) == Some(&b'*') {
+                    let body_end = close.max(open + 3);
+                    found = Some(normalize_jsdoc(text.get(open + 3..body_end)?));
+                }
+                index = close + 2;
+            }
+            _ => index += 1,
+        }
+    }
+    found.flatten()
+}
+
+/// Returns the byte offset of the `*/` closing a block comment, or `limit`.
+fn block_comment_end(bytes: &[u8], open: usize, limit: usize) -> usize {
+    let mut cursor = open + 2;
+    while cursor + 1 < limit {
+        if bytes.get(cursor) == Some(&b'*') && bytes.get(cursor + 1) == Some(&b'/') {
+            return cursor;
+        }
+        cursor += 1;
+    }
+    limit
+}
+
+/// Folds one `JSDoc` body into a single trimmed line.
+///
+/// Strips the leading whitespace and `*` of every line, collapses whitespace,
+/// returns `None` for an empty body and caps the result at
+/// [`MAX_DOCUMENTATION_CHARS`] characters.
+fn normalize_jsdoc(body: &str) -> Option<String> {
+    let mut folded = String::new();
+    for line in body.lines() {
+        let line = line.trim_start();
+        let line = line.strip_prefix('*').unwrap_or(line);
+        if !folded.is_empty() {
+            folded.push(' ');
+        }
+        folded.push_str(line);
+    }
+    let normalized = folded.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized.chars().count() <= MAX_DOCUMENTATION_CHARS {
+        return Some(normalized);
+    }
+    let truncated = normalized
+        .chars()
+        .take(MAX_DOCUMENTATION_CHARS)
+        .collect::<String>();
+    Some(truncated.trim_end().to_owned())
 }
 
 /// Reads one member name, keeping quoted names verbatim.
@@ -2468,5 +2563,128 @@ mod tests {
             assert_eq!(facts.sources.len(), 1);
             let _ = TypeText::parse(text.as_str()).is_proven();
         }
+    }
+
+    /// Builds one declaration file with the given `props`/`events` bodies.
+    fn component_source(props: &str, events: &str) -> String {
+        format!(
+            r"
+            interface WxmlComponentMap {{ 'demo-box': DemoBox; }}
+            interface DemoBox {{
+              props: {{{props}}};
+              events: {{{events}}};
+            }}
+            "
+        )
+    }
+
+    /// Parses one component from the given `props`/`events` bodies.
+    fn component_facts(props: &str, events: &str) -> TypingComponent {
+        let source = component_source(props, events);
+        let facts = facts(&[("types/components.d.ts", source.as_str())]);
+        assert!(facts.complete, "{:?}", facts.issues);
+        facts.component("demo-box").expect("component").clone()
+    }
+
+    #[test]
+    fn single_line_jsdoc_becomes_documentation() {
+        let component = component_facts(
+            " /** 按钮类型 */ kind: string;",
+            " /** 点击事件 */ tap: { detail: { index: number } };",
+        );
+        let property = component.prop("kind").expect("prop");
+        assert_eq!(property.documentation.as_deref(), Some("按钮类型"));
+        let event = component.event("tap").expect("event");
+        assert_eq!(event.documentation.as_deref(), Some("点击事件"));
+    }
+
+    #[test]
+    fn multi_line_jsdoc_folds_into_one_line() {
+        let component = component_facts(
+            r"
+            /**
+             * 第一行
+             * 第二行
+             */
+            kind: string;
+            ",
+            "",
+        );
+        let property = component.prop("kind").expect("prop");
+        assert_eq!(property.documentation.as_deref(), Some("第一行 第二行"));
+    }
+
+    #[test]
+    fn empty_jsdoc_yields_no_documentation() {
+        let component = component_facts(" /** */ kind: string;", " /** */ tap: void;");
+        let property = component.prop("kind").expect("prop");
+        assert_eq!(property.documentation, None);
+        let event = component.event("tap").expect("event");
+        assert_eq!(event.documentation, None);
+    }
+
+    #[test]
+    fn non_jsdoc_comments_yield_no_documentation() {
+        let component = component_facts(
+            " // 注释\n kind: string; /* 普通块 */ other: number;",
+            " // 注释\n tap: void; /* 普通块 */ close: void;",
+        );
+        assert_eq!(component.prop("kind").expect("prop").documentation, None);
+        assert_eq!(component.prop("other").expect("prop").documentation, None);
+        assert_eq!(component.event("tap").expect("event").documentation, None);
+        assert_eq!(component.event("close").expect("event").documentation, None);
+    }
+
+    #[test]
+    fn long_jsdoc_is_truncated_to_the_character_budget() {
+        let long = "文".repeat(600);
+        let component = component_facts(&format!(" /** {long} */ kind: string;"), "");
+        let documentation = component
+            .prop("kind")
+            .expect("prop")
+            .documentation
+            .clone()
+            .expect("documentation");
+        assert_eq!(documentation.chars().count(), MAX_DOCUMENTATION_CHARS);
+        assert!(documentation.chars().all(|character| character == '文'));
+    }
+
+    #[test]
+    fn documentation_does_not_change_other_component_facts() {
+        let plain = component_facts(
+            " a: string; b?: number; c: 'x' | 'y';",
+            " tap: void; change: { detail: { index: number } };",
+        );
+        let documented = component_facts(
+            r"
+            /** 说明 a */ a: string;
+            /** 说明 b */ b?: number;
+            /** 说明 c */ c: 'x' | 'y';
+            ",
+            r"
+            /** 说明 tap */ tap: void;
+            /** 说明 change */ change: { detail: { index: number } };
+            ",
+        );
+        assert_eq!(plain.complete, documented.complete);
+        assert_eq!(plain.props.len(), documented.props.len());
+        for (plain, documented) in plain.props.iter().zip(documented.props.iter()) {
+            assert_eq!(plain.name, documented.name);
+            assert_eq!(plain.type_text, documented.type_text);
+            assert_eq!(plain.optional, documented.optional);
+            assert_eq!(plain.proven, documented.proven);
+            assert_eq!(plain.ty, documented.ty);
+        }
+        assert_eq!(plain.events.len(), documented.events.len());
+        for (plain, documented) in plain.events.iter().zip(documented.events.iter()) {
+            assert_eq!(plain.name, documented.name);
+            assert_eq!(plain.detail_text, documented.detail_text);
+            assert_eq!(plain.detail, documented.detail);
+            assert_eq!(plain.proven, documented.proven);
+        }
+        assert_eq!(
+            documented.prop("c").expect("prop").documentation.as_deref(),
+            Some("说明 c")
+        );
     }
 }

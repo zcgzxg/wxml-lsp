@@ -415,6 +415,7 @@ fn missing_registration(
             },
             properties: Vec::new(),
             complete: false,
+            own_complete: false,
             problems: reasons.clone(),
         },
         methods: MethodTable {

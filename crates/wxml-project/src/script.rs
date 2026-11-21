@@ -965,7 +965,9 @@ const fn mark_incomplete(facts: &mut ComponentPropertyFacts, reason: &'static st
 /// still a declaration.
 ///
 /// Declared properties carry no source position, so their definition target is
-/// the declaration file itself.
+/// the declaration file itself. The declaration's `JSDoc` description is kept
+/// verbatim; `default_text` stays `None` because the declaration subset does not
+/// parse default values.
 #[must_use]
 pub fn merge_declared_properties(
     script: ComponentPropertyFacts,
@@ -987,7 +989,7 @@ pub fn merge_declared_properties(
             name: property.name.clone(),
             type_text: property.type_text.clone(),
             default_text: None,
-            documentation: None,
+            documentation: property.documentation.clone(),
             script: component.source.clone(),
             range: anchor,
         })
@@ -1682,8 +1684,19 @@ mod tests {
             type_text: type_text.to_owned(),
             optional: true,
             proven,
+            documentation: None,
             ty: crate::typing::TypeText::parse(type_text),
         }
+    }
+
+    fn documented_typing_property(
+        name: &str,
+        type_text: &str,
+        documentation: &str,
+    ) -> crate::typing::TypingProperty {
+        let mut property = typing_property(name, type_text, true);
+        property.documentation = Some(documentation.to_owned());
+        property
     }
 
     fn typing_component(
@@ -1719,6 +1732,30 @@ mod tests {
         assert_eq!(merged.properties[0].name, "type");
         assert_eq!(merged.properties[0].type_text, "string");
         assert_eq!(merged.properties[0].script, path("components.d.ts"));
+    }
+
+    #[test]
+    fn declared_documentation_is_carried_into_merged_properties() {
+        let script = path("components/card/card.ts");
+        let roots = extract_data_roots(&script, "Component({ properties: {} });");
+        let facts = extract_component_property_facts(&roots);
+
+        let component = typing_component(
+            vec![
+                documented_typing_property("title", "string", "标题，支持字符串或数字"),
+                typing_property("plain", "number", true),
+            ],
+            true,
+        );
+        let merged = merge_declared_properties(facts, Some(&component));
+
+        assert_eq!(
+            merged.properties[0].documentation.as_deref(),
+            Some("标题，支持字符串或数字")
+        );
+        assert_eq!(merged.properties[0].default_text, None);
+        assert_eq!(merged.properties[1].documentation, None);
+        assert_eq!(merged.properties[1].default_text, None);
     }
 
     #[test]

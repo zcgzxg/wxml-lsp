@@ -586,6 +586,7 @@ mod tests {
             detail_text: detail.map(str::to_owned),
             detail: detail.map(TypeText::parse),
             proven,
+            documentation: None,
         }
     }
 

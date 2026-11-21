@@ -5752,6 +5752,33 @@ export {};
         let typing = button.typing.as_ref().expect("declaration facts");
         assert!(typing.event("change").is_some());
         assert!(typing.prop("loading").is_some());
+        assert_eq!(
+            button
+                .property_facts
+                .properties
+                .iter()
+                .find(|property| property.name == "type")
+                .expect("type property")
+                .documentation
+                .as_deref(),
+            Some("按钮类型，字符串字面量联合")
+        );
+        assert_eq!(
+            typing
+                .prop("loading")
+                .expect("loading property")
+                .documentation
+                .as_deref(),
+            Some("是否显示加载中，可选 boolean")
+        );
+        assert_eq!(
+            typing
+                .event("change")
+                .expect("change event")
+                .documentation
+                .as_deref(),
+            Some("点击确认后触发，detail 携带列表下标")
+        );
 
         let view = analyze_page(&host, r#"<van-button type="primary" />"#, 31);
         assert!(

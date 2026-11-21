@@ -32,3 +32,4 @@ pub(crate) mod hints;
 pub(crate) mod position;
 pub(crate) mod target;
 pub(crate) mod tokens;
+pub(crate) mod tsconfig_paths;

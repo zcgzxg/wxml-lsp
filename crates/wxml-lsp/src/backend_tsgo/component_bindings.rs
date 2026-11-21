@@ -44,6 +44,7 @@ use wxml_types::{
 use crate::backend_tsgo::mapping::ShadowLayout;
 use crate::backend_tsgo::session::QuerySession;
 use crate::project_host::PreparedView;
+use crate::semantics::tsconfig_paths::TsconfigPaths;
 
 /// Maximum distinct component tags checked in one template.
 const MAX_TAGS: usize = 64;
@@ -150,6 +151,10 @@ struct ComponentDeclarations {
     /// Property name to declaration. A present name with `None` targets means
     /// the declaration is readable but not checkable.
     properties: BTreeMap<String, Option<DeclaredBinding>>,
+    /// `false` when only the component's own `properties` were enumerated and
+    /// behaviors may contribute unlisted names. The listed declarations remain
+    /// checkable, but an attribute outside them is not an error.
+    complete: bool,
 }
 
 /// What a declared property accepts.
@@ -231,6 +236,9 @@ struct Pass<'a, Q> {
     diagnostics: Vec<Diagnostic>,
     per_tag: BTreeMap<String, usize>,
     details: Vec<String>,
+    /// 组件 behaviors 未能完全解析、但自身 properties 完整时，记录按自身声明
+    /// 校验过的 tag；这些 tag 的结果可用但不完整。
+    behavior_incomplete: BTreeSet<String>,
     skipped: usize,
     queries: usize,
     partial: bool,
@@ -259,6 +267,7 @@ where
             diagnostics: Vec::new(),
             per_tag: BTreeMap::new(),
             details: Vec::new(),
+            behavior_incomplete: BTreeSet::new(),
             skipped: 0,
             queries: 0,
             partial: false,
@@ -330,6 +339,11 @@ where
                 self.skip(&usage.tag);
                 continue;
             }
+            if !declarations.complete {
+                // behaviors 未能解析：只按组件自身声明的属性校验，未声明的
+                // 属性可能来自 behavior，因此不能报错，只能标记结果不完整。
+                self.behavior_incomplete.insert(usage.tag.clone());
+            }
             for attribute in &usage.attributes {
                 if self.stopped {
                     break;
@@ -358,7 +372,7 @@ where
         let parsed = self
             .input
             .as_ref()
-            .and_then(|input| analyze_component(input, path));
+            .and_then(|input| analyze_component(input, self.view, path));
         self.declarations.insert(path.to_owned(), parsed.clone());
         parsed
     }
@@ -772,17 +786,24 @@ where
         });
         self.diagnostics
             .sort_by_key(|diagnostic| (diagnostic.range.start(), diagnostic.range.end()));
-        let status = if self.partial || self.skipped > 0 {
+        let mut reasons = Vec::new();
+        if self.partial || self.skipped > 0 {
             let detail = if self.details.is_empty() {
                 String::new()
             } else {
                 format!(" ({})", self.details.join(", "))
             };
-            Some(CapabilityStatus::Partial {
-                reason: format!("{SKIPPED_PREFIX}{detail}"),
-            })
-        } else {
+            reasons.push(format!("{SKIPPED_PREFIX}{detail}"));
+        }
+        if !self.behavior_incomplete.is_empty() {
+            reasons.push(behavior_partial_reason(&self.behavior_incomplete));
+        }
+        let status = if reasons.is_empty() {
             None
+        } else {
+            Some(CapabilityStatus::Partial {
+                reason: reasons.join("; "),
+            })
         };
         ComponentBindingDiagnostics {
             diagnostics: self.diagnostics,
@@ -817,14 +838,27 @@ fn component_input(view: &PreparedView) -> Option<AnalysisInput> {
 }
 
 /// Analyzes one component script and extracts its declared property contract.
-fn analyze_component(input: &AnalysisInput, path: &str) -> Option<ComponentDeclarations> {
-    let analysis = analyze_script(&ScriptRequest::new(
-        input,
-        path,
-        RegistrationKind::Component,
-    ))
-    .ok()?;
-    if !analysis.registration.complete || !analysis.properties.complete {
+///
+/// `view` supplies the tsconfig `paths` resolver: a behavior imported through an
+/// alias would otherwise read as unresolved and hide every property it
+/// contributes.
+fn analyze_component(
+    input: &AnalysisInput,
+    view: &PreparedView,
+    path: &str,
+) -> Option<ComponentDeclarations> {
+    let resolver = TsconfigPaths::from_view(view);
+    let request = ScriptRequest::new(input, path, RegistrationKind::Component);
+    let request = resolver
+        .as_ref()
+        .map_or(request, |resolver| request.with_resolver(resolver));
+    let analysis = analyze_script(&request).ok()?;
+    if !analysis.registration.complete {
+        return None;
+    }
+    // behaviors 不可读但自身 properties 已完整枚举时，仍可用自身声明做校验；
+    // 未声明的属性可能由 behavior 贡献，调用方不得报错。
+    if !analysis.properties.complete && !analysis.properties.own_complete {
         return None;
     }
     let properties = analysis
@@ -833,7 +867,30 @@ fn analyze_component(input: &AnalysisInput, path: &str) -> Option<ComponentDecla
         .iter()
         .map(|fact| (fact.name.clone(), declared_binding(fact)))
         .collect();
-    Some(ComponentDeclarations { properties })
+    Some(ComponentDeclarations {
+        properties,
+        complete: analysis.properties.complete,
+    })
+}
+
+/// 生成 behavior 不可解析时的 `Partial` 说明。
+///
+/// tag 列表与既有 skip 明细同风格：最多引用 [`MAX_SKIPPED_DETAILS`] 个类名。
+fn behavior_partial_reason(tags: &BTreeSet<String>) -> String {
+    let names = tags
+        .iter()
+        .take(MAX_SKIPPED_DETAILS)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let suffix = if tags.len() > MAX_SKIPPED_DETAILS {
+        " 等"
+    } else {
+        ""
+    };
+    format!(
+        "组件 behaviors 未能完全解析，仅校验了组件自身 properties 声明的属性（{names}{suffix}）"
+    )
 }
 
 /// Parses one `PropertyFact` into a checkable contract.
@@ -1610,6 +1667,10 @@ mod tests {
     const PLAIN_PATH: &str = "plain.ts";
     const SPREAD_PATH: &str = "spread.ts";
     const BEHAVIOR_CARD_PATH: &str = "behavior-card.ts";
+    /// Component whose behavior is imported through a tsconfig `paths` alias.
+    const ALIAS_CARD_PATH: &str = "components/alias-card/alias-card.ts";
+    /// Behavior target of the `@/*` alias.
+    const ALIAS_BEHAVIOR_PATH: &str = "behaviors/platform.ts";
     /// Fixed declaration file next to the project `tsconfig.json`.
     const DECLARATION_PATH: &str = "components.d.ts";
     const PAGE_SCRIPT: &str =
@@ -1620,6 +1681,9 @@ mod tests {
     const MATRIX_CARD_SCRIPT: &str = "Component({\n  properties: {\n    title: { type: String },\n    count: { type: Number },\n    active: { type: Boolean },\n    score: { type: String, optionalTypes: [Number] },\n    loose: { type: null },\n    items: { type: Array },\n    meta: { type: Object },\n    handler: { type: Function },\n  },\n});\n";
     const PLAIN_COMPONENT_SCRIPT: &str = "const shared = {};\nComponent({ properties: shared });\n";
     const SPREAD_COMPONENT_SCRIPT: &str = "const base = { title: { type: String } };\nComponent({ properties: { ...base, count: { type: Number } } });\n";
+    const ALIAS_CARD_SCRIPT: &str = "import platform from \"@/behaviors/platform\";\nComponent({\n  behaviors: [platform],\n  properties: {\n    title: { type: String },\n  },\n});\n";
+    const ALIAS_BEHAVIOR_SCRIPT: &str =
+        "export default Behavior({\n  properties: {\n    score: { type: Number },\n  },\n});\n";
 
     type Answers = Vec<Option<(&'static str, u64)>>;
 
@@ -1665,6 +1729,7 @@ mod tests {
         let ty = TypeText::parse(type_text);
         TypingProperty {
             name: name.to_owned(),
+            documentation: None,
             type_text: type_text.to_owned(),
             optional,
             proven: ty.is_proven(),
@@ -1676,6 +1741,7 @@ mod tests {
     fn unproven_property(name: &str, type_text: &str) -> TypingProperty {
         TypingProperty {
             name: name.to_owned(),
+            documentation: None,
             type_text: type_text.to_owned(),
             optional: false,
             proven: false,
@@ -1711,6 +1777,16 @@ mod tests {
             status_hint: None,
             source_complete: true,
         }
+    }
+
+    /// 与生产 `PreparedView::compiler_options` 一致的 tsconfig `paths` 别名。
+    fn alias_options() -> serde_json::Map<String, serde_json::Value> {
+        serde_json::json!({
+            "paths": { "@/*": ["*"] },
+        })
+        .as_object()
+        .cloned()
+        .expect("compiler options object")
     }
 
     /// Attaches declaration facts parsed from one declaration text.
@@ -2333,6 +2409,132 @@ mod tests {
         assert!(result.status.is_none(), "{:?}", result.status);
         assert_eq!(calls.len(), 2);
         assert!(calls.iter().all(|(path, _)| path == SCRIPT_PATH));
+    }
+
+    /// 别名导入的 behavior 需经 tsconfig `paths` 解析后才贡献属性。
+    ///
+    /// 未挂 resolver 时 behavior 解析失败、整个组件被 skip；这里断言 behavior
+    /// 声明与自身声明都参与校验，且没有 Partial。
+    #[test]
+    fn aliased_behavior_properties_are_checked() {
+        let wxml = r#"<view><alias-card title="{{ total }}" score="{{ pageTitle }}" /></view>"#;
+        let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
+        let score = mustache_attr(wxml, "score", r#"score="{{ pageTitle }}""#, "pageTitle");
+        let layout = shadow(
+            wxml,
+            &[
+                title.expr_range.expect("title expr"),
+                score.expr_range.expect("score expr"),
+            ],
+        );
+        let mut view = build_view(
+            vec![
+                prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+                prepared_file(ALIAS_CARD_PATH, ALIAS_CARD_SCRIPT),
+                prepared_file(ALIAS_BEHAVIOR_PATH, ALIAS_BEHAVIOR_SCRIPT),
+            ],
+            vec![usage(
+                "alias-card",
+                Some(ALIAS_CARD_PATH),
+                vec![title.clone(), score.clone()],
+            )],
+        );
+        view.compiler_options = alias_options();
+        let (result, calls) = run(
+            &layout,
+            &view,
+            vec![Some(("number", 0)), Some(("string", 0))],
+        );
+        assert_eq!(calls.len(), 2, "{calls:?}");
+        assert!(result.status.is_none(), "{:?}", result.status);
+        let actual = result
+            .diagnostics
+            .iter()
+            .map(|diagnostic| {
+                assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+                (diagnostic.range, diagnostic.message.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            actual,
+            vec![
+                (
+                    title.expr_range.expect("title expr"),
+                    "component property \"title\" expects string, got number (bound expression \"total\")",
+                ),
+                (
+                    score.expr_range.expect("score expr"),
+                    "component property \"score\" expects number, got string (bound expression \"pageTitle\")",
+                ),
+            ]
+        );
+    }
+
+    /// 别名目标缺失时回退到组件自身声明，未声明属性不得报错。
+    #[test]
+    fn unresolved_aliased_behavior_falls_back_to_own_properties() {
+        let wxml = r#"<view><alias-card title="{{ total }}" score="{{ pageTitle }}" /></view>"#;
+        let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
+        let score = mustache_attr(wxml, "score", r#"score="{{ pageTitle }}""#, "pageTitle");
+        let layout = shadow(
+            wxml,
+            &[
+                title.expr_range.expect("title expr"),
+                score.expr_range.expect("score expr"),
+            ],
+        );
+        let mut view = build_view(
+            vec![
+                prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+                prepared_file(ALIAS_CARD_PATH, ALIAS_CARD_SCRIPT),
+            ],
+            vec![usage(
+                "alias-card",
+                Some(ALIAS_CARD_PATH),
+                vec![title.clone(), score],
+            )],
+        );
+        view.compiler_options = alias_options();
+        let (result, calls) = run(&layout, &view, vec![Some(("number", 0))]);
+        // 只有自身声明的 `title` 被查询；`score` 可能来自 behavior，直接忽略。
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        assert_eq!(result.diagnostics[0].range, title.expr_range.expect("expr"));
+        assert_eq!(
+            result.diagnostics[0].message,
+            "component property \"title\" expects string, got number (bound expression \"total\")"
+        );
+        let CapabilityStatus::Partial { reason } = result.status.as_ref().expect("partial") else {
+            panic!("expected Partial, got {:?}", result.status);
+        };
+        assert_eq!(
+            reason,
+            "组件 behaviors 未能完全解析，仅校验了组件自身 properties 声明的属性（alias-card）"
+        );
+        assert!(!reason.contains('/'), "{reason}");
+    }
+
+    /// 配置了 `paths` 但没有 behavior 的组件仍保持完整校验，不产生 Partial。
+    #[test]
+    fn paths_options_without_behaviors_stay_complete() {
+        let wxml = r#"<view><card title="{{ total }}" /></view>"#;
+        let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
+        let layout = shadow(wxml, &[title.expr_range.expect("expr")]);
+        let mut view = build_view(
+            page_and_card(),
+            vec![usage("card", Some(CARD_PATH), vec![title.clone()])],
+        );
+        view.compiler_options = alias_options();
+        let (result, calls) = run(&layout, &view, vec![Some(("number", 0))]);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        assert_eq!(result.diagnostics[0].range, title.expr_range.expect("expr"));
+        assert!(
+            result.diagnostics[0].message.contains("expects string"),
+            "{}",
+            result.diagnostics[0].message
+        );
+        assert!(result.status.is_none(), "{:?}", result.status);
     }
 
     #[test]

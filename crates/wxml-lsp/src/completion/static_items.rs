@@ -630,6 +630,7 @@ mod tests {
             detail_text: detail.map(str::to_owned),
             detail: detail.map(wxml_project::typing::TypeText::parse),
             proven: true,
+            documentation: None,
         }
     }
 

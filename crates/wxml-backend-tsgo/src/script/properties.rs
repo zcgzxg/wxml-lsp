@@ -114,6 +114,10 @@ pub struct PropertyOverlay {
     pub properties: Vec<PropertyFact>,
     /// False when a spread/computed/non-literal declaration was skipped.
     pub complete: bool,
+    /// True when the component's own `properties` member was fully enumerated.
+    ///
+    /// Unlike `complete`, this ignores behavior readability and `options` spread.
+    pub own_complete: bool,
     /// Degradation reasons.
     pub problems: Vec<String>,
 }
@@ -278,31 +282,33 @@ fn build_properties(
             },
             properties,
             complete,
+            own_complete: true,
             problems,
         };
     };
     if member.kind != MemberKind::Property {
         problems.push("component `properties` is not a property assignment".to_owned());
-        return property_partial(properties, problems);
+        return property_partial(properties, problems, false);
     }
     let Ok(script) = Script::new(file.text()) else {
-        return property_partial(properties, problems);
+        return property_partial(properties, problems, false);
     };
     let Some((open, close)) = object_bounds(&script, member) else {
         problems.push("component `properties` is not an object literal".to_owned());
-        return property_partial(properties, problems);
+        return property_partial(properties, problems, false);
     };
+    let mut own_complete = true;
     let entries = scan_members(&script, open + 1, close);
     if entries.len() > MAX_OWN_MEMBERS {
         problems.push(format!(
             "component `properties` exceeds the {MAX_OWN_MEMBERS}-member processing budget"
         ));
-        complete = false;
+        own_complete = false;
     }
     for entry in entries.into_iter().take(MAX_OWN_MEMBERS) {
         if entry.kind == MemberKind::Computed {
             problems.push("`properties` has a computed member name".to_owned());
-            complete = false;
+            own_complete = false;
             continue;
         }
         if entry.kind != MemberKind::Property {
@@ -310,19 +316,19 @@ fn build_properties(
                 "`properties` uses a spread, shorthand or method member; declared properties are incomplete"
                     .to_owned(),
             );
-            complete = false;
+            own_complete = false;
             continue;
         }
         let Some(name) = &entry.name else {
             problems.push("`properties` has a computed member name".to_owned());
-            complete = false;
+            own_complete = false;
             continue;
         };
         let Some((option_open, option_close)) = object_bounds(&script, &entry) else {
             problems.push(format!(
                 "property `{name}` is not declared with an object literal"
             ));
-            complete = false;
+            own_complete = false;
             continue;
         };
         let options = scan_members(&script, option_open + 1, option_close);
@@ -330,17 +336,17 @@ fn build_properties(
             problems.push(format!(
                 "property `{name}` has no readable `type` declaration"
             ));
-            complete = false;
+            own_complete = false;
             continue;
         };
         if !union_complete {
             problems.push(format!(
                 "property `{name}` has an unreadable `type`/`optionalTypes` entry"
             ));
-            complete = false;
+            own_complete = false;
         }
         let Some(range) = property_range(&script, &entry) else {
-            complete = false;
+            own_complete = false;
             continue;
         };
         let default_text = member_last(&options, "value")
@@ -369,6 +375,9 @@ fn build_properties(
         }
     }
 
+    // 保持既有语义：整体完整性 = 自身枚举完整性 + behavior 可读性 + 无 options 展开。
+    complete = own_complete && !behavior.properties_incomplete && !options_spread;
+
     let status = if complete && behavior.status.is_supported() {
         CapabilityStatus::Supported
     } else {
@@ -380,6 +389,7 @@ fn build_properties(
         status,
         properties,
         complete,
+        own_complete,
         problems,
     }
 }
@@ -438,13 +448,18 @@ fn data_unsupported(
     }
 }
 
-fn property_partial(properties: Vec<PropertyFact>, problems: Vec<String>) -> PropertyOverlay {
+fn property_partial(
+    properties: Vec<PropertyFact>,
+    problems: Vec<String>,
+    own_complete: bool,
+) -> PropertyOverlay {
     PropertyOverlay {
         status: CapabilityStatus::Partial {
             reason: problem_text(&problems, "property overlay is incomplete"),
         },
         properties,
         complete: false,
+        own_complete,
         problems,
     }
 }
@@ -480,4 +495,95 @@ fn is_same_file_type(script: &Script<'_>, member: &super::scanner::Member) -> bo
         (script.is_ident(index, "interface") || script.is_ident(index, "type"))
             && script.is_ident(index + 1, name)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Write as _;
+
+    use super::*;
+    use crate::input::{
+        AnalysisInput, DocumentRevision, ProjectKey, ProjectRoot, SnapshotRevision,
+    };
+    use crate::script::registration::{self, RegistrationKind};
+
+    fn file(text: &str) -> SourceFile {
+        SourceFile::new("index.ts", text, DocumentRevision::new(1)).expect("valid fixture")
+    }
+
+    fn overlay(text: &str, behavior: &BehaviorResolution) -> PropertyOverlay {
+        let file = file(text);
+        let input = AnalysisInput::new(
+            ProjectKey::new("demo"),
+            ProjectRoot::new("/work/demo").expect("valid root"),
+            SnapshotRevision::new(7),
+            vec![file.clone()],
+        )
+        .expect("valid input");
+        let snapshot = Snapshot::new(&input, None);
+        let scan = registration::scan(&file).expect("scan");
+        let registration = registration::select(&file, &scan, RegistrationKind::Component)
+            .expect("select")
+            .expect("component registration");
+        build_properties(&snapshot, &file, &registration, behavior)
+    }
+
+    fn incomplete_behavior() -> BehaviorResolution {
+        BehaviorResolution {
+            status: CapabilityStatus::Partial {
+                reason: "behavior properties are incomplete".to_owned(),
+            },
+            properties_incomplete: true,
+            ..BehaviorResolution::empty()
+        }
+    }
+
+    #[test]
+    fn absent_properties_member_is_own_complete() {
+        let result = overlay("Component({ data: {} });", &BehaviorResolution::empty());
+        assert!(result.own_complete);
+        assert!(result.complete);
+    }
+
+    #[test]
+    fn complete_object_literal_is_own_complete() {
+        let result = overlay(
+            "Component({ properties: { title: { type: String, value: '' } } });",
+            &BehaviorResolution::empty(),
+        );
+        assert!(result.own_complete);
+        assert!(result.complete);
+    }
+
+    #[test]
+    fn incomplete_behavior_keeps_own_complete() {
+        let result = overlay(
+            "Component({ properties: { title: { type: String } } });",
+            &incomplete_behavior(),
+        );
+        assert!(result.own_complete);
+        assert!(!result.complete);
+    }
+
+    #[test]
+    fn spread_own_property_is_not_own_complete() {
+        let result = overlay(
+            "Component({ properties: { ...base } });",
+            &BehaviorResolution::empty(),
+        );
+        assert!(!result.own_complete);
+        assert!(!result.complete);
+    }
+
+    #[test]
+    fn own_member_budget_overflow_is_not_own_complete() {
+        let mut members = String::new();
+        for index in 0..=MAX_OWN_MEMBERS {
+            write!(members, "p{index}: {{ type: String }},").expect("write member");
+        }
+        let source = format!("Component({{ properties: {{ {members} }} }});");
+        let result = overlay(&source, &BehaviorResolution::empty());
+        assert!(!result.own_complete);
+        assert!(!result.complete);
+    }
 }

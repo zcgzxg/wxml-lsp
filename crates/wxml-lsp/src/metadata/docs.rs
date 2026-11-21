@@ -185,7 +185,8 @@ fn event_document(name: &str, detail: &str) -> String {
 /// so `bind:some-event` and `bindsomeEvent` both reach a declared `someEvent`
 /// while the hover keeps the attribute as written. The detail text is the
 /// declaration's own text (never a guessed type); an unproven detail keeps it
-/// and says so explicitly.
+/// and says so explicitly. A declared `JSDoc` description, when present, is
+/// appended as its own paragraph.
 fn declared_event_document(component: &ViewComponent, name: &str) -> Option<String> {
     let (_, event) = wxml_backend_tsgo::script::events::parse_event_attribute(name)?;
     let typing = component.typing.as_deref()?;
@@ -203,6 +204,9 @@ fn declared_event_document(component: &ViewComponent, name: &str) -> Option<Stri
     );
     if !declared.proven {
         document.push_str("\n\n（detail 类型未证明）");
+    }
+    if let Some(documentation) = declared.documentation.as_ref() {
+        let _ = write!(document, "\n\n{}", escape(documentation));
     }
     Some(document)
 }
@@ -341,10 +345,22 @@ mod tests {
     fn event(name: &str, detail: Option<&str>, proven: bool) -> wxml_project::typing::TypingEvent {
         wxml_project::typing::TypingEvent {
             name: name.to_owned(),
+            documentation: None,
             detail_text: detail.map(str::to_owned),
             detail: detail.map(wxml_project::typing::TypeText::parse),
             proven,
         }
+    }
+
+    /// Builds one declared event with a `JSDoc` description.
+    fn documented_event(
+        name: &str,
+        detail: Option<&str>,
+        documentation: &str,
+    ) -> wxml_project::typing::TypingEvent {
+        let mut event = event(name, detail, true);
+        event.documentation = Some(documentation.to_owned());
+        event
     }
 
     /// Builds one component with declared events.
@@ -426,6 +442,36 @@ mod tests {
         let end = start + u32::try_from("bind:change".len()).expect("len");
         assert_eq!((range.start(), range.end()), (start, end));
         assert_eq!(&text[start as usize..end as usize], "bind:change");
+    }
+
+    #[test]
+    fn a_declared_event_description_is_shown_after_the_signature() {
+        let text = "<van-field bind:change=\"onChange\" />";
+        let components = vec![component(vec![documented_event(
+            "change",
+            Some("{ index: number }"),
+            "输入框内容变化时触发",
+        )])];
+        let (markdown, _) = hover_at(text, &components, "bind:change");
+        assert_eq!(
+            markdown,
+            "### bind:change\n\n```ts\n(e: WechatMiniprogram.CustomEvent<{ index: number }>) => void\n```\n\n组件 `van-field` 声明的事件处理函数签名。\n\n输入框内容变化时触发"
+        );
+    }
+
+    #[test]
+    fn an_event_without_a_description_keeps_the_exact_document() {
+        let text = "<van-field bind:change=\"onChange\" />";
+        let components = vec![component(vec![event(
+            "change",
+            Some("{ index: number }"),
+            true,
+        )])];
+        let (markdown, _) = hover_at(text, &components, "bind:change");
+        assert_eq!(
+            markdown,
+            "### bind:change\n\n```ts\n(e: WechatMiniprogram.CustomEvent<{ index: number }>) => void\n```\n\n组件 `van-field` 声明的事件处理函数签名。"
+        );
     }
 
     #[test]
@@ -521,6 +567,17 @@ mod tests {
         let start = u32::try_from(text.find("some-prop").expect("attribute")).expect("start");
         let end = start + u32::try_from("some-prop".len()).expect("len");
         assert_eq!((range.start(), range.end()), (start, end));
+    }
+
+    #[test]
+    fn a_documented_property_shows_its_description() {
+        let text = "<van-field autosize=\"x\" />";
+        let mut autosize = property("autosize", "any");
+        autosize.documentation = Some("是否自适应内容高度".to_owned());
+        let components = vec![component_with_properties(vec![autosize])];
+        let (markdown, _) = hover_at(text, &components, "autosize");
+        assert!(markdown.contains("`any`"), "{markdown}");
+        assert!(markdown.contains("是否自适应内容高度"), "{markdown}");
     }
 
     #[test]

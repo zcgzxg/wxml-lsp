@@ -124,6 +124,7 @@ fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是
 - 声明成员类型未证明时，该成员不参与类型诊断，状态 `Partial` 并给出原因，其他成员照常生效。
 - 可选属性（`?` 或类型含 `undefined`）允许缺省和 `undefined`；hover 展示声明中的类型原文，不重排 union 顺序。
 - 脚本来源下，`type` 与 `optionalTypes` 共同构成允许类型。
+- 脚本来源的组件带 `behaviors` 时，behavior 模块按 tsconfig `paths` 解析后并入属性面。behavior 无法解析（别名失配、文件缺失、behavior 自身写法超出静态可读范围）时不再让整个组件失效：仍校验组件自身 `properties` 声明的属性；其余属性可能由 behavior 提供，按脚本来源惯例不报错，状态 `Partial`，原因形如 `组件 behaviors 未能完全解析，仅校验了组件自身 properties 声明的属性（card）`。
 - 纯表达式绑定（`count="{{ total }}"`）按可赋值性检查；`number → Number` 通过，`number → String` 报错；范围落在绑定表达式而非属性名。
 - 混合文本绑定（`title="共 {{ n }} 个"`）第一版只做 `Partial` 覆盖。
 - 未声明属性访问（组件 WXML 使用 `subtitle` 但 `data`/`properties` 都没有）必须报错。
@@ -152,7 +153,7 @@ fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是
 | --- | --- | --- |
 | 事件名补全 | 声明 `events`，仅当 `events` 声明完整 | `bind:`/`catch:`/`capture-bind:`/`capture-catch:`/`mut-bind:` 之后返回声明中的事件名；只替换已输入的事件名片段，不改写绑定前缀；声明缺失或不完整时沿用静态目录候选 |
 | 未声明事件名 | 声明 `events`，仅当 `events` 声明完整 | 事件名不在声明中：在事件名 token 上发布 `Warning`；动态绑定（`bind:change="{{ name }}"`）、声明缺失或不完整时不发布 |
-| 事件属性 hover | 声明 `events` 的 `detail` | 展示 `(e: WechatMiniprogram.CustomEvent<T>) => void`，`T` 为声明中 `detail` 的类型原文；`detail` 未证明时明确标注未证明，不展示猜测类型 |
+| 事件属性 hover | 声明 `events` 的 `detail` | 展示 `(e: WechatMiniprogram.CustomEvent<T>) => void`，`T` 为声明中 `detail` 的类型原文；`detail` 未证明时明确标注未证明，不展示猜测类型；成员上方的 `/** */` 说明作为独立段落追加在签名之后 |
 | handler 签名校验 | 声明 `detail` + 脚本形参标注 | 处理函数无参数（`arity == 0`）视为兼容；有参数时仅在已显式标注类型时比较：可证明不兼容时在 handler 名 token 上发布 `Error`；兼容时不发布诊断；参数未标注或任一侧未证明时不发布诊断，状态 `Partial` 并给出原因 |
 | handler hover / 补全 / definition | 脚本 | 保持既有行为，见下文 |
 
@@ -224,6 +225,7 @@ export {};
 ```
 
 - `events` 的事件值用 `{ detail: T }` 声明 detail；`T` 直接决定 hover 签名中的 `CustomEvent<T>`。
+- `props` 与 `events` 成员上方的 `/** ... */` 说明会进入 hover：属性说明追加在类型与声明位置之后，事件说明追加在签名之后。多行说明折叠为单行，超过 512 字符截断；`//` 与 `/* */` 不算说明；没有说明时不生成空行，也不伪造描述。说明只用于展示，不参与类型证明、可空性或绑定检查。
 - 映射表内重复映射同一标签时取第一个，并记录冲突说明；只影响重复项与截断项，其他组件照常生效。
 - 真实样例见 [`components-typings` 样本](../../tests/fixtures/README.md)：`round` 未声明、`text="{{ loading }}"` 类型不匹配、`bind:chaneg` 未声明事件名。
 
