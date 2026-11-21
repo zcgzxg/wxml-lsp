@@ -1711,13 +1711,13 @@ impl ProjectHost for ProjectState {
             return Vec::new();
         };
         let facts = if policy.classes {
-            self.style_facts_for(snapshot.file())
+            self.style_facts_in(snapshot.file().project(), &path)
         } else {
             None
         };
         let mut diagnostics = Vec::new();
         if let (true, Some(facts)) = (policy.classes, facts.as_ref()) {
-            if facts.complete && !crate::styles::has_external_class_reference(snapshot.text()) {
+            if facts.complete {
                 let defined: std::collections::BTreeSet<&str> = facts
                     .classes
                     .iter()
@@ -1793,9 +1793,7 @@ impl ProjectHost for ProjectState {
         wxml: &ProjectPath,
         tag: &str,
     ) -> Option<ComponentPropertyFacts> {
-        let state = self.read();
-        let project = active_project_id(&state)?.clone();
-        drop(state);
+        let project = self.ensure_view_project(wxml)?;
         self.component_properties_in(&project, wxml, tag)
     }
 
@@ -4520,6 +4518,66 @@ mod tests {
     }
 
     #[test]
+    fn component_properties_follow_the_owning_app_not_the_active_one() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-component-multi-app-{stamp}"));
+        // Both apps keep the same in-app relative template path
+        // (`pages/index/index.wxml`); lazy discovery keeps workspace-relative
+        // paths, so each template still maps to exactly one app.
+        for (app, property) in [("a", "aProp"), ("b", "bProp")] {
+            let dir = root.join("apps").join(app);
+            std::fs::create_dir_all(dir.join("pages/index")).expect("page dir");
+            std::fs::create_dir_all(dir.join("components/card")).expect("component dir");
+            std::fs::write(
+                dir.join("app.json"),
+                r#"{"pages":["pages/index/index"],"usingComponents":{"card":"/components/card/card"}}"#,
+            )
+            .expect("app json");
+            std::fs::write(dir.join("pages/index/index.wxml"), "<card />").expect("page wxml");
+            std::fs::write(dir.join("pages/index/index.ts"), "Page({});").expect("page script");
+            std::fs::write(dir.join("components/card/card.wxml"), "<view/>").expect("card wxml");
+            std::fs::write(
+                dir.join("components/card/card.ts"),
+                format!("Component({{ properties: {{ {property}: {{ type: String }} }} }});"),
+            )
+            .expect("card script");
+        }
+
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open workspace");
+        // Loading b makes it the active app before a is ever touched.
+        let b_uri = format!("file://{}/apps/b/pages/index/index.wxml", root.display());
+        host.path_for_uri(&b_uri).expect("load and activate b");
+
+        let a_page = ProjectPath::new("apps/a/pages/index/index.wxml").expect("a page");
+        let b_page = ProjectPath::new("apps/b/pages/index/index.wxml").expect("b page");
+        assert!(a_page.as_str().ends_with("/pages/index/index.wxml"));
+        assert!(b_page.as_str().ends_with("/pages/index/index.wxml"));
+
+        let facts = host
+            .component_properties(&a_page, "card")
+            .expect("a properties while b is active");
+        assert_eq!(facts.properties.len(), 1);
+        assert_eq!(facts.properties[0].name, "aProp");
+        assert_eq!(
+            facts.properties[0].script.as_str(),
+            "apps/a/components/card/card.ts"
+        );
+
+        let facts = host
+            .component_properties(&b_page, "card")
+            .expect("b properties");
+        assert_eq!(facts.properties[0].name, "bProp");
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn project_id_does_not_contain_the_root_path() {
         let id = project_id_for_parts(
             Path::new("/tmp/very/secret/project"),
@@ -5112,6 +5170,66 @@ mod tests {
         assert!(!facts.complete);
         assert!(facts.reason.is_some());
         assert!(facts.primary("a").is_some());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn style_diagnostics_skip_class_reports_for_external_references() {
+        let base = std::env::var_os("TMPDIR")
+            .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        let root = base.join(format!("wxml-style-external-diagnostics-{stamp}"));
+        std::fs::create_dir_all(root.join("pages/index")).expect("dirs");
+        std::fs::write(root.join("app.json"), r#"{"pages":["pages/index/index"]}"#)
+            .expect("app json");
+        std::fs::write(root.join("pages/index/index.wxml"), "<view class=\"a\"/>").expect("wxml");
+        std::fs::write(root.join("pages/index/index.ts"), "Page({})").expect("script");
+        std::fs::write(root.join("pages/index/index.wxss"), ".a { color: red; }\n").expect("style");
+        let host = ProjectState::new();
+        host.open_root(Some(&format!("file://{}", root.display())))
+            .expect("open");
+        host.configure_styles(StyleConfig::default(), StyleDiagnosticsPolicy::enabled());
+        let path = ProjectPath::new("pages/index/index.wxml").expect("path");
+        let file = host.file_id(&path).expect("view file");
+        // A plain unknown class is still reported, so the guard below is the
+        // only thing that can suppress it.
+        let plain = Arc::new(SourceSnapshot::new(
+            file.clone(),
+            SourceRevision::new(2),
+            SnapshotId::new(11),
+            "<view class=\"a missing\"/>".to_owned(),
+        ));
+        host.set_wxml_snapshot(file.clone(), Arc::clone(&plain));
+        let diagnostics = host.style_diagnostics(&plain);
+        assert!(
+            diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code.as_deref() == Some("style.unknown-class")),
+            "{diagnostics:?}"
+        );
+
+        // The server registers the same document snapshot before asking for
+        // diagnostics; the `~class` guard then comes from `style_facts_in`.
+        let snapshot = Arc::new(SourceSnapshot::new(
+            file.clone(),
+            SourceRevision::new(3),
+            SnapshotId::new(12),
+            "<view class=\"~external a missing\"/>".to_owned(),
+        ));
+        host.set_wxml_snapshot(file, Arc::clone(&snapshot));
+        assert!(
+            !host.style_facts(&path).expect("external facts").complete,
+            "external references must keep facts partial"
+        );
+        let diagnostics = host.style_diagnostics(&snapshot);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| diagnostic.code.as_deref() != Some("style.unknown-class")),
+            "{diagnostics:?}"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 
