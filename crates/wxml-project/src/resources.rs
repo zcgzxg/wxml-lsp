@@ -10,7 +10,7 @@
 //! links are produced by the LSP layer only for existing files, so a missing
 //! path never becomes a clickable target.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::files::{self, PathError, ProjectPath};
 use crate::{Project, ProjectSnapshot};
@@ -253,7 +253,7 @@ impl ProjectSnapshot {
         let Ok(canonical) = std::fs::canonicalize(&directory) else {
             return result;
         };
-        if !path_within(&self.root, &canonical) || !canonical.is_dir() {
+        if !files::path_within(&self.root, &canonical) || !canonical.is_dir() {
             return result;
         }
         if let Some(source_root) = self.source_root.as_ref() {
@@ -300,7 +300,7 @@ impl ProjectSnapshot {
                 let Ok(target) = std::fs::canonicalize(entry.path()) else {
                     continue;
                 };
-                if !path_within(&self.root, &target) {
+                if !files::path_within(&self.root, &target) {
                     continue;
                 }
                 if let Some(source_root) = self.source_root.as_ref() {
@@ -477,11 +477,6 @@ fn join_project_path(directory: Option<&ProjectPath>, name: &str) -> Option<Proj
         || ProjectPath::new(name).ok(),
         |directory| ProjectPath::new(format!("{}/{}", directory.as_str(), name)).ok(),
     )
-}
-
-/// Returns whether `candidate` is `root` or below it.
-fn path_within(root: &Path, candidate: &Path) -> bool {
-    candidate.starts_with(root)
 }
 
 #[cfg(test)]

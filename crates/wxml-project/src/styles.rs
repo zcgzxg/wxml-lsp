@@ -582,13 +582,6 @@ impl Project {
             && !crate::sources::has_excluded_component(path)
     }
 
-    /// Returns whether `path` is a style file outside excluded build
-    /// directories.
-    #[must_use]
-    pub fn is_style_path(path: &ProjectPath) -> bool {
-        is_style_path(path) && !crate::sources::has_excluded_component(path)
-    }
-
     /// Returns the discovered style scope for a WXML view.
     #[must_use]
     pub fn style_scope(&self, view: &ProjectPath) -> StyleScope {

@@ -617,7 +617,7 @@ fn parent_escapes_root(root: &Path, absolute: &Path) -> bool {
 }
 
 /// Returns whether `candidate` is `root` or below it.
-fn path_within(root: &Path, candidate: &Path) -> bool {
+pub(crate) fn path_within(root: &Path, candidate: &Path) -> bool {
     #[cfg(windows)]
     {
         windows_within(root, candidate)
