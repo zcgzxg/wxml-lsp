@@ -1,15 +1,13 @@
-//! Real native session: handshake, virtual snapshots, callbacks and queries.
+//! Real in-process native session: handshake, virtual snapshots and queries.
 //!
-//! [`NativeSession::start`] verifies the pinned executable hash, runs
-//! `lib/tsc --version` in the executable directory with a cleared environment,
-//! spawns `--api --async` with the frozen argv and cwd, performs the
-//! `initialize` handshake, runs the full schema/capability probe (virtual
-//! snapshot, `getSourceFileNames`, `getSourceFile` v9/header-64 validation,
-//! `getTypeAtPosition`/`typeToString`, `getSemanticDiagnostics` +
-//! `getSyntacticDiagnostics`, `getCompletionsAtPosition`,
-//! `getSymbolAtPosition`/`getDocumentationComment`/`getJsDocTags`,
-//! `getReferencedSymbolsForNode`, and a successful `release`) and only then
-//! marks the supervisor ready.
+//! [`NativeSession::start`] checks the pinned `tsrs_core` version, creates the
+//! in-process [`tsrs_api::Session`], performs the `initialize` handshake, runs
+//! the full schema/capability probe (virtual snapshot, `getSourceFileNames`,
+//! `getSourceFile` v9/header-64 validation, `getTypeAtPosition`/`typeToString`,
+//! `getSemanticDiagnostics` + `getSyntacticDiagnostics`,
+//! `getCompletionsAtPosition`, `getSymbolAtPosition`/`getDocumentationComment`/
+//! `getJsDocTags`, `getReferencedSymbolsForNode`, and a successful `release`)
+//! before the session is handed to the caller.
 //!
 //! A session owns one current snapshot and a bounded ledger of older engine
 //! snapshots that have not been confirmed released. [`NativeSession::open_project`]
@@ -27,8 +25,8 @@
 //! checked against the epoch captured when the request was sent; an old
 //! snapshot id produces `StaleSnapshot`.
 //!
-//! While waiting for a response the loop answers engine filesystem callbacks
-//! from the current [`VirtualFileSystem`]. Handles are bound to the session
+//! While a snapshot is current, the in-process engine reads the same
+//! [`VirtualFileSystem`] through [`VfsHandle`]. Handles are bound to the session
 //! generation, engine snapshot id, file path, content hash, encoder index and
 //! node kind before they may be sent back; an update makes every old binding
 //! stale.
@@ -50,9 +48,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::Value;
 
@@ -63,27 +59,19 @@ use crate::native::ast::{
     find_identifier, node_span,
 };
 use crate::native::document_symbol::DocumentSymbolsEvidence;
-use crate::native::framing::{DEFAULT_FRAME_LIMITS, FrameLimits, FrameRole};
 use crate::native::handles::{
     BoundNodeHandle, BoundSymbol, BoundSymbolReference, EngineSnapshotId, HandleBinding,
     NodeHandle, SessionGeneration, SymbolBinding, SymbolReferenceBinding,
 };
-use crate::native::protocol::{
-    InitializeResult, NativeMethod, NativeRequest, SnapshotResult, SourceFileNames,
+use crate::native::inproc::{
+    DEFAULT_FRAME_LIMITS, Deadline, FrameLimits, InProcTransport, ShutdownReport, VfsHandle,
 };
-use crate::native::rpc::{
-    CallbackId, CallbackRejected, JsonRpcError, RawPayload, RpcDispatch, decode_inbound,
-    encode_callback_error, encode_callback_rejection, encode_callback_result, encode_request,
-};
+use crate::native::protocol::{InitializeResult, NativeMethod, SnapshotResult, SourceFileNames};
 use crate::native::strings::{
     Utf8Offset, Utf16Offset, Utf16Position, position_to_offset, utf16_len, utf16_slice,
     utf16_to_utf8,
 };
-use crate::native::supervisor::{
-    Deadline, EngineSupervisor, HANDSHAKE_DEADLINE_MS, InboundEvent, Lifecycle, ProcessSession,
-    SHUTDOWN_DEADLINE_MS, ShutdownReport, SpawnError, SupervisorError, verify_engine_executable,
-};
-use crate::native::vfs::{CallbackError, EnvironmentDegradation, VfsError, VirtualFileSystem};
+use crate::native::vfs::{EnvironmentDegradation, VfsError, VirtualFileSystem};
 use crate::native::wire::{
     RawCompletionList, RawDiagnostic, RawJsDocTag, RawReferencedSymbol, RawSourceFile, RawSymbol,
     RawSymbolReference, RawType, SnapshotChanges, SnapshotFileSystem, completion_params,
@@ -105,14 +93,19 @@ use crate::shadow::mapping::SourceRange;
 /// Static session options.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionOptions {
-    /// Verified pinned executable (`lib/tsc`).
+    /// Historical engine executable path.
+    ///
+    /// The in-process engine does not read it; the field is retained so the
+    /// adapter and test constructors keep one shape.
     pub executable: PathBuf,
-    /// Backend-owned empty sandbox used as `--cwd`.
+    /// Backend-owned virtual working directory.
     pub sandbox_root: PathBuf,
 }
 
 impl SessionOptions {
-    /// Creates options for an explicit verified executable.
+    /// Creates options for an explicit engine path and virtual cwd.
+    ///
+    /// `executable` is accepted for compatibility and is not inspected.
     #[must_use]
     pub fn new(executable: impl Into<PathBuf>, sandbox_root: impl Into<PathBuf>) -> Self {
         Self {
@@ -395,8 +388,8 @@ impl SnapshotLedger {
 #[derive(Debug)]
 pub struct NativeSession {
     engine: PinnedEngine,
-    supervisor: EngineSupervisor,
-    dispatch: RpcDispatch,
+    transport: InProcTransport,
+    fs: VfsHandle,
     limits: FrameLimits,
     generation: SessionGeneration,
     epoch: Option<NativeEpoch>,
@@ -412,30 +405,31 @@ pub struct NativeSession {
 }
 
 impl NativeSession {
-    /// Starts and validates a real engine session.
+    /// Starts and validates an in-process engine session.
     ///
     /// # Errors
     ///
-    /// Returns `Unavailable(ArtifactMismatch)` for a hash/version mismatch,
-    /// `Unavailable(HandshakeFailed)` for an incompatible initialize shape,
-    /// `Unavailable(ApiMismatch)` when a probe method is absent, and
-    /// `Protocol` for an AST schema mismatch or a failed process.
+    /// Returns `Unavailable(EngineVersionMismatch)` for a compiled version
+    /// mismatch, `Unavailable(EngineStartupPanic)` when session construction
+    /// panics, `Unavailable(ApiMismatch)` when a probe method is absent,
+    /// `Unavailable(MissingAsset)` for an invalid type asset set and
+    /// `Protocol` for an AST schema mismatch.
     pub fn start(options: SessionOptions) -> Result<Self, NativeError> {
         let engine = PinnedEngine::pinned();
-        verify_engine_executable(&options.executable, engine.executable_sha256())
-            .map_err(|error| map_spawn_error(&error))?;
-        probe_version(&options.executable, &engine)?;
-        confinement_self_check(&options)?;
-
-        let mut supervisor = EngineSupervisor::new(engine);
-        supervisor
-            .spawn_with_executable(&options.executable, &options.sandbox_root)
-            .map_err(map_supervisor_error)?;
+        let cwd = options
+            .sandbox_root
+            .to_str()
+            .ok_or(NativeError::InvalidParams {
+                reason: "sandbox root is not valid UTF-8",
+            })?
+            .to_owned();
+        let fs = VfsHandle::new();
+        let transport = InProcTransport::start(&cwd, fs.clone())?;
 
         let mut session = Self {
             engine,
-            supervisor,
-            dispatch: RpcDispatch::new(DEFAULT_FRAME_LIMITS),
+            transport,
+            fs,
             limits: DEFAULT_FRAME_LIMITS,
             generation: SessionGeneration::next(),
             epoch: None,
@@ -451,7 +445,7 @@ impl NativeSession {
         };
 
         if let Err(error) = session.handshake() {
-            drop(session);
+            let _ = session.transport.shutdown();
             return Err(error);
         }
         Ok(session)
@@ -495,22 +489,13 @@ impl NativeSession {
             .map_or(&[], VirtualFileSystem::environment_degradations)
     }
 
-    /// Returns whether the engine process is still ready and not poisoned.
+    /// Returns whether the in-process engine session is still usable.
     ///
-    /// This is a non-blocking health check used only to decide whether one
-    /// restart-and-retry is justified after a fatal query. A `Ready` lifecycle
-    /// alone is not enough: the child may have exited between requests, or the
-    /// transport may have been poisoned by a timeout/framing fault.
+    /// This is a non-blocking health check used only to decide whether a fatal
+    /// query left the session unusable. A closed or poisoned transport is not
+    /// alive; a healthy one is.
     pub fn is_alive(&mut self) -> bool {
-        if self.supervisor.lifecycle() != Lifecycle::Ready {
-            return false;
-        }
-        if !matches!(self.supervisor.try_wait(), Ok(None)) {
-            return false;
-        }
-        self.supervisor
-            .session()
-            .is_some_and(|session| !session.is_poisoned())
+        self.transport.is_alive()
     }
 
     /// Returns the accepted initialize result.
@@ -525,13 +510,25 @@ impl NativeSession {
         &self.options.sandbox_root
     }
 
-    /// Returns the control-character-sanitized last `stderr` tail.
+    /// Returns the diagnostic `stderr` tail.
     ///
-    /// Engine paths and stack text may remain; this is diagnostic evidence,
-    /// not a user-visible error message.
+    /// The in-process engine has no separate `stderr`, so this is always empty;
+    /// it is kept for the adapter's existing diagnostics shape.
     #[must_use]
-    pub fn stderr_tail(&self) -> String {
-        self.supervisor.stderr_tail()
+    pub const fn stderr_tail(&self) -> String {
+        self.transport.stderr_tail()
+    }
+
+    /// Installs or clears the virtual filesystem used by the engine.
+    ///
+    /// The table visible to engine reads is updated before the local field so a
+    /// request issued afterwards always observes the same snapshot.
+    pub fn set_vfs(&mut self, vfs: Option<VirtualFileSystem>) {
+        match &vfs {
+            Some(vfs) => self.fs.install(vfs.clone()),
+            None => self.fs.clear(),
+        }
+        self.vfs = vfs;
     }
 
     fn handshake(&mut self) -> Result<(), NativeError> {
@@ -542,9 +539,7 @@ impl NativeSession {
             return Err(handshake_error());
         }
         self.initialize = Some(initialize);
-        self.probe_schema(deadline)?;
-        self.supervisor.mark_ready().map_err(map_supervisor_error)?;
-        Ok(())
+        self.probe_schema(deadline)
     }
 
     fn probe_schema(&mut self, deadline: Deadline) -> Result<(), NativeError> {
@@ -560,11 +555,11 @@ impl NativeSession {
             [(probe_path.clone(), PROBE_SOURCE.to_owned())],
         )
         .map_err(|error| map_vfs(&error))?;
-        self.vfs = Some(vfs);
+        self.set_vfs(Some(vfs));
 
         let inner = self.probe_schema_inner(&probe_path, deadline);
         let release = self.release_current_snapshot(deadline);
-        self.vfs = None;
+        self.set_vfs(None);
         self.project_key = None;
         self.project_root = None;
 
@@ -790,9 +785,9 @@ impl NativeSession {
         let changes = Self::create_changes(&vfs, prepare.as_deref());
         let tsconfig = vfs.tsconfig_path().to_owned();
         // Install the VFS before createSnapshot: the engine may resolve
-        // modules while applying the request, and callbacks must see the same
-        // table rather than the no-snapshot fallback.
-        self.vfs = Some(vfs);
+        // modules while applying the request, and every read must see the same
+        // table rather than a fail-closed empty one.
+        self.set_vfs(Some(vfs));
 
         let value = match self.call(
             NativeMethod::CreateSnapshot,
@@ -802,14 +797,14 @@ impl NativeSession {
         ) {
             Ok(value) => value,
             Err(error) => {
-                self.vfs = None;
+                self.set_vfs(None);
                 return Err(error);
             }
         };
         let snapshot = match parse_snapshot(&value) {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                self.vfs = None;
+                self.set_vfs(None);
                 self.poison_session();
                 return Err(error);
             }
@@ -818,7 +813,7 @@ impl NativeSession {
         self.ledger.track(snapshot_id);
         let Some(project) = select_project(&snapshot, &tsconfig) else {
             let _ = self.release_snapshot(snapshot_id, Deadline::release());
-            self.vfs = None;
+            self.set_vfs(None);
             self.poison_session();
             return Err(NativeError::Protocol(
                 "createSnapshot returned no project".to_owned(),
@@ -838,7 +833,6 @@ impl NativeSession {
             path,
             snapshot: snapshot_id,
         });
-        self.dispatch.clear_abandoned();
         if let Err(error) = self.enforce_live_cap() {
             self.epoch = None;
             self.project_id = None;
@@ -846,7 +840,7 @@ impl NativeSession {
             self.project_root = None;
             self.type_environment = None;
             self.auto_imports = None;
-            self.vfs = None;
+            self.set_vfs(None);
             return Err(error);
         }
         Ok(())
@@ -905,7 +899,8 @@ impl NativeSession {
         // The engine applies the new full filesystem during this request;
         // answer callbacks from the new table and restore the old one on
         // failure so a rejected update never leaves a mixed VFS/epoch state.
-        let old_vfs = self.vfs.replace(vfs).ok_or(NativeError::NoSnapshot)?;
+        let old_vfs = self.vfs.clone().ok_or(NativeError::NoSnapshot)?;
+        self.set_vfs(Some(vfs));
         let value = match self.call(
             NativeMethod::UpdateSnapshot,
             update_snapshot_params(epoch.snapshot.get(), &changes),
@@ -914,21 +909,21 @@ impl NativeSession {
         ) {
             Ok(value) => value,
             Err(error) => {
-                self.vfs = Some(old_vfs);
+                self.set_vfs(Some(old_vfs));
                 return Err(error);
             }
         };
         let snapshot = match parse_snapshot(&value) {
             Ok(snapshot) => snapshot,
             Err(error) => {
-                self.vfs = Some(old_vfs);
+                self.set_vfs(Some(old_vfs));
                 self.poison_session();
                 return Err(error);
             }
         };
         let snapshot_id = EngineSnapshotId::new(snapshot.snapshot());
         if snapshot_id == epoch.snapshot {
-            self.vfs = Some(old_vfs);
+            self.set_vfs(Some(old_vfs));
             self.poison_session();
             return Err(NativeError::Protocol(
                 "updateSnapshot reused the current snapshot id".to_owned(),
@@ -936,7 +931,7 @@ impl NativeSession {
         }
         self.ledger.track(snapshot_id);
         let Some(project) = select_project(&snapshot, &tsconfig) else {
-            self.vfs = Some(old_vfs);
+            self.set_vfs(Some(old_vfs));
             let _ = self.enforce_live_cap();
             self.poison_session();
             return Err(NativeError::Protocol(
@@ -955,7 +950,6 @@ impl NativeSession {
             path,
             snapshot: snapshot_id,
         });
-        self.dispatch.clear_abandoned();
 
         let release = self.release_snapshot(epoch.snapshot, Deadline::release());
         let cap = self.enforce_live_cap();
@@ -977,10 +971,10 @@ impl NativeSession {
         let ids: Vec<EngineSnapshotId> = self.ledger.ids().collect();
         let mut first_error = None;
         for snapshot in ids {
-            if let Err(error) = self.release_snapshot(snapshot, Deadline::release()) {
-                if first_error.is_none() {
-                    first_error = Some(error);
-                }
+            if let Err(error) = self.release_snapshot(snapshot, Deadline::release())
+                && first_error.is_none()
+            {
+                first_error = Some(error);
             }
         }
         self.epoch = None;
@@ -988,9 +982,8 @@ impl NativeSession {
         self.project_key = None;
         self.project_root = None;
         self.type_environment = None;
-        self.vfs = None;
+        self.set_vfs(None);
         self.auto_imports = None;
-        self.dispatch.clear_abandoned();
         first_error.map_or(Ok(()), Err)
     }
 
@@ -1058,12 +1051,11 @@ impl NativeSession {
         Ok(())
     }
 
-    /// Releases the snapshot and shuts the process down.
+    /// Releases the snapshot and closes the in-process session.
     #[must_use]
     pub fn shutdown(mut self) -> Option<ShutdownReport> {
         let _ = self.release();
-        self.supervisor
-            .shutdown_with_timeout(Duration::from_millis(SHUTDOWN_DEADLINE_MS))
+        self.transport.shutdown()
     }
 
     /// Returns semantic diagnostics for one project-relative file.
@@ -1178,7 +1170,7 @@ impl NativeSession {
 
     /// Returns the raw (unbound) symbol at a UTF-16 position.
     fn raw_symbol_at_position(
-        &mut self,
+        &self,
         path: &str,
         position: Utf16Position,
     ) -> Result<Option<RawSymbol>, NativeError> {
@@ -1520,10 +1512,10 @@ impl NativeSession {
                 });
             }
         }
-        if let Some(facts) = &symbol {
-            if let Some(reference) = facts.reference() {
-                documentation = Some(map_documentation(&self.documentation(reference)?));
-            }
+        if let Some(facts) = &symbol
+            && let Some(reference) = facts.reference()
+        {
+            documentation = Some(map_documentation(&self.documentation(reference)?));
         }
 
         let declarations = match &symbol {
@@ -1554,7 +1546,7 @@ impl NativeSession {
     /// Decodes a symbol's declaration handles into verified project-relative
     /// name-token targets.
     fn decode_hover_declarations(
-        &mut self,
+        &self,
         symbol: &BoundSymbol,
         gaps: &mut Vec<HoverGap>,
     ) -> Result<Vec<HoverDeclaration>, NativeError> {
@@ -1584,7 +1576,7 @@ impl NativeSession {
 
     /// Decodes one epoch-bound declaration handle into its name-token target.
     fn decode_hover_declaration(
-        &mut self,
+        &self,
         declaration: &BoundNodeHandle,
         expected_name: &str,
         cache: &mut BTreeMap<String, HoverAstCacheEntry>,
@@ -1659,7 +1651,7 @@ impl NativeSession {
 
     /// Returns a cached hover AST payload or a truthful unavailability reason.
     fn hover_ast_lookup(
-        &mut self,
+        &self,
         absolute: &str,
         cache: &mut BTreeMap<String, HoverAstCacheEntry>,
         cache_bytes: &mut usize,
@@ -1725,10 +1717,10 @@ impl NativeSession {
         if file.hash() != content_hash {
             return Err(NativeError::StaleSnapshot);
         }
-        if let Some(symbol) = symbol {
-            if !symbol.is_current(self.generation, current.snapshot, content_hash) {
-                return Err(NativeError::StaleHandle);
-            }
+        if let Some(symbol) = symbol
+            && !symbol.is_current(self.generation, current.snapshot, content_hash)
+        {
+            return Err(NativeError::StaleHandle);
         }
         Ok(())
     }
@@ -1847,7 +1839,7 @@ impl NativeSession {
     /// so the full node span is used instead; a position inside the escape must
     /// not become `InvalidParams`.
     fn verify_identifier_position(
-        &mut self,
+        &self,
         identifier: &BoundNodeHandle,
         position: Utf16Position,
         symbol: &BoundSymbol,
@@ -1955,7 +1947,7 @@ impl NativeSession {
     }
 
     fn decode_definition_target(
-        &mut self,
+        &self,
         definition: &str,
         expected_name: &str,
         cache: &mut BTreeMap<String, Option<Vec<u8>>>,
@@ -2026,7 +2018,7 @@ impl NativeSession {
     /// Returns the Identifier node handle at `offset` when its pool text is
     /// `name`.
     fn identifier_handle(
-        &mut self,
+        &self,
         absolute: &str,
         offset: u32,
         name: &str,
@@ -2049,7 +2041,7 @@ impl NativeSession {
     }
 
     /// Fetches and base64-decodes the current snapshot AST for one file.
-    fn get_source_ast(&mut self, absolute: &str) -> Result<Vec<u8>, NativeError> {
+    fn get_source_ast(&self, absolute: &str) -> Result<Vec<u8>, NativeError> {
         let epoch = self.epoch.ok_or(NativeError::NoSnapshot)?;
         let project = self.project_id.clone().ok_or(NativeError::NoSnapshot)?;
         let value = self.call(
@@ -2203,7 +2195,6 @@ impl NativeSession {
             path: absolute,
             snapshot: snapshot_id,
         });
-        self.dispatch.clear_abandoned();
         let release = self.release_snapshot(epoch.snapshot, Deadline::release());
         let cap = self.enforce_live_cap();
         release?;
@@ -2425,84 +2416,15 @@ impl NativeSession {
     }
 
     fn call(
-        &mut self,
+        &self,
         method: NativeMethod,
         params: Value,
         deadline: Deadline,
         expected_snapshot: Option<EngineSnapshotId>,
     ) -> Result<Value, NativeError> {
-        let admission = self.dispatch.allocate_request()?;
-        if admission.is_queued() {
-            return Err(NativeError::Protocol(
-                "native request queue is unexpectedly occupied".to_owned(),
-            ));
-        }
-        let id = admission.id();
-        let request = NativeRequest::new(method, RawPayload::new(params));
-        let body = encode_request(id, &request)?;
-        if let Err(error) = self
-            .process()?
-            .send_until(FrameRole::Request, &body, deadline)
-        {
-            let _ = self.dispatch.abandon_request(id);
-            return Err(error);
-        }
-
-        loop {
-            let event = match self.process()?.recv_until(deadline) {
-                Ok(event) => event,
-                Err(error) => {
-                    let _ = self.dispatch.abandon_request(id);
-                    return Err(error);
-                }
-            };
-            let frame = match event {
-                InboundEvent::Frame(frame) => frame,
-                InboundEvent::Fault(fault) => {
-                    let _ = self.dispatch.abandon_request(id);
-                    return Err(NativeError::Protocol(fault.message().to_owned()));
-                }
-                InboundEvent::Closed => {
-                    let _ = self.dispatch.abandon_request(id);
-                    return Err(NativeError::Unavailable {
-                        reason: UnavailableReason::ProcessExited,
-                    });
-                }
-            };
-
-            let decoded = decode_inbound(frame.body(), self.limits)?;
-            match self.dispatch.route(decoded)? {
-                crate::native::rpc::RoutedMessage::Response {
-                    id: response_id,
-                    result,
-                } if response_id == id => {
-                    self.ensure_snapshot(expected_snapshot)?;
-                    return Ok(result);
-                }
-                crate::native::rpc::RoutedMessage::ErrorResponse {
-                    id: response_id,
-                    error,
-                } if response_id == id => {
-                    return Err(map_engine_error(method, &error));
-                }
-                crate::native::rpc::RoutedMessage::Callback {
-                    id: callback_id,
-                    method: callback_method,
-                    params,
-                } => {
-                    self.serve_callback(&callback_id, &callback_method, &params)?;
-                }
-                crate::native::rpc::RoutedMessage::RejectedCallback(rejected) => {
-                    self.send_rejected_callback(&rejected)?;
-                }
-                crate::native::rpc::RoutedMessage::LateResponse { .. } => {}
-                crate::native::rpc::RoutedMessage::Response { .. }
-                | crate::native::rpc::RoutedMessage::ErrorResponse { .. } => {
-                    let _ = self.dispatch.abandon_request(id);
-                    return Err(NativeError::Protocol("unexpected response id".to_owned()));
-                }
-            }
-        }
+        let value = self.transport.request(method.as_str(), params, deadline)?;
+        self.ensure_snapshot(expected_snapshot)?;
+        Ok(value)
     }
 
     fn ensure_snapshot(&self, expected: Option<EngineSnapshotId>) -> Result<(), NativeError> {
@@ -2513,61 +2435,13 @@ impl NativeSession {
         }
     }
 
-    fn serve_callback(
-        &mut self,
-        id: &CallbackId,
-        method: &str,
-        params: &Value,
-    ) -> Result<(), NativeError> {
-        // Read callbacks must never be answered with a JSON-RPC error: F0
-        // §5.2 records that the engine panics on that path. Before a VFS is
-        // installed (initialize and the createSnapshot window) use the
-        // per-callback fail-closed shape, and never use an error as a deny.
-        let answer = self.vfs.as_ref().map_or_else(
-            || {
-                VirtualFileSystem::fail_closed_answer(method).ok_or_else(|| {
-                    CallbackError::UnknownCallback {
-                        method: method.to_owned(),
-                    }
-                })
-            },
-            |vfs| {
-                vfs.answer(method, params)
-                    .or_else(|error| VirtualFileSystem::fail_closed_answer(method).ok_or(error))
-            },
-        );
-        let body = match answer {
-            Ok(value) => encode_callback_result(id, &value)?,
-            Err(error) => encode_callback_error(id, error.code(), error.reason())?,
-        };
-        self.process()?
-            .send_until(FrameRole::CallbackResponse, &body, Deadline::callback())?;
-        self.dispatch.finish_callback(id)?;
-        Ok(())
-    }
-
-    fn send_rejected_callback(&mut self, rejected: &CallbackRejected) -> Result<(), NativeError> {
-        let body = encode_callback_rejection(rejected)?;
-        self.process()?
-            .send_until(FrameRole::CallbackResponse, &body, Deadline::callback())?;
-        Ok(())
-    }
-
-    fn process(&mut self) -> Result<&mut ProcessSession, NativeError> {
-        self.supervisor.session().ok_or(NativeError::Unavailable {
-            reason: UnavailableReason::ProcessExited,
-        })
-    }
-
     /// Marks the transport unusable after a protocol/shape failure.
     ///
-    /// The process is not killed here; the caller must shut the session down.
-    /// This is the F0 §6.6 recovery trigger: a malformed snapshot response is a
-    /// protocol error, not a degraded-but-usable state.
-    const fn poison_session(&mut self) {
-        if let Some(session) = self.supervisor.session() {
-            session.poison();
-        }
+    /// The in-process session is not killed here; the caller must shut the
+    /// session down. A malformed snapshot response is a protocol error, not a
+    /// degraded-but-usable state.
+    fn poison_session(&self) {
+        self.transport.poison();
     }
 }
 
@@ -2642,83 +2516,6 @@ fn select_project(snapshot: &SnapshotResult, tsconfig: &str) -> Option<String> {
         .map(|project| project.id().to_owned())
 }
 
-/// Proves the virtual dispatcher refuses a real host file outside the root.
-///
-/// The pinned executable is known to exist and cannot be inside the empty
-/// sandbox, so it is a safe canary without creating a temporary host file.
-fn confinement_self_check(options: &SessionOptions) -> Result<(), NativeError> {
-    let root = options.sandbox_root.to_str().ok_or_else(handshake_error)?;
-    let probe_path = format!("{root}/probe.ts");
-    let vfs = VirtualFileSystem::from_root_and_files(root, [(probe_path, PROBE_SOURCE.to_owned())])
-        .map_err(|error| map_vfs(&error))?;
-    let canary = options.executable.to_str().ok_or_else(artifact_error)?;
-    vfs.assert_confined(canary)
-        .map_err(|_| NativeError::Unavailable {
-            reason: UnavailableReason::VfsConfinement,
-        })
-}
-
-fn probe_version(executable: &std::path::Path, engine: &PinnedEngine) -> Result<(), NativeError> {
-    let directory = executable.parent().ok_or_else(artifact_error)?;
-    let mut child = Command::new(executable)
-        .arg("--version")
-        .current_dir(directory)
-        .env_clear()
-        .env("LANG", "C")
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|_| NativeError::Unavailable {
-            reason: UnavailableReason::ProcessExited,
-        })?;
-
-    let deadline = Deadline::after(Duration::from_millis(HANDSHAKE_DEADLINE_MS));
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    return Err(artifact_error());
-                }
-                break;
-            }
-            Ok(None) if !deadline.is_expired() => {
-                std::thread::sleep(Duration::from_millis(10));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(artifact_error());
-            }
-        }
-    }
-
-    let mut output = String::new();
-    if let Some(mut stdout) = child.stdout.take() {
-        use std::io::Read as _;
-        stdout
-            .read_to_string(&mut output)
-            .map_err(|_| artifact_error())?;
-    }
-    if output.trim_end() != engine.version_line() {
-        return Err(artifact_error());
-    }
-    Ok(())
-}
-
-fn map_engine_error(method: NativeMethod, error: &JsonRpcError) -> NativeError {
-    if error.is_method_not_found() {
-        unsupported(method.as_str())
-    } else if error.is_snapshot_not_found() {
-        NativeError::StaleSnapshot
-    } else if error.is_stale_handle() {
-        NativeError::StaleHandle
-    } else {
-        error.to_native_error()
-    }
-}
-
 fn map_probe_error(error: NativeError) -> NativeError {
     match error {
         NativeError::Unsupported { .. } => api_mismatch(),
@@ -2737,43 +2534,13 @@ const fn unsupported(method: &'static str) -> NativeError {
 
 const fn handshake_error() -> NativeError {
     NativeError::Unavailable {
-        reason: UnavailableReason::HandshakeFailed,
+        reason: UnavailableReason::ApiMismatch,
     }
 }
 
 const fn api_mismatch() -> NativeError {
     NativeError::Unavailable {
         reason: UnavailableReason::ApiMismatch,
-    }
-}
-
-const fn artifact_error() -> NativeError {
-    NativeError::Unavailable {
-        reason: UnavailableReason::ArtifactMismatch,
-    }
-}
-
-const fn map_spawn_error(error: &SpawnError) -> NativeError {
-    match error {
-        SpawnError::ExecutableMismatch
-        | SpawnError::ExecutableMissing
-        | SpawnError::ExecutableSymlink
-        | SpawnError::ExecutableNotFile
-        | SpawnError::ExecutableNotExecutable
-        | SpawnError::ExecutableIo(_) => artifact_error(),
-        SpawnError::InvalidExecutablePath => NativeError::InvalidHandle {
-            reason: "engine executable path is not normalized",
-        },
-        _ => NativeError::Unavailable {
-            reason: UnavailableReason::ProcessExited,
-        },
-    }
-}
-
-fn map_supervisor_error(error: SupervisorError) -> NativeError {
-    match error {
-        SupervisorError::Spawn(spawn) => map_spawn_error(&spawn),
-        other => NativeError::from(other),
     }
 }
 
@@ -3194,22 +2961,6 @@ mod tests {
     }
 
     #[test]
-    fn spawn_errors_distinguish_artifact_from_process_failures() {
-        assert!(matches!(
-            map_spawn_error(&SpawnError::ExecutableMismatch),
-            NativeError::Unavailable {
-                reason: UnavailableReason::ArtifactMismatch
-            }
-        ));
-        assert!(matches!(
-            map_spawn_error(&SpawnError::SandboxNotEmpty),
-            NativeError::Unavailable {
-                reason: UnavailableReason::ProcessExited
-            }
-        ));
-    }
-
-    #[test]
     fn snapshot_ledger_tracks_only_confirmed_releases_and_enforces_the_cap() {
         let mut ledger = SnapshotLedger::default();
         for id in 1..=MAX_LIVE_SNAPSHOTS {
@@ -3269,39 +3020,6 @@ mod tests {
         assert!(matches!(
             map_probe_error(NativeError::Timeout(10)),
             NativeError::Timeout(10)
-        ));
-    }
-
-    #[test]
-    fn engine_errors_are_classified_for_stale_identity() {
-        let snapshot = JsonRpcError::from_value(&serde_json::json!({
-            "code": -32603,
-            "message": "snapshot 2 not found",
-        }))
-        .expect("snapshot error");
-        assert!(matches!(
-            map_engine_error(NativeMethod::GetTypeAtPosition, &snapshot),
-            NativeError::StaleSnapshot
-        ));
-
-        let handle = JsonRpcError::from_value(&serde_json::json!({
-            "code": -32603,
-            "message": "node handle 9.79./work/main.ts is stale",
-        }))
-        .expect("handle error");
-        assert!(matches!(
-            map_engine_error(NativeMethod::GetTypeAtPosition, &handle),
-            NativeError::StaleHandle
-        ));
-
-        let missing = JsonRpcError::from_value(&serde_json::json!({
-            "code": -32601,
-            "message": "unknown API method",
-        }))
-        .expect("method error");
-        assert!(matches!(
-            map_engine_error(NativeMethod::GetTypeAtPosition, &missing),
-            NativeError::Unsupported { .. }
         ));
     }
 
@@ -3443,30 +3161,29 @@ mod tests {
             .map_or_else(|| PathBuf::from("/tmp/opencode"), PathBuf::from)
     }
 
+    /// Whether the opt-in real-type gate is hard, accepting both `1` and `true`.
+    fn required_real_engine() -> bool {
+        std::env::var("WXML_REQUIRE_REAL_ENGINE")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+    }
+
+    /// Opens an in-process session for a document-symbol fixture.
+    ///
+    /// The engine is compiled in, so the explicit gate only keeps the default
+    /// unit-test run fast; no external `tsgo` executable is involved.
     fn real_engine_doc_symbol_session(
         tag: &str,
         source: &str,
     ) -> Option<(NativeSession, tempfile::TempDir)> {
         use crate::input::{DocumentRevision, ProjectRoot, SourceFile as InputSourceFile};
 
-        let Ok(bin) = std::env::var("TSGO_BIN") else {
-            let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
-            assert!(
-                !required,
-                "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1; \
-                 set it to the pinned 7.1.0-beta lib/tsc"
-            );
+        if !required_real_engine() {
             eprintln!(
-                "real-engine document-symbol test `{tag}` skipped: set TSGO_BIN to the pinned \
-                 7.1.0-beta lib/tsc (or WXML_REQUIRE_REAL_ENGINE=1 to make this a hard gate)"
+                "in-process document-symbol test `{tag}` skipped: set \
+                 WXML_REQUIRE_REAL_ENGINE=1 to run it"
             );
             return None;
-        };
-        let executable = std::path::Path::new(&bin);
-        assert!(
-            executable.is_file(),
-            "TSGO_BIN does not point at a file: {bin}"
-        );
+        }
 
         let sandbox = tempfile::Builder::new()
             .prefix(&format!("wxml-tsgo-doc-symbols-{tag}-sandbox-"))
@@ -3484,8 +3201,11 @@ mod tests {
         )
         .expect("analysis input");
 
-        let mut session = NativeSession::start(SessionOptions::new(executable, sandbox.path()))
-            .expect("start engine");
+        let mut session = NativeSession::start(SessionOptions::new(
+            sandbox.path().join("in-process-engine"),
+            sandbox.path(),
+        ))
+        .expect("start in-process engine");
         session.open_project(&input).expect("open project");
         Some((session, sandbox))
     }

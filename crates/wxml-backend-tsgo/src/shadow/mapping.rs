@@ -351,15 +351,16 @@ pub fn map_span_to_source(
                 unit: "utf-16",
             });
         }
-        if target_start >= start_units && target_end <= end {
-            if let Some(segment) = source_segments.iter().find(|segment| {
+        if target_start >= start_units
+            && target_end <= end
+            && let Some(segment) = source_segments.iter().find(|segment| {
                 target_start >= segment.start_utf16
                     && target_end <= segment.start_utf16 + segment.length_utf16
-            }) {
-                let mapped = map_within(mount, segment, target_start, target_end, true, mount_end)?;
-                if mapped.range.is_some() {
-                    return Ok(mapped);
-                }
+            })
+        {
+            let mapped = map_within(mount, segment, target_start, target_end, true, mount_end)?;
+            if mapped.range.is_some() {
+                return Ok(mapped);
             }
         }
     }

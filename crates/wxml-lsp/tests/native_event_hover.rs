@@ -1,7 +1,7 @@
 //! Opt-in native-engine LSP gate for event-handler hover and definition.
 //!
 //! The gate reuses the `documentSymbol` fixture (`support::provision`): it
-//! builds the disposable package from the pinned `TSGO_BIN`, replaces the
+//! builds the disposable typings-only package from `TSGO_TYPINGS_ROOT`, replaces the
 //! sample project with four pages, starts `<package>/bin/wxml-lsp --stdio
 //! --backend native` and drives real `textDocument/hover` and
 //! `textDocument/definition` requests.
@@ -15,7 +15,7 @@
 //!   by a `Page` behavior degrades to an empty hover and definition instead of
 //!   fabricating a type, signature or location.
 //!
-//! Without `TSGO_BIN` the fixture prints an explicit `SKIP` reason through
+//! Without `TSGO_TYPINGS_ROOT` the fixture prints an explicit `SKIP` reason through
 //! [`provision`] and returns `None`; `WXML_REQUIRE_REAL_ENGINE=1|true` turns a
 //! missing input into a panic. Only a *missing* input is skippable.
 
@@ -47,12 +47,12 @@ const APP_JSON: &str = concat!(
     "\"pages/pagebehavior/index\"",
     "]}\n",
 );
-/// The pinned engine is TypeScript 7.1.0-beta, where `paths` targets are
+/// The in-process engine is TypeScript 7.1.0-beta, where `paths` targets are
 /// tsconfig-relative and `baseUrl` no longer exists.
 const TSCONFIG: &str = "{\"compilerOptions\":{\"paths\":{\"@/*\":[\"./src/*\"]}}}\n";
 /// Behavior with a documented handler.
 ///
-/// The `JSDoc` must be its own leading line: with the pinned engine the
+/// The `JSDoc` must be its own leading line: with the in-process engine the
 /// single-line `methods: { /** ... */ onBackTap() {} }` form loses the
 /// documentation on the `this.onBackTap` hover, while the same comment on its
 /// own line is reported verbatim. The fixture therefore documents the handler

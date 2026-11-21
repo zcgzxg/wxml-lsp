@@ -207,10 +207,7 @@ fn file_identity(raw: &RawDiagnostic, requested: Option<(&str, &str)>) -> String
     if let Some((_, path)) = requested {
         return normalize_file_name(path);
     }
-    raw.file_name
-        .as_deref()
-        .map(normalize_file_name)
-        .unwrap_or_default()
+    raw.file_name.as_deref().map_or_default(normalize_file_name)
 }
 
 fn normalize_file_name(path: &str) -> String {

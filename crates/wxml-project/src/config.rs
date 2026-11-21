@@ -571,7 +571,7 @@ impl<'a> Loader<'a> {
         let mut merged = Layer::default();
         let mut direct_extends = Vec::new();
         let mut applied = BTreeSet::new();
-        for specifier in extends.map(RawExtends::into_vec).unwrap_or_default() {
+        for specifier in extends.map_or_default(RawExtends::into_vec) {
             if self.edges >= MAX_CONFIG_EXTENDS_EDGES {
                 return Err(ConfigError::TooManyExtends {
                     path: path.clone(),

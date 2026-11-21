@@ -127,10 +127,10 @@ fn format_scope(text: &str, scope: Option<TextRange>, options: FormatOptions) ->
             skipped = skipped.saturating_add(1);
             continue;
         };
-        if let Some(scope) = scope {
-            if tag.start() < scope.start() || tag.end() > scope.end() {
-                continue;
-            }
+        if let Some(scope) = scope
+            && (tag.start() < scope.start() || tag.end() > scope.end())
+        {
+            continue;
         }
         let Some(tag_edits) = start_tag_edits(text, tree, id, options) else {
             skipped = skipped.saturating_add(1);
@@ -627,7 +627,7 @@ mod tests {
         let mut checked = 0_usize;
         for index in 0..300_u64 {
             let gap = gaps[usize::try_from(next(&mut state) % 6).expect("gap")];
-            let tab = (next(&mut state) % 2) == 0;
+            let tab = next(&mut state).is_multiple_of(2);
             let mut text = String::new();
             if index % 3 == 0 {
                 text.push_str("<block>");

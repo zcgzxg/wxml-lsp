@@ -1,14 +1,19 @@
 //! Trusted on-disk loader for the pinned native type-asset set.
 //!
-//! [`TypeAssets::load_pinned`] is the production entry point: it walks two
+//! [`TypeAssets::load_pinned`] is the full production entry point: it walks two
 //! caller-supplied package roots, reads every TypeScript declaration once and
 //! validates the result against the crate's built-in [`TypeAssetsPin::pinned_runtime`].
-//! [`TypeAssets::load_trusted`] is the same walk with a caller-supplied pin and
-//! exists for tests and for callers that already verified a manifest.
+//! [`TypeAssets::load_pinned_typings`] is the typings-only entry point for the
+//! in-process engine: the standard library is bundled with the engine, so only
+//! the `miniprogram-api-typings` package is read and verified against
+//! [`TypeAssetsPin::pinned_typings_only`]. [`TypeAssets::load_trusted`] and
+//! [`TypeAssets::load_trusted_typings`] are the same walks with a caller-supplied
+//! pin and exist for tests and for callers that already verified a manifest.
 //!
-//! The standard-library root is the engine's `lib` directory (flat); the
-//! typings root is the directory that contains the `miniprogram-api-typings`
-//! package. Only files below those roots are read.
+//! In full mode the standard-library root is the engine's `lib` directory
+//! (flat); in typings-only mode there is no such root. The typings root is the
+//! directory that contains the `miniprogram-api-typings` package. Only files
+//! below those roots are read.
 //!
 //! # Platform support
 //!
@@ -220,6 +225,62 @@ impl TypeAssets {
     ) -> Result<Self, TypeAssetError> {
         load_trusted_type_assets(engine_root, typings_root, pin)
     }
+
+    /// Loads and verifies a typings-only asset set against the built-in pin.
+    ///
+    /// This is the production entry point for the in-process engine: the
+    /// TypeScript standard library is bundled with the engine, so only the
+    /// `miniprogram-api-typings` package below `typings_root` is read and
+    /// verified. No `engine/lib` directory or `lib*.d.ts` file is required.
+    ///
+    /// # Errors
+    ///
+    /// See [`Self::load_trusted_typings`].
+    pub fn load_pinned_typings(typings_root: &Path) -> Result<Self, TypeAssetError> {
+        Self::load_trusted_typings(typings_root, &TypeAssetsPin::pinned_typings_only())
+    }
+
+    /// Loads and verifies a typings-only asset set against a caller-supplied pin.
+    ///
+    /// `typings_root` is the directory that contains the
+    /// `miniprogram-api-typings` package; only that package subtree is walked.
+    /// The pin must come from [`TypeAssetsPin::pinned_typings_only`] or from an
+    /// independently verified manifest.
+    ///
+    /// # Errors
+    ///
+    /// Fails closed with a [`TypeAssetError`] for a missing or unsafe root, a
+    /// symlink, hard link, non-regular file, non-UTF-8 or non-portable name,
+    /// case collision, over-entry/over-budget tree, non-UTF-8 declaration, a
+    /// file that changes while being read, a missing typings entry point
+    /// (`index.d.ts`, `types/index.d.ts`) or any pin mismatch.
+    pub fn load_trusted_typings(
+        typings_root: &Path,
+        pin: &TypeAssetsPin,
+    ) -> Result<Self, TypeAssetError> {
+        load_trusted_typings_type_assets(typings_root, pin)
+    }
+}
+
+/// Loads a typings-only asset set from a trusted on-disk root.
+///
+/// This is the free-function form of [`TypeAssets::load_trusted_typings`]; see
+/// its documentation for the accepted layout, guarantees and errors.
+///
+/// # Errors
+///
+/// See [`TypeAssets::load_trusted_typings`].
+pub fn load_trusted_typings_type_assets(
+    typings_root: &Path,
+    pin: &TypeAssetsPin,
+) -> Result<TypeAssets, TypeAssetError> {
+    let typings = Root::open(typings_root)?;
+    let package = Root::open_child(&typings, MINIPROGRAM_TYPINGS)?;
+
+    let mut walk = Walk::default();
+    package.collect_tree("", 0, &mut walk)?;
+
+    TypeAssets::new_typings_only(typings.virtual_root, walk.files, pin.clone())
 }
 
 /// Loads a complete type-asset set from trusted on-disk roots.
@@ -850,5 +911,82 @@ mod tests {
                 panic!("FIFO reader thread exited without a result");
             }
         }
+    }
+
+    /// Writes the pinned 20-file typings closure and returns its typical pin.
+    fn write_typings_package(root: &Path) -> TypeAssetsPin {
+        let package = root.join(MINIPROGRAM_TYPINGS);
+        fs::create_dir_all(package.join("types")).expect("typings package");
+        let mut entries = Vec::new();
+        for index in 0..20_u32 {
+            let relative = match index {
+                0 => "index.d.ts".to_owned(),
+                1 => "types/index.d.ts".to_owned(),
+                _ => format!("types/fake{index}.d.ts"),
+            };
+            let text = format!("// fake typings {index}\n");
+            fs::write(package.join(&relative), text.as_bytes()).expect("typings file");
+            entries.push((relative, hex_lower(&Sha256::digest(text.as_bytes())), text));
+        }
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        let mut hasher = Sha256::new();
+        for (relative, digest, _) in &entries {
+            hasher.update(digest.as_bytes());
+            hasher.update(b"  ");
+            hasher.update(relative.as_bytes());
+            hasher.update(b"\n");
+        }
+        let bundle = hex_lower(&hasher.finalize());
+        let bytes = entries.iter().map(|(_, _, text)| text.len() as u64).sum();
+        TypeAssetsPin::typings_only("5.3.1", 20, bytes, bundle).expect("typings pin")
+    }
+
+    #[test]
+    fn typings_only_load_needs_no_engine_directory() {
+        let (dir, _cleanup) = scratch("typings-only");
+        let typings_root = dir.join("typings");
+        let pin = write_typings_package(&typings_root);
+        assert!(!dir.join("engine").exists(), "no engine directory exists");
+
+        let assets =
+            TypeAssets::load_trusted_typings(&typings_root, &pin).expect("typings-only assets");
+        assert!(assets.is_typings_only());
+        assert_eq!(assets.file_count(), 20);
+        assert_eq!(assets.pin().standard_lib_file_count(), 0);
+        assert_eq!(assets.pin().standard_lib_bytes(), 0);
+        assert_eq!(
+            assets.standard_lib_root().as_str(),
+            crate::input::BUNDLED_STANDARD_LIBRARY_ROOT
+        );
+        assert!(
+            assets
+                .files()
+                .iter()
+                .all(|file| { file.path().as_str().contains("/miniprogram-api-typings/") })
+        );
+    }
+
+    #[test]
+    fn typings_only_load_reports_a_missing_typings_root() {
+        let (dir, _cleanup) = scratch("typings-missing-root");
+        let pin = TypeAssetsPin::pinned_typings_only();
+        let error = TypeAssets::load_trusted_typings(&dir.join("absent"), &pin)
+            .expect_err("a missing typings root must fail closed");
+        assert!(
+            matches!(error, TypeAssetError::MissingRoot { .. }),
+            "expected MissingRoot, got {error}"
+        );
+    }
+
+    #[test]
+    fn typings_only_load_requires_the_typings_package() {
+        let (dir, _cleanup) = scratch("typings-missing-package");
+        let pin = TypeAssetsPin::pinned_typings_only();
+        let error = TypeAssets::load_trusted_typings(&dir, &pin)
+            .expect_err("a missing typings package must fail closed");
+        assert!(
+            matches!(error, TypeAssetError::MissingRoot { .. }),
+            "expected MissingRoot, got {error}"
+        );
     }
 }

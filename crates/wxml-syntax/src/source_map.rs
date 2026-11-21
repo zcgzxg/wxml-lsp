@@ -164,13 +164,13 @@ impl SourceMap {
 
     /// Returns the number of segments.
     #[must_use]
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.segments.len()
     }
 
     /// Returns `true` when no segments were added.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.segments.is_empty()
     }
 

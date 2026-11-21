@@ -1433,15 +1433,14 @@ impl ProjectHost for ProjectState {
                     reason: "script is shared by more than one page or component",
                 });
             }
-            if let Ok(wxml) = script_path.with_extension("wxml") {
-                if state
+            if let Ok(wxml) = script_path.with_extension("wxml")
+                && state
                     .projects
                     .get(&project)
                     .is_some_and(|slot| slot.project.file_size(&wxml).is_some())
-                    && ensure_lazy_view(&mut state, &project, &wxml)
-                {
-                    owner = find_owner(&state);
-                }
+                && ensure_lazy_view(&mut state, &project, &wxml)
+            {
+                owner = find_owner(&state);
             }
         }
         let (wxml, view) = owner.ok_or(HostError::Unsupported {
@@ -1716,35 +1715,35 @@ impl ProjectHost for ProjectState {
             None
         };
         let mut diagnostics = Vec::new();
-        if let (true, Some(facts)) = (policy.classes, facts.as_ref()) {
-            if facts.complete {
-                let defined: std::collections::BTreeSet<&str> = facts
-                    .classes
-                    .iter()
-                    .map(wxml_project::ClassDefinition::name)
-                    .collect();
-                for class in crate::styles::class_tokens(snapshot.text()) {
-                    if defined.contains(class.name.as_str()) {
-                        continue;
-                    }
-                    let Ok(text_range) =
-                        wxml_text::TextRange::new(class.token.start(), class.token.end())
-                    else {
-                        continue;
-                    };
-                    let Some(range) = snapshot.source_range(text_range) else {
-                        continue;
-                    };
-                    diagnostics.push(Diagnostic {
-                        range,
-                        severity: DiagnosticSeverity::Warning,
-                        message: format!(
-                            "class `{}` is not defined in the indexed styles",
-                            class.name
-                        ),
-                        code: Some("style.unknown-class".to_owned()),
-                    });
+        if let (true, Some(facts)) = (policy.classes, facts.as_ref())
+            && facts.complete
+        {
+            let defined: std::collections::BTreeSet<&str> = facts
+                .classes
+                .iter()
+                .map(wxml_project::ClassDefinition::name)
+                .collect();
+            for class in crate::styles::class_tokens(snapshot.text()) {
+                if defined.contains(class.name.as_str()) {
+                    continue;
                 }
+                let Ok(text_range) =
+                    wxml_text::TextRange::new(class.token.start(), class.token.end())
+                else {
+                    continue;
+                };
+                let Some(range) = snapshot.source_range(text_range) else {
+                    continue;
+                };
+                diagnostics.push(Diagnostic {
+                    range,
+                    severity: DiagnosticSeverity::Warning,
+                    message: format!(
+                        "class `{}` is not defined in the indexed styles",
+                        class.name
+                    ),
+                    code: Some("style.unknown-class".to_owned()),
+                });
             }
         }
         if policy.resources {
@@ -1817,19 +1816,17 @@ impl ProjectHost for ProjectState {
         // Fast path: the per-project cache already contains this snapshot.
         {
             let state = self.read();
-            if let Some(slot) = state.projects.get(&project_id) {
-                if !slot.config_stale {
-                    if let Some(view) = slot.views.get(&path) {
-                        if let Some(cache) = slot.prepared.iter().find(|cache| {
-                            cache.key.path == path
-                                && cache.key.snapshot == snapshot.snapshot()
-                                && cache.key.view_revision == view.view_revision
-                                && cache.key.project_revision == slot.project_revision
-                        }) {
-                            return Ok((*cache.view).clone());
-                        }
-                    }
-                }
+            if let Some(slot) = state.projects.get(&project_id)
+                && !slot.config_stale
+                && let Some(view) = slot.views.get(&path)
+                && let Some(cache) = slot.prepared.iter().find(|cache| {
+                    cache.key.path == path
+                        && cache.key.snapshot == snapshot.snapshot()
+                        && cache.key.view_revision == view.view_revision
+                        && cache.key.project_revision == slot.project_revision
+                })
+            {
+                return Ok((*cache.view).clone());
             }
         }
 
@@ -1955,10 +1952,10 @@ impl ProjectState {
             (script, revision, component.property_facts.clone())
         };
         let key = (project_id.clone(), script.clone());
-        if let Some((cached_revision, facts)) = state.property_cache.get(&key) {
-            if *cached_revision == revision {
-                return Some(facts.clone());
-            }
+        if let Some((cached_revision, facts)) = state.property_cache.get(&key)
+            && *cached_revision == revision
+        {
+            return Some(facts.clone());
         }
         let text = {
             let slot = state.projects.get(project_id)?;
@@ -2496,10 +2493,10 @@ fn load_project_for_path(
     if let Some(project) = active_project_id(state) {
         return Ok(project.clone());
     }
-    if state.projects.len() == 1 {
-        if let Some(project) = state.projects.keys().next() {
-            return Ok(project.clone());
-        }
+    if state.projects.len() == 1
+        && let Some(project) = state.projects.keys().next()
+    {
+        return Ok(project.clone());
     }
     Err(HostError::Unsupported {
         reason: "no project root is open",
@@ -2521,13 +2518,14 @@ fn route_project(state: &mut State, uri: &str) -> Result<(ProjectId, ProjectPath
 /// Loads or activates one app project without scanning directories.
 fn ensure_loaded(state: &mut State, app: &AppRoot, activate: bool) -> Result<ProjectId, HostError> {
     let project_id = project_id_for(app);
-    if let Some(slot) = state.projects.get(&project_id) {
-        if slot.app == *app && !slot.config_stale {
-            if activate {
-                state.active_project = Some(project_id.clone());
-            }
-            return Ok(project_id);
+    if let Some(slot) = state.projects.get(&project_id)
+        && slot.app == *app
+        && !slot.config_stale
+    {
+        if activate {
+            state.active_project = Some(project_id.clone());
         }
+        return Ok(project_id);
     }
     let project = open_app(state, app)?;
     let mut next_view_revision = state.next_view_revision;
@@ -2546,8 +2544,7 @@ fn ensure_loaded(state: &mut State, app: &AppRoot, activate: bool) -> Result<Pro
     let file_versions = state
         .projects
         .get(&project_id)
-        .map(|slot| slot.file_versions.clone())
-        .unwrap_or_default();
+        .map_or_default(|slot| slot.file_versions.clone());
     state.projects.insert(
         project_id.clone(),
         ProjectSlot {
@@ -2632,16 +2629,14 @@ fn app_for_uri(state: &mut State, uri: &str) -> Result<AppRoot, HostError> {
     }
     // A tsconfig or other file may live above `app.json` but inside the loaded
     // TypeScript project. Keep the active project for it.
-    if let Some(active) = state.active_project.as_ref() {
-        if let Some(app) = state
+    if let Some(active) = state.active_project.as_ref()
+        && let Some(app) = state
             .app_roots
             .iter()
             .find(|app| &project_id_for(app) == active)
-        {
-            if path.starts_with(&app.project_root) {
-                return Ok(app.clone());
-            }
-        }
+        && path.starts_with(&app.project_root)
+    {
+        return Ok(app.clone());
     }
     let mut roots = state
         .app_roots
@@ -2875,10 +2870,10 @@ fn build_views(
         for (path, view) in previous {
             if view.lazy && !views.contains_key(path) && project.file_size(path).is_some() {
                 let mut refreshed = view.clone();
-                if let Some(base_text) = path.as_str().strip_suffix(".wxml") {
-                    if let Ok(base) = ProjectPath::new(base_text) {
-                        refreshed.components = lazy_view_components(project, &base);
-                    }
+                if let Some(base_text) = path.as_str().strip_suffix(".wxml")
+                    && let Ok(base) = ProjectPath::new(base_text)
+                {
+                    refreshed.components = lazy_view_components(project, &base);
                 }
                 views.insert(path.clone(), refreshed);
             }
@@ -2902,8 +2897,7 @@ fn lazy_view_config(
             .map(|text| (path, text))
     }) {
         Some((path, text)) => wxml_project::discovery::parse_page_config(path, &text)
-            .map(|parsed| parsed.value.local)
-            .unwrap_or_default(),
+            .map_or_default(|parsed| parsed.value.local),
         None => BTreeMap::new(),
     };
     let global = project
@@ -3112,13 +3106,12 @@ fn resolve_components(
     usages
         .into_iter()
         .map(|mut usage| {
-            if let Some(base) = view_components.get(&usage.tag) {
-                if let Some(script) = project
+            if let Some(base) = view_components.get(&usage.tag)
+                && let Some(script) = project
                     .component(base)
                     .and_then(|component| component.script.as_ref())
-                {
-                    usage.component_file = FileId::new(project_id.clone(), script.as_str()).ok();
-                }
+            {
+                usage.component_file = FileId::new(project_id.clone(), script.as_str()).ok();
             }
             usage
         })
@@ -3179,8 +3172,7 @@ fn all_slot_views(state: &State, project: &ProjectId) -> Vec<ProjectPath> {
     state
         .projects
         .get(project)
-        .map(|slot| slot.views.keys().cloned().collect())
-        .unwrap_or_default()
+        .map_or_default(|slot| slot.views.keys().cloned().collect())
 }
 
 /// Advances the view revision of affected paths and returns the deduplicated
@@ -3694,21 +3686,19 @@ fn build_prepared(
     // A declared event whose handler exists but has no parameter annotation is
     // only a coverage gap, never a diagnostic. The reason is merged last so an
     // existing declaration/typing degradation keeps its wording.
-    if script_present {
-        if let Some(root) = slot.project.root().to_str() {
-            let typing = typing_snapshot(slot);
-            if let Some(reason) = crate::semantics::event_diagnostics::unannotated_handler_reason(
-                &files,
-                root,
-                project_id.as_str(),
-                script.as_str(),
-                owner,
-                snapshot.text(),
-                &events,
-                &typing.facts,
-            ) {
-                merge_hint(&mut hint, CapabilityStatus::Partial { reason });
-            }
+    if script_present && let Some(root) = slot.project.root().to_str() {
+        let typing = typing_snapshot(slot);
+        if let Some(reason) = crate::semantics::event_diagnostics::unannotated_handler_reason(
+            &files,
+            root,
+            project_id.as_str(),
+            script.as_str(),
+            owner,
+            snapshot.text(),
+            &events,
+            &typing.facts,
+        ) {
+            merge_hint(&mut hint, CapabilityStatus::Partial { reason });
         }
     }
 
@@ -3772,11 +3762,11 @@ fn limit_request_files(
     hint: &mut Option<CapabilityStatus>,
 ) -> bool {
     let mut complete = true;
-    if let Some(position) = files.iter().position(|file| file.path == *script) {
-        if position > 0 {
-            let file = files.remove(position);
-            files.insert(0, file);
-        }
+    if let Some(position) = files.iter().position(|file| file.path == *script)
+        && position > 0
+    {
+        let file = files.remove(position);
+        files.insert(0, file);
     }
     if files.len() > limits.max_files {
         complete = false;
@@ -3887,20 +3877,18 @@ pub(crate) fn syntax_diagnostics(
             });
         }
     }
-    if parsed.truncated {
-        if let Some(range) = parsed
+    if parsed.truncated
+        && let Some(range) = parsed
             .tree
             .text_range(parsed.tree.root())
             .and_then(|range| snapshot.source_range(range))
-        {
-            diagnostics.push(Diagnostic {
-                range,
-                severity: DiagnosticSeverity::Warning,
-                message: "parsing stopped at a resource limit; diagnostics are incomplete"
-                    .to_owned(),
-                code: None,
-            });
-        }
+    {
+        diagnostics.push(Diagnostic {
+            range,
+            severity: DiagnosticSeverity::Warning,
+            message: "parsing stopped at a resource limit; diagnostics are incomplete".to_owned(),
+            code: None,
+        });
     }
     diagnostics
 }

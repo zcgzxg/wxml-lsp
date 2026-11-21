@@ -2,7 +2,7 @@
 
 更新日期：2026-11-20。
 
-本文件说明 `wxml-lsp` 的查询基准（Criterion `queries` bench）测什么、如何运行、结果如何解读。它是**本地基线工具**，不是验收门禁，也不定义延迟预算。查询语义和协议契约仍以[基础契约](contracts.md)、[C1 类型桥契约](type-bridge-c1.md)和[模板类型诊断策略](type-diagnostics.md)为准；样本约定见[共享验收样本](../../tests/fixtures/README.md)。
+本文件说明 `wxml-lsp` 的查询基准（Criterion `queries` bench）测什么、如何运行、结果如何解读。它是**本地基线工具**，不是验收门禁，也不定义延迟预算。查询语义和协议契约仍以[基础契约](contracts.md)、[原生类型后端合同](tsgo-native-contract.md)和[模板类型诊断策略](type-diagnostics.md)为准；样本约定见[共享验收样本](../../tests/fixtures/README.md)。
 
 ## 1. 测量内容
 
@@ -10,12 +10,12 @@
 
 | 组 | 用例 | 走的路径 |
 | --- | --- | --- |
-| `query/type` | `root`、`member`、`local` | 根变量、成员访问、`wx:for` 模板局部变量的 hover，经 native tsgo 类型查询 |
+| `query/type` | `root`、`member`、`local` | 根变量、成员访问、`wx:for` 模板局部变量的 hover，经进程内类型会话查询 |
 | `query/tag` | `builtin`、`component`、`attribute`、`value` | 内置标签、自定义组件标签、属性名、属性值的 hover，走静态 metadata |
 | `query/class` | `extract`、`site`、`hover`、`completion`、`definition` | 静态类名提取、指定偏移的类名识别（纯 WXML 解析），以及 class hover/补全/定义（样式索引） |
 | `first-query` | `type`、`tag`、`class` | 完整建栈后执行一次同类查询，见 §5 |
 
-只看解析层的低噪声参考点时使用 `query/class/extract` 与 `query/class/site`；它们不依赖引擎和样式索引。
+只看解析层的低噪声参考点时使用 `query/class/extract` 与 `query/class/site`；它们不依赖类型会话和样式索引。
 
 ## 2. 测量边界
 
@@ -25,7 +25,7 @@
 - 客户端按 `Content-Length` 帧发送 `initialize`、`initialized`、`didOpen`，随后对同一会话重复发送目标请求。
 - 计时区间是“写入请求帧到读出对应响应帧”。
 
-因此一个样本**包含** JSON-RPC 编解码与分帧、scheduler 线程切换、workspace 查找、shadow 映射，以及引擎或样式查询；**不包含**进程启动、操作系统管道/套接字 IPC 和编辑器客户端自身的开销。
+因此一个样本**包含** JSON-RPC 编解码与分帧、scheduler 线程切换、workspace 查找、shadow 映射，以及类型会话或样式查询；**不包含**服务进程启动和编辑器客户端自身的开销，类型会话初始化只计入 §5 的冷样本。
 
 不采用子进程启动已安装的 `wxml-lsp --stdio`：额外的进程与管道噪声会淹没亚毫秒路径，也要求先构建并安装完整布局。也不直接调用内部 helper：那会绕过 scheduler 和 shadow，测到的不是用户实际等待的路径。
 
@@ -47,28 +47,27 @@ cargo bench -p wxml-lsp --bench queries -- "first-query"
 
 Criterion 的采样产物写入 `target/criterion/`；对比同一台机器上的改动时使用它的 baseline 参数（如 `--save-baseline` / `--baseline`），不要在项目目录另建结果目录。
 
-## 4. 类型组与引擎要求
+## 4. 类型组与 typings 要求
 
-`query/type/*` 和 `first-query/type` 需要已安装的原生布局。基准读取 `WXML_BENCH_INSTALL_ROOT`，默认 `$HOME/.local/share/wxml-lsp`，并要求该根目录下存在：
+`query/type/*` 和 `first-query/type` 需要已安装的 typings 布局；类型引擎在进程内运行，不需要引擎可执行文件，TypeScript 标准库随二进制内嵌。基准读取 `WXML_BENCH_INSTALL_ROOT`，默认 `$HOME/.local/share/wxml-lsp`，并要求该根目录下存在：
 
 ```text
 <root>/bin/wxml-lsp
-<root>/engine/lib/tsc
 <root>/typings/miniprogram-api-typings
 ```
 
-`query/tag/*` 与 `query/class/*` 不依赖该布局；`first-query/tag`、`first-query/class` 同样不需要引擎。
+`query/tag/*` 与 `query/class/*` 不依赖该布局；`first-query/tag`、`first-query/class` 同样不需要 typings。
 
 - 布局缺失时，类型组打印 `SKIP` 与安装提示，不产生伪造数据；其余组照常运行。
 - 设置 `WXML_REQUIRE_REAL_ENGINE=1` 后，缺失布局从跳过改为硬失败，适合在确知已安装的机器上做完整基线。
-- 布局由 [`scripts/install-native.sh`](../../scripts/install-native.sh) 按 `assets.lock.json` 下载并校验后创建；安装根必须位于仓库之外。直接运行 `target/debug` 或 `target/release` 下的二进制不算安装布局。
+- 布局由 [`scripts/install-native.sh`](../../scripts/install-native.sh) 按 `assets.lock.json` 下载并校验 typings 后创建；不下载或安装引擎。安装根必须位于仓库之外。直接运行 `target/debug` 或 `target/release` 下的二进制不算安装布局。
 
 没有实际运行类型组时，不得声称类型路径的性能已验证。
 
 ## 5. 热查询与首次查询
 
 - **热（`query/*`）**：后端、host、server、会话与索引全部就绪后重复查询同一位置，是主指标。`didOpen` 之后先把 `diagnostics.debounceMs` 设为 `0` 并等待首轮诊断结束，避免诊断任务与查询争抢 worker。
-- **冷（`first-query/*`）**：每次迭代新建 backend + host + server，执行 `initialize` + `didOpen` + 一次查询后关闭，`sample_size(10)`。因此冷样本**包含** pinned 资产校验、引擎进程 handshake 和样式索引的首次构建。
+- **冷（`first-query/*`）**：每次迭代新建 backend + host + server，执行 `initialize` + `didOpen` + 一次查询后关闭，`sample_size(10)`。因此冷样本**包含** pinned typings 校验、进程内类型会话初始化（`initialize` 与能力探针）和样式索引的首次构建。
 
 冷、热样本测的不是同一个区间，**不要相互比较**，也不要拼接两者的数字。冷样本用于观察“打开项目后第一次查询”的成本量级；热样本用于观察稳态路径的相对变化。
 

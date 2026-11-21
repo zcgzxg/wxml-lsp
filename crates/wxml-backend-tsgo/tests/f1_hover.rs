@@ -1,11 +1,12 @@
 //! F1-22 hover composition and evidence tests.
 //!
 //! The pure tests freeze the three-part Markdown order and the
-//! checked-empty / Unsupported / Partial distinction. The real-engine tests are
-//! opt-in through `TSGO_BIN`; `WXML_REQUIRE_REAL_ENGINE=1` turns a missing
-//! engine into a hard failure instead of a skip. The pinned standard library
-//! comes from `TSGO_ASSET_ROOT` (or the engine's `lib` directory) and typings
-//! from `TSGO_TYPINGS_ROOT` (or `TSGO_ASSET_ROOT/typings`).
+//! checked-empty / Unsupported / Partial distinction. The real-engine tests run
+//! against the in-process `tsrs` session and are opt-in through
+//! `TSGO_TYPINGS_ROOT` (the directory containing `miniprogram-api-typings`, or
+//! the package directory itself). `WXML_REQUIRE_REAL_ENGINE=1` turns missing or
+//! invalid typings into a hard failure instead of a skip. The TypeScript
+//! standard library is bundled with the engine, so no `lib.d.ts` tree is read.
 
 #![allow(clippy::expect_used, clippy::too_many_lines)]
 
@@ -14,10 +15,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use sha2::{Digest, Sha256};
 use wxml_backend_tsgo::input::{
-    AnalysisInput, AssetPath, CompilerOptions, DocumentRevision, MINIPROGRAM_TYPINGS, ProjectKey,
-    ProjectRoot, SnapshotRevision, SourceFile, TypeAssetFile, TypeAssets, TypeAssetsPin,
+    AnalysisInput, CompilerOptions, DocumentRevision, MINIPROGRAM_TYPINGS, ProjectKey, ProjectRoot,
+    SnapshotRevision, SourceFile, TypeAssets,
 };
 use wxml_backend_tsgo::native::session::{NativeSession, SessionOptions};
 use wxml_backend_tsgo::native::strings::{Utf16Offset, Utf16Position, offset_to_position};
@@ -338,25 +338,69 @@ fn position_at(source: &str, needle: &str) -> Utf16Position {
     .expect("position")
 }
 
-fn start_engine(tag: &str) -> Option<(NativeSession, Cleanup)> {
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
+/// Whether the real-engine gate must fail instead of skipping.
+fn require_real_engine() -> bool {
+    std::env::var("WXML_REQUIRE_REAL_ENGINE")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
+/// Normalizes `TSGO_TYPINGS_ROOT`, accepting either the parent root or the
+/// `miniprogram-api-typings` package directory itself.
+fn normalize_typings_root(path: &Path) -> PathBuf {
+    if path.file_name().and_then(|name| name.to_str()) == Some(MINIPROGRAM_TYPINGS) {
+        path.parent()
+            .map_or_else(|| path.to_path_buf(), Path::to_path_buf)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// A validated typings root plus the staged copy that keeps it alive.
+struct RealTypings {
+    root: PathBuf,
+    _staged: Option<typings_fixture::Staged>,
+}
+
+/// Resolves and verifies the pinned typings, or skips explicitly.
+fn prepare_real_typings() -> Option<RealTypings> {
+    let required = require_real_engine();
+    let (root, staged) = if let Some(raw) = std::env::var_os("TSGO_TYPINGS_ROOT") {
+        (normalize_typings_root(Path::new(&raw)), None)
+    } else if let Some(staged) = typings_fixture::stage() {
+        (staged.root().to_path_buf(), Some(staged))
+    } else {
         assert!(
             !required,
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1; \
-             set it to the pinned 7.1.0-beta lib/tsc"
+            "TSGO_TYPINGS_ROOT is required when WXML_REQUIRE_REAL_ENGINE=1; \
+             point it at miniprogram-api-typings or its parent directory"
         );
         eprintln!(
-            "real-engine hover test skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc \
+            "real-engine hover test skipped: set TSGO_TYPINGS_ROOT to \
+             miniprogram-api-typings or its parent directory \
              (or WXML_REQUIRE_REAL_ENGINE=1 to make this a hard gate)"
         );
         return None;
     };
-    let executable = Path::new(&bin);
-    assert!(
-        executable.is_file(),
-        "TSGO_BIN does not point at a file: {bin}"
-    );
+    if let Err(error) = TypeAssets::load_pinned_typings(&root) {
+        assert!(
+            !required,
+            "invalid typings under {} when WXML_REQUIRE_REAL_ENGINE=1: {error}",
+            root.display()
+        );
+        eprintln!(
+            "real-engine hover test skipped: cannot verify typings under {}: {error}",
+            root.display()
+        );
+        return None;
+    }
+    Some(RealTypings {
+        root,
+        _staged: staged,
+    })
+}
+
+fn start_engine(tag: &str) -> Option<(NativeSession, Cleanup, RealTypings)> {
+    let typings = prepare_real_typings()?;
 
     let sandbox = std::env::temp_dir().join(unique(tag));
     std::fs::create_dir_all(&sandbox).expect("sandbox");
@@ -368,122 +412,19 @@ fn start_engine(tag: &str) -> Option<(NativeSession, Cleanup)> {
         "sandbox must start empty"
     );
     let guard = Cleanup(sandbox.clone());
-    let session =
-        NativeSession::start(SessionOptions::new(executable, sandbox)).expect("start real engine");
-    Some((session, guard))
+    // The executable is a historical field; the in-process engine ignores it.
+    let session = NativeSession::start(SessionOptions::new(PathBuf::new(), sandbox))
+        .expect("start in-process engine");
+    Some((session, guard, typings))
 }
 
-const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
-
-fn sha(text: &str) -> String {
-    let mut encoded = String::with_capacity(64);
-    for byte in Sha256::digest(text.as_bytes()) {
-        encoded.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
-        encoded.push(char::from(HEX_DIGITS[usize::from(byte & 0x0f)]));
-    }
-    encoded
-}
-
-fn declaration_files(root: &Path, recursive: bool, lib_only: bool) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return files;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if recursive {
-                files.extend(declaration_files(&path, recursive, lib_only));
-            }
-            continue;
-        }
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if !name.ends_with(".d.ts") || (lib_only && !name.starts_with("lib")) {
-            continue;
-        }
-        files.push(path);
-    }
-    files.sort();
-    files
-}
-
-fn load_pinned_assets() -> Result<TypeAssets, String> {
-    let bin = std::env::var("TSGO_BIN").map_err(|_| "TSGO_BIN is unset".to_owned())?;
-    let executable = PathBuf::from(bin);
-    let standard_lib = std::env::var_os("TSGO_ASSET_ROOT")
-        .map(PathBuf::from)
-        .and_then(|root| {
-            [root.join("engine/lib"), root.join("lib")]
-                .into_iter()
-                .find(|candidate| candidate.join("lib.d.ts").is_file())
-        })
-        .or_else(|| {
-            executable
-                .parent()
-                .filter(|parent| parent.join("lib.d.ts").is_file())
-                .map(Path::to_path_buf)
-        })
-        .ok_or_else(|| "no standard-library lib.d.ts near TSGO_BIN".to_owned())?;
-    let standard_lib = std::fs::canonicalize(&standard_lib)
-        .map_err(|error| format!("canonicalize {}: {error}", standard_lib.display()))?;
-    let (typings_root, _staged) = if let Some(root) = std::env::var_os("TSGO_TYPINGS_ROOT") {
-        (PathBuf::from(root), None)
-    } else {
-        let staged = typings_fixture::stage().ok_or_else(|| {
-            format!(
-                "typings package is missing at {}; set TSGO_TYPINGS_ROOT or \
-                 TSGO_ASSET_ROOT",
-                typings_fixture::fixture_package().display()
-            )
-        })?;
-        (staged.root().to_path_buf(), Some(staged))
-    };
-    let typings_root = std::fs::canonicalize(&typings_root)
-        .map_err(|error| format!("canonicalize {}: {error}", typings_root.display()))?;
-    let typings_package = typings_root.join(MINIPROGRAM_TYPINGS);
-    if !typings_package.join("index.d.ts").is_file() {
-        return Err(format!(
-            "no pinned typings package at {}; set TSGO_TYPINGS_ROOT to the directory \
-             containing {MINIPROGRAM_TYPINGS}",
-            typings_package.display()
-        ));
-    }
-
-    let mut files = Vec::new();
-    for path in declaration_files(&standard_lib, false, true)
-        .into_iter()
-        .chain(declaration_files(&typings_package, true, false))
-    {
-        let text = std::fs::read_to_string(&path)
-            .map_err(|error| format!("read {}: {error}", path.display()))?;
-        let size = u64::try_from(text.len()).map_err(|_| "asset is too large".to_owned())?;
-        files.push(
-            TypeAssetFile::new(
-                AssetPath::new(path.to_string_lossy().into_owned())
-                    .map_err(|error| error.to_string())?,
-                text.clone(),
-                sha(&text),
-                size,
-            )
-            .map_err(|error| error.to_string())?,
-        );
-    }
-    TypeAssets::new(
-        AssetPath::new(standard_lib.to_string_lossy().into_owned())
-            .map_err(|error| error.to_string())?,
-        AssetPath::new(typings_root.to_string_lossy().into_owned())
-            .map_err(|error| error.to_string())?,
-        files,
-        TypeAssetsPin::pinned_runtime(),
-    )
-    .map_err(|error| error.to_string())
+fn load_pinned_assets(typings: &RealTypings) -> Result<TypeAssets, String> {
+    TypeAssets::load_pinned_typings(&typings.root).map_err(|error| error.to_string())
 }
 
 #[test]
 fn real_engine_hover_evidence_preserves_type_docs_tags_and_declaration_ranges() {
-    let Some((mut session, _sandbox)) = start_engine("engine") else {
+    let Some((mut session, _sandbox, _typings)) = start_engine("engine") else {
         return;
     };
     let project_root = format!("/tmp/opencode/{}", unique("project"));
@@ -734,15 +675,22 @@ fn real_engine_hover_evidence_preserves_type_docs_tags_and_declaration_ranges() 
     session.shutdown().expect("shutdown");
 }
 
+/// A mounted declaration outside the project must be a proven external gap.
+///
+/// The in-process session does not currently surface its bundled standard
+/// library through `tsrs_api`, so the external target here is a declaration in
+/// the verified `miniprogram-api-typings` package. That keeps the assertion
+/// meaningful: the type resolves, the declaration is provably out of the
+/// project snapshot, and the composed status is Partial without leaking a path.
 #[test]
 fn real_engine_hover_marks_external_library_declarations_partial() {
-    let Some((mut session, _sandbox)) = start_engine("external-engine") else {
+    let Some((mut session, _sandbox, typings)) = start_engine("external-engine") else {
         return;
     };
-    let assets = match load_pinned_assets() {
+    let assets = match load_pinned_assets(&typings) {
         Ok(assets) => assets,
         Err(reason) => {
-            let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
+            let required = require_real_engine();
             assert!(
                 !required,
                 "pinned type assets are required when WXML_REQUIRE_REAL_ENGINE=1: {reason}"
@@ -752,7 +700,7 @@ fn real_engine_hover_marks_external_library_declarations_partial() {
         }
     };
 
-    let source = "const text = \"abc\";\ntext.length;\n";
+    let source = "const info = wx.getSystemInfoSync();\ninfo.windowWidth;\n";
     let project_root = format!("/tmp/opencode/{}", unique("external-project"));
     assert!(
         !Path::new(&project_root).exists(),
@@ -789,9 +737,9 @@ fn real_engine_hover_marks_external_library_declarations_partial() {
         external.gaps.iter().any(|gap| matches!(
             gap,
             HoverGap::ExternalDeclaration { path: Some(path) }
-                if path.ends_with("lib.es5.d.ts")
+                if path.ends_with("types/wx/lib.wx.api.d.ts")
         )),
-        "the standard-library declaration must be reported with its proven path: {:?}",
+        "the mounted typings declaration must be reported with its proven path: {:?}",
         external.gaps
     );
     assert!(

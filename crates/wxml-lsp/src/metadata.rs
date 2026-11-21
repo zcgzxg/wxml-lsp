@@ -119,25 +119,25 @@ pub(crate) fn target_at(text: &str, offset: u32) -> Option<Target> {
             index = skip_mustache(bytes, index)?;
             continue;
         }
-        if bytes[index] == b'<' {
-            if let Some(tag) = scan_tag(text, index) {
-                if offset < tag.start {
+        if bytes[index] == b'<'
+            && let Some(tag) = scan_tag(text, index)
+        {
+            if offset < tag.start {
+                return None;
+            }
+            if offset <= tag.end {
+                return token_in_tag(&tag, offset);
+            }
+            index = tag.end.max(index + 1);
+            if tag.name == "wxs" && !tag.closing && !tag.self_closing {
+                let close = text.get(tag.end..)?.find("</wxs")?;
+                let close = tag.end.saturating_add(close);
+                if offset < close {
                     return None;
                 }
-                if offset <= tag.end {
-                    return token_in_tag(&tag, offset);
-                }
-                index = tag.end.max(index + 1);
-                if tag.name == "wxs" && !tag.closing && !tag.self_closing {
-                    let close = text.get(tag.end..)?.find("</wxs")?;
-                    let close = tag.end.saturating_add(close);
-                    if offset < close {
-                        return None;
-                    }
-                    index = close;
-                }
-                continue;
+                index = close;
             }
+            continue;
         }
         index += 1;
     }

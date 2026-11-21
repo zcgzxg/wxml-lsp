@@ -2002,16 +2002,15 @@ fn union_text(script: &Script<'_>, options: &[Member]) -> Option<String> {
     if let Some(main) = constructor_text(script, options, "type") {
         parts.push(main);
     }
-    if let Some(optional) = member_last(options, "optionalTypes") {
-        if optional.kind == MemberKind::Property {
-            if let Some(elements) = array_elements(script, optional) {
-                for element in elements {
-                    if let Some(text) = constructor_token(script, element) {
-                        if !parts.contains(&text) {
-                            parts.push(text);
-                        }
-                    }
-                }
+    if let Some(optional) = member_last(options, "optionalTypes")
+        && optional.kind == MemberKind::Property
+        && let Some(elements) = array_elements(script, optional)
+    {
+        for element in elements {
+            if let Some(text) = constructor_token(script, element)
+                && !parts.contains(&text)
+            {
+                parts.push(text);
             }
         }
     }

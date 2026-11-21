@@ -1,16 +1,12 @@
 //! P6-3 native type-environment slice tests.
 //!
-//! The fake tests do not need an engine. The real-engine tests are opt-in
-//! through `TSGO_BIN`; `WXML_REQUIRE_REAL_ENGINE=1` turns a missing engine or a
-//! missing asset root into a hard failure instead of a skip.
+//! The fake tests do not need a type engine. The real-type tests are opt-in
+//! through `TSGO_TYPINGS_ROOT`; `WXML_REQUIRE_REAL_ENGINE=1` turns a missing
+//! typings root into a hard failure instead of a skip.
 //!
-//! The type assets are read from the pinned package layout:
-//! `<package>/engine/lib/lib*.d.ts` (or `<package>/lib` for the extracted
-//! upstream tarball) plus `<package>/typings/miniprogram-api-typings/**`. When
-//! `TSGO_ASSET_ROOT` is unset the standard library is derived from
-//! `TSGO_BIN`'s directory and typings come from `TSGO_TYPINGS_ROOT` or
-//! `TSGO_ASSET_ROOT/typings`, staged into the canonical package layout below the
-//! test temp base.
+//! Only `<package>/typings/miniprogram-api-typings/**` is read from disk. The
+//! TypeScript standard library is embedded in the in-process `tsrs` engine and
+//! is mounted into the virtual snapshot at runtime.
 
 #![allow(clippy::expect_used, clippy::too_many_lines)]
 
@@ -25,10 +21,9 @@ use wxml_backend_tsgo::input::{
     AnalysisInput, AssetPath, COMPILER_OPTION_KEYS, CompilerOptions, DocumentRevision,
     MAX_ASSET_COMPONENT_BYTES, MAX_ASSET_PATH_BYTES, MAX_ASSET_PATH_COMPONENTS,
     MAX_TYPE_ASSET_BYTES, MAX_TYPE_ASSET_FILES, MINIPROGRAM_TYPINGS, PINNED_STANDARD_LIB_BYTES,
-    PINNED_STANDARD_LIB_FILE_COUNT, PINNED_TYPE_ASSET_BYTES, PINNED_TYPE_ASSET_FILES,
-    PINNED_TYPINGS_BYTES, PINNED_TYPINGS_FILE_COUNT, PINNED_TYPINGS_VERSION, ProjectKey,
-    ProjectRoot, SnapshotRevision, SourceFile, TypeAssetError, TypeAssetFile, TypeAssets,
-    TypeAssetsPin,
+    PINNED_STANDARD_LIB_FILE_COUNT, PINNED_TYPE_ASSET_FILES, PINNED_TYPINGS_BYTES,
+    PINNED_TYPINGS_FILE_COUNT, PINNED_TYPINGS_VERSION, ProjectKey, ProjectRoot, SnapshotRevision,
+    SourceFile, TypeAssetError, TypeAssetFile, TypeAssets, TypeAssetsPin,
 };
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::session::{NativeSession, SessionOptions};
@@ -47,6 +42,8 @@ const badType: number = info.model;
 const page = Page({ data: { count: 1 } });
 const component = Component({ data: { n: 1 } });
 const app = getApp();
+const text = `abc`;
+const textLength = text.length;
 wx.
 ";
 
@@ -698,8 +695,8 @@ fn fake_full_resend_release_p95_stays_within_budget() {
 }
 
 struct AssetRoots {
-    standard_lib: PathBuf,
     typings: PathBuf,
+    assets: TypeAssets,
     _staged: Option<typings_fixture::Staged>,
 }
 
@@ -715,135 +712,48 @@ fn normalize_typings_root(path: &Path) -> Option<PathBuf> {
         .then_some(root)
 }
 
-fn resolve_asset_roots(executable: &Path) -> Option<AssetRoots> {
-    let packaged = std::env::var_os("TSGO_ASSET_ROOT").map(PathBuf::from);
-    let standard_lib = packaged
-        .as_ref()
-        .and_then(|root| {
-            [root.join("engine/lib"), root.join("lib")]
-                .into_iter()
-                .find(|candidate| candidate.join("lib.d.ts").is_file())
-        })
-        .or_else(|| {
-            executable
-                .parent()
-                .filter(|parent| parent.join("lib.d.ts").is_file())
-                .map(Path::to_path_buf)
-        })?;
+fn real_engine_context() -> Option<AssetRoots> {
+    let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
     let configured = std::env::var_os("TSGO_TYPINGS_ROOT")
         .map(PathBuf::from)
-        .and_then(|path| normalize_typings_root(&path))
-        .or_else(|| {
-            packaged
-                .as_ref()
-                .and_then(|root| normalize_typings_root(&root.join("typings")))
-        });
+        .and_then(|path| normalize_typings_root(&path));
     let (typings, staged) = if let Some(path) = configured {
         (path, None)
     } else {
         let staged = typings_fixture::stage()?;
         (staged.root().to_path_buf(), Some(staged))
     };
-    Some(AssetRoots {
-        standard_lib,
-        typings,
-        _staged: staged,
-    })
-}
-
-fn real_engine_context() -> Option<(PathBuf, AssetRoots)> {
-    let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
-        assert!(
-            !required,
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1; \
-             set it to the pinned 7.1.0-beta lib/tsc"
-        );
-        eprintln!(
-            "real-engine type-asset gate skipped: set TSGO_BIN to the pinned \
-             7.1.0-beta lib/tsc (or WXML_REQUIRE_REAL_ENGINE=1 for a hard gate)"
-        );
-        return None;
-    };
-    let executable = PathBuf::from(bin);
-    assert!(
-        executable.is_file(),
-        "TSGO_BIN does not point at a file: {}",
-        executable.display()
-    );
-    let Some(roots) = resolve_asset_roots(&executable) else {
-        assert!(
-            !required,
-            "type-asset roots are required when WXML_REQUIRE_REAL_ENGINE=1; \
-             set TSGO_ASSET_ROOT or TSGO_TYPINGS_ROOT"
-        );
-        eprintln!(
-            "real-engine type-asset gate skipped: no standard-library root found and the \
-             configured typings package is missing near {}",
-            executable.display()
-        );
-        return None;
-    };
-    Some((executable, roots))
-}
-
-fn declaration_files(root: &Path, recursive: bool, lib_only: bool) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return files;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            if recursive {
-                files.extend(declaration_files(&path, recursive, lib_only));
-            }
-            continue;
+    match TypeAssets::load_pinned_typings(&typings) {
+        Ok(assets) => Some(AssetRoots {
+            typings,
+            assets,
+            _staged: staged,
+        }),
+        Err(error) => {
+            assert!(
+                !required,
+                "typings are required when WXML_REQUIRE_REAL_ENGINE=1: {error}"
+            );
+            eprintln!(
+                "real-engine typings gate skipped: set TSGO_TYPINGS_ROOT to the pinned \
+                 miniprogram-api-typings package (or WXML_REQUIRE_REAL_ENGINE=1 for a hard gate): {error}"
+            );
+            None
         }
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if !name.ends_with(".d.ts") || (lib_only && !name.starts_with("lib")) {
-            continue;
-        }
-        files.push(path);
     }
-    files.sort();
-    files
 }
 
-fn load_type_assets(roots: &AssetRoots, omit: Option<&Path>) -> Result<TypeAssets, TypeAssetError> {
-    let mut files = Vec::new();
-    for path in declaration_files(&roots.standard_lib, false, true)
-        .into_iter()
-        .chain(declaration_files(
-            &roots.typings.join(MINIPROGRAM_TYPINGS),
-            true,
-            false,
-        ))
-    {
-        if omit.is_some_and(|omit| path.as_path() == omit) {
-            continue;
+fn copy_tree(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).expect("create copied tree");
+    for entry in std::fs::read_dir(from).expect("read copied tree") {
+        let entry = entry.expect("entry");
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).expect("copy file");
         }
-        let text = std::fs::read_to_string(&path).expect("read declaration");
-        let size = u64::try_from(text.len()).expect("size");
-        let hash = sha(&text);
-        files.push(
-            TypeAssetFile::new(
-                AssetPath::new(path.to_string_lossy().into_owned()).expect("asset path"),
-                text,
-                hash,
-                size,
-            )
-            .expect("asset"),
-        );
     }
-    TypeAssets::new(
-        AssetPath::new(roots.standard_lib.to_string_lossy().into_owned()).expect("stdlib root"),
-        AssetPath::new(roots.typings.to_string_lossy().into_owned()).expect("typings root"),
-        files,
-        TypeAssetsPin::pinned_runtime(),
-    )
 }
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -858,31 +768,25 @@ impl Drop for Cleanup {
 
 fn unique(tag: &str) -> String {
     let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("wxml-tsgo-type-assets-{tag}-{}-{count}", std::process::id())
-}
-
-fn real_engine_environment() -> Option<(PathBuf, AssetRoots, TypeAssets)> {
-    let (executable, roots) = real_engine_context()?;
-    let assets = load_type_assets(&roots, None).expect("verified real type assets");
-    Some((executable, roots, assets))
+    format!("wxml-tsrs-type-assets-{tag}-{}-{count}", std::process::id())
 }
 
 #[test]
 fn real_engine_resolves_wx_page_component_and_getapp() {
-    let Some((executable, roots, assets)) = real_engine_environment() else {
+    let Some(roots) = real_engine_context() else {
         return;
     };
+    let assets = roots.assets;
     println!(
-        "type assets: files={} bytes={} stdlib={} typings={}",
+        "typings assets: files={} bytes={} typings={}",
         assets.file_count(),
         assets.total_bytes(),
-        assets.standard_lib_root(),
         assets.typings_root()
     );
-    assert_eq!(assets.file_count(), PINNED_TYPE_ASSET_FILES);
-    assert_eq!(assets.total_bytes(), PINNED_TYPE_ASSET_BYTES);
-    assert_eq!(assets.pin(), &TypeAssetsPin::pinned_runtime());
-    println!("typings source: repository fixture (not a packaged-chain claim)");
+    assert!(assets.is_typings_only());
+    assert_eq!(assets.file_count(), PINNED_TYPINGS_FILE_COUNT);
+    assert_eq!(assets.total_bytes(), PINNED_TYPINGS_BYTES);
+    assert_eq!(assets.pin(), &TypeAssetsPin::pinned_typings_only());
 
     let sandbox = std::env::temp_dir().join(unique("sandbox"));
     std::fs::create_dir_all(&sandbox).expect("sandbox");
@@ -894,17 +798,18 @@ fn real_engine_resolves_wx_page_component_and_getapp() {
     );
 
     let files = vec![SourceFile::new("main.ts", MAIN, DocumentRevision::new(1)).expect("main.ts")];
+    let compiler_options = CompilerOptions::default();
     let input = AnalysisInput::with_environment(
         ProjectKey::new("type-assets"),
         ProjectRoot::new(&project_root).expect("project root"),
         SnapshotRevision::new(1),
         files,
-        CompilerOptions::default(),
+        compiler_options.clone(),
         std::sync::Arc::new(assets.clone()),
     )
     .expect("environment input");
-    let mut session =
-        NativeSession::start(SessionOptions::new(&executable, sandbox)).expect("start real engine");
+    let mut session = NativeSession::start(SessionOptions::new(PathBuf::new(), sandbox))
+        .expect("start in-process engine");
     session.open_project(&input).expect("open project");
 
     let evidence = session.diagnostics("main.ts").expect("diagnostics");
@@ -936,6 +841,18 @@ fn real_engine_resolves_wx_page_component_and_getapp() {
             .text
             .unwrap_or_default();
         println!("type at {line}:{character} = {text}");
+        if line == 0 && character == 6 {
+            let standard_library_type = session
+                .type_query("main.ts", position(7, 6))
+                .expect("standard library type query")
+                .text
+                .unwrap_or_default();
+            println!("type of text.length = {standard_library_type}");
+            assert_eq!(
+                standard_library_type, "number",
+                "the bundled standard library must define String.length"
+            );
+        }
         assert!(
             text.contains(expected),
             "position {line}:{character} must be {expected}, got {text:?}"
@@ -943,7 +860,7 @@ fn real_engine_resolves_wx_page_component_and_getapp() {
     }
 
     let completions = session
-        .completions("main.ts", position(6, 3))
+        .completions("main.ts", position(8, 3))
         .expect("completions")
         .expect("completion list");
     let names: Vec<&str> = completions
@@ -960,7 +877,6 @@ fn real_engine_resolves_wx_page_component_and_getapp() {
         );
     }
 
-    // Open with assets, then reject a legacy update without downgrading.
     let legacy = AnalysisInput::new(
         ProjectKey::new("type-assets"),
         ProjectRoot::new(&project_root).expect("project root"),
@@ -991,13 +907,34 @@ fn real_engine_resolves_wx_page_component_and_getapp() {
             serde_json::json!(true),
         )]))
         .expect("options"),
-        std::sync::Arc::new(assets),
+        std::sync::Arc::new(assets.clone()),
     )
     .expect("changed environment");
     assert!(matches!(
         session.update_project(&changed_options),
         Err(NativeError::InvalidParams { .. })
     ));
+
+    for revision in 2u64..22 {
+        let input = AnalysisInput::with_environment(
+            ProjectKey::new("type-assets"),
+            ProjectRoot::new(&project_root).expect("project root"),
+            SnapshotRevision::new(revision),
+            vec![SourceFile::new("main.ts", MAIN, DocumentRevision::new(2)).expect("main.ts")],
+            compiler_options.clone(),
+            std::sync::Arc::new(assets.clone()),
+        )
+        .expect("soak input");
+        session.update_project(&input).expect("soak update");
+    }
+    assert!(session.is_alive(), "the in-process session must stay alive");
+    let soaked = session
+        .diagnostics("main.ts")
+        .expect("diagnostics after soak");
+    assert!(
+        !soaked.semantic.iter().any(|item| item.code == 2304),
+        "the soak must keep the type environment"
+    );
 
     session.release().expect("release");
     session.shutdown().expect("shutdown");
@@ -1006,17 +943,16 @@ fn real_engine_resolves_wx_page_component_and_getapp() {
 
 #[test]
 fn real_engine_missing_typings_declaration_fails_closed() {
-    let Some((_executable, roots)) = real_engine_context() else {
+    let Some(roots) = real_engine_context() else {
         return;
     };
-    for name in ["types/index.d.ts", "lib.es5.d.ts", "types/wx/index.d.ts"] {
-        let missing = roots.typings.join(MINIPROGRAM_TYPINGS).join(name);
-        let missing = if name.starts_with("lib") {
-            roots.standard_lib.join(name)
-        } else {
-            missing
-        };
-        let error = load_type_assets(&roots, Some(&missing))
+    for name in ["types/index.d.ts", "types/wx/index.d.ts"] {
+        let copy = std::env::temp_dir().join(unique("typings-copy"));
+        let _guard = Cleanup(copy.clone());
+        copy_tree(&roots.typings, &copy);
+        let missing = copy.join(MINIPROGRAM_TYPINGS).join(name);
+        std::fs::remove_file(&missing).expect("remove declaration");
+        let error = TypeAssets::load_pinned_typings(&copy)
             .expect_err("a missing declaration must fail closed");
         println!("missing asset error: {error}");
         assert!(

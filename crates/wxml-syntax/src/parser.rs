@@ -436,7 +436,7 @@ pub struct ParseResult {
 impl ParseResult {
     /// Returns `true` when the document parsed without errors or truncation.
     #[must_use]
-    pub fn is_clean(&self) -> bool {
+    pub const fn is_clean(&self) -> bool {
         self.errors.is_empty() && !self.truncated
     }
 
@@ -884,12 +884,11 @@ impl<'a> Parser<'a> {
         if self.peek().kind() == TokenKind::RawText {
             let token = self.bump();
             end = end.max(token.range().end());
-            if !token.range().is_empty() {
-                if let Some(text) =
+            if !token.range().is_empty()
+                && let Some(text) =
                     self.finish_node(NodeKind::Text, token.range(), None, None, Vec::new())
-                {
-                    children.push(text);
-                }
+            {
+                children.push(text);
             }
         }
         if self.peek().kind() == TokenKind::TagClose {

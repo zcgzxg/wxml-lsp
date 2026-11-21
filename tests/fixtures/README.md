@@ -306,7 +306,7 @@ manifest 的 `coverage` 只记录覆盖范围，不代表对应断言已经执�
 2. 至少提供 `app.json`、`tsconfig.json`、模板与脚本、`expected/hover.json`、`expected/diagnostics.json`。
 3. 每个正例和反例都要有唯一 marker 和明确 target；不要用“存在任意 hover”代替具体断言。
 4. 在 `manifest.json` 增加 case，`positive`/`negative` 与 expected 的 marker 集合完全一致。
-5. 运行 `cargo test -p wxml-lsp --all-features`；需要真实引擎时按 `crates/wxml-backend-tsgo/tests/real_engine.rs` 的 `TSGO_BIN` 说明执行。
+5. 运行 `cargo test -p wxml-lsp --all-features`；需要真实类型时按 `crates/wxml-backend-tsgo/tests/real_engine.rs` 的说明设置 `TSGO_TYPINGS_ROOT`（必要时设 `WXML_REQUIRE_REAL_ENGINE=1`）。
 6. 新增外部来源样本前先更新 `docs/reference/provenance.md`；默认只接受自造样本。
 
 ## 10. 查询基准样本（bench-queries）

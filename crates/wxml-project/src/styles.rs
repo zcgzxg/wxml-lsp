@@ -1025,10 +1025,10 @@ fn component_page_isolation(page: &Page) -> StyleIsolation {
     let hints = &page.script_hints;
     let json_isolation = page.config.style_isolation.as_deref();
     let script_isolation = hints.style_isolation.as_deref();
-    if let (Some(json), Some(script)) = (json_isolation, script_isolation) {
-        if !json.eq_ignore_ascii_case(script) {
-            return StyleIsolation::Unknown;
-        }
+    if let (Some(json), Some(script)) = (json_isolation, script_isolation)
+        && !json.eq_ignore_ascii_case(script)
+    {
+        return StyleIsolation::Unknown;
     }
     let isolation = script_isolation.or(json_isolation);
     let add = hints.add_global_class.or(page.config.add_global_class);
@@ -1367,12 +1367,11 @@ fn import_candidates(path: &ProjectPath, from: &ProjectPath) -> Vec<ProjectPath>
         if let Ok(candidate) = path.with_extension(extension) {
             candidates.push(candidate);
         }
-        if let Some(parent) = parent.as_ref() {
-            if let Ok(candidate) =
+        if let Some(parent) = parent.as_ref()
+            && let Ok(candidate) =
                 ProjectPath::new(format!("{}/_{name}.{extension}", parent.as_str()))
-            {
-                candidates.push(candidate);
-            }
+        {
+            candidates.push(candidate);
         }
     }
     for extension in ordered {

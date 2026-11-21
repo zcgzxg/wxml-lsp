@@ -31,17 +31,19 @@ use super::{Environment, EnvironmentLoadError, degradation_reason, load_environm
 use crate::backend_tsgo::engine::DiscoveredInstall;
 
 use crate::backend_tsgo::input::ViewProvider;
-use crate::backend_tsgo::sandbox::{SandboxError, SandboxSessionFactory};
+use crate::backend_tsgo::runtime::virtual_cwd;
 use crate::backend_tsgo::session::SessionFactory;
 use crate::backend_tsgo::{NativeStartupError, TsgoBackendAdapter};
 use crate::project_host::ProjectHost;
 
 #[test]
 fn fake_assets_match_their_pin_and_share_one_arc() {
-    let assets = fake_assets("/engine/lib");
-    assert_eq!(assets.file_count(), 136);
-    assert_eq!(assets.pin().total_file_count(), 136);
+    let assets = fake_assets("/typings");
+    assert_eq!(assets.file_count(), 20);
+    assert_eq!(assets.pin().total_file_count(), 20);
     assert_eq!(assets.pin().typings_version(), "5.3.1");
+    assert!(assets.is_typings_only());
+    assert_eq!(assets.pin().standard_lib_file_count(), 0);
 
     let views = TestViews::new(prepared_view(Map::new()));
     let (factory, _counts) = TestFactory::new(None);
@@ -72,7 +74,7 @@ fn fake_assets_match_their_pin_and_share_one_arc() {
 #[test]
 fn trusted_adapter_rejects_legacy_input_before_starting_a_session() {
     let views = TestViews::new(prepared_view(Map::new()));
-    let assets = fake_assets("/engine/lib");
+    let assets = fake_assets("/typings");
     let (adapter, counts) = trusted_adapter(Arc::clone(&views), assets, None);
     let legacy = Environment::legacy();
     let plan = plan_with(&views, &adapter, &legacy, 1);
@@ -88,7 +90,7 @@ fn trusted_adapter_rejects_legacy_input_before_starting_a_session() {
 #[test]
 fn trusted_adapter_rejects_legacy_input_with_an_open_session() {
     let views = TestViews::new(prepared_view(Map::new()));
-    let assets = fake_assets("/engine/lib");
+    let assets = fake_assets("/typings");
     let (adapter, counts) = trusted_adapter(Arc::clone(&views), assets, None);
     adapter
         .hover(hover_request(&adapter, 1))
@@ -106,43 +108,30 @@ fn trusted_adapter_rejects_legacy_input_with_an_open_session() {
 }
 
 #[test]
-fn with_install_reports_asset_failure_before_creating_a_sandbox() {
+fn with_install_reports_asset_failure_before_starting_a_session() {
     let package_root = unique_temp("absent-install");
-    let standard_lib_root = package_root.join("engine/lib");
     let install = DiscoveredInstall {
         package_root: package_root.clone(),
-        engine: standard_lib_root.join("tsc"),
-        standard_lib_root,
         typings_root: package_root.join("typings"),
     };
     let host: Arc<dyn ProjectHost> = Arc::new(crate::project_host::ProjectState::new());
     let error = TsgoBackendAdapter::with_install(host, &install)
-        .expect_err("a missing asset tree must fail startup");
+        .expect_err("a missing typings tree must fail startup");
     assert!(matches!(
         error,
         NativeStartupError::Environment(EnvironmentLoadError::RootUnavailable)
     ));
     assert_path_free(&error.to_string());
     assert!(!package_root.exists());
-    // If the constructor had reached the sandbox first, this same install
-    // would have produced a sandbox error instead of the asset error above.
-    assert!(matches!(
-        SandboxSessionFactory::new(install.engine.clone(), &install.package_root),
-        Err(SandboxError::BaseUnavailable)
-    ));
 }
 
 #[test]
 fn with_install_reports_a_missing_typings_root() {
     let dir = TempDir::new("missing-typings");
     let package_root = dir.path().join("package");
-    let standard_lib_root = package_root.join("engine/lib");
-    fs::create_dir_all(&standard_lib_root).expect("standard root");
-    fs::write(standard_lib_root.join("lib.d.ts"), b"// lib\n").expect("lib");
+    fs::create_dir_all(&package_root).expect("package root");
     let install = DiscoveredInstall {
         package_root: package_root.clone(),
-        engine: standard_lib_root.join("tsc"),
-        standard_lib_root,
         typings_root: package_root.join("typings"),
     };
     let host: Arc<dyn ProjectHost> = Arc::new(crate::project_host::ProjectState::new());
@@ -159,14 +148,10 @@ fn with_install_reports_a_missing_typings_root() {
 fn load_environment_rejects_an_incomplete_tree_without_exposing_paths() {
     let dir = TempDir::new("incomplete");
     let package_root = dir.path().join("package");
-    let standard_lib_root = package_root.join("engine/lib");
     let typings_root = package_root.join("typings");
-    fs::create_dir_all(&standard_lib_root).expect("standard root");
     fs::create_dir_all(typings_root.join("miniprogram-api-typings")).expect("typings root");
     let install = DiscoveredInstall {
         package_root,
-        engine: standard_lib_root.join("tsc"),
-        standard_lib_root,
         typings_root,
     };
     let error = load_environment(&install).expect_err("empty trees are incomplete");
@@ -228,7 +213,7 @@ fn unsupported_compiler_option_is_unavailable_before_start() {
         "notAnOption".to_owned(),
         Value::Bool(true),
     )])));
-    let (adapter, counts) = trusted_adapter(views, fake_assets("/engine/lib"), None);
+    let (adapter, counts) = trusted_adapter(views, fake_assets("/typings"), None);
     let error = adapter
         .hover(hover_request(&adapter, 1))
         .expect_err("unsupported options must not be dropped silently");
@@ -239,7 +224,7 @@ fn unsupported_compiler_option_is_unavailable_before_start() {
 #[test]
 fn source_only_change_updates_without_reopening() {
     let views = TestViews::new(prepared_view(Map::new()));
-    let (adapter, counts) = trusted_adapter(views, fake_assets("/engine/lib"), None);
+    let (adapter, counts) = trusted_adapter(views, fake_assets("/typings"), None);
     let before = adapter.epoch();
     adapter
         .hover(hover_request(&adapter, 1))
@@ -259,7 +244,7 @@ fn compiler_option_change_restarts_and_shuts_down_the_old_session() {
     let first = prepared_view(Map::from_iter([("strict".to_owned(), Value::Bool(true))]));
     let second = prepared_view(Map::from_iter([("strict".to_owned(), Value::Bool(false))]));
     let views = TestViews::new(first);
-    let (adapter, counts) = trusted_adapter(Arc::clone(&views), fake_assets("/engine/lib"), None);
+    let (adapter, counts) = trusted_adapter(Arc::clone(&views), fake_assets("/typings"), None);
     adapter
         .hover(hover_request(&adapter, 1))
         .expect("first hover");
@@ -274,14 +259,16 @@ fn compiler_option_change_restarts_and_shuts_down_the_old_session() {
 }
 
 #[test]
-fn identity_tracks_asset_roots_and_options() {
-    let first_assets = fake_assets("/engine/lib");
-    let second_assets = fake_assets("/engine-other/lib");
+fn identity_tracks_typings_roots_and_options() {
+    let first_assets = fake_assets("/typings");
+    let second_assets = fake_assets("/typings-other");
     let first = Environment::trusted(first_assets);
     let second = Environment::trusted(second_assets);
     let defaults = CompilerOptions::default();
     assert_eq!(first.identity(&defaults), first.identity(&defaults));
     assert_ne!(first.identity(&defaults), second.identity(&defaults));
+    let identity = first.identity(&defaults).expect("trusted identity");
+    assert!(identity.standard_lib_embedded());
     let strict = CompilerOptions::new(BTreeMap::from_iter([(
         "strict".to_owned(),
         Value::Bool(true),
@@ -294,11 +281,8 @@ fn identity_tracks_asset_roots_and_options() {
 #[test]
 fn environment_degradation_is_merged_into_typed_queries_only() {
     let views = TestViews::new(prepared_view(Map::new()));
-    let (adapter, _counts) = trusted_adapter(
-        views,
-        fake_assets("/engine/lib"),
-        Some(ENV_REASON.to_owned()),
-    );
+    let (adapter, _counts) =
+        trusted_adapter(views, fake_assets("/typings"), Some(ENV_REASON.to_owned()));
     // E7b: the very first request already sees the degradation produced
     // while the session's VFS was built.
     let hover = adapter.hover(hover_request(&adapter, 1)).expect("hover");
@@ -366,7 +350,7 @@ fn first_request_reports_plan_environment_degradation_before_the_session_opens()
     let views = TestViews::new(prepared_view(options));
     // The fake session reports no degradation: the reason must come from the
     // request plan, not from the opened VFS.
-    let (adapter, counts) = trusted_adapter(views, fake_assets("/engine/lib"), None);
+    let (adapter, counts) = trusted_adapter(views, fake_assets("/typings"), None);
     let hover = adapter.hover(hover_request(&adapter, 1)).expect("hover");
     let CapabilityStatus::Partial { reason } = hover.status else {
         panic!("expected a partial first hover: {:?}", hover.status);
@@ -427,17 +411,15 @@ fn legacy_constructors_keep_the_legacy_environment() {
     );
 
     let host: Arc<dyn ProjectHost> = Arc::new(crate::project_host::ProjectState::new());
-    let with_host = TsgoBackendAdapter::with_host(
-        host,
-        SessionOptions::new("/bin/true", unique_temp("with-host-sandbox")),
-    );
+    let with_host =
+        TsgoBackendAdapter::with_host(host, SessionOptions::new(PathBuf::new(), virtual_cwd()));
     assert!(!with_host.environment.is_trusted());
     assert_eq!(counts.starts.load(Ordering::SeqCst), 0);
 }
 
 #[test]
 fn out_of_vfs_options_produce_a_path_free_environment_reason() {
-    let assets = fake_assets("/engine/lib");
+    let assets = fake_assets("/typings");
     let options = CompilerOptions::new(BTreeMap::from_iter([
         (
             "typeRoots".to_owned(),
@@ -488,17 +470,4 @@ fn test_session_reports_environment_reason_only_after_open() {
         session.environment_degradation(),
         Some(ENV_REASON.to_owned())
     );
-}
-
-#[test]
-fn engine_root_mismatch_is_rejected_without_a_path() {
-    let install = DiscoveredInstall {
-        package_root: PathBuf::from("/work/install/versions/1.0.0"),
-        engine: PathBuf::from("/work/install/versions/1.0.0/engine/other/tsc"),
-        standard_lib_root: PathBuf::from("/work/install/versions/1.0.0/engine/lib"),
-        typings_root: PathBuf::from("/work/install/versions/1.0.0/typings"),
-    };
-    let error = load_environment(&install).expect_err("engine must live in the library root");
-    assert_eq!(error, EnvironmentLoadError::EngineRootMismatch);
-    assert_path_free(&error.to_string());
 }

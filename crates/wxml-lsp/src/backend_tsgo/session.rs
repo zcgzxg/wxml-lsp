@@ -105,10 +105,10 @@ pub(crate) trait QuerySession: Send {
         None
     }
 
-    /// Returns whether the underlying engine process is still usable.
+    /// Returns whether the underlying engine session is still usable.
     ///
     /// The adapter consults this only after a fatal query result to decide
-    /// whether one restart-and-retry is justified. A real native session
+    /// whether one rebuild-and-retry is justified. A real native session
     /// reports a poisoned, exited or non-ready process as dead. Fakes and
     /// decorators default to `true` so historical behavior is unchanged.
     fn is_alive(&mut self) -> bool {
@@ -159,7 +159,7 @@ pub(crate) struct HostOnlySessionFactory;
 impl SessionFactory for HostOnlySessionFactory {
     fn start(&self) -> Result<Box<dyn QuerySession>, NativeError> {
         Err(NativeError::Unavailable {
-            reason: UnavailableReason::ArtifactMismatch,
+            reason: UnavailableReason::MissingAsset,
         })
     }
 }

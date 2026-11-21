@@ -1,13 +1,10 @@
 //! Disposable package, project and fail-closed package builders.
 //!
-//! The generated `manifest.json` is a **discovery-only** `schemaVersion: 2`
-//! projection for `backend_tsgo::engine::discover_from_current_exe`. It is not
-//! a release package: `typeAssets` and `binaries` are empty, `files` lists only
-//! the engine executable and the test binary, and `engine.licenseFiles` name
-//! files that are not copied. The pinned standard-library and typings trees
-//! copied next to it are intentionally not enumerated. F3-03 manifest/asset
-//! cross-checking is not wired, so this fixture must not be presented as a
-//! complete v2 delivery package.
+//! The generated package contains only `<package>/bin/wxml-lsp` and
+//! `<package>/typings/miniprogram-api-typings`; discovery and startup are
+//! typings-only because the type engine runs in-process and embeds the
+//! TypeScript standard library. No `engine/` tree or manifest is produced or
+//! read.
 
 #![allow(
     clippy::expect_used,
@@ -23,16 +20,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use serde_json::json;
-use sha2::{Digest, Sha256};
-
 use super::{
-    ENGINE_API_SCHEMA_VERSION, ENGINE_AST_HEADER_BYTES, ENGINE_BINARY, ENGINE_DISTRIBUTION,
-    ENGINE_DISTRIBUTION_FILE_COUNT, ENGINE_DISTRIBUTION_INTEGRITY, ENGINE_DISTRIBUTION_SHA256,
-    ENGINE_DISTRIBUTION_SIZE, ENGINE_DISTRIBUTION_UNPACKED_SIZE, ENGINE_DISTRIBUTION_URL,
-    ENGINE_SOURCE_COMMIT, ENGINE_VERSION, EngineInputs, MANIFEST, PACKAGE_BIN,
-    PINNED_ENGINE_SHA256, PINNED_ENGINE_SIZE, ProvisionEnv, ProvisionError, REQUIRE_ENV, TestRoot,
-    Tripwire, provisioning_hint, resolve, resolve_tmp_base, set_mode,
+    PACKAGE_BIN, ProvisionEnv, ProvisionError, REQUIRE_ENV, TestRoot, Tripwire, TypingsInputs,
+    provisioning_hint, resolve, resolve_tmp_base, set_mode,
 };
 
 pub(crate) const PROJECT_APP_JSON: &str = "{\"pages\":[\"pages/index/index\"]}\n";
@@ -116,7 +106,7 @@ pub(crate) fn provision_with_env(env: &ProvisionEnv, label: &str) -> Option<Fixt
         Err(error) => panic!(
             "native document symbol fixture is unavailable: {}\n{}\n\
              A present-but-invalid input is always fatal; {REQUIRE_ENV}=1 makes every \
-             missing input fatal. Pinned engine SHA-256: {PINNED_ENGINE_SHA256}.",
+             missing input fatal.",
             error.message(),
             provisioning_hint()
         ),
@@ -124,7 +114,7 @@ pub(crate) fn provision_with_env(env: &ProvisionEnv, label: &str) -> Option<Fixt
 }
 
 /// Builds the disposable package, project and private TMPDIR.
-fn build_fixture(inputs: &EngineInputs, label: &str) -> Fixture {
+fn build_fixture(inputs: &TypingsInputs, label: &str) -> Fixture {
     let root = TestRoot::new(&inputs.tmp_base, label);
     let package = root.path().join("package");
     let project = root.path().join("project");
@@ -143,18 +133,16 @@ fn build_fixture(inputs: &EngineInputs, label: &str) -> Fixture {
     }
 }
 
-/// Creates the package directories and copies every verified input.
+/// Creates the package directories and copies the verified typings.
 ///
-/// The production startup path verifies the pinned standard library and
-/// `miniprogram-api-typings` before any session exists, so the fixture copies
-/// both roots instead of leaving `typings/` empty. The running server still
-/// performs its own pin checks; the fixture never bypasses them.
-fn create_package(package: &Path, inputs: &EngineInputs) {
+/// The production startup path verifies `miniprogram-api-typings` before any
+/// session exists, so the fixture copies the package instead of leaving
+/// `typings/` empty. The running server still performs its own pin checks; the
+/// fixture never bypasses them.
+fn create_package(package: &Path, inputs: &TypingsInputs) {
     for directory in [
         package.to_path_buf(),
         package.join("bin"),
-        package.join("engine"),
-        package.join("engine/lib"),
         package.join("typings"),
     ] {
         fs::create_dir_all(&directory)
@@ -163,13 +151,10 @@ fn create_package(package: &Path, inputs: &EngineInputs) {
     }
     let test_binary = Path::new(env!("CARGO_BIN_EXE_wxml-lsp"));
     copy_executable(test_binary, &package.join(PACKAGE_BIN));
-    copy_executable(&inputs.engine_bin, &package.join(ENGINE_BINARY));
-    copy_standard_library(&inputs.asset_lib, &package.join("engine/lib"));
     copy_tree(
         &inputs.typings_package,
         &package.join("typings/miniprogram-api-typings"),
     );
-    write_discovery_manifest(package, PINNED_ENGINE_SHA256);
 }
 
 /// Copies one executable and forces mode 0755.
@@ -182,41 +167,6 @@ fn copy_executable(source: &Path, destination: &Path) {
         )
     });
     set_mode(destination, 0o755).expect("executable mode");
-}
-
-/// Copies every `lib*.d.ts` from the standard-library root.
-fn copy_standard_library(source: &Path, destination: &Path) {
-    let entries = fs::read_dir(source)
-        .unwrap_or_else(|error| panic!("read standard library {}: {error}", source.display()));
-    let mut copied = 0_usize;
-    for entry in entries {
-        let entry = entry.unwrap_or_else(|error| panic!("standard library entry: {error}"));
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if !name.starts_with("lib") || !name.ends_with(".d.ts") {
-            continue;
-        }
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path).unwrap_or_else(|error| {
-            panic!("standard library metadata {}: {error}", path.display())
-        });
-        assert!(
-            !metadata.file_type().is_symlink() && metadata.is_file(),
-            "standard library entry is not a regular file: {}",
-            path.display()
-        );
-        let target = destination.join(entry.file_name());
-        fs::copy(&path, &target).unwrap_or_else(|error| {
-            panic!("copy {} to {}: {error}", path.display(), target.display());
-        });
-        set_mode(&target, 0o644).expect("standard library mode");
-        copied += 1;
-    }
-    assert!(
-        copied > 0,
-        "{} contains no lib*.d.ts files; the pinned startup path would reject it",
-        source.display()
-    );
 }
 
 /// Recursively copies a typings tree with safe, deterministic modes.
@@ -245,72 +195,6 @@ fn copy_tree(source: &Path, destination: &Path) {
             set_mode(&target, 0o644).expect("typings file mode");
         }
     }
-}
-
-/// Writes a **discovery-only** schema-v2 manifest with the actual test binary
-/// digest.
-///
-/// This is not a release package (see the module header): `typeAssets` and
-/// `binaries` stay empty, `files` contains only the engine and test binary, and
-/// the copied license/standard-library/typings trees are not listed. The
-/// running server's `discover_from_current_exe` projection only needs this
-/// subset; F3-03 cross-checking is not applicable until the delivery gate
-/// lands.
-fn write_discovery_manifest(package: &Path, engine_sha256: &str) {
-    let binary = package.join(PACKAGE_BIN);
-    let binary_size = fs::metadata(&binary)
-        .unwrap_or_else(|error| panic!("binary metadata: {error}"))
-        .len();
-    let binary_sha = sha256_file(&binary).unwrap_or_else(|reason| panic!("{reason}"));
-    let manifest = json!({
-        "schemaVersion": 2,
-        "package": "wxml-lsp",
-        "packageVersion": env!("CARGO_PKG_VERSION"),
-        "platform": "linux-x86_64",
-        "protocolVersion": 2,
-        "builtAt": "2026-11-18T00:00:00Z",
-        "engine": {
-            "name": "typescript",
-            "version": ENGINE_VERSION,
-            "sourceCommit": ENGINE_SOURCE_COMMIT,
-            "distribution": ENGINE_DISTRIBUTION,
-            "distributionUrl": ENGINE_DISTRIBUTION_URL,
-            "distributionIntegrity": ENGINE_DISTRIBUTION_INTEGRITY,
-            "distributionSha256": ENGINE_DISTRIBUTION_SHA256,
-            "distributionSize": ENGINE_DISTRIBUTION_SIZE,
-            "distributionFileCount": ENGINE_DISTRIBUTION_FILE_COUNT,
-            "distributionUnpackedSize": ENGINE_DISTRIBUTION_UNPACKED_SIZE,
-            "apiSchemaVersion": ENGINE_API_SCHEMA_VERSION,
-            "astHeaderBytes": ENGINE_AST_HEADER_BYTES,
-            "license": "Apache-2.0",
-            "licenseFiles": ["engine/LICENSE", "engine/NOTICE.txt"],
-            "binary": ENGINE_BINARY,
-            "probe": {"args": ["--version"], "expectPrefix": "Version "}
-        },
-        "typeAssets": [],
-        "binaries": [],
-        "files": [
-            {
-                "path": ENGINE_BINARY,
-                "sha256": engine_sha256,
-                "size": PINNED_ENGINE_SIZE,
-                "mode": "0755"
-            },
-            {
-                "path": PACKAGE_BIN,
-                "sha256": binary_sha,
-                "size": binary_size,
-                "mode": "0755"
-            }
-        ]
-    });
-    let path = package.join(MANIFEST);
-    fs::write(
-        &path,
-        serde_json::to_vec_pretty(&manifest).expect("manifest JSON"),
-    )
-    .unwrap_or_else(|error| panic!("write {}: {error}", path.display()));
-    set_mode(&path, 0o644).expect("manifest mode");
 }
 
 /// Writes the mini-program project used by the end-to-end test.
@@ -361,11 +245,11 @@ impl BrokenPackage {
 /// Which discovery invariant the broken package violates.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum PackageDefect {
-    MissingEngine,
-    TamperedEngine,
+    MissingTypings,
+    IncompleteTypings,
 }
 
-/// Builds a package that must fail discovery before `initialize`.
+/// Builds a package that must fail discovery or startup before `initialize`.
 pub(crate) fn broken_package(label: &str, defect: PackageDefect) -> BrokenPackage {
     let env = ProvisionEnv::from_process();
     let base = resolve_tmp_base(&env).unwrap_or_else(|error| panic!("{}", error.message()));
@@ -374,8 +258,6 @@ pub(crate) fn broken_package(label: &str, defect: PackageDefect) -> BrokenPackag
     for directory in [
         package.clone(),
         package.join("bin"),
-        package.join("engine"),
-        package.join("engine/lib"),
         package.join("typings"),
     ] {
         fs::create_dir_all(&directory)
@@ -386,11 +268,14 @@ pub(crate) fn broken_package(label: &str, defect: PackageDefect) -> BrokenPackag
         Path::new(env!("CARGO_BIN_EXE_wxml-lsp")),
         &package.join(PACKAGE_BIN),
     );
-    write_discovery_manifest(&package, PINNED_ENGINE_SHA256);
-    if matches!(defect, PackageDefect::TamperedEngine) {
-        let engine = package.join(ENGINE_BINARY);
-        fs::write(&engine, b"tampered engine").expect("tampered engine");
-        set_mode(&engine, 0o755).expect("tampered engine mode");
+    match defect {
+        PackageDefect::MissingTypings => {
+            fs::remove_dir_all(package.join("typings")).expect("remove typings");
+        }
+        PackageDefect::IncompleteTypings => {
+            fs::create_dir_all(package.join("typings/miniprogram-api-typings"))
+                .expect("incomplete typings");
+        }
     }
     let project = root.path().join("project");
     fs::create_dir(&project).expect("broken project");
@@ -406,15 +291,4 @@ pub(crate) fn broken_package(label: &str, defect: PackageDefect) -> BrokenPackag
         private_tmp,
         tripwire,
     }
-}
-
-pub(crate) fn sha256_file(path: &Path) -> Result<String, String> {
-    let bytes = fs::read(path).map_err(|error| format!("read {}: {error}", path.display()))?;
-    let digest = Sha256::digest(&bytes);
-    let mut encoded = String::with_capacity(64);
-    for byte in digest {
-        use std::fmt::Write as _;
-        write!(encoded, "{byte:02x}").expect("hex encoding");
-    }
-    Ok(encoded)
 }

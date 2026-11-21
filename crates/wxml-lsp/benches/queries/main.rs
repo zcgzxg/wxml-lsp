@@ -2,7 +2,7 @@
 //!
 //! Group layout:
 //!
-//! - `query/type/{root,member,local}` — engine-backed variable hover.
+//! - `query/type/{root,member,local}` — in-process-engine variable hover.
 //! - `query/tag/{builtin,component,attribute,value}` — static metadata hover.
 //! - `query/class/{extract,site,hover,completion,definition}` — class parsing
 //!   and the style index.
@@ -10,8 +10,8 @@
 //!
 //! Every sample is one full request/response round trip through the real
 //! server event loop; see `docs/reference/benchmarks.md`. The type group is
-//! skipped unless an installed native layout exists; it is never reported as
-//! measured without one.
+//! skipped unless an installed typings layout exists; it is never reported as
+//! measured without one. No external engine process is started or measured.
 
 // The bench target is a binary-like crate: modules are private, so `pub(crate)`
 // items are idiomatic here and `unreachable_pub` already forced them over
@@ -43,11 +43,11 @@ fn main() {
                 std::env::var_os("WXML_REQUIRE_REAL_ENGINE").is_some_and(|value| value == "1");
             assert!(
                 !require,
-                "WXML_REQUIRE_REAL_ENGINE=1 but no native layout at {}: {reason}",
+                "WXML_REQUIRE_REAL_ENGINE=1 but no installed typings layout at {}: {reason}",
                 install.display()
             );
             eprintln!(
-                "SKIP query/type/* and first-query/type: no native layout at {}: {reason}",
+                "SKIP query/type/* and first-query/type: no installed typings layout at {}: {reason}",
                 install.display()
             );
             eprintln!(

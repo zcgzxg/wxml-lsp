@@ -92,7 +92,7 @@ fn decorated_contents(result: &HoverResult) -> String {
 ///
 /// Returning an empty markdown block here would make every ordinary WXML
 /// position show a misleading "type quality: unknown" tooltip.
-fn is_empty_hover(result: &HoverResult) -> bool {
+const fn is_empty_hover(result: &HoverResult) -> bool {
     result.contents.is_empty()
         && result.range.is_none()
         && matches!(result.quality, TypeQuality::Unknown)
@@ -113,10 +113,9 @@ fn hover_value(server: &Server, stamp: &AnalysisStamp, result: &HoverResult) -> 
     if let Some(range) = result
         .range
         .and_then(|range| source_range_value(document, range))
+        && let Some(object) = value.as_object_mut()
     {
-        if let Some(object) = value.as_object_mut() {
-            object.insert("range".to_owned(), range);
-        }
+        object.insert("range".to_owned(), range);
     }
     Some(value)
 }
@@ -261,10 +260,10 @@ fn refresh_component_properties(
     if metadata::is_builtin_tag(tag) {
         return;
     }
-    if let Some(component) = components.iter_mut().find(|entry| entry.name == *tag) {
-        if let Some(facts) = server.host.component_properties_for(file, tag) {
-            component.apply_live_facts(facts);
-        }
+    if let Some(component) = components.iter_mut().find(|entry| entry.name == *tag)
+        && let Some(facts) = server.host.component_properties_for(file, tag)
+    {
+        component.apply_live_facts(facts);
     }
 }
 

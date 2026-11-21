@@ -216,7 +216,7 @@ fn sanitize_display(text: &str, limit: usize) -> String {
 
 /// Returns `true` for characters that must not reach an editor or a terminal
 /// unfiltered: control characters plus bidi/zero-width format characters.
-fn is_display_unsafe(character: char) -> bool {
+const fn is_display_unsafe(character: char) -> bool {
     character.is_control()
         || matches!(
             character,

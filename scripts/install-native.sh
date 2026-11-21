@@ -2,7 +2,8 @@
 # Install the Node-free native wxml-lsp payload from assets.lock.json.
 # Each tarball is pinned by URL, size and SHA-256; nothing is extracted until
 # both checks pass. packageRoot is installed verbatim below --root and the
-# resulting layout is verified. The engine is never discovered through PATH.
+# resulting layout is verified. The type engine runs in-process, so only the
+# binary and typings are installed; no engine executable is downloaded.
 set -euo pipefail
 umask 022
 
@@ -10,8 +11,9 @@ usage() { cat <<'USAGE'
 Usage: scripts/install-native.sh [OPTIONS]
 
 Downloads the tarballs pinned by assets.lock.json, verifies size and SHA-256,
-and installs <root>/bin/wxml-lsp, <root>/engine/lib/tsc (TypeScript engine) and
-<root>/typings/miniprogram-api-typings.
+and installs <root>/bin/wxml-lsp and <root>/typings/miniprogram-api-typings.
+The TypeScript standard library is embedded in the in-process engine; no
+engine tarball or engine/lib/tsc is installed.
 
 Options:
   --root DIR      install root (default: ${WXML_LSP_HOME:-$HOME/.local/share/wxml-lsp})
@@ -139,12 +141,16 @@ while IFS=$'\t' read -r name package_root url size sha256; do
 done <"$manifest"
 [ "$installed" -gt 0 ] || die "no assets were installed"
 
-engine="$root/engine/lib/tsc"; typings="$root/typings/miniprogram-api-typings"
-[ -f "$engine" ] && [ -x "$engine" ] || die "engine missing or not executable: $engine"
+engine_removed="$root/engine"
+if [ -e "$engine_removed" ]; then
+    printf 'note: ignoring legacy engine tree at %s (in-process engine has no external files)\n' \
+        "$engine_removed" >&2
+fi
+typings="$root/typings/miniprogram-api-typings"
 [ -f "$typings/index.d.ts" ] || die "typings missing after install: $typings/index.d.ts"
 mkdir -p -- "$root/bin"
 install -m 0755 -- "$binary" "$root/bin/wxml-lsp"
 [ -x "$root/bin/wxml-lsp" ] || die "installed binary is not executable: $root/bin/wxml-lsp"
 
-printf '\ninstalled native wxml-lsp\n  root:    %s\n  binary:  %s\n  typings: %s\n  engine:  %s\nexport WXML_LSP_BIN="%s"\n' \
-    "$root" "$root/bin/wxml-lsp" "$typings" "$engine" "$root/bin/wxml-lsp"
+printf '\ninstalled native wxml-lsp\n  root:    %s\n  binary:  %s\n  typings: %s\nexport WXML_LSP_BIN="%s"\n' \
+    "$root" "$root/bin/wxml-lsp" "$typings" "$root/bin/wxml-lsp"

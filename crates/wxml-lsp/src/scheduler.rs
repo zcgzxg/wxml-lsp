@@ -316,10 +316,9 @@ impl Scheduler {
             .interactive
             .iter()
             .position(|job| job.key.as_ref() == Some(key))
+            && let Some(job) = queue.interactive.remove(position)
         {
-            if let Some(job) = queue.interactive.remove(position) {
-                job.cancel.store(true, Ordering::SeqCst);
-            }
+            job.cancel.store(true, Ordering::SeqCst);
         }
     }
 
@@ -383,11 +382,9 @@ where
                 let diagnostics_turn = state.interactive.is_empty()
                     || (state.consecutive_interactive >= MAX_INTERACTIVE_BURST
                         && !state.diagnostics.is_empty());
-                if diagnostics_turn {
-                    if let Some(job) = state.diagnostics.pop_front() {
-                        state.consecutive_interactive = 0;
-                        break job;
-                    }
+                if diagnostics_turn && let Some(job) = state.diagnostics.pop_front() {
+                    state.consecutive_interactive = 0;
+                    break job;
                 }
                 if let Some(job) = state.interactive.pop_front() {
                     state.consecutive_interactive = state.consecutive_interactive.saturating_add(1);

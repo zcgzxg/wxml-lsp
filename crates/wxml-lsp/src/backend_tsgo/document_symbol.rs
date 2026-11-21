@@ -119,12 +119,12 @@ fn map_symbol(
         drops.drop_subtree(symbol);
         return None;
     }
-    if let Some(parent) = parent {
-        if range.start() < parent.start() || range.end() > parent.end() {
-            drops.child_outside = drops.child_outside.saturating_add(1);
-            drops.drop_subtree(symbol);
-            return None;
-        }
+    if let Some(parent) = parent
+        && (range.start() < parent.start() || range.end() > parent.end())
+    {
+        drops.child_outside = drops.child_outside.saturating_add(1);
+        drops.drop_subtree(symbol);
+        return None;
     }
     let children = symbol
         .children
@@ -298,11 +298,11 @@ fn mark_partial(status: &mut CapabilityStatus, reason: &str) {
         };
         return;
     }
-    if let CapabilityStatus::Partial { reason: existing } = status {
-        if !existing.split("; ").any(|part| part == reason) {
-            existing.push_str("; ");
-            existing.push_str(reason);
-        }
+    if let CapabilityStatus::Partial { reason: existing } = status
+        && !existing.split("; ").any(|part| part == reason)
+    {
+        existing.push_str("; ");
+        existing.push_str(reason);
     }
 }
 

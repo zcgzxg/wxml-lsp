@@ -321,13 +321,12 @@ fn shadow_set(
         };
         if matches!(token, "function" | "class" | "const" | "let" | "var")
             && script.kind(index + 1) == Some(crate::shadow::expression::TokenKind::Identifier)
+            && let Some(name) = script.token_text(index + 1)
         {
-            if let Some(name) = script.token_text(index + 1) {
-                if alias_declarations.contains_key(&index) {
-                    shadows.add_alias(name);
-                } else {
-                    shadows.add_non_alias(name);
-                }
+            if alias_declarations.contains_key(&index) {
+                shadows.add_alias(name);
+            } else {
+                shadows.add_non_alias(name);
             }
         }
         if token == "import" && !script.is_punct(index + 1, '(') {
@@ -377,10 +376,10 @@ fn collect_import_names(script: &Script<'_>, mut cursor: usize, shadows: &mut Sh
                 | crate::shadow::expression::TokenKind::Punctuator(';'),
             ) => break,
             Some(crate::shadow::expression::TokenKind::Identifier) => {
-                if let Some(name) = script.token_text(cursor) {
-                    if !matches!(name, "import" | "type" | "from" | "as") {
-                        shadows.add_non_alias(name);
-                    }
+                if let Some(name) = script.token_text(cursor)
+                    && !matches!(name, "import" | "type" | "from" | "as")
+                {
+                    shadows.add_non_alias(name);
                 }
             }
             _ => {}

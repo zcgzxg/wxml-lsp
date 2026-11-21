@@ -1,21 +1,21 @@
 //! Test-only fixture and JSON-RPC client for the native `documentSymbol` gate.
 //!
-//! The fixture builds a disposable package below `WXML_TEST_TMPDIR` (default
-//! `/tmp/opencode`) from a pinned `TSGO_BIN` and the standard library and
-//! typings that the production startup path requires. It never writes inside
-//! the repository and never selects the Node backend.
+//! The fixture builds a disposable typings-only package below
+//! `WXML_TEST_TMPDIR` (default `/tmp/opencode`) from the pinned typings that the
+//! production startup path requires. The type engine runs in-process, so there
+//! is no engine executable, engine tarball or `engine/lib` standard library. It
+//! never writes inside the repository and never selects the Node backend.
 //!
 //! Gate semantics:
 //!
-//! - `TSGO_BIN` is optional. Only a *missing* input
+//! - `TSGO_TYPINGS_ROOT` is optional. Only a *missing* input
 //!   ([`ProvisionError::Missing`]) becomes an explicit `SKIP` print plus
 //!   `None` in optional mode; there is no silent pass.
 //! - A present but invalid input is always fatal, even in optional mode:
-//!   a relative path, a wrong engine size or SHA-256, an unusable
-//!   `TSGO_ASSET_ROOT`, an unusable `TSGO_TYPINGS_ROOT`, or a temporary base
-//!   inside the repository.
+//!   a relative path, an unusable `TSGO_TYPINGS_ROOT`, a package without the
+//!   required declarations, or a temporary base inside the repository.
 //! - `WXML_REQUIRE_REAL_ENGINE=1|true` turns every missing input into a panic.
-//! - A different engine is never accepted to make the gate pass.
+//!   The variable name is legacy; the engine itself is in-process.
 //!
 //! # Compatibility / commit ordering
 //!
@@ -57,43 +57,21 @@ pub(crate) use package::{
 };
 
 pub(crate) const REQUIRE_ENV: &str = "WXML_REQUIRE_REAL_ENGINE";
-pub(crate) const TSGO_BIN_ENV: &str = "TSGO_BIN";
-pub(crate) const TSGO_ASSET_ROOT_ENV: &str = "TSGO_ASSET_ROOT";
 pub(crate) const TSGO_TYPINGS_ROOT_ENV: &str = "TSGO_TYPINGS_ROOT";
 pub(crate) const TEST_TMPDIR_ENV: &str = "WXML_TEST_TMPDIR";
 pub(crate) const DEFAULT_TMP_BASE: &str = "/tmp/opencode";
-pub(crate) const PINNED_ENGINE_SHA256: &str =
-    "a183b1956edbe7e7d98f2249858eedf2d8a9790809cc4909db1276e202faaa70";
-pub(crate) const PINNED_ENGINE_SIZE: u64 = 24_522_912;
 
 pub(crate) const PACKAGE_BIN: &str = "bin/wxml-lsp";
-pub(crate) const ENGINE_BINARY: &str = "engine/lib/tsc";
-pub(crate) const MANIFEST: &str = "manifest.json";
 pub(crate) const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 pub(crate) const EXIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 pub(crate) const STDERR_LIMIT: usize = 256 * 1024;
 /// Upper bound for one Content-Length frame accepted by the test client.
 pub(crate) const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
-pub(crate) const ENGINE_VERSION: &str = "7.1.0-beta";
-const ENGINE_SOURCE_COMMIT: &str = "3e9236361fa97a9e6c685f4833ac457ae2d8c50a";
-const ENGINE_DISTRIBUTION: &str = "@typescript/typescript-linux-x64";
-const ENGINE_DISTRIBUTION_URL: &str = "https://registry.npmjs.org/@typescript/typescript-linux-x64/-/typescript-linux-x64-7.1.0-beta.tgz";
-const ENGINE_DISTRIBUTION_INTEGRITY: &str = "sha512-kcD51ihf+pnI5KT4uQQYG04OpwznaZYBlIQhDhl8fflFd27NktxXsUeguxZyvUMyWfum7IF2bBS6Jv7ox0AgFQ==";
-const ENGINE_DISTRIBUTION_SHA256: &str =
-    "59128685cb55f44c9e6644ef5edb3cb321618d9547b4ee94c3038598ffd51855";
-const ENGINE_DISTRIBUTION_SIZE: u64 = 10_175_135;
-const ENGINE_DISTRIBUTION_FILE_COUNT: u64 = 122;
-const ENGINE_DISTRIBUTION_UNPACKED_SIZE: u64 = 28_450_796;
-const ENGINE_API_SCHEMA_VERSION: u64 = 9;
-const ENGINE_AST_HEADER_BYTES: u64 = 64;
-
 /// One read-only projection of the gate environment.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ProvisionEnv {
     pub(crate) require_real_engine: Option<OsString>,
-    pub(crate) tsgo_bin: Option<OsString>,
-    pub(crate) asset_root: Option<OsString>,
     pub(crate) typings_root: Option<OsString>,
     pub(crate) tmp_base: Option<OsString>,
 }
@@ -102,8 +80,6 @@ impl ProvisionEnv {
     pub(crate) fn from_process() -> Self {
         Self {
             require_real_engine: std::env::var_os(REQUIRE_ENV),
-            tsgo_bin: std::env::var_os(TSGO_BIN_ENV),
-            asset_root: std::env::var_os(TSGO_ASSET_ROOT_ENV),
             typings_root: std::env::var_os(TSGO_TYPINGS_ROOT_ENV),
             tmp_base: std::env::var_os(TEST_TMPDIR_ENV),
         }
@@ -127,20 +103,14 @@ pub(crate) fn non_empty(value: Option<&OsString>) -> Option<&OsString> {
 
 /// Remediation shared by the skip and fatal provisioning messages.
 ///
-/// Resolution order mirrors the production gate: the pinned engine comes from
-/// `TSGO_BIN`; the standard library comes from `TSGO_ASSET_ROOT` (an extracted
-/// package) or the engine's own directory; typings come from
-/// `TSGO_TYPINGS_ROOT` or `TSGO_ASSET_ROOT/typings`. There is no committed
-/// fallback: unset typings inputs are a missing input and skip in optional mode.
+/// The in-process engine needs only the typings package. There is no committed
+/// fallback: an unset typings input is a missing input and skips in optional
+/// mode.
 pub(crate) fn provisioning_hint() -> String {
     format!(
-        "set {TSGO_BIN_ENV} to the pinned 7.1.0-beta lib/tsc; \
-         {TSGO_ASSET_ROOT_ENV} may point at an extracted package whose engine/lib or lib \
-         contains lib.d.ts (otherwise the lib*.d.ts next to {TSGO_BIN_ENV} are used); \
-         set {TSGO_TYPINGS_ROOT_ENV} to the directory containing miniprogram-api-typings \
-         (also accepted: {TSGO_ASSET_ROOT_ENV}/typings); when neither provides typings the \
-         gate is skipped in optional mode; \
-         {REQUIRE_ENV}=1 makes every missing input fatal"
+        "set {TSGO_TYPINGS_ROOT_ENV} to the directory containing miniprogram-api-typings \
+         (the package directory itself is also accepted); the TypeScript standard library \
+         is embedded in the in-process engine; {REQUIRE_ENV}=1 makes every missing input fatal"
     )
 }
 
@@ -163,9 +133,7 @@ impl ProvisionError {
 
 /// Verified inputs copied into one disposable package.
 #[derive(Debug, Clone)]
-pub(crate) struct EngineInputs {
-    pub(crate) engine_bin: PathBuf,
-    pub(crate) asset_lib: PathBuf,
+pub(crate) struct TypingsInputs {
     pub(crate) typings_package: PathBuf,
     pub(crate) tmp_base: PathBuf,
 }
@@ -173,19 +141,10 @@ pub(crate) struct EngineInputs {
 /// Resolves and verifies every fixture input without writing a package.
 ///
 /// `Missing` is skippable in optional mode; `Invalid` is always fatal.
-pub(crate) fn resolve(env: &ProvisionEnv) -> Result<EngineInputs, ProvisionError> {
+pub(crate) fn resolve(env: &ProvisionEnv) -> Result<TypingsInputs, ProvisionError> {
     let tmp_base = resolve_tmp_base(env)?;
-    let Some(bin) = non_empty(env.tsgo_bin.as_ref()) else {
-        return Err(ProvisionError::Missing {
-            reason: format!("{TSGO_BIN_ENV} is not set"),
-        });
-    };
-    let engine_bin = resolve_engine_bin(&PathBuf::from(bin))?;
-    let asset_lib = resolve_asset_lib(env, &engine_bin)?;
     let typings_package = resolve_typings(env)?;
-    Ok(EngineInputs {
-        engine_bin,
-        asset_lib,
+    Ok(TypingsInputs {
         typings_package,
         tmp_base,
     })
@@ -279,111 +238,10 @@ pub(crate) fn repo_root() -> PathBuf {
     fs::canonicalize(root).expect("canonicalize repository root")
 }
 
-/// Validates the pinned engine size and digest.
-fn resolve_engine_bin(path: &Path) -> Result<PathBuf, ProvisionError> {
-    if !path.is_absolute() {
-        return Err(ProvisionError::Invalid {
-            reason: format!("{TSGO_BIN_ENV} must be absolute: {}", path.display()),
-        });
-    }
-    let metadata = match fs::symlink_metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(ProvisionError::Missing {
-                reason: format!(
-                    "{TSGO_BIN_ENV} points at {} which does not exist",
-                    path.display()
-                ),
-            });
-        }
-        Err(error) => {
-            return Err(ProvisionError::Invalid {
-                reason: format!(
-                    "cannot inspect {TSGO_BIN_ENV} at {}: {error}",
-                    path.display()
-                ),
-            });
-        }
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_file() {
-        return Err(ProvisionError::Invalid {
-            reason: format!("{TSGO_BIN_ENV} must be a regular file: {}", path.display()),
-        });
-    }
-    if metadata.len() != PINNED_ENGINE_SIZE {
-        return Err(ProvisionError::Invalid {
-            reason: format!(
-                "{TSGO_BIN_ENV} is {} bytes, expected {PINNED_ENGINE_SIZE} bytes for the pinned 7.1.0-beta artifact",
-                metadata.len()
-            ),
-        });
-    }
-    let digest = package::sha256_file(path).map_err(|reason| ProvisionError::Invalid { reason })?;
-    if digest != PINNED_ENGINE_SHA256 {
-        return Err(ProvisionError::Invalid {
-            reason: format!("{TSGO_BIN_ENV} SHA-256 is {digest}, expected {PINNED_ENGINE_SHA256}"),
-        });
-    }
-    fs::canonicalize(path).map_err(|error| ProvisionError::Invalid {
-        reason: format!(
-            "cannot canonicalize {TSGO_BIN_ENV} at {}: {error}",
-            path.display()
-        ),
-    })
-}
-
-/// Finds the standard-library root next to the engine or in `TSGO_ASSET_ROOT`.
-fn resolve_asset_lib(env: &ProvisionEnv, engine_bin: &Path) -> Result<PathBuf, ProvisionError> {
-    if let Some(root) = non_empty(env.asset_root.as_ref()) {
-        let root = PathBuf::from(root);
-        if !root.is_absolute() {
-            return Err(ProvisionError::Invalid {
-                reason: format!("{TSGO_ASSET_ROOT_ENV} must be absolute: {}", root.display()),
-            });
-        }
-        return asset_candidates(&root)
-            .into_iter()
-            .find(|candidate| candidate.join("lib.d.ts").is_file())
-            .and_then(|candidate| fs::canonicalize(candidate).ok())
-            .ok_or_else(|| ProvisionError::Invalid {
-                reason: format!(
-                    "{TSGO_ASSET_ROOT_ENV} has no lib.d.ts under {}/engine/lib or {}/lib",
-                    root.display(),
-                    root.display()
-                ),
-            });
-    }
-    let Some(parent) = engine_bin.parent() else {
-        return Err(ProvisionError::Invalid {
-            reason: format!("{TSGO_BIN_ENV} has no parent directory"),
-        });
-    };
-    if parent.join("lib.d.ts").is_file() {
-        return fs::canonicalize(parent).map_err(|error| ProvisionError::Invalid {
-            reason: format!("cannot canonicalize {}: {error}", parent.display()),
-        });
-    }
-    Err(ProvisionError::Missing {
-        reason: format!(
-            "{TSGO_ASSET_ROOT_ENV} is not set and no lib.d.ts exists next to {TSGO_BIN_ENV}"
-        ),
-    })
-}
-
-/// Candidate standard-library roots in preference order.
-fn asset_candidates(root: &Path) -> Vec<PathBuf> {
-    vec![
-        root.join("engine/lib"),
-        root.join("lib"),
-        root.to_path_buf(),
-    ]
-}
-
 /// Resolves the pinned `miniprogram-api-typings` package.
 ///
-/// Explicit `TSGO_TYPINGS_ROOT` wins; an extracted `TSGO_ASSET_ROOT` may carry
-/// `typings/miniprogram-api-typings`. When neither input provides the package,
-/// the input is absent and optional mode skips it.
+/// Only an explicit `TSGO_TYPINGS_ROOT` is accepted. When it is unset the input
+/// is absent and optional mode skips it.
 fn resolve_typings(env: &ProvisionEnv) -> Result<PathBuf, ProvisionError> {
     if let Some(root) = non_empty(env.typings_root.as_ref()) {
         let root = PathBuf::from(root);
@@ -407,31 +265,17 @@ fn resolve_typings(env: &ProvisionEnv) -> Result<PathBuf, ProvisionError> {
                 ),
             });
         };
-        return require_typings_package(package, true);
-    }
-    if let Some(root) = non_empty(env.asset_root.as_ref()) {
-        let root = PathBuf::from(root);
-        for candidate in [
-            root.join("typings/miniprogram-api-typings"),
-            root.join("typings"),
-        ] {
-            if candidate.join("index.d.ts").is_file()
-                && candidate.join("types/index.d.ts").is_file()
-            {
-                return require_typings_package(candidate, false);
-            }
-        }
+        return require_typings_package(package);
     }
     let reason = format!(
         "the pinned miniprogram-api-typings package is unavailable: set \
-         {TSGO_TYPINGS_ROOT_ENV} to the directory containing miniprogram-api-typings, or place \
-         typings/miniprogram-api-typings under {TSGO_ASSET_ROOT_ENV}"
+         {TSGO_TYPINGS_ROOT_ENV} to the directory containing miniprogram-api-typings"
     );
     Err(ProvisionError::Missing { reason })
 }
 
 /// Requires both declarations the pinned typings loader needs.
-fn require_typings_package(package: PathBuf, explicit: bool) -> Result<PathBuf, ProvisionError> {
+fn require_typings_package(package: PathBuf) -> Result<PathBuf, ProvisionError> {
     if package.join("index.d.ts").is_file() && package.join("types/index.d.ts").is_file() {
         return fs::canonicalize(&package).map_err(|error| ProvisionError::Invalid {
             reason: format!("cannot canonicalize typings {}: {error}", package.display()),
@@ -441,11 +285,7 @@ fn require_typings_package(package: PathBuf, explicit: bool) -> Result<PathBuf, 
         "the pinned miniprogram-api-typings package is unavailable: {}",
         package.display()
     );
-    if explicit {
-        Err(ProvisionError::Invalid { reason })
-    } else {
-        Err(ProvisionError::Missing { reason })
-    }
+    Err(ProvisionError::Invalid { reason })
 }
 
 /// A disposable private directory below the test temp base.

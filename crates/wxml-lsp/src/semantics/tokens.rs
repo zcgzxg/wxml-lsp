@@ -209,17 +209,15 @@ fn collect_wxs(facts: &ViewFacts, raw: &mut RawTokens) {
             let line_start = start.saturating_add(line_offset);
             let trimmed_start = line.len().saturating_sub(line.trim_start().len());
             let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                if let (Ok(token_start), Ok(token_len)) = (
+            if !trimmed.is_empty()
+                && let (Ok(token_start), Ok(token_len)) = (
                     u32::try_from(line_start.saturating_add(trimmed_start)),
                     u32::try_from(trimmed.len()),
-                ) {
-                    if let Ok(range) =
-                        TextRange::new(token_start, token_start.saturating_add(token_len))
-                    {
-                        raw.push(range, WXS);
-                    }
-                }
+                )
+                && let Ok(range) =
+                    TextRange::new(token_start, token_start.saturating_add(token_len))
+            {
+                raw.push(range, WXS);
             }
             line_offset = line_offset.saturating_add(line.len());
         }

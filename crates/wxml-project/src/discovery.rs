@@ -1706,10 +1706,10 @@ fn component_properties(
         return (Vec::new(), ScriptStyleHints::unknown());
     }
     let attempt = path_attempt_size(root, overlay, script_path);
-    if let Some(size) = attempt {
-        if !script_budget.charge(size) {
-            return (Vec::new(), ScriptStyleHints::unknown());
-        }
+    if let Some(size) = attempt
+        && !script_budget.charge(size)
+    {
+        return (Vec::new(), ScriptStyleHints::unknown());
     }
     match overlay.read_text(root, script_path) {
         Ok(Some(text)) => {

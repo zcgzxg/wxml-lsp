@@ -39,23 +39,21 @@ pub(crate) fn diagnostics(document: &Document) -> Vec<Value> {
             }
         });
 
-        if let ModeValue::Literal(value_text) = mode {
-            if !rule.knows_value(value_text) {
-                if let Some(attribute) = controlling {
-                    if let Some(value) = attribute.value() {
-                        push(
-                            document,
-                            &mut diagnostics,
-                            literal_range(value),
-                            &mode_code(rule.tag, "value"),
-                            &format!(
-                                "`{value_text}` is not a known `{} {}` value",
-                                rule.tag, rule.attribute
-                            ),
-                        );
-                    }
-                }
-            }
+        if let ModeValue::Literal(value_text) = mode
+            && !rule.knows_value(value_text)
+            && let Some(attribute) = controlling
+            && let Some(value) = attribute.value()
+        {
+            push(
+                document,
+                &mut diagnostics,
+                literal_range(value),
+                &mode_code(rule.tag, "value"),
+                &format!(
+                    "`{value_text}` is not a known `{} {}` value",
+                    rule.tag, rule.attribute
+                ),
+            );
         }
 
         let hidden = rule.hidden(mode);

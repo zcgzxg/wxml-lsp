@@ -258,11 +258,11 @@ impl<'a> MappingState<'a> {
             self.drops.drop_subtree(symbol, DropKind::SelectionOutside);
             return None;
         }
-        if let Some(parent) = parent {
-            if range.start() < parent.start() || range.end() > parent.end() {
-                self.drops.drop_subtree(symbol, DropKind::ChildOutside);
-                return None;
-            }
+        if let Some(parent) = parent
+            && (range.start() < parent.start() || range.end() > parent.end())
+        {
+            self.drops.drop_subtree(symbol, DropKind::ChildOutside);
+            return None;
         }
         self.emitted = self.emitted.saturating_add(1);
         let children = symbol

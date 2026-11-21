@@ -162,13 +162,13 @@ pub fn group_local_levels(
         }
         match binding.role {
             LocalRole::Item => {
-                if let Some(current) = levels.last_mut() {
-                    if current.item.is_none() {
-                        if current.index.as_ref().map(|index| &index.name) != Some(&binding.name) {
-                            current.item = Some(binding.clone());
-                        }
-                        continue;
+                if let Some(current) = levels.last_mut()
+                    && current.item.is_none()
+                {
+                    if current.index.as_ref().map(|index| &index.name) != Some(&binding.name) {
+                        current.item = Some(binding.clone());
                     }
+                    continue;
                 }
                 levels.push(LocalLevel {
                     item: Some(binding.clone()),
@@ -284,13 +284,12 @@ pub fn render_locals(
                 } else {
                     level_unresolved = true;
                 }
-                if let Some(text) = &source_text {
-                    if let Some(leftover) = value_identifier_names(text) {
-                        if own_names.iter().any(|name| leftover.contains(name)) {
-                            source_text = None;
-                            level_unresolved = true;
-                        }
-                    }
+                if let Some(text) = &source_text
+                    && let Some(leftover) = value_identifier_names(text)
+                    && own_names.iter().any(|name| leftover.contains(name))
+                {
+                    source_text = None;
+                    level_unresolved = true;
                 }
             }
         }

@@ -3,19 +3,23 @@
 //! The synthetic trees are hermetic: each test writes a complete 116-file
 //! standard-library root plus a 20-file `miniprogram-api-typings` package into a
 //! scratch directory and computes the expected pin from the intended content.
+//! These exercise the compatibility full-mode API (`TypeAssets::load_trusted` /
+//! `TypeAssets::load_pinned`); the in-process engine bundles its own standard
+//! library, so this full mode is unit coverage, not a real gate.
 //!
 //! The three real package tests are `#[ignore]`d and only run with
-//! `-- --ignored`. They read roots from `TSGO_ASSET_ROOT` (engine `lib` or
-//! `engine/lib` plus `typings/`) or `TSGO_BIN` plus `TSGO_TYPINGS_ROOT`. The
-//! configured typings package is staged below the test temp base into the
-//! canonical `<root>/miniprogram-api-typings` layout. `WXML_REQUIRE_REAL_ENGINE=1`
-//! or `WXML_REQUIRE_REAL_ENGINE=true` (case-insensitive) turns a missing real
-//! root into a hard failure instead of a skip. When
-//! run explicitly with `--ignored`, it verifies the 20-file/2,522,752 B/`821c93…`
+//! `-- --ignored`. They are typings-only: they read `TSGO_TYPINGS_ROOT` (the
+//! directory containing `miniprogram-api-typings`, or the package directory
+//! itself) or stage the fixture, then verify the package through
+//! `TypeAssets::load_pinned_typings`. `WXML_REQUIRE_REAL_ENGINE=1` or
+//! `WXML_REQUIRE_REAL_ENGINE=true` (case-insensitive) turns a missing or
+//! invalid root into a hard failure instead of a skip. When run explicitly with
+//! `--ignored`, the first test verifies the 20-file/2,522,752 B/`821c93…`
 //! typings closure with an independent walk and digest implementation without
-//! calling the loader; a missing fixture is a hard failure there. The default
-//! suite verifies neither that fixture nor the standard-library digest
-//! `5e126e…`, which is checked only by the opt-in real gate.
+//! calling the loader; a missing fixture is a hard failure there.
+//!
+//! No standard-library root or `lib.d.ts` digest is part of the real gate: the
+//! engine supplies that library in process.
 //!
 //! The loader is a disk-to-memory building block only. It does not verify an
 //! install or the delivery manifest; that remains BLOCKED under P6-3-4/F3-03.
@@ -205,7 +209,7 @@ fn write_fixture(engine_root: &Path, typings_root: &Path) -> TypeAssetsPin {
 fn loads_a_complete_synthetic_tree_and_matches_the_pin() {
     let base = scratch("happy");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let pin = write_fixture(&engine_root, &typings_root);
 
@@ -268,7 +272,7 @@ fn loads_a_complete_synthetic_tree_and_matches_the_pin() {
 fn load_pinned_uses_the_builtin_pin_not_caller_supplied_values() {
     let base = scratch("load-pinned");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let pin = write_fixture(&engine_root, &typings_root);
 
@@ -304,7 +308,7 @@ fn real_pin_constants_match_the_pinned_fixture_values() {
 fn rejects_a_missing_root() {
     let base = scratch("missing");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let pin = write_fixture(&engine_root, &typings_root);
     let missing = base.join("absent-engine");
@@ -338,12 +342,12 @@ fn rejects_a_missing_root() {
 fn rejects_non_normalized_roots() {
     let base = scratch("roots");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let pin = write_fixture(&engine_root, &typings_root);
 
     for root in [
-        PathBuf::from("relative/engine/lib"),
+        PathBuf::from("relative/stdlib"),
         PathBuf::from("/tmp/../etc"),
         PathBuf::from("/"),
     ] {
@@ -370,7 +374,7 @@ fn rejects_substituted_sets_with_the_same_count_and_bytes() {
     for root in ["engine", "typings"] {
         let base = scratch("substituted");
         let _cleanup = Cleanup(base.clone());
-        let engine_root = base.join("engine/lib");
+        let engine_root = base.join("stdlib");
         let typings_root = base.join("typings");
         let package = typings_root.join(MINIPROGRAM_TYPINGS);
         let pin = write_fixture(&engine_root, &typings_root);
@@ -406,7 +410,7 @@ fn rejects_substituted_sets_with_the_same_count_and_bytes() {
 fn rejects_missing_and_extra_declarations() {
     let base = scratch("set");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let package = typings_root.join(MINIPROGRAM_TYPINGS);
     let pin = write_fixture(&engine_root, &typings_root);
@@ -471,7 +475,7 @@ fn rejects_missing_and_extra_declarations() {
 fn ignores_files_outside_the_mounted_roots() {
     let base = scratch("confined");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let pin = write_fixture(&engine_root, &typings_root);
 
@@ -505,7 +509,7 @@ fn symlink(target: &Path, link: &Path) {
 fn rejects_symbolic_links_inside_and_at_the_roots() {
     let base = scratch("symlink");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let package = typings_root.join(MINIPROGRAM_TYPINGS);
     let pin = write_fixture(&engine_root, &typings_root);
@@ -561,7 +565,7 @@ fn rejects_symbolic_links_inside_and_at_the_roots() {
 fn rejects_hard_linked_declarations() {
     let base = scratch("hardlink");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let pin = write_fixture(&engine_root, &typings_root);
 
@@ -584,7 +588,7 @@ fn rejects_hard_linked_declarations() {
 fn rejects_non_regular_files() {
     let base = scratch_short("socket");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let pin = write_fixture(&engine_root, &typings_root);
 
@@ -605,7 +609,7 @@ fn rejects_non_utf8_entry_names() {
 
     let base = scratch("non-utf8-name");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let pin = write_fixture(&engine_root, &typings_root);
 
@@ -624,7 +628,7 @@ fn rejects_non_utf8_entry_names() {
 fn rejects_unsafe_entry_names_and_flat_directories() {
     let base = scratch("unsafe-name");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let pin = write_fixture(&engine_root, &typings_root);
 
@@ -659,7 +663,7 @@ fn rejects_unsafe_entry_names_and_flat_directories() {
 fn rejects_non_utf8_declaration_content() {
     let base = scratch("non-utf8-content");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let pin = write_fixture(&engine_root, &typings_root);
 
@@ -676,7 +680,7 @@ fn rejects_non_utf8_declaration_content() {
 fn rejects_case_colliding_names() {
     let base = scratch("case");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let pin = write_fixture(&engine_root, &typings_root);
 
@@ -700,7 +704,7 @@ fn rejects_case_colliding_names() {
 fn rejects_an_over_budget_tree() {
     let base = scratch("budget");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let pin = write_fixture(&engine_root, &typings_root);
 
@@ -720,7 +724,7 @@ fn rejects_an_over_budget_tree() {
 
     let base = scratch("oversize");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let pin = write_fixture(&engine_root, &typings_root);
     fs::write(
@@ -740,7 +744,7 @@ fn rejects_an_over_budget_tree() {
 fn rejects_excessive_typings_nesting() {
     let base = scratch("nested");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let package = typings_root.join(MINIPROGRAM_TYPINGS);
     let pin = write_fixture(&engine_root, &typings_root);
@@ -770,7 +774,7 @@ fn rejects_excessive_typings_nesting() {
 fn rejects_a_tree_with_too_many_directory_entries() {
     let base = scratch("entries");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let pin = write_fixture(&engine_root, &typings_root);
 
@@ -797,7 +801,7 @@ fn rejects_a_tree_with_too_many_directory_entries() {
 fn rejects_non_regular_files_in_the_typings_package() {
     let base = scratch_short("typings-socket");
     let _cleanup = Cleanup(base.clone());
-    let engine_root = base.join("engine/lib");
+    let engine_root = base.join("stdlib");
     let typings_root = base.join("typings");
     let package = typings_root.join(MINIPROGRAM_TYPINGS);
     let pin = write_fixture(&engine_root, &typings_root);
@@ -816,9 +820,8 @@ fn rejects_non_regular_files_in_the_typings_package() {
 // Opt-in real pinned package gates.
 // ---------------------------------------------------------------------------
 
-struct RealRoots {
-    engine: PathBuf,
-    typings: PathBuf,
+struct RealTypings {
+    root: PathBuf,
     _staged: Option<typings_fixture::Staged>,
 }
 
@@ -834,40 +837,15 @@ fn normalize_typings_root(path: &Path) -> Option<PathBuf> {
         .then_some(root)
 }
 
-fn resolve_real_roots() -> Option<RealRoots> {
-    let packaged = std::env::var_os("TSGO_ASSET_ROOT").map(PathBuf::from);
-    let engine = packaged
-        .as_ref()
-        .and_then(|root| {
-            [root.join("engine/lib"), root.join("lib")]
-                .into_iter()
-                .find(|candidate| candidate.join("lib.d.ts").is_file())
-        })
-        .or_else(|| {
-            let executable = PathBuf::from(std::env::var_os("TSGO_BIN")?);
-            let parent = executable.parent()?;
-            parent
-                .join("lib.d.ts")
-                .is_file()
-                .then(|| parent.to_path_buf())
-        })?;
-    let configured = std::env::var_os("TSGO_TYPINGS_ROOT")
-        .map(PathBuf::from)
-        .and_then(|path| normalize_typings_root(&path))
-        .or_else(|| {
-            packaged
-                .as_ref()
-                .and_then(|root| normalize_typings_root(&root.join("typings")))
-        });
-    let (typings, staged) = if let Some(path) = configured {
-        (path, None)
+fn resolve_real_typings() -> Option<RealTypings> {
+    let (root, staged) = if let Some(raw) = std::env::var_os("TSGO_TYPINGS_ROOT") {
+        (normalize_typings_root(Path::new(&raw))?, None)
     } else {
         let staged = typings_fixture::stage()?;
         (staged.root().to_path_buf(), Some(staged))
     };
-    Some(RealRoots {
-        engine,
-        typings,
+    Some(RealTypings {
+        root,
         _staged: staged,
     })
 }
@@ -878,23 +856,35 @@ fn require_real_gate() -> bool {
         .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
-/// Returns the real pinned roots, or skips explicitly unless the gate is required.
-fn real_roots() -> Option<RealRoots> {
+/// Returns a verified real typings root, or skips explicitly unless required.
+fn real_typings() -> Option<RealTypings> {
     let required = require_real_gate();
-    let roots = resolve_real_roots();
-    if roots.is_none() {
+    let Some(roots) = resolve_real_typings() else {
         assert!(
             !required,
-            "real type-asset roots are required when WXML_REQUIRE_REAL_ENGINE is 1 or true; \
-             set TSGO_ASSET_ROOT or TSGO_BIN (TSGO_TYPINGS_ROOT overrides typings)"
+            "real typings are required when WXML_REQUIRE_REAL_ENGINE is 1 or true; \
+             set TSGO_TYPINGS_ROOT to miniprogram-api-typings or its parent directory"
         );
         eprintln!(
-            "real type-asset loader gate skipped: set TSGO_ASSET_ROOT or TSGO_BIN \
-             (TSGO_TYPINGS_ROOT overrides typings; or \
-             WXML_REQUIRE_REAL_ENGINE=1/true for a hard gate)"
+            "real typings loader gate skipped: set TSGO_TYPINGS_ROOT to \
+             miniprogram-api-typings or its parent directory \
+             (or WXML_REQUIRE_REAL_ENGINE=1/true for a hard gate)"
         );
+        return None;
+    };
+    if let Err(error) = TypeAssets::load_pinned_typings(&roots.root) {
+        assert!(
+            !required,
+            "invalid typings under {} when WXML_REQUIRE_REAL_ENGINE is 1 or true: {error}",
+            roots.root.display()
+        );
+        eprintln!(
+            "real typings loader gate skipped: cannot verify typings under {}: {error}",
+            roots.root.display()
+        );
+        return None;
     }
-    roots
+    Some(roots)
 }
 
 fn copy_declarations(source: &Path, destination: &Path, recursive: bool) {
@@ -953,84 +943,53 @@ fn declaration_paths(root: &Path, recursive: bool) -> Vec<PathBuf> {
     paths
 }
 
-#[ignore = "requires TSGO_BIN/TSGO_ASSET_ROOT"]
+#[ignore = "requires TSGO_TYPINGS_ROOT"]
 #[test]
-fn real_pinned_roots_load_pinned_and_match_stdlib_and_typings_digests() {
-    let Some(roots) = real_roots() else {
+fn real_pinned_typings_load_and_match_the_pinned_digest() {
+    let Some(roots) = real_typings() else {
         return;
     };
-    let assets = TypeAssets::load_pinned(&roots.engine, &roots.typings).expect("pinned tree");
+    let assets = TypeAssets::load_pinned_typings(&roots.root).expect("pinned typings");
     println!(
-        "real type assets: files={} bytes={} engine={} typings={}",
+        "real typings: files={} bytes={} root={}",
         assets.file_count(),
         assets.total_bytes(),
-        roots.engine.display(),
-        roots.typings.display()
+        roots.root.display()
     );
-    assert_eq!(assets.file_count(), 136);
-    assert_eq!(
-        assets.total_bytes(),
-        PINNED_STANDARD_LIB_BYTES + PINNED_TYPINGS_BYTES
-    );
-    let pin = TypeAssetsPin::pinned_runtime();
+    assert_eq!(assets.file_count(), PINNED_TYPINGS_FILE_COUNT);
+    assert_eq!(assets.total_bytes(), PINNED_TYPINGS_BYTES);
+    let pin = TypeAssetsPin::pinned_typings_only();
     assert_eq!(assets.pin(), &pin);
-    assert_eq!(pin.standard_lib_file_count(), 116);
-    assert_eq!(pin.standard_lib_bytes(), PINNED_STANDARD_LIB_BYTES);
-    assert_eq!(
-        pin.standard_lib_bundle_digest(),
-        "5e126e7206065b6fff9d651eff3ad66b9413804d3e23d7ecfb4257299af3e85e"
-    );
     assert_eq!(pin.typings_file_count(), 20);
     assert_eq!(pin.typings_bytes(), PINNED_TYPINGS_BYTES);
     assert_eq!(
         pin.typings_bundle_digest(),
         "821c93bfdf41324faa7ee44011a963993cfecc3b4ea9e41cd834e894755e9ba9"
     );
-    assert_eq!(
-        assets.standard_lib_root().as_str(),
-        roots.engine.to_str().unwrap()
-    );
-    assert_eq!(
-        assets.typings_root().as_str(),
-        roots.typings.to_str().unwrap()
-    );
+    assert_eq!(assets.typings_root().as_str(), roots.root.to_str().unwrap());
     assert!(
         assets
-            .file(&format!("{}/lib.es5.d.ts", roots.engine.display()))
+            .file(&format!(
+                "{}/{}/index.d.ts",
+                roots.root.display(),
+                MINIPROGRAM_TYPINGS
+            ))
             .is_some()
     );
 }
 
-#[ignore = "requires TSGO_BIN/TSGO_ASSET_ROOT"]
+#[ignore = "requires TSGO_TYPINGS_ROOT"]
 #[test]
-fn real_pinned_roots_reject_same_size_substitutions() {
-    let Some(roots) = real_roots() else {
+fn real_pinned_typings_reject_same_size_substitutions() {
+    let Some(roots) = real_typings() else {
         return;
     };
     let base = scratch("real-substitution");
     let _cleanup = Cleanup(base.clone());
 
-    let engine_copy = base.join("engine/lib");
-    copy_declarations(&roots.engine, &engine_copy, false);
-    for path in declaration_paths(&engine_copy, false) {
-        tamper_same_size(&path);
-    }
-    let error = TypeAssets::load_pinned(&engine_copy, &roots.typings)
-        .expect_err("a same-size standard-library substitution must fail closed");
-    assert!(
-        matches!(
-            error,
-            TypeAssetError::PinMismatch {
-                field: "standardLibBundleDigest",
-                ..
-            }
-        ),
-        "expected a standard-library digest mismatch, got {error}"
-    );
-
     let typings_copy = base.join("typings");
     copy_declarations(
-        &roots.typings.join(MINIPROGRAM_TYPINGS),
+        &roots.root.join(MINIPROGRAM_TYPINGS),
         &typings_copy.join(MINIPROGRAM_TYPINGS),
         true,
     );
@@ -1039,7 +998,7 @@ fn real_pinned_roots_reject_same_size_substitutions() {
     for path in &declarations {
         tamper_same_size(path);
     }
-    let error = TypeAssets::load_pinned(&roots.engine, &typings_copy)
+    let error = TypeAssets::load_pinned_typings(&typings_copy)
         .expect_err("a same-size typings substitution must fail closed");
     assert!(
         matches!(
@@ -1053,10 +1012,10 @@ fn real_pinned_roots_reject_same_size_substitutions() {
     );
 }
 
-#[ignore = "requires TSGO_BIN/TSGO_ASSET_ROOT"]
+#[ignore = "requires TSGO_TYPINGS_ROOT"]
 #[test]
-fn real_pinned_roots_reject_missing_extra_and_symlinked_typings() {
-    let Some(roots) = real_roots() else {
+fn real_pinned_typings_reject_missing_extra_and_symlinked_typings() {
+    let Some(roots) = real_typings() else {
         return;
     };
     let base = scratch("real-set");
@@ -1064,10 +1023,10 @@ fn real_pinned_roots_reject_missing_extra_and_symlinked_typings() {
 
     let typings_copy = base.join("typings");
     let package = typings_copy.join(MINIPROGRAM_TYPINGS);
-    copy_declarations(&roots.typings.join(MINIPROGRAM_TYPINGS), &package, true);
+    copy_declarations(&roots.root.join(MINIPROGRAM_TYPINGS), &package, true);
 
     fs::remove_file(package.join("types/index.d.ts")).expect("remove declaration");
-    let error = TypeAssets::load_pinned(&roots.engine, &typings_copy)
+    let error = TypeAssets::load_pinned_typings(&typings_copy)
         .expect_err("a missing required declaration must fail closed");
     assert!(
         matches!(error, TypeAssetError::MissingRequired { .. }),
@@ -1078,10 +1037,10 @@ fn real_pinned_roots_reject_missing_extra_and_symlinked_typings() {
     let _cleanup = Cleanup(base.clone());
     let typings_copy = base.join("typings");
     let package = typings_copy.join(MINIPROGRAM_TYPINGS);
-    copy_declarations(&roots.typings.join(MINIPROGRAM_TYPINGS), &package, true);
+    copy_declarations(&roots.root.join(MINIPROGRAM_TYPINGS), &package, true);
     fs::write(package.join("types/extra-unlisted.d.ts"), "export {};\n")
         .expect("extra declaration");
-    let error = TypeAssets::load_pinned(&roots.engine, &typings_copy)
+    let error = TypeAssets::load_pinned_typings(&typings_copy)
         .expect_err("an extra declaration must fail closed");
     assert!(
         matches!(
@@ -1098,14 +1057,14 @@ fn real_pinned_roots_reject_missing_extra_and_symlinked_typings() {
     let _cleanup = Cleanup(base.clone());
     let typings_copy = base.join("typings");
     let package = typings_copy.join(MINIPROGRAM_TYPINGS);
-    copy_declarations(&roots.typings.join(MINIPROGRAM_TYPINGS), &package, true);
+    copy_declarations(&roots.root.join(MINIPROGRAM_TYPINGS), &package, true);
     let index = package.join("index.d.ts");
     fs::remove_file(&index).expect("remove declaration");
     #[cfg(unix)]
     std::os::unix::fs::symlink(package.join("types/index.d.ts"), &index).expect("symlink");
     #[cfg(unix)]
     {
-        let error = TypeAssets::load_pinned(&roots.engine, &typings_copy)
+        let error = TypeAssets::load_pinned_typings(&typings_copy)
             .expect_err("a symlinked declaration must fail closed");
         assert!(
             matches!(error, TypeAssetError::Symlink { .. }),

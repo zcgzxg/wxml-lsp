@@ -165,10 +165,10 @@ fn parse_member(tokens: &impl Members, start: usize, end: usize) -> Member {
     if tokens.ident_at(start, "async") {
         return parse_named_member(tokens, start + 1, end, MemberKind::Method).unwrap_or(unknown);
     }
-    if tokens.ident_at(start, "get") || tokens.ident_at(start, "set") {
-        if let Some(next) = parse_accessor(tokens, start + 1, end) {
-            return next;
-        }
+    if (tokens.ident_at(start, "get") || tokens.ident_at(start, "set"))
+        && let Some(next) = parse_accessor(tokens, start + 1, end)
+    {
+        return next;
     }
     parse_named_member(tokens, start, end, MemberKind::Unknown).unwrap_or(unknown)
 }

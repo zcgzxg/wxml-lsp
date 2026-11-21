@@ -356,18 +356,18 @@ impl Project {
                 };
                 text.to_owned()
             } else {
-                if let Some(size) = disk_size(self.root(), &path) {
-                    if size > u64::try_from(max_file_bytes).unwrap_or(u64::MAX) {
-                        issues.push(SourceIssue {
-                            path,
-                            kind: SourceIssueKind::TooLarge,
-                        });
-                        if issues.truncated {
-                            truncated = true;
-                            break;
-                        }
-                        continue;
+                if let Some(size) = disk_size(self.root(), &path)
+                    && size > u64::try_from(max_file_bytes).unwrap_or(u64::MAX)
+                {
+                    issues.push(SourceIssue {
+                        path,
+                        kind: SourceIssueKind::TooLarge,
+                    });
+                    if issues.truncated {
+                        truncated = true;
+                        break;
                     }
+                    continue;
                 }
                 match self.read(&path) {
                     Ok(text) => text,

@@ -293,10 +293,10 @@ impl HoverEvidence {
                 TypeQuality::Any | TypeQuality::Known => {}
             }
         }
-        if let Some(docs) = &self.documentation {
-            if let Some(reason) = docs.status.reason() {
-                reasons.push(format!("documentation: {reason}"));
-            }
+        if let Some(docs) = &self.documentation
+            && let Some(reason) = docs.status.reason()
+        {
+            reasons.push(format!("documentation: {reason}"));
         }
         reasons.extend(self.gaps.iter().map(HoverGap::reason));
         reasons

@@ -859,18 +859,18 @@ pub fn find_declaration_name(
     while index < end {
         let base = node_base(&header, index)?;
         let kind = read_u32(payload, base).ok_or(AstError::SectionOrder)?;
-        if kind == IDENTIFIER_KIND {
-            if let Some(range) = identifier_range(payload, &header, base, name, source_utf16_len)? {
-                // A direct child is the declaration's name slot. Decorators,
-                // heritage clauses and initializers can contain identifiers
-                // with the same text; they must never win over the name slot.
-                let parent = read_u32(payload, base + 16).ok_or(AstError::SectionOrder)?;
-                if parent == node_index {
-                    return Ok(Some(range));
-                }
-                if fallback.is_none() {
-                    fallback = Some(range);
-                }
+        if kind == IDENTIFIER_KIND
+            && let Some(range) = identifier_range(payload, &header, base, name, source_utf16_len)?
+        {
+            // A direct child is the declaration's name slot. Decorators,
+            // heritage clauses and initializers can contain identifiers
+            // with the same text; they must never win over the name slot.
+            let parent = read_u32(payload, base + 16).ok_or(AstError::SectionOrder)?;
+            if parent == node_index {
+                return Ok(Some(range));
+            }
+            if fallback.is_none() {
+                fallback = Some(range);
             }
         }
         index = index.saturating_add(1);
@@ -1104,7 +1104,7 @@ pub fn decode_base64(input: &str) -> Result<Vec<u8>, Base64Error> {
     if symbols % 4 == 1 {
         return Err(Base64Error::InvalidLength);
     }
-    if symbols % 4 != 0 && padding == 0 {
+    if !symbols.is_multiple_of(4) && padding == 0 {
         return Err(Base64Error::InvalidPadding);
     }
     if padding != 0 {

@@ -1,27 +1,27 @@
 //! Real-install gate for the production trusted type environment.
 //!
-//! The gate is opt-in. `TSGO_BIN` must point at the pinned engine `lib/tsc`;
-//! `TSGO_ASSET_ROOT` supplies the package root used for sandbox exclusion and
-//! the standard library. `TSGO_TYPINGS_ROOT` must point at the
-//! `miniprogram-api-typings` package directory; this gate also accepts the
-//! containing directory and normalizes it. Real-engine tests copy the supplied
-//! directory as the package itself, so they require the package directory
-//! (`.../node_modules/miniprogram-api-typings`).
+//! The gate is opt-in. `TSGO_TYPINGS_ROOT` must point at the
+//! `miniprogram-api-typings` directory or the directory that contains it; this
+//! gate accepts both and normalizes the containing directory. The type engine
+//! itself is in-process and needs no executable, tarball or `engine/lib`
+//! standard library.
 //!
-//! `WXML_REQUIRE_REAL_ENGINE=1|true` turns a missing or unusable input into a
-//! hard failure. Without it the gate skips and prints one line.
+//! `WXML_REQUIRE_REAL_ENGINE=1|true` turns a missing or unusable typings input
+//! into a hard failure. Without it the gate skips and prints one line. The
+//! variable name is legacy; it now gates in-process real types.
 //!
 //! # What this gate covers
 //!
-//! - the production `TypeAssets::load_pinned` pin through `load_environment`;
+//! - the production `TypeAssets::load_pinned_typings` pin through
+//!   `load_environment`;
 //! - `TsgoBackendAdapter::with_install` injecting `Environment::Trusted`, plus
-//!   a real session start/stop through the managed sandbox factory;
+//!   a real in-process session start/stop through the virtual-cwd factory;
 //! - a real `with_install` adapter over a real on-disk project hovering an
 //!   in-project symbol (`Known`/`string`/exact range), plus the same hover
 //!   through `new` (legacy, no assets) and a trusted `new_with_environment`
 //!   adapter for comparison;
 //! - a real `NativeSession` opened from `AnalysisInput::with_environment` with
-//!   the verified assets, and a `wx.request` hover that must resolve to the
+//!   the verified typings, and a `wx.request` hover that must resolve to the
 //!   mini-program typings signature.
 //!
 //! No fake session participates. The `wx` global is queried through the real
@@ -58,7 +58,7 @@ use super::{Environment, load_environment};
 use crate::backend_tsgo::TsgoBackendAdapter;
 use crate::backend_tsgo::engine::DiscoveredInstall;
 use crate::backend_tsgo::input::ViewProvider;
-use crate::backend_tsgo::sandbox::SandboxSessionFactory;
+use crate::backend_tsgo::runtime::{VirtualSessionFactory, virtual_cwd};
 use crate::backend_tsgo::session::NativeSessionFactory;
 use crate::project_host::{PreparedView, ProjectHost, ProjectState};
 
@@ -80,10 +80,9 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Returns `<typings>`, the directory that contains the typings package.
+/// Returns the directory that contains the typings package.
 fn real_typings_root() -> Option<PathBuf> {
-    let root = env_path("TSGO_TYPINGS_ROOT")
-        .or_else(|| env_path("TSGO_ASSET_ROOT").map(|asset| asset.join("typings")))?;
+    let root = env_path("TSGO_TYPINGS_ROOT")?;
     if root.file_name().and_then(|name| name.to_str()) == Some("miniprogram-api-typings") {
         return root
             .parent()
@@ -101,63 +100,33 @@ fn real_typings_root() -> Option<PathBuf> {
 /// mode and panics with the same message when the gate is required. `required`
 /// is passed explicitly so the regression tests do not mutate process
 /// environment variables.
-fn load_real_install(
-    bin: Option<PathBuf>,
-    typings_root: Option<PathBuf>,
-    asset_root: Option<PathBuf>,
-    required: bool,
-) -> Option<DiscoveredInstall> {
-    let Some(bin) = bin else {
+fn load_real_install(typings_root: Option<PathBuf>, required: bool) -> Option<DiscoveredInstall> {
+    let Some(typings_root) = typings_root else {
         skip_or_fail(
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1",
+            "TSGO_TYPINGS_ROOT must provide miniprogram-api-typings",
             required,
         );
         return None;
     };
-    let Some(engine) = fs::canonicalize(&bin).ok() else {
-        skip_or_fail("TSGO_BIN does not exist or cannot be resolved", required);
-        return None;
-    };
-    let Some(standard_lib_root) = engine.parent().map(Path::to_path_buf) else {
-        skip_or_fail("TSGO_BIN has no parent directory", required);
-        return None;
-    };
-    if !standard_lib_root.join("lib.d.ts").is_file() {
+    let package = typings_root.join("miniprogram-api-typings");
+    if !package.is_dir() {
         skip_or_fail(
-            "TSGO_BIN must live in the engine lib directory with lib.d.ts",
+            "TSGO_TYPINGS_ROOT does not contain miniprogram-api-typings",
             required,
         );
         return None;
     }
-    let Some(typings_root) = typings_root else {
-        skip_or_fail(
-            "TSGO_TYPINGS_ROOT (or TSGO_ASSET_ROOT/typings) must provide miniprogram-api-typings",
-            required,
-        );
-        return None;
-    };
-    let package_root = asset_root
-        .and_then(|path| fs::canonicalize(path).ok())
-        .or_else(|| standard_lib_root.parent().map(Path::to_path_buf));
-    let Some(package_root) = package_root else {
-        skip_or_fail("TSGO_ASSET_ROOT is not a resolvable package root", required);
-        return None;
-    };
+    let package_root = typings_root
+        .parent()
+        .map_or_else(|| typings_root.clone(), Path::to_path_buf);
     Some(DiscoveredInstall {
         package_root,
-        engine,
-        standard_lib_root,
         typings_root,
     })
 }
 
 fn real_install() -> Option<DiscoveredInstall> {
-    load_real_install(
-        env_path("TSGO_BIN"),
-        real_typings_root(),
-        env_path("TSGO_ASSET_ROOT"),
-        required_engine(),
-    )
+    load_real_install(real_typings_root(), required_engine())
 }
 
 /// Temporary directory used only by the gate and its regression tests.
@@ -173,26 +142,19 @@ fn temp_dir(tag: &str) -> tempfile::TempDir {
 }
 
 fn assert_pinned_assets(assets: &TypeAssets) {
-    assert_eq!(assets.file_count(), 136);
-    assert_eq!(assets.total_bytes(), 6_392_948);
-    assert_eq!(assets.pin().standard_lib_file_count(), 116);
+    assert!(assets.is_typings_only());
+    assert_eq!(assets.file_count(), 20);
+    assert_eq!(assets.total_bytes(), 2_522_752);
+    assert_eq!(assets.pin().standard_lib_file_count(), 0);
     assert_eq!(assets.pin().typings_file_count(), 20);
-    assert_eq!(
-        assets.pin().standard_lib_bundle_digest(),
-        "5e126e7206065b6fff9d651eff3ad66b9413804d3e23d7ecfb4257299af3e85e"
-    );
     assert_eq!(
         assets.pin().typings_bundle_digest(),
         "821c93bfdf41324faa7ee44011a963993cfecc3b4ea9e41cd834e894755e9ba9"
     );
 }
 
-/// Opens a real session on a virtual project with the verified assets.
-fn open_trusted_session(
-    install: &DiscoveredInstall,
-    assets: &Arc<TypeAssets>,
-    sandbox: &Path,
-) -> NativeSession {
+/// Opens a real session on a virtual project with the verified typings.
+fn open_trusted_session(assets: &Arc<TypeAssets>) -> NativeSession {
     let script = "const req = wx.request;\nPage({ data: {} });\n";
     let input = AnalysisInput::with_environment(
         ProjectKey::new("gate"),
@@ -203,19 +165,15 @@ fn open_trusted_session(
         Arc::clone(assets),
     )
     .expect("environment input");
-    let mut session = NativeSession::start(SessionOptions::new(
-        install.engine.clone(),
-        sandbox.to_path_buf(),
-    ))
-    .expect("real native session");
+    let mut session = NativeSession::start(SessionOptions::new(PathBuf::new(), virtual_cwd()))
+        .expect("in-process native session");
     session.open_project(&input).expect("open trusted project");
     session
 }
 
 /// Hovers `wx.request` in the real session and checks the typings signature.
-fn assert_native_wx_hover(install: &DiscoveredInstall, assets: &Arc<TypeAssets>) {
-    let sandbox = temp_dir("native-session");
-    let mut session = open_trusted_session(install, assets, sandbox.path());
+fn assert_native_wx_hover(assets: &Arc<TypeAssets>) {
+    let mut session = open_trusted_session(assets);
     let evidence = session
         .hover_evidence(
             "main.ts",
@@ -228,13 +186,11 @@ fn assert_native_wx_hover(install: &DiscoveredInstall, assets: &Arc<TypeAssets>)
     let type_text = evidence
         .type_info
         .as_ref()
-        .map(|info| info.text.as_str())
-        .unwrap_or_default();
+        .map_or_default(|info| info.text.as_str());
     let symbol = evidence
         .symbol
         .as_ref()
-        .map(|symbol| symbol.name.as_str())
-        .unwrap_or_default();
+        .map_or_default(|symbol| symbol.name.as_str());
     assert_eq!(evidence.type_quality, NativeTypeQuality::Known);
     assert_eq!(symbol, "request");
     assert!(
@@ -258,7 +214,7 @@ fn assert_native_wx_hover(install: &DiscoveredInstall, assets: &Arc<TypeAssets>)
 /// Host view that types `this.data` for both legacy and trusted sessions.
 ///
 /// The explicit `Page` declaration keeps the legacy no-asset session at
-/// `Known`/`string`; with assets the mini-program typings declare the same
+/// `Known`/`string`; with typings the mini-program declarations provide the same
 /// global and the shadow fragment resolves identically.
 fn project_symbol_view() -> PreparedView {
     let globals = "declare function Page(options: {\n  data: { user: { name: string } };\n  __wxml_check_0(this: { data: { user: { name: string } } }): void;\n}): void;\n";
@@ -293,28 +249,25 @@ fn optional_real_adapter_hover_matches_legacy_without_assets() {
     let Some(install) = real_install() else {
         return;
     };
-    let environment = load_environment(&install).expect("pinned real assets");
+    let environment = load_environment(&install).expect("pinned real typings");
     let assets = environment.assets().expect("trusted assets");
 
     let legacy_views = TestViews::new(project_symbol_view());
-    let legacy_sandbox = temp_dir("legacy-adapter");
     let legacy = TsgoBackendAdapter::new(
         PinnedEngine::pinned(),
         Arc::clone(&legacy_views) as Arc<dyn ViewProvider>,
         Arc::new(NativeSessionFactory::new(SessionOptions::new(
-            install.engine.clone(),
-            legacy_sandbox.path().to_path_buf(),
+            PathBuf::new(),
+            virtual_cwd(),
         ))),
     );
     assert_adapter_project_symbol_hover(&legacy);
 
     let views = TestViews::new(project_symbol_view());
-    let sessions = SandboxSessionFactory::new(install.engine.clone(), &install.package_root)
-        .expect("real sandbox factory");
     let trusted = TsgoBackendAdapter::new_with_environment(
         PinnedEngine::pinned(),
         Arc::clone(&views) as Arc<dyn ViewProvider>,
-        Arc::new(sessions),
+        Arc::new(VirtualSessionFactory::new()),
         Environment::trusted(Arc::clone(assets)),
     );
     assert_adapter_project_symbol_hover(&trusted);
@@ -346,7 +299,7 @@ fn optional_real_with_install_adapter_hovers_a_project_symbol() {
     assert!(host.is_project_open(), "real project must be loaded");
     let adapter =
         TsgoBackendAdapter::with_install(Arc::clone(&host) as Arc<dyn ProjectHost>, &install)
-            .expect("with_install loads assets and builds the managed sandbox");
+            .expect("with_install loads typings and builds the virtual-cwd factory");
     assert!(adapter.environment.is_trusted());
 
     let path = ProjectPath::new("pages/index/index.wxml").expect("wxml path");
@@ -403,7 +356,7 @@ fn optional_real_project_script_diagnostics_use_the_host_view() {
     host.open_root(Some(&uri)).expect("open real project");
     let adapter =
         TsgoBackendAdapter::with_install(Arc::clone(&host) as Arc<dyn ProjectHost>, &install)
-            .expect("with_install loads assets");
+            .expect("with_install loads typings");
 
     let script_path = ProjectPath::new("pages/index/index.ts").expect("script path");
     let script_file = host.file_id(&script_path).expect("script file");
@@ -524,7 +477,7 @@ fn optional_real_project_script_diagnostics_check_allow_js() {
     host.open_root(Some(&uri)).expect("open real project");
     let adapter =
         TsgoBackendAdapter::with_install(Arc::clone(&host) as Arc<dyn ProjectHost>, &install)
-            .expect("with_install loads assets");
+            .expect("with_install loads typings");
 
     let script_path = ProjectPath::new("pages/index/index.js").expect("script path");
     let script_file = host.file_id(&script_path).expect("script file");
@@ -571,78 +524,42 @@ fn optional_real_project_script_diagnostics_check_allow_js() {
 }
 
 #[test]
-fn optional_real_install_loads_assets_and_resolves_wx_in_a_native_session() {
+fn optional_real_install_loads_typings_and_resolves_wx_in_a_native_session() {
     let Some(install) = real_install() else {
         return;
     };
-    let environment = load_environment(&install).expect("pinned real assets");
+    let environment = load_environment(&install).expect("pinned real typings");
     let assets = environment.assets().expect("trusted assets");
     assert_pinned_assets(assets);
 
     let host: Arc<dyn ProjectHost> = Arc::new(ProjectState::new());
     let managed = TsgoBackendAdapter::with_install(host, &install)
-        .expect("production constructor loads assets before the sandbox");
+        .expect("production constructor loads typings before any session");
     assert!(
         managed.environment.is_trusted(),
         "with_install must inject the trusted type environment"
     );
     managed
         .start_and_stop_session_for_test()
-        .expect("real session start and shutdown");
+        .expect("real in-process session start and shutdown");
 
-    assert_native_wx_hover(&install, assets);
+    assert_native_wx_hover(assets);
 }
 
 #[test]
-fn optional_gate_skips_a_missing_binary() {
-    assert!(
-        load_real_install(
-            Some(PathBuf::from("/nonexistent/wxml-tsgo-gate/tsc")),
-            Some(PathBuf::from("/tmp")),
-            None,
-            false,
-        )
-        .is_none()
-    );
-}
-
-#[test]
-#[should_panic(expected = "TSGO_BIN does not exist")]
-fn required_gate_fails_for_a_missing_binary() {
-    let _ = load_real_install(
-        Some(PathBuf::from("/nonexistent/wxml-tsgo-gate/tsc")),
-        Some(PathBuf::from("/tmp")),
-        None,
-        true,
-    );
-}
-
-#[test]
-#[should_panic(expected = "no parent directory")]
-fn required_gate_fails_for_a_binary_without_a_parent() {
-    let _ = load_real_install(
-        Some(PathBuf::from("/")),
-        Some(PathBuf::from("/tmp")),
-        None,
-        true,
-    );
-}
-
-#[test]
-#[should_panic(expected = "lib.d.ts")]
-fn required_gate_fails_without_the_standard_library() {
-    let dir = temp_dir("no-lib");
-    let bin = dir.path().join("tsc");
-    fs::write(&bin, b"engine").expect("bin");
-    let _ = load_real_install(Some(bin), Some(PathBuf::from("/tmp")), None, true);
+fn optional_gate_skips_missing_typings() {
+    assert!(load_real_install(None, false).is_none());
 }
 
 #[test]
 #[should_panic(expected = "TSGO_TYPINGS_ROOT")]
 fn required_gate_fails_without_typings() {
-    let dir = temp_dir("no-typings");
-    let bin = dir.path().join("tsc");
-    fs::write(&bin, b"engine").expect("bin");
-    fs::write(dir.path().join("lib.d.ts"), b"// lib\n").expect("lib");
-    let _ = load_real_install(Some(bin), None, None, true);
+    let _ = load_real_install(None, true);
+}
+
+#[test]
+#[should_panic(expected = "does not contain miniprogram-api-typings")]
+fn required_gate_fails_for_a_missing_typings_package() {
+    let dir = temp_dir("no-typings-package");
+    let _ = load_real_install(Some(dir.path().to_path_buf()), true);
 }

@@ -29,12 +29,13 @@
 //!
 //! # Type environment
 //!
-//! [`run_stdio_native`] and [`run_stdio_native_default`] load the pinned type
-//! assets once through `TsgoBackendAdapter::with_install`, before any sandbox
-//! or session exists. A missing, unsafe or pin-mismatched tree aborts startup;
-//! there is no Node or legacy fallback. `HostOnly` never loads assets and never
-//! reads the legacy Node environment: it serves the static host layer with a
-//! session factory that cannot start an engine.
+//! [`run_stdio_native`] and [`run_stdio_native_default`] load the pinned
+//! typings once through `TsgoBackendAdapter::with_install`, before any session
+//! exists. A missing or pin-mismatched typings tree aborts startup; there is no
+//! Node or legacy fallback. The TypeScript standard library is embedded in the
+//! in-process engine, so no `engine/` tree is read. `HostOnly` never loads assets
+//! and never reads the legacy Node environment: it serves the static host layer
+//! with a session factory that cannot start an engine.
 //!
 //! [`run_stdio_host_only`] exists only for the default selector's
 //! `NotInstalled` state. Its type queries return `Unavailable` with a stable
@@ -86,8 +87,8 @@
 //! # Test seams
 //!
 //! [`ViewProvider`] and [`SessionFactory`] are internal seams: unit tests use
-//! a fake session, the real install gate needs `TSGO_BIN`,
-//! `TSGO_TYPINGS_ROOT` and `WXML_REQUIRE_REAL_ENGINE=1`.
+//! a fake session, the real-type gate needs `TSGO_TYPINGS_ROOT` and
+//! `WXML_REQUIRE_REAL_ENGINE=1` (the engine itself is in-process).
 
 #![allow(
     dead_code,
@@ -107,13 +108,12 @@ pub(crate) mod hover;
 pub(crate) mod input;
 pub(crate) mod mapping;
 pub(crate) mod query;
-pub(crate) mod sandbox;
+pub(crate) mod runtime;
 pub(crate) mod session;
 pub(crate) mod symbols;
 
 pub use self::engine::EngineDiscoveryError;
 pub use self::environment::EnvironmentLoadError;
-pub use self::sandbox::SandboxError;
 
 #[cfg(test)]
 mod tests;
@@ -142,7 +142,7 @@ use self::input::{
     OpenPlan, PlanError, PlanIdentity, RequestPlan, ScriptViewError, ViewProvider,
     build_point_request_plan, build_request_plan, build_script_request_plan, merge_reason,
 };
-use self::sandbox::SandboxSessionFactory;
+use self::runtime::VirtualSessionFactory;
 use self::session::{HostOnlySessionFactory, NativeSessionFactory, QuerySession, SessionFactory};
 
 /// Stable backend identity used in [`BackendEpoch`].
@@ -172,12 +172,9 @@ pub enum NativeStartupError {
     /// The running executable is not installed with a verified pinned engine.
     #[error("native engine discovery failed: {0}")]
     Discovery(#[from] EngineDiscoveryError),
-    /// The verified pinned type assets could not be loaded.
+    /// The verified pinned typings could not be loaded.
     #[error("native type assets are unavailable: {0}")]
     Environment(#[from] EnvironmentLoadError),
-    /// A private per-session sandbox could not be validated or created.
-    #[error("native sandbox is unavailable: {0}")]
-    Sandbox(#[from] SandboxError),
     /// The LSP transport itself failed.
     #[error("native server failed: {0}")]
     Server(#[from] crate::ServerError),
@@ -187,13 +184,12 @@ pub enum NativeStartupError {
 ///
 /// This is the explicit `--backend native` selector: it never degrades to
 /// `HostOnly` and never constructs the Node backend. Discovery starts at the
-/// running executable and requires
-/// `<package>/bin/wxml-lsp` with a verified manifest and `engine/lib/tsc`.
-/// This function also loads and verifies the pinned standard-library and
-/// mini-program typings once, before any sandbox or session exists. Missing,
-/// corrupt or unsafe installations or assets return [`NativeStartupError`]
-/// before the LSP `initialize` exchange; there is no Node fallback and no
-/// legacy no-asset session.
+/// running executable and requires `<package>/bin/wxml-lsp` and
+/// `<package>/typings`. This function also loads and verifies the pinned
+/// typings once, before any session exists. Missing, corrupt or unsafe
+/// installations or typings return [`NativeStartupError`] before the LSP
+/// `initialize` exchange; there is no Node fallback and no legacy no-asset
+/// session.
 pub fn run_stdio_native() -> Result<crate::ServerOutcome, NativeStartupError> {
     let install = engine::discover_from_current_exe()?;
     let host = Arc::new(crate::project_host::ProjectState::new());
@@ -204,11 +200,11 @@ pub fn run_stdio_native() -> Result<crate::ServerOutcome, NativeStartupError> {
 /// Serves the LSP over stdio with the default native selector.
 ///
 /// The running executable is discovered as `<package>/bin/wxml-lsp` and the
-/// verified engine plus pinned type assets are loaded exactly like
-/// [`run_stdio_native`]. The only degradation is
+/// pinned typings are loaded exactly like [`run_stdio_native`]. The only
+/// degradation is
 /// [`EngineDiscoveryError::NotInstalled`]: the executable is not inside an
 /// installed package, so the process starts [`run_stdio_host_only`] instead of
-/// failing. Every other discovery, asset, sandbox or transport error is
+/// failing. Every other discovery, typings or transport error is
 /// returned unchanged; there is no Node or legacy fallback.
 pub fn run_stdio_native_default() -> Result<crate::ServerOutcome, NativeStartupError> {
     let install = match engine::discover_from_current_exe() {
@@ -228,9 +224,9 @@ pub fn run_stdio_native_default() -> Result<crate::ServerOutcome, NativeStartupE
 
 /// Serves the LSP over stdio with the native `HostOnly` adapter.
 ///
-/// `HostOnly` never discovers an engine, never loads type assets, never creates a
-/// sandbox and never reads the removed `WXML_NODE`, `WXML_TYPE_BACKEND` or
-/// `WXML_BACKEND_DIR` variables. Static template, style, event and
+/// `HostOnly` never discovers an engine, never loads typings, never creates a
+/// working directory and never reads the removed `WXML_NODE`, `WXML_TYPE_BACKEND`
+/// or `WXML_BACKEND_DIR` variables. Static template, style, event and
 /// script-symbol features keep working; every session-backed query returns
 /// `Unavailable` with `native engine is not installed`. It is not a Node fallback.
 ///
@@ -259,7 +255,7 @@ pub(crate) struct TsgoBackendAdapter {
     /// When set, every session-backed query fails closed with this reason.
     ///
     /// `HostOnly` sets it because discovery reported `NotInstalled`; the static
-    /// host layer never opens a session, so no engine process or type asset is
+    /// host layer never opens a session, so no engine session or type asset is
     /// reached.
     engine_unavailable: Option<&'static str>,
     state: Mutex<AdapterState>,
@@ -288,7 +284,7 @@ impl std::fmt::Debug for TsgoBackendAdapter {
 impl TsgoBackendAdapter {
     /// Creates an adapter around explicit session options.
     ///
-    /// The caller owns executable, asset and sandbox verification; this
+    /// The caller owns asset and session options; this
     /// constructor performs none and always uses [`Environment::Legacy`]. The
     /// opt-in production startup path uses [`Self::with_install`].
     #[must_use]
@@ -305,23 +301,23 @@ impl TsgoBackendAdapter {
 
     /// Creates the opt-in production adapter from a discovered install.
     ///
-    /// The pinned standard-library and typings assets are loaded and verified
-    /// once, before any sandbox or session exists, so a missing or
-    /// pin-mismatched asset tree fails startup instead of producing a legacy
-    /// session. Every native session then gets a fresh private sandbox below
-    /// the OS temporary directory; the package root is rejected as a sandbox
-    /// base so runtime files never land in the immutable version tree.
+    /// The pinned typings are loaded and verified once, before any session
+    /// exists, so a missing or pin-mismatched typings tree fails startup
+    /// instead of producing a legacy session. The in-process engine supplies the
+    /// standard library, so no `engine/` tree is read. Every native session uses
+    /// one stable virtual working directory; no process sandbox or temporary
+    /// directory is created.
     ///
-    /// Engine manifest projection and asset sets are verified independently:
-    /// the delivery reader validates `typeAssets`/`binaries`/`builtAt` before
-    /// activation, while this constructor re-verifies every mounted
-    /// declaration byte against the crate pin.
+    /// Engine identity and asset sets are verified independently: the delivery
+    /// reader validates the type-asset payload before activation, while this
+    /// constructor re-verifies every mounted declaration byte against the crate
+    /// pin.
     pub(crate) fn with_install(
         host: Arc<dyn crate::project_host::ProjectHost>,
         install: &DiscoveredInstall,
     ) -> Result<Self, NativeStartupError> {
         let environment = environment::load_environment(install)?;
-        let sessions = SandboxSessionFactory::new(install.engine.clone(), &install.package_root)?;
+        let sessions = VirtualSessionFactory::new();
         Ok(Self::new_with_environment(
             PinnedEngine::pinned(),
             Arc::new(input::HostViewProvider::new(host)),
@@ -332,7 +328,7 @@ impl TsgoBackendAdapter {
 
     /// Creates the `HostOnly` adapter for a package that is not installed.
     ///
-    /// No engine is discovered, no type assets are loaded and no sandbox is
+    /// No engine is discovered, no typings are loaded and no working directory is
     /// created. The legacy [`Environment::Legacy`] mode is reused deliberately:
     /// it carries no assets, so a session can never be opened with a partial
     /// type environment. [`Self::ensure_open`] short-circuits every
@@ -354,9 +350,9 @@ impl TsgoBackendAdapter {
     /// Starts and immediately stops one native session without entering the
     /// LSP transport.
     ///
-    /// Test-only success-path seam for P6-4a. It exercises discovery output,
-    /// per-session sandbox creation, engine verification, handshake, schema
-    /// probe and sandbox cleanup. No production caller uses it.
+    /// Test-only success-path seam. It exercises discovery output,
+    /// virtual-cwd session creation, the in-process handshake, schema probe and
+    /// shutdown. No production caller uses it.
     #[cfg(test)]
     pub(crate) fn start_and_stop_session_for_test(&self) -> Result<(), BackendError> {
         let session = self.sessions.start().map_err(map_native_error)?;
@@ -463,7 +459,7 @@ impl TsgoBackendAdapter {
 
     /// Runs one session operation with a single dead-session restart retry.
     ///
-    /// A fatal result whose engine process is already dead is retried once on
+    /// A fatal result whose engine session is already dead is retried once on
     /// a freshly started session. The retry deliberately does not advance the
     /// adapter epoch when it succeeds: the request's own stamp is still
     /// current, and the old process cannot publish a competing result because
@@ -512,7 +508,7 @@ impl TsgoBackendAdapter {
             return first;
         }
 
-        // The engine died during the query. Drop it without advancing the
+        // The engine session died during the query. Drop it without advancing the
         // epoch and make exactly one fresh attempt. If an external
         // invalidation races with the restart, the request is stale and must
         // not be retried.
@@ -607,16 +603,17 @@ impl TsgoBackendAdapter {
             return Err(BackendError::Unavailable(reason.to_owned()));
         }
         self.drop_invalidated(state);
-        if let Some(open) = &state.open {
-            if open.identity == plan.plan_identity() && state.session.is_some() {
-                return Ok(());
-            }
+        if let Some(open) = &state.open
+            && open.identity == plan.plan_identity()
+            && state.session.is_some()
+        {
+            return Ok(());
         }
         let revision = next_revision(state)?;
         let input = plan.input(revision)?;
         // A trusted adapter must never start or update a session from a legacy
         // no-asset input (and a legacy adapter must never mount assets). The
-        // check runs before any session/sandbox exists, so a mismatch cannot
+        // check runs before any session exists, so a mismatch cannot
         // silently degrade the type environment.
         if input.has_type_environment() != self.environment.is_trusted() {
             return Err(BackendError::Unavailable(

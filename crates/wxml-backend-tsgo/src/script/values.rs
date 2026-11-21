@@ -297,10 +297,10 @@ pub(crate) fn resolve_binding_in(
             }
             continue;
         }
-        if script.is_ident(index, "import") {
-            if let Some((module, export)) = exact_import(script, index, name) {
-                return resolve_export(snapshot, &module, export.as_deref(), file, depth + 1);
-            }
+        if script.is_ident(index, "import")
+            && let Some((module, export)) = exact_import(script, index, name)
+        {
+            return resolve_export(snapshot, &module, export.as_deref(), file, depth + 1);
         }
     }
     None
@@ -325,10 +325,10 @@ pub(crate) fn resolve_export(
         if depths.get(index).copied().unwrap_or(1) != 0 {
             continue;
         }
-        if script.is_ident(index, "export") {
-            if let Some(range) = export_from(&script, index, export_name, target)? {
-                return Some(range);
-            }
+        if script.is_ident(index, "export")
+            && let Some(range) = export_from(&script, index, export_name, target)?
+        {
+            return Some(range);
         }
         if export_name.is_none()
             && script.is_ident(index, "module")

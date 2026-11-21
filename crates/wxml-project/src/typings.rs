@@ -90,14 +90,14 @@ pub fn resolve_declaration(
         }));
     }
     let absolute = project.root().join(path.as_str());
-    if let Ok(metadata) = std::fs::metadata(&absolute) {
-        if !metadata.is_file() {
-            return Err(DeclarationIssue {
-                path,
-                kind: DeclarationIssueKind::NotAFile,
-                message: "路径存在但不是普通文件（例如目录），已忽略".to_owned(),
-            });
-        }
+    if let Ok(metadata) = std::fs::metadata(&absolute)
+        && !metadata.is_file()
+    {
+        return Err(DeclarationIssue {
+            path,
+            kind: DeclarationIssueKind::NotAFile,
+            message: "路径存在但不是普通文件（例如目录），已忽略".to_owned(),
+        });
     }
     match project.read_optional(&path) {
         Ok(Some(text)) => Ok(Some(DeclarationSource { path, text })),

@@ -57,7 +57,7 @@ pub(crate) fn class(criterion: &mut Criterion, fixture: &Fixture) {
     );
 }
 
-/// Registers the engine-backed type hover paths.
+/// Registers the in-process-engine type hover paths.
 ///
 /// Prints `SKIP` when the installed layout is missing; the caller only
 /// registers this group after [`install_available`] succeeded.

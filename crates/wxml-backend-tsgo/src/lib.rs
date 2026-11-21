@@ -27,9 +27,7 @@ pub mod script;
 pub mod shadow;
 
 pub use backend::BackendError;
-pub use config::{
-    AST_HEADER_BYTES, AST_PROTOCOL_VERSION, ENGINE_VERSION, LaunchError, PinnedEngine,
-};
+pub use config::{AST_HEADER_BYTES, AST_PROTOCOL_VERSION, ENGINE_VERSION, PinnedEngine};
 pub use input::{
     AnalysisInput, DocumentRevision, InputError, InputProvider, ProjectKey, SnapshotRevision,
     SourceFile,

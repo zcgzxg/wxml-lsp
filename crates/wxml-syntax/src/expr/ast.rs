@@ -312,7 +312,7 @@ pub struct ExprParseResult {
 impl ExprParseResult {
     /// Returns `true` when no problems were found.
     #[must_use]
-    pub fn is_clean(&self) -> bool {
+    pub const fn is_clean(&self) -> bool {
         self.errors.is_empty()
     }
 }

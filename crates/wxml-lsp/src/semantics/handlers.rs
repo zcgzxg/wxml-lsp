@@ -277,10 +277,10 @@ impl Server {
                 reason,
             )];
         }
-        if let Some(old) = target.placeholder_text(&facts.doc) {
-            if old == new_name {
-                return vec![Outgoing::success(id, json!({"documentChanges": []}))];
-            }
+        if let Some(old) = target.placeholder_text(&facts.doc)
+            && old == new_name
+        {
+            return vec![Outgoing::success(id, json!({"documentChanges": []}))];
         }
         if let Some((subject, query)) = node_query(&target) {
             return self.schedule_symbol_query(
@@ -1160,10 +1160,8 @@ fn node_reference_tokens(
         }
         _ => Tokens::new(),
     };
-    if include_declaration {
-        if let Some(token) = result.declaration.as_ref() {
-            push_script_token(&mut tokens, token, TokenStyle::Identifier);
-        }
+    if include_declaration && let Some(token) = result.declaration.as_ref() {
+        push_script_token(&mut tokens, token, TokenStyle::Identifier);
     }
     for reference in &result.references {
         if reference.role == SymbolReferenceRole::Declaration && !include_declaration {
@@ -1190,10 +1188,8 @@ fn local_reference_tokens(
             let mut tokens = Tokens::new();
             tokens.complete = collected.complete;
             tokens.reason = collected.reason;
-            if include_declaration {
-                if let Some(declaration) = collected.declaration {
-                    tokens.push(&declaration.file, declaration.range, TokenStyle::Identifier);
-                }
+            if include_declaration && let Some(declaration) = collected.declaration {
+                tokens.push(&declaration.file, declaration.range, TokenStyle::Identifier);
             }
             for reference in collected.references {
                 tokens.push(&reference.file, reference.range, TokenStyle::Identifier);
@@ -1205,10 +1201,8 @@ fn local_reference_tokens(
             let mut tokens = Tokens::new();
             tokens.complete = collected.complete;
             tokens.reason = collected.reason;
-            if include_declaration {
-                if let Some(definition) = collected.definition {
-                    tokens.push(&definition.file, definition.range, TokenStyle::Template);
-                }
+            if include_declaration && let Some(definition) = collected.definition {
+                tokens.push(&definition.file, definition.range, TokenStyle::Template);
             }
             for call in collected.calls {
                 tokens.push(&call.file, call.range, TokenStyle::Template);
@@ -1393,10 +1387,10 @@ fn local_rename_plan(
                     .unwrap_or("the style class cannot be renamed completely")
                     .to_owned());
             }
-            if let Some(style) = server.host.style_facts_for(&facts.doc.file) {
-                if !style.definitions(new_name).is_empty() {
-                    return Err("the new class name already has a definition".to_owned());
-                }
+            if let Some(style) = server.host.style_facts_for(&facts.doc.file)
+                && !style.definitions(new_name).is_empty()
+            {
+                return Err("the new class name already has a definition".to_owned());
             }
             if class_in_use(facts, new_name) {
                 return Err("the new class name is already used in this template".to_owned());
@@ -1710,14 +1704,13 @@ fn code_action_diagnostic(params: &Value, range: (Position, Position)) -> Option
         .get("context")
         .and_then(|context| context.get("only"))
         .and_then(Value::as_array);
-    if let Some(allowed) = allowed {
-        if !allowed
+    if let Some(allowed) = allowed
+        && !allowed
             .iter()
             .filter_map(Value::as_str)
             .any(|kind| kind == "quickfix" || kind == "source")
-        {
-            return None;
-        }
+    {
+        return None;
     }
     diagnostics.iter().find_map(|diagnostic| {
         let diagnostic_range = code_action_diagnostic_range(diagnostic)?;

@@ -303,10 +303,10 @@ pub(crate) fn parse(body: &[u8]) -> Result<Incoming, ParseError> {
     let value: Value = serde_json::from_str(text).map_err(ParseError::Json)?;
     let object = value.as_object().ok_or(ParseError::NotAnObject)?;
 
-    if let Some(version) = object.get("jsonrpc") {
-        if version.as_str() != Some("2.0") {
-            return Err(ParseError::Invalid("jsonrpc must be \"2.0\""));
-        }
+    if let Some(version) = object.get("jsonrpc")
+        && version.as_str() != Some("2.0")
+    {
+        return Err(ParseError::Invalid("jsonrpc must be \"2.0\""));
     }
 
     let method = object.get("method").map(|method| {

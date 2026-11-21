@@ -775,10 +775,10 @@ impl<'a> Parser<'a> {
             };
             let (kind, type_text, signature, module_specifier) =
                 self.classify_initializer(index, end, &name);
-            if kind == WxsMemberKind::Module {
-                if let Some((specifier, specifier_range)) = self.require_specifier(index) {
-                    self.push_require(name.clone(), specifier, name_range, specifier_range);
-                }
+            if kind == WxsMemberKind::Module
+                && let Some((specifier, specifier_range)) = self.require_specifier(index)
+            {
+                self.push_require(name.clone(), specifier, name_range, specifier_range);
             }
             // A mutable local keeps its declared/initial type for hover;
             // reassignment is not a reason to discard the whole module summary.
@@ -865,10 +865,10 @@ impl<'a> Parser<'a> {
                 .iter()
                 .find(|entry| entry.0 == first.text)
                 .cloned();
-            if let Some((_local_name, kind, type_text, signature)) = alias {
-                if kind != WxsMemberKind::Module {
-                    return (kind, type_text, signature, None);
-                }
+            if let Some((_local_name, kind, type_text, signature)) = alias
+                && kind != WxsMemberKind::Module
+            {
+                return (kind, type_text, signature, None);
             }
         }
         (
@@ -1287,14 +1287,14 @@ impl<'a> Parser<'a> {
             doc
         };
         let signature = signature.map(|signature| apply_signature_jsdoc(&signature, &doc));
-        if kind == WxsMemberKind::Function {
-            if let Some(returned) = signature.as_deref().and_then(|signature| {
+        if kind == WxsMemberKind::Function
+            && let Some(returned) = signature.as_deref().and_then(|signature| {
                 signature
                     .rsplit_once("=>")
                     .map(|(_, returned)| returned.trim())
-            }) {
-                returned.clone_into(&mut type_text);
-            }
+            })
+        {
+            returned.clone_into(&mut type_text);
         }
         self.push_member(WxsMember {
             name,

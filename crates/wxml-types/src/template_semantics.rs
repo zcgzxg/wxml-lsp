@@ -412,13 +412,11 @@ impl Engine<'_> {
             let Some(name) = attribute.name() else {
                 continue;
             };
-            if matches!(name, "wx:for-item" | "wx:for-index") {
-                if let Some(value) = attribute.value().and_then(AttributeValue::literal_text) {
-                    let value = value.trim();
-                    if !value.is_empty() {
-                        child_locals.insert(value.to_owned());
-                    }
-                }
+            if matches!(name, "wx:for-item" | "wx:for-index")
+                && let Some(value) = attribute.value().and_then(AttributeValue::literal_text)
+                && !value.trim().is_empty()
+            {
+                child_locals.insert(value.trim().to_owned());
             }
         }
         let _ = locals;
@@ -447,13 +445,11 @@ impl Engine<'_> {
         // as ordinary markup so nested mustaches are not silently skipped.
         let mut child_locals = locals.clone();
         for attribute in &attributes {
-            if matches!(attribute.name(), Some("wx:for-item" | "wx:for-index")) {
-                if let Some(value) = attribute.value().and_then(AttributeValue::literal_text) {
-                    let value = value.trim();
-                    if !value.is_empty() {
-                        child_locals.insert(value.to_owned());
-                    }
-                }
+            if matches!(attribute.name(), Some("wx:for-item" | "wx:for-index"))
+                && let Some(value) = attribute.value().and_then(AttributeValue::literal_text)
+                && !value.trim().is_empty()
+            {
+                child_locals.insert(value.trim().to_owned());
             }
         }
         let _ = attributes;
@@ -647,13 +643,11 @@ impl Engine<'_> {
                 child_locals.insert("index".to_owned());
             }
             for attribute in element.attributes() {
-                if matches!(attribute.name(), Some("wx:for-item" | "wx:for-index")) {
-                    if let Some(value) = attribute.value().and_then(AttributeValue::literal_text) {
-                        let value = value.trim();
-                        if !value.is_empty() {
-                            child_locals.insert(value.to_owned());
-                        }
-                    }
+                if matches!(attribute.name(), Some("wx:for-item" | "wx:for-index"))
+                    && let Some(value) = attribute.value().and_then(AttributeValue::literal_text)
+                    && !value.trim().is_empty()
+                {
+                    child_locals.insert(value.trim().to_owned());
                 }
             }
             for attribute in element.attributes() {

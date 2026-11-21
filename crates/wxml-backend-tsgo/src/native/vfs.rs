@@ -253,10 +253,10 @@ impl VirtualFileSystem {
         if !table.contains_key(&tsconfig_path) {
             let mut relative = Vec::new();
             for path in table.keys() {
-                if let Some(rest) = path.strip_prefix(&root) {
-                    if let Some(rest) = rest.strip_prefix('/') {
-                        relative.push(rest.to_owned());
-                    }
+                if let Some(rest) = path.strip_prefix(&root)
+                    && let Some(rest) = rest.strip_prefix('/')
+                {
+                    relative.push(rest.to_owned());
                 }
             }
             relative.sort();
@@ -342,6 +342,36 @@ impl VirtualFileSystem {
     #[must_use]
     pub fn asset(&self, absolute: &str) -> Option<&VirtualFile> {
         self.assets.get(absolute)
+    }
+
+    /// Returns either a project file or a mounted type asset.
+    ///
+    /// Invalid paths and paths outside both tables return `None`; this never
+    /// consults the host filesystem.
+    #[must_use]
+    pub fn file_or_asset(&self, absolute: &str) -> Option<&VirtualFile> {
+        self.virtual_file(absolute)
+    }
+
+    /// Returns whether an absolute path names a virtual directory.
+    #[must_use]
+    pub fn is_directory(&self, absolute: &str) -> bool {
+        validate_absolute(absolute).is_ok()
+            && (self.directories.contains_key(absolute)
+                || self.asset_directories.contains_key(absolute))
+    }
+
+    /// Returns the immediate children of one virtual directory.
+    ///
+    /// Project directories are checked first, then mounted asset directories.
+    #[must_use]
+    pub fn directory_entries(&self, absolute: &str) -> Option<&DirectoryEntries> {
+        if validate_absolute(absolute).is_err() {
+            return None;
+        }
+        self.directories
+            .get(absolute)
+            .or_else(|| self.asset_directories.get(absolute))
     }
 
     /// Returns every mounted type-asset path, sorted.
@@ -899,6 +929,14 @@ fn mount_type_assets(
     let standard_lib_root = assets.standard_lib_root().as_str();
     let typings_package_root = assets.typings_package_root();
     let mut table = BTreeMap::new();
+    if assets.is_typings_only() {
+        for name in tsrs_vfs::bundled::LIB_NAMES {
+            let path = join_root(standard_lib_root, name)?;
+            let text = tsrs_vfs::bundled::embedded_file(&format!("bundled:///libs/{name}"))
+                .ok_or_else(|| TypeAssetError::MissingRequired { path: path.clone() })?;
+            table.insert(path, VirtualFile::new(text.to_owned()));
+        }
+    }
     for asset in assets.files() {
         let path = asset.path().as_str();
         if !within_root(standard_lib_root, path) && !within_root(&typings_package_root, path) {

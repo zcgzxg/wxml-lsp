@@ -96,7 +96,7 @@ impl ShadowLayout {
 
     /// Returns the number of mounted template fragments.
     #[must_use]
-    pub(crate) fn fragment_count(&self) -> usize {
+    pub(crate) const fn fragment_count(&self) -> usize {
         self.fragments.len()
     }
 
@@ -470,14 +470,14 @@ fn identifier_bounds(text: &str, cursor: usize, min: usize, max: usize) -> Optio
         return None;
     }
     let mut start = cursor;
-    let mut end = cursor;
-    if cursor < max {
-        if let Some(character) = text.get(cursor..)?.chars().next() {
-            if is_identifier_character(character) {
-                end = cursor.checked_add(character.len_utf8())?;
-            }
-        }
-    }
+    let mut end = if cursor < max
+        && let Some(character) = text.get(cursor..)?.chars().next()
+        && is_identifier_character(character)
+    {
+        cursor.checked_add(character.len_utf8())?
+    } else {
+        cursor
+    };
     if start == end {
         let (previous, character) = text.get(..cursor)?.char_indices().next_back()?;
         if previous < min || !is_identifier_character(character) {

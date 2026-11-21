@@ -57,7 +57,7 @@ pub fn map_type_query(raw: &TypeQuery) -> TypeResult {
         };
     };
 
-    let text = raw.text.as_deref().map(str::trim).unwrap_or_default();
+    let text = raw.text.as_deref().map_or_default(str::trim);
     if text.is_empty() {
         return TypeResult {
             info: None,

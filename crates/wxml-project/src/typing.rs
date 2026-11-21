@@ -1335,7 +1335,7 @@ impl IssueLog {
     }
 
     /// Returns whether no issue was recorded.
-    fn is_empty(&self) -> bool {
+    const fn is_empty(&self) -> bool {
         self.items.is_empty()
     }
 

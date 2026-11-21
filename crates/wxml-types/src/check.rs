@@ -492,7 +492,7 @@ impl TemplateAnalysis {
     /// Returns `true` when the template produced no fragments, component
     /// usages, events or unsupported records.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.fragments.is_empty()
             && self.components.is_empty()
             && self.events.is_empty()

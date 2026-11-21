@@ -664,14 +664,15 @@ pub(crate) fn class_tokens(text: &str) -> Vec<ClassSite> {
                     let Ok(token) = TextRange::new(start, end) else {
                         continue;
                     };
-                    if let Some(name) = text.get(token_start..token_end) {
-                        if !name.is_empty() && !is_external_class(name) {
-                            tokens.push(ClassSite {
-                                token,
-                                name: name.to_owned(),
-                            });
-                            token_budget = token_budget.saturating_sub(1);
-                        }
+                    if let Some(name) = text.get(token_start..token_end)
+                        && !name.is_empty()
+                        && !is_external_class(name)
+                    {
+                        tokens.push(ClassSite {
+                            token,
+                            name: name.to_owned(),
+                        });
+                        token_budget = token_budget.saturating_sub(1);
                     }
                 }
             }

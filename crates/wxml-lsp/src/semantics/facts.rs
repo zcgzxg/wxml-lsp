@@ -274,7 +274,7 @@ impl ViewFacts {
 
     /// Returns `true` when template bodies could contain references this view
     /// cannot attribute to the caller's data/methods.
-    pub(crate) fn has_template_definitions(&self) -> bool {
+    pub(crate) const fn has_template_definitions(&self) -> bool {
         !self.semantics.definitions.is_empty()
     }
 
@@ -661,7 +661,7 @@ fn binding_name(attribute: Option<wxml_syntax::Attribute<'_>>, default: &str) ->
             value: None,
         };
     };
-    let literal = value.literal_text().map(str::trim).unwrap_or_default();
+    let literal = value.literal_text().map_or_default(str::trim);
     let quote = u32::from(value.is_quoted());
     let value_range = SourceRange::from_bounds(
         value.text_range().start().saturating_add(quote),

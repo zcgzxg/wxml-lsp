@@ -568,11 +568,11 @@ impl Server {
         }
         let mut outgoing = Vec::new();
         for (project, changes) in groups {
-            if let Some(project) = project {
-                if let Err(error) = self.host.activate_project(&project) {
-                    log(format_args!("watched file project unavailable: {error}"));
-                    continue;
-                }
+            if let Some(project) = project
+                && let Err(error) = self.host.activate_project(&project)
+            {
+                log(format_args!("watched file project unavailable: {error}"));
+                continue;
             }
             match self.host.watched_files_changed(&changes) {
                 Ok(update) => outgoing.extend(self.apply_host_update(&update)),

@@ -176,20 +176,20 @@ pub(crate) fn signature_of(script: &Script<'_>, member: &Member) -> String {
             while cursor < member.value_end && !script.is_punct(cursor, '(') {
                 cursor += 1;
             }
-            if cursor < member.value_end {
-                if let Ok(close) = script.close_of(cursor) {
-                    // Methods may carry a return type between `)` and `{`.
-                    let mut after = close + 1;
-                    while after < member.value_end {
-                        if script.is_punct(after, '{') {
-                            end = after;
-                            break;
-                        }
-                        if script.is_punct(after, ';') {
-                            break;
-                        }
-                        after += 1;
+            if cursor < member.value_end
+                && let Ok(close) = script.close_of(cursor)
+            {
+                // Methods may carry a return type between `)` and `{`.
+                let mut after = close + 1;
+                while after < member.value_end {
+                    if script.is_punct(after, '{') {
+                        end = after;
+                        break;
                     }
+                    if script.is_punct(after, ';') {
+                        break;
+                    }
+                    after += 1;
                 }
             }
             script

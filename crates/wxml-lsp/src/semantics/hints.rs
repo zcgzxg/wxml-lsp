@@ -405,13 +405,13 @@ pub(crate) fn signature_help(server: &Server, document: &Document, position: Pos
         "label": signature.label,
         "parameters": parameters,
     });
-    if let Some(documentation) = signature.documentation {
-        if let Some(object) = entry.as_object_mut() {
-            object.insert(
-                "documentation".to_owned(),
-                json!({"kind": "markdown", "value": documentation}),
-            );
-        }
+    if let Some(documentation) = signature.documentation
+        && let Some(object) = entry.as_object_mut()
+    {
+        object.insert(
+            "documentation".to_owned(),
+            json!({"kind": "markdown", "value": documentation}),
+        );
     }
     let active = signature
         .active_parameter

@@ -11,6 +11,9 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
+tsrs_api = "=7.1.0-beta.tsrs4"
+tsrs_core = "=7.1.0-beta.tsrs4"
+tsrs_vfs = "=7.1.0-beta.tsrs4"
 wxml-types = { path = "../wxml-types" }
 
 [dev-dependencies]

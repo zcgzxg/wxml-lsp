@@ -44,12 +44,11 @@ impl std::fmt::Debug for BenchBackend {
 
 /// Builds a native backend from an installed package root.
 ///
-/// `root` is the install root (`<root>/bin/wxml-lsp`,
-/// `<root>/engine/lib/tsc`, `<root>/typings`), e.g.
+/// `root` is the install root (`<root>/bin/wxml-lsp`, `<root>/typings`), e.g.
 /// `$HOME/.local/share/wxml-lsp`. Discovery runs on
-/// `<root>/bin/wxml-lsp` with the production engine pin, and the adapter then
-/// verifies the pinned standard-library and typings assets before any sandbox
-/// or session exists.
+/// `<root>/bin/wxml-lsp` with typings-only layout checks, and the adapter then
+/// verifies the pinned typings before any session starts. The standard library
+/// is embedded in the in-process engine.
 ///
 /// # Errors
 ///

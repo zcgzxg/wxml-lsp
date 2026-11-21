@@ -229,10 +229,10 @@ fn folding_ranges_in(tree: &SyntaxTree, line_index: &LineIndex) -> Vec<Fold> {
                 }
                 // A multiline start tag is foldable even for an unclosed or
                 // self-closing element; dedup removes the duplicate range.
-                if let Some(start_tag) = start_tag_id(tree, id) {
-                    if let Some(range) = tree.text_range(start_tag) {
-                        add_fold(text, line_index, &mut folds, range, "region");
-                    }
+                if let Some(start_tag) = start_tag_id(tree, id)
+                    && let Some(range) = tree.text_range(start_tag)
+                {
+                    add_fold(text, line_index, &mut folds, range, "region");
                 }
             }
             Some(NodeKind::Comment) => {

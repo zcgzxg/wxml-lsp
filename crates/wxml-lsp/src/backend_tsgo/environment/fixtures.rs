@@ -1,11 +1,15 @@
-//! In-memory fake type assets for the adapter tests.
+//! In-memory fake typings assets for the adapter tests.
 //!
-//! The bundles are synthetic (`116` standard-library files and `20` typings
-//! files), but the pin is computed with the exact backend algorithm: each
-//! file's SHA-256 is rendered as `<sha256>  <root-relative path>\n`, the lines
-//! are sorted by absolute path and hashed once more. This lets
-//! [`wxml_backend_tsgo::input::TypeAssets::new`] accept the set without
-//! weakening or reaching into the production `load_pinned` pin.
+//! The bundle is synthetic (`20` typings files) but the pin is computed with the
+//! exact backend algorithm: each file's SHA-256 is rendered as
+//! `<sha256>  <package-relative path>\n`, the lines are sorted by absolute path
+//! and hashed once more. This lets
+//! [`wxml_backend_tsgo::input::TypeAssets::new_typings_only`] accept the set
+//! without weakening or reaching into the production `load_pinned_typings` pin.
+//!
+//! The TypeScript standard library is not part of the fake set: the in-process
+//! engine supplies it. Tests that need the legacy full mode use the
+//! `input::test_support` fixtures inside the backend crate.
 
 #![allow(clippy::expect_used)]
 
@@ -61,24 +65,7 @@ fn asset_file(path: &str, text: &str) -> TypeAssetFile {
     .expect("asset file")
 }
 
-/// Builds a 116 + 20 in-memory asset set whose pin matches exactly.
-fn standard_lib_files(root: &str) -> Vec<(String, String)> {
-    (0..116_u32)
-        .map(|index| {
-            let name = if index == 0 {
-                "lib.d.ts".to_owned()
-            } else {
-                format!("lib.fake{index}.d.ts")
-            };
-            (
-                format!("{root}/{name}"),
-                format!("// fake standard library {index}\n"),
-            )
-        })
-        .collect()
-}
-
-fn typings_files() -> Vec<(String, String)> {
+fn typings_files(root: &str) -> Vec<(String, String)> {
     (0..20_u32)
         .map(|index| {
             let relative = match index {
@@ -87,7 +74,7 @@ fn typings_files() -> Vec<(String, String)> {
                 _ => format!("types/fake{index}.d.ts"),
             };
             (
-                format!("{TYPINGS_ROOT}/miniprogram-api-typings/{relative}"),
+                format!("{root}/miniprogram-api-typings/{relative}"),
                 format!("// fake typings {index}\n"),
             )
         })
@@ -101,31 +88,26 @@ fn byte_total(files: &[(String, String)]) -> u64 {
         .sum()
 }
 
-pub(super) fn fake_assets(standard_lib_root: &str) -> Arc<TypeAssets> {
-    let standard = standard_lib_files(standard_lib_root);
-    let typings = typings_files();
-    let pin = TypeAssetsPin::new(
+/// Builds a 20-file typings-only asset set whose pin matches exactly.
+pub(super) fn fake_assets(typings_root: &str) -> Arc<TypeAssets> {
+    let typings = typings_files(typings_root);
+    let pin = TypeAssetsPin::typings_only(
         "5.3.1",
-        116,
-        byte_total(&standard),
-        bundle_digest(standard_lib_root, &standard),
         20,
         byte_total(&typings),
-        bundle_digest(&format!("{TYPINGS_ROOT}/miniprogram-api-typings"), &typings),
+        bundle_digest(&format!("{typings_root}/miniprogram-api-typings"), &typings),
     )
-    .expect("fake pin");
-    let files = standard
+    .expect("fake typings-only pin");
+    let files = typings
         .iter()
-        .chain(typings.iter())
         .map(|(path, text)| asset_file(path, text))
         .collect();
     Arc::new(
-        TypeAssets::new(
-            AssetPath::new(standard_lib_root).expect("standard root"),
-            AssetPath::new(TYPINGS_ROOT).expect("typings root"),
+        TypeAssets::new_typings_only(
+            AssetPath::new(typings_root).expect("typings root"),
             files,
             pin,
         )
-        .expect("fake assets"),
+        .expect("fake typings assets"),
     )
 }

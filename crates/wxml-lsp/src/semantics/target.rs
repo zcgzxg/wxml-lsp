@@ -139,10 +139,9 @@ impl Target {
         if let Self::Loop {
             name, declaration, ..
         } = self
+            && declaration.is_none()
         {
-            if declaration.is_none() {
-                return Some(name.clone());
-            }
+            return Some(name.clone());
         }
         let range = self.placeholder();
         range_text(doc, range).map(str::to_owned)
@@ -295,14 +294,14 @@ fn tag_or_attribute_at(server: &Server, facts: &ViewFacts, offset: u32) -> Optio
             return;
         }
         let name = element.name().unwrap_or_default();
-        if let Some(range) = element.name_range() {
-            if range.contains(offset) {
-                // Tag rename needs the owning usingComponents alias and every
-                // project usage; the S package rejects it instead of editing a
-                // lone tag pair.
-                let _ = name;
-                return;
-            }
+        if let Some(range) = element.name_range()
+            && range.contains(offset)
+        {
+            // Tag rename needs the owning usingComponents alias and every
+            // project usage; the S package rejects it instead of editing a
+            // lone tag pair.
+            let _ = name;
+            return;
         }
         for attribute in element.attributes() {
             let Some(attribute_name) = attribute.name() else {
@@ -327,17 +326,18 @@ fn tag_or_attribute_at(server: &Server, facts: &ViewFacts, offset: u32) -> Optio
             if !(value_range.start() <= offset && offset < value_range.end()) {
                 continue;
             }
-            if name == "template" && matches!(attribute_name, "name" | "is") {
-                if let Some(target) = template_target(value, offset) {
-                    found = Some(target);
-                    return;
-                }
+            if name == "template"
+                && matches!(attribute_name, "name" | "is")
+                && let Some(target) = template_target(value, offset)
+            {
+                found = Some(target);
+                return;
             }
-            if attribute_name == "class" {
-                if let Some(target) = class_target(server, facts, value, offset) {
-                    found = Some(target);
-                    return;
-                }
+            if attribute_name == "class"
+                && let Some(target) = class_target(server, facts, value, offset)
+            {
+                found = Some(target);
+                return;
             }
             if crate::completion::catalog::is_event_attribute(attribute_name) {
                 if let Some(event) = facts.analysis.events.iter().find(|event| {

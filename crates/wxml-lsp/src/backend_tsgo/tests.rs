@@ -2,7 +2,8 @@
 //!
 //! These tests exercise the real `wxml_types::Backend` implementation, shadow
 //! construction and coordinate mapping; they do not require a native binary.
-//! The real-engine smoke test at the end is opt-in through `TSGO_BIN`.
+//! The real-type smoke tests at the end are opt-in through
+//! `WXML_REQUIRE_REAL_ENGINE=1`; the engine itself is in-process.
 
 #![allow(
     clippy::expect_used,
@@ -15,7 +16,6 @@
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -39,8 +39,8 @@ use wxml_backend_tsgo::native::ast::{
 use wxml_backend_tsgo::native::document_symbol::{
     DocumentSymbolEvidence, DocumentSymbolGap as NativeDocumentSymbolGap, DocumentSymbolsEvidence,
 };
+use wxml_backend_tsgo::native::session::TypeQuery;
 use wxml_backend_tsgo::native::session::{AutoImportPreparation, DocumentationQuery};
-use wxml_backend_tsgo::native::session::{SessionOptions, TypeQuery};
 use wxml_backend_tsgo::native::strings::{
     Utf8Offset, Utf16Offset, Utf16Position, offset_to_position, utf16_len,
 };
@@ -341,7 +341,7 @@ impl ViewProvider for FailingViews {
 #[derive(Clone, Debug)]
 enum FakeFailure {
     Timeout,
-    Exited,
+    Poisoned,
     InvalidParams,
     Unsupported(&'static str),
 }
@@ -350,8 +350,8 @@ impl FakeFailure {
     fn native(&self) -> NativeError {
         match self {
             Self::Timeout => NativeError::Timeout(10),
-            Self::Exited => NativeError::Unavailable {
-                reason: UnavailableReason::ProcessExited,
+            Self::Poisoned => NativeError::Unavailable {
+                reason: UnavailableReason::SessionPoisoned,
             },
             Self::InvalidParams => NativeError::InvalidParams {
                 reason: "file is not in the open snapshot",
@@ -574,7 +574,7 @@ struct FakeBehavior {
     document_symbols: FakeDocumentSymbolOutcome,
     update_failure: Option<FakeFailure>,
     start_failure: Option<FakeFailure>,
-    /// Reports the fake engine process as dead for the one-shot retry path.
+    /// Reports the fake engine session as dead for the one-shot retry path.
     dead: bool,
     type_gate: Option<Arc<SlowGate>>,
     definition_gate: Option<Arc<SlowGate>>,
@@ -1780,7 +1780,7 @@ fn a_fatal_diagnostic_source_returns_unavailable_without_err_or_epoch_bump() {
 fn both_fatal_diagnostic_sources_return_unavailable_without_err() {
     let behavior = FakeBehavior {
         semantic: FakeDiagnosticOutcome::Failure(FakeFailure::Timeout),
-        syntactic: FakeDiagnosticOutcome::Failure(FakeFailure::Exited),
+        syntactic: FakeDiagnosticOutcome::Failure(FakeFailure::Poisoned),
         ..FakeBehavior::default()
     };
     let (adapter, _log) = adapter_with(
@@ -3321,7 +3321,7 @@ fn a_cjk_crlf_non_owner_overlay_change_updates_and_maps() {
 fn a_dead_session_is_restarted_once_for_the_current_request() {
     let behaviors = vec![
         FakeBehavior {
-            hover_outcome: FakeHoverOutcome::Failure(FakeFailure::Exited),
+            hover_outcome: FakeHoverOutcome::Failure(FakeFailure::Poisoned),
             dead: true,
             ..FakeBehavior::default()
         },
@@ -3354,12 +3354,12 @@ fn a_dead_session_is_restarted_once_for_the_current_request() {
 fn a_dead_session_retry_is_bounded_to_one_attempt() {
     let behaviors = vec![
         FakeBehavior {
-            hover_outcome: FakeHoverOutcome::Failure(FakeFailure::Exited),
+            hover_outcome: FakeHoverOutcome::Failure(FakeFailure::Poisoned),
             dead: true,
             ..FakeBehavior::default()
         },
         FakeBehavior {
-            hover_outcome: FakeHoverOutcome::Failure(FakeFailure::Exited),
+            hover_outcome: FakeHoverOutcome::Failure(FakeFailure::Poisoned),
             dead: true,
             ..FakeBehavior::default()
         },
@@ -3412,7 +3412,7 @@ fn an_unsupported_result_is_not_retried_as_a_new_query() {
 fn an_external_invalidation_is_not_retried() {
     let gate = Arc::new(SlowGate::default());
     let behavior = FakeBehavior {
-        hover_outcome: FakeHoverOutcome::Failure(FakeFailure::Exited),
+        hover_outcome: FakeHoverOutcome::Failure(FakeFailure::Poisoned),
         dead: true,
         type_gate: Some(Arc::clone(&gate)),
         ..FakeBehavior::default()
@@ -6273,7 +6273,7 @@ fn script_diagnostics_report_a_non_project_script_as_unsupported() {
 #[test]
 fn script_diagnostics_fail_closed_when_the_engine_is_missing() {
     let behavior = FakeBehavior {
-        start_failure: Some(FakeFailure::Exited),
+        start_failure: Some(FakeFailure::Poisoned),
         ..FakeBehavior::default()
     };
     let (adapter, log) = adapter_with(
@@ -6396,28 +6396,9 @@ fn backend_trait_script_diagnostics_reaches_the_script_seam() {
 
 #[test]
 fn optional_real_engine_hover_smoke() {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = matches!(
-            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
-            Ok("1" | "true")
-        );
-        assert!(
-            !required,
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
-        );
-        eprintln!(
-            "optional real-engine adapter test skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc"
-        );
+    if super::runtime::skip_unless_real_engine("real type adapter") {
         return;
-    };
-    let executable = PathBuf::from(&bin);
-    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let sandbox =
-        std::env::temp_dir().join(format!("wxml-tsgo-adapter-{}-{count}", std::process::id()));
-    std::fs::create_dir_all(&sandbox).expect("sandbox");
-    let _cleanup = Cleanup(sandbox.clone());
+    }
 
     let files = vec![
         prepared_file(SCRIPT_PATH, SCRIPT),
@@ -6434,9 +6415,7 @@ fn optional_real_engine_hover_smoke() {
     let adapter = TsgoBackendAdapter::new(
         PinnedEngine::pinned(),
         views,
-        Arc::new(super::session::NativeSessionFactory::new(
-            SessionOptions::new(executable, sandbox),
-        )),
+        Arc::new(super::runtime::VirtualSessionFactory::new()),
     );
     let result = adapter
         .hover(HoverRequest {
@@ -6464,38 +6443,16 @@ fn optional_real_engine_hover_smoke() {
 }
 
 /// Real-engine opt-in: a non-literal `Page(options)` owner must be classified
-/// as `Unsupported` before the native engine is started.
+/// as `Unsupported` before the in-process engine is started.
 ///
-/// The classification is pure Rust planning, so the engine must stay untouched
-/// (the sandbox stays empty). This test fails closed when
-/// `WXML_REQUIRE_REAL_ENGINE=1` and no engine is configured.
+/// The classification is pure Rust planning, so no session is created. With
+/// `WXML_REQUIRE_REAL_ENGINE=1` a skipped real-type gate is a hard failure.
 #[test]
 fn optional_real_engine_non_literal_page_is_unsupported_without_an_engine() {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
     const NONLITERAL_SCRIPT: &str = "const options = {\n  data: { user: { name: \"Ada\" } },\n  onTap() {},\n};\nPage(options);\n";
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = matches!(
-            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
-            Ok("1" | "true")
-        );
-        assert!(
-            !required,
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
-        );
-        eprintln!(
-            "optional real-engine adapter test skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc"
-        );
+    if super::runtime::skip_unless_real_engine("real type adapter") {
         return;
-    };
-    let executable = PathBuf::from(&bin);
-    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let sandbox = std::env::temp_dir().join(format!(
-        "wxml-tsgo-nonliteral-{}-{count}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&sandbox).expect("sandbox");
-    let _cleanup = Cleanup(sandbox.clone());
+    }
 
     let adapter = TsgoBackendAdapter::new(
         PinnedEngine::pinned(),
@@ -6504,9 +6461,7 @@ fn optional_real_engine_non_literal_page_is_unsupported_without_an_engine() {
             NONLITERAL_SCRIPT,
             "user.name",
         ))),
-        Arc::new(super::session::NativeSessionFactory::new(
-            SessionOptions::new(executable, sandbox.clone()),
-        )),
+        Arc::new(super::runtime::VirtualSessionFactory::new()),
     );
     let result = adapter
         .diagnostics(DiagnosticsRequest {
@@ -6519,198 +6474,13 @@ fn optional_real_engine_non_literal_page_is_unsupported_without_an_engine() {
         result.status
     );
     assert!(result.diagnostics.is_empty());
-    assert_eq!(
-        std::fs::read_dir(&sandbox).expect("sandbox").count(),
-        0,
-        "the static class must be decided before the engine starts"
-    );
-}
-
-/// Returns every descendant PID of `root` using `/proc` (Linux only).
-#[cfg(target_os = "linux")]
-fn descendants(root: u32) -> Vec<u32> {
-    let mut found = Vec::new();
-    let mut seen = Vec::new();
-    let mut queue = vec![root];
-    while let Some(pid) = queue.pop() {
-        if seen.contains(&pid) {
-            continue;
-        }
-        seen.push(pid);
-        let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
-            continue;
-        };
-        for task in tasks.flatten() {
-            let children = std::path::Path::new("/proc")
-                .join(pid.to_string())
-                .join("task")
-                .join(task.file_name())
-                .join("children");
-            let Ok(text) = std::fs::read_to_string(&children) else {
-                continue;
-            };
-            for child in text
-                .split_whitespace()
-                .filter_map(|value| value.parse::<u32>().ok())
-            {
-                found.push(child);
-                queue.push(child);
-            }
-        }
-    }
-    found
-}
-
-/// Kills the engine child whose executable and cwd match the test sandbox.
-#[cfg(target_os = "linux")]
-fn kill_engine_child(executable: &std::path::Path, sandbox: &std::path::Path) -> bool {
-    let executable = std::fs::canonicalize(executable).expect("canonical executable");
-    let sandbox = std::fs::canonicalize(sandbox).expect("canonical sandbox");
-    for pid in descendants(std::process::id()) {
-        let Ok(child_executable) = std::fs::read_link(format!("/proc/{pid}/exe")) else {
-            continue;
-        };
-        if child_executable != executable {
-            continue;
-        }
-        let Ok(child_cwd) = std::fs::read_link(format!("/proc/{pid}/cwd")) else {
-            continue;
-        };
-        if child_cwd != sandbox {
-            continue;
-        }
-        let status = std::process::Command::new("kill")
-            .arg("-9")
-            .arg(pid.to_string())
-            .status();
-        if status.is_ok_and(|status| status.success()) {
-            return true;
-        }
-    }
-    false
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn optional_real_engine_kill_restart_answers_first_hover_with_overlay() {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = matches!(
-            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
-            Ok("1" | "true")
-        );
-        assert!(
-            !required,
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
-        );
-        eprintln!(
-            "optional real-engine restart test skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc"
-        );
-        return;
-    };
-    let executable = PathBuf::from(&bin);
-    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let sandbox = std::env::temp_dir().join(format!(
-        "wxml-tsgo-adapter-restart-{}-{count}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&sandbox).expect("sandbox");
-    let _cleanup = Cleanup(sandbox.clone());
-
-    let owner = "import type { User } from \"../../model\";\nPage({ data: { user: null as unknown as User } });\n";
-    let model = "export interface User { name: \"OVERLAY\" }\n";
-    let globals = "declare function Page<T>(options: {\n  data: T;\n  __wxml_check_0(this: { data: T }): void;\n}): void;\n";
-    let files = vec![
-        prepared_file(SCRIPT_PATH, owner),
-        prepared_file(MODEL_PATH, model),
-        prepared_file("globals.d.ts", globals),
-    ];
-    let views = Arc::new(FakeViews::new(prepared_view_with_files(
-        WXML,
-        "user.name",
-        files,
-    )));
-    let adapter = TsgoBackendAdapter::new(
-        PinnedEngine::pinned(),
-        views,
-        Arc::new(super::session::NativeSessionFactory::new(
-            SessionOptions::new(executable.clone(), sandbox.clone()),
-        )),
-    );
-    let first = adapter
-        .hover(HoverRequest {
-            context: context(&adapter, WXML),
-            offset: offset_of(WXML, "name"),
-        })
-        .expect("initial real engine hover");
-    assert!(
-        first.contents.contains("OVERLAY"),
-        "the non-owner overlay must be visible before restart: {:?}",
-        first.contents
-    );
-    assert_eq!(
-        first.range.expect("initial range").start(),
-        offset_of(WXML, "name")
-    );
-
-    assert!(
-        kill_engine_child(&executable, &sandbox),
-        "the native engine child under the test sandbox was not found"
-    );
-    thread::sleep(Duration::from_millis(50));
-    let before = adapter.epoch();
-    let restarted = adapter
-        .hover(HoverRequest {
-            context: context(&adapter, WXML),
-            offset: offset_of(WXML, "name"),
-        })
-        .expect("the first hover after a killed engine must retry and succeed");
-    assert!(
-        restarted.contents.contains("OVERLAY"),
-        "the restarted engine must replay the non-owner overlay: {:?}",
-        restarted.contents
-    );
-    let range = restarted.range.expect("restart range");
-    assert_eq!(range.start(), offset_of(WXML, "name"));
-    assert_eq!(
-        range.end(),
-        offset_of(WXML, "name") + u32::try_from("name".len()).expect("length")
-    );
-    assert_eq!(
-        adapter.epoch(),
-        before,
-        "a successful one-shot retry must not invalidate the request stamp"
-    );
 }
 
 #[test]
 fn optional_real_engine_script_diagnostics_smoke() {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = matches!(
-            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
-            Ok("1" | "true")
-        );
-        assert!(
-            !required,
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
-        );
-        eprintln!(
-            "optional real-engine script-diagnostics test skipped: set TSGO_BIN to the pinned \
-             7.1.0-beta lib/tsc"
-        );
+    if super::runtime::skip_unless_real_engine("real type adapter") {
         return;
-    };
-    let executable = PathBuf::from(&bin);
-    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let sandbox = std::env::temp_dir().join(format!(
-        "wxml-tsgo-adapter-script-diagnostics-{}-{count}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&sandbox).expect("sandbox");
-    let _cleanup = Cleanup(sandbox.clone());
+    }
 
     let wxml = "<view>{{ title }}</view>";
     let script = "const x: string = 1;\nPage({ data: { title: \"hi\" } });\n";
@@ -6725,9 +6495,7 @@ fn optional_real_engine_script_diagnostics_smoke() {
     let adapter = TsgoBackendAdapter::new(
         PinnedEngine::pinned(),
         views,
-        Arc::new(super::session::NativeSessionFactory::new(
-            SessionOptions::new(executable, sandbox),
-        )),
+        Arc::new(super::runtime::VirtualSessionFactory::new()),
     );
     let result = adapter
         .script_diagnostics(&DiagnosticsRequest {
@@ -6778,31 +6546,9 @@ fn optional_real_engine_script_diagnostics_smoke() {
 
 #[test]
 fn optional_real_engine_definition_smoke() {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = matches!(
-            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
-            Ok("1" | "true")
-        );
-        assert!(
-            !required,
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
-        );
-        eprintln!(
-            "optional real-engine adapter definition test skipped: set TSGO_BIN to the pinned \
-             7.1.0-beta lib/tsc"
-        );
+    if super::runtime::skip_unless_real_engine("real type adapter") {
         return;
-    };
-    let executable = PathBuf::from(&bin);
-    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let sandbox = std::env::temp_dir().join(format!(
-        "wxml-tsgo-adapter-definition-{}-{count}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&sandbox).expect("sandbox");
-    let _cleanup = Cleanup(sandbox.clone());
+    }
 
     let wxml = "<view>{{ u.name }}</view>";
     let script = r#"import type { User } from "./model";
@@ -6837,9 +6583,7 @@ export {};
     let adapter = TsgoBackendAdapter::new(
         PinnedEngine::pinned(),
         views,
-        Arc::new(super::session::NativeSessionFactory::new(
-            SessionOptions::new(executable, sandbox),
-        )),
+        Arc::new(super::runtime::VirtualSessionFactory::new()),
     );
     let result = adapter
         .definition(DefinitionRequest {
@@ -6872,31 +6616,9 @@ export {};
 
 #[test]
 fn optional_real_engine_completion_smoke() {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = matches!(
-            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
-            Ok("1" | "true")
-        );
-        assert!(
-            !required,
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
-        );
-        eprintln!(
-            "optional real-engine adapter completion test skipped: set TSGO_BIN to the pinned \
-             7.1.0-beta lib/tsc"
-        );
+    if super::runtime::skip_unless_real_engine("real type adapter") {
         return;
-    };
-    let executable = PathBuf::from(&bin);
-    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let sandbox = std::env::temp_dir().join(format!(
-        "wxml-tsgo-adapter-completion-{}-{count}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&sandbox).expect("sandbox");
-    let _cleanup = Cleanup(sandbox.clone());
+    }
 
     // `u.name` is a valid fragment, so both cursors are real member-completion
     // positions: after `u.` (empty prefix) and after `u.na` (partial prefix).
@@ -6934,9 +6656,7 @@ export {};
     let adapter = TsgoBackendAdapter::new(
         PinnedEngine::pinned(),
         views,
-        Arc::new(super::session::NativeSessionFactory::new(
-            SessionOptions::new(executable, sandbox),
-        )),
+        Arc::new(super::runtime::VirtualSessionFactory::new()),
     );
 
     let cursors = [
@@ -6957,31 +6677,9 @@ export {};
 
 #[test]
 fn optional_real_engine_trailing_dot_completion_smoke() {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = matches!(
-            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
-            Ok("1" | "true")
-        );
-        assert!(
-            !required,
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
-        );
-        eprintln!(
-            "optional real-engine trailing-dot completion test skipped: set TSGO_BIN to the \
-             pinned 7.1.0-beta lib/tsc"
-        );
+    if super::runtime::skip_unless_real_engine("real type adapter") {
         return;
-    };
-    let executable = PathBuf::from(&bin);
-    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let sandbox = std::env::temp_dir().join(format!(
-        "wxml-tsgo-adapter-trailing-dot-completion-{}-{count}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&sandbox).expect("sandbox");
-    let _cleanup = Cleanup(sandbox.clone());
+    }
 
     // `{{ user. }}` and the unclosed `{{ user.na` have no mountable
     // fragment. The adapter must mount the bare `user` root and ask the engine
@@ -6997,9 +6695,7 @@ fn optional_real_engine_trailing_dot_completion_smoke() {
     let adapter = TsgoBackendAdapter::new(
         PinnedEngine::pinned(),
         views,
-        Arc::new(super::session::NativeSessionFactory::new(
-            SessionOptions::new(executable, sandbox),
-        )),
+        Arc::new(super::runtime::VirtualSessionFactory::new()),
     );
     for (wxml, needle, prefix_len) in [
         ("<view>😀{{ user. }}</view>", "user.", 0_u32),
@@ -7035,31 +6731,9 @@ fn optional_real_engine_trailing_dot_completion_smoke() {
 
 #[test]
 fn optional_real_engine_adapter_document_symbols_smoke() {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = matches!(
-            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
-            Ok("1" | "true")
-        );
-        assert!(
-            !required,
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
-        );
-        eprintln!(
-            "optional real-engine adapter document-symbol test skipped: set TSGO_BIN to the \
-             pinned 7.1.0-beta lib/tsc"
-        );
+    if super::runtime::skip_unless_real_engine("real type adapter") {
         return;
-    };
-    let executable = PathBuf::from(&bin);
-    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let sandbox = std::env::temp_dir().join(format!(
-        "wxml-tsgo-adapter-document-symbols-{}-{count}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&sandbox).expect("sandbox");
-    let _cleanup = Cleanup(sandbox.clone());
+    }
 
     let script = "interface User {\n  name: string;\n}\ntype Alias = User;\nclass Demo {\n  value: number = 1;\n  method(): void {}\n}\nfunction helper(): number {\n  return 1;\n}\nconst answer = 42;\nPage({\n  data: { user: { name: \"Ada\" } },\n});\n";
     let wxml = "<view>{{ user.name }}</view>";
@@ -7067,9 +6741,7 @@ fn optional_real_engine_adapter_document_symbols_smoke() {
     let adapter = TsgoBackendAdapter::new(
         PinnedEngine::pinned(),
         views,
-        Arc::new(super::session::NativeSessionFactory::new(
-            SessionOptions::new(executable, sandbox),
-        )),
+        Arc::new(super::runtime::VirtualSessionFactory::new()),
     );
     let result = adapter
         .document_symbols(document_symbols_request(&adapter, script_file()))
@@ -7187,14 +6859,6 @@ fn assert_real_engine_completion(result: &CompletionResult, cursor: u32, prefix_
             "the real engine must expose a non-empty native sortText: {item:?}"
         );
         assert_eq!(item.filter_text.as_deref(), Some(item.label.as_str()));
-    }
-}
-
-struct Cleanup(PathBuf);
-
-impl Drop for Cleanup {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
@@ -7654,24 +7318,10 @@ fn capabilities_do_not_claim_component_diagnostics_uncovered() {
 /// covered by the existing integration tests, not by this adapter seam.
 #[test]
 fn optional_real_engine_component_binding_fixture() {
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
     const GLOBALS: &str = "declare function Page(options: {\n  data: { pageTitle: string; total: number };\n  __wxml_check_0(this: { data: { pageTitle: string; total: number } }): void;\n  onCardTap(): void;\n}): void;\n";
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = matches!(
-            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
-            Ok("1" | "true")
-        );
-        assert!(
-            !required,
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
-        );
-        eprintln!(
-            "optional real-engine component binding test skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc"
-        );
+    if super::runtime::skip_unless_real_engine("real type adapter") {
         return;
-    };
-    let executable = PathBuf::from(&bin);
-    assert!(executable.is_file(), "TSGO_BIN does not point at a file");
+    }
 
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
@@ -7703,20 +7353,10 @@ fn optional_real_engine_component_binding_fixture() {
     view.files = Arc::from(files);
     assert_eq!(view.components.len(), 2);
 
-    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-    let sandbox = std::env::temp_dir().join(format!(
-        "wxml-tsgo-component-{}-{count}",
-        std::process::id()
-    ));
-    std::fs::create_dir_all(&sandbox).expect("sandbox");
-    let _cleanup = Cleanup(sandbox.clone());
-
     let adapter = TsgoBackendAdapter::new(
         PinnedEngine::pinned(),
         Arc::new(FakeViews::new(view)),
-        Arc::new(super::session::NativeSessionFactory::new(
-            SessionOptions::new(executable, sandbox),
-        )),
+        Arc::new(super::runtime::VirtualSessionFactory::new()),
     );
     let context = RequestContext::new(
         host.project_revision(),

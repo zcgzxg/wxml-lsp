@@ -356,18 +356,18 @@ pub(crate) fn expression_site(text: &str, offset: u32) -> Option<ExpressionSite>
     // mounted fragment, so only a typed member prefix at the cursor can be
     // synthesized safely.
     let full_end = usize::try_from(expr_end).ok()?;
-    if let Some(full) = text.get(start..full_end) {
-        if !full.is_empty() {
-            let parsed = parse_expression(full, 0);
-            if parsed.errors.is_empty() && !parsed.expr.walk().any(Expr::is_missing) {
-                if !crate::backend_tsgo::input::expression_has_free_root(&parsed.expr, full) {
-                    return Some(ExpressionSite::Unsupported(
-                        "the expression has no data root to complete",
-                    ));
-                }
-                if closed {
-                    return None;
-                }
+    if let Some(full) = text.get(start..full_end)
+        && !full.is_empty()
+    {
+        let parsed = parse_expression(full, 0);
+        if parsed.errors.is_empty() && !parsed.expr.walk().any(Expr::is_missing) {
+            if !crate::backend_tsgo::input::expression_has_free_root(&parsed.expr, full) {
+                return Some(ExpressionSite::Unsupported(
+                    "the expression has no data root to complete",
+                ));
+            }
+            if closed {
+                return None;
             }
         }
     }

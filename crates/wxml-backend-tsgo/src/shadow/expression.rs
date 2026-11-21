@@ -542,22 +542,22 @@ impl<'a> Lexer<'a> {
     fn scan_number(&mut self) -> Result<(), ShadowError> {
         let start = self.index;
         let bytes = self.bytes;
-        if bytes[self.index] == b'0' {
-            if let Some(radix) = self.peek(1) {
-                let lower = radix.to_ascii_lowercase();
-                if lower == b'x' || lower == b'b' || lower == b'o' {
-                    self.index += 2;
-                    while self.index < bytes.len()
-                        && (bytes[self.index].is_ascii_hexdigit() || bytes[self.index] == b'_')
-                    {
-                        self.index += 1;
-                    }
-                    if self.index < bytes.len() && bytes[self.index] == b'n' {
-                        self.index += 1;
-                    }
-                    self.push(TokenKind::Number, start)?;
-                    return Ok(());
+        if bytes[self.index] == b'0'
+            && let Some(radix) = self.peek(1)
+        {
+            let lower = radix.to_ascii_lowercase();
+            if lower == b'x' || lower == b'b' || lower == b'o' {
+                self.index += 2;
+                while self.index < bytes.len()
+                    && (bytes[self.index].is_ascii_hexdigit() || bytes[self.index] == b'_')
+                {
+                    self.index += 1;
                 }
+                if self.index < bytes.len() && bytes[self.index] == b'n' {
+                    self.index += 1;
+                }
+                self.push(TokenKind::Number, start)?;
+                return Ok(());
             }
         }
         while self.index < bytes.len()

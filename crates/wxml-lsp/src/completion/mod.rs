@@ -59,10 +59,10 @@ pub(crate) fn static_completion(
     if let context::Site::AttributeName { tag, .. } = &detected.site {
         // Discovery may predate an unsaved component script edit; refresh the
         // one tag being completed from the effective script text.
-        if let Some(component) = components.iter_mut().find(|entry| entry.name == *tag) {
-            if let Some(facts) = server.host.component_properties_for(file, tag) {
-                component.apply_live_facts(facts);
-            }
+        if let Some(component) = components.iter_mut().find(|entry| entry.name == *tag)
+            && let Some(facts) = server.host.component_properties_for(file, tag)
+        {
+            component.apply_live_facts(facts);
         }
     }
     let text = context.source().text();

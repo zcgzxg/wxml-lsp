@@ -420,10 +420,10 @@ fn wxs_hover(
         if contains(block.module_range, offset) || contains(block.src_range, offset) {
             return Some(module_hover(wxs, path, block));
         }
-        if contains(block.body_range, offset) {
-            if let Some(hover) = wxs_body_hover(path, text, wxs, offset, access) {
-                return Some(hover);
-            }
+        if contains(block.body_range, offset)
+            && let Some(hover) = wxs_body_hover(path, text, wxs, offset, access)
+        {
+            return Some(hover);
         }
     }
     // A static `src` whose target is not in the snapshot still explains why
@@ -501,19 +501,18 @@ fn wxs_body_hover(
             });
         }
     }
-    if let Some(token) = word_at(text, offset) {
-        if let Some(member) = wxs
+    if let Some(token) = word_at(text, offset)
+        && let Some(member) = wxs
             .summary
             .members
             .iter()
             .find(|member| member.name == token)
-        {
-            return Some(StaticHover {
-                contents: member_markdown(Some(&wxs.module), &wxs.summary, member, &token),
-                range: Some(word_range(text, offset)?),
-                positions: vec![defined_position(path, wxs, member.name_range)],
-            });
-        }
+    {
+        return Some(StaticHover {
+            contents: member_markdown(Some(&wxs.module), &wxs.summary, member, &token),
+            range: Some(word_range(text, offset)?),
+            positions: vec![defined_position(path, wxs, member.name_range)],
+        });
     }
     None
 }
@@ -557,15 +556,12 @@ fn module_hover(wxs: &LocatedWxs, path: &str, block: &WxsBlock) -> StaticHover {
     }
     let positions = wxs.path.as_ref().map_or_else(
         || {
-            block
-                .body_range
-                .map(|body| {
-                    vec![StaticPosition {
-                        path: path.to_owned(),
-                        range: body,
-                    }]
-                })
-                .unwrap_or_default()
+            block.body_range.map_or_default(|body| {
+                vec![StaticPosition {
+                    path: path.to_owned(),
+                    range: body,
+                }]
+            })
         },
         |source| {
             vec![StaticPosition {
@@ -604,10 +600,10 @@ fn member_markdown(
             MAX_HOVER_DOC_CHARS,
         ));
     }
-    if member.kind == wxml_types::WxsMemberKind::Module {
-        if let Some(specifier) = &member.module_specifier {
-            let _ = write!(contents, "\n\nRequires `{specifier}`");
-        }
+    if member.kind == wxml_types::WxsMemberKind::Module
+        && let Some(specifier) = &member.module_specifier
+    {
+        let _ = write!(contents, "\n\nRequires `{specifier}`");
     }
     if summary.truncated {
         contents.push_str("\n\nPartial: WXS summary truncated; later members were skipped.");
@@ -687,29 +683,27 @@ fn wxs_definition(
         }
         if contains(block.body_range, offset) {
             for require in &wxs.summary.requires {
-                if contains(Some(shift(wxs, require.specifier_range)), offset) {
-                    if let Some(resolved) = resolve_static_specifier(
+                if contains(Some(shift(wxs, require.specifier_range)), offset)
+                    && let Some(resolved) = resolve_static_specifier(
                         wxs.path.as_deref().unwrap_or(path),
                         &require.specifier,
                     )
                     .filter(|resolved| access(resolved).is_some())
-                    {
-                        return Some(vec![StaticPosition {
-                            path: resolved,
-                            range: zero_range(),
-                        }]);
-                    }
+                {
+                    return Some(vec![StaticPosition {
+                        path: resolved,
+                        range: zero_range(),
+                    }]);
                 }
             }
-            if let Some(token) = word_at(text, offset) {
-                if let Some(member) = wxs
+            if let Some(token) = word_at(text, offset)
+                && let Some(member) = wxs
                     .summary
                     .members
                     .iter()
                     .find(|member| member.name == token)
-                {
-                    return Some(vec![defined_position(path, wxs, member.name_range)]);
-                }
+            {
+                return Some(vec![defined_position(path, wxs, member.name_range)]);
             }
         }
     }
@@ -874,18 +868,18 @@ fn template_hover(
         if contains(Some(call.name_range), offset) {
             let definitions = templates_named(index, &call.name);
             let mut contents = format!("template `{}`", call.name);
-            if let Some(data) = &call.data {
-                if !data.keys.is_empty() {
-                    let _ = write!(
-                        contents,
-                        "\n\nInstance data: {}",
-                        data.keys
-                            .iter()
-                            .map(|key| format!("`{}`", key.name))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    );
-                }
+            if let Some(data) = &call.data
+                && !data.keys.is_empty()
+            {
+                let _ = write!(
+                    contents,
+                    "\n\nInstance data: {}",
+                    data.keys
+                        .iter()
+                        .map(|key| format!("`{}`", key.name))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
             }
             if let Some(partial) = &partial {
                 let _ = write!(contents, "\n\nPartial: {partial}");
@@ -1209,8 +1203,7 @@ fn template_data_completion(
     let template = templates_named(index, &name).first().copied()?;
     let mut present: HashSet<String> = call
         .and_then(|call| call.data.as_ref())
-        .map(|data| data.keys.iter().map(|key| key.name.clone()).collect())
-        .unwrap_or_default();
+        .map_or_default(|data| data.keys.iter().map(|key| key.name.clone()).collect());
     // Keys already typed before the cursor in an unparsed object literal.
     let value_text =
         &text[site.value_range.start() as usize..(site.value_range.end() as usize).min(text.len())];
@@ -1411,11 +1404,11 @@ fn chain_at(
             if expr.range() == token {
                 // The cursor is on the whole chain.
             }
-            if property.range() == token {
-                if let ExprKind::Identifier { .. } = property.kind() {
-                    let root = root_identifier(object, text)?;
-                    return Some((root, Some(token_text.to_owned())));
-                }
+            if property.range() == token
+                && let ExprKind::Identifier { .. } = property.kind()
+            {
+                let root = root_identifier(object, text)?;
+                return Some((root, Some(token_text.to_owned())));
             }
             chain_at(object, text, token, token_text)
         }
@@ -1556,10 +1549,9 @@ pub(crate) fn hover_value(document: &Document, hover: &StaticHover) -> Value {
     if let Some(range) = hover
         .range
         .and_then(|range| source_range_value(document, range))
+        && let Some(object) = value.as_object_mut()
     {
-        if let Some(object) = value.as_object_mut() {
-            object.insert("range".to_owned(), range);
-        }
+        object.insert("range".to_owned(), range);
     }
     value
 }
@@ -1632,13 +1624,13 @@ pub(crate) fn completion_values(document: &Document, result: &StaticCompletionLi
                 "detail": item.detail,
                 "textEdit": {"range": range, "newText": item.label},
             });
-            if let Some(documentation) = &item.documentation {
-                if let Some(object) = value.as_object_mut() {
-                    object.insert(
-                        "documentation".to_owned(),
-                        json!({"kind": "plaintext", "value": documentation}),
-                    );
-                }
+            if let Some(documentation) = &item.documentation
+                && let Some(object) = value.as_object_mut()
+            {
+                object.insert(
+                    "documentation".to_owned(),
+                    json!({"kind": "plaintext", "value": documentation}),
+                );
             }
             Some(value)
         })
@@ -1665,10 +1657,10 @@ pub(crate) fn host_access(server: &Server) -> impl Fn(&str) -> Option<String> + 
         if let Some(document) = server.workspace.get_by_file(&file) {
             return Some(document.snapshot().text().to_owned());
         }
-        if let Some(uri) = server.host.uri_for(&file) {
-            if let Some(document) = server.workspace.get(&uri) {
-                return Some(document.snapshot().text().to_owned());
-            }
+        if let Some(uri) = server.host.uri_for(&file)
+            && let Some(document) = server.workspace.get(&uri)
+        {
+            return Some(document.snapshot().text().to_owned());
         }
         server.host.file_text(&file).map(|text| text.to_string())
     }
@@ -2516,10 +2508,9 @@ fn innermost_mustache_expr(tree: &SyntaxTree, offset: u32) -> Option<&Expr> {
         if range.start() <= offset
             && offset <= range.end()
             && found.is_none_or(|(best, _)| range.len() < best)
+            && let Some(expr) = tree.expr(id)
         {
-            if let Some(expr) = tree.expr(id) {
-                found = Some((range.len(), expr));
-            }
+            found = Some((range.len(), expr));
         }
     }
     found.map(|(_, expr)| expr)
@@ -2626,20 +2617,20 @@ fn signature_parameters(signature: &str) -> Vec<String> {
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth -= 1,
             ',' if depth == 0 => {
-                if let Some(parameter) = inner.get(start..index).map(str::trim) {
-                    if !parameter.is_empty() {
-                        parameters.push(parameter.to_owned());
-                    }
+                if let Some(parameter) = inner.get(start..index).map(str::trim)
+                    && !parameter.is_empty()
+                {
+                    parameters.push(parameter.to_owned());
                 }
                 start = index + character.len_utf8();
             }
             _ => {}
         }
     }
-    if let Some(parameter) = inner.get(start..).map(str::trim) {
-        if !parameter.is_empty() {
-            parameters.push(parameter.to_owned());
-        }
+    if let Some(parameter) = inner.get(start..).map(str::trim)
+        && !parameter.is_empty()
+    {
+        parameters.push(parameter.to_owned());
     }
     parameters
 }

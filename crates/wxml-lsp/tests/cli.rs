@@ -7,9 +7,6 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 
-use sha2::{Digest, Sha256};
-use wxml_backend_tsgo::config::PinnedEngine;
-
 const BIN: &str = env!("CARGO_BIN_EXE_wxml-lsp");
 
 #[test]
@@ -253,7 +250,6 @@ fn build_package_skeleton(tag: &str) -> TempTree {
     let tree = TempTree::new(tag);
     let package = tree.path().join("version");
     fs::create_dir_all(package.join("bin")).expect("bin");
-    fs::create_dir_all(package.join("engine/lib")).expect("engine lib");
     fs::create_dir_all(package.join("typings/miniprogram-api-typings")).expect("typings root");
     copy_file(Path::new(BIN), &package.join("bin/wxml-lsp"));
     tree
@@ -291,30 +287,50 @@ fn default_fails_closed_on_a_missing_typings_root() {
     let tree = build_package_skeleton("missing-typings");
     let package = tree.path().join("version");
     fs::remove_dir_all(package.join("typings")).expect("remove typings");
-    assert_default_fails_closed(&package, "the installed package layout is unsafe");
+    assert_default_fails_closed(&package, "the installed typings directory is missing");
 }
 
 #[test]
-fn default_fails_closed_on_a_missing_engine() {
-    let tree = build_package_skeleton("missing-engine");
+fn default_ignores_a_legacy_engine_layout_but_needs_typings() {
+    // An old install tree may still contain `engine/lib/tsc`. Discovery must
+    // ignore it; only the missing typings directory may fail startup.
+    let tree = build_package_skeleton("legacy-engine");
     let package = tree.path().join("version");
-    assert_default_fails_closed(&package, "the pinned native engine is missing");
-}
-
-#[test]
-fn default_fails_closed_on_an_engine_artifact_mismatch() {
-    let tree = build_package_skeleton("engine-mismatch");
-    let package = tree.path().join("version");
-    let engine = package.join("engine/lib/tsc");
-    fs::write(&engine, b"").expect("empty engine");
+    fs::create_dir_all(package.join("engine/lib")).expect("engine lib");
+    fs::write(package.join("engine/lib/tsc"), b"legacy engine\n").expect("legacy engine");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&engine, fs::Permissions::from_mode(0o755)).expect("engine mode");
+        fs::set_permissions(
+            package.join("engine/lib/tsc"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .expect("engine mode");
     }
-    assert_default_fails_closed(
-        &package,
-        "the pinned native engine does not match the pinned artifact",
+    fs::remove_dir_all(package.join("typings")).expect("remove typings");
+    assert_default_fails_closed(&package, "the installed typings directory is missing");
+
+    // The same legacy engine tree is ignored when typings exist: the binary
+    // reaches the LSP handshake and is not rejected for a missing engine.
+    let tree = build_package_skeleton("legacy-engine-ok");
+    let package = tree.path().join("version");
+    fs::create_dir_all(package.join("engine/lib")).expect("engine lib");
+    fs::write(package.join("engine/lib/tsc"), b"legacy engine\n").expect("legacy engine");
+    let output = run_framed_session(
+        &package.join("bin/wxml-lsp"),
+        &["--stdio", "--backend", "native"],
+        tree.path(),
+        POISON_ENV,
+        &standard_payloads(None),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("native engine discovery failed"),
+        "a legacy engine tree must be ignored: {stderr}"
+    );
+    assert!(
+        !stderr.contains("typings directory is missing"),
+        "typings must be discovered: {stderr}"
     );
 }
 
@@ -362,39 +378,27 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn real_engine_dir() -> Option<PathBuf> {
-    let bin = env_path("TSGO_BIN")?;
-    let bin = fs::canonicalize(bin).ok()?;
-    let directory = bin.parent()?.to_path_buf();
-    directory.join("lib.d.ts").is_file().then_some(directory)
-}
-
-fn real_typings_package() -> Option<PathBuf> {
-    let root = env_path("TSGO_TYPINGS_ROOT")
-        .or_else(|| env_path("TSGO_ASSET_ROOT").map(|asset| asset.join("typings")))?;
+fn real_typings_root() -> Option<PathBuf> {
+    let root = env_path("TSGO_TYPINGS_ROOT")?;
     let package =
         if root.file_name().and_then(|name| name.to_str()) == Some("miniprogram-api-typings") {
-            root
+            root.clone()
         } else {
             root.join("miniprogram-api-typings")
         };
-    package.join("index.d.ts").is_file().then_some(package)
+    package.join("index.d.ts").is_file().then_some(root)
 }
 
-fn real_inputs() -> Option<(PathBuf, PathBuf)> {
+fn real_inputs() -> Option<PathBuf> {
     let required = required_engine();
-    let Some(engine) = real_engine_dir() else {
-        skip_or_fail("TSGO_BIN must point at the pinned engine lib/tsc", required);
-        return None;
-    };
-    let Some(typings) = real_typings_package() else {
+    let Some(typings) = real_typings_root() else {
         skip_or_fail(
-            "TSGO_TYPINGS_ROOT (or TSGO_ASSET_ROOT/typings) must provide miniprogram-api-typings",
+            "TSGO_TYPINGS_ROOT must provide miniprogram-api-typings",
             required,
         );
         return None;
     };
-    Some((engine, typings))
+    Some(typings)
 }
 
 struct TempTree {
@@ -426,17 +430,6 @@ fn copy_file(source: &Path, destination: &Path) {
     fs::copy(source, destination).expect("copy fixture file");
 }
 
-fn copy_flat_directory(source: &Path, destination: &Path) {
-    fs::create_dir_all(destination).expect("flat destination");
-    for entry in fs::read_dir(source).expect("source directory") {
-        let entry = entry.expect("directory entry");
-        let metadata = entry.metadata().expect("entry metadata");
-        if metadata.is_file() {
-            copy_file(&entry.path(), &destination.join(entry.file_name()));
-        }
-    }
-}
-
 fn copy_tree(source: &Path, destination: &Path) {
     fs::create_dir_all(destination).expect("tree destination");
     for entry in fs::read_dir(source).expect("source tree") {
@@ -451,135 +444,19 @@ fn copy_tree(source: &Path, destination: &Path) {
     }
 }
 
-fn sha256_file(path: &Path) -> String {
-    use std::fmt::Write as _;
-    let bytes = fs::read(path).expect("hash file");
-    let digest = Sha256::digest(&bytes);
-    let mut encoded = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        write!(encoded, "{byte:02x}").expect("hex");
-    }
-    encoded
-}
-
-#[cfg(unix)]
-fn mode_of(path: &Path) -> String {
-    use std::os::unix::fs::PermissionsExt;
-    let mode = fs::metadata(path)
-        .expect("mode metadata")
-        .permissions()
-        .mode()
-        & 0o777;
-    format!("{mode:04o}")
-}
-
-#[cfg(not(unix))]
-fn mode_of(_path: &Path) -> String {
-    "0644".to_owned()
-}
-
-fn manifest_file_entries(package: &Path) -> Vec<serde_json::Value> {
-    let mut files = Vec::new();
-    let mut stack = vec![package.to_path_buf()];
-    while let Some(directory) = stack.pop() {
-        for entry in fs::read_dir(&directory).expect("package directory") {
-            let entry = entry.expect("package entry");
-            let path = entry.path();
-            let metadata = entry.metadata().expect("package metadata");
-            if metadata.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if !metadata.is_file() {
-                continue;
-            }
-            let relative = path
-                .strip_prefix(package)
-                .expect("package relative path")
-                .to_string_lossy()
-                .replace('\\', "/");
-            files.push(serde_json::json!({
-                "path": relative,
-                "sha256": sha256_file(&path),
-                "size": metadata.len(),
-                "mode": mode_of(&path),
-            }));
-        }
-    }
-    files.sort_by(|left, right| {
-        left["path"]
-            .as_str()
-            .unwrap_or_default()
-            .cmp(right["path"].as_str().unwrap_or_default())
-    });
-    files
-}
-
-fn install_manifest_value(package: &Path) -> serde_json::Value {
-    let pin = PinnedEngine::pinned();
-    let prefix = pin
-        .version_line()
-        .strip_suffix(pin.version())
-        .unwrap_or("Version ");
-    let files = manifest_file_entries(package);
-    serde_json::json!({
-        "schemaVersion": 2,
-        "package": "wxml-lsp",
-        "packageVersion": env!("CARGO_PKG_VERSION"),
-        "platform": "linux-x86_64",
-        "protocolVersion": 2,
-        "builtAt": "2026-11-19T00:00:00Z",
-        "engine": {
-            "name": "typescript",
-            "version": pin.version(),
-            "sourceCommit": pin.git_head(),
-            "distribution": pin.package(),
-            "distributionUrl": "https://registry.npmjs.org/@typescript/typescript-linux-x64/-/typescript-linux-x64-7.1.0-beta.tgz",
-            "distributionIntegrity": pin.sri(),
-            "distributionSha256": pin.tarball_sha256(),
-            "distributionSize": 10_175_135,
-            "distributionFileCount": pin.file_count(),
-            "distributionUnpackedSize": pin.unpacked_bytes(),
-            "apiSchemaVersion": pin.ast_protocol_version(),
-            "astHeaderBytes": pin.ast_header_bytes(),
-            "license": "Apache-2.0",
-            "licenseFiles": ["engine/LICENSE", "engine/NOTICE.txt"],
-            "binary": pin.executable(),
-            "probe": {"args": ["--version"], "expectPrefix": prefix},
-        },
-        "typeAssets": [],
-        "binaries": [],
-        "files": files,
-    })
-}
-
-fn write_manifest_value(package: &Path, manifest: &serde_json::Value) {
-    let path = package.join("manifest.json");
-    let mut bytes = serde_json::to_vec_pretty(manifest).expect("manifest json");
-    bytes.push(b'\n');
-    fs::write(&path, bytes).expect("manifest write");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).expect("manifest mode");
-    }
-}
-
-fn write_install_manifest(package: &Path) {
-    write_manifest_value(package, &install_manifest_value(package));
-}
-
-/// Builds a temporary install tree shaped like a real native package.
-fn build_install_tree(tag: &str, engine: &Path, typings: &Path) -> TempTree {
+/// Builds a temporary install tree shaped like a real typings-only package.
+///
+/// `typings` is the directory that contains `miniprogram-api-typings`.
+fn build_install_tree(tag: &str, typings: &Path) -> TempTree {
     let tree = TempTree::new(tag);
     let package = tree.path().join("version");
     fs::create_dir_all(package.join("bin")).expect("bin");
-    fs::create_dir_all(package.join("engine/lib")).expect("engine lib");
     fs::create_dir_all(package.join("typings/miniprogram-api-typings")).expect("typings root");
     copy_file(Path::new(BIN), &package.join("bin/wxml-lsp"));
-    copy_flat_directory(engine, &package.join("engine/lib"));
-    copy_tree(typings, &package.join("typings/miniprogram-api-typings"));
-    write_install_manifest(&package);
+    copy_tree(
+        &typings.join("miniprogram-api-typings"),
+        &package.join("typings/miniprogram-api-typings"),
+    );
     tree
 }
 
@@ -816,10 +693,10 @@ fn run_native_session(package: &Path, cwd: &Path) -> std::process::Output {
 
 #[test]
 fn optional_real_install_tree_serves_native_stdio_without_path_node() {
-    let Some((engine, typings)) = real_inputs() else {
+    let Some(typings) = real_inputs() else {
         return;
     };
-    let tree = build_install_tree("serve", &engine, &typings);
+    let tree = build_install_tree("serve", &typings);
     let package = tree.path().join("version");
     let unrelated = tree.path().join("unrelated-cwd");
     fs::create_dir_all(&unrelated).expect("unrelated cwd");
@@ -848,10 +725,10 @@ fn optional_real_install_tree_serves_native_stdio_without_path_node() {
 
 #[test]
 fn optional_real_install_tree_serves_native_stdio_by_default() {
-    let Some((engine, typings)) = real_inputs() else {
+    let Some(typings) = real_inputs() else {
         return;
     };
-    let tree = build_install_tree("serve-default", &engine, &typings);
+    let tree = build_install_tree("serve-default", &typings);
     let package = tree.path().join("version");
     let unrelated = tree.path().join("unrelated-cwd");
     fs::create_dir_all(&unrelated).expect("unrelated cwd");
@@ -942,10 +819,10 @@ fn optional_real_install_tree_serves_native_stdio_by_default() {
 
 #[test]
 fn optional_real_install_tree_default_fails_closed_without_typings() {
-    let Some((engine, typings)) = real_inputs() else {
+    let Some(typings) = real_inputs() else {
         return;
     };
-    let tree = build_install_tree("default-missing-assets", &engine, &typings);
+    let tree = build_install_tree("default-missing-assets", &typings);
     let package = tree.path().join("version");
     fs::remove_dir_all(package.join("typings/miniprogram-api-typings")).expect("remove typings");
     let output = Command::new(package.join("bin/wxml-lsp"))
@@ -974,10 +851,10 @@ fn optional_real_install_tree_default_fails_closed_without_typings() {
 
 #[test]
 fn optional_real_install_tree_without_typings_fails_closed() {
-    let Some((engine, typings)) = real_inputs() else {
+    let Some(typings) = real_inputs() else {
         return;
     };
-    let tree = build_install_tree("missing-assets", &engine, &typings);
+    let tree = build_install_tree("missing-assets", &typings);
     let package = tree.path().join("version");
     fs::remove_dir_all(package.join("typings/miniprogram-api-typings")).expect("remove typings");
     let output = Command::new(package.join("bin/wxml-lsp"))

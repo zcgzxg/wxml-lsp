@@ -10,6 +10,8 @@
 
 **2026-11-20 后续**：安装机制已由 [ADR-0009](0009-project-slimming.md) 替代。`wxml-delivery` 及其 manifest v2、`versions/<version>` + `current` 布局已删除；安装改由 `scripts/install-native.sh` 完成，布局为 `<root>/bin/wxml-lsp`、`<root>/engine/lib/tsc`、`<root>/typings/`。本文保留的运行时信任边界、引擎/类型资产 pin 和 fail-closed 原则仍然有效；原子升级、回滚、归档缓存和许可证生成不再是当前能力。
 
+**2026-11-21 后续**：[ADR-0012](0012-in-process-tsrs-session.md) 已取代上条及本文中 `engine/lib/tsc` 安装与引擎校验相关部分；类型引擎改为进程内，安装树只保留二进制与 typings。以上历史结论保留为决策记录，不作改写。
+
 ## Context
 
 项目只面向本人在 Linux 上使用 Zed，当前没有 Marketplace 发布、官方下载域名或服务器自动安装服务。Zed 扩展存在两种可选的上游交付方式：

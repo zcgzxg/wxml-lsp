@@ -56,10 +56,10 @@ fn diagnostic_value(document: &Document, diagnostic: &Diagnostic) -> Option<Valu
         "source": "wxml-lsp",
         "message": sanitized_message(&diagnostic.message),
     });
-    if let Some(code) = diagnostic.code.as_ref() {
-        if let Some(object) = value.as_object_mut() {
-            object.insert("code".to_owned(), Value::String(sanitized_reason(code)));
-        }
+    if let Some(code) = diagnostic.code.as_ref()
+        && let Some(object) = value.as_object_mut()
+    {
+        object.insert("code".to_owned(), Value::String(sanitized_reason(code)));
     }
     Some(value)
 }
@@ -361,15 +361,13 @@ impl Server {
         };
         let script = path.as_ref().is_some_and(script_diagnostics_path)
             && matches!(self.host.route(uri), DocumentRoute::Script(_));
-        if let Some(path) = path {
-            if let Ok(file) = self.host.file_id(&path) {
-                if let Err(error) =
-                    self.workspace
-                        .open_file(uri, file, text.clone(), version, ViewRevision::new(0))
-                {
-                    log(format_args!("side document open failed: {error}"));
-                }
-            }
+        if let Some(path) = path
+            && let Ok(file) = self.host.file_id(&path)
+            && let Err(error) =
+                self.workspace
+                    .open_file(uri, file, text.clone(), version, ViewRevision::new(0))
+        {
+            log(format_args!("side document open failed: {error}"));
         }
         match self.host.open_document(OpenDocument {
             uri: uri.to_owned(),
@@ -813,17 +811,16 @@ impl Server {
             // The backend restarted. The document may be unchanged, but the new
             // generation has not checked it yet. Marking it dirty makes the
             // retry that follows this completed job schedule a fresh request.
-            if self.workspace.is_current(&done.stamp) {
-                if let Some(uri) = self
+            if self.workspace.is_current(&done.stamp)
+                && let Some(uri) = self
                     .workspace
                     .get_by_file(&done.stamp.file)
                     .map(|document| document.uri().to_owned())
-                {
-                    log(format_args!(
-                        "dropping script diagnostics for an old backend epoch and rescheduling"
-                    ));
-                    self.mark_dirty(&uri);
-                }
+            {
+                log(format_args!(
+                    "dropping script diagnostics for an old backend epoch and rescheduling"
+                ));
+                self.mark_dirty(&uri);
             }
             return Vec::new();
         }
@@ -942,16 +939,15 @@ impl Server {
                 // the new generation has not checked this snapshot yet. Mark it
                 // dirty so the retry that follows this completed job schedules a
                 // fresh request with the new epoch.
-                if current {
-                    if let Some(uri) = self
+                if current
+                    && let Some(uri) = self
                         .workspace
                         .get_by_file(&done.stamp.file)
                         .map(|document| document.uri().to_owned())
-                    {
-                        // Reuse the epoch already read for this event instead
-                        // of asking the backend again.
-                        let _ = self.schedule_diagnostics_with_epoch(&uri, epoch);
-                    }
+                {
+                    // Reuse the epoch already read for this event instead
+                    // of asking the backend again.
+                    let _ = self.schedule_diagnostics_with_epoch(&uri, epoch);
                 }
                 return Vec::new();
             }
@@ -1027,10 +1023,10 @@ impl Server {
             failure,
         );
         let mode = super::mode_diagnostics::diagnostics(document);
-        if !mode.is_empty() {
-            if let Some(diagnostics) = params.get_mut("diagnostics").and_then(Value::as_array_mut) {
-                diagnostics.extend(mode);
-            }
+        if !mode.is_empty()
+            && let Some(diagnostics) = params.get_mut("diagnostics").and_then(Value::as_array_mut)
+        {
+            diagnostics.extend(mode);
         }
         vec![Outgoing::notification(PUBLISH, params)]
     }
@@ -1078,10 +1074,10 @@ impl Server {
                 )
             },
         );
-        if !mode.is_empty() {
-            if let Some(diagnostics) = params.get_mut("diagnostics").and_then(Value::as_array_mut) {
-                diagnostics.extend(mode);
-            }
+        if !mode.is_empty()
+            && let Some(diagnostics) = params.get_mut("diagnostics").and_then(Value::as_array_mut)
+        {
+            diagnostics.extend(mode);
         }
         vec![Outgoing::notification(PUBLISH, params)]
     }

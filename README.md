@@ -2,11 +2,12 @@
 
 个人自用的微信小程序 WXML 语言服务器，目标是在 Zed 中得到可追踪到脚本类型的模板体验：悬停显示 `data`/`properties` 字段的真实类型与 JSDoc，定义跳转到声明，类型错误落在 WXML 的准确范围。
 
-实现是 Rust，无 Node 运行时。类型能力来自固定的原生 tsgo 引擎（`@typescript/typescript-linux-x64@7.1.0-beta`）和 `miniprogram-api-typings@5.3.1` 类型资产，两者由 `assets.lock.json` 固定。
+实现是 Rust，无 Node 运行时。类型能力来自进程内固定版本的 tsrs 类型引擎（`7.1.0-beta.tsrs4`，内嵌 TypeScript 标准库）和 `miniprogram-api-typings@5.3.1` 类型资产；引擎由 Cargo 精确 pin，typings 由 `assets.lock.json` 固定。
 
 - 形态：本地安装、自用；没有 marketplace 发布、远端 release 或发布者签名。
 - 平台：仅在 Linux x86_64 验证；Windows/macOS 未验证。
-- 决策背景：[ADR 索引](docs/adr/README.md)，重点见 [ADR-0008](docs/adr/0008-rust-tsgo-no-node-backend.md)（native 默认，Node 已移除）。
+- 工具链：MSRV 1.100（workspace `Cargo.toml` 的 `rust-version`），edition 2024。
+- 决策背景：[ADR 索引](docs/adr/README.md)，重点见 [ADR-0008](docs/adr/0008-rust-tsgo-no-node-backend.md)（native 默认，Node 已移除）和 [ADR-0012](docs/adr/0012-in-process-tsrs-session.md)（进程内类型会话）。
 
 ## 架构与分层
 
@@ -14,8 +15,8 @@
 Zed 扩展（editors/zed，Rust/WASM）
   │  LSP over stdio
   ▼
-wxml-lsp            传输、多项目宿主、请求路由、调度与恢复
-  ├─ wxml-backend-tsgo   原生 tsgo 适配：进程、沙箱、shadow、查询、源码映射
+wxml-lsp            传输、多项目宿主、请求路由、调度与降级
+  ├─ wxml-backend-tsgo   进程内类型会话适配：只读 VFS、shadow、查询、源码映射
   ├─ wxml-types          C0 契约、模板语义、WXS/静态摘要、后端接口
   ├─ wxml-project        URI/路径、overlay、多 app/惰性发现、tsconfig、样式/资源索引
   ├─ wxml-syntax         容错 lexer/parser、Mustache、WXS rawtext
@@ -24,11 +25,11 @@ wxml-lsp            传输、多项目宿主、请求路由、调度与恢复
 
 依赖方向：`wxml-text` → `wxml-syntax` → `wxml-types` / `wxml-project` → `wxml-backend-tsgo` → `wxml-lsp`。禁止反向依赖，也不允许 `wxml-types → wxml-project`；边界见 [ADR-0001](docs/adr/0001-layered-language-service-architecture.md)。
 
-类型路径：`wxml-lsp` 把 WXML、关联脚本与配置投影成内存快照交给 `wxml-backend-tsgo`，后者驱动独立 tsgo 子进程完成类型查询，再把结果映射回模板的 UTF-16 范围。业务文件不写盘，也不需要修改 `Page({...})`/`Component({...})` 写法。
+类型路径：`wxml-lsp` 把 WXML、关联脚本与配置投影成内存快照交给 `wxml-backend-tsgo`，后者在进程内驱动类型会话完成类型查询，再把结果映射回模板的 UTF-16 范围。业务文件不写盘，也不需要修改 `Page({...})`/`Component({...})` 写法。
 
 ## 构建
 
-工具链为 stable（`rust-toolchain.toml`，含 clippy/rustfmt），edition 2024。
+工具链为 stable（`rust-toolchain.toml`，含 clippy/rustfmt），edition 2024，MSRV 为 Rust 1.100。
 
 ```bash
 cargo build --release
@@ -39,26 +40,24 @@ cargo build --release
 
 ```bash
 wxml-lsp --stdio              # native 默认后端
-wxml-lsp --stdio --backend native   # 严格 native：要求已安装引擎
+wxml-lsp --stdio --backend native   # 严格 native：要求已安装类型资产
 wxml-lsp --stdio --mock       # 进程内 mock 后端，仅用于测试
 wxml-lsp --version | --help
 ```
 
-单独构建二进制不足以获得类型能力：运行时需要下面安装好的引擎与类型资产。
+单独构建二进制不足以获得类型能力：运行时需要下面安装好的 typings 资产；TypeScript 标准库随二进制内嵌，不需要额外文件。
 
 ## 安装
 
-`scripts/install-native.sh` 把 release 二进制、固定引擎和类型资产组装成运行时可发现的安装根：
+`scripts/install-native.sh` 把 release 二进制与固定类型资产组装成运行时可发现的安装根：
 
 ```text
 <root>/
 ├── bin/wxml-lsp
-├── engine/lib/tsc
-├── engine/lib/lib*.d.ts
 └── typings/miniprogram-api-typings/
 ```
 
-`assets.lock.json` 是唯一的固定输入：脚本只下载其中登记的 tarball，逐个校验字节数与 SHA-256 后解包到上述位置，再从已安装布局做 fail-closed 检查。安装根必须是完整包，不能只拷贝二进制。
+`assets.lock.json` 是类型资产的固定输入：脚本只下载其中登记的 typings tarball，校验字节数与 SHA-256 后解包到上述位置，再从已安装布局做 fail-closed 检查。引擎没有可执行文件或标准库资产需要安装；旧布局中的 `engine/` 与 `lib/tsc` 会被忽略。安装根必须是完整包，不能只拷贝二进制。
 
 ```bash
 cargo build --release
@@ -67,7 +66,7 @@ scripts/install-native.sh --root "$root"
 # 其他选项（--binary、--assets）见 scripts/install-native.sh --help
 ```
 
-运行时发现规则：`wxml-lsp` 只从自身可执行文件（canonical 后的 `current_exe`）出发，要求可执行文件位于 `<package>/bin/wxml-lsp`，且同根下存在 `engine/lib/tsc`、`engine/lib` 标准库和 `typings/miniprogram-api-typings`；不读 `PATH`、不读工作目录、不读后端环境变量。引擎字节、标准库与类型资产的摘要必须与内建 pin 一致，否则在 LSP 握手前 fail closed。唯一的降级是 `NotInstalled`：从 `target/release/` 直接运行或布局不完整时退化为 `HostOnly`（静态能力可用，类型查询返回 `Unavailable`）。
+运行时发现规则：`wxml-lsp` 只从自身可执行文件（canonical 后的 `current_exe`）出发，要求可执行文件位于 `<package>/bin/wxml-lsp`，且同根下存在 `typings/miniprogram-api-typings`；不读 `PATH`、不读工作目录，也不再识别 `TSGO_BIN`/`TSGO_ASSET_ROOT` 等引擎覆盖变量。typings 摘要必须与内建 pin 一致，否则在 LSP 握手前 fail closed。安装发现阶段唯一的降级是 `NotInstalled`：从 `target/release/` 直接运行或布局不完整时退化为 `HostOnly`（静态能力可用，类型查询返回 `Unavailable`）。运行期类型会话初始化失败或中毒时，类型能力降级为 `Unavailable`/`SessionPoisoned`，语言服务器其余功能继续工作。
 
 ## 在 Zed 中使用
 
@@ -133,7 +132,7 @@ scripts/install-native.sh --root "$root"
 | 静态语言功能 | 标签/属性/属性值/`wx:` 指令补全，组件与属性事实，class 与资源路径补全/导航/诊断，documentSymbol/outline，folding、selection range、linked editing。 |
 | 格式化 | 全量与 range 保真格式化：只规范开始标签内部空白，解析失败时零编辑。 |
 | 语义工具 | references、prepareRename/rename（安全 `EditPlan`）、codeAction（quickfix）、semanticTokens、workspaceSymbol、inlayHint、signatureHelp、codeLens。 |
-| 编辑一致性 | overlay 优先于磁盘；诊断 debounce（默认 120 ms，可配 0–5000）、同文档合并、有界队列、排队取消、timeout/crash 降级与重启恢复。 |
+| 编辑一致性 | overlay 优先于磁盘；诊断 debounce（默认 120 ms，可配 0–5000）、同文档合并、有界队列、排队取消、timeout 丢弃迟到结果；类型会话不可恢复时显式降级，不重启进程。 |
 
 rename 只接受 `documentChanges`，打开文件带客户端 version、关闭文件重读后以 `version: null` 返回，失败零编辑，服务端不写盘。自定义组件 tag rename、动态访问、跨视图冲突等场景保守拒绝。诊断策略见 [类型诊断策略](docs/reference/type-diagnostics.md)，通用行为见 [WXML 语言功能基线](docs/reference/wxml-language-feature-baseline.md)。
 
@@ -146,7 +145,7 @@ crates/
 ├── wxml-syntax            # lexer/parser、Mustache、源码映射
 ├── wxml-project           # 项目/页面/组件、usingComponents、tsconfig、样式/资源索引
 ├── wxml-types             # C0 契约、模板语义、WXS/静态摘要、后端接口与 mock
-├── wxml-backend-tsgo      # 原生 tsgo 适配（native/script/shadow/query）
+├── wxml-backend-tsgo      # 进程内类型会话适配（native/script/shadow/query）
 └── wxml-lsp               # LSP 二进制
 editors/zed/               # Zed Dev Extension（独立 workspace）
 scripts/install-native.sh  # 组装 native 安装根
@@ -154,7 +153,7 @@ tests/fixtures/            # AC-001..AC-013 验收样本
 docs/adr/                  # 架构决策记录
 docs/reference/            # 契约、诊断策略、功能基线、来源记录
 openspec/                  # spec-driven 变更流程（changes/、archive/、specs/）
-assets.lock.json           # 引擎与类型资产的固定输入
+assets.lock.json           # typings 类型资产的固定输入
 ```
 
 ## 检查与测试
@@ -180,6 +179,16 @@ cargo build --target wasm32-wasip2 --locked
 
 CI（`.github/workflows/ci.yml`）只有 `check` 作业，执行 fmt、clippy（`-D warnings`）、test、doc 和 cargo-deny。
 
+默认 `cargo test` 不需要真实类型引擎：真实类型用例在未设置门禁时跳过。要运行进程内真实类型门禁，提供 typings 根并要求缺失即失败：
+
+```bash
+TSGO_TYPINGS_ROOT="$HOME/.local/share/wxml-lsp/typings/miniprogram-api-typings" \
+WXML_REQUIRE_REAL_ENGINE=1 \
+cargo test --workspace --all-features
+```
+
+两个变量名称沿用历史门禁，但语义已是“进程内引擎 + 外部 typings”：不会启动外部引擎，也没有 `TSGO_BIN`/`TSGO_ASSET_ROOT` 覆盖入口。
+
 ## 已知限制
 
 - 默认零配置惰性发现，也支持单个 LSP workspace 内的显式多 app；不支持完整多 workspace，`apps`/`projectRoot` 或 tsconfig 变更后需重启。最近 `tsconfig.json` 选择暂不展开 solution-style `references`。
@@ -187,13 +196,15 @@ CI（`.github/workflows/ci.yml`）只有 `check` 作业，执行 fmt、clippy（
 - 模板体不做逐次实例化的完整类型检查；WXS 仅支持静态子集且从不执行。
 - 插件/远程组件缺少本地可信元数据时降级，不伪造属性；动态 template/`is`、动态 WXS 导出不猜测。
 - 性能与稳定性只在单个小 fixture 上验证，没有大项目语料；真实主桌面 Wayland 与连续键入延迟未验收。
+- 类型引擎在语言服务器进程内运行：单请求 panic 以该请求失败返回，但会使类型会话中毒、类型能力降级；OOM、abort、栈溢出会终止整个进程；运行中的类型计算不可取消，超时只是放弃等待。
+- 会话中毒后类型能力持续不可用，必须重启语言服务器才能恢复；不自动重建会话。
 - 没有发布者签名、自动更新或跨平台安装器；信任模型见 [ADR-0007](docs/adr/0007-local-delivery-trust-model.md)。
 
 ## 文档
 
 - [文档索引](docs/README.md)
-- [ADR 索引](docs/adr/README.md)：0001 分层、0002 类型检查与源码映射、0003 文档同步、0004 交付闸门、0005 文档自包含、0006 显式根、0007 交付信任、0008 native 后端、0009 瘦身、0010 零配置惰性发现
+- [ADR 索引](docs/adr/README.md)：0001 分层、0002 类型检查与源码映射、0003 文档同步、0004 交付闸门、0005 文档自包含、0006 显式根、0007 交付信任、0008 native 后端、0009 瘦身、0010 零配置惰性发现、0012 进程内类型会话
 - [C0 基础契约](docs/reference/contracts.md)、[模板类型诊断策略](docs/reference/type-diagnostics.md)
-- [tsgo 原生后端合同](docs/reference/tsgo-native-contract.md)
+- [原生类型后端合同](docs/reference/tsgo-native-contract.md)（tsrs 进程内会话口径）
 - [来源与许可证记录](docs/reference/provenance.md)
 - 变更流程：[`openspec/`](openspec/)（活跃变更在 `changes/`，归档在 `changes/archive/`；`specs/` 尚未沉淀能力规格）

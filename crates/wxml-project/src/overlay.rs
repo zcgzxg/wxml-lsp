@@ -80,13 +80,13 @@ impl Overlay {
             return Err(OverlayError::TooLarge { size });
         }
         let key = FileKey::new(path);
-        if let Some(entry) = self.entries.get(&key) {
-            if revision <= entry.revision {
-                return Err(OverlayError::StaleRevision {
-                    stored: entry.revision,
-                    attempted: revision,
-                });
-            }
+        if let Some(entry) = self.entries.get(&key)
+            && revision <= entry.revision
+        {
+            return Err(OverlayError::StaleRevision {
+                stored: entry.revision,
+                attempted: revision,
+            });
         }
         self.entries.insert(
             key,

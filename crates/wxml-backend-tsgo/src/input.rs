@@ -29,14 +29,16 @@
 //! 256-file/8-MiB budget. The legacy [`AnalysisInput::new`] constructor is
 //! reserved for probes and old tests and carries no assets.
 //!
-//! [`TypeAssets::load_pinned`] is
-//! the production disk entry point: it walks the caller-supplied engine and
-//! typings roots, rejects unsafe entries, hashes every declaration and runs the
-//! same pin validation as [`TypeAssets::new`] against the built-in
-//! [`TypeAssetsPin::pinned_runtime`]. The caller-pinned
-//! [`TypeAssets::load_trusted`]
-//! is for tests and independently verified manifests. Neither verifies the
-//! install or the delivery manifest.
+//! [`TypeAssets::load_pinned_typings`] is the production disk entry point for
+//! the in-process engine: it walks the caller-supplied typings root, rejects
+//! unsafe entries, hashes every declaration and runs the same pin validation as
+//! [`TypeAssets::new_typings_only`] against the built-in
+//! [`TypeAssetsPin::pinned_typings_only`]. The standard library is embedded in
+//! the engine, so no engine root is read. [`TypeAssets::load_pinned`] and
+//! [`TypeAssets::load_trusted`] keep the historical full mode for compatibility
+//! tests; [`TypeAssets::load_trusted_typings`] is the caller-pinned typings-only
+//! form for tests and independently verified manifests. None of them verifies
+//! the install or the delivery manifest.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -144,6 +146,18 @@ pub const PINNED_TYPE_ASSET_FILES: u32 = PINNED_STANDARD_LIB_FILE_COUNT + PINNED
 
 /// Total mounted `.d.ts` bytes for the pinned fixture.
 pub const PINNED_TYPE_ASSET_BYTES: u64 = PINNED_STANDARD_LIB_BYTES + PINNED_TYPINGS_BYTES;
+
+/// Reserved virtual root reported when the standard library is embedded.
+///
+/// The in-process `tsrs` engine supplies its bundled `lib.*.d.ts` set, so a
+/// typings-only [`TypeAssets`] has no standard-library files to mount. This
+/// stable reserved path keeps [`TypeAssets::standard_lib_root`] non-empty
+/// without allocating a host path or creating a directory.
+pub const BUNDLED_STANDARD_LIBRARY_ROOT: &str = "/__wxml-bundled-standard-library";
+
+/// Bundle digest of an empty declaration set (`sha256("")`).
+const EMPTY_BUNDLE_DIGEST: &str =
+    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
 /// Bundle digest of the pinned `lib*.d.ts` set.
 ///
@@ -382,12 +396,16 @@ impl TypeAssetFile {
 /// recomputes every value and rejects a mismatch; there is no empty or default
 /// pin and no boolean bypass.
 ///
-/// Only [`Self::pinned_runtime`] is a built-in trusted anchor. [`Self::new`]
-/// anchors the version and both file counts to crate constants, but accepts
-/// caller-provided byte totals and bundle digests without establishing their
-/// provenance; a pin derived from the same tree that is about to be loaded
-/// proves nothing. Production wiring should use
-/// [`TypeAssets::load_pinned`]
+/// A pin created with [`Self::typings_only`] declares that the standard library
+/// is supplied by the in-process engine. In that mode the standard-library
+/// fields are fixed to zero/empty and only the typings identity is verified.
+///
+/// Only [`Self::pinned_runtime`] and [`Self::pinned_typings_only`] are built-in
+/// trusted anchors. [`Self::new`] anchors the version and both file counts to
+/// crate constants, but accepts caller-provided byte totals and bundle digests
+/// without establishing their provenance; a pin derived from the same tree that
+/// is about to be loaded proves nothing. Production wiring should use
+/// [`TypeAssets::load_pinned`] or [`TypeAssets::load_pinned_typings`]
 /// or pass a pin verified independently against the delivery manifest.
 ///
 /// The trusted *source* of this pin (manifest/package-root discovery and the
@@ -396,7 +414,8 @@ impl TypeAssetFile {
 /// assets. [`Self::pinned_runtime`] records the local pinned fixture:
 /// TypeScript 7.1.0-beta `lib*.d.ts` plus
 /// `backends/typescript` fixture `miniprogram-api-typings` 5.3.1
-/// runtime `.d.ts` closure (20 files).
+/// runtime `.d.ts` closure (20 files). [`Self::pinned_typings_only`] records the
+/// same typings closure with the standard library supplied in-process.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TypeAssetsPin {
     typings_version: String,
@@ -406,6 +425,7 @@ pub struct TypeAssetsPin {
     typings_file_count: u32,
     typings_bytes: u64,
     typings_bundle_digest: String,
+    standard_lib_embedded: bool,
 }
 
 impl TypeAssetsPin {
@@ -474,6 +494,54 @@ impl TypeAssetsPin {
             typings_file_count,
             typings_bytes,
             typings_bundle_digest,
+            standard_lib_embedded: false,
+        })
+    }
+
+    /// Validates a pin for a typings-only asset set.
+    ///
+    /// The in-process engine supplies the TypeScript standard library, so this
+    /// constructor fixes the standard-library count to `0`, its bytes to `0` and
+    /// its bundle digest to the empty-set digest. Only the typings version,
+    /// count and digest are caller-supplied and verified.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a typings version/count mismatch or a malformed digest.
+    pub fn typings_only(
+        typings_version: impl Into<String>,
+        typings_file_count: u32,
+        typings_bytes: u64,
+        typings_bundle_digest: impl Into<String>,
+    ) -> Result<Self, TypeAssetError> {
+        let typings_version = typings_version.into();
+        if typings_version != PINNED_TYPINGS_VERSION {
+            return Err(TypeAssetError::InvalidVersion {
+                version: typings_version,
+            });
+        }
+        if typings_file_count != PINNED_TYPINGS_FILE_COUNT {
+            return Err(TypeAssetError::PinMismatch {
+                field: "typingsFileCount",
+                expected: PINNED_TYPINGS_FILE_COUNT.to_string(),
+                actual: typings_file_count.to_string(),
+            });
+        }
+        let typings_bundle_digest = typings_bundle_digest.into();
+        if !is_sha256(&typings_bundle_digest) {
+            return Err(TypeAssetError::InvalidPinDigest {
+                field: "typingsBundleDigest",
+            });
+        }
+        Ok(Self {
+            typings_version,
+            standard_lib_file_count: 0,
+            standard_lib_bytes: 0,
+            standard_lib_bundle_digest: EMPTY_BUNDLE_DIGEST.to_owned(),
+            typings_file_count,
+            typings_bytes,
+            typings_bundle_digest,
+            standard_lib_embedded: true,
         })
     }
 
@@ -496,7 +564,35 @@ impl TypeAssetsPin {
             typings_file_count: PINNED_TYPINGS_FILE_COUNT,
             typings_bytes: PINNED_TYPINGS_BYTES,
             typings_bundle_digest: PINNED_TYPINGS_BUNDLE_DIGEST.to_owned(),
+            standard_lib_embedded: false,
         }
+    }
+
+    /// Returns the built-in production pin for a typings-only asset set.
+    ///
+    /// The TypeScript standard library is embedded in the in-process engine, so
+    /// this pin fixes the standard-library fields to zero/empty and verifies
+    /// only the pinned `miniprogram-api-typings` 5.3.1 runtime closure. Use it
+    /// through [`TypeAssets::load_pinned_typings`] in production.
+    #[must_use]
+    pub fn pinned_typings_only() -> Self {
+        Self {
+            typings_version: PINNED_TYPINGS_VERSION.to_owned(),
+            standard_lib_file_count: 0,
+            standard_lib_bytes: 0,
+            standard_lib_bundle_digest: EMPTY_BUNDLE_DIGEST.to_owned(),
+            typings_file_count: PINNED_TYPINGS_FILE_COUNT,
+            typings_bytes: PINNED_TYPINGS_BYTES,
+            typings_bundle_digest: PINNED_TYPINGS_BUNDLE_DIGEST.to_owned(),
+            standard_lib_embedded: true,
+        }
+    }
+
+    /// Returns whether the standard library is supplied by the in-process
+    /// engine instead of mounted assets.
+    #[must_use]
+    pub const fn standard_lib_embedded(&self) -> bool {
+        self.standard_lib_embedded
     }
 
     /// Returns the exact typings package version.
@@ -561,8 +657,12 @@ impl TypeAssetsPin {
 /// production disk loader: it reads the two pinned package roots, rejects unsafe
 /// entries, hashes every declaration and validates the built-in production pin.
 /// [`Self::load_trusted`] performs the same walk with a caller-supplied pin and
-/// is reserved for tests or independently verified manifests. A production host
-/// reads and hashes the pinned package once, then shares the value through an
+/// is reserved for tests or independently verified manifests.
+///
+/// [`Self::new_typings_only`] (and [`Self::load_pinned_typings`] on disk) is the
+/// in-process-engine mode: only `miniprogram-api-typings` is mounted, because
+/// the engine supplies its bundled standard library. A production host reads and
+/// hashes the pinned typings package once, then shares the value through an
 /// [`Arc`] for every snapshot. Construction requires a [`TypeAssetsPin`] and
 /// recomputes counts, byte totals and bundle digests.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -586,6 +686,10 @@ impl TypeAssets {
     /// `miniprogram-api-typings/index.d.ts` and its referenced
     /// `miniprogram-api-typings/types/index.d.ts` are mandatory.
     ///
+    /// This full mode remains for compatibility tests and for callers that still
+    /// mount an external standard library. Production startup uses
+    /// [`Self::new_typings_only`].
+    ///
     /// # Errors
     ///
     /// Rejects overlapping roots, duplicate or unsafe paths, an oversized set
@@ -594,6 +698,47 @@ impl TypeAssets {
     /// fail-closed: callers must not spawn or reuse a native session with an
     /// incomplete type environment.
     pub fn new(
+        standard_lib_root: AssetPath,
+        typings_root: AssetPath,
+        files: Vec<TypeAssetFile>,
+        pin: TypeAssetsPin,
+    ) -> Result<Self, TypeAssetError> {
+        Self::build(standard_lib_root, typings_root, files, pin)
+    }
+
+    /// Validates a typings-only asset set against a typings-only pin.
+    ///
+    /// The standard library is supplied by the in-process engine, so only
+    /// `typings_root/miniprogram-api-typings` files are accepted. Any file under
+    /// the reserved [`BUNDLED_STANDARD_LIBRARY_ROOT`] is rejected: a typings-only
+    /// environment must not mount an external standard library.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a non-typings-only pin, a file outside the typings package,
+    /// duplicate or unsafe paths, an oversized set, missing typings entry points
+    /// and any count, byte or bundle-digest mismatch against `pin`.
+    pub fn new_typings_only(
+        typings_root: AssetPath,
+        files: Vec<TypeAssetFile>,
+        pin: TypeAssetsPin,
+    ) -> Result<Self, TypeAssetError> {
+        if !pin.standard_lib_embedded {
+            return Err(TypeAssetError::PinMismatch {
+                field: "standardLibFileCount",
+                expected: "0".to_owned(),
+                actual: pin.standard_lib_file_count.to_string(),
+            });
+        }
+        let standard_lib_root = AssetPath::new(BUNDLED_STANDARD_LIBRARY_ROOT)?;
+        Self::build(standard_lib_root, typings_root, files, pin)
+    }
+
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one pass over the asset set keeps count/digest checks adjacent"
+    )]
+    fn build(
         standard_lib_root: AssetPath,
         typings_root: AssetPath,
         mut files: Vec<TypeAssetFile>,
@@ -624,6 +769,12 @@ impl TypeAssets {
             let path = file.path().as_str();
             let in_standard_lib = standard_lib_root.contains(path);
             let in_typings = within_asset_root(&typings_package_root, path);
+            if pin.standard_lib_embedded && in_standard_lib {
+                return Err(TypeAssetError::InvalidPath {
+                    path: path.to_owned(),
+                    reason: "standard library is embedded in the engine",
+                });
+            }
             if !in_standard_lib && !in_typings {
                 return Err(TypeAssetError::InvalidPath {
                     path: path.to_owned(),
@@ -651,11 +802,14 @@ impl TypeAssets {
             });
         }
 
-        for required in [
-            format!("{}/lib.d.ts", standard_lib_root.as_str()),
+        let mut required = vec![
             format!("{typings_package_root}/index.d.ts"),
             format!("{typings_package_root}/types/index.d.ts"),
-        ] {
+        ];
+        if !pin.standard_lib_embedded {
+            required.push(format!("{}/lib.d.ts", standard_lib_root.as_str()));
+        }
+        for required in required {
             if !seen.contains(required.as_str()) {
                 return Err(TypeAssetError::MissingRequired { path: required });
             }
@@ -703,7 +857,17 @@ impl TypeAssets {
         })
     }
 
+    /// Returns whether the standard library is supplied by the in-process
+    /// engine instead of mounted files.
+    #[must_use]
+    pub const fn is_typings_only(&self) -> bool {
+        self.pin.standard_lib_embedded
+    }
+
     /// Returns the fixed engine `lib` root.
+    ///
+    /// In typings-only mode this is the stable reserved
+    /// [`BUNDLED_STANDARD_LIBRARY_ROOT`] path and mounts no files.
     #[must_use]
     pub const fn standard_lib_root(&self) -> &AssetPath {
         &self.standard_lib_root
@@ -790,6 +954,7 @@ pub struct TypeEnvironmentIdentity {
     options_digest: String,
     typings_version: String,
     standard_lib_root: String,
+    standard_lib_embedded: bool,
     typings_root: String,
     standard_lib_file_count: u32,
     standard_lib_bytes: u64,
@@ -808,6 +973,7 @@ impl TypeEnvironmentIdentity {
             options_digest: options.digest().to_owned(),
             typings_version: pin.typings_version().to_owned(),
             standard_lib_root: assets.standard_lib_root().as_str().to_owned(),
+            standard_lib_embedded: pin.standard_lib_embedded(),
             typings_root: assets.typings_root().as_str().to_owned(),
             standard_lib_file_count: pin.standard_lib_file_count(),
             standard_lib_bytes: pin.standard_lib_bytes(),
@@ -831,9 +997,18 @@ impl TypeEnvironmentIdentity {
     }
 
     /// Returns the fixed standard-library root.
+    ///
+    /// Typings-only environments report the reserved
+    /// [`BUNDLED_STANDARD_LIBRARY_ROOT`] path.
     #[must_use]
     pub fn standard_lib_root(&self) -> &str {
         &self.standard_lib_root
+    }
+
+    /// Returns whether the standard library is embedded in the engine.
+    #[must_use]
+    pub const fn standard_lib_embedded(&self) -> bool {
+        self.standard_lib_embedded
     }
 
     /// Returns the fixed typings root.
@@ -1963,6 +2138,52 @@ pub(crate) mod test_support {
         )
         .expect("fixture assets")
     }
+
+    /// Builds the 20-file typings closure for one typings root.
+    pub(crate) fn typings_only_files(typings_root: &str) -> Vec<TypeAssetFile> {
+        let typings_package = format!("{typings_root}/{MINIPROGRAM_TYPINGS}");
+        (0..PINNED_TYPINGS_FILE_COUNT)
+            .map(|index| {
+                let name = match index {
+                    0 => "index.d.ts".to_owned(),
+                    1 => "types/index.d.ts".to_owned(),
+                    _ => format!("types/extra{index}.d.ts"),
+                };
+                file(
+                    &format!("{typings_package}/{name}"),
+                    &format!("declare const typings{index}: number;\n"),
+                )
+            })
+            .collect()
+    }
+
+    /// Builds a typings-only pin matching [`typings_only_files`].
+    pub(crate) fn typings_only_pin_for(
+        typings_root: &str,
+        files: &[TypeAssetFile],
+    ) -> TypeAssetsPin {
+        let typings_package = format!("{typings_root}/{MINIPROGRAM_TYPINGS}");
+        let mut typings: Vec<&TypeAssetFile> = files.iter().collect();
+        TypeAssetsPin::typings_only(
+            PINNED_TYPINGS_VERSION,
+            PINNED_TYPINGS_FILE_COUNT,
+            typings.iter().map(|file| file.size()).sum(),
+            bundle_digest(&typings_package, &mut typings),
+        )
+        .expect("matching typings-only pin")
+    }
+
+    /// Builds an in-memory typings-only asset set.
+    pub(crate) fn typings_only_assets(typings_root: &str) -> TypeAssets {
+        let files = typings_only_files(typings_root);
+        let pin = typings_only_pin_for(typings_root, &files);
+        TypeAssets::new_typings_only(
+            AssetPath::new(typings_root).expect("typings root"),
+            files,
+            pin,
+        )
+        .expect("typings-only assets")
+    }
 }
 
 #[cfg(test)]
@@ -2319,6 +2540,90 @@ mod tests {
             Err(TypeAssetError::PinMismatch {
                 field: "standardLibBundleDigest",
                 ..
+            })
+        ));
+    }
+
+    #[test]
+    fn typings_only_assets_mount_no_standard_library() {
+        let assets = test_support::typings_only_assets("/typings");
+        assert!(assets.is_typings_only());
+        assert_eq!(assets.file_count(), PINNED_TYPINGS_FILE_COUNT);
+        assert_eq!(assets.total_bytes(), assets.pin().typings_bytes());
+        assert_eq!(assets.pin().standard_lib_file_count(), 0);
+        assert_eq!(assets.pin().standard_lib_bytes(), 0);
+        assert!(assets.pin().standard_lib_embedded());
+        assert_eq!(
+            assets.standard_lib_root().as_str(),
+            BUNDLED_STANDARD_LIBRARY_ROOT
+        );
+        assert!(
+            !assets
+                .files()
+                .iter()
+                .any(|file| file.path().as_str().ends_with("/lib.d.ts")),
+            "typings-only assets must not mount a standard library"
+        );
+
+        let identity = TypeEnvironmentIdentity::new(&CompilerOptions::default(), &assets);
+        assert!(identity.standard_lib_embedded());
+        assert_eq!(identity.standard_lib_root(), BUNDLED_STANDARD_LIBRARY_ROOT);
+    }
+
+    #[test]
+    fn typings_only_assets_reject_an_external_standard_library() {
+        let typings_root = "/typings";
+        let mut files = test_support::typings_only_files(typings_root);
+        let pin = test_support::typings_only_pin_for(typings_root, &files);
+        files.push(asset_file(
+            &format!("{BUNDLED_STANDARD_LIBRARY_ROOT}/lib.d.ts"),
+            "declare const external: number;\n",
+        ));
+        let result = TypeAssets::new_typings_only(
+            AssetPath::new(typings_root).expect("typings root"),
+            files,
+            pin,
+        );
+        assert!(matches!(
+            result,
+            Err(TypeAssetError::InvalidPath {
+                reason: "standard library is embedded in the engine",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn typings_only_pin_rejects_a_full_or_malformed_pin() {
+        let assets = test_support::typings_only_assets("/typings");
+        let result = TypeAssets::new_typings_only(
+            AssetPath::new("/typings").expect("typings root"),
+            assets.files().to_vec(),
+            TypeAssetsPin::pinned_runtime(),
+        );
+        assert!(matches!(
+            result,
+            Err(TypeAssetError::PinMismatch {
+                field: "standardLibFileCount",
+                ..
+            })
+        ));
+
+        assert!(matches!(
+            TypeAssetsPin::typings_only("5.3.1/../escape", 20, 1, sha("pin")),
+            Err(TypeAssetError::InvalidVersion { .. })
+        ));
+        assert!(matches!(
+            TypeAssetsPin::typings_only("5.3.1", 19, 1, sha("pin")),
+            Err(TypeAssetError::PinMismatch {
+                field: "typingsFileCount",
+                ..
+            })
+        ));
+        assert!(matches!(
+            TypeAssetsPin::typings_only("5.3.1", 20, 1, "not-a-sha"),
+            Err(TypeAssetError::InvalidPinDigest {
+                field: "typingsBundleDigest"
             })
         ));
     }

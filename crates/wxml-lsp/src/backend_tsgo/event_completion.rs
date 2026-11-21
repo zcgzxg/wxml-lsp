@@ -306,10 +306,10 @@ fn build_candidates(
     }
 
     let mut reasons = analysis.methods.problems.clone();
-    if reasons.is_empty() {
-        if let Some(reason) = analysis.methods.status.reason() {
-            reasons.push(reason.to_owned());
-        }
+    if reasons.is_empty()
+        && let Some(reason) = analysis.methods.status.reason()
+    {
+        reasons.push(reason.to_owned());
     }
     if analysis
         .methods

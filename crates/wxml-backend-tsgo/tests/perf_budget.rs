@@ -1,4 +1,5 @@
-//! Opt-in real-engine performance budgets for the native `tsgo` path (P5).
+//! Opt-in in-process type-query performance budgets for the native `tsrs`
+//! session (P5).
 //!
 //! Budgets are frozen from the historical migration plan (section 9.5); the
 //! plan is available at tag `pre-slim-20261120`:
@@ -12,11 +13,12 @@
 //! | queued cancellation/skip | p95 ≤ 100 ms |
 //! | static completion/structural query | p95 ≤ 50 ms (BLOCKED: no static path) |
 //!
-//! The test is opt-in and strictly serial. Cold start (spawn, `--version`,
-//! handshake and probe) is measured and printed but excluded from the samples;
-//! every metric additionally runs [`WARMUP`] untimed iterations first. The
-//! wall-clock assertions assume a quiet local machine with one engine, so do
-//! not run this on shared CI. Exact invocation with the pinned engine:
+//! The engine runs in-process: there is no executable, frame pipe or stderr
+//! reader to measure. Cold start (`NativeSession::start` plus handshake) is
+//! measured and printed but excluded from the samples; every metric
+//! additionally runs [`WARMUP`] untimed iterations first. The wall-clock
+//! assertions assume a quiet local machine, so run this strictly serial and do
+//! not run it on shared CI.
 //!
 //! The `diagnostics_after_edit` row is the plan's stop-typing metric: every
 //! sample first commits a real `updateProject` edit whose text and line number
@@ -27,23 +29,22 @@
 //! budget.
 //!
 //! ```text
-//! TSGO_BIN=/tmp/opencode/tsgo-spike/extract/7.1.0-beta/package/lib/tsc \
-//!   WXML_REQUIRE_REAL_ENGINE=1 \
+//! TSGO_TYPINGS_ROOT=$HOME/.local/share/wxml-lsp/typings/miniprogram-api-typings \
+//! WXML_REQUIRE_REAL_ENGINE=1 \
 //!   cargo test -p wxml-backend-tsgo --test perf_budget -- --nocapture --test-threads=1
 //! ```
 //!
-//! Without `TSGO_BIN` the test prints an explicit skip and passes. With
-//! `WXML_REQUIRE_REAL_ENGINE=1` a missing `TSGO_BIN` is a hard failure, and a
-//! `TSGO_BIN` that is not the pinned 7.1.0-beta executable fails the session
-//! identity check inside [`NativeSession::start`]; nothing is silently skipped.
+//! The gate is typings-based: the test runs when `TSGO_TYPINGS_ROOT` (or the
+//! staged fixture) provides a verified `miniprogram-api-typings` package, and
+//! skips explicitly otherwise. `WXML_REQUIRE_REAL_ENGINE=1` turns missing or
+//! invalid typings into a hard failure. The TypeScript standard library is
+//! bundled with the engine, so no `lib.d.ts` tree is read.
 //!
 //! The static completion budget has no measurable subject yet: this crate only
 //! implements the engine-backed completion query, so that metric is reported as
 //! BLOCKED instead of being measured with a substitute. Likewise the session
-//! layer exposes no cancel token for a running query, so end-to-end running
-//! cancellation is BLOCKED; queued cancellation is real production code in
-//! [`RpcDispatch`] (the queued request is removed before it is ever sent) and is
-//! measured there.
+//! layer exposes no cancel token for a running or queued query, so both
+//! cancellation metrics are reported as BLOCKED.
 
 #![allow(clippy::expect_used, clippy::too_many_lines)]
 
@@ -51,14 +52,16 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use wxml_backend_tsgo::config::{MAX_IN_FLIGHT_REQUESTS, MAX_LIVE_SNAPSHOTS};
+use wxml_backend_tsgo::config::MAX_LIVE_SNAPSHOTS;
 use wxml_backend_tsgo::input::{
-    AnalysisInput, DocumentRevision, ProjectKey, ProjectRoot, SnapshotRevision, SourceFile,
+    AnalysisInput, DocumentRevision, MINIPROGRAM_TYPINGS, ProjectKey, ProjectRoot,
+    SnapshotRevision, SourceFile, TypeAssets,
 };
-use wxml_backend_tsgo::native::framing::DEFAULT_FRAME_LIMITS;
-use wxml_backend_tsgo::native::rpc::RpcDispatch;
 use wxml_backend_tsgo::native::session::{DiagnosticsEvidence, NativeSession, SessionOptions};
 use wxml_backend_tsgo::native::strings::Utf16Position;
+
+#[path = "support/typings_fixture.rs"]
+mod typings_fixture;
 
 /// Measured samples per metric; plan section 9.5 requires at least 200.
 const SAMPLES: usize = 200;
@@ -148,27 +151,59 @@ fn required_engine() -> bool {
         .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
 }
 
-/// Returns the pinned executable, or an explicit skip when the gate is off.
-fn engine_executable() -> Option<PathBuf> {
+/// Normalizes `TSGO_TYPINGS_ROOT`, accepting either the parent root or the
+/// `miniprogram-api-typings` package directory itself.
+fn normalize_typings_root(path: &Path) -> PathBuf {
+    if path.file_name().and_then(|name| name.to_str()) == Some(MINIPROGRAM_TYPINGS) {
+        path.parent()
+            .map_or_else(|| path.to_path_buf(), Path::to_path_buf)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// A validated typings root plus the staged copy that keeps it alive.
+struct RealTypings {
+    _root: PathBuf,
+    _staged: Option<typings_fixture::Staged>,
+}
+
+/// Resolves and verifies the pinned typings, or skips explicitly.
+fn prepare_real_typings() -> Option<RealTypings> {
     let required = required_engine();
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
+    let (root, staged) = if let Some(raw) = std::env::var_os("TSGO_TYPINGS_ROOT") {
+        (normalize_typings_root(Path::new(&raw)), None)
+    } else if let Some(staged) = typings_fixture::stage() {
+        (staged.root().to_path_buf(), Some(staged))
+    } else {
         assert!(
             !required,
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1; \
-             set it to the pinned 7.1.0-beta lib/tsc"
+            "TSGO_TYPINGS_ROOT is required when WXML_REQUIRE_REAL_ENGINE=1; \
+             point it at miniprogram-api-typings or its parent directory"
         );
         eprintln!(
-            "perf-budget gate skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc \
+            "perf-budget test skipped: set TSGO_TYPINGS_ROOT to \
+             miniprogram-api-typings or its parent directory \
              (or WXML_REQUIRE_REAL_ENGINE=1 to make this a hard gate)"
         );
         return None;
     };
-    let executable = PathBuf::from(&bin);
-    assert!(
-        executable.is_file(),
-        "TSGO_BIN does not point at a file: {bin}"
-    );
-    Some(executable)
+    if let Err(error) = TypeAssets::load_pinned_typings(&root) {
+        assert!(
+            !required,
+            "invalid typings under {} when WXML_REQUIRE_REAL_ENGINE=1: {error}",
+            root.display()
+        );
+        eprintln!(
+            "perf-budget test skipped: cannot verify typings under {}: {error}",
+            root.display()
+        );
+        return None;
+    }
+    Some(RealTypings {
+        _root: root,
+        _staged: staged,
+    })
 }
 
 /// Builds one virtual project revision.
@@ -382,27 +417,13 @@ fn report(measurement: &Measurement, failures: &mut Vec<String>) {
 
 /// Measures cancelling the oldest queued request before it is ever sent.
 ///
-/// This is the real F1-24 queued path: the id is admitted as [`Queued`] after
-/// the eight in-flight slots are occupied, then abandoned without an engine
-/// round trip. A running-query cancel has no session API and stays BLOCKED.
-fn measure_queued_cancel() -> f64 {
-    let mut dispatch = RpcDispatch::new(DEFAULT_FRAME_LIMITS);
-    for _ in 0..MAX_IN_FLIGHT_REQUESTS {
-        let admission = dispatch.allocate_request().expect("in-flight request");
-        assert!(!admission.is_queued());
-    }
-    let queued = dispatch.allocate_request().expect("queued request");
-    assert!(queued.is_queued(), "the request must be queued");
-    let start = Instant::now();
-    dispatch
-        .abandon_request(queued.id())
-        .expect("abandon queued request");
-    start.elapsed().as_secs_f64() * 1_000.0
-}
+/// The former dispatch queue no longer exists: `tsrs_api::Session` executes one
+/// caller-supplied request at a time and exposes no cancel token, so both
+/// running and queued cancellation are reported as BLOCKED.
 
 #[test]
 fn real_engine_meets_p5_performance_budgets() {
-    let Some(executable) = engine_executable() else {
+    let Some(_typings) = prepare_real_typings() else {
         return;
     };
 
@@ -424,13 +445,8 @@ fn real_engine_meets_p5_performance_budgets() {
     );
 
     let cold_start = Instant::now();
-    let mut session = NativeSession::start(SessionOptions::new(executable.clone(), sandbox))
-        .unwrap_or_else(|error| {
-            panic!(
-                "failed to start the pinned 7.1.0-beta engine at {}: {error}",
-                executable.display()
-            )
-        });
+    let mut session = NativeSession::start(SessionOptions::new(PathBuf::new(), sandbox))
+        .unwrap_or_else(|error| panic!("failed to start the in-process engine: {error}"));
     println!(
         "[perf] cold_start_ms={:.3} (excluded from samples)",
         cold_start.elapsed().as_secs_f64() * 1_000.0
@@ -510,13 +526,10 @@ fn real_engine_meets_p5_performance_budgets() {
         &project_root,
         1,
     ));
-    measurements.push(measure("cancel_queued_skip", CANCEL_QUEUED_P95_MS, || {
-        std::hint::black_box(measure_queued_cancel());
-    }));
 
     println!(
-        "[perf] cancel_queued_skip scope: dispatch layer only; the queued request \
-         is removed before any engine send and no engine round trip is timed"
+        "[perf] cancel_queued_skip     BLOCKED budget_p95={CANCEL_QUEUED_P95_MS:.0}ms \
+         reason=\"the in-process session exposes no queued-request queue\""
     );
     println!(
         "[perf] static_completion       BLOCKED budget_p95={STATIC_COMPLETION_P95_MS:.0}ms \
@@ -590,21 +603,7 @@ fn real_engine_meets_p5_performance_budgets() {
         cap = MAX_LIVE_SNAPSHOTS,
     );
 
-    let shutdown = session.shutdown().expect("shutdown report");
-    println!(
-        "[perf] shutdown forced_kill={} detached_threads={} stderr_discarded_bytes={}",
-        shutdown.forced_kill(),
-        shutdown.threads_detached(),
-        shutdown.stderr_discarded_bytes()
-    );
-    assert!(
-        !shutdown.forced_kill(),
-        "perf shutdown needed SIGKILL; graceful reclamation failed"
-    );
-    assert!(
-        !shutdown.threads_detached(),
-        "perf shutdown detached reader threads"
-    );
+    session.shutdown().expect("shutdown");
     assert!(
         !Path::new(&project_root).exists(),
         "the engine must not write the virtual project root to the host"

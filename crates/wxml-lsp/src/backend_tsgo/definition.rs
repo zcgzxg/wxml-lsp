@@ -195,11 +195,11 @@ fn mark_partial(status: &mut CapabilityStatus, reason: &str) {
         };
         return;
     }
-    if let CapabilityStatus::Partial { reason: existing } = status {
-        if !existing.split("; ").any(|part| part == reason) {
-            existing.push_str("; ");
-            existing.push_str(reason);
-        }
+    if let CapabilityStatus::Partial { reason: existing } = status
+        && !existing.split("; ").any(|part| part == reason)
+    {
+        existing.push_str("; ");
+        existing.push_str(reason);
     }
 }
 

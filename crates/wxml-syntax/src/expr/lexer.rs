@@ -255,14 +255,13 @@ impl<'a> Lexer<'a> {
                 Some(b'o' | b'O') => Some(|c: char| matches!(c, '0'..='7')),
                 _ => None,
             };
-            if let Some(digit_ok) = digit_ok {
-                if self
+            if let Some(digit_ok) = digit_ok
+                && self
                     .peek_char_after(self.offset + 2)
                     .is_some_and(|(c, _)| digit_ok(c))
-                {
-                    radix_digits = Some(digit_ok);
-                    self.offset += 2;
-                }
+            {
+                radix_digits = Some(digit_ok);
+                self.offset += 2;
             }
         }
         if let Some(digit_ok) = radix_digits {
@@ -284,14 +283,14 @@ impl<'a> Lexer<'a> {
             self.offset += 1;
             self.consume_ascii_digits();
         }
-        if let Some(('e' | 'E', len)) = self.peek_char() {
-            if self.exponent_has_digits(self.offset + len) {
-                self.offset += len;
-                if let Some(('+' | '-', sign_len)) = self.peek_char() {
-                    self.offset += sign_len;
-                }
-                self.consume_ascii_digits();
+        if let Some(('e' | 'E', len)) = self.peek_char()
+            && self.exponent_has_digits(self.offset + len)
+        {
+            self.offset += len;
+            if let Some(('+' | '-', sign_len)) = self.peek_char() {
+                self.offset += sign_len;
             }
+            self.consume_ascii_digits();
         }
         self.push(TokenKind::Number, start);
     }

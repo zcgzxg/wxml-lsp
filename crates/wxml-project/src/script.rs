@@ -1185,9 +1185,7 @@ fn property_type(value: &str) -> (String, Option<String>) {
     let trimmed = value.trim();
     if trimmed.starts_with('{') {
         let type_expression = object_member(trimmed, "type");
-        let optional = object_member(trimmed, "optionalTypes")
-            .map(constructor_list)
-            .unwrap_or_default();
+        let optional = object_member(trimmed, "optionalTypes").map_or_default(constructor_list);
         let default = object_member(trimmed, "value")
             .map(str::trim)
             .filter(|text| !text.is_empty())

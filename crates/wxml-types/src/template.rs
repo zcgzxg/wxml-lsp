@@ -411,13 +411,11 @@ impl<'a> Engine<'a> {
                     .iter()
                     .copied()
                     .find(|attribute| attribute.name() == Some(binding_attribute))
-                {
-                    if attribute
+                    && attribute
                         .value()
                         .is_some_and(|value| value.mustaches().next().is_some())
-                    {
-                        self.record(UnsupportedKind::DynamicForBinding, attribute.text_range());
-                    }
+                {
+                    self.record(UnsupportedKind::DynamicForBinding, attribute.text_range());
                 }
             }
         }
@@ -949,10 +947,11 @@ fn event_attribute(name: &str) -> Option<(EventBindingKind, &str)> {
         }
     }
     for (prefix, binding) in COMPACT_EVENT_PREFIXES {
-        if let Some(event) = name.strip_prefix(prefix) {
-            if !event.is_empty() && !event.starts_with(':') {
-                return Some((binding, event));
-            }
+        if let Some(event) = name.strip_prefix(prefix)
+            && !event.is_empty()
+            && !event.starts_with(':')
+        {
+            return Some((binding, event));
         }
     }
     None

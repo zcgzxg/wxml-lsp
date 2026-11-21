@@ -872,18 +872,17 @@ fn build_request_plan_with_completion(
             mount: mount.clone(),
         });
     }
-    if let Some(fragment) = completion {
-        if let Some(mount) = built
+    if let Some(fragment) = completion
+        && let Some(mount) = built
             .view
             .mounts
             .iter()
             .find(|mount| mount.fragment_id == COMPLETION_FRAGMENT_ID)
-        {
-            fragment_maps.push(FragmentMap {
-                wxml_range: fragment.wxml_range,
-                mount: mount.clone(),
-            });
-        }
+    {
+        fragment_maps.push(FragmentMap {
+            wxml_range: fragment.wxml_range,
+            mount: mount.clone(),
+        });
     }
     if let Some(fragment) = &event_point {
         if let Some(mount) = built

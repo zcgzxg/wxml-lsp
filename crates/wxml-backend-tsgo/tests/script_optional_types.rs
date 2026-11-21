@@ -14,8 +14,11 @@
 //! freeze the same text for the Rust script overlay, including behavior
 //! contributions, and prove that the declaration-derived shadow type uses it.
 
+use std::path::{Path, PathBuf};
+
 use wxml_backend_tsgo::input::{
-    AnalysisInput, DocumentRevision, ProjectKey, ProjectRoot, SnapshotRevision, SourceFile,
+    AnalysisInput, DocumentRevision, MINIPROGRAM_TYPINGS, ProjectKey, ProjectRoot,
+    SnapshotRevision, SourceFile, TypeAssets,
 };
 use wxml_backend_tsgo::script::ScriptAnalysis;
 use wxml_backend_tsgo::script::ScriptRequest;
@@ -26,6 +29,69 @@ use wxml_backend_tsgo::shadow::layout::{
     build_in_place_shadow, build_in_place_shadow_with_behavior,
 };
 use wxml_backend_tsgo::shadow::mapping::SourceRange;
+
+#[path = "support/typings_fixture.rs"]
+mod typings_fixture;
+
+/// Whether the real-engine gate must fail instead of skipping.
+fn require_real_engine() -> bool {
+    std::env::var("WXML_REQUIRE_REAL_ENGINE")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
+/// Normalizes `TSGO_TYPINGS_ROOT`, accepting either the parent root or the
+/// `miniprogram-api-typings` package directory itself.
+fn normalize_typings_root(path: &Path) -> PathBuf {
+    if path.file_name().and_then(|name| name.to_str()) == Some(MINIPROGRAM_TYPINGS) {
+        path.parent()
+            .map_or_else(|| path.to_path_buf(), Path::to_path_buf)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// A validated typings root plus the staged copy that keeps it alive.
+struct RealTypings {
+    _root: PathBuf,
+    _staged: Option<typings_fixture::Staged>,
+}
+
+fn prepare_real_typings() -> Option<RealTypings> {
+    let required = require_real_engine();
+    let (root, staged) = if let Some(raw) = std::env::var_os("TSGO_TYPINGS_ROOT") {
+        (normalize_typings_root(Path::new(&raw)), None)
+    } else if let Some(staged) = typings_fixture::stage() {
+        (staged.root().to_path_buf(), Some(staged))
+    } else {
+        assert!(
+            !required,
+            "TSGO_TYPINGS_ROOT is required when WXML_REQUIRE_REAL_ENGINE=1; \
+             point it at miniprogram-api-typings or its parent directory"
+        );
+        eprintln!(
+            "real-engine optionalTypes test skipped: set TSGO_TYPINGS_ROOT to \
+             miniprogram-api-typings or its parent directory \
+             (or WXML_REQUIRE_REAL_ENGINE=1 to make this a hard gate)"
+        );
+        return None;
+    };
+    if let Err(error) = TypeAssets::load_pinned_typings(&root) {
+        assert!(
+            !required,
+            "invalid typings under {} when WXML_REQUIRE_REAL_ENGINE=1: {error}",
+            root.display()
+        );
+        eprintln!(
+            "real-engine optionalTypes test skipped: cannot verify typings under {}: {error}",
+            root.display()
+        );
+        return None;
+    }
+    Some(RealTypings {
+        _root: root,
+        _staged: staged,
+    })
+}
 
 fn analysis(files: &[(&str, &str)], path: &str, kind: RegistrationKind) -> ScriptAnalysis {
     let files = files
@@ -324,27 +390,19 @@ fn shadow_without_behavior_overlay_keeps_the_partial_contract() {
 
 /// Real-engine proof that the declaration-derived shadow type is readable.
 ///
-/// Opt-in through `TSGO_BIN`; `WXML_REQUIRE_REAL_ENGINE=1` turns a missing
-/// engine into a hard failure. The minimal `Component`/`Behavior` shims are
+/// Opt-in through `TSGO_TYPINGS_ROOT`; `WXML_REQUIRE_REAL_ENGINE=1` turns
+/// missing or invalid typings into a hard failure. The in-process engine
+/// supplies the standard library. The minimal `Component`/`Behavior` shims are
 /// enough because the hovered type is the generated local alias, not the
 /// mini-program instance type.
 #[test]
 fn real_engine_hover_reads_the_generated_union() {
-    use std::path::PathBuf;
-
     use wxml_backend_tsgo::native::session::{NativeSession, SessionOptions};
     use wxml_backend_tsgo::native::strings::{Utf16Offset, offset_to_position, utf16_len};
 
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
-        assert!(
-            std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() != Ok("1"),
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
-        );
-        eprintln!("real-engine optionalTypes test skipped: set TSGO_BIN");
+    let Some(_typings) = prepare_real_typings() else {
         return;
     };
-    let engine = std::path::Path::new(&bin);
-    assert!(engine.is_file(), "TSGO_BIN does not point at a file: {bin}");
 
     let source = r"Component({
   behaviors: [Behavior({
@@ -387,11 +445,8 @@ fn real_engine_hover_reads_the_generated_union() {
     let sandbox =
         std::env::temp_dir().join(format!("optional-types-sandbox-{}", std::process::id()));
     std::fs::create_dir_all(&sandbox).expect("sandbox");
-    let mut session = NativeSession::start(SessionOptions::new(
-        engine.to_path_buf(),
-        PathBuf::from(&sandbox),
-    ))
-    .expect("native session");
+    let mut session = NativeSession::start(SessionOptions::new(PathBuf::new(), sandbox.clone()))
+        .expect("native session");
     session.open_project(&input).expect("open project");
 
     let mount = derived.find("__wxml_props_0.cardTitle").expect("mount");
@@ -404,8 +459,7 @@ fn real_engine_hover_reads_the_generated_union() {
     let text = evidence
         .type_info
         .as_ref()
-        .map(|info| info.text.as_str())
-        .unwrap_or_default();
+        .map_or_default(|info| info.text.as_str());
     assert_eq!(text, "string | number", "{evidence:?}");
     assert!(
         evidence

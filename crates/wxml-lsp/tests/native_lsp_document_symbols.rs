@@ -1,15 +1,16 @@
-//! Opt-in native-engine LSP `textDocument/documentSymbol` gate.
+//! Opt-in in-process-engine LSP `textDocument/documentSymbol` gate.
 //!
-//! The gate builds a disposable package from a pinned `TSGO_BIN`, starts
-//! `<package>/bin/wxml-lsp --stdio --backend native`, and drives real
-//! Content-Length JSON-RPC frames. It proves the script outline is produced by
-//! the native engine (not by the static WXML path) and that the static WXML
-//! outline still answers while the native backend is active.
+//! The gate builds a disposable typings-only package from
+//! `TSGO_TYPINGS_ROOT`, starts `<package>/bin/wxml-lsp --stdio --backend
+//! native`, and drives real Content-Length JSON-RPC frames. It proves the
+//! script outline is produced by the in-process type engine (not by the static
+//! WXML path) and that the static WXML outline still answers while the native
+//! backend is active.
 //!
-//! Without `TSGO_BIN` the end-to-end test prints an explicit `SKIP` reason and
-//! passes; `WXML_REQUIRE_REAL_ENGINE=1|true` turns that into a panic. Only a
-//! *missing* input is skippable; a present but invalid engine/asset/typings
-//! input is always fatal. The fail-closed package tests do not need the engine.
+//! Without `TSGO_TYPINGS_ROOT` the end-to-end test prints an explicit `SKIP`
+//! reason and passes; `WXML_REQUIRE_REAL_ENGINE=1|true` turns that into a panic.
+//! Only a *missing* input is skippable; a present but invalid typings input is
+//! always fatal. The fail-closed package tests do not need the typings gate.
 //!
 //! This gate depends on the trusted type-environment handoff
 //! (`run_stdio_native` -> `with_install` -> `with_environment`), because the
@@ -181,8 +182,8 @@ fn real_engine_script_diagnostics_publish_2322_without_template_facts() {
 }
 
 #[test]
-fn a_missing_engine_fails_before_initialize_without_node_fallback() {
-    let broken = broken_package("missing-engine", PackageDefect::MissingEngine);
+fn a_missing_typings_directory_fails_before_initialize_without_node_fallback() {
+    let broken = broken_package("missing-typings", PackageDefect::MissingTypings);
     let failure = run_startup_failure(&broken);
     assert!(!failure.status.success(), "{failure:?}");
     assert!(
@@ -195,31 +196,30 @@ fn a_missing_engine_fails_before_initialize_without_node_fallback() {
         "{}",
         failure.stderr
     );
-    assert!(failure.stderr.contains("engine"), "{}", failure.stderr);
+    assert!(
+        failure.stderr.contains("typings directory is missing"),
+        "{}",
+        failure.stderr
+    );
     assert!(!failure.stderr.contains("server.js"), "{}", failure.stderr);
     assert!(!failure.stdout.contains("server.js"), "{}", failure.stdout);
     broken.tripwire().assert_absent();
 }
 
 #[test]
-fn a_tampered_engine_fails_before_initialize() {
-    let broken = broken_package("tampered-engine", PackageDefect::TamperedEngine);
+fn an_incomplete_typings_package_fails_before_initialize() {
+    let broken = broken_package("incomplete-typings", PackageDefect::IncompleteTypings);
     let failure = run_startup_failure(&broken);
     assert!(!failure.status.success(), "{failure:?}");
     assert!(
         !failure.stdout.contains("\"result\""),
-        "the tampered package answered initialize: {}",
+        "the incomplete package answered initialize: {}",
         failure.stdout
-    );
-    assert!(
-        failure.stderr.contains("native engine discovery failed"),
-        "{}",
-        failure.stderr
     );
     assert!(
         failure
             .stderr
-            .contains("does not match the pinned artifact"),
+            .contains("native type assets are unavailable"),
         "{}",
         failure.stderr
     );
@@ -230,7 +230,7 @@ fn a_tampered_engine_fails_before_initialize() {
 
 #[test]
 #[should_panic(expected = "WXML_REQUIRE_REAL_ENGINE")]
-fn required_mode_without_engine_fails_closed() {
+fn required_mode_without_typings_fails_closed() {
     let true_spelling = ProvisionEnv {
         require_real_engine: Some(OsString::from("true")),
         ..ProvisionEnv::default()
@@ -238,20 +238,19 @@ fn required_mode_without_engine_fails_closed() {
     assert!(true_spelling.required());
     let env = ProvisionEnv {
         require_real_engine: Some(OsString::from("1")),
-        tsgo_bin: None,
+        typings_root: None,
         tmp_base: Some(OsString::from(DEFAULT_TMP_BASE)),
-        ..ProvisionEnv::default()
     };
-    let _ = provision_with_env(&env, "required-missing-engine");
+    let _ = provision_with_env(&env, "required-missing-typings");
 }
 
 #[test]
-fn optional_mode_without_engine_is_an_explicit_skip() {
+fn optional_mode_without_typings_is_an_explicit_skip() {
     let env = ProvisionEnv {
         tmp_base: Some(OsString::from(DEFAULT_TMP_BASE)),
         ..ProvisionEnv::default()
     };
-    assert!(provision_with_env(&env, "optional-missing-engine").is_none());
+    assert!(provision_with_env(&env, "optional-missing-typings").is_none());
 }
 
 #[test]
@@ -287,18 +286,21 @@ fn a_repository_tmp_base_is_rejected_without_creating_it() {
 }
 
 #[test]
-fn a_present_non_pinned_engine_is_always_fatal() {
+fn a_present_incomplete_typings_root_is_always_fatal() {
     let base = resolve_tmp_base(&ProvisionEnv::default()).expect("test base");
-    let root = TestRoot::new(&base, "wrong-engine");
-    let fake = root.path().join("tsc");
-    fs::write(&fake, b"#!/bin/sh\nexit 0\n").expect("fake engine");
+    let root = TestRoot::new(&base, "incomplete-typings-root");
+    let typings = root.path().join("typings");
+    fs::create_dir_all(typings.join("miniprogram-api-typings")).expect("typings dir");
     let env = ProvisionEnv {
-        tsgo_bin: Some(fake.into_os_string()),
+        typings_root: Some(typings.into_os_string()),
         ..ProvisionEnv::default()
     };
-    let error = resolve(&env).expect_err("a non-pinned engine must be rejected");
+    let error = resolve(&env).expect_err("an incomplete typings package must be rejected");
     assert!(matches!(error, ProvisionError::Invalid { .. }), "{error:?}");
-    assert!(error.message().contains("pinned"), "{error:?}");
+    assert!(
+        error.message().contains("miniprogram-api-typings"),
+        "{error:?}"
+    );
 }
 
 /// Returns `(name, kind)` pairs in result order.

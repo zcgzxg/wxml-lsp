@@ -60,7 +60,7 @@ impl LineIndex {
     ///
     /// A trailing newline starts a final, empty line.
     #[must_use]
-    pub fn line_count(&self) -> usize {
+    pub const fn line_count(&self) -> usize {
         self.line_starts.len()
     }
 

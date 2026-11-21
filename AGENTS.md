@@ -17,7 +17,8 @@ workspace. Linux x86_64 is the only verified platform.
   OpenCode picks them up; re-move after `openspec update`). Architectural
   decisions still belong in `docs/adr/`.
 - Architecture context: `docs/adr/0001` (layering), `0006` (explicit roots),
-  `0008` (native backend), `0009` (slimming), `0010` (zero-config lazy discovery).
+  `0008` (native backend), `0009` (slimming), `0010` (zero-config lazy
+  discovery), `0012` (in-process type session).
 - `tests/fixtures/README.md` documents the current layout: every sample is a
   real mini-program project read directly by crate tests. The `wxml-fixtures`
   crate and the Node `wave5_acceptance` runner are deleted; do not recreate them.
@@ -35,6 +36,8 @@ cargo deny --offline check
 ```
 
 `cargo deny` needs `cargo deny fetch db` once first (CI does this).
+The workspace MSRV is Rust 1.100 (`rust-version` in the root `Cargo.toml`);
+`rust-toolchain.toml` tracks stable with clippy/rustfmt.
 Focused checks: `cargo test -p wxml-text`, `cargo test -p wxml-syntax`, etc.;
 a single test: `cargo test -p wxml-backend-tsgo --test shadow_mapping <name>`.
 
@@ -55,25 +58,41 @@ This needs the `wasm32-wasip2` target; grammar builds may need `wasi-sdk` or
 
 ## Backend and assets
 
-- `wxml-lsp --stdio` is native by default, but running the binary from
-  `target/debug` or `target/release` is not an installed package: it serves
-  HostOnly and type queries return `Unavailable`. To exercise real types,
-  install the full layout:
+- The type engine runs in-process (`tsrs_api::Session`). Installation only
+  needs the binary and typings; there is no engine executable, no tarball and
+  no `engine/lib` standard library. `wxml-lsp --stdio` is native by default,
+  but running the binary from `target/debug` or `target/release` is not an
+  installed package: it serves HostOnly and type queries return `Unavailable`.
+  To exercise real types, install the typings layout:
 
   ```bash
   cargo build --release -p wxml-lsp
   scripts/install-native.sh --root "$HOME/.local/share/wxml-lsp"
   ```
 
-  The installer needs network plus `python3`/`curl`/`tar`, and its root must be
-  outside the repository. Runtime discovery starts at `current_exe()` and
-  requires `<root>/bin/wxml-lsp`, `<root>/engine/lib/tsc` and
-  `<root>/typings/miniprogram-api-typings`; it does not use `PATH` or the cwd.
+  The installer needs network plus `python3`/`curl`/`tar` to fetch the typings
+  tarball; use `--assets` for a local lock and keep the root outside the
+  repository. Runtime discovery starts at `current_exe()` and requires
+  `<root>/bin/wxml-lsp` and `<root>/typings/miniprogram-api-typings`; it does
+  not use `PATH`, the cwd, or any engine-override variable.
 
-- Engine `@typescript/typescript-linux-x64@7.1.0-beta` and typings
-  `miniprogram-api-typings@5.3.1` are pinned in `assets.lock.json`, with
-  hardcoded sizes/digests in `crates/wxml-backend-tsgo/src/{config,input}.rs`.
-  Keep both in sync; a mismatch fails closed before the LSP handshake.
+- `tsrs_api`, `tsrs_core` and `tsrs_vfs` are pinned exactly
+  (`=7.1.0-beta.tsrs4`), and `miniprogram-api-typings@5.3.1` is pinned in
+  `assets.lock.json` with hardcoded digests in
+  `crates/wxml-backend-tsgo/src/{config,input}.rs`. Keep pins and lockfile in
+  sync; a mismatch fails closed before the LSP handshake. TypeScript standard
+  library comes from `tsrs_vfs`; do not read `TSRS_LIB_PATH` or install
+  `lib*.d.ts` into the package.
+
+- Startup validates `tsrs_core::version()`, AST protocol v9/header 64/stride 28
+  and the capability probes before enabling types. Compile-time
+  `TSRS_TS_VERSION` must stay unset (CI asserts this).
+
+- Failure model: a single request panic fails that request; an unrecoverable
+  session becomes `SessionPoisoned` and type features are unavailable while the
+  rest of the LSP keeps serving. There is no timeout cancellation, no process
+  restart and no backoff. `TSGO_BIN`/`TSGO_ASSET_ROOT` are removed; do not
+  reintroduce an external engine override.
 
 - The Node backend is gone. `--backend node` and `WXML_NODE`,
   `WXML_TYPE_BACKEND`, `WXML_BACKEND_DIR`, `WXML_ANALYZE_TIMEOUT_MS`,
@@ -87,7 +106,7 @@ This needs the `wasm32-wasip2` target; grammar builds may need `wasi-sdk` or
   make `wxml-types` depend on `wxml-project`.
 - Keep `wxml-lsp` a protocol/adapter layer. Parsing belongs in `wxml-syntax`,
   project facts in `wxml-project`, template/type semantics in `wxml-types`, and
-  engine process/shadow/query work in `wxml-backend-tsgo`.
+  the in-process type session/shadow/query work in `wxml-backend-tsgo`.
 - Use `wxml-text` for byte/UTF-16/LSP position conversion. Do not hand-roll
   offsets; Unicode and CRLF fixtures assert exact byte behavior.
 - The LSP server's stdout is JSON-RPC only. Logging and diagnostics must go
@@ -105,10 +124,11 @@ This needs the `wasm32-wasip2` target; grammar builds may need `wasi-sdk` or
 
 ## Tests and fixtures
 
-- A default `cargo test` is green without the engine: real-engine suites skip
-  unless `TSGO_BIN` and `TSGO_TYPINGS_ROOT`/`TSGO_ASSET_ROOT` are set.
-  `WXML_REQUIRE_REAL_ENGINE=1` turns a missing engine into a hard failure. Do
-  not claim native type behavior was verified from a green default run.
+- A default `cargo test` is green without the type engine: real-type suites
+  skip unless `TSGO_TYPINGS_ROOT` is set. `WXML_REQUIRE_REAL_ENGINE=1` turns a
+  missing engine/typings gate into a hard failure; the names are legacy, the
+  engine itself is in-process. Do not claim native type behavior was verified
+  from a green default run.
 - Shared AC fixtures live in `tests/fixtures/`. `.gitattributes` requires LF
   for normal `.wxml` files and byte-exact CRLF for `*-crlf.wxml`; do not
   normalize line endings.

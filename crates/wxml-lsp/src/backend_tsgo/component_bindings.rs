@@ -301,11 +301,11 @@ where
                 .as_ref()
                 .and_then(|facts| facts.component(&usage.tag))
                 .cloned();
-            if let Some(typing) = declared {
-                if typing.complete {
-                    self.check_declared_usage(usage, &typing);
-                    continue;
-                }
+            if let Some(typing) = declared
+                && typing.complete
+            {
+                self.check_declared_usage(usage, &typing);
+                continue;
             }
             if self.input.is_none() {
                 // No project root or no representable file set: every script
@@ -1637,10 +1637,8 @@ mod tests {
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use wxml_backend_tsgo::config::PinnedEngine;
-    use wxml_backend_tsgo::native::session::SessionOptions;
     use wxml_backend_tsgo::native::strings::position_to_offset;
     use wxml_backend_tsgo::native::wire::RawType;
     use wxml_backend_tsgo::shadow::mapping::{
@@ -1657,7 +1655,6 @@ mod tests {
     use super::*;
     use crate::backend_tsgo::TsgoBackendAdapter;
     use crate::backend_tsgo::input::{ScriptViewError, ViewProvider};
-    use crate::backend_tsgo::session::NativeSessionFactory;
     use crate::project_host::{HostError, PreparedFile, ProjectHost, ProjectState, ViewTarget};
 
     const SCRIPT_PATH: &str = "pages/index/index.ts";
@@ -4226,7 +4223,7 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Real engine (opt-in through `TSGO_BIN`)
+    // Real type engine (opt-in through `WXML_REQUIRE_REAL_ENGINE=1`)
     // -----------------------------------------------------------------------
 
     /// View provider backed by one prepared view.
@@ -4244,39 +4241,16 @@ mod tests {
         }
     }
 
-    /// Removes one real-engine sandbox on drop.
-    struct SandboxCleanup(PathBuf);
-
-    impl Drop for SandboxCleanup {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
-        }
-    }
-
     #[test]
     fn optional_real_engine_declared_property_mismatch() {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
         const REAL_WXML: &str = r#"<view><card type="primary" text="{{ loading }}" /></view>"#;
         const REAL_SCRIPT: &str = "Page({\n  data: { buttonText: 'ok', loading: true },\n});\n";
         const REAL_GLOBALS: &str = "declare namespace WechatMiniprogram {\n  interface CustomEvent<T> {\n    detail: T;\n  }\n}\n\ndeclare function Page(options: {\n  data: { buttonText: string; loading: boolean };\n  __wxml_check_0(this: { data: { buttonText: string; loading: boolean } }): void;\n}): void;\n";
         const REAL_DECLARATION: &str = "declare global {\n  interface WxmlComponentMap {\n    card: CardDeclaration;\n  }\n\n  interface CardDeclaration {\n    props: {\n      type?: 'primary' | 'default';\n      text: string;\n    };\n  }\n}\n\nexport {};\n";
 
-        let Ok(bin) = std::env::var("TSGO_BIN") else {
-            let required = matches!(
-                std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref(),
-                Ok("1" | "true")
-            );
-            assert!(
-                !required,
-                "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1"
-            );
-            eprintln!(
-                "optional real-engine declared-property test skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc"
-            );
+        if crate::backend_tsgo::runtime::skip_unless_real_engine("component bindings") {
             return;
-        };
-        let executable = PathBuf::from(&bin);
-        assert!(executable.is_file(), "TSGO_BIN does not point at a file");
+        }
 
         let text = mustache_attr(REAL_WXML, "text", r#"text="{{ loading }}""#, "loading");
         let expr_range = text.expr_range.expect("expression range");
@@ -4301,20 +4275,10 @@ mod tests {
         );
         view.fragments = Arc::from(vec![fragment]);
 
-        let count = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let sandbox = std::env::temp_dir().join(format!(
-            "wxml-tsgo-declared-bindings-{}-{count}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&sandbox).expect("sandbox");
-        let _cleanup = SandboxCleanup(sandbox.clone());
-
         let adapter = TsgoBackendAdapter::new(
             PinnedEngine::pinned(),
             Arc::new(DeclaredViews { view }),
-            Arc::new(NativeSessionFactory::new(SessionOptions::new(
-                executable, sandbox,
-            ))),
+            Arc::new(crate::backend_tsgo::runtime::VirtualSessionFactory::new()),
         );
         let context = RequestContext::new(
             ProjectRevision::new(project(), 1),

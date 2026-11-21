@@ -7,10 +7,12 @@
 //! [`TsgoBackendAdapter::with_host`](super::TsgoBackendAdapter::with_host); the
 //! production `run_stdio_native` path can only obtain `Trusted`.
 //!
-//! Asset loading happens before any sandbox or session exists. A missing,
-//! unsafe, incomplete or pin-mismatched asset tree therefore fails the process
-//! startup with a path-free [`EnvironmentLoadError`] instead of falling back to
-//! Node or to a legacy session.
+//! The in-process engine embeds the TypeScript standard library, so loading is
+//! typings-only: only `miniprogram-api-typings` is read and verified. Asset
+//! loading happens before any session exists. A missing, unsafe, incomplete or
+//! pin-mismatched typings tree therefore fails process startup with a path-free
+//! [`EnvironmentLoadError`] instead of falling back to Node or to a legacy
+//! session.
 //!
 //! The only supported production platform is Linux x86-64 with POSIX absolute
 //! asset roots. Windows drive-letter/UNC roots and non-UTF-8 roots are rejected
@@ -120,9 +122,6 @@ impl fmt::Debug for Environment {
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum EnvironmentLoadError {
-    /// The verified engine is not inside the standard-library root.
-    #[error("the pinned engine is not inside the standard-library root")]
-    EngineRootMismatch,
     /// An asset root is missing, a symlink or not a directory.
     #[error("a type-asset root is missing or not a directory")]
     RootUnavailable,
@@ -157,16 +156,15 @@ pub enum EnvironmentLoadError {
 
 /// Loads the production type environment from a discovered install.
 ///
-/// This is the only production asset entry point. It checks the engine/root
-/// layout, then reads and verifies both roots against the crate pin. The
-/// caller must not create a sandbox or start a session after an error.
+/// This is the only production asset entry point. It reads and verifies
+/// `miniprogram-api-typings` below the discovered `typings` root against the
+/// built-in typings-only pin. The standard library comes from the in-process
+/// engine, so no `engine/lib` tree is required. The caller must not start a
+/// session after an error.
 pub(crate) fn load_environment(
     install: &DiscoveredInstall,
 ) -> Result<Environment, EnvironmentLoadError> {
-    if install.engine.parent() != Some(install.standard_lib_root()) {
-        return Err(EnvironmentLoadError::EngineRootMismatch);
-    }
-    let assets = TypeAssets::load_pinned(install.standard_lib_root(), install.typings_root())
+    let assets = TypeAssets::load_pinned_typings(install.typings_root())
         .map_err(|error| map_asset_error(&error))?;
     Ok(Environment::trusted(Arc::new(assets)))
 }

@@ -76,8 +76,8 @@ pub use server::{ServerError, ServerOutcome, run_stdio, run_stdio_with_host, run
 // answers type queries as unavailable. All exports report typed, path-free
 // failures.
 pub use backend_tsgo::{
-    EngineDiscoveryError, EnvironmentLoadError, NativeStartupError, SandboxError,
-    run_stdio_host_only, run_stdio_native, run_stdio_native_default,
+    EngineDiscoveryError, EnvironmentLoadError, NativeStartupError, run_stdio_host_only,
+    run_stdio_native, run_stdio_native_default,
 };
 
 /// Returns the version reported by `wxml-lsp --version`.

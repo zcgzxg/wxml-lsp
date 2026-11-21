@@ -161,10 +161,10 @@ fn class_hover_value(document: &Document, facts: &StyleViewFacts, site: &ClassSi
             "value": lines.join("\n"),
         },
     });
-    if let Some(range) = source_range_value(document, SourceRange::new(site.token)) {
-        if let Some(object) = value.as_object_mut() {
-            object.insert("range".to_owned(), range);
-        }
+    if let Some(range) = source_range_value(document, SourceRange::new(site.token))
+        && let Some(object) = value.as_object_mut()
+    {
+        object.insert("range".to_owned(), range);
     }
     value
 }
@@ -323,13 +323,13 @@ impl Server {
                     "newText": class.name(),
                 },
             });
-            if let Some(comment) = class.comment() {
-                if let Some(object) = item.as_object_mut() {
-                    object.insert(
-                        "documentation".to_owned(),
-                        Value::String(code_text(comment, MAX_HOVER_COMMENT_BYTES)),
-                    );
-                }
+            if let Some(comment) = class.comment()
+                && let Some(object) = item.as_object_mut()
+            {
+                object.insert(
+                    "documentation".to_owned(),
+                    Value::String(code_text(comment, MAX_HOVER_COMMENT_BYTES)),
+                );
             }
             items.push(item);
         }

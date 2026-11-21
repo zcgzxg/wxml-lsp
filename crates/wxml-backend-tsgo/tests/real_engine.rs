@@ -1,23 +1,26 @@
 //! Real-engine integration gate for the P4-N vertical slice.
 //!
-//! Run explicitly with the pinned executable:
+//! Run explicitly with the pinned typings:
 //!
 //! ```text
-//! TSGO_BIN=/tmp/opencode/tsgo-spike/extract/7.1.0-beta/package/lib/tsc \
+//! TSGO_TYPINGS_ROOT=$HOME/.local/share/wxml-lsp/typings/miniprogram-api-typings \
 //!   cargo test -p wxml-backend-tsgo --test real_engine -- --nocapture
 //! ```
 //!
-//! The test is opt-in through `TSGO_BIN` for a normal local run. When
-//! `WXML_REQUIRE_REAL_ENGINE=1` is set (the CI/gate mode), a missing engine is a
-//! hard failure rather than a skip.
+//! The tests run against the in-process `tsrs` session; the standard library is
+//! bundled with the engine. They are opt-in through `TSGO_TYPINGS_ROOT` (the
+//! directory containing `miniprogram-api-typings`, or the package directory
+//! itself). When `WXML_REQUIRE_REAL_ENGINE=1` is set (the CI/gate mode), missing
+//! or invalid typings are a hard failure rather than a skip.
 
 #![allow(clippy::expect_used, clippy::too_many_lines)]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use wxml_backend_tsgo::input::{
-    AnalysisInput, DocumentRevision, ProjectKey, ProjectRoot, SnapshotRevision, SourceFile,
+    AnalysisInput, DocumentRevision, MINIPROGRAM_TYPINGS, ProjectKey, ProjectRoot,
+    SnapshotRevision, SourceFile, TypeAssets,
 };
 use wxml_backend_tsgo::native::NativeError;
 use wxml_backend_tsgo::native::handles::NodeHandle;
@@ -40,6 +43,9 @@ use wxml_backend_tsgo::shadow::layout::{
 };
 use wxml_backend_tsgo::shadow::locals::{LocalBinding, LocalRole};
 use wxml_backend_tsgo::shadow::mapping::{SourceRange, utf16_len, utf16_to_byte};
+
+#[path = "support/typings_fixture.rs"]
+mod typings_fixture;
 
 const MAIN: &str = r#"import type { User } from "./model";
 /** A documented user. */
@@ -74,7 +80,7 @@ const BROKEN: &str = "const broken = ;\n";
 
 static COUNTER: AtomicU64 = AtomicU64::new(0);
 
-struct Cleanup(std::path::PathBuf);
+struct Cleanup(PathBuf);
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
@@ -85,6 +91,66 @@ impl Drop for Cleanup {
 fn unique(tag: &str) -> String {
     let count = COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("wxml-tsgo-p4-{tag}-{}-{count}", std::process::id())
+}
+
+/// Whether the real-engine gate must fail instead of skipping.
+fn require_real_engine() -> bool {
+    std::env::var("WXML_REQUIRE_REAL_ENGINE")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+}
+
+/// Normalizes `TSGO_TYPINGS_ROOT`, accepting either the parent root or the
+/// `miniprogram-api-typings` package directory itself.
+fn normalize_typings_root(path: &Path) -> PathBuf {
+    if path.file_name().and_then(|name| name.to_str()) == Some(MINIPROGRAM_TYPINGS) {
+        path.parent()
+            .map_or_else(|| path.to_path_buf(), Path::to_path_buf)
+    } else {
+        path.to_path_buf()
+    }
+}
+
+/// A validated typings root plus the staged copy that keeps it alive.
+struct RealTypings {
+    _root: PathBuf,
+    _staged: Option<typings_fixture::Staged>,
+}
+
+fn prepare_real_typings(gate: &str) -> Option<RealTypings> {
+    let required = require_real_engine();
+    let (root, staged) = if let Some(raw) = std::env::var_os("TSGO_TYPINGS_ROOT") {
+        (normalize_typings_root(Path::new(&raw)), None)
+    } else if let Some(staged) = typings_fixture::stage() {
+        (staged.root().to_path_buf(), Some(staged))
+    } else {
+        assert!(
+            !required,
+            "TSGO_TYPINGS_ROOT is required when WXML_REQUIRE_REAL_ENGINE=1; \
+             point it at miniprogram-api-typings or its parent directory"
+        );
+        eprintln!(
+            "{gate} skipped: set TSGO_TYPINGS_ROOT to miniprogram-api-typings \
+             or its parent directory (or WXML_REQUIRE_REAL_ENGINE=1 to make \
+             this a hard gate)"
+        );
+        return None;
+    };
+    if let Err(error) = TypeAssets::load_pinned_typings(&root) {
+        assert!(
+            !required,
+            "invalid typings under {} when WXML_REQUIRE_REAL_ENGINE=1: {error}",
+            root.display()
+        );
+        eprintln!(
+            "{gate} skipped: cannot verify typings under {}: {error}",
+            root.display()
+        );
+        return None;
+    }
+    Some(RealTypings {
+        _root: root,
+        _staged: staged,
+    })
 }
 
 const fn position(line: u32, character: u32) -> Utf16Position {
@@ -121,24 +187,9 @@ fn input(root: &str, revision: u64, main: &str, canary_specifier: &str) -> Analy
 
 #[test]
 fn real_engine_vertical_slice() {
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
-        assert!(
-            !required,
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1; \
-             set it to the pinned 7.1.0-beta lib/tsc"
-        );
-        eprintln!(
-            "real-engine gate skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc \
-             (or WXML_REQUIRE_REAL_ENGINE=1 to make this a hard gate)"
-        );
+    let Some(_typings) = prepare_real_typings("real-engine gate") else {
         return;
     };
-    let executable = Path::new(&bin);
-    assert!(
-        executable.is_file(),
-        "TSGO_BIN does not point at a file: {bin}"
-    );
 
     let sandbox = std::env::temp_dir().join(unique("sandbox"));
     std::fs::create_dir_all(&sandbox).expect("sandbox");
@@ -180,8 +231,8 @@ fn real_engine_vertical_slice() {
         "the canary must be outside the virtual project root"
     );
 
-    let mut session = NativeSession::start(SessionOptions::new(executable, sandbox.clone()))
-        .expect("start real engine");
+    let mut session = NativeSession::start(SessionOptions::new(PathBuf::new(), sandbox.clone()))
+        .expect("start in-process engine");
     let initialize = session
         .initialize_result()
         .expect("initialize result")
@@ -478,24 +529,9 @@ fn real_engine_vertical_slice() {
 /// after leading `JSDoc` trivia, not the declaration node's `pos`.
 #[test]
 fn real_engine_definition_decodes_declaration_identifier_ranges() {
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
-        assert!(
-            !required,
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1; \
-             set it to the pinned 7.1.0-beta lib/tsc"
-        );
-        eprintln!(
-            "real-engine definition gate skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc \
-             (or WXML_REQUIRE_REAL_ENGINE=1 to make this a hard gate)"
-        );
+    let Some(_typings) = prepare_real_typings("real-engine definition gate") else {
         return;
     };
-    let executable = Path::new(&bin);
-    assert!(
-        executable.is_file(),
-        "TSGO_BIN does not point at a file: {bin}"
-    );
 
     let sandbox = std::env::temp_dir().join(unique("definition-sandbox"));
     std::fs::create_dir_all(&sandbox).expect("sandbox");
@@ -513,8 +549,8 @@ fn real_engine_definition_decodes_declaration_identifier_ranges() {
         "/tmp/opencode/definition-unused-canary",
     );
 
-    let mut session =
-        NativeSession::start(SessionOptions::new(executable, sandbox)).expect("start real engine");
+    let mut session = NativeSession::start(SessionOptions::new(PathBuf::new(), sandbox))
+        .expect("start in-process engine");
     session.open_project(&fixture).expect("open project");
 
     let raw = session
@@ -680,30 +716,7 @@ fn auto_import_input(root: &str, revision: u64) -> AnalysisInput {
     .expect("analysis input")
 }
 
-fn real_engine_bin() -> Option<std::path::PathBuf> {
-    let Ok(bin) = std::env::var("TSGO_BIN") else {
-        let required = std::env::var("WXML_REQUIRE_REAL_ENGINE").as_deref() == Ok("1");
-        assert!(
-            !required,
-            "TSGO_BIN is required when WXML_REQUIRE_REAL_ENGINE=1; \
-             set it to the pinned 7.1.0-beta lib/tsc"
-        );
-        eprintln!(
-            "real-engine auto-import gate skipped: set TSGO_BIN to the pinned 7.1.0-beta lib/tsc \
-             (or WXML_REQUIRE_REAL_ENGINE=1 to make this a hard gate)"
-        );
-        return None;
-    };
-    let executable = std::path::PathBuf::from(bin);
-    assert!(
-        executable.is_file(),
-        "TSGO_BIN does not point at a file: {}",
-        executable.display()
-    );
-    Some(executable)
-}
-
-fn auto_import_cleanup(tag: &str) -> (std::path::PathBuf, Cleanup) {
+fn auto_import_cleanup(tag: &str) -> (PathBuf, Cleanup) {
     let sandbox = std::env::temp_dir().join(unique(tag));
     std::fs::create_dir_all(&sandbox).expect("sandbox");
     let guard = Cleanup(sandbox.clone());
@@ -712,14 +725,14 @@ fn auto_import_cleanup(tag: &str) -> (std::path::PathBuf, Cleanup) {
 
 #[test]
 fn real_engine_completion_auto_import_needs_a_prepared_snapshot() {
-    let Some(executable) = real_engine_bin() else {
+    let Some(_typings) = prepare_real_typings("real-engine auto-import gate") else {
         return;
     };
     let (sandbox, _sandbox_guard) = auto_import_cleanup("auto-import-sandbox");
     let project_root = format!("/tmp/opencode/{}", unique("auto-import-project"));
 
-    let mut session =
-        NativeSession::start(SessionOptions::new(executable, sandbox)).expect("start real engine");
+    let mut session = NativeSession::start(SessionOptions::new(PathBuf::new(), sandbox))
+        .expect("start in-process engine");
     let first = auto_import_input(&project_root, 1);
     session
         .open_project_with_auto_imports(&first, "main.ts")
@@ -805,14 +818,14 @@ fn real_engine_completion_auto_import_needs_a_prepared_snapshot() {
 
 #[test]
 fn real_engine_unprepared_symbol_completion_fails_closed() {
-    let Some(executable) = real_engine_bin() else {
+    let Some(_typings) = prepare_real_typings("real-engine auto-import gate") else {
         return;
     };
     let (sandbox, _sandbox_guard) = auto_import_cleanup("auto-import-unprepared-sandbox");
     let project_root = format!("/tmp/opencode/{}", unique("auto-import-unprepared-project"));
 
-    let mut session =
-        NativeSession::start(SessionOptions::new(executable, sandbox)).expect("start real engine");
+    let mut session = NativeSession::start(SessionOptions::new(PathBuf::new(), sandbox))
+        .expect("start in-process engine");
     let input = auto_import_input(&project_root, 1);
     session
         .open_project(&input)
@@ -953,18 +966,18 @@ fn shadow_input(tag: &str, text: &str) -> AnalysisInput {
     .expect("analysis input")
 }
 
-fn start_shadow_engine(executable: &Path, tag: &str) -> (NativeSession, Cleanup) {
+fn start_shadow_engine(tag: &str) -> (NativeSession, Cleanup) {
     let sandbox = std::env::temp_dir().join(unique(tag));
     std::fs::create_dir_all(&sandbox).expect("sandbox");
     let guard = Cleanup(sandbox.clone());
-    let session =
-        NativeSession::start(SessionOptions::new(executable, sandbox)).expect("start real engine");
+    let session = NativeSession::start(SessionOptions::new(PathBuf::new(), sandbox))
+        .expect("start in-process engine");
     (session, guard)
 }
 
 #[test]
 fn real_engine_object_literal_mustache_reports_no_key_diagnostics() {
-    let Some(executable) = real_engine_bin() else {
+    let Some(_typings) = prepare_real_typings("real-engine object-literal gate") else {
         return;
     };
     let script = SourceFile::new(
@@ -1003,7 +1016,7 @@ fn real_engine_object_literal_mustache_reports_no_key_diagnostics() {
     );
 
     let input = shadow_input("object-literal-project", &built.view.text);
-    let (mut session, _sandbox_guard) = start_shadow_engine(&executable, "object-literal-sandbox");
+    let (mut session, _sandbox_guard) = start_shadow_engine("object-literal-sandbox");
     session.open_project(&input).expect("open shadow project");
     let evidence = session
         .diagnostics(SHADOW_SCRIPT_PATH)
@@ -1047,7 +1060,7 @@ fn real_engine_object_literal_mustache_reports_no_key_diagnostics() {
 
 #[test]
 fn real_engine_loop_local_member_completion_resolves_element_members() {
-    let Some(executable) = real_engine_bin() else {
+    let Some(_typings) = prepare_real_typings("real-engine loop-local gate") else {
         return;
     };
     let script = SourceFile::new(
@@ -1098,7 +1111,7 @@ fn real_engine_loop_local_member_completion_resolves_element_members() {
         .expect("completion position in the shadow");
 
     let input = shadow_input("loop-local-project", &derived);
-    let (mut session, _sandbox_guard) = start_shadow_engine(&executable, "loop-local-sandbox");
+    let (mut session, _sandbox_guard) = start_shadow_engine("loop-local-sandbox");
     session.open_project(&input).expect("open shadow project");
     let raw = session
         .completions(SHADOW_SCRIPT_PATH, position)

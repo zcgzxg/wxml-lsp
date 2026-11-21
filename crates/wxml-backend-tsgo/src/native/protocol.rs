@@ -14,8 +14,6 @@
 use serde_json::{Map, Value};
 use thiserror::Error;
 
-use crate::native::rpc::RawPayload;
-
 macro_rules! native_methods {
     ($($variant:ident => $wire:literal,)+) => {
         /// Every method permitted by the frozen F0 allow-list.
@@ -69,33 +67,6 @@ native_methods! {
     GetReferencedSymbolsForNode => "getReferencedSymbolsForNode",
     GetCompletionsAtPosition => "getCompletionsAtPosition",
     GetDefaultProjectForFile => "getDefaultProjectForFile",
-}
-
-/// One typed outbound request. Construction does not send anything.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NativeRequest {
-    method: NativeMethod,
-    params: RawPayload,
-}
-
-impl NativeRequest {
-    /// Creates a request from an allow-listed method and its params.
-    #[must_use]
-    pub const fn new(method: NativeMethod, params: RawPayload) -> Self {
-        Self { method, params }
-    }
-
-    /// Returns the typed method.
-    #[must_use]
-    pub const fn method(&self) -> NativeMethod {
-        self.method
-    }
-
-    /// Returns the raw params value.
-    #[must_use]
-    pub const fn params(&self) -> &RawPayload {
-        &self.params
-    }
 }
 
 /// Failure to decode a response shape.

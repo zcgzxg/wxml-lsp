@@ -2,23 +2,23 @@
 
 Language server for WeChat Mini Program WXML templates. This crate owns the LSP
 transport, document state, request routing, project-host integration and the
-native `tsgo` backend adapter. There is no Node backend and no Node process in
-the production path.
+in-process type backend adapter. There is no Node backend, no Node process and
+no external engine process in the production path.
 
 Removing Node did not remove TypeScript/JavaScript support: business `.ts`,
 `.js`, `.mts`, `.cts`, `.mjs`, `.cjs` and `.d.ts` inputs (plus JS JSDoc and
-TS/JSON overlays) are still analyzed by the pinned native engine.
+TS/JSON overlays) are still analyzed by the pinned in-process type engine.
 
 ## Running
 
 ```bash
-# Default: native engine from the installed package.
+# Default: in-process type session with typings from the installed package.
 # Falls back to HostOnly only when this executable is not installed as
 # <package>/bin/wxml-lsp.
 wxml-lsp --stdio
 
 # Strict native: requires a verified installed layout and fails closed
-# when discovery, engine or type assets are missing or mismatched.
+# when discovery or the pinned typings are missing or mismatched.
 wxml-lsp --stdio --backend native
 
 # In-process mock backend, no project (used by the skeleton tests).
@@ -36,48 +36,58 @@ requires the installed layout:
 
 ```text
 <root>/bin/wxml-lsp
-<root>/engine/lib/tsc            # pinned 7.1.0-beta
 <root>/typings/                  # pinned miniprogram-api-typings
 ```
 
-Discovery never reads `PATH`, the working directory or backend environment
+The TypeScript standard library is embedded in the binary; no `engine/`
+directory, engine executable or `lib*.d.ts` tree is installed or read.
+
+Discovery never reads `PATH`, the working directory or engine-override
 variables, and never falls back to Node. A missing install degrades to
-`HostOnly`; every other discovery, asset, sandbox or transport failure fails
-closed before the LSP handshake.
+`HostOnly`; typings discovery or digest failures fail closed before the LSP
+handshake. An in-process session that fails to initialise or becomes poisoned
+degrades type features to `Unavailable` while the rest of the server keeps
+serving.
 
 ## Degradation
 
 - **Native**: expression hover/definition/diagnostics/completion, script
   diagnostics, script document symbols and event-handler facts come from the
-  pinned engine through an in-place shadow.
+  in-process pinned type session through an in-place shadow.
 - **HostOnly**: template syntax, formatting, structure, event facts and script
   symbol facts keep working; session-backed type queries answer `Unavailable`
-  with `native engine is not installed`. This is not a Node fallback.
+  with a path-free reason. This is not a Node fallback.
+- **Degraded**: an uninitialised or poisoned type session answers type queries
+  `Unavailable`; no type result is fabricated and no session is silently
+  restarted.
 - **Static limits** (for example a non-literal `Page(options)` registration)
   answer `Unsupported` with a path-free reason; they are never reported as an
   empty successful type result.
 
 ## Environment
 
-No backend environment variable is read in the production path. Test-only
-seams used by the opt-in native gates:
+No engine-override environment variable is read in the production path.
+Test-only seams used by the opt-in real-type gates:
 
 | Variable | Meaning |
 | --- | --- |
-| `TSGO_BIN` | Absolute engine `lib/tsc` path for real-engine tests |
-| `TSGO_TYPINGS_ROOT` / `TSGO_ASSET_ROOT` | Pinned type-asset roots for real-engine tests |
-| `WXML_REQUIRE_REAL_ENGINE=1` | Turn a missing/unusable real engine into a hard failure instead of a skip |
+| `TSGO_TYPINGS_ROOT` | Pinned `miniprogram-api-typings` root for real-type tests |
+| `WXML_REQUIRE_REAL_ENGINE=1` | Turn a missing/unusable typings gate into a hard failure instead of a skip |
 | `WXML_TEST_TMPDIR` | Absolute temporary root used by sandbox tests |
+
+`TSGO_TYPINGS_ROOT` and `WXML_REQUIRE_REAL_ENGINE` keep their historical names;
+the type engine itself is in-process. `TSGO_BIN` and `TSGO_ASSET_ROOT` are
+removed and have no effect.
 
 ## Architecture
 
 - `src/project_host.rs`: `ProjectHost`/`ProjectState`; real root, `FileId`,
   page/component views, script/JSON overlays, WXML snapshots, compiler-option
   filtering and `PreparedView` assembly.
-- `src/backend_tsgo/`: native adapter; engine discovery and layout checks,
-  pinned type-asset loading, `0700` sandbox, native session lifecycle,
-  shadow/query mapping, hover/definition/diagnostics/completion/document
-  symbols and event-handler facts.
+- `src/backend_tsgo/`: in-process type adapter; typings discovery and layout
+  checks, pinned type-asset loading, read-only virtual filesystem, session
+  lifecycle, shadow/query mapping, hover/definition/diagnostics/completion/
+  document symbols and event-handler facts.
 - `src/server.rs`, `src/handlers/`, `src/workspace.rs`, `src/scheduler.rs`:
   protocol lifecycle, document state, bounded scheduling and publication
   barriers.
@@ -100,11 +110,11 @@ cargo test -p wxml-lsp
 RUSTDOCFLAGS="-D warnings" cargo doc -p wxml-lsp --no-deps
 ```
 
-`cargo test -p wxml-lsp` works without an installed engine; real-engine tests
-in `tests/native_lsp_document_symbols.rs` and the backend's
+`cargo test -p wxml-lsp` works without an installed layout; real-type tests in
+`tests/native_lsp_document_symbols.rs` and the backend's
 `crates/wxml-backend-tsgo/tests/real_engine.rs` skip unless
-`TSGO_BIN`/`TSGO_TYPINGS_ROOT` are provided, and `WXML_REQUIRE_REAL_ENGINE=1`
-turns a missing engine into a failure instead of a green skip.
+`TSGO_TYPINGS_ROOT` is provided, and `WXML_REQUIRE_REAL_ENGINE=1` turns a
+missing typings gate into a failure instead of a green skip.
 
 The former `scripts/native-gates.sh` 40/40 gate and the Q2/performance/stdio
 suites were removed by ADR-0009; their historical versions are available at tag
@@ -115,8 +125,12 @@ suites were removed by ADR-0009; their historical versions are available at tag
 - Requests are processed by one backend worker; a slow query serializes
   hover/diagnostics. The worker is not preemptible, and `shutdown` detaches
   after two seconds.
-- `HostOnly` has no type queries; native sessions require the pinned install
+- `HostOnly` has no type queries; type sessions require the pinned typings
   layout. Only Linux x86-64 with POSIX absolute roots is supported.
+- The type engine runs in-process: a single-request panic is returned as that
+  request's failure and poisons the session; OOM, abort or stack overflow ends
+  the whole process. Running type work cannot be cancelled, and a poisoned
+  session is not restarted automatically.
 - Definition is limited to expression-member targets the native referenced
   symbol path can decode and map back to original text.
 - Template bodies are not fully type-checked per call instance; WXS is a static
@@ -128,15 +142,16 @@ suites were removed by ADR-0009; their historical versions are available at tag
 
 ## Security notes
 
-- Engine discovery and layout verification are path-pinned to the running
-  executable's package; `PATH`, cwd and environment cannot redirect the engine.
-- Engine and type assets are re-verified against the crate pin and
-  `assets.lock.json` before a sandbox or session exists; symlinks, hard links,
-  non-regular files and platform mismatches fail closed.
-- Each session runs in a fresh `0700` sandbox with pinned argv/env/cwd; the
-  native framing layer bounds frame headers, body sizes, in-flight requests and
-  callbacks, pending queues, AST nodes/strings and document symbols. Truncation
-  is reported as `Partial`, never as a supported empty result.
+- Typings discovery is path-pinned to the running executable's package; `PATH`,
+  cwd and environment cannot redirect it, and `TSGO_BIN`/`TSGO_ASSET_ROOT` are
+  not recognised.
+- Typings are re-verified against the crate pin and `assets.lock.json` before a
+  session exists; symlinks, hard links, non-regular files and platform
+  mismatches fail closed. The TypeScript standard library is embedded, so no
+  engine artifact is downloaded or verified.
+- The in-process session reads through a read-only virtual filesystem that never
+  falls back to the host; request/AST/document-symbol budgets still bound sizes,
+  and truncation is reported as `Partial`, never as a supported empty result.
 - `tsconfig` `baseUrl` values that are absolute or contain `..` are dropped
   (reported as partial compiler options) so they cannot escape the project.
 - Backend-supplied capability reasons and diagnostics are filtered for

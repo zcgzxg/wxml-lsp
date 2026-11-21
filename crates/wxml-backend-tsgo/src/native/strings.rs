@@ -65,7 +65,7 @@ impl StringPoolIndex {
     /// Creates a pool index when `index` is a valid even word index.
     #[must_use]
     pub const fn new(index: u32) -> Option<Self> {
-        if index % 2 == 0 {
+        if index.is_multiple_of(2) {
             Some(Self(index))
         } else {
             None

@@ -107,12 +107,12 @@ impl DependencyIndex {
                 affected.insert(view.clone());
             }
             while let Some(view) = pending.pop() {
-                if let Some(parent_base) = own_base.get(&view) {
-                    if let Some(parents) = users_by_base.get(parent_base) {
-                        for parent in parents {
-                            if affected.insert(parent.clone()) {
-                                pending.push(parent.clone());
-                            }
+                if let Some(parent_base) = own_base.get(&view)
+                    && let Some(parents) = users_by_base.get(parent_base)
+                {
+                    for parent in parents {
+                        if affected.insert(parent.clone()) {
+                            pending.push(parent.clone());
                         }
                     }
                 }

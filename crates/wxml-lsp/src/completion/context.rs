@@ -220,11 +220,11 @@ pub(crate) fn detect(text: &str, offset: u32) -> Option<Context> {
         }
         // WXS element bodies are JavaScript, not WXML.
         if matches!(open_tags.last().map(String::as_str), Some("wxs")) {
-            if let Some(end) = text[index..].find("</wxs") {
-                if index + end < offset {
-                    index += end;
-                    continue;
-                }
+            if let Some(end) = text[index..].find("</wxs")
+                && index + end < offset
+            {
+                index += end;
+                continue;
             }
             return None;
         }

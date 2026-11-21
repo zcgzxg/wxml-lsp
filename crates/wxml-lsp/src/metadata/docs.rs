@@ -236,29 +236,29 @@ pub(super) fn value_document(
     attribute: &str,
     value: &str,
 ) -> Option<String> {
-    if catalog::tag(tag).is_none() {
-        if let Some(component) = component(components, tag) {
-            if let Some(property) = component
-                .property_facts
-                .properties
-                .iter()
-                .find(|property| component_name_eq(&property.name, attribute))
-            {
-                let mut document = format!("### {}\n\n", escape(value));
-                if let Some(documentation) = property.documentation.as_ref() {
-                    let _ = write!(document, "{}\n\n", escape(documentation));
-                }
-                let _ = write!(
-                    document,
-                    "`{}`，`{}` 的 `{}` 取值。",
-                    escape(&property.type_text),
-                    escape(tag),
-                    escape(attribute)
-                );
-                return Some(document);
+    if catalog::tag(tag).is_none()
+        && let Some(component) = component(components, tag)
+    {
+        if let Some(property) = component
+            .property_facts
+            .properties
+            .iter()
+            .find(|property| component_name_eq(&property.name, attribute))
+        {
+            let mut document = format!("### {}\n\n", escape(value));
+            if let Some(documentation) = property.documentation.as_ref() {
+                let _ = write!(document, "{}\n\n", escape(documentation));
             }
-            return None;
+            let _ = write!(
+                document,
+                "`{}`，`{}` 的 `{}` 取值。",
+                escape(&property.type_text),
+                escape(tag),
+                escape(attribute)
+            );
+            return Some(document);
         }
+        return None;
     }
     if catalog::is_event_attribute(attribute) {
         return None;
@@ -315,7 +315,7 @@ fn escape(text: &str) -> String {
 }
 
 /// Returns `true` for control and bidirectional formatting characters.
-fn is_unsafe(character: char) -> bool {
+const fn is_unsafe(character: char) -> bool {
     character.is_control()
         || matches!(
             character,

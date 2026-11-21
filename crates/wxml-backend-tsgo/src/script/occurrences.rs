@@ -287,18 +287,16 @@ fn collect_paths(
                     prefix_len: prefix.len(),
                     nested,
                 });
-                if nested {
-                    if let Ok(inner_close) = script.close_of(member.value_start) {
-                        collect_paths(
-                            script,
-                            member.value_start,
-                            inner_close,
-                            &path_segments,
-                            out,
-                            complete,
-                            problems,
-                        );
-                    }
+                if nested && let Ok(inner_close) = script.close_of(member.value_start) {
+                    collect_paths(
+                        script,
+                        member.value_start,
+                        inner_close,
+                        &path_segments,
+                        out,
+                        complete,
+                        problems,
+                    );
                 }
             }
         }

@@ -507,13 +507,10 @@ pub fn link_targets(links: &Value) -> Vec<String> {
 
 /// Returns definition location URIs.
 pub fn definition_uris(locations: &Value) -> Vec<String> {
-    locations
-        .as_array()
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|location| location["uri"].as_str().map(str::to_owned))
-                .collect()
-        })
-        .unwrap_or_default()
+    locations.as_array().map_or_default(|entries| {
+        entries
+            .iter()
+            .filter_map(|location| location["uri"].as_str().map(str::to_owned))
+            .collect()
+    })
 }
