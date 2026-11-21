@@ -27,9 +27,46 @@ sha2 = "0.10"
 tempfile = "3"
 thiserror = "2.0"
 
+# Build profiles are tuned for the shipped `wxml-lsp` binary (Linux x86_64) and
+# for the benchmark loop. `editors/zed/` is a separate workspace with its own
+# `[profile.release]`, so nothing here reaches the wasm32-wasip2 extension.
+#
+# `panic` stays at the default `unwind`: the scheduler, the server and the
+# in-process engine isolate a panicking request with `catch_unwind`, and
+# `panic = "abort"` would take the whole server down instead.
 [profile.release]
+opt-level = 3
 lto = "thin"
 codegen-units = 1
+# Strip the symbol table (reclaims ~2.5 MB of the ~30 MB binary); `perf` users
+# build the `profiling` profile below. No code here reads a backtrace.
+strip = "symbols"
+
+# Dependencies do not need a single codegen unit: thin LTO still merges and
+# inlines across crates at link time, while one CGU per dependency serialises
+# the codegen of the `tsrs_*` tree. Workspace members keep `codegen-units = 1`.
+[profile.release.package."*"]
+codegen-units = 16
+
+# Build scripts and proc-macros only run while compiling; release-grade
+# optimisation of them is build time spent for no runtime gain.
+[profile.release.build-override]
+opt-level = 0
+codegen-units = 16
+
+# `cargo build --profile profiling -p wxml-lsp` keeps symbols and line tables
+# for `perf`/flamegraph without touching the shipped profile above.
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"
+
+# `test` inherits `dev`, so this covers both. The in-process type engine is the
+# hot path of every real-engine suite (enabled by `TSGO_TYPINGS_ROOT`), and an
+# unoptimised `tsrs_*` dependency tree makes those runs one to two orders of
+# magnitude slower. `debug-assertions` stays on because it is a separate knob.
+[profile.dev.package."*"]
+opt-level = 2
 
 [workspace.lints.rust]
 unsafe_code = "deny"
