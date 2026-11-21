@@ -25,21 +25,26 @@ use super::ScriptError;
 /// script size instead of quadratic in the member count.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Utf16Index {
-    boundaries: Vec<(usize, i32)>,
+    /// `(UTF-8 byte end, byte lead over UTF-16)` pairs for non-ASCII
+    /// boundaries, in source order.
+    ///
+    /// A UTF-16 code unit never costs more bytes than its UTF-8 encoding, so
+    /// the lead is the cumulative non-negative byte surplus of the prefix.
+    boundaries: Vec<(usize, usize)>,
 }
 
 impl Utf16Index {
     /// Builds the boundary index once for `text`.
     pub(crate) fn new(text: &str) -> Self {
         let mut boundaries = Vec::new();
-        let mut units = 0_u32;
+        let mut units = 0_usize;
         for (offset, character) in text.char_indices() {
-            let width = if character.len_utf16() == 2 { 2 } else { 1 };
-            units = units.saturating_add(width);
+            units = units.saturating_add(character.len_utf16());
             let end = offset + character.len_utf8();
             if character.len_utf8() != character.len_utf16() {
-                let delta = i64::from(units) - i64::try_from(end).unwrap_or(i64::MAX);
-                boundaries.push((end, i32::try_from(delta).unwrap_or(0)));
+                // `units` never exceeds `end`; UTF-16 uses at most as many
+                // code units as UTF-8 uses bytes for the same prefix.
+                boundaries.push((end, end - units));
             }
         }
         Self { boundaries }
@@ -53,18 +58,13 @@ impl Utf16Index {
                 reason: "offset is outside the text or not a character boundary".to_owned(),
             });
         }
-        let delta = match self.boundaries.binary_search_by_key(&byte, |(at, _)| *at) {
+        let lead = match self.boundaries.binary_search_by_key(&byte, |(at, _)| *at) {
             Ok(index) => self.boundaries[index].1,
-            Err(index) => {
-                if index == 0 {
-                    0
-                } else {
-                    self.boundaries[index - 1].1
-                }
-            }
+            Err(index) => index
+                .checked_sub(1)
+                .map_or(0, |previous| self.boundaries[previous].1),
         };
-        let value = i64::try_from(byte).unwrap_or(i64::MAX) + i64::from(delta);
-        u32::try_from(value).map_err(|_| ScriptError::Invalid {
+        u32::try_from(byte - lead).map_err(|_| ScriptError::Invalid {
             feature: "symbol.range",
             reason: "UTF-16 offset is out of range".to_owned(),
         })

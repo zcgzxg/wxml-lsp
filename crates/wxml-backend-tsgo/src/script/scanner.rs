@@ -14,7 +14,7 @@ use super::ScriptError;
 use super::symbols::{ScriptRange, Utf16Index};
 
 /// Maximum signature length in characters.
-pub(crate) const MAX_SIGNATURE_CHARS: usize = 512;
+pub const MAX_SIGNATURE_LENGTH: usize = 512;
 
 /// One lexed script plus delimiter pairs.
 #[derive(Debug, Clone)]
@@ -227,16 +227,17 @@ pub(crate) fn signature_of(script: &Script<'_>, member: &Member) -> String {
             .unwrap_or("")
             .to_owned(),
     };
-    cap_signature(text.split_whitespace().collect::<Vec<_>>().join(" "))
+    cap_signature(&text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
 
-fn cap_signature(text: String) -> String {
-    if text.chars().count() <= MAX_SIGNATURE_CHARS {
-        return text;
+/// Truncates one normalized signature to [`MAX_SIGNATURE_LENGTH`] characters.
+pub(crate) fn cap_signature(text: &str) -> String {
+    if text.chars().count() <= MAX_SIGNATURE_LENGTH {
+        return text.to_owned();
     }
     let mut capped = text
         .chars()
-        .take(MAX_SIGNATURE_CHARS - 1)
+        .take(MAX_SIGNATURE_LENGTH - 1)
         .collect::<String>();
     capped.truncate(capped.trim_end().len());
     capped.push('…');

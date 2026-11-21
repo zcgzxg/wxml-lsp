@@ -376,7 +376,7 @@ pub(crate) fn push_reason(reasons: &mut Vec<String>, reason: &str) {
     }
 }
 
-fn dedupe(reasons: &mut Vec<String>) {
+pub(crate) fn dedupe(reasons: &mut Vec<String>) {
     let mut seen = BTreeSet::new();
     reasons.retain(|reason| seen.insert(reason.clone()));
 }

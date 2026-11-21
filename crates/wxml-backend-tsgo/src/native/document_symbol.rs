@@ -38,7 +38,7 @@ use crate::native::ast::{
     PROPERTY_SIGNATURE_KIND, SET_ACCESSOR_KIND, TYPE_ALIAS_DECLARATION_KIND,
     VARIABLE_DECLARATION_KIND, VARIABLE_DECLARATION_LIST_KIND, VARIABLE_STATEMENT_KIND,
 };
-use crate::native::strings::{Utf8Offset, Utf16Offset};
+use crate::native::strings::{Utf8Offset, Utf16Offset, utf16_slice, utf16_to_utf8};
 
 /// Maximum number of document symbols retained for one file.
 ///
@@ -462,10 +462,12 @@ impl Walker<'_, '_> {
         if declaration.is_empty() || !selection_is_valid {
             return None;
         }
-        let start_utf8 = utf16_to_utf8(self.source, node.pos)?;
-        let end_utf8 = utf16_to_utf8(self.source, node.end)?;
-        let selection_start_utf8 = utf16_to_utf8(self.source, selection.start)?;
-        let selection_end_utf8 = utf16_to_utf8(self.source, selection.end)?;
+        let start_utf8 = utf16_to_utf8(self.source, Utf16Offset::new(node.pos)).ok()?;
+        let end_utf8 = utf16_to_utf8(self.source, Utf16Offset::new(node.end)).ok()?;
+        let selection_start_utf8 =
+            utf16_to_utf8(self.source, Utf16Offset::new(selection.start)).ok()?;
+        let selection_end_utf8 =
+            utf16_to_utf8(self.source, Utf16Offset::new(selection.end)).ok()?;
         Some(EvidenceRanges {
             start_utf16: Utf16Offset::new(node.pos),
             end_utf16: Utf16Offset::new(node.end),
@@ -508,18 +510,6 @@ struct EvidenceRanges {
     selection_end_utf16: Utf16Offset,
     selection_start_utf8: Utf8Offset,
     selection_end_utf8: Utf8Offset,
-}
-
-fn utf16_slice(text: &str, range: AstRange) -> Option<&str> {
-    let start = utf16_to_utf8(text, range.start)?;
-    let end = utf16_to_utf8(text, range.end)?;
-    let start = usize::try_from(start.get()).ok()?;
-    let end = usize::try_from(end.get()).ok()?;
-    text.get(start..end)
-}
-
-fn utf16_to_utf8(text: &str, offset: u32) -> Option<Utf8Offset> {
-    crate::native::strings::utf16_to_utf8(text, Utf16Offset::new(offset)).ok()
 }
 
 fn normalize(symbols: &mut Vec<DocumentSymbolEvidence>) {

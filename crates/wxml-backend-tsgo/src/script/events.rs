@@ -29,14 +29,15 @@ use super::registration::{
     ParsedRegistration, RegistrationKind, RegistrationScan, selection_integrity,
 };
 use super::scanner::{
-    Member, MemberKind, Script, doc_before, object_bounds, scan_members, signature_of,
+    Member, MemberKind, Script, cap_signature, doc_before, object_bounds, scan_members,
+    signature_of,
 };
+use super::symbol_facts::push_reason;
 use super::symbols::ScriptRange;
 
 /// Defensive cap for one event batch.
 pub const MAX_EVENT_RESULTS: usize = 1024;
-/// Maximum signature length in characters.
-pub const MAX_SIGNATURE_LENGTH: usize = 512;
+pub use super::scanner::MAX_SIGNATURE_LENGTH;
 /// Maximum own handler-table members processed per registration.
 const MAX_OWN_METHODS: usize = 512;
 
@@ -641,20 +642,6 @@ fn is_identifier_text(value: &str) -> bool {
     characters.all(|character| character == '_' || character == '$' || character.is_alphanumeric())
 }
 
-fn cap_signature(text: &str) -> String {
-    let count = text.chars().count();
-    if count <= MAX_SIGNATURE_LENGTH {
-        return text.to_owned();
-    }
-    let mut capped = text
-        .chars()
-        .take(MAX_SIGNATURE_LENGTH - 1)
-        .collect::<String>();
-    capped.truncate(capped.trim_end().len());
-    capped.push('…');
-    capped
-}
-
 /// Extracts the first parameter annotation and the parameter count.
 ///
 /// The input is a normalized one-line signature from
@@ -808,12 +795,6 @@ fn script_range(
     range: SourceRange,
 ) -> Result<ScriptRange, super::ScriptError> {
     script.source_range(range)
-}
-
-fn push_reason(problems: &mut Vec<String>, reason: &str) {
-    if !problems.iter().any(|existing| existing == reason) {
-        problems.push(reason.to_owned());
-    }
 }
 
 #[cfg(test)]

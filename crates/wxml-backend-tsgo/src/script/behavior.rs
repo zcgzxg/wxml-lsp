@@ -33,6 +33,7 @@ use super::scanner::{
     Member, MemberKind, Script, doc_before, member_last, object_bounds, scan_members, signature_of,
 };
 use super::snapshot::Snapshot;
+use super::symbol_facts::dedupe;
 use super::symbols::ScriptRange;
 use super::values::{self, ExprRange, infer_initializer};
 
@@ -1058,10 +1059,7 @@ pub(crate) fn expand_static_fields(
 }
 
 fn basename(path: &str) -> String {
-    path.rsplit('/').next().unwrap_or(path).to_owned()
-}
-
-fn dedupe(values: &mut Vec<String>) {
-    let mut seen = BTreeSet::new();
-    values.retain(|value| seen.insert(value.clone()));
+    path.rsplit_once('/')
+        .map_or(path, |(_, name)| name)
+        .to_owned()
 }

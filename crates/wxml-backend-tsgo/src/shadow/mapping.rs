@@ -92,10 +92,7 @@ pub trait ShadowMapper {
 }
 
 /// Returns the length of `text` in UTF-16 code units.
-#[must_use]
-pub fn utf16_len(text: &str) -> u32 {
-    u32::try_from(text.encode_utf16().count()).unwrap_or(u32::MAX)
-}
+pub use crate::native::strings::utf16_len;
 
 /// Converts a UTF-16 code-unit offset into a UTF-8 byte offset.
 ///

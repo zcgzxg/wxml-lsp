@@ -7,6 +7,8 @@
 
 use thiserror::Error;
 
+use crate::native::ast::AstRange;
+
 /// UTF-8 byte offset into Rust source text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Utf8Offset(u32);
@@ -126,12 +128,41 @@ pub enum TextConversionError {
     },
 }
 
+/// Returns the UTF-16 width of `character` in code units.
+///
+/// `len_utf16` is always one or two, so the branches are exhaustive.
+const fn utf16_width(character: char) -> u32 {
+    if character.len_utf16() == 2 { 2 } else { 1 }
+}
+
+/// Returns the UTF-8 width of `character` in bytes.
+///
+/// `len_utf8` is always one to four, so the branches are exhaustive.
+const fn utf8_width(character: char) -> u32 {
+    match character.len_utf8() {
+        1 => 1,
+        2 => 2,
+        3 => 3,
+        _ => 4,
+    }
+}
+
 /// Returns the length of `text` in UTF-16 code units.
 #[must_use]
 pub fn utf16_len(text: &str) -> u32 {
     text.chars()
-        .map(|character| u32::try_from(character.len_utf16()).unwrap_or(0))
+        .map(utf16_width)
         .fold(0u32, u32::saturating_add)
+}
+
+/// Returns the UTF-8 slice for a UTF-16 range, if both ends are boundaries.
+#[must_use]
+pub fn utf16_slice(text: &str, range: AstRange) -> Option<&str> {
+    let start = utf16_to_utf8(text, Utf16Offset::new(range.start)).ok()?;
+    let end = utf16_to_utf8(text, Utf16Offset::new(range.end)).ok()?;
+    let start = usize::try_from(start.get()).ok()?;
+    let end = usize::try_from(end.get()).ok()?;
+    text.get(start..end)
 }
 
 /// Converts a zero-based line/UTF-16 column to a UTF-16 offset.
@@ -176,7 +207,7 @@ pub fn position_to_offset(
                 if column == position.character {
                     return Ok(Utf16Offset::new(offset));
                 }
-                let width = u32::try_from(character.len_utf16()).unwrap_or(0);
+                let width = utf16_width(character);
                 if position.character < column.saturating_add(width) {
                     return Err(TextConversionError::MidSurrogate {
                         offset: line_start.saturating_add(position.character),
@@ -236,7 +267,7 @@ pub fn offset_to_position(
             }
             return Ok(Utf16Position { line, character });
         }
-        let width = u32::try_from(character_value.len_utf16()).unwrap_or(0);
+        let width = utf16_width(character_value);
         let next = consumed.saturating_add(width);
         if target < next {
             return Err(TextConversionError::MidSurrogate { offset: target });
@@ -281,13 +312,13 @@ pub fn utf16_to_utf8(text: &str, offset: Utf16Offset) -> Result<Utf8Offset, Text
         if consumed == target {
             return Ok(Utf8Offset::new(bytes));
         }
-        let width = u32::try_from(character.len_utf16()).unwrap_or(0);
+        let width = utf16_width(character);
         let next = consumed.saturating_add(width);
         if target < next {
             return Err(TextConversionError::MidSurrogate { offset: target });
         }
         consumed = next;
-        bytes = bytes.saturating_add(u32::try_from(character.len_utf8()).unwrap_or(0));
+        bytes = bytes.saturating_add(utf8_width(character));
     }
 
     if consumed == target {
@@ -312,12 +343,12 @@ pub fn utf8_to_utf16(text: &str, offset: Utf8Offset) -> Result<Utf16Offset, Text
         if utf8 == target {
             return Ok(Utf16Offset::new(utf16));
         }
-        let next = utf8.saturating_add(u32::try_from(character.len_utf8()).unwrap_or(0));
+        let next = utf8.saturating_add(utf8_width(character));
         if target < next {
             return Err(TextConversionError::NotCharBoundary { offset: target });
         }
         utf8 = next;
-        utf16 = utf16.saturating_add(u32::try_from(character.len_utf16()).unwrap_or(0));
+        utf16 = utf16.saturating_add(utf16_width(character));
     }
 
     if utf8 == target {

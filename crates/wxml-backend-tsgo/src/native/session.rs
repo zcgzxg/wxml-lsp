@@ -76,7 +76,8 @@ use crate::native::rpc::{
     encode_callback_error, encode_callback_rejection, encode_callback_result, encode_request,
 };
 use crate::native::strings::{
-    Utf8Offset, Utf16Offset, Utf16Position, position_to_offset, utf16_len, utf16_to_utf8,
+    Utf8Offset, Utf16Offset, Utf16Position, position_to_offset, utf16_len, utf16_slice,
+    utf16_to_utf8,
 };
 use crate::native::supervisor::{
     Deadline, EngineSupervisor, HANDSHAKE_DEADLINE_MS, InboundEvent, Lifecycle, ProcessSession,
@@ -2940,16 +2941,6 @@ fn dropped_reference_cause(
 /// Builds a stable malformed-reference error.
 const fn invalid_reference(reason: &'static str) -> NativeError {
     NativeError::InvalidHandle { reason }
-}
-
-/// Returns the UTF-8 slice for a UTF-16 AST range, if both ends are boundaries.
-fn utf16_slice(text: &str, range: AstRange) -> Option<&str> {
-    let start = utf16_to_utf8(text, Utf16Offset::new(range.start)).ok()?;
-    let end = utf16_to_utf8(text, Utf16Offset::new(range.end)).ok()?;
-    text.get(
-        usize::try_from(start.get()).unwrap_or(usize::MAX)
-            ..usize::try_from(end.get()).unwrap_or(usize::MAX),
-    )
 }
 
 /// Chooses the position bounds for a caller-supplied identifier.
