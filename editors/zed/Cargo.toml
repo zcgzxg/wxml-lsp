@@ -13,3 +13,13 @@ zed_extension_api = "0.7.0"
 # Keep this crate out of the repository root workspace. Zed builds extensions
 # as standalone WebAssembly components.
 [workspace]
+
+# The component only builds the language-server `Command` and workspace
+# configuration at startup, so it is not a hot path: prefer size over speed.
+# `panic` stays at the default `unwind` to keep panic behaviour identical to the
+# native server instead of trading a few hundred KiB for a host trap.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = "symbols"
