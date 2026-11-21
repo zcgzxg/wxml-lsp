@@ -311,14 +311,14 @@ fn case_component_0521_named_imports_and_reexport_aliases_resolve_statically() {
         complete: !result.behavior.properties_incomplete && result.behavior.status.is_supported(),
         reason: result.behavior.status.reason(),
     };
+    let fragments = [fragment];
+    let mut request = wxml_backend_tsgo::shadow::layout::ShadowRequest::new(
+        &index_source,
+        wxml_backend_tsgo::shadow::layout::RootKind::Component,
+    );
+    request.fragments = &fragments;
     let built = wxml_backend_tsgo::shadow::layout::build_in_place_shadow_with_behavior(
-        &wxml_backend_tsgo::shadow::layout::ShadowRequest {
-            script: &index_source,
-            root: wxml_backend_tsgo::shadow::layout::RootKind::Component,
-            fragments: &[fragment],
-            js_check: wxml_backend_tsgo::shadow::layout::JsCheckPolicy::Inherit,
-            check_js: false,
-        },
+        &request,
         Some(&overlay),
     )
     .expect("shadow");
@@ -634,14 +634,14 @@ fn case_component_0498_build_reports_a_behavior_reason_and_mounts_dynamic() {
         complete: !result.behavior.properties_incomplete && result.behavior.status.is_supported(),
         reason: result.behavior.status.reason(),
     };
+    let fragments = [fragment];
+    let mut request = wxml_backend_tsgo::shadow::layout::ShadowRequest::new(
+        &source,
+        wxml_backend_tsgo::shadow::layout::RootKind::Component,
+    );
+    request.fragments = &fragments;
     let built = wxml_backend_tsgo::shadow::layout::build_in_place_shadow_with_behavior(
-        &wxml_backend_tsgo::shadow::layout::ShadowRequest {
-            script: &source,
-            root: wxml_backend_tsgo::shadow::layout::RootKind::Component,
-            fragments: &[fragment],
-            js_check: wxml_backend_tsgo::shadow::layout::JsCheckPolicy::Inherit,
-            check_js: false,
-        },
+        &request,
         Some(&overlay),
     )
     .expect("shadow");

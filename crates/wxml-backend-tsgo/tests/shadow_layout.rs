@@ -55,13 +55,24 @@ fn build(
     check_js: bool,
 ) -> Result<wxml_backend_tsgo::shadow::layout::BuiltShadow, ShadowError> {
     let script = source_file(path, text);
-    let request = ShadowRequest {
-        script: &script,
-        root,
-        fragments,
-        js_check,
-        check_js,
-    };
+    let mut request = ShadowRequest::new(&script, root);
+    request.fragments = fragments;
+    request.js_check = js_check;
+    request.check_js = check_js;
+    build_in_place_shadow(&request)
+}
+
+fn build_with_wxs_modules(
+    path: &str,
+    text: &str,
+    root: RootKind,
+    fragments: &[FragmentSpec],
+    wxs_modules: &[String],
+) -> Result<wxml_backend_tsgo::shadow::layout::BuiltShadow, ShadowError> {
+    let script = source_file(path, text);
+    let mut request = ShadowRequest::new(&script, root);
+    request.fragments = fragments;
+    request.wxs_modules = wxs_modules;
     build_in_place_shadow(&request)
 }
 
@@ -1151,19 +1162,17 @@ fn hashbang_scripts_are_scanned_without_hashbang_tokens() {
 fn wxs_module_calls_stay_unprefixed_and_are_declared_once() {
     let script = "Page({ data: { formData: { attendLimit: 1, userLimit: 2 } } });";
     let expr = "m1.getLimitSettingText(formData.attendLimit)";
-    let mut fragment = FragmentSpec::new(
+    let fragment = FragmentSpec::new(
         "wxs#0",
         expr,
         SourceRange::new(0, u32::try_from(expr.len()).expect("expression length")),
     );
-    fragment.wxs_modules = vec!["m1".to_owned()];
-    let built = build(
+    let built = build_with_wxs_modules(
         "index.ts",
         script,
         RootKind::Page,
         &[fragment],
-        JsCheckPolicy::Inherit,
-        false,
+        &["m1".to_owned()],
     )
     .expect("layout");
     assert_eq!(built.status, BuildStatus::Supported);
@@ -1197,17 +1206,14 @@ fn wxs_module_calls_stay_unprefixed_and_are_declared_once() {
 #[test]
 fn wxs_module_declarations_are_deduplicated_across_fragments() {
     let script = "Page({ data: { formData: { attendLimit: 1 } } });";
-    let mut first = FragmentSpec::new("wxs#0", "m1.alpha", SourceRange::new(0, 8));
-    let mut second = FragmentSpec::new("wxs#1", "m1.beta", SourceRange::new(9, 16));
-    first.wxs_modules = vec!["m1".to_owned()];
-    second.wxs_modules = vec!["m1".to_owned()];
-    let built = build(
+    let first = FragmentSpec::new("wxs#0", "m1.alpha", SourceRange::new(0, 8));
+    let second = FragmentSpec::new("wxs#1", "m1.beta", SourceRange::new(9, 16));
+    let built = build_with_wxs_modules(
         "index.ts",
         script,
         RootKind::Page,
         &[first, second],
-        JsCheckPolicy::Inherit,
-        false,
+        &["m1".to_owned(), "m1".to_owned()],
     )
     .expect("layout");
     assert_eq!(built.status, BuildStatus::Supported);
@@ -1231,6 +1237,52 @@ fn wxs_module_declarations_are_deduplicated_across_fragments() {
 }
 
 #[test]
+fn request_level_wxs_modules_drop_reserved_and_invalid_names() {
+    // `ShadowRequest` is public: a caller-built request must not inject invalid
+    // or reserved probe text through the module list.
+    let script = "Page({ data: { title: 'x' } });";
+    let fragment = FragmentSpec::new("wxs#0", "m1.alpha", SourceRange::new(0, 8));
+    let built = build_with_wxs_modules(
+        "index.ts",
+        script,
+        RootKind::Page,
+        &[fragment],
+        &[
+            "m1".to_owned(),
+            "m1".to_owned(),
+            "__wxml_root".to_owned(),
+            "not-valid".to_owned(),
+        ],
+    )
+    .expect("layout");
+    assert_eq!(built.status, BuildStatus::Supported);
+    assert_eq!(
+        built
+            .view
+            .text
+            .matches("const m1: any = null as any;")
+            .count(),
+        1,
+        "{}",
+        built.view.text
+    );
+    assert!(
+        !built.view.text.contains("not-valid"),
+        "{}",
+        built.view.text
+    );
+    assert!(
+        !built
+            .view
+            .text
+            .contains("const __wxml_root: any = null as any;"),
+        "{}",
+        built.view.text
+    );
+    assert_eq!(built.view.mounts[0].text, "m1.alpha");
+}
+
+#[test]
 fn wxs_module_and_loop_bindings_share_one_probe() {
     let script = "Page({ data: { users: [{ name: 'x' }] } });";
     let expr = "m1.format(item.name)";
@@ -1239,19 +1291,17 @@ fn wxs_module_and_loop_bindings_share_one_probe() {
         expr,
         SourceRange::new(0, u32::try_from(expr.len()).expect("expression length")),
     );
-    fragment.wxs_modules = vec!["m1".to_owned()];
     fragment.bindings = vec![LocalBinding {
         name: "item".to_owned(),
         role: LocalRole::Item,
         source_expr: "users".to_owned(),
     }];
-    let built = build(
+    let built = build_with_wxs_modules(
         "index.ts",
         script,
         RootKind::Page,
         &[fragment],
-        JsCheckPolicy::Inherit,
-        false,
+        &["m1".to_owned()],
     )
     .expect("layout");
     assert_eq!(built.status, BuildStatus::Supported);
@@ -1273,19 +1323,17 @@ fn a_loop_binding_shadows_a_same_named_wxs_module() {
     // rest of the probe still sees the module.
     let script = "Page({ data: { m1: [{ name: 'x' }] } });";
     let mut fragment = FragmentSpec::new("loop#0", "m1.name", SourceRange::new(0, 7));
-    fragment.wxs_modules = vec!["m1".to_owned()];
     fragment.bindings = vec![LocalBinding {
         name: "m1".to_owned(),
         role: LocalRole::Item,
         source_expr: "m1".to_owned(),
     }];
-    let built = build(
+    let built = build_with_wxs_modules(
         "index.ts",
         script,
         RootKind::Page,
         &[fragment],
-        JsCheckPolicy::Inherit,
-        false,
+        &["m1".to_owned()],
     )
     .expect("layout");
     assert_eq!(built.status, BuildStatus::Supported);
@@ -1311,15 +1359,13 @@ fn wxs_module_declarations_follow_the_probe_syntax() {
     // A `.js` probe cannot carry a type annotation, so the same declaration is
     // rendered as a JSDoc cast; the module still stays unprefixed.
     let script = "Page({ data: { title: 'x' } });";
-    let mut fragment = FragmentSpec::new("wxs#0", "m1.alpha", SourceRange::new(0, 8));
-    fragment.wxs_modules = vec!["m1".to_owned()];
-    let built = build(
+    let fragment = FragmentSpec::new("wxs#0", "m1.alpha", SourceRange::new(0, 8));
+    let built = build_with_wxs_modules(
         "index.js",
         script,
         RootKind::Page,
         &[fragment],
-        JsCheckPolicy::Inherit,
-        false,
+        &["m1".to_owned()],
     )
     .expect("layout");
     assert!(

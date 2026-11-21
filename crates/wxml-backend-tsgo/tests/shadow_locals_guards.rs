@@ -87,13 +87,10 @@ fn build(
     check_js: bool,
 ) -> wxml_backend_tsgo::shadow::layout::BuiltShadow {
     let script = source_file(path, text);
-    let request = ShadowRequest {
-        script: &script,
-        root,
-        fragments,
-        js_check,
-        check_js,
-    };
+    let mut request = ShadowRequest::new(&script, root);
+    request.fragments = fragments;
+    request.js_check = js_check;
+    request.check_js = check_js;
     build_in_place_shadow(&request).expect("layout")
 }
 

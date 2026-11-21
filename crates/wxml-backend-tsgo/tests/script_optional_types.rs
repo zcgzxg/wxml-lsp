@@ -22,7 +22,7 @@ use wxml_backend_tsgo::script::ScriptRequest;
 use wxml_backend_tsgo::script::analyze_script;
 use wxml_backend_tsgo::script::registration::RegistrationKind;
 use wxml_backend_tsgo::shadow::layout::{
-    BehaviorPropertyOverlay, BuildStatus, FragmentSpec, JsCheckPolicy, RootKind, ShadowRequest,
+    BehaviorPropertyOverlay, BuildStatus, FragmentSpec, RootKind, ShadowRequest,
     build_in_place_shadow, build_in_place_shadow_with_behavior,
 };
 use wxml_backend_tsgo::shadow::mapping::SourceRange;
@@ -248,13 +248,9 @@ fn emoji_and_cjk_documentation_survive_the_union_overlay() {
 }
 
 fn shadow_request<'a>(script: &'a SourceFile, fragments: &'a [FragmentSpec]) -> ShadowRequest<'a> {
-    ShadowRequest {
-        script,
-        root: RootKind::Component,
-        fragments,
-        js_check: JsCheckPolicy::Inherit,
-        check_js: false,
-    }
+    let mut request = ShadowRequest::new(script, RootKind::Component);
+    request.fragments = fragments;
+    request
 }
 
 fn fragment(expr: &str, start: u32) -> FragmentSpec {

@@ -187,13 +187,6 @@ pub struct FragmentSpec {
     pub locals: Vec<String>,
     /// Structured `wx:for` bindings, outermost first.
     pub bindings: Vec<LocalBinding>,
-    /// Static WXS module names declared by the owning template.
-    ///
-    /// A `<wxs module="m1">` name is a file-level value, not a data field, so
-    /// it is kept unprefixed and declared once as `any` in the probe. The
-    /// entries must be valid binding identifiers; the renderer re-validates
-    /// defensively.
-    pub wxs_modules: Vec<String>,
     /// Enclosing guard chains, outermost first.
     pub guards: Vec<GuardChain>,
     /// Mount `expr` as a member of the registration instance instead of
@@ -222,7 +215,6 @@ impl FragmentSpec {
             target: None,
             locals: Vec::new(),
             bindings: Vec::new(),
-            wxs_modules: Vec::new(),
             guards: Vec::new(),
             member: false,
         }
@@ -238,6 +230,13 @@ pub struct ShadowRequest<'a> {
     pub root: RootKind,
     /// Fragments to mount.
     pub fragments: &'a [FragmentSpec],
+    /// Static WXS module names declared by the owning template.
+    ///
+    /// A `<wxs module="m1">` name is a file-level value, not a data field, so
+    /// it is kept unprefixed and declared once as `any` in the probe. Entries
+    /// must be valid binding identifiers; the renderer re-validates defensively
+    /// before writing any probe text.
+    pub wxs_modules: &'a [String],
     /// JavaScript checking policy.
     pub js_check: JsCheckPolicy,
     /// Effective `checkJs` project option.
@@ -252,6 +251,7 @@ impl<'a> ShadowRequest<'a> {
             script,
             root,
             fragments: &[],
+            wxs_modules: &[],
             js_check: JsCheckPolicy::Inherit,
             check_js: false,
         }
@@ -675,7 +675,7 @@ fn build_in_place_shadow_inner(
     // against `any` instead of `__wxml_root.m1`. This is generated text without
     // a source mapping and it deliberately does not mark the fragment as
     // unresolved: a valid static module is complete coverage, not a gap.
-    for name in probe_wxs_modules(request.fragments) {
+    for name in probe_wxs_modules(request.wxs_modules) {
         match syntax {
             Syntax::TypeScript => {
                 body.push(&format!("{BODY_INDENT}const {name}: any = null as any;\n"));
@@ -747,7 +747,7 @@ fn build_in_place_shadow_inner(
             });
         }
         validate_fragment_range(fragment)?;
-        let planned = plan_fragment(fragment, &property_names, syntax)?;
+        let planned = plan_fragment(fragment, request.wxs_modules, &property_names, syntax)?;
         let depth = if fragment.bindings.is_empty() {
             0
         } else {
@@ -823,7 +823,7 @@ fn build_in_place_shadow_inner(
             scope.local_text = locals.text;
             scope.local_close = locals.close;
         }
-        let local_names = effective_local_names(fragment);
+        let local_names = effective_local_names(fragment, request.wxs_modules);
         for guard in &fragment.guards {
             let planned_guards = render_guards_planned(
                 guard,
@@ -873,6 +873,7 @@ fn build_in_place_shadow_inner(
                     fragment,
                     chain_index,
                     expr,
+                    request.wxs_modules,
                     &property_names,
                     &condition.text,
                 ) else {
@@ -1245,13 +1246,12 @@ struct PlannedFragment {
 
 /// Effective local names of one fragment, in the same order as [`RewriteOptions`].
 ///
-/// WXS module names are template-level values, so they stay unprefixed exactly
-/// like `wx:for` locals. Invalid names and the reserved `__wxml_` namespaces
-/// are dropped, which keeps a caller-built `FragmentSpec` from emitting invalid
-/// probe text.
-fn effective_local_names(fragment: &FragmentSpec) -> BTreeSet<String> {
-    let mut names: BTreeSet<String> = fragment
-        .wxs_modules
+/// WXS module names are template-level values carried by the request, so they
+/// stay unprefixed exactly like `wx:for` locals. Invalid names and the reserved
+/// `__wxml_` namespaces are dropped, which keeps a caller-built
+/// `ShadowRequest`/`FragmentSpec` from emitting invalid probe text.
+fn effective_local_names(fragment: &FragmentSpec, wxs_modules: &[String]) -> BTreeSet<String> {
+    let mut names: BTreeSet<String> = wxs_modules
         .iter()
         .filter(|name| expression::is_binding_identifier(name))
         .cloned()
@@ -1278,28 +1278,27 @@ fn effective_local_names(fragment: &FragmentSpec) -> BTreeSet<String> {
 
 /// Deduplicated WXS module names declared once at the top of the probe.
 ///
-/// The union spans every fragment of the request, in first-occurrence order.
-/// Invalid names (including the reserved `__wxml_` namespaces) are skipped so
+/// The request-level list is deduplicated in first-occurrence order. Invalid
+/// names (including the reserved `__wxml_` namespaces) are skipped so
 /// hand-built requests cannot inject arbitrary probe text. Nothing here touches
 /// the unresolved-binding counter.
-fn probe_wxs_modules(fragments: &[FragmentSpec]) -> Vec<String> {
+fn probe_wxs_modules(wxs_modules: &[String]) -> Vec<String> {
     let mut names: Vec<String> = Vec::new();
-    for fragment in fragments {
-        for name in &fragment.wxs_modules {
-            if !expression::is_binding_identifier(name) {
-                continue;
-            }
-            if names.iter().any(|existing| existing == name) {
-                continue;
-            }
-            names.push(name.clone());
+    for name in wxs_modules {
+        if !expression::is_binding_identifier(name) {
+            continue;
         }
+        if names.iter().any(|existing| existing == name) {
+            continue;
+        }
+        names.push(name.clone());
     }
     names
 }
 
 fn plan_fragment(
     fragment: &FragmentSpec,
+    wxs_modules: &[String],
     property_names: &BTreeSet<String>,
     syntax: Syntax,
 ) -> Result<PlannedFragment, ShadowError> {
@@ -1313,7 +1312,7 @@ fn plan_fragment(
         props_prefix: PROPS_PREFIX.to_owned(),
         property_overlay: property_names.clone(),
         data_overlay: BTreeSet::new(),
-        locals: effective_local_names(fragment),
+        locals: effective_local_names(fragment, wxs_modules),
     };
     let rewritten = rewrite_expression(&fragment.expr, fragment.target.as_deref(), &options)?;
     let _ = syntax;
@@ -1407,6 +1406,7 @@ fn guard_condition_source(
     owner: &FragmentSpec,
     chain_index: usize,
     expr: &str,
+    wxs_modules: &[String],
     property_names: &BTreeSet<String>,
     expected_text: &str,
 ) -> Option<SourceRange> {
@@ -1426,7 +1426,7 @@ fn guard_condition_source(
         let rewritten = rewrite_condition(
             &candidate.expr,
             property_names,
-            &effective_local_names(candidate),
+            &effective_local_names(candidate, wxs_modules),
         )?;
         if rewritten.text != expected_text {
             continue;
@@ -2221,13 +2221,8 @@ mod tests {
 
     fn build_js_with_policy(text: &str, policy: JsCheckPolicy) -> BuiltShadow {
         let script = source_file("index.js", text);
-        let request = ShadowRequest {
-            script: &script,
-            root: RootKind::Component,
-            fragments: &[],
-            js_check: policy,
-            check_js: false,
-        };
+        let mut request = ShadowRequest::new(&script, RootKind::Component);
+        request.js_check = policy;
         build_in_place_shadow(&request).expect("layout")
     }
 
@@ -2384,13 +2379,8 @@ mod tests {
             "index.js",
             "\u{FEFF}#!/usr/bin/env node\nComponent({ methods: {} });",
         );
-        let request = ShadowRequest {
-            script: &script,
-            root: RootKind::Component,
-            fragments: &[],
-            js_check: JsCheckPolicy::Pragma,
-            check_js: false,
-        };
+        let mut request = ShadowRequest::new(&script, RootKind::Component);
+        request.js_check = JsCheckPolicy::Pragma;
         let built = build_in_place_shadow(&request).expect("layout");
         assert_eq!(built.js_check_applied, JsCheckApplied::Pragma);
         assert!(built.view.text.starts_with("#!"));
@@ -2597,13 +2587,8 @@ mod tests {
             FragmentSpec::new("f0", "title", SourceRange::new(0, 5)),
             FragmentSpec::new("f0", "title", SourceRange::new(0, 5)),
         ];
-        let request = ShadowRequest {
-            script: &script,
-            root: RootKind::Page,
-            fragments: &duplicate,
-            js_check: JsCheckPolicy::Inherit,
-            check_js: false,
-        };
+        let mut request = ShadowRequest::new(&script, RootKind::Page);
+        request.fragments = &duplicate;
         let error = build_in_place_shadow(&request).expect_err("duplicate fragment id");
         match error {
             ShadowError::Invalid { feature, reason } => {
@@ -2629,13 +2614,9 @@ mod tests {
         assert!(name.target.is_none());
         assert_eq!(name.locals.len(), 0);
 
-        let request = ShadowRequest {
-            script: &script,
-            root: RootKind::Page,
-            fragments: &[title, name],
-            js_check: JsCheckPolicy::Inherit,
-            check_js: false,
-        };
+        let fragments = [title, name];
+        let mut request = ShadowRequest::new(&script, RootKind::Page);
+        request.fragments = &fragments;
         let built = build_in_place_shadow(&request).expect("legacy fragments build");
         assert_eq!(built.view.mounts.len(), 2);
         assert_eq!(built.view.mounts[0].text, "__wxml_root.title");
@@ -2652,13 +2633,9 @@ mod tests {
             expr,
             SourceRange::new(134, 134 + u32::try_from(expr.len()).expect("length")),
         );
-        let request = ShadowRequest {
-            script: &script,
-            root: RootKind::Page,
-            fragments: &[fragment],
-            js_check: JsCheckPolicy::Inherit,
-            check_js: false,
-        };
+        let fragments = [fragment];
+        let mut request = ShadowRequest::new(&script, RootKind::Page);
+        request.fragments = &fragments;
         let built = build_in_place_shadow(&request).expect("layout");
         assert!(built.view.text.contains(
             "const __wxml_root = this.data;\n        {\n          __wxml_root.user.name;"
@@ -2691,13 +2668,9 @@ mod tests {
         );
         let mut fragment = FragmentSpec::new("event#0", handler, handler_range);
         fragment.member = true;
-        let request = ShadowRequest {
-            script: &script,
-            root: RootKind::Page,
-            fragments: &[fragment],
-            js_check: JsCheckPolicy::Inherit,
-            check_js: false,
-        };
+        let fragments = [fragment];
+        let mut request = ShadowRequest::new(&script, RootKind::Page);
+        request.fragments = &fragments;
         let built = build_in_place_shadow(&request).expect("layout");
         assert_eq!(built.status, BuildStatus::Supported);
         assert!(
@@ -2764,13 +2737,9 @@ mod tests {
                 u32::try_from(start + expr.len()).expect("offset"),
             ),
         );
-        let request = ShadowRequest {
-            script: &script,
-            root: RootKind::Page,
-            fragments: &[fragment],
-            js_check: JsCheckPolicy::Inherit,
-            check_js: false,
-        };
+        let fragments = [fragment];
+        let mut request = ShadowRequest::new(&script, RootKind::Page);
+        request.fragments = &fragments;
         let built = build_in_place_shadow(&request).expect("layout");
         assert_eq!(built.status, BuildStatus::Supported);
         assert!(
@@ -2849,13 +2818,9 @@ mod tests {
             selected: 0,
         }];
         let guard = FragmentSpec::new("guard", condition, guard_range);
-        let request = ShadowRequest {
-            script: &script,
-            root: RootKind::Page,
-            fragments: &[value, guard],
-            js_check: JsCheckPolicy::Inherit,
-            check_js: false,
-        };
+        let fragments = [value, guard];
+        let mut request = ShadowRequest::new(&script, RootKind::Page);
+        request.fragments = &fragments;
         let built = build_in_place_shadow(&request).expect("layout");
         assert_eq!(built.status, BuildStatus::Supported);
 
@@ -2918,13 +2883,9 @@ mod tests {
     fn invalid_fragment_ranges_are_rejected() {
         let script = source_file("index.ts", "Page({ data: {} });");
         let fragment = FragmentSpec::new("f0", "user.name", SourceRange::new(0, 1));
-        let request = ShadowRequest {
-            script: &script,
-            root: RootKind::Page,
-            fragments: &[fragment],
-            js_check: JsCheckPolicy::Inherit,
-            check_js: false,
-        };
+        let fragments = [fragment];
+        let mut request = ShadowRequest::new(&script, RootKind::Page);
+        request.fragments = &fragments;
         assert!(matches!(
             build_in_place_shadow(&request),
             Err(ShadowError::Invalid {

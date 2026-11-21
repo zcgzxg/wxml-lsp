@@ -359,7 +359,7 @@ mod adapter {
     use wxml_backend_tsgo::script::registration::RegistrationKind;
     use wxml_backend_tsgo::script::{ScriptRequest, analyze_script};
     use wxml_backend_tsgo::shadow::layout::{
-        BehaviorPropertyOverlay, FragmentSpec, JsCheckPolicy, RootKind, ShadowRequest,
+        BehaviorPropertyOverlay, FragmentSpec, RootKind, ShadowRequest,
         build_in_place_shadow_with_behavior,
     };
     use wxml_types::{
@@ -485,17 +485,9 @@ mod adapter {
             complete: true,
             reason: None,
         };
-        let built = build_in_place_shadow_with_behavior(
-            &ShadowRequest {
-                script: &script,
-                root: RootKind::Component,
-                fragments: std::slice::from_ref(&fragment),
-                js_check: JsCheckPolicy::Inherit,
-                check_js: false,
-            },
-            Some(&overlay),
-        )
-        .expect("shadow");
+        let mut request = ShadowRequest::new(&script, RootKind::Component);
+        request.fragments = std::slice::from_ref(&fragment);
+        let built = build_in_place_shadow_with_behavior(&request, Some(&overlay)).expect("shadow");
         let mount = built
             .view
             .mounts
@@ -574,17 +566,9 @@ mod adapter {
             "user.name",
             wxml_backend_tsgo::shadow::mapping::SourceRange::new(3, 12),
         );
-        let built = build_in_place_shadow_with_behavior(
-            &ShadowRequest {
-                script: &script,
-                root: RootKind::Component,
-                fragments: std::slice::from_ref(&fragment),
-                js_check: JsCheckPolicy::Inherit,
-                check_js: false,
-            },
-            None,
-        )
-        .expect("shadow");
+        let mut request = ShadowRequest::new(&script, RootKind::Component);
+        request.fragments = std::slice::from_ref(&fragment);
+        let built = build_in_place_shadow_with_behavior(&request, None).expect("shadow");
         let mount = built
             .view
             .mounts
@@ -658,28 +642,15 @@ mod adapter {
         let end = start + u32::try_from("onBackTap".len()).expect("handler length");
         let script = SourceFile::new("pages/index/index.ts", source, DocumentRevision::new(1))
             .expect("script");
-        let fragment = FragmentSpec {
-            id: crate::backend_tsgo::input::EVENT_POINT_FRAGMENT_ID.to_owned(),
-            expr: "onBackTap".to_owned(),
-            wxml_range: wxml_backend_tsgo::shadow::mapping::SourceRange::new(start, end),
-            target: None,
-            locals: Vec::new(),
-            bindings: Vec::new(),
-            wxs_modules: Vec::new(),
-            guards: Vec::new(),
-            member: true,
-        };
-        let built = build_in_place_shadow_with_behavior(
-            &ShadowRequest {
-                script: &script,
-                root: RootKind::Page,
-                fragments: std::slice::from_ref(&fragment),
-                js_check: JsCheckPolicy::Inherit,
-                check_js: false,
-            },
-            None,
-        )
-        .expect("shadow");
+        let mut fragment = FragmentSpec::new(
+            crate::backend_tsgo::input::EVENT_POINT_FRAGMENT_ID,
+            "onBackTap",
+            wxml_backend_tsgo::shadow::mapping::SourceRange::new(start, end),
+        );
+        fragment.member = true;
+        let mut request = ShadowRequest::new(&script, RootKind::Page);
+        request.fragments = std::slice::from_ref(&fragment);
+        let built = build_in_place_shadow_with_behavior(&request, None).expect("shadow");
         let mount = built
             .view
             .mounts
@@ -755,17 +726,9 @@ mod adapter {
             "user.name",
             wxml_backend_tsgo::shadow::mapping::SourceRange::new(3, 12),
         );
-        let built = build_in_place_shadow_with_behavior(
-            &ShadowRequest {
-                script: &script,
-                root: RootKind::Page,
-                fragments: std::slice::from_ref(&fragment),
-                js_check: JsCheckPolicy::Inherit,
-                check_js: false,
-            },
-            None,
-        )
-        .expect("shadow");
+        let mut request = ShadowRequest::new(&script, RootKind::Page);
+        request.fragments = std::slice::from_ref(&fragment);
+        let built = build_in_place_shadow_with_behavior(&request, None).expect("shadow");
         let mount = built
             .view
             .mounts

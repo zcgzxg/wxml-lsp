@@ -21,7 +21,7 @@ use wxml_backend_tsgo::input::{DocumentRevision, SourceFile};
 use wxml_backend_tsgo::native::strings::Utf16Offset;
 use wxml_backend_tsgo::shadow::guards::{GuardChain, GuardCondition, GuardKind};
 use wxml_backend_tsgo::shadow::layout::{
-    BuildStatus, FragmentSpec, JsCheckPolicy, RootKind, ShadowRequest, build_in_place_shadow,
+    BuildStatus, FragmentSpec, RootKind, ShadowRequest, build_in_place_shadow,
 };
 use wxml_backend_tsgo::shadow::locals::{LocalBinding, LocalRole};
 use wxml_backend_tsgo::shadow::mapping::{
@@ -45,14 +45,9 @@ fn range_of(wxml: &str, needle: &str) -> SourceRange {
 
 fn build(fragments: &[FragmentSpec]) -> wxml_backend_tsgo::shadow::layout::BuiltShadow {
     let script = source_file(SCRIPT);
-    build_in_place_shadow(&ShadowRequest {
-        script: &script,
-        root: RootKind::Page,
-        fragments,
-        js_check: JsCheckPolicy::Inherit,
-        check_js: false,
-    })
-    .expect("layout")
+    let mut request = ShadowRequest::new(&script, RootKind::Page);
+    request.fragments = fragments;
+    build_in_place_shadow(&request).expect("layout")
 }
 
 fn condition(branch: GuardKind, expr: &str) -> GuardCondition {

@@ -25,8 +25,8 @@ use wxml_backend_tsgo::shadow::guards::{
     GuardKind as ShadowGuardKind,
 };
 use wxml_backend_tsgo::shadow::layout::{
-    BehaviorPropertyOverlay, FragmentSpec, JsCheckPolicy, RootKind as ShadowRootKind,
-    ShadowRequest, build_in_place_shadow_with_behavior,
+    BehaviorPropertyOverlay, FragmentSpec, RootKind as ShadowRootKind, ShadowRequest,
+    build_in_place_shadow_with_behavior,
 };
 use wxml_backend_tsgo::shadow::locals::{
     LocalBinding as ShadowLocalBinding, LocalRole as ShadowLocalRole,
@@ -746,7 +746,7 @@ fn build_request_plan_with_completion(
     let (included, omitted_literal, omitted_malformed) = eligible_fragments(&view.fragments);
     let mut fragments = included
         .iter()
-        .map(|fragment| fragment_spec(fragment, &view.wxs_modules))
+        .map(|fragment| fragment_spec(fragment))
         .collect::<Vec<_>>();
     if let Some(fragment) = completion {
         let spec = completion_fragment_spec(fragment);
@@ -772,17 +772,12 @@ fn build_request_plan_with_completion(
     let project = ProjectKey::new(context.file().project().as_str());
     let facts = collect_script_facts(&view, &project, &project_root, &script_path, shadow_root);
     let behavior_overlay = facts.behavior.as_ref().map(BehaviorFacts::overlay);
-    let built = build_in_place_shadow_with_behavior(
-        &ShadowRequest {
-            script: &original,
-            root: shadow_root,
-            fragments: &fragments,
-            js_check: JsCheckPolicy::Inherit,
-            check_js,
-        },
-        behavior_overlay.as_ref(),
-    )
-    .map_err(|error| shadow_error(&error))?;
+    let mut request = ShadowRequest::new(&original, shadow_root);
+    request.fragments = &fragments;
+    request.wxs_modules = &view.wxs_modules;
+    request.check_js = check_js;
+    let built = build_in_place_shadow_with_behavior(&request, behavior_overlay.as_ref())
+        .map_err(|error| shadow_error(&error))?;
 
     // A completion plan mounts the valid expression prefix and appends a
     // synthetic `.` plus placeholder. The query sits after the inserted dot, so
@@ -1358,21 +1353,18 @@ fn slice_relative(source: &str, range: wxml_text::TextRange) -> Option<&str> {
 /// (the rightmost value identifier is queried) and no guard (completion never
 /// narrows), which keeps the published replacement range original.
 fn completion_fragment_spec(fragment: &CompletionFragment) -> FragmentSpec {
-    FragmentSpec {
-        id: COMPLETION_FRAGMENT_ID.to_owned(),
-        expr: fragment.expr.clone(),
-        wxml_range: ShadowSourceRange::new(fragment.wxml_range.start(), fragment.wxml_range.end()),
-        target: None,
-        locals: fragment
-            .bindings
-            .iter()
-            .map(|binding| binding.name.clone())
-            .collect(),
-        bindings: fragment.bindings.iter().map(local_binding).collect(),
-        wxs_modules: Vec::new(),
-        guards: Vec::new(),
-        member: false,
-    }
+    let mut spec = FragmentSpec::new(
+        COMPLETION_FRAGMENT_ID,
+        fragment.expr.clone(),
+        ShadowSourceRange::new(fragment.wxml_range.start(), fragment.wxml_range.end()),
+    );
+    spec.locals = fragment
+        .bindings
+        .iter()
+        .map(|binding| binding.name.clone())
+        .collect();
+    spec.bindings = fragment.bindings.iter().map(local_binding).collect();
+    spec
 }
 
 /// Finds the static event handler whose token contains `offset`.
@@ -1432,40 +1424,36 @@ fn is_member_name(name: &str) -> bool {
 
 /// Builds the member fragment spec for one event-handler point query.
 fn event_point_fragment_spec(fragment: &EventPointFragment) -> FragmentSpec {
-    FragmentSpec {
-        id: EVENT_POINT_FRAGMENT_ID.to_owned(),
-        expr: fragment.handler.clone(),
-        wxml_range: ShadowSourceRange::new(fragment.wxml_range.start(), fragment.wxml_range.end()),
-        target: None,
-        locals: Vec::new(),
-        bindings: Vec::new(),
-        wxs_modules: Vec::new(),
-        guards: Vec::new(),
-        member: true,
-    }
+    let mut spec = FragmentSpec::new(
+        EVENT_POINT_FRAGMENT_ID,
+        fragment.handler.clone(),
+        ShadowSourceRange::new(fragment.wxml_range.start(), fragment.wxml_range.end()),
+    );
+    spec.member = true;
+    spec
 }
 
 /// Builds the fragment spec for one template fragment.
 ///
-/// Every fragment carries the view's static WXS module names: the shadow keeps
-/// them unprefixed and declares them once, so an expression whose only root is
-/// a module is still mounted and never rewritten to a data root.
-fn fragment_spec(fragment: &CheckFragment, wxs_modules: &[String]) -> FragmentSpec {
-    FragmentSpec {
-        id: fragment.fragment_id.clone(),
-        expr: fragment.expr_text.clone(),
-        wxml_range: ShadowSourceRange::new(fragment.wxml_range.start(), fragment.wxml_range.end()),
-        target: fragment.target.clone(),
-        locals: fragment
-            .bindings
-            .iter()
-            .map(|binding| binding.name.clone())
-            .collect(),
-        bindings: fragment.bindings.iter().map(local_binding).collect(),
-        wxs_modules: wxs_modules.to_vec(),
-        guards: fragment.guards.iter().map(guard_chain).collect(),
-        member: false,
-    }
+/// The view's static WXS module names travel on [`ShadowRequest`] instead of
+/// each fragment: the shadow keeps them unprefixed and declares them once, so an
+/// expression whose only root is a module is still mounted and never rewritten
+/// to a data root.
+fn fragment_spec(fragment: &CheckFragment) -> FragmentSpec {
+    let mut spec = FragmentSpec::new(
+        fragment.fragment_id.clone(),
+        fragment.expr_text.clone(),
+        ShadowSourceRange::new(fragment.wxml_range.start(), fragment.wxml_range.end()),
+    );
+    spec.target.clone_from(&fragment.target);
+    spec.locals = fragment
+        .bindings
+        .iter()
+        .map(|binding| binding.name.clone())
+        .collect();
+    spec.bindings = fragment.bindings.iter().map(local_binding).collect();
+    spec.guards = fragment.guards.iter().map(guard_chain).collect();
+    spec
 }
 
 fn local_binding(binding: &wxml_types::LocalBinding) -> ShadowLocalBinding {

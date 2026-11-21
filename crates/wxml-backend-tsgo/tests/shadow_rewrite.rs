@@ -14,7 +14,7 @@ use wxml_backend_tsgo::input::{DocumentRevision, SourceFile};
 use wxml_backend_tsgo::native::strings::Utf16Offset;
 use wxml_backend_tsgo::shadow::ShadowError;
 use wxml_backend_tsgo::shadow::layout::{
-    FragmentSpec, JsCheckPolicy, RootKind, ShadowRequest, build_in_place_shadow,
+    FragmentSpec, RootKind, ShadowRequest, build_in_place_shadow,
 };
 use wxml_backend_tsgo::shadow::mapping::{MountRecord, SourceRange, map_span_to_source, utf16_len};
 use wxml_backend_tsgo::shadow::rewrite::{
@@ -254,23 +254,15 @@ fn case_rewrite_0207_wxmlrange_must_match_the_expression_byte_length() {
     // the positive control, so the rejection is length-specific.
     let script = source_file("Page({ data: { title: \"x\" } });");
     let valid = FragmentSpec::new("f0", "title", SourceRange::new(0, 5));
-    let valid_request = ShadowRequest {
-        script: &script,
-        root: RootKind::Page,
-        fragments: &[valid],
-        js_check: JsCheckPolicy::Inherit,
-        check_js: false,
-    };
+    let valid_fragments = [valid];
+    let mut valid_request = ShadowRequest::new(&script, RootKind::Page);
+    valid_request.fragments = &valid_fragments;
     assert!(build_in_place_shadow(&valid_request).is_ok());
 
     let invalid = FragmentSpec::new("f0", "title", SourceRange::new(0, 99));
-    let invalid_request = ShadowRequest {
-        script: &script,
-        root: RootKind::Page,
-        fragments: &[invalid],
-        js_check: JsCheckPolicy::Inherit,
-        check_js: false,
-    };
+    let invalid_fragments = [invalid];
+    let mut invalid_request = ShadowRequest::new(&script, RootKind::Page);
+    invalid_request.fragments = &invalid_fragments;
     let error = build_in_place_shadow(&invalid_request).expect_err("wrong wxmlRange length");
     match error {
         ShadowError::Invalid { feature, reason } => {
@@ -370,13 +362,9 @@ fn case_rewrite_0309_rewritten_mounts_map_target_spans_and_trim_synthetic_prefix
         "title + user.name",
         SourceRange::new(origin + 10, origin + 27),
     );
-    let request = ShadowRequest {
-        script: &script,
-        root: RootKind::Page,
-        fragments: &[first, second],
-        js_check: JsCheckPolicy::Inherit,
-        check_js: false,
-    };
+    let fragments = [first, second];
+    let mut request = ShadowRequest::new(&script, RootKind::Page);
+    request.fragments = &fragments;
     let built = build_in_place_shadow(&request).expect("layout");
     let bang = built
         .view
@@ -475,14 +463,9 @@ fn case_rewrite_0197_a_member_typo_keeps_the_exact_wxml_byte_range() {
         // rightmost value identifier, which is `nmae`.
         FragmentSpec::new("user.nmae", "user.nmae", SourceRange::new(129, 138)),
     ];
-    let built = build_in_place_shadow(&ShadowRequest {
-        script: &script,
-        root: RootKind::Page,
-        fragments: &fragments,
-        js_check: JsCheckPolicy::Inherit,
-        check_js: false,
-    })
-    .expect("layout");
+    let mut request = ShadowRequest::new(&script, RootKind::Page);
+    request.fragments = &fragments;
+    let built = build_in_place_shadow(&request).expect("layout");
     let mount = built
         .view
         .mounts
