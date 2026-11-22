@@ -3655,24 +3655,9 @@ fn build_prepared(
         );
     }
 
-    // A declared event whose handler exists but has no parameter annotation is
-    // only a coverage gap, never a diagnostic. The reason is merged last so an
-    // existing declaration/typing degradation keeps its wording.
-    if script_present && let Some(root) = slot.project.root().to_str() {
-        let typing = typing_snapshot(slot);
-        if let Some(reason) = crate::semantics::event_diagnostics::unannotated_handler_reason(
-            &files,
-            root,
-            project_id.as_str(),
-            script.as_str(),
-            owner,
-            snapshot.text(),
-            &events,
-            &typing.facts,
-        ) {
-            merge_hint(&mut hint, CapabilityStatus::Partial { reason });
-        }
-    }
+    // An unannotated handler parameter is a coverage gap owned by the engine
+    // contract plan (`contracts.rs` skips it and publishes its own `Partial`);
+    // view preparation must not duplicate that reason with a script scan.
 
     let mut filtered_partial = false;
     let compiler_options = filter_compiler_options(
@@ -5884,20 +5869,15 @@ export {};
     }
 
     #[test]
-    fn an_unannotated_declared_event_handler_degrades_the_status_hint() {
+    fn an_unannotated_declared_event_handler_keeps_the_view_status_clean() {
+        // The unannotated handler is a coverage gap owned by the engine
+        // contract plan (`contracts.rs`), which publishes its own `Partial`.
+        // View preparation must not duplicate it with a Rust-side script scan.
         let (_dir, root) = typing_host(Some(CARD_DECLARATION));
         write_page_script(&root, "Page({ onChange(event) {} });");
         let host = open_typing_host(&root);
         let view = analyze_page(&host, r#"<card bind:change="onChange" />"#, 31);
-        let Some(CapabilityStatus::Partial { reason }) = view.status_hint else {
-            panic!("expected a partial hint, got {:?}", view.status_hint);
-        };
-        assert!(reason.contains("参数未标注类型"), "{reason}");
-        assert!(reason.contains("card"), "{reason}");
-        assert!(
-            !reason.contains('/'),
-            "the reason must not contain a path: {reason}"
-        );
+        assert!(view.status_hint.is_none(), "{:?}", view.status_hint);
     }
 
     #[test]
@@ -5922,7 +5902,7 @@ export {};
     }
 
     #[test]
-    fn a_missing_declared_event_handler_does_not_add_the_unannotated_reason() {
+    fn a_missing_declared_event_handler_keeps_the_view_status_clean() {
         let (_dir, root) = typing_host(Some(CARD_DECLARATION));
         write_page_script(&root, "Page({ other() {} });");
         let host = open_typing_host(&root);
@@ -5935,7 +5915,7 @@ export {};
     }
 
     #[test]
-    fn an_undeclared_event_binding_does_not_add_the_unannotated_reason() {
+    fn an_undeclared_event_binding_keeps_the_view_status_clean() {
         let (_dir, root) = typing_host(Some(CARD_DECLARATION));
         write_page_script(&root, "Page({ onChange(event) {} });");
         let host = open_typing_host(&root);
@@ -5944,7 +5924,7 @@ export {};
     }
 
     #[test]
-    fn a_project_without_declarations_never_degrades_for_unannotated_handlers() {
+    fn a_project_without_declarations_never_degrades_for_an_unannotated_handler() {
         let (_dir, root) = typing_host(None);
         write_page_script(&root, "Page({ onChange(event) {} });");
         let host = open_typing_host(&root);
@@ -5957,7 +5937,7 @@ export {};
     }
 
     #[test]
-    fn an_existing_declaration_reason_wins_over_the_unannotated_handler_reason() {
+    fn an_unproven_event_declaration_is_the_only_view_degradation() {
         let (_dir, root) = typing_host(Some(UNPROVEN_EVENT_DECLARATION));
         write_page_script(&root, "Page({ onChange(event) {} });");
         let host = open_typing_host(&root);
@@ -5965,8 +5945,8 @@ export {};
         let Some(CapabilityStatus::Partial { reason }) = view.status_hint else {
             panic!("expected a partial hint, got {:?}", view.status_hint);
         };
-        // The existing declaration degradation keeps its more specific wording;
-        // the unannotated-handler reason is merged but loses at equal rank.
+        // The declaration degradation is the only view hint: the unannotated
+        // parameter belongs to the engine contract plan.
         assert!(reason.contains("未证明的事件类型"), "{reason}");
     }
 

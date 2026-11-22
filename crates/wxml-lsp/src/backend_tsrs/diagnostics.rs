@@ -21,6 +21,8 @@ use wxml_backend_tsrs::native::strings::{
     Utf16Offset, Utf16Position, position_to_offset, utf16_to_utf8,
 };
 use wxml_backend_tsrs::native::wire::RawDiagnostic;
+use wxml_backend_tsrs::script::symbols::Utf16Range;
+use wxml_backend_tsrs::shadow::layout::ContractAnchor;
 use wxml_types::{
     CapabilityStatus, Diagnostic, DiagnosticSeverity, DiagnosticsResult, SourceRange,
     SourceSnapshot,
@@ -30,6 +32,22 @@ use crate::backend_tsrs::component_bindings;
 use crate::backend_tsrs::mapping::{NativeRange, ShadowLayout};
 use crate::backend_tsrs::session::QuerySession;
 use crate::project_host::PreparedView;
+
+/// Assignment diagnostics whose range may land on a generated probe name.
+///
+/// `2739`/`2741` report a missing required property, which is still an
+/// assignment failure for a WXML object binding. Like `2322`/`2345`, the
+/// engine anchors them on the generated probe name, so they need the same
+/// re-anchoring path.
+const ASSIGNMENT_CODES: [u32; 4] = [2322, 2345, 2739, 2741];
+/// Excess-property diagnostics, which WXML structural compatibility allows.
+const EXCESS_PROPERTY_CODE: u32 = 2353;
+/// Unused-local and synthetic-declaration noise produced by generated code.
+const SYNTHETIC_NOISE_CODES: [u32; 2] = [6133, 6196];
+/// Diagnostics for an expected type the engine cannot resolve.
+const UNRESOLVED_EXPECTED_CODES: [u32; 2] = [2304, 2503];
+/// Maximum published contract message length in bytes.
+const MAX_CONTRACT_MESSAGE_LENGTH: usize = 512;
 
 /// One diagnostics run plus whether the native session must be dropped.
 #[derive(Debug)]
@@ -97,6 +115,7 @@ pub(crate) fn diagnostics(
         })
         .collect();
     let mut script_excluded = 0usize;
+    let mut contract_bindings: BTreeSet<(u32, u32)> = BTreeSet::new();
     for diagnostic in mapped.diagnostics {
         let Some(start) = diagnostic_offset(layout, diagnostic.start) else {
             mark_partial(
@@ -112,7 +131,64 @@ pub(crate) fn diagnostics(
             );
             continue;
         };
-        let Some(location) = map_range(layout, start, end, &mut status) else {
+
+        let contract = contract_hit(layout, start, end);
+
+        // Generated declarations are consumed by `void`, so unused or
+        // empty-declaration noise that still lands on a probe describes
+        // synthetic text only. A script-level unused local keeps the existing
+        // exclusion accounting.
+        if SYNTHETIC_NOISE_CODES.contains(&diagnostic.code) && contract.is_some() {
+            continue;
+        }
+
+        // WXML property binding is structural: an object literal may carry
+        // fields the declared type does not name. The remaining value and
+        // missing-property errors are still reported by `ASSIGNMENT_CODES` on
+        // the same binding.
+        if diagnostic.code == EXCESS_PROPERTY_CODE && contract.is_some() {
+            continue;
+        }
+
+        if let Some(anchor) = contract
+            && ASSIGNMENT_CODES.contains(&diagnostic.code)
+        {
+            let binding = (anchor.anchor.start.get(), anchor.anchor.end.get());
+            if !contract_bindings.insert(binding) {
+                continue;
+            }
+            // Only the generated probe name is re-anchored. A diagnostic
+            // inside the bound expression keeps its precise `map_native_range`
+            // position, but still counts as the one message of this binding.
+            if probe_overlaps(anchor.probe, start, end) {
+                let Some(range) = SourceRange::from_bounds(binding.0, binding.1).ok() else {
+                    mark_partial(
+                        &mut status,
+                        "a component binding anchor is not a valid template range",
+                    );
+                    continue;
+                };
+                let message = truncate_contract_message(&diagnostic.message);
+                let code = Some(diagnostic.code.to_string());
+                if seen.insert((code.clone(), range.start(), range.end(), message.clone())) {
+                    diagnostics.push(Diagnostic {
+                        range,
+                        severity: map_severity(diagnostic.severity, &mut status),
+                        message,
+                        code,
+                    });
+                }
+                continue;
+            }
+        }
+
+        let reason = if UNRESOLVED_EXPECTED_CODES.contains(&diagnostic.code) {
+            "a component contract expected type could not be resolved and the binding was \
+             not checked"
+        } else {
+            "a native diagnostic in generated text was not published"
+        };
+        let Some(location) = map_range(layout, start, end, &mut status, reason) else {
             continue;
         };
         if let NativeRange::Template { range, approximate } = location {
@@ -152,8 +228,14 @@ pub(crate) fn diagnostics(
             ),
         );
     }
-    let component = component_bindings::diagnostics(session, layout, view, script_path);
+    let component = component_bindings::diagnostics(layout, view);
     for diagnostic in component.diagnostics {
+        // The engine contract probe and the component pass describe the same
+        // binding. The engine owns the type verdict now, so a second message at
+        // the same binding range is never published.
+        if contract_bindings.contains(&(diagnostic.range.start(), diagnostic.range.end())) {
+            continue;
+        }
         let key = (
             diagnostic.code.clone(),
             diagnostic.range.start(),
@@ -354,15 +436,82 @@ fn diagnostic_offset(layout: &ShadowLayout, position: Utf16Position) -> Option<u
         .map(Utf16Offset::get)
 }
 
+/// Returns the contract whose generated probe text owns the derived range.
+///
+/// A range is attributed in two steps, both exact:
+///
+/// 1. it overlaps the generated variable name (`ContractAnchor::probe`), which
+///    is where an assignment diagnostic lands;
+/// 2. it lies inside the mount of the contract's fragment, which covers
+///    diagnostics reported on the bound expression itself.
+///
+/// A range in any other generated text (type annotation, declaration prefix)
+/// has no owner and is never guessed onto a nearby token.
+fn contract_hit(layout: &ShadowLayout, start: u32, end: u32) -> Option<&ContractAnchor> {
+    if let Some(anchor) = layout
+        .contracts()
+        .iter()
+        .find(|anchor| probe_overlaps(anchor.probe, start, end))
+    {
+        return Some(anchor);
+    }
+    layout
+        .contracts()
+        .iter()
+        .find(|anchor| contract_mount_contains(layout, anchor, start, end))
+}
+
+const fn probe_overlaps(probe: Utf16Range, start: u32, end: u32) -> bool {
+    if start == end {
+        probe.start.get() <= start && start <= probe.end.get()
+    } else {
+        start < probe.end.get() && probe.start.get() < end
+    }
+}
+
+fn contract_mount_contains(
+    layout: &ShadowLayout,
+    anchor: &ContractAnchor,
+    start: u32,
+    end: u32,
+) -> bool {
+    let Ok(target) = SourceRange::from_bounds(anchor.anchor.start.get(), anchor.anchor.end.get())
+    else {
+        return false;
+    };
+    let Some(mount) = layout.mount_for_range(target) else {
+        return false;
+    };
+    let Ok(mount_end) = mount.end_utf16() else {
+        return false;
+    };
+    mount.start_utf16 <= start && end <= mount_end
+}
+
+/// Truncates one contract message at a UTF-8 boundary.
+fn truncate_contract_message(message: &str) -> String {
+    if message.len() <= MAX_CONTRACT_MESSAGE_LENGTH {
+        return message.to_owned();
+    }
+    let mut end = MAX_CONTRACT_MESSAGE_LENGTH;
+    while end > 0 && !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    message
+        .get(..end)
+        .map_or_else(String::new, |text| format!("{text}…"))
+}
+
 fn map_range(
     layout: &ShadowLayout,
     start: u32,
     end: u32,
     status: &mut CapabilityStatus,
+    reason: &str,
 ) -> Option<NativeRange> {
     layout.map_native_range(start, end).map_or_else(
         |_| {
-            mark_partial(status, "a native diagnostic range could not be mapped");
+            mark_partial(status, reason);
             None
         },
         Some,

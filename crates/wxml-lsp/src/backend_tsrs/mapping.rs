@@ -14,6 +14,7 @@
 use thiserror::Error;
 use wxml_backend_tsrs::native::strings::{TextConversionError, Utf16Offset, utf16_len};
 use wxml_backend_tsrs::shadow::ShadowError;
+use wxml_backend_tsrs::shadow::layout::ContractAnchor;
 use wxml_backend_tsrs::shadow::mapping::{
     MappedSpan, MappingLayer, MountRecord, ShadowMap, ShadowMapper,
     SourceRange as ShadowSourceRange, map_span_to_source, utf16_to_byte,
@@ -38,6 +39,7 @@ pub(crate) struct ShadowLayout {
     derived: String,
     script_map: ShadowMap,
     fragments: Vec<FragmentMap>,
+    contracts: Vec<ContractAnchor>,
 }
 
 impl ShadowLayout {
@@ -54,7 +56,21 @@ impl ShadowLayout {
             derived: derived.into(),
             script_map,
             fragments,
+            contracts: Vec::new(),
         }
+    }
+
+    /// Attaches the contract probe anchors produced by the shadow build.
+    #[must_use]
+    pub(crate) fn with_contracts(mut self, contracts: Vec<ContractAnchor>) -> Self {
+        self.contracts = contracts;
+        self
+    }
+
+    /// Returns the contract probe anchors in derived UTF-16 coordinates.
+    #[must_use]
+    pub(crate) fn contracts(&self) -> &[ContractAnchor] {
+        &self.contracts
     }
 
     /// Returns the derived script text.

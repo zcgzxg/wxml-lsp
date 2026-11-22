@@ -6,6 +6,8 @@
 
 **Deciders**: 项目维护者
 
+**局部替代**：[ADR-0013](0013-engine-checked-component-bindings.md)（2026-11-22 accepted）替代本文第 4 节的事件签名结构比较，改为引擎函数赋值判定；发现规则、声明优先、事件名 `Warning` 与 hover 形态不变。
+
 **局部补充**：[ADR-0002](0002-template-type-checking-and-source-maps.md) 的模板类型检查与 [ADR-0010](0010-zero-config-lazy-discovery.md) 的零配置发现——本文只新增「组件属性与事件的类型来源」，分层依赖、引擎虚拟快照、不读取 `node_modules` 等既有边界不变。ADR-0001 的模块依赖方向仍是硬约束。
 
 ## Context

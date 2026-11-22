@@ -18,6 +18,7 @@ use wxml_backend_tsrs::native::strings::{
 };
 use wxml_backend_tsrs::native::vfs::environment_degradations_for;
 use wxml_backend_tsrs::script::behavior::BehaviorProperty;
+use wxml_backend_tsrs::script::events::MethodTable;
 use wxml_backend_tsrs::script::registration::RegistrationKind as ScriptRegistrationKind;
 use wxml_backend_tsrs::script::{ScriptRequest, analyze_script};
 use wxml_backend_tsrs::shadow::guards::{
@@ -25,7 +26,7 @@ use wxml_backend_tsrs::shadow::guards::{
     GuardKind as ShadowGuardKind,
 };
 use wxml_backend_tsrs::shadow::layout::{
-    BehaviorPropertyOverlay, FragmentSpec, RootKind as ShadowRootKind, ShadowRequest,
+    BehaviorPropertyOverlay, ContractSpec, FragmentSpec, RootKind as ShadowRootKind, ShadowRequest,
     build_in_place_shadow_with_behavior,
 };
 use wxml_backend_tsrs::shadow::locals::{
@@ -40,6 +41,10 @@ use wxml_types::{
     SourceSnapshot, ViewRevision,
 };
 
+use crate::backend_tsrs::component_facts::{
+    ComponentFactsCache, ScriptPropertyFacts, analysis_input,
+};
+use crate::backend_tsrs::contracts;
 use crate::backend_tsrs::environment::{Environment, degradation_reason};
 use crate::backend_tsrs::hover::DeclaredPropertyType;
 use crate::backend_tsrs::mapping::{FragmentMap, ShadowLayout};
@@ -534,6 +539,11 @@ struct ScriptFacts {
     behavior: Option<BehaviorFacts>,
     /// Declaration-derived property types for hover fidelity.
     declared_properties: BTreeMap<String, DeclaredPropertyType>,
+    /// Owner method table used by event contract probes.
+    ///
+    /// `None` means the script analysis did not run or failed, so an event
+    /// contract cannot be built from it.
+    methods: Option<MethodTable>,
 }
 
 /// Owned behavior properties plus their resolution completeness.
@@ -564,13 +574,15 @@ impl BehaviorFacts {
 /// The analysis runs over the effective project text (owning script plus every
 /// prepared project file) and is bounded by the script module's member,
 /// behavior, depth and file budgets. When the script has neither `properties`
-/// nor `behaviors`, the scan is skipped.
+/// nor `behaviors` and no event contract needs the method table, the scan is
+/// skipped.
 fn collect_script_facts(
     view: &PreparedView,
     project: &ProjectKey,
     project_root: &ProjectRoot,
     script_path: &str,
     shadow_root: ShadowRootKind,
+    needs_methods: bool,
 ) -> ScriptFacts {
     let Some(script) = view
         .files
@@ -581,29 +593,11 @@ fn collect_script_facts(
     };
     let has_properties = script.text.contains("properties");
     let has_behaviors = script.text.contains("behaviors");
-    if !has_properties && !has_behaviors {
+    if !has_properties && !has_behaviors && !needs_methods {
         return ScriptFacts::default();
     }
 
-    let files = view
-        .files
-        .iter()
-        .filter(|file| Language::from_path(file.path.as_str()).is_some())
-        .filter_map(|file| {
-            SourceFile::new(
-                file.path.as_str(),
-                file.text.to_string(),
-                DocumentRevision::new(file.source_revision),
-            )
-            .ok()
-        })
-        .collect::<Vec<_>>();
-    let Ok(input) = AnalysisInput::new(
-        project.clone(),
-        project_root.clone(),
-        SnapshotRevision::new(0),
-        files,
-    ) else {
+    let Some(input) = analysis_input(view, project, project_root, SnapshotRevision::new(0)) else {
         return ScriptFacts {
             behavior: has_behaviors.then(|| BehaviorFacts {
                 properties: Vec::new(),
@@ -611,6 +605,7 @@ fn collect_script_facts(
                 reason: Some("the script overlay could not be built from this project".to_owned()),
             }),
             declared_properties: BTreeMap::new(),
+            methods: None,
         };
     };
     let kind = match shadow_root {
@@ -625,24 +620,12 @@ fn collect_script_facts(
                 reason: Some("the script overlay could not be analyzed".to_owned()),
             }),
             declared_properties: BTreeMap::new(),
+            methods: None,
         };
     };
 
-    let overlay_complete = analysis.properties.complete;
-    let declared_properties = analysis
-        .properties
-        .properties
-        .iter()
-        .map(|property| {
-            (
-                property.name.clone(),
-                DeclaredPropertyType {
-                    type_text: property.type_text.clone(),
-                    complete: property.type_complete && overlay_complete,
-                },
-            )
-        })
-        .collect();
+    let declared_properties =
+        ScriptPropertyFacts::from_overlay(&analysis.properties).declared_types();
     let behavior = has_behaviors.then(|| BehaviorFacts {
         properties: analysis.behavior.properties.clone(),
         complete: !analysis.behavior.properties_incomplete
@@ -652,6 +635,7 @@ fn collect_script_facts(
     ScriptFacts {
         behavior,
         declared_properties,
+        methods: Some(analysis.methods),
     }
 }
 
@@ -738,18 +722,6 @@ fn build_request_plan_with_completion(
     )
     .map_err(|error| input_error(&error))?;
 
-    let (included, omitted_literal, omitted_malformed) = eligible_fragments(&view.fragments);
-    let mut fragments = included
-        .iter()
-        .map(|fragment| fragment_spec(fragment))
-        .collect::<Vec<_>>();
-    if let Some(fragment) = completion {
-        let spec = completion_fragment_spec(fragment);
-        fragments.push(spec);
-    }
-    if let Some(fragment) = &event_point {
-        fragments.push(event_point_fragment_spec(fragment));
-    }
     let shadow_root = match target.owner {
         RootKind::Page => ShadowRootKind::Page,
         RootKind::Component => ShadowRootKind::Component,
@@ -765,7 +737,54 @@ fn build_request_plan_with_completion(
         })?)
         .map_err(|error| input_error(&error))?;
     let project = ProjectKey::new(context.file().project().as_str());
-    let facts = collect_script_facts(&view, &project, &project_root, &script_path, shadow_root);
+    // Contract probes only belong to the diagnostics plan. A completion or
+    // point-query plan keeps exactly the fragments its query needs, so hover
+    // and completion never pay for (or depend on) contract coverage.
+    let wants_contracts = completion.is_none() && point.is_none();
+    let needs_methods = wants_contracts && contracts::needs_methods(&view);
+    let facts = collect_script_facts(
+        &view,
+        &project,
+        &project_root,
+        &script_path,
+        shadow_root,
+        needs_methods,
+    );
+    let js_checking = Language::from_path(&script_path)
+        .is_none_or(|language| !language.is_javascript())
+        || check_js
+        || contracts::has_ts_check(script.text.as_ref());
+    let contract_plan = if wants_contracts {
+        let mut cache = ComponentFactsCache::new(&view);
+        contracts::plan(
+            &view,
+            &mut cache,
+            facts.methods.as_ref(),
+            js_checking,
+            &script_path,
+        )
+    } else {
+        contracts::ContractPlan::default()
+    };
+    let (included, omitted_literal, omitted_malformed) =
+        eligible_fragments(&view.fragments, &contract_plan.properties);
+    let mut fragments = included
+        .iter()
+        .map(|fragment| {
+            fragment_spec(
+                fragment,
+                contract_plan.properties.get(&fragment.fragment_id),
+            )
+        })
+        .collect::<Vec<_>>();
+    fragments.extend(contract_plan.events.iter().cloned());
+    if let Some(fragment) = completion {
+        let spec = completion_fragment_spec(fragment);
+        fragments.push(spec);
+    }
+    if let Some(fragment) = &event_point {
+        fragments.push(event_point_fragment_spec(fragment));
+    }
     let behavior_overlay = facts.behavior.as_ref().map(BehaviorFacts::overlay);
     let mut request = ShadowRequest::new(&original, shadow_root);
     request.fragments = &fragments;
@@ -841,6 +860,14 @@ fn build_request_plan_with_completion(
             &mut degradation,
             Some(format!(
                 "{omitted_malformed} malformed template fragment(s) were omitted"
+            )),
+        );
+    }
+    for (reason, count) in &contract_plan.reasons {
+        merge_reason(
+            &mut degradation,
+            Some(format!(
+                "{count} component contract(s) were not checked: {reason}"
             )),
         );
     }
@@ -959,6 +986,7 @@ fn build_request_plan_with_completion(
         environment: environment_identity,
     };
 
+    let contracts = built.contracts().to_vec();
     Ok(RequestPlan {
         identity,
         project,
@@ -972,7 +1000,8 @@ fn build_request_plan_with_completion(
             derived,
             built.view.map,
             fragment_maps,
-        ),
+        )
+        .with_contracts(contracts),
         completion_query,
         declared_properties: facts.declared_properties,
         syntax_diagnostics: view.syntax_diagnostics.clone(),
@@ -1186,14 +1215,27 @@ fn hash_bytes(hash: &mut u64, bytes: &[u8], prime: u64) {
 }
 
 /// Fragments that can be mounted, plus counts of the two rejection reasons.
-fn eligible_fragments(fragments: &[CheckFragment]) -> (Vec<&CheckFragment>, usize, usize) {
+///
+/// A fragment with a contract is mounted even when it has no free-root
+/// identifier (`{{ 1 }}`): the contract probe assigns the expression to an
+/// explicitly typed variable, which is meaningful without a data root.
+fn eligible_fragments<'a>(
+    fragments: &'a [CheckFragment],
+    contracts: &BTreeMap<String, ContractSpec>,
+) -> (Vec<&'a CheckFragment>, usize, usize) {
     let mut included = Vec::new();
     let mut omitted_literal = 0;
     let mut omitted_malformed = 0;
     for fragment in fragments {
         match fragment_eligibility(fragment) {
             FragmentEligibility::Eligible => included.push(fragment),
-            FragmentEligibility::NoFreeRoot => omitted_literal += 1,
+            FragmentEligibility::NoFreeRoot => {
+                if contracts.contains_key(&fragment.fragment_id) {
+                    included.push(fragment);
+                } else {
+                    omitted_literal += 1;
+                }
+            }
             FragmentEligibility::Malformed => omitted_malformed += 1,
         }
     }
@@ -1430,7 +1472,7 @@ fn event_point_fragment_spec(fragment: &EventPointFragment) -> FragmentSpec {
 /// each fragment: the shadow keeps them unprefixed and declares them once, so an
 /// expression whose only root is a module is still mounted and never rewritten
 /// to a data root.
-fn fragment_spec(fragment: &CheckFragment) -> FragmentSpec {
+fn fragment_spec(fragment: &CheckFragment, contract: Option<&ContractSpec>) -> FragmentSpec {
     let mut spec = FragmentSpec::new(
         fragment.fragment_id.clone(),
         fragment.expr_text.clone(),
@@ -1444,6 +1486,7 @@ fn fragment_spec(fragment: &CheckFragment) -> FragmentSpec {
         .collect();
     spec.bindings = fragment.bindings.iter().map(local_binding).collect();
     spec.guards = fragment.guards.iter().map(guard_chain).collect();
+    spec.contract = contract.cloned();
     spec
 }
 
@@ -1679,6 +1722,7 @@ mod tests {
             let end = start + u32::try_from(handler.len()).expect("handler length");
             let range = range(start, end);
             view.events = Arc::from(vec![EventHandler {
+                tag: "view".to_owned(),
                 attribute: "bindtap".to_owned(),
                 binding: EventBindingKind::Bind,
                 event: "tap".to_owned(),
@@ -1866,6 +1910,400 @@ mod tests {
                 .is_none_or(|reason| !reason.contains("free-root")),
             "{:?}",
             plan.degradation
+        );
+    }
+
+    use wxml_backend_tsrs::shadow::layout::ContractKind;
+    use wxml_project::ProjectPath;
+    use wxml_project::typing::ComponentTypingFacts;
+    use wxml_types::{AttributeValueKind, ComponentAttribute, ComponentUsage};
+
+    use crate::project_host::{PreparedFile, ViewTarget};
+
+    const DECLARATION_PATH: &str = "components.d.ts";
+    const PAGE_SCRIPT: &str = "Page({ data: { pageTitle: '首页' } });\n";
+
+    fn typing_facts(declaration: &str) -> Arc<ComponentTypingFacts> {
+        let source = wxml_project::SourceFile {
+            path: ProjectPath::new(DECLARATION_PATH).expect("declaration path"),
+            kind: wxml_project::SourceKind::Dts,
+            text: declaration.to_owned(),
+            source_revision: 1,
+        };
+        Arc::new(wxml_project::parse_component_typing_facts(
+            &wxml_project::SourceSet {
+                files: vec![source],
+                truncated: false,
+                issues: Vec::new(),
+            },
+        ))
+    }
+
+    fn mustache_attribute(wxml: &str, name: &str, expression: &str) -> ComponentAttribute {
+        let start = u32::try_from(wxml.find(expression).expect("expression in template"))
+            .expect("expression start");
+        let range = range(
+            start,
+            start + u32::try_from(expression.len()).expect("expression length"),
+        );
+        ComponentAttribute {
+            name: name.to_owned(),
+            value_kind: AttributeValueKind::Mustache,
+            expr_text: Some(expression.to_owned()),
+            expr_range: Some(range),
+            attribute_range: range,
+        }
+    }
+
+    fn mustache_fragment(wxml: &str, id: &str, expression: &str) -> CheckFragment {
+        let start = u32::try_from(wxml.find(expression).expect("expression in template"))
+            .expect("expression start");
+        CheckFragment {
+            fragment_id: id.to_owned(),
+            expr_text: expression.to_owned(),
+            target: None,
+            bindings: Vec::new(),
+            guards: Vec::new(),
+            wxml_range: range(
+                start,
+                start + u32::try_from(expression.len()).expect("expression length"),
+            ),
+            fragment_revision: 1,
+            root: RootKind::Page,
+        }
+    }
+
+    fn component_usage(
+        tag: &str,
+        component: &str,
+        attributes: Vec<ComponentAttribute>,
+    ) -> ComponentUsage {
+        ComponentUsage {
+            tag: tag.to_owned(),
+            component_file: Some(FileId::new(point_project(), component).expect("component file")),
+            attributes,
+        }
+    }
+
+    fn component_view(
+        wxml: &str,
+        files: Vec<PreparedFile>,
+        declaration: Option<&str>,
+        components: Vec<ComponentUsage>,
+    ) -> PreparedView {
+        let mut view = empty_view(wxml, files);
+        view.typing = declaration.map(typing_facts);
+        view.components = Arc::from(components);
+        view
+    }
+
+    fn contract_plan(wxml: &str, view: PreparedView) -> RequestPlan {
+        build_request_plan(
+            &PointViews(view),
+            &point_context(wxml),
+            &Environment::Legacy,
+        )
+        .expect("plan")
+    }
+
+    const CARD_DECLARATION: &str = "declare global {\n  interface WxmlComponentMap {\n    card: CardDeclaration;\n  }\n\n  interface CardDeclaration {\n    props: {\n      someProp?: string;\n      count: number;\n      loose: any;\n      mystery: unknown;\n    };\n  }\n}\n\nexport {};\n";
+
+    #[test]
+    fn a_declared_component_property_references_the_component_map() {
+        // `some-prop` must index the *declared* camelCase member.
+        let wxml = "<card some-prop=\"{{ pageTitle }}\" />";
+        let mut view = component_view(
+            wxml,
+            vec![
+                prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+                prepared_file(DECLARATION_PATH, CARD_DECLARATION),
+            ],
+            Some(CARD_DECLARATION),
+            vec![component_usage(
+                "card",
+                "components/card/card.ts",
+                vec![mustache_attribute(wxml, "some-prop", "pageTitle")],
+            )],
+        );
+        view.fragments = Arc::from(vec![mustache_fragment(wxml, "f0", "pageTitle")]);
+
+        let plan = contract_plan(wxml, view);
+        let derived = plan.layout.derived();
+        assert!(
+            derived.contains(
+                "const __wxml_bind_f0: WxmlComponentMap['card']['props']['someProp'] | undefined = __wxml_root.pageTitle;"
+            ),
+            "{derived}"
+        );
+        assert!(derived.contains("void __wxml_bind_f0;"), "{derived}");
+        let contracts = plan.layout.contracts();
+        assert_eq!(contracts.len(), 1, "{contracts:?}");
+        assert_eq!(contracts[0].kind, ContractKind::Property);
+        assert_eq!(
+            contracts[0].display,
+            "WxmlComponentMap['card']['props']['someProp'] | undefined"
+        );
+        let anchor_start =
+            u32::try_from(wxml.find("pageTitle").expect("expression")).expect("start");
+        assert_eq!(contracts[0].anchor.start.get(), anchor_start);
+        assert!(
+            plan.file_text(DECLARATION_PATH).is_some(),
+            "the declaration file must stay in the shadow input"
+        );
+    }
+
+    #[test]
+    fn a_script_property_uses_its_normalized_type_text() {
+        let wxml = "<my-card title=\"{{ pageTitle }}\" />";
+        let card = "Component({ properties: { title: { type: String } } });\n";
+        let mut view = component_view(
+            wxml,
+            vec![
+                prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+                prepared_file("components/card/card.ts", card),
+            ],
+            None,
+            vec![component_usage(
+                "my-card",
+                "components/card/card.ts",
+                vec![mustache_attribute(wxml, "title", "pageTitle")],
+            )],
+        );
+        view.fragments = Arc::from(vec![mustache_fragment(wxml, "f0", "pageTitle")]);
+
+        let plan = contract_plan(wxml, view);
+        let derived = plan.layout.derived();
+        assert!(
+            derived.contains("const __wxml_bind_f0: string = __wxml_root.pageTitle;"),
+            "{derived}"
+        );
+    }
+
+    #[test]
+    fn a_contract_fragment_without_a_free_root_is_still_mounted() {
+        let wxml = "<card count=\"{{ 1 }}\" />";
+        let mut view = component_view(
+            wxml,
+            vec![
+                prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+                prepared_file(DECLARATION_PATH, CARD_DECLARATION),
+            ],
+            Some(CARD_DECLARATION),
+            vec![component_usage(
+                "card",
+                "components/card/card.ts",
+                vec![mustache_attribute(wxml, "count", "1")],
+            )],
+        );
+        view.fragments = Arc::from(vec![mustache_fragment(wxml, "f0", "1")]);
+
+        let plan = contract_plan(wxml, view);
+        let derived = plan.layout.derived();
+        assert!(
+            derived
+                .contains("const __wxml_bind_f0: WxmlComponentMap['card']['props']['count'] = 1;"),
+            "{derived}"
+        );
+        assert!(
+            plan.degradation
+                .as_deref()
+                .is_none_or(|reason| !reason.contains("free-root")),
+            "{:?}",
+            plan.degradation
+        );
+    }
+
+    #[test]
+    fn an_any_property_is_clean_and_unknown_is_partial() {
+        let wxml = "<card loose=\"{{ pageTitle }}\" mystery=\"{{ pageTitle }}\" />";
+        let mut view = component_view(
+            wxml,
+            vec![
+                prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+                prepared_file(DECLARATION_PATH, CARD_DECLARATION),
+            ],
+            Some(CARD_DECLARATION),
+            vec![component_usage(
+                "card",
+                "components/card/card.ts",
+                vec![
+                    mustache_attribute(wxml, "loose", "pageTitle"),
+                    mustache_attribute(wxml, "mystery", "pageTitle"),
+                ],
+            )],
+        );
+        // Both attributes share the same expression range, so only the first
+        // fragment exists and the second binding deduplicates onto it.
+        view.fragments = Arc::from(vec![mustache_fragment(wxml, "f0", "pageTitle")]);
+
+        let plan = contract_plan(wxml, view);
+        let derived = plan.layout.derived();
+        assert!(!derived.contains("__wxml_bind_f0"), "{derived}");
+        let degradation = plan.degradation.as_deref().unwrap_or_default();
+        assert!(degradation.contains("unknown"), "{degradation}");
+        assert!(!degradation.contains("`any`"), "{degradation}");
+    }
+
+    const EVENT_DECLARATION: &str = "declare global {\n  interface WxmlComponentMap {\n    'van-button': VanButton;\n  }\n\n  interface VanButton {\n    props: { label: string };\n    events: {\n      change: { detail: { index: number } };\n    };\n  }\n}\n\nexport {};\n";
+    const EVENT_WXML: &str = "<van-button bindchange=\"onChange\" />";
+    const EVENT_SCRIPT: &str = "Page({ data: {}, onChange(event: WechatMiniprogram.CustomEvent<{ index: number }>) {} });\n";
+
+    fn declared_event_view(wxml: &str, script: &str) -> PreparedView {
+        let mut view = component_view(
+            wxml,
+            vec![
+                prepared_file(SCRIPT_PATH, script),
+                prepared_file(DECLARATION_PATH, EVENT_DECLARATION),
+            ],
+            Some(EVENT_DECLARATION),
+            Vec::new(),
+        );
+        let start = u32::try_from(wxml.find("onChange").expect("handler in template"))
+            .expect("handler start");
+        let range = range(
+            start,
+            start + u32::try_from("onChange".len()).expect("handler length"),
+        );
+        view.events = Arc::from(vec![EventHandler {
+            tag: "van-button".to_owned(),
+            attribute: "bindchange".to_owned(),
+            binding: EventBindingKind::Bind,
+            event: "change".to_owned(),
+            handler: "onChange".to_owned(),
+            range,
+            attribute_range: range,
+            handler_range: range,
+        }]);
+        view
+    }
+
+    #[test]
+    fn a_module_level_declaration_is_referenced_through_an_import_type() {
+        let declaration = "export interface WxmlComponentMap {\n  card: CardDeclaration;\n}\n\nexport interface CardDeclaration {\n  props: { title: string };\n}\n\nexport {};\n";
+        let wxml = "<card title=\"{{ pageTitle }}\" />";
+        let mut view = component_view(
+            wxml,
+            vec![
+                prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+                prepared_file(DECLARATION_PATH, declaration),
+            ],
+            Some(declaration),
+            vec![component_usage(
+                "card",
+                "components/card/card.ts",
+                vec![mustache_attribute(wxml, "title", "pageTitle")],
+            )],
+        );
+        view.fragments = Arc::from(vec![mustache_fragment(wxml, "f0", "pageTitle")]);
+
+        let plan = contract_plan(wxml, view);
+        assert!(
+            plan.layout.derived().contains(
+                "const __wxml_bind_f0: import('../../components').WxmlComponentMap['card']['props']['title'] = __wxml_root.pageTitle;"
+            ),
+            "{}",
+            plan.layout.derived()
+        );
+    }
+
+    #[test]
+    fn a_declared_event_handler_gets_a_member_contract() {
+        let plan = contract_plan(EVENT_WXML, declared_event_view(EVENT_WXML, EVENT_SCRIPT));
+        let derived = plan.layout.derived();
+        assert!(
+            derived.contains(
+                "const __wxml_bind_contract_event_0: (event: WechatMiniprogram.CustomEvent<WxmlComponentMap['van-button']['events']['change']['detail']>) => void = this.onChange;"
+            ),
+            "{derived}\n---\n{:?}",
+            plan.degradation
+        );
+        assert!(
+            derived.contains("void __wxml_bind_contract_event_0;"),
+            "{derived}"
+        );
+        let contracts = plan.layout.contracts();
+        assert_eq!(contracts.len(), 1, "{contracts:?}");
+        assert_eq!(contracts[0].kind, ContractKind::Event);
+    }
+
+    #[test]
+    fn a_zero_argument_event_handler_is_still_checked() {
+        let script = "Page({ data: {}, onChange() {} });\n";
+        let plan = contract_plan(EVENT_WXML, declared_event_view(EVENT_WXML, script));
+        assert!(
+            plan.layout.derived().contains("= this.onChange;"),
+            "{}",
+            plan.layout.derived()
+        );
+    }
+
+    #[test]
+    fn an_unannotated_event_handler_is_partial_and_not_generated() {
+        let script = "Page({ data: {}, onChange(event) {} });\n";
+        let plan = contract_plan(EVENT_WXML, declared_event_view(EVENT_WXML, script));
+        assert!(
+            !plan
+                .layout
+                .derived()
+                .contains("__wxml_bind_contract_event_0"),
+            "{}",
+            plan.layout.derived()
+        );
+        assert!(
+            plan.degradation
+                .as_deref()
+                .is_some_and(|reason| reason.contains("no explicit type annotation")),
+            "{:?}",
+            plan.degradation
+        );
+    }
+
+    #[test]
+    fn javascript_contracts_require_check_js_or_ts_check() {
+        let path = "pages/index/index.js";
+        let script = EVENT_SCRIPT;
+        let build = |text: &str| {
+            let mut view = declared_event_view(EVENT_WXML, text);
+            view.files = Arc::from(vec![
+                prepared_file(path, text),
+                prepared_file(DECLARATION_PATH, EVENT_DECLARATION),
+            ]);
+            view.target = Some(ViewTarget {
+                wxml: ProjectPath::new("pages/index/index.wxml").expect("wxml path"),
+                owner: RootKind::Page,
+                script: ProjectPath::new(path).expect("script path"),
+                script_file: FileId::new(point_project(), path).expect("script file"),
+                view_revision: ViewRevision::new(1),
+            });
+            contract_plan(EVENT_WXML, view)
+        };
+
+        let unchecked = build(script);
+        assert!(
+            !unchecked
+                .layout
+                .derived()
+                .contains("__wxml_bind_contract_event_0"),
+            "{}",
+            unchecked.layout.derived()
+        );
+        assert!(
+            unchecked
+                .degradation
+                .as_deref()
+                .is_some_and(|reason| reason.contains("checkJs")),
+            "{:?}",
+            unchecked.degradation
+        );
+
+        let checked = build(&format!("// @ts-check\n{script}"));
+        assert!(
+            checked
+                .layout
+                .derived()
+                .contains("WechatMiniprogram.CustomEvent<"),
+            "{}",
+            checked.layout.derived()
         );
     }
 }

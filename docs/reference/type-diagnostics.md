@@ -1,6 +1,6 @@
 # 模板类型诊断策略
 
-更新日期：2026-11-21。
+更新日期：2026-11-22。
 
 本文件规定 WXML 模板在什么情况下产生诊断、什么情况下必须降级、hover 的类型与说明如何取舍，以及诊断落在哪个 token 上。它是实现目标，不代表功能已实现；实际进度与证据仍由[项目 README](../../README.md) 维护。契约定义见 [C0 基础契约](contracts.md)。
 
@@ -45,7 +45,8 @@
 | 检查完成、无错误 | 发布空诊断集合，清除该文件旧诊断 |
 | 检查完成、存在模板可归因错误 | 只发布精确映射成功的诊断 |
 | 后端超时、退出或未就绪 | 返回 `BackendError` / `Unavailable`，不发布空集合 |
-| 诊断落在 helper、探针或生成代码 | 视为桥接失败或覆盖不足，不发布猜测位置 |
+| 诊断落在契约探针的明确锚点 | 按锚点发布到属性表达式或 handler token；同一绑定只保留一条 |
+| 诊断落在 helper 或契约探针之外的生成代码 | 视为桥接失败或覆盖不足，不发布猜测位置 |
 | 表达式跨 helper 与原标识符 | 归入覆盖不足，不整体平移 |
 | 文档关闭或项目移除 | 清理该文档诊断 |
 | 后端重启（新 `BackendEpoch`） | 旧请求、ACK、诊断全部失效；重放快照后重新计算 |
@@ -115,21 +116,24 @@ fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是
 
 | 优先级 | 来源 | 生效条件 |
 | --- | --- | --- |
-| 1 | 组件类型声明 | 项目 `tsconfig.json` 同级的 `components.d.ts`（见 [§7.4](#74-组件类型声明)）把该标签映射到组件接口，且该属性类型可证明 |
-| 2 | 脚本 `properties` | 标签没有声明映射，或声明把该属性标为不完整/未证明 |
+| 1 | 组件类型声明 | 项目 `tsconfig.json` 同级的 `components.d.ts`（见 [§7.4](#74-组件类型声明)）把该标签映射到组件接口，且该属性类型能被影子脚本中的类型级引用解析 |
+| 2 | 脚本 `properties` | 标签没有声明映射，或声明整体结构无法理解（组件声明不完整） |
 
 - 声明覆盖脚本：同一标签同时有声明与脚本 `properties` 时，属性检查与 hover 使用声明；两份事实不合并，冲突按声明处理。
 - 未保存改动不改变声明来源：组件已使用声明事实时，脚本 `properties` 的 overlay 改动不影响组件事实；只有声明文件自身的 overlay 改动会触发重算。
 - 声明缺失或不完整时回落到脚本 `properties`，行为与本次改动前一致。两条来源的未知属性处理不同：声明映射生效时，组件的 `props` 就是完整属性面，声明未包含的属性报未声明属性（`class`/`style`/`id`/`hidden`/`slot`/`data-*`/`aria-*`/`wx:*` 等通用属性豁免）；只有脚本 `properties` 时沿用既有行为，不把未知属性当作错误（保留 `custom-class` 一类透传写法）。
-- 声明成员类型未证明时，该成员不参与类型诊断，状态 `Partial` 并给出原因，其他成员照常生效。
-- 可选属性（`?` 或类型含 `undefined`）允许缺省和 `undefined`；hover 展示声明中的类型原文，不重排 union 顺序。
-- 脚本来源下，`type` 与 `optionalTypes` 共同构成允许类型。
+- 声明成员的类型在影子中不可解析时，该成员不参与类型诊断，状态 `Partial` 并给出原因，其他成员照常生效；不回退到手写的类型比较。
+- 可选属性（`?` 或类型含 `undefined`）允许缺省和 `undefined`；期望类型追加 `| undefined`。hover 展示声明中的类型原文，不重排 union 顺序。
+- 脚本来源下，`type` 与 `optionalTypes` 共同构成允许类型；期望类型使用已有的规范化 `type_text`，不读取 `this.properties` 的实例推导（当前 typings 会漏掉 `optionalTypes`）。
 - 脚本来源的组件带 `behaviors` 时，behavior 模块按 tsconfig `paths` 解析后并入属性面。behavior 无法解析（别名失配、文件缺失、behavior 自身写法超出静态可读范围）时不再让整个组件失效：仍校验组件自身 `properties` 声明的属性；其余属性可能由 behavior 提供，按脚本来源惯例不报错，状态 `Partial`，原因形如 `组件 behaviors 未能完全解析，仅校验了组件自身 properties 声明的属性（card）`。
-- 纯表达式绑定（`count="{{ total }}"`）按可赋值性检查；`number → Number` 通过，`number → String` 报错；范围落在绑定表达式而非属性名。
+- 纯 mustache 表达式绑定（`count="{{ total }}"`）由类型引擎按可赋值性检查，覆盖联合、数组元素、对象字段、条件、索引、算术、泛型与映射类型；范围落在绑定表达式而非属性名。`any` 期望类型视为干净并跳过；`unknown`、全 `never` 或期望类型无法解析时返回 `Partial`，不生成猜测诊断。
+- 对象字面量绑定按 WXML 结构兼容处理：声明类型未命名的额外字段不报错，也不发布 TypeScript 的 `2353`；缺少声明类型中的必需字段属于赋值错误，发布到绑定表达式。
+- 字面量属性（`type="primary"`）和空属性（`disabled`）仍按 WXML 值语义由 Rust 侧判定；空属性按布尔 `true` 处理，不生成引擎探针。
 - 混合文本绑定（`title="共 {{ n }} 个"`）第一版只做 `Partial` 覆盖。
 - 未声明属性访问（组件 WXML 使用 `subtitle` 但 `data`/`properties` 都没有）必须报错。
 - 页面/组件根数据只来自脚本 `data`（组件另加 `properties`）；独立 `interface`/`type` 只有被字段引用时才参与，不能作为模板根。`Page({ data: User })` 这类把 interface 当值的写法必须返回 `Unknown`，不得伪造字段类型。
 - 同一项目中多个组件可以各自声明同名 `title` 且类型不同；hover 必须解析到当前组件自己的声明或 `properties`，不能串到页面或另一个组件。
+- 契约探针的赋值错误（含类型不匹配与缺失必需字段）由探针归属重锚到属性表达式；落在期望类型注解、无法归属的生成声明或其它合成文本上的错误不发布，状态 `Partial`。
 
 ### 7.2 事件绑定
 
@@ -154,7 +158,7 @@ fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是
 | 事件名补全 | 声明 `events`，仅当 `events` 声明完整 | `bind:`/`catch:`/`capture-bind:`/`capture-catch:`/`mut-bind:` 之后返回声明中的事件名；只替换已输入的事件名片段，不改写绑定前缀；声明缺失或不完整时沿用静态目录候选 |
 | 未声明事件名 | 声明 `events`，仅当 `events` 声明完整 | 事件名不在声明中：在事件名 token 上发布 `Warning`；动态绑定（`bind:change="{{ name }}"`）、声明缺失或不完整时不发布 |
 | 事件属性 hover | 声明 `events` 的 `detail` | 展示 `(e: WechatMiniprogram.CustomEvent<T>) => void`，`T` 为声明中 `detail` 的类型原文；`detail` 未证明时明确标注未证明，不展示猜测类型；成员上方的 `/** */` 说明作为独立段落追加在签名之后 |
-| handler 签名校验 | 声明 `detail` + 脚本形参标注 | 处理函数无参数（`arity == 0`）视为兼容；有参数时仅在已显式标注类型时比较：可证明不兼容时在 handler 名 token 上发布 `Error`；兼容时不发布诊断；参数未标注或任一侧未证明时不发布诊断，状态 `Partial` 并给出原因 |
+| handler 签名校验 | 声明 `detail` + 脚本形参标注 | 处理函数无参数（`arity == 0`）视为兼容；有参数时仅在已显式标注类型时检查：把处理函数赋给 `(event: WechatMiniprogram.CustomEvent<detail>) => void`，由类型引擎按函数参数可赋值性判定。可证明不兼容时在 handler 名 token 上发布 `Error`；兼容时不发布诊断；参数未标注或 `detail` 不可解析时不发布诊断，状态 `Partial` 并给出原因 |
 | handler hover / 补全 / definition | 脚本 | 保持既有行为，见下文 |
 
 说明：
@@ -162,7 +166,12 @@ fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是
 - 事件属性 hover 的展示形态固定为 `(e: WechatMiniprogram.CustomEvent<T>) => void`；例如 `detail` 为 `{ index: number }` 时展示 `(e: WechatMiniprogram.CustomEvent<{ index: number }>) => void`。
 - 未声明事件名是唯一由声明引入的 `Warning`：仅在 `events` 完整时启用，因为库可能 `triggerEvent` 未声明的事件；补齐声明或删除映射即可关闭。
 - 处理函数缺失优先：发布缺失 `Error` 后不再叠加参数类型诊断。
-- 参数未标注导致的 `Partial` 原因固定形如 `组件 'card' 的事件处理函数参数未标注类型，事件参数类型未校验`；与其他降级原因（声明不可读、声明不完整、类型未证明）共存时保留先到者，不叠加展示。
+- 函数参数可赋值性允许合法宽化：detail 字段更多、参数类型更宽、必填变可选、字面量变基础类型均通过；处理函数多出额外必填参数、detail 字段类型不兼容时发布 `Error`。
+- 检查遵循项目编译选项，不强制 `strict` 或 `strictFunctionTypes`。关闭 `strictFunctionTypes` 时，`unknown`/更窄参数等函数参数检查会按项目的宽松规则放行；文档不得宣称所有配置都同样严格。
+- TypeScript 对方法简写（如 `onChange(event: E) {}`）的参数检查是双变的：即使 `strictFunctionTypes` 为 true，也不会因 `detail` 的 `unknown` 字段而报错。更严格的函数参数检查适用于 `onChange: function (...) {}` 或箭头函数属性；这是 TypeScript 自身规则，不是本项目的降级。
+- JS 文件只有在 `checkJs: true` 或文件带 `@ts-check` 时才生成属性/事件契约探针；否则状态 `Partial`，不把“未检查”当作兼容。
+- 参数未标注导致的 `Partial` 原因固定形如 `组件 'card' 的事件处理函数参数未标注类型，事件参数类型未校验`；与其他降级原因（声明不可读、声明不完整、类型不可解析）共存时保留先到者，不叠加展示。
+- 契约探针的赋值错误由探针归属重锚到 handler token；落在期望类型注解、无法归属的生成声明或其它合成文本上的错误不发布，状态 `Partial`。
 - 事件名补全与事件属性值补全互不替代：属性名候选来自声明（仅完整声明），属性值候选仍来自脚本方法。
 
 hover：悬停在 handler token 上返回后端提供的脚本方法签名，范围精确到 handler token。
@@ -229,18 +238,19 @@ export {};
 - 映射表内重复映射同一标签时取第一个，并记录冲突说明；只影响重复项与截断项，其他组件照常生效。
 - 真实样例见 [`components-typings` 样本](../../tests/fixtures/README.md)：`round` 未声明、`text="{{ loading }}"` 类型不匹配、`bind:chaneg` 未声明事件名。
 
-#### 7.4.3 可证明的类型子集
+#### 7.4.3 声明类型的检查边界
 
-| 接受 | 示例 |
+属性与事件的兼容性不再依赖 Rust 侧对类型表达式的完整解析。声明成员名、可选性与类型原文由 Rust 读取；具体可赋值性通过影子脚本中的类型级引用交给类型引擎：
+
+| 情况 | 检查行为 |
 | --- | --- |
-| 基础类型 | `string`、`number`、`boolean` |
-| 字符串/数字/布尔字面量与联合 | `'primary' \| 'default'`、`1 \| 2`、`true` |
-| 数组 | `string[]`、`{ id: number }[]` |
-| `Record` | `Record<string, string>` |
-| 嵌套对象字面量 | `{ index: number; tags?: string[] }` |
-| 同文件 `interface`/`type` 别名 | 先声明 `interface Options { ... }`，再引用 `Options` |
+| 引擎能解析该类型级引用（基础类型、字面量联合、数组、对象、`Record`、同文件别名，以及可解析的泛型、导入类型、条件/映射类型） | 按引擎可赋值性检查 |
+| 期望类型为 `any` | 视为干净并跳过，不发布诊断 |
+| 期望类型为 `unknown`、全 `never`，或类型级引用无法在影子中解析 | 不生成探针，状态 `Partial` 并说明原因 |
+| 字面量/空属性 | 仍按 WXML 值语义由 Rust 判定，不生成探针 |
+| 混合文本 | 仍为 `Partial` |
 
-超出子集的成员标记为“未证明”：不参与类型诊断，hover 明确标注未证明，状态 `Partial`。包括但不限于：外部导入类型、跨文件标识符（如 `SomeLib.Options`）、泛型、条件/映射类型、`typeof import(...)`、`node_modules` 内的类型。
+hover 的类型原文和“未证明”标注仍按既有声明解析展示，用于说明可读性；它不决定本次绑定检查是否启用。检查失败时不得回退到手写的 `compatible`/`union_eq`/`object_eq` 近似比较。
 
 #### 7.4.4 非目标
 
@@ -262,8 +272,8 @@ export {};
 | 情况 | hover | 诊断 | 状态 |
 | --- | --- | --- | --- |
 | 已知具体类型 | 实际类型 + 说明 | 正常检查 | `Supported` / `Known` |
-| 声明中可证明的属性/事件类型 | 声明中的类型原文 | 按声明检查 | `Supported` / `Known` |
-| 声明的成员类型未证明 | 标注“未证明”，不展示猜测类型 | 不发布该成员诊断 | `Partial` |
+| 声明中可由引擎解析的属性/事件类型 | 声明中的类型原文 | 按引擎可赋值性检查 | `Supported` / `Known` |
+| 声明的成员类型在影子中不可解析 | 标注“未证明”，不展示猜测类型 | 不发布该成员诊断 | `Partial` |
 | 显式 `any` | `any` | 成员访问不报错 | `Supported` / `Any` |
 | `unknown` | `unknown` | 成员访问报错，target 为 unknown 表达式 | `Supported` / `Unknown` |
 | 裸 `Object` / `{}` | 实际类型文本 | 按 TS 可访问性检查 | `Partial` |
@@ -289,14 +299,15 @@ export {};
 | 多候选注册或类型来源不明 | `Partial` + 候选计数 | 使用首个注册、不合并；reason 必须包含候选数，见 [ADR-0012](../adr/0012-in-process-tsrs-session.md) 与[原生合同](tsrs-native-contract.md) |
 | 组件声明文件不可读（目录、越界、超限） | `Partial` | 不产生组件事实，不发布猜测诊断，原因不含绝对路径 |
 | 组件声明不完整（截断、重复映射、解析失败） | `Partial` | 受影响的组件或成员不参与检查，其他组件照常生效 |
-| handler 参数未标注（或标注未证明） | `Partial` | 不发布签名诊断，原因可读 |
-| 事件 `detail` 未证明 | `Partial` | 不发布签名诊断；hover 标注未证明 |
+| handler 参数未标注（或标注不可解析） | `Partial` | 不发布签名诊断，原因可读 |
+| 事件 `detail` 不可解析 | `Partial` | 不发布签名诊断；hover 标注未证明 |
+| 组件属性/事件期望类型在影子中无法解析（`2304`/`2503`） | `Partial` | 不发布模板诊断，生成文本错误不外溢 |
 | 动态事件绑定 | `Unsupported` | 不发布存在性诊断 |
 | 复杂窄化守卫 | `Partial` | 不产生猜测性空值错误 |
 | 可选链等未覆盖表达式 | `Partial` | 记录支持范围，不把整段模板当字符串 |
 | 共享模板的不同调用实例 | `Partial` | 视图身份包含调用上下文 |
 | 无适用 `tsconfig` | `Partial` | 报告 inferred project 与实际选项 |
-| JS 文件 `checkJs: false` | `Supported`（模板检查独立启用） | 从 JSDoc 取类型；不重复发布脚本错误 |
+| JS 文件 `checkJs: false` 且无 `@ts-check` | `Partial` | 组件属性/事件契约不生成探针；其它模板检查独立启用，不重复发布脚本错误 |
 
 降级的必要条件：
 

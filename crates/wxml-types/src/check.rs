@@ -253,6 +253,11 @@ pub struct EventHandler {
     pub binding: EventBindingKind,
     /// Normalized event name, for example `tap`.
     pub event: String,
+    /// Tag of the element that owns the binding, for example `view`.
+    ///
+    /// Custom-component tags are recorded as written in the template so
+    /// consumers can look up the component declaration.
+    pub tag: String,
     /// Static handler name as written, trimmed.
     pub handler: String,
     /// Byte range of the whole attribute.

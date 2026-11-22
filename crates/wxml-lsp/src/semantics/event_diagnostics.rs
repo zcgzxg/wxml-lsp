@@ -28,11 +28,10 @@
 //! capability.
 
 use wxml_backend_tsrs::script::events::EventBinding;
-use wxml_project::typing::{ComponentTypingFacts, TypingComponent};
-use wxml_project::typing_contract::{HandlerTypeCheck, check_handler};
-use wxml_types::{CapabilityStatus, Diagnostic, DiagnosticSeverity, EventHandler, RootKind};
+use wxml_project::typing::TypingComponent;
+use wxml_types::{CapabilityStatus, Diagnostic, DiagnosticSeverity, EventHandler};
 
-use crate::project_host::{PreparedFile, PreparedView, ViewComponent};
+use crate::project_host::{PreparedView, ViewComponent};
 use crate::semantics::event_definition::{EventValueSite, analyze, event_handler_sites};
 
 /// Stable reason for a prepared source list that hid a behavior/script file.
@@ -63,7 +62,7 @@ impl EventDiagnostics {
 }
 
 /// Checks every static handler binding of `view` against its script table and
-/// its declared component event contracts.
+/// its declared component events.
 ///
 /// `text` must be the template text the prepared view was built from; the
 /// handler token is re-validated against it so a stale or synthetic document
@@ -71,10 +70,12 @@ impl EventDiagnostics {
 ///
 /// Declared event facts come from `components`; a tag without a declaration
 /// (`typing == None`) keeps exactly the pre-declaration diagnostics, which is
-/// what makes a project without `components.d.ts` behave unchanged.
+/// what makes a project without `components.d.ts` behave unchanged. Handler
+/// parameter compatibility is not decided here: the engine contract probe
+/// publishes it from the declaration's real types.
 #[allow(
     clippy::too_many_lines,
-    reason = "one linear token scan plus one per-binding contract pass"
+    reason = "one linear token scan plus one per-binding declared-event pass"
 )]
 pub(crate) fn diagnostics(
     view: &PreparedView,
@@ -149,7 +150,6 @@ pub(crate) fn diagnostics(
     {
         note_status(&mut status, &result.status);
         let source = view.events.get(*index);
-        let declared = source.and_then(|event| typing_of_event(text, event, components));
         // A dropped behavior/script file may own the missing method; an
         // incomplete source list can never prove a handler missing.
         let proven_missing = analysis.dropped == 0 && analysis.view.source_complete;
@@ -169,21 +169,18 @@ pub(crate) fn diagnostics(
                 message: diagnostic.message.clone(),
                 code: None,
             });
-            // A missing handler is the only error for this binding: no
-            // parameter type check is layered on top of it.
+            // A missing handler is the only error this check layers on a
+            // binding; parameter compatibility is published from the engine
+            // contract probe, not compared here.
             continue;
         }
-        let (Some((tag, typing)), Some(source)) = (declared, source) else {
+        let (Some((tag, typing)), Some(source)) = (
+            source.and_then(|event| typing_of_event(text, event, components)),
+            source,
+        ) else {
             continue;
         };
-        if let Some(diagnostic) = event_contract_diagnostic(
-            text,
-            binding,
-            source,
-            tag,
-            typing,
-            &analysis.analysis.methods.methods,
-        ) {
+        if let Some(diagnostic) = unknown_event_diagnostic(text, binding, source, tag, typing) {
             diagnostics.push(diagnostic);
         }
     }
@@ -201,132 +198,35 @@ pub(crate) fn diagnostics(
     }
 }
 
-/// Returns the diagnostic for one binding's declared event contract.
+/// Returns the diagnostic for one binding whose event is not declared.
 ///
-/// Only one diagnostic is possible per binding: an undeclared event name
-/// (`Warning` on the event token) or a handler parameter that is proven
-/// incompatible (`Error` on the handler token). A zero-argument handler accepts
-/// any detail, and an unannotated or unproven side produces no diagnostic.
+/// Only an undeclared event name produces a diagnostic here (`Warning` on the
+/// event token). Handler parameter compatibility is decided by the engine
+/// contract probe and a missing handler by the method-table result above, so a
+/// single binding never carries two messages from this check.
 ///
 /// The lookup uses [`TypingComponent::event_named`], so a kebab binding and a
 /// camel declaration (in either direction) are the same event. The raw binding
 /// text is kept for the diagnostic message and the token range.
-fn event_contract_diagnostic(
+fn unknown_event_diagnostic(
     text: &str,
     binding: &EventBinding,
     source: &EventHandler,
     tag: &str,
     typing: &TypingComponent,
-    methods: &[wxml_backend_tsrs::script::events::EventMethod],
 ) -> Option<Diagnostic> {
-    let declared_events_complete = typing.complete && !typing.events.is_empty();
-    if declared_events_complete && typing.event_named(&binding.event).is_none() {
-        return Some(Diagnostic {
-            range: event_name_range(text, source, &binding.event)?,
-            severity: DiagnosticSeverity::Warning,
-            message: unknown_event_message(&binding.event, tag),
-            code: None,
-        });
-    }
-    let method = methods
-        .iter()
-        .find(|method| method.name == binding.handler)?;
-    // A handler that declares no parameters accepts any detail.
-    if method.arity == 0 {
+    if !typing.complete || typing.events.is_empty() {
         return None;
     }
-    let declared = typing.event_named(&binding.event)?;
-    // An unproven declaration is never compared: the declared side cannot be
-    // trusted, so the binding stays undecided instead of guessed at.
-    if !declared.proven {
+    if typing.event_named(&binding.event).is_some() {
         return None;
     }
-    let HandlerTypeCheck::Incompatible { expected, found } =
-        check_handler(method.parameter.as_deref(), declared.detail_text.as_deref())
-    else {
-        return None;
-    };
     Some(Diagnostic {
-        range: wxml_text::SourceRange::from_bounds(
-            source.handler_range.start(),
-            source.handler_range.end(),
-        )
-        .ok()?,
-        severity: DiagnosticSeverity::Error,
-        message: incompatible_handler_message(&binding.handler, &binding.event, &expected, &found),
+        range: event_name_range(text, source, &binding.event)?,
+        severity: DiagnosticSeverity::Warning,
+        message: unknown_event_message(&binding.event, tag),
         code: None,
     })
-}
-
-/// Returns the degradation reason for unannotated declared-event handlers.
-///
-/// The check is the status-side counterpart of
-/// [`event_contract_diagnostic`]: a binding whose owning component declares the
-/// event and whose handler exists with `arity > 0` but no parameter annotation
-/// makes the event parameter type unverified. The caller turns this into one
-/// `Partial` hint; it never produces a diagnostic.
-///
-/// Only views that actually bind a declared event pay for the script analysis,
-/// and a project without declarations returns before any table is built.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the caller already has every script/view fact; grouping them would only move the fields"
-)]
-pub(crate) fn unannotated_handler_reason(
-    files: &[PreparedFile],
-    project_root: &str,
-    project: &str,
-    script: &str,
-    owner: RootKind,
-    text: &str,
-    events: &[EventHandler],
-    facts: &ComponentTypingFacts,
-) -> Option<String> {
-    // Cheap gate: only a component with a complete, non-empty event declaration
-    // can make a handler parameter unverified.
-    let declares_events = facts
-        .components
-        .values()
-        .any(|component| component.complete && !component.events.is_empty());
-    if !declares_events {
-        return None;
-    }
-    let mut bindings = Vec::new();
-    for event in events {
-        let Some(tag) = owning_tag(text, event.attribute_range.start()) else {
-            continue;
-        };
-        let Some(typing) = facts.component(tag) else {
-            continue;
-        };
-        if !typing.complete || typing.event_named(&event.event).is_none() {
-            continue;
-        }
-        bindings.push((tag, event.handler.trim()));
-    }
-    if bindings.is_empty() {
-        return None;
-    }
-    let methods = crate::backend_tsrs::event_completion::owner_methods(
-        files,
-        project_root,
-        project,
-        script,
-        owner,
-    )?;
-    for (tag, handler) in bindings {
-        let Some(method) = methods.methods.iter().find(|method| method.name == handler) else {
-            // A missing handler has its own diagnostic and must not add this
-            // reason.
-            continue;
-        };
-        if method.arity > 0 && method.parameter.is_none() {
-            return Some(format!(
-                "组件 '{tag}' 的事件处理函数参数未标注类型，事件参数类型未校验"
-            ));
-        }
-    }
-    None
 }
 
 /// Returns the declared component facts that own one event binding.
@@ -409,13 +309,6 @@ fn event_name_range(
 /// Stable message for one undeclared event name.
 fn unknown_event_message(event: &str, tag: &str) -> String {
     format!("Event \"{event}\" is not declared by component \"{tag}\"")
-}
-
-/// Stable message for one incompatible handler parameter.
-fn incompatible_handler_message(handler: &str, event: &str, expected: &str, found: &str) -> String {
-    format!(
-        "Event handler \"{handler}\" parameter does not match event \"{event}\" detail: expected {expected}, found {found}"
-    )
 }
 
 /// Returns the coverage status for a truncated event batch.
@@ -1063,48 +956,6 @@ mod tests {
     }
 
     #[test]
-    fn an_incompatible_handler_parameter_is_an_error_at_the_handler_token() {
-        let script =
-            "Page({ onChange(event: WechatMiniprogram.CustomEvent<{ name: string }>) {} });";
-        let template = "<van-field bind:change=\"onChange\" />";
-        let components = vec![component(
-            "van-field",
-            vec![event("change", Some("{ index: number }"), true)],
-            true,
-        )];
-        let result = check_with_components(RootKind::Page, script, template, &components);
-        assert_eq!(result.diagnostics.len(), 1, "{result:?}");
-        assert_at(
-            &result,
-            template,
-            "onChange",
-            DiagnosticSeverity::Error,
-            "Event handler \"onChange\" parameter does not match event \"change\" detail: \
-             expected { index: number }, found { name: string }",
-        );
-    }
-
-    #[test]
-    fn a_compatible_or_unannotated_handler_parameter_is_quiet() {
-        let components = vec![component(
-            "van-field",
-            vec![event("change", Some("{ index: number }"), true)],
-            true,
-        )];
-        let template = "<van-field bind:change=\"onChange\" />";
-        for script in [
-            "Page({ onChange(event: WechatMiniprogram.CustomEvent<{ index: number }>) {} });",
-            "Page({ onChange(event: CustomEvent<{ index: number }>) {} });",
-            "Page({ onChange(event) {} });",
-            "Page({ onChange: function (event) {} });",
-            "Page({ onChange: (event) => {} });",
-        ] {
-            let result = check_with_components(RootKind::Page, script, template, &components);
-            assert!(result.diagnostics.is_empty(), "{script}: {result:?}");
-        }
-    }
-
-    #[test]
     fn a_zero_argument_handler_accepts_any_detail() {
         let components = vec![component(
             "van-field",
@@ -1116,6 +967,40 @@ mod tests {
             "Page({ onChange() {} });",
             "Page({ onChange: function () {} });",
             "Page({ onChange: () => {} });",
+        ] {
+            let result = check_with_components(RootKind::Page, script, template, &components);
+            assert!(result.diagnostics.is_empty(), "{script}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn a_handler_parameter_mismatch_is_left_to_the_engine_probe() {
+        // The engine contract probe publishes parameter compatibility; this
+        // Rust-side check must not repeat it with a hand-written comparison.
+        let components = vec![component(
+            "van-field",
+            vec![event("change", Some("{ index: number }"), true)],
+            true,
+        )];
+        let template = "<van-field bind:change=\"onChange\" />";
+        let script =
+            "Page({ onChange(event: WechatMiniprogram.CustomEvent<{ name: string }>) {} });";
+        let result = check_with_components(RootKind::Page, script, template, &components);
+        assert!(result.diagnostics.is_empty(), "{result:?}");
+    }
+
+    #[test]
+    fn an_unannotated_handler_parameter_is_quiet() {
+        let components = vec![component(
+            "van-field",
+            vec![event("change", Some("{ index: number }"), true)],
+            true,
+        )];
+        let template = "<van-field bind:change=\"onChange\" />";
+        for script in [
+            "Page({ onChange(event) {} });",
+            "Page({ onChange: function (event) {} });",
+            "Page({ onChange: (event) => {} });",
         ] {
             let result = check_with_components(RootKind::Page, script, template, &components);
             assert!(result.diagnostics.is_empty(), "{script}: {result:?}");
@@ -1207,8 +1092,7 @@ mod tests {
                 source.handler_range.end(),
             ),
         );
-        let diagnostic =
-            event_contract_diagnostic(&template, &binding, &source, "card", typing, &[]);
+        let diagnostic = unknown_event_diagnostic(&template, &binding, &source, "card", typing);
         assert!(
             diagnostic.is_none(),
             "{declared:?} {attribute}: {diagnostic:?}"
@@ -1291,26 +1175,5 @@ mod tests {
                 "Event \"someevnt\" is not declared by component \"card\"",
             );
         }
-    }
-
-    #[test]
-    fn an_incompatible_handler_uses_the_declared_detail_through_a_kebab_binding() {
-        let script = "Page({ onSome(event: WechatMiniprogram.CustomEvent<{ name: string }>) {} });";
-        let template = "<card bind:some-event=\"onSome\" />";
-        let components = vec![component(
-            "card",
-            vec![event("someEvent", Some("{ index: number }"), true)],
-            true,
-        )];
-        let result = check_with_components(RootKind::Page, script, template, &components);
-        assert_eq!(result.diagnostics.len(), 1, "{result:?}");
-        assert_at(
-            &result,
-            template,
-            "onSome",
-            DiagnosticSeverity::Error,
-            "Event handler \"onSome\" parameter does not match event \"some-event\" detail: \
-             expected { index: number }, found { name: string }",
-        );
     }
 }

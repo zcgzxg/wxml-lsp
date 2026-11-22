@@ -31,7 +31,7 @@ use std::sync::{Mutex, PoisonError};
 use wxml_backend_tsrs::input::{
     AnalysisInput, DocumentRevision, ProjectKey, ProjectRoot, SnapshotRevision, SourceFile,
 };
-use wxml_backend_tsrs::script::events::{EventMethod, MethodTable};
+use wxml_backend_tsrs::script::events::EventMethod;
 use wxml_backend_tsrs::script::registration::RegistrationKind;
 use wxml_backend_tsrs::script::{ScriptRequest, analyze_script};
 use wxml_backend_tsrs::shadow::expression::is_identifier_name;
@@ -159,49 +159,6 @@ pub(crate) fn completion(
         *cache.lock().unwrap_or_else(PoisonError::into_inner) = Some(fresh);
     }
     Ok(result)
-}
-
-/// Builds the owning registration's method table without a prepared view.
-///
-/// This is the script-only seam used by view preparation to decide whether a
-/// declared event handler has an unannotated parameter. It runs the same
-/// analysis as [`completion`] but keeps no cache, maps no replacement range and
-/// never touches the native engine. Files that cannot be represented are
-/// skipped: the table is only ever used to prove an already-existing method's
-/// parameter shape, never to prove a handler missing.
-pub(crate) fn owner_methods(
-    files: &[PreparedFile],
-    project_root: &str,
-    project: &str,
-    script: &str,
-    owner: RootKind,
-) -> Option<MethodTable> {
-    let mut sources = Vec::with_capacity(files.len());
-    for prepared in files {
-        let Ok(file) = SourceFile::new(
-            prepared.path.as_str(),
-            prepared.text.to_string(),
-            DocumentRevision::new(prepared.source_revision),
-        ) else {
-            continue;
-        };
-        sources.push(file);
-    }
-    let root = ProjectRoot::new(project_root.to_owned()).ok()?;
-    let input = AnalysisInput::new(
-        ProjectKey::new(project),
-        root,
-        SnapshotRevision::new(1),
-        sources,
-    )
-    .ok()?;
-    analyze_script(&ScriptRequest::new(
-        &input,
-        script,
-        registration_kind(owner),
-    ))
-    .ok()
-    .map(|analysis| analysis.methods)
 }
 
 /// Maps a view owner to the registration kind whose method table it uses.

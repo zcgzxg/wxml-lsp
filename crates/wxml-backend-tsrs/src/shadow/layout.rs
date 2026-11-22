@@ -45,6 +45,13 @@
 //! therefore unattributable when a span lies entirely inside it. Member
 //! fragments are otherwise ordinary fragments: placement, guards and the mount
 //! record are built by the same code path.
+//!
+//! A fragment with a [`ContractSpec`] ([`FragmentSpec::contract`]) mounts the
+//! same rewritten expression as a contextually typed `const __wxml_bind_<id>`
+//! declaration followed by a `void` reference instead of a bare expression
+//! statement. The declaration is generated text, so assignment diagnostics on
+//! the variable name cannot be attributed by the source map; each probe is
+//! published as a [`ContractAnchor`] mapping that name back to its WXML range.
 
 #![allow(clippy::format_push_string)] // generated probe text is tiny; format! stays readable
 
@@ -56,6 +63,7 @@ use crate::script::members::{
     Member, MemberKind, Members, doc_before, function_keyword_before, member_end, member_last,
     method_name_before, object_bounds, scan_members,
 };
+use crate::script::symbols::Utf16Range;
 use crate::shadow::ShadowError;
 use crate::shadow::expression::{self, Token, TokenKind};
 use crate::shadow::guards::{GuardChain, PlannedGuards, render_guards_planned};
@@ -68,7 +76,7 @@ use crate::shadow::mapping::{
 };
 use crate::shadow::rewrite::{
     AppliedEdit, EditKind, HoverTarget, MountedSegment, RewriteOptions, RewrittenExpression,
-    ShadowEdit, apply_edits, rewrite_expression,
+    ShadowEdit, apply_edits, rewrite_contract_expression, rewrite_expression,
 };
 
 /// Probe member name inserted into the registration options.
@@ -167,6 +175,48 @@ pub enum DataRootKind {
     TypeReference,
 }
 
+/// Kind of type contract checked by a generated probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContractKind {
+    /// Component attribute bound to a mustache expression.
+    Property,
+    /// Event handler expected to accept the declared event detail.
+    Event,
+}
+
+/// Type contract attached to one fragment.
+///
+/// A contract turns the fragment mount into a contextually typed `const`
+/// declaration, so the engine checks the expression against `expected` instead
+/// of only checking that the expression type-checks on its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractSpec {
+    /// Property or event contract.
+    pub kind: ContractKind,
+    /// TypeScript type expression the mounted value must be assignable to.
+    pub expected: String,
+    /// Expected type text used in the published diagnostic.
+    pub display: String,
+    /// WXML range the probe belongs to.
+    pub anchor: SourceRange,
+}
+
+/// One generated contract probe anchored in the derived script.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractAnchor {
+    /// Generated variable-name range in the derived script (UTF-16 units).
+    ///
+    /// An assignment diagnostic lands on this name, not on the WXML bytes, so
+    /// the existing source map cannot attribute it.
+    pub probe: Utf16Range,
+    /// Original WXML range the probe checks.
+    pub anchor: SourceRange,
+    /// Property or event contract.
+    pub kind: ContractKind,
+    /// Expected type text used in the published diagnostic.
+    pub display: String,
+}
+
 /// One WXML fragment to mount.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FragmentSpec {
@@ -197,6 +247,15 @@ pub struct FragmentSpec {
     /// rewriting is skipped because the name is read as a member of `this`, not
     /// as template data.
     pub member: bool,
+    /// Optional contract checked by a generated typed assignment.
+    ///
+    /// With a contract the mount becomes
+    /// `const __wxml_bind_<id>: <expected> = <rewritten>;` followed by
+    /// `void __wxml_bind_<id>;` instead of a bare expression statement. The
+    /// `void` reference consumes the generated variable, so an enabled
+    /// `noUnusedLocals` does not report it (6133). One contract replaces the
+    /// bare statement; it never adds a second copy of the expression.
+    pub contract: Option<ContractSpec>,
 }
 
 impl FragmentSpec {
@@ -215,6 +274,7 @@ impl FragmentSpec {
             bindings: Vec::new(),
             guards: Vec::new(),
             member: false,
+            contract: None,
         }
     }
 }
@@ -376,6 +436,8 @@ pub struct DerivedView {
     pub insertions: Vec<InsertionRecord>,
     /// Public mount records.
     pub mounts: Vec<MountRecord>,
+    /// Contract probe anchors in derived UTF-16 coordinates.
+    pub contracts: Vec<ContractAnchor>,
     /// Generated declarations.
     pub generated_declarations: Vec<GeneratedDeclaration>,
     /// Probe helper offsets.
@@ -405,6 +467,18 @@ pub struct BuiltShadow {
     pub properties: PropertyScan,
     /// Derived view and mappings.
     pub view: DerivedView,
+}
+
+impl BuiltShadow {
+    /// Returns the contract probe anchors produced by the layout.
+    ///
+    /// Each anchor maps the generated probe variable name to the original WXML
+    /// range it checks. `diagnostics.rs` resolves engine diagnostics that land
+    /// on a probe name through this list before consulting the source map.
+    #[must_use]
+    pub fn contracts(&self) -> &[ContractAnchor] {
+        &self.view.contracts
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -890,6 +964,22 @@ fn build_in_place_shadow_inner(
 
         body.push(&scope.open());
         body.push(scope.mount_indent());
+        let contract = fragment.contract.as_ref().map(|contract| {
+            let variable = contract_variable(&fragment.id);
+            let (prefix, name_offset) =
+                render_contract_prefix(contract, &variable, scope.mount_indent(), syntax);
+            PlannedContract {
+                spec: contract,
+                variable,
+                prefix,
+                name_offset,
+            }
+        });
+        let mut contract_probe_start: Option<u32> = None;
+        if let Some(contract) = &contract {
+            contract_probe_start = Some(body.length_utf16 + contract.name_offset);
+            body.push(&contract.prefix);
+        }
         // A bare expression starting with `{` is parsed by TypeScript as a
         // block, so wrap object literals in parentheses. The parentheses are
         // generated text: `expression_start` still points at the expression's
@@ -931,10 +1021,15 @@ fn build_in_place_shadow_inner(
             // `mount_text` to keep the mount text aligned with the derived
             // body; the closing `)` stays outside (the mount ends at the
             // expression). Without a fold the parentheses are both outside
-            // the mount and `text` remains the bare expression.
+            // the mount and `text` remains the bare expression. A contract
+            // declaration prefix sits between the guard and the expression and
+            // is part of the same folded span.
             let open_paren = if needs_parens { "(" } else { "" };
+            let contract_prefix = contract
+                .as_ref()
+                .map_or("", |contract| contract.prefix.as_str());
             format!(
-                "{guard_text}{}{open_paren}{}",
+                "{guard_text}{}{contract_prefix}{open_paren}{}",
                 scope.mount_indent(),
                 planned.rewritten.text
             )
@@ -949,6 +1044,23 @@ fn build_in_place_shadow_inner(
             segments,
         });
         body.push(";\n");
+        if let Some(contract) = &contract
+            && let Some(relative_probe_start) = contract_probe_start
+        {
+            // Consume the synthetic variable so `noUnusedLocals` cannot report
+            // it (6133), and keep the probe inside the same guard scope.
+            body.push(scope.mount_indent());
+            body.push("void ");
+            body.push(&contract.variable);
+            body.push(";\n");
+            body.contracts.push(PendingContract {
+                relative_probe_start,
+                probe_length: utf16_len(&contract.variable),
+                anchor: contract.spec.anchor,
+                kind: contract.spec.kind,
+                display: contract.spec.display.clone(),
+            });
+        }
         body.push(&scope.close());
     }
     body.push(METHOD_INDENT);
@@ -988,6 +1100,7 @@ fn build_in_place_shadow_inner(
                 edits: assembled.edits,
                 insertions: Vec::new(),
                 mounts: Vec::new(),
+                contracts: Vec::new(),
                 generated_declarations: Vec::new(),
                 probe_anchors: ProbeAnchors::default(),
                 map,
@@ -1116,6 +1229,20 @@ fn build_in_place_shadow_inner(
         })
         .collect();
 
+    let contracts = body
+        .contracts
+        .iter()
+        .map(|contract| ContractAnchor {
+            probe: Utf16Range::new(
+                base + contract.relative_probe_start,
+                base + contract.relative_probe_start + contract.probe_length,
+            ),
+            anchor: contract.anchor,
+            kind: contract.kind,
+            display: contract.display.clone(),
+        })
+        .collect();
+
     let probe_offset = base + body.mark_probe;
     let root_offset = base + body.mark_root_expression;
     let props_offset = body.mark_props.map(|offset| base + offset);
@@ -1145,6 +1272,7 @@ fn build_in_place_shadow_inner(
         edits: assembled.edits,
         insertions,
         mounts,
+        contracts,
         generated_declarations: generated,
         probe_anchors: ProbeAnchors {
             probe_offset,
@@ -1302,9 +1430,56 @@ fn plan_fragment(
         data_overlay: BTreeSet::new(),
         locals: effective_local_names(fragment, wxs_modules),
     };
-    let rewritten = rewrite_expression(&fragment.expr, fragment.target.as_deref(), &options)?;
+    let rewritten = if fragment.contract.is_some() {
+        rewrite_contract_expression(&fragment.expr, fragment.target.as_deref(), &options)?
+    } else {
+        rewrite_expression(&fragment.expr, fragment.target.as_deref(), &options)?
+    };
     let _ = syntax;
     Ok(PlannedFragment { rewritten })
+}
+
+/// Prefix of the generated contract variable name.
+pub const BIND_PREFIX: &str = "__wxml_bind_";
+
+/// Derives the contract variable name of one fragment.
+///
+/// Identifiers are unique per fragment and each fragment mounts inside its own
+/// block, so the name only has to be a stable, valid identifier. Characters
+/// outside `[A-Za-z0-9_]` are escaped as `_x<hex>_` so distinct fragment ids
+/// (for example `f-0` and `f_0`) never collapse onto the same probe name.
+fn contract_variable(fragment_id: &str) -> String {
+    let mut name = String::from(BIND_PREFIX);
+    for character in fragment_id.chars() {
+        if character.is_ascii_alphanumeric() || character == '_' {
+            name.push(character);
+        } else {
+            name.push_str(&format!("_x{:x}_", u32::from(character)));
+        }
+    }
+    name
+}
+
+/// Renders the contextually typed declaration prefix and the UTF-16 offset of
+/// the generated variable name inside it.
+fn render_contract_prefix(
+    contract: &ContractSpec,
+    variable: &str,
+    indent: &str,
+    syntax: Syntax,
+) -> (String, u32) {
+    let mut prefix = match syntax {
+        Syntax::TypeScript => String::from("const "),
+        Syntax::JavaScript => format!("/** @type {{{}}} */\n{indent}const ", contract.expected),
+    };
+    let name_offset = utf16_len(&prefix);
+    prefix.push_str(variable);
+    if syntax == Syntax::TypeScript {
+        prefix.push_str(": ");
+        prefix.push_str(&contract.expected);
+    }
+    prefix.push_str(" = ");
+    (prefix, name_offset)
 }
 
 /// Prefix that turns a handler name into a member of the registration instance.
@@ -1503,6 +1678,22 @@ struct PendingFragment {
     segments: Vec<MountedSegment>,
 }
 
+/// Rendering of one contract declaration before absolute coordinates are known.
+struct PlannedContract<'a> {
+    spec: &'a ContractSpec,
+    variable: String,
+    prefix: String,
+    name_offset: u32,
+}
+
+struct PendingContract {
+    relative_probe_start: u32,
+    probe_length: u32,
+    anchor: SourceRange,
+    kind: ContractKind,
+    display: String,
+}
+
 struct GeneratedDraft {
     name: String,
     start_utf16: u32,
@@ -1514,6 +1705,7 @@ struct BodyBuilder {
     text: String,
     length_utf16: u32,
     fragments: Vec<PendingFragment>,
+    contracts: Vec<PendingContract>,
     generated: Vec<GeneratedDraft>,
     mark_probe: u32,
     mark_root_name: u32,
@@ -1527,6 +1719,7 @@ impl BodyBuilder {
             text: String::new(),
             length_utf16: 0,
             fragments: Vec::new(),
+            contracts: Vec::new(),
             generated: Vec::new(),
             mark_probe: 0,
             mark_root_name: 0,
@@ -2875,6 +3068,304 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    fn text_of_utf16(text: &str, range: Utf16Range) -> String {
+        let start = utf16_to_byte(text, range.start.get()).expect("start boundary");
+        let end = utf16_to_byte(text, range.end.get()).expect("end boundary");
+        text[start..end].to_owned()
+    }
+
+    fn property_contract(expected: &str, anchor: SourceRange) -> ContractSpec {
+        ContractSpec {
+            kind: ContractKind::Property,
+            expected: expected.to_owned(),
+            display: expected.to_owned(),
+            anchor,
+        }
+    }
+
+    fn wxml_range(wxml: &str, needle: &str) -> SourceRange {
+        let start = wxml.find(needle).expect("needle in wxml");
+        let start = u32::try_from(start).expect("offset");
+        SourceRange::new(start, start + u32::try_from(needle.len()).expect("length"))
+    }
+
+    #[test]
+    fn contract_fragment_replaces_the_bare_statement_with_a_typed_const() {
+        let script = source_file("index.ts", "Page({ data: { title: 'x' } });");
+        let wxml = "<view>{{ title }}</view>";
+        let range = wxml_range(wxml, "title");
+        let mut fragment = FragmentSpec::new("f0", "title", range);
+        fragment.contract = Some(property_contract("string", range));
+        let fragments = [fragment];
+        let mut request = ShadowRequest::new(&script, RootKind::Page);
+        request.fragments = &fragments;
+        let built = build_in_place_shadow(&request).expect("layout");
+
+        assert!(
+            built
+                .view
+                .text
+                .contains("const __wxml_bind_f0: string = __wxml_root.title;")
+        );
+        assert!(
+            built.view.text.contains("void __wxml_bind_f0;"),
+            "the probe variable is consumed: {}",
+            built.view.text
+        );
+        assert_eq!(
+            built.view.text.matches("__wxml_root.title").count(),
+            1,
+            "the bare expression statement is replaced, not duplicated"
+        );
+        assert_eq!(built.view.text.matches("const __wxml_bind_f0").count(), 1);
+        assert_eq!(built.view.mounts.len(), 1);
+
+        assert_eq!(built.contracts().len(), 1);
+        let anchor = &built.contracts()[0];
+        assert_eq!(anchor.anchor, range);
+        assert_eq!(anchor.kind, ContractKind::Property);
+        assert_eq!(anchor.display, "string");
+        assert_eq!(
+            text_of_utf16(&built.view.text, anchor.probe),
+            "__wxml_bind_f0"
+        );
+    }
+
+    #[test]
+    fn contract_fragment_uses_jsdoc_in_javascript() {
+        let script = source_file(
+            "index.js",
+            "Component({\n  methods: {},\n  data: { title: 'x' },\n});\n",
+        );
+        let wxml = "<view>{{ title }}</view>";
+        let range = wxml_range(wxml, "title");
+        let mut fragment = FragmentSpec::new("f0", "title", range);
+        fragment.contract = Some(property_contract("string", range));
+        let fragments = [fragment];
+        let mut request = ShadowRequest::new(&script, RootKind::Component);
+        request.fragments = &fragments;
+        let built = build_in_place_shadow(&request).expect("layout");
+
+        assert!(
+            built.view.text.contains("/** @type {string} */\n"),
+            "{}",
+            built.view.text
+        );
+        assert!(
+            built
+                .view
+                .text
+                .contains("const __wxml_bind_f0 = __wxml_root.title;")
+        );
+        assert!(!built.view.text.contains("const __wxml_bind_f0: string"));
+        assert!(built.view.text.contains("void __wxml_bind_f0;"));
+        assert_eq!(built.contracts().len(), 1);
+        assert_eq!(
+            text_of_utf16(&built.view.text, built.contracts()[0].probe),
+            "__wxml_bind_f0"
+        );
+    }
+
+    #[test]
+    fn contract_probe_stays_inside_for_and_if_scope() {
+        use crate::shadow::guards::{GuardChain, GuardCondition, GuardKind};
+        use crate::shadow::locals::{LocalBinding, LocalRole};
+
+        let script = source_file(
+            "index.ts",
+            "Page({ data: { items: [{ name: 'a', ok: true }] } });",
+        );
+        let wxml = "<view wx:for=\"{{ items }}\" wx:for-item=\"item\" wx:if=\"{{ item.ok }}\">{{ item.name }}</view>";
+        let value_range = wxml_range(wxml, "item.name");
+        let condition_range = wxml_range(wxml, "item.ok");
+        let mut value = FragmentSpec::new("f0", "item.name", value_range);
+        value.bindings = vec![LocalBinding {
+            name: "item".to_owned(),
+            role: LocalRole::Item,
+            source_expr: "items".to_owned(),
+        }];
+        value.guards = vec![GuardChain {
+            conditions: vec![GuardCondition {
+                branch: GuardKind::If,
+                expr: "item.ok".to_owned(),
+            }],
+            selected: 0,
+        }];
+        value.contract = Some(property_contract("string", value_range));
+        let mut guard = FragmentSpec::new("guard", "item.ok", condition_range);
+        guard.locals = vec!["item".to_owned()];
+        let fragments = [value, guard];
+        let mut request = ShadowRequest::new(&script, RootKind::Page);
+        request.fragments = &fragments;
+        let built = build_in_place_shadow(&request).expect("layout");
+
+        let declaration = built
+            .view
+            .text
+            .find("const __wxml_bind_f0: string = item.name;")
+            .expect("contract declaration");
+        let guard_open = built
+            .view
+            .text
+            .find("if (item.ok) {")
+            .expect("guard wrapper");
+        assert!(
+            declaration > guard_open,
+            "the probe must stay inside the wx:if scope: {}",
+            built.view.text
+        );
+
+        let mount = built
+            .view
+            .mounts
+            .iter()
+            .find(|mount| mount.fragment_id == "f0")
+            .expect("value mount");
+        assert!(mount.text.contains("if (item.ok) {"), "{}", mount.text);
+        assert!(
+            mount
+                .text
+                .contains("const __wxml_bind_f0: string = item.name"),
+            "{}",
+            mount.text
+        );
+
+        let anchor = &built.contracts()[0];
+        assert_eq!(anchor.anchor, value_range);
+        let probe = crate::shadow::mapping::map_span_to_source(
+            mount,
+            crate::native::strings::Utf16Offset::new(anchor.probe.start.get()),
+            anchor.probe.len(),
+        )
+        .expect("probe span is inside the folded mount");
+        assert_eq!(
+            probe.range, None,
+            "a probe name must not be attributed to WXML bytes"
+        );
+        assert!(probe.unattributable);
+    }
+
+    #[test]
+    fn contract_anchor_keeps_cjk_and_crlf_wxml_bytes() {
+        let script = source_file("index.ts", "Page({ data: { 标题: 'x' } });");
+        let wxml = "<view>\r\n  <text>{{ 标题 }}</text>\r\n</view>";
+        let range = wxml_range(wxml, "标题");
+        let mut fragment = FragmentSpec::new("f0", "标题", range);
+        fragment.contract = Some(property_contract("string", range));
+        let fragments = [fragment];
+        let mut request = ShadowRequest::new(&script, RootKind::Page);
+        request.fragments = &fragments;
+        let built = build_in_place_shadow(&request).expect("layout");
+
+        assert!(built.view.text.contains("__wxml_root.标题"));
+        assert_eq!(built.contracts().len(), 1);
+        let anchor = &built.contracts()[0];
+        assert_eq!(anchor.anchor, range);
+        assert_eq!(
+            text_of_utf16(&built.view.text, anchor.probe),
+            "__wxml_bind_f0"
+        );
+    }
+
+    #[test]
+    fn contract_fragment_without_free_root_mounts_verbatim() {
+        let script = source_file("index.ts", "Page({ data: {} });");
+        let wxml = "<view>{{ 1 }}</view>";
+        let range = wxml_range(wxml, "1");
+        let mut fragment = FragmentSpec::new("literal", "1", range);
+        fragment.contract = Some(property_contract("number", range));
+        let fragments = [fragment];
+        let mut request = ShadowRequest::new(&script, RootKind::Page);
+        request.fragments = &fragments;
+        let built = build_in_place_shadow(&request).expect("layout");
+
+        assert!(
+            built
+                .view
+                .text
+                .contains("const __wxml_bind_literal: number = 1;"),
+            "{}",
+            built.view.text
+        );
+        assert_eq!(built.view.mounts.len(), 1);
+        assert_eq!(built.view.mounts[0].text, "1");
+        assert_eq!(built.view.mounts[0].segments.len(), 1);
+        assert_eq!(built.view.mounts[0].segments[0].source, Some(range));
+        assert_eq!(built.contracts().len(), 1);
+    }
+
+    #[test]
+    fn member_contract_assigns_this_handler() {
+        let script = source_file("index.ts", "Page({ data: {}, onBackTap(event: {}) {} });");
+        let wxml = "<view bindtap=\"onBackTap\">back</view>";
+        let range = wxml_range(wxml, "onBackTap");
+        let expected = "(event: WechatMiniprogram.CustomEvent<{ x: number }>) => void";
+        let mut fragment = FragmentSpec::new("event#0", "onBackTap", range);
+        fragment.member = true;
+        fragment.contract = Some(ContractSpec {
+            kind: ContractKind::Event,
+            expected: expected.to_owned(),
+            display: expected.to_owned(),
+            anchor: range,
+        });
+        let fragments = [fragment];
+        let mut request = ShadowRequest::new(&script, RootKind::Page);
+        request.fragments = &fragments;
+        let built = build_in_place_shadow(&request).expect("layout");
+
+        assert!(
+            built.view.text.contains(&format!(
+                "const __wxml_bind_event_x23_0: {expected} = this.onBackTap;"
+            )),
+            "{}",
+            built.view.text
+        );
+        assert!(built.view.text.contains("void __wxml_bind_event_x23_0;"));
+        assert_eq!(built.view.mounts[0].text, "this.onBackTap");
+        assert_eq!(built.contracts()[0].kind, ContractKind::Event);
+        assert_eq!(built.contracts()[0].anchor, range);
+    }
+
+    #[test]
+    fn contract_probes_in_one_probe_method_use_distinct_names() {
+        let script = source_file("index.ts", "Page({ data: { title: 'x', count: 1 } });");
+        let wxml = "<view>{{ title }}{{ count }}</view>";
+        let title_range = wxml_range(wxml, "title");
+        let count_range = wxml_range(wxml, "count");
+        let mut title = FragmentSpec::new("f0", "title", title_range);
+        title.contract = Some(property_contract("string", title_range));
+        let mut count = FragmentSpec::new("f1", "count", count_range);
+        count.contract = Some(property_contract("number", count_range));
+        let fragments = [title, count];
+        let mut request = ShadowRequest::new(&script, RootKind::Page);
+        request.fragments = &fragments;
+        let built = build_in_place_shadow(&request).expect("layout");
+
+        assert!(
+            built
+                .view
+                .text
+                .contains("const __wxml_bind_f0: string = __wxml_root.title;")
+        );
+        assert!(
+            built
+                .view
+                .text
+                .contains("const __wxml_bind_f1: number = __wxml_root.count;")
+        );
+        assert!(built.view.text.contains("void __wxml_bind_f0;"));
+        assert!(built.view.text.contains("void __wxml_bind_f1;"));
+        assert_eq!(built.contracts().len(), 2);
+    }
+
+    #[test]
+    fn contract_variable_names_are_identifier_safe_and_do_not_collapse() {
+        assert_eq!(contract_variable("f0"), "__wxml_bind_f0");
+        assert_eq!(contract_variable("event#0"), "__wxml_bind_event_x23_0");
+        assert_ne!(contract_variable("f-0"), contract_variable("f_0"));
+        assert!(expression::is_identifier_name(&contract_variable("事件#0")));
     }
 
     /// The shared grammar reads both script token views; they must agree.

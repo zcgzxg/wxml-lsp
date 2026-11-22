@@ -400,7 +400,7 @@ impl<'a> Engine<'a> {
                 continue;
             }
             if let Some((binding, event)) = event_attribute(attribute_name) {
-                self.analyze_event(*attribute, binding, event);
+                self.analyze_event(*attribute, binding, event, name);
             } else if is_empty_event_attribute(attribute_name) {
                 self.record(UnsupportedKind::EmptyEvent, attribute.text_range());
             } else {
@@ -434,6 +434,7 @@ impl<'a> Engine<'a> {
         attribute: Attribute<'a>,
         binding: EventBindingKind,
         event: &'a str,
+        tag: &str,
     ) {
         let Some(attribute_name) = attribute.name() else {
             return;
@@ -466,6 +467,7 @@ impl<'a> Engine<'a> {
             attribute: attribute_name.to_owned(),
             binding,
             event: event.to_owned(),
+            tag: tag.to_owned(),
             handler: handler.to_owned(),
             range,
             attribute_range: range,
@@ -1850,6 +1852,7 @@ mod tests {
             assert_eq!(handler.attribute, attribute);
             assert_eq!(handler.binding, binding, "attribute {attribute}");
             assert_eq!(handler.event, event, "attribute {attribute}");
+            assert_eq!(handler.tag, "view", "attribute {attribute}");
             assert_eq!(handler.handler, "onTap");
 
             let start = u32::try_from(source.find(attribute).expect("attribute offset"))
@@ -1870,6 +1873,20 @@ mod tests {
             );
             assert_eq!(text(&tree, handler.handler_range), "onTap");
         }
+    }
+
+    #[test]
+    fn event_bindings_record_owning_element_tag() {
+        let (analysis, _) = analyze_with_tags(
+            r#"<view><card bindtap="onTap" /><custom-view catch:tap="onTap" /></view>"#,
+            &["card"],
+        );
+        let tags: Vec<&str> = analysis
+            .events
+            .iter()
+            .map(|event| event.tag.as_str())
+            .collect();
+        assert_eq!(tags, ["card", "custom-view"]);
     }
 
     #[test]

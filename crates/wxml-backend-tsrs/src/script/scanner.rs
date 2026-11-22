@@ -198,17 +198,55 @@ pub(crate) fn signature_of(script: &Script<'_>, member: &Member) -> String {
             let mut end = member.value_end;
             let mut arrow = false;
             let mut cursor = member.value_start;
+            let mut depth = 0_usize;
+            // Find a top-level arrow before treating a brace as the body. Braces
+            // inside the parameter list belong to type literals such as
+            // `CustomEvent<{ index: number }>`; a return-type object literal is
+            // skipped by its matching brace.
             while cursor < member.value_end {
-                if script.is_punct(cursor, '=') && script.is_punct(cursor + 1, '>') {
+                if depth == 0 && script.is_punct(cursor, '=') && script.is_punct(cursor + 1, '>') {
                     end = cursor + 2;
                     arrow = true;
                     break;
                 }
-                if script.is_punct(cursor, '{') {
-                    end = cursor;
-                    break;
+                if script.is_punct(cursor, '(') || script.is_punct(cursor, '[') {
+                    depth += 1;
+                } else if script.is_punct(cursor, ')') || script.is_punct(cursor, ']') {
+                    depth = depth.saturating_sub(1);
+                } else if script.is_punct(cursor, '{') {
+                    if depth == 0 {
+                        if let Ok(close) = script.close_of(cursor) {
+                            cursor = close;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        depth += 1;
+                    }
+                } else if script.is_punct(cursor, '}') {
+                    depth = depth.saturating_sub(1);
                 }
                 cursor += 1;
+            }
+            if !arrow {
+                cursor = member.value_start;
+                depth = 0;
+                while cursor < member.value_end {
+                    if script.is_punct(cursor, '(') || script.is_punct(cursor, '[') {
+                        depth += 1;
+                    } else if script.is_punct(cursor, ')') || script.is_punct(cursor, ']') {
+                        depth = depth.saturating_sub(1);
+                    } else if script.is_punct(cursor, '{') {
+                        if depth == 0 {
+                            end = cursor;
+                            break;
+                        }
+                        depth += 1;
+                    } else if script.is_punct(cursor, '}') {
+                        depth = depth.saturating_sub(1);
+                    }
+                    cursor += 1;
+                }
             }
             let base = script
                 .token_range_text_between(member.key_start, end)

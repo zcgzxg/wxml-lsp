@@ -224,7 +224,7 @@ cargo test --workspace --all-features
 ## 文档
 
 - [文档索引](docs/README.md)
-- [ADR 索引](docs/adr/README.md)：0001 分层、0002 类型检查与源码映射、0003 文档同步、0004 交付闸门、0005 文档自包含、0006 显式根、0007 交付信任、0009 瘦身、0010 零配置惰性发现、0012 进程内类型会话
+- [ADR 索引](docs/adr/README.md)：0001 分层、0002 类型检查与源码映射、0003 文档同步、0004 交付闸门、0005 文档自包含、0006 显式根、0007 交付信任、0009 瘦身、0010 零配置惰性发现、0011 组件类型声明、0012 进程内类型会话、0013 组件属性与事件的引擎判定
 - [C0 基础契约](docs/reference/contracts.md)、[模板类型诊断策略](docs/reference/type-diagnostics.md)
 - [原生类型后端合同](docs/reference/tsrs-native-contract.md)（tsrs 进程内会话口径）
 - 变更流程：[`openspec/`](openspec/)（活跃变更在 `changes/`，归档在 `changes/archive/`；`specs/` 尚未沉淀能力规格）

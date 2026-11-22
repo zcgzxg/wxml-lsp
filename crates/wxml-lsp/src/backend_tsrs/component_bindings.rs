@@ -1,100 +1,52 @@
 //! Component property binding diagnostics.
 //!
 //! The template analyzer already records every custom-component usage and
-//! classifies each non-event attribute value, and the shadow mounts every
-//! mustache. This pass adds the missing check: read the component's declared
-//! `properties` from the prepared script facts, query the bound expression's
-//! type through the pinned native `type_query`, and publish an error only when
-//! the mismatch is provable.
+//! classifies each non-event attribute value, and the project host prepares
+//! declaration-first property facts. This pass keeps the checks that need no
+//! type engine:
 //!
-//! The comparison is deliberately conservative. The pinned API has no
-//! `isTypeAssignableTo`, so a complex expression, an `any`/`unknown`/missing
-//! type, an unresolved component script, an incomplete `properties` literal or
-//! a structural array/object question degrades the result to `Partial` through
-//! the stable reason prefix. Nothing is guessed and no error is fabricated.
+//! - a static `name="value"` literal or a valueless attribute against the
+//!   declared property type;
+//! - an attribute the component declaration does not mention;
+//! - coverage (`Partial`) reasons for unreadable component facts, incomplete
+//!   behaviors, mixed text and the per-tag cap.
+//!
+//! A pure mustache expression is checked by the engine through the contract
+//! probe the request plan attaches to the fragment, so this pass never queries
+//! an expression type and never publishes a type diagnostic for one. When the
+//! facts are incomplete or the component script is missing, the usage keeps its
+//! existing `Partial`/skip result; the mustache itself is not re-judged here.
 //!
 //! Event bindings are excluded by `ComponentUsage::attributes` upstream; this
 //! pass never inspects raw element attributes, so `bind*`/`catch*`/
 //! `capture-*`/`mut-bind`/`slot`/`wx:*` cannot become property diagnostics.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
 
-use crate::backend_tsrs::query::type_info::{TypeQuality, TypeResult, map_type_query};
-use wxml_backend_tsrs::input::{
-    AnalysisInput, DocumentRevision, ProjectKey, ProjectRoot, SnapshotRevision, SourceFile,
-};
-use wxml_backend_tsrs::native::NativeError;
-use wxml_backend_tsrs::native::session::TypeQuery;
-use wxml_backend_tsrs::native::strings::{
-    Utf16Offset, Utf16Position, offset_to_position, utf16_len,
-};
 use wxml_backend_tsrs::script::properties::PropertyFact;
-use wxml_backend_tsrs::script::registration::RegistrationKind;
-use wxml_backend_tsrs::script::{ScriptRequest, analyze_script};
-use wxml_project::ComponentTypingFacts;
 use wxml_project::typing::{PrimitiveType, TypeText, TypingComponent, TypingProperty};
-use wxml_syntax::{Expr, ExprKind, parse_expression};
-use wxml_text::TextRange;
 use wxml_types::{
     AttributeValueKind, CapabilityStatus, ComponentAttribute, ComponentUsage, Diagnostic,
     DiagnosticSeverity, SourceRange,
 };
 
+use crate::backend_tsrs::component_facts::{
+    ComponentFactsCache, ComponentUsageFacts, ScriptPropertyFacts,
+};
 use crate::backend_tsrs::mapping::ShadowLayout;
-use crate::backend_tsrs::session::QuerySession;
 use crate::project_host::PreparedView;
-use crate::semantics::tsconfig_paths::TsconfigPaths;
 
 /// Maximum distinct component tags checked in one template.
 const MAX_TAGS: usize = 64;
 /// Maximum published diagnostics for one component tag.
 const MAX_DIAGNOSTICS_PER_TAG: usize = 8;
-/// Maximum native expression queries for one diagnostics run.
-const MAX_QUERIES: usize = 256;
 /// Maximum `tag.attribute` examples quoted in the `Partial` reason.
 const MAX_SKIPPED_DETAILS: usize = 3;
-/// Maximum quoted expression length inside a message.
-const MAX_EXPRESSION_TEXT: usize = 80;
 /// Maximum published message length after sanitization.
 const MAX_MESSAGE_LENGTH: usize = 512;
 
 /// Stable prefix shared with the Node backend's `Partial` reason.
 const SKIPPED_PREFIX: &str = "some component bindings could not be resolved and were not checked";
-
-/// Pinned `tsrs` 7.1.0-beta `TypeFlags` bits observed through the public wire
-/// `flags` field of `getTypeAtPosition`.
-///
-/// The pinned engine does not document these values in the protocol, so they
-/// are used only as corroboration after the `typeToString` text: a shape the
-/// text already proves always wins, and an unknown flag combination leaves the
-/// type unclassified instead of producing a diagnostic.
-mod type_flags {
-    /// `any`.
-    pub(super) const ANY: u64 = 1;
-    /// `unknown`.
-    pub(super) const UNKNOWN: u64 = 2;
-    /// `undefined`.
-    pub(super) const UNDEFINED: u64 = 4;
-    /// `null`.
-    pub(super) const NULL: u64 = 8;
-    /// Primitive `string`.
-    pub(super) const STRING: u64 = 32;
-    /// Primitive `number`.
-    pub(super) const NUMBER: u64 = 64;
-    /// Primitive `boolean`.
-    pub(super) const BOOLEAN: u64 = 256;
-    /// String literal.
-    pub(super) const STRING_LITERAL: u64 = 1024;
-    /// Numeric literal.
-    pub(super) const NUMBER_LITERAL: u64 = 2048;
-    /// Boolean literal.
-    pub(super) const BOOLEAN_LITERAL: u64 = 8192;
-    /// `never`.
-    pub(super) const NEVER: u64 = 262_144;
-    /// Object-like type, including arrays and functions.
-    pub(super) const OBJECT: u64 = 1_048_576;
-}
 
 /// Diagnostics produced by the component binding pass.
 pub(crate) struct ComponentBindingDiagnostics {
@@ -104,26 +56,13 @@ pub(crate) struct ComponentBindingDiagnostics {
     pub(crate) status: Option<CapabilityStatus>,
 }
 
-/// Runs the component binding pass through a live query session.
-pub(crate) fn diagnostics(
-    session: &mut dyn QuerySession,
-    layout: &ShadowLayout,
-    view: &PreparedView,
-    script_path: &str,
-) -> ComponentBindingDiagnostics {
-    diagnostics_with(layout, view, script_path, |path, position| {
-        session.type_query(path, position)
-    })
-}
-
-/// Runs the component binding pass with an explicit expression type source.
+/// Runs the component binding pass over one prepared view.
 ///
-/// The query seam keeps the comparison unit-testable without a native process.
-pub(crate) fn diagnostics_with(
+/// The pass only reads the original template and the shared component facts:
+/// pure mustache compatibility belongs to the engine contract probe.
+pub(crate) fn diagnostics(
     layout: &ShadowLayout,
     view: &PreparedView,
-    script_path: &str,
-    query: impl FnMut(&str, Utf16Position) -> Result<TypeQuery, NativeError>,
 ) -> ComponentBindingDiagnostics {
     if view.components.is_empty() {
         return ComponentBindingDiagnostics {
@@ -131,35 +70,23 @@ pub(crate) fn diagnostics_with(
             status: None,
         };
     }
-    let mut pass = Pass::new(layout, view, script_path, query);
+    let mut pass = Pass::new(layout, view);
     pass.run();
     pass.finish()
 }
 
-/// One declared component property and its conservative target set.
+/// One declared script property and its static-literal contract.
 #[derive(Clone, Debug)]
 struct DeclaredBinding {
     /// Declaration text shown in the message.
     text: String,
-    /// Every allowed target; empty means "cannot prove" and the attribute is skipped.
-    targets: Vec<Target>,
+    /// What a static WXML literal must satisfy.
+    contract: LiteralContract,
 }
 
-/// Declared properties of one component script.
-#[derive(Clone, Debug)]
-struct ComponentDeclarations {
-    /// Property name to declaration. A present name with `None` targets means
-    /// the declaration is readable but not checkable.
-    properties: BTreeMap<String, Option<DeclaredBinding>>,
-    /// `false` when only the component's own `properties` were enumerated and
-    /// behaviors may contribute unlisted names. The listed declarations remain
-    /// checkable, but an attribute outside them is not an error.
-    complete: bool,
-}
-
-/// What a declared property accepts.
+/// One value shape a declared property can accept from a WXML literal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Target {
+enum LiteralKind {
     /// Primitive `string`.
     String,
     /// Primitive `number`.
@@ -168,70 +95,211 @@ enum Target {
     Boolean,
     /// Array-like value.
     Array,
-    /// Object-like value; arrays are accepted like the Node Object flag check.
+    /// Object-like value.
     Object,
 }
 
-impl Target {
-    /// Returns whether `actual` satisfies this target.
-    const fn accepts(self, actual: Actual) -> bool {
-        match actual {
-            Actual::String => matches!(self, Self::String),
-            Actual::Number => matches!(self, Self::Number),
-            Actual::Boolean => matches!(self, Self::Boolean),
-            // An `Object` declaration accepts arrays, matching the Node
-            // backend's Object type flag check.
-            Actual::Array => matches!(self, Self::Array | Self::Object),
-            Actual::Object => matches!(self, Self::Object),
-            Actual::Never | Actual::Unset | Actual::Unknown => false,
+/// What one declared property accepts from a static WXML literal value.
+///
+/// Only the literal forms are modelled: a quoted attribute is always a string
+/// and a valueless attribute is always a boolean, so shapes that need a
+/// structural comparison (array contents, object members, conditionals) are not
+/// represented here. Pure mustache values are checked by the engine instead.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum LiteralContract {
+    /// The declaration is unproven or not representable: never diagnosed.
+    Unknown,
+    /// `any` accepts every value.
+    Any,
+    /// One or more primitive/structural shapes.
+    Shapes(Vec<LiteralKind>),
+    /// A union of string literals; only the listed values are accepted.
+    StringLiterals(Vec<String>),
+    /// A union of numeric literals; a WXML literal is always a string and can
+    /// never satisfy it.
+    NumberLiterals,
+}
+
+impl LiteralContract {
+    /// Maps one declared member to a literal contract.
+    ///
+    /// `proven == false` always yields [`LiteralContract::Unknown`]: the
+    /// declaration parser did not understand the whole expression.
+    fn from_property(property: &TypingProperty) -> Self {
+        if !property.proven {
+            return Self::Unknown;
+        }
+        Self::from_type(&property.ty)
+    }
+
+    /// Maps one parsed type expression to a literal contract.
+    fn from_type(ty: &TypeText) -> Self {
+        match ty {
+            TypeText::Primitive(primitive) => Self::from_primitive(*primitive),
+            TypeText::StringLiteral(value) => Self::StringLiterals(vec![value.clone()]),
+            TypeText::NumberLiteral(_) => Self::NumberLiterals,
+            TypeText::BooleanLiteral(_) => Self::Shapes(vec![LiteralKind::Boolean]),
+            TypeText::Array(_) => Self::Shapes(vec![LiteralKind::Array]),
+            TypeText::Record(_) | TypeText::Object(_) => Self::Shapes(vec![LiteralKind::Object]),
+            TypeText::Union(parts) => Self::from_union(parts),
+            TypeText::Unproven => Self::Unknown,
+        }
+    }
+
+    /// Maps one primitive type to a literal contract.
+    fn from_primitive(primitive: PrimitiveType) -> Self {
+        match primitive {
+            PrimitiveType::String => Self::Shapes(vec![LiteralKind::String]),
+            PrimitiveType::Number => Self::Shapes(vec![LiteralKind::Number]),
+            PrimitiveType::Boolean => Self::Shapes(vec![LiteralKind::Boolean]),
+            PrimitiveType::Object => Self::Shapes(vec![LiteralKind::Object]),
+            PrimitiveType::Any => Self::Any,
+            // `null`/`undefined`/`void` alone admit no bound value, and
+            // `unknown`/`never` cannot be narrowed into a literal shape.
+            _ => Self::Unknown,
+        }
+    }
+
+    /// Maps a union to a literal contract, treating nullish alternatives as
+    /// absence.
+    fn from_union(parts: &[TypeText]) -> Self {
+        let mut alternatives = Vec::new();
+        for part in parts {
+            flatten_union(part, &mut alternatives);
+        }
+        let mut shapes = Vec::new();
+        let mut strings: Vec<String> = Vec::new();
+        let mut numbers = false;
+        for part in alternatives {
+            match part {
+                // Nullish alternatives only widen optionality; `never`
+                // contributes no value.
+                TypeText::Primitive(
+                    PrimitiveType::Null
+                    | PrimitiveType::Undefined
+                    | PrimitiveType::Void
+                    | PrimitiveType::Never,
+                ) => {}
+                TypeText::Primitive(PrimitiveType::String) => {
+                    push_shape(&mut shapes, LiteralKind::String);
+                }
+                TypeText::Primitive(PrimitiveType::Number) => {
+                    push_shape(&mut shapes, LiteralKind::Number);
+                }
+                TypeText::Primitive(PrimitiveType::Boolean) | TypeText::BooleanLiteral(_) => {
+                    push_shape(&mut shapes, LiteralKind::Boolean);
+                }
+                TypeText::Primitive(PrimitiveType::Any) => return Self::Any,
+                TypeText::StringLiteral(value) => push_unique(&mut strings, value),
+                TypeText::NumberLiteral(_) => numbers = true,
+                TypeText::Array(_) => push_shape(&mut shapes, LiteralKind::Array),
+                TypeText::Primitive(PrimitiveType::Object)
+                | TypeText::Record(_)
+                | TypeText::Object(_) => push_shape(&mut shapes, LiteralKind::Object),
+                // An empty nested union, an unsupported primitive or an
+                // unproven part cannot be narrowed into a contract.
+                TypeText::Primitive(_) | TypeText::Union(_) | TypeText::Unproven => {
+                    return Self::Unknown;
+                }
+            }
+        }
+        if shapes.is_empty() && strings.is_empty() && numbers {
+            return Self::NumberLiterals;
+        }
+        if shapes.is_empty() && !strings.is_empty() && !numbers {
+            return Self::StringLiterals(strings);
+        }
+        // Mixed primitive kinds or several shapes cannot be expressed as one
+        // literal contract; a single shape may absorb same-domain literals.
+        if shapes.len() != 1 {
+            return Self::Unknown;
+        }
+        let representable = match shapes[0] {
+            // `string | 'a' | 'b'` still accepts the whole string domain.
+            LiteralKind::String => !numbers,
+            // A numeric shape absorbs numeric literals; a string literal never
+            // matches it.
+            LiteralKind::Number => strings.is_empty(),
+            LiteralKind::Boolean | LiteralKind::Array | LiteralKind::Object => {
+                strings.is_empty() && !numbers
+            }
+        };
+        if representable {
+            Self::Shapes(shapes)
+        } else {
+            Self::Unknown
+        }
+    }
+
+    /// Maps one script `properties` union to a literal contract.
+    ///
+    /// The overlay only normalizes the five `WeChat` constructors below. Every
+    /// other text (`any`, `Function`, a non-literal `properties` object) stays
+    /// unrepresented so callers keep it as a coverage gap instead of guessing.
+    fn from_script_text(text: &str) -> Option<Self> {
+        let parts = split_union(text);
+        if parts.is_empty() {
+            return None;
+        }
+        let mut shapes = Vec::with_capacity(parts.len());
+        for part in parts {
+            let shape = match part.trim() {
+                "string" => LiteralKind::String,
+                "number" => LiteralKind::Number,
+                "boolean" => LiteralKind::Boolean,
+                "any[]" => LiteralKind::Array,
+                "Record<string, any>" => LiteralKind::Object,
+                _ => return None,
+            };
+            push_shape(&mut shapes, shape);
+        }
+        Some(Self::Shapes(shapes))
+    }
+
+    /// Judges one static literal attribute value.
+    ///
+    /// `None` means the declaration cannot be represented, which keeps the
+    /// attribute a coverage gap instead of an error.
+    fn judge_literal(&self, value: LiteralValue<'_>) -> Option<bool> {
+        match self {
+            Self::Unknown => None,
+            Self::Any => Some(true),
+            Self::Shapes(shapes) => Some(shapes.contains(&value.shape())),
+            Self::StringLiterals(allowed) => Some(match value {
+                LiteralValue::String(text) => allowed.iter().any(|allowed| allowed == text),
+                LiteralValue::Boolean => false,
+            }),
+            // A WXML literal attribute is always a string, never a number.
+            Self::NumberLiterals => Some(false),
         }
     }
 }
 
-/// A classified bound type constituent.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Actual {
-    /// Primitive or literal string.
-    String,
-    /// Primitive or literal number.
-    Number,
-    /// Primitive or literal boolean.
+/// One static attribute value.
+#[derive(Clone, Copy, Debug)]
+enum LiteralValue<'a> {
+    /// A quoted attribute value, for example `type="primary"`.
+    String(&'a str),
+    /// A valueless attribute, for example `disabled`.
     Boolean,
-    /// Array-like value.
-    Array,
-    /// Object-like value.
-    Object,
-    /// `never` is assignable to every declared target.
-    Never,
-    /// `undefined`/`null`/`void` mean the property is not set.
-    Unset,
-    /// `any`, `unknown`, a missing type or an unsupported shape.
-    Unknown,
 }
 
-/// Three-state comparison result.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Verdict {
-    /// Every defined constituent matches.
-    Accept,
-    /// At least one constituent cannot match; this wins over `Unknown`.
-    Reject,
-    /// At least one constituent cannot be classified.
-    Unknown,
+impl LiteralValue<'_> {
+    /// Returns the value shape a declared contract is matched against.
+    const fn shape(self) -> LiteralKind {
+        match self {
+            Self::String(_) => LiteralKind::String,
+            Self::Boolean => LiteralKind::Boolean,
+        }
+    }
 }
 
-/// Runs the component binding pass with precomputed declarations.
-struct Pass<'a, Q> {
+/// Runs the component binding pass with declaration-first property facts.
+struct Pass<'a> {
     layout: &'a ShadowLayout,
     view: &'a PreparedView,
-    script_path: &'a str,
-    input: Option<AnalysisInput>,
-    /// Declaration facts attached to the view by the project host.
-    ///
-    /// `None` means the project has no usable `components.d.ts`; consumers then
-    /// keep the script-derived behaviour unchanged.
-    typing: Option<Arc<ComponentTypingFacts>>,
-    declarations: BTreeMap<String, Option<ComponentDeclarations>>,
+    /// Declaration-first property facts, cached by component path.
+    facts: ComponentFactsCache<'a>,
     tags: BTreeSet<String>,
     diagnostics: Vec<Diagnostic>,
     per_tag: BTreeMap<String, usize>,
@@ -240,48 +308,27 @@ struct Pass<'a, Q> {
     /// 校验过的 tag；这些 tag 的结果可用但不完整。
     behavior_incomplete: BTreeSet<String>,
     skipped: usize,
-    queries: usize,
     partial: bool,
-    stopped: bool,
-    query: Q,
 }
 
-impl<'a, Q> Pass<'a, Q>
-where
-    Q: FnMut(&str, Utf16Position) -> Result<TypeQuery, NativeError>,
-{
-    fn new(
-        layout: &'a ShadowLayout,
-        view: &'a PreparedView,
-        script_path: &'a str,
-        query: Q,
-    ) -> Self {
+impl<'a> Pass<'a> {
+    fn new(layout: &'a ShadowLayout, view: &'a PreparedView) -> Self {
         Self {
             layout,
             view,
-            script_path,
-            input: component_input(view),
-            typing: view.typing.clone(),
-            declarations: BTreeMap::new(),
+            facts: ComponentFactsCache::new(view),
             tags: BTreeSet::new(),
             diagnostics: Vec::new(),
             per_tag: BTreeMap::new(),
             details: Vec::new(),
             behavior_incomplete: BTreeSet::new(),
             skipped: 0,
-            queries: 0,
             partial: false,
-            stopped: false,
-            query,
         }
     }
 
-    #[allow(clippy::too_many_lines, reason = "one linear usage check pipeline")]
     fn run(&mut self) {
         for usage in self.view.components.iter() {
-            if self.stopped {
-                break;
-            }
             if usage.attributes.is_empty() {
                 continue;
             }
@@ -294,87 +341,61 @@ where
                 self.tags.insert(usage.tag.clone());
             }
             // A structurally complete declaration is the whole attribute
-            // surface: the script `properties` object is never consulted, so
-            // `analyze_component` is skipped for this tag.
-            let declared = self
-                .typing
-                .as_ref()
-                .and_then(|facts| facts.component(&usage.tag))
-                .cloned();
-            if let Some(typing) = declared
-                && typing.complete
-            {
-                self.check_declared_usage(usage, &typing);
-                continue;
-            }
-            if self.input.is_none() {
-                // No project root or no representable file set: every script
-                // derived usage is unproven, but an empty attribute list still
-                // needs no reason.
-                self.partial = true;
-                self.skip(&usage.tag);
-                continue;
-            }
-            let Some(component_file) = usage.component_file.as_ref() else {
-                self.skip(&usage.tag);
-                continue;
-            };
-            let path = component_file.path();
-            if !self
-                .view
-                .files
-                .iter()
-                .any(|file| file.path.as_str() == path)
-            {
-                self.skip(&usage.tag);
-                continue;
-            }
-            let Some(declarations) = self.declarations(path) else {
-                self.skip(&usage.tag);
-                continue;
-            };
-            if declarations.properties.is_empty() {
-                // A component without declared properties makes the binding
-                // surface unproven, not clean.
-                self.skip(&usage.tag);
-                continue;
-            }
-            if !declarations.complete {
-                // behaviors 未能解析：只按组件自身声明的属性校验，未声明的
-                // 属性可能来自 behavior，因此不能报错，只能标记结果不完整。
-                self.behavior_incomplete.insert(usage.tag.clone());
-            }
-            for attribute in &usage.attributes {
-                if self.stopped {
-                    break;
+            // surface: the script `properties` object is never consulted.
+            match self.facts.resolve(usage) {
+                ComponentUsageFacts::Declared(typing) => self.check_declared_usage(usage, &typing),
+                ComponentUsageFacts::Script(properties) => {
+                    self.check_script_usage(usage, &properties);
                 }
-                let declared = match declared_property(&declarations, &attribute.name) {
-                    // `class`, `style`, `id` and undeclared attributes are not
-                    // component properties, exactly like the Node backend.
-                    DeclaredLookup::Undeclared => continue,
-                    DeclaredLookup::Unproven => {
-                        self.skip(&format!("{}.{}", usage.tag, attribute.name));
+                ComponentUsageFacts::Unavailable => {
+                    // No project root or no representable file set: every script
+                    // derived usage is unproven, but an empty attribute list still
+                    // needs no reason.
+                    if !self.facts.has_input() {
                         self.partial = true;
-                        continue;
                     }
-                    DeclaredLookup::Checkable(declared) => declared,
-                };
-                self.check_attribute(&usage.tag, attribute, declared);
+                    self.skip(&usage.tag);
+                }
             }
         }
     }
 
-    /// Returns the declarations for one component path, cached by path.
-    fn declarations(&mut self, path: &str) -> Option<ComponentDeclarations> {
-        if let Some(cached) = self.declarations.get(path) {
-            return cached.clone();
+    /// Checks one usage whose component is described by script `properties`.
+    ///
+    /// An attribute the script does not declare stays ignored: it may come from
+    /// an unreadable behavior or belong to the host element, exactly like the
+    /// Node backend.
+    fn check_script_usage(&mut self, usage: &ComponentUsage, properties: &ScriptPropertyFacts) {
+        if properties.is_empty() {
+            // A component without declared properties makes the binding
+            // surface unproven, not clean.
+            self.skip(&usage.tag);
+            return;
         }
-        let parsed = self
-            .input
-            .as_ref()
-            .and_then(|input| analyze_component(input, self.view, path));
-        self.declarations.insert(path.to_owned(), parsed.clone());
-        parsed
+        if !properties.complete() {
+            // behaviors 未能解析：只按组件自身声明的属性校验，未声明的属性可能来自
+            // behavior，因此不能报错，只能标记结果不完整。
+            self.behavior_incomplete.insert(usage.tag.clone());
+        }
+        for attribute in &usage.attributes {
+            match declared_property(properties, &attribute.name) {
+                // `class`, `style`, `id` and undeclared attributes are not
+                // component properties.
+                DeclaredLookup::Undeclared => {}
+                DeclaredLookup::Unproven => {
+                    self.partial = true;
+                    self.skip(&format!("{}.{}", usage.tag, attribute.name));
+                }
+                DeclaredLookup::Checkable(declared) => {
+                    self.check_static_attribute(
+                        &usage.tag,
+                        attribute,
+                        &declared.contract,
+                        &declared.text,
+                    );
+                }
+            }
+        }
     }
 
     /// Checks one attribute of a component that has declaration facts.
@@ -383,9 +404,6 @@ where
     /// coverage gap, while the remaining declared members are still checked.
     fn check_declared_usage(&mut self, usage: &ComponentUsage, typing: &TypingComponent) {
         for attribute in &usage.attributes {
-            if self.stopped {
-                break;
-            }
             match declared_typing_property(typing, &attribute.name) {
                 // The declared `props` set is the whole attribute surface, so
                 // an attribute it does not mention is an error except for the
@@ -400,27 +418,28 @@ where
         }
     }
 
-    /// Checks one declared attribute against its contract.
+    /// Checks one declared attribute against its literal contract.
     fn check_declared_attribute(
         &mut self,
         tag: &str,
         attribute: &ComponentAttribute,
         property: &TypingProperty,
     ) {
-        let contract = PropertyContract::from_property(property);
-        if matches!(contract, PropertyContract::Unknown) {
-            // An unproven member, or a type the contract cannot represent, is
-            // never guessed: it is a coverage gap instead of a diagnostic.
-            self.partial = true;
-            self.skip(&format!("{tag}.{}", attribute.name));
-            return;
-        }
-        if matches!(contract, PropertyContract::Any) {
-            // `any` accepts every value, so no query is needed and the result
-            // is proven clean.
-            return;
-        }
-        let allows_undefined = property.optional || contains_undefined(&property.ty);
+        let contract = LiteralContract::from_property(property);
+        self.check_static_attribute(tag, attribute, &contract, &property.type_text);
+    }
+
+    /// Checks one attribute whose value form needs no type engine.
+    ///
+    /// A pure mustache is delegated to the engine contract probe: it is neither
+    /// checked nor recorded as a coverage gap here.
+    fn check_static_attribute(
+        &mut self,
+        tag: &str,
+        attribute: &ComponentAttribute,
+        contract: &LiteralContract,
+        type_text: &str,
+    ) {
         match attribute.value_kind {
             AttributeValueKind::Literal => {
                 let value =
@@ -430,30 +449,18 @@ where
                     self.skip(&format!("{tag}.{}", attribute.name));
                     return;
                 };
-                self.check_declared_literal(
+                self.check_literal(
                     tag,
                     attribute,
-                    &contract,
-                    &property.type_text,
+                    contract,
+                    type_text,
                     LiteralValue::String(&value),
                 );
             }
             AttributeValueKind::Boolean => {
-                self.check_declared_literal(
-                    tag,
-                    attribute,
-                    &contract,
-                    &property.type_text,
-                    LiteralValue::Boolean,
-                );
+                self.check_literal(tag, attribute, contract, type_text, LiteralValue::Boolean);
             }
-            AttributeValueKind::Mustache => self.check_declared_mustache(
-                tag,
-                attribute,
-                &contract,
-                allows_undefined,
-                &property.type_text,
-            ),
+            AttributeValueKind::Mustache => {}
             // `Mixed` needs a string conversion and a future value kind is
             // unknown: both are coverage gaps, never errors.
             _ => {
@@ -463,22 +470,22 @@ where
         }
     }
 
-    /// Checks one literal attribute value against a declared contract.
-    fn check_declared_literal(
+    /// Judges one static literal value against its contract.
+    fn check_literal(
         &mut self,
         tag: &str,
         attribute: &ComponentAttribute,
-        contract: &PropertyContract,
+        contract: &LiteralContract,
         type_text: &str,
         value: LiteralValue<'_>,
     ) {
         match contract.judge_literal(value) {
-            Verdict::Accept => {}
-            Verdict::Unknown => {
+            Some(true) => {}
+            None => {
                 self.partial = true;
                 self.skip(&format!("{tag}.{}", attribute.name));
             }
-            Verdict::Reject => {
+            Some(false) => {
                 let got = match value {
                     LiteralValue::String(_) => "string literal",
                     LiteralValue::Boolean => "boolean literal",
@@ -488,44 +495,6 @@ where
                     attribute.name,
                 );
                 self.publish(tag, &attribute.name, attribute.attribute_range, &message);
-            }
-        }
-    }
-
-    /// Checks one bound expression against a declared contract.
-    fn check_declared_mustache(
-        &mut self,
-        tag: &str,
-        attribute: &ComponentAttribute,
-        contract: &PropertyContract,
-        allows_undefined: bool,
-        type_text: &str,
-    ) {
-        let Some((result, expr_range)) = self.query_bound_type(tag, attribute) else {
-            return;
-        };
-        match compare_contract(contract, allows_undefined, &result) {
-            Verdict::Accept => {}
-            Verdict::Unknown => {
-                self.partial = true;
-                self.skip(&format!("{tag}.{}", attribute.name));
-            }
-            Verdict::Reject => {
-                let got = result
-                    .info
-                    .as_ref()
-                    .map(|info| info.text.trim())
-                    .filter(|text| !text.is_empty())
-                    .unwrap_or("unknown");
-                let expr_text = attribute.expr_text.as_deref().unwrap_or_default();
-                let message = format!(
-                    "component property \"{}\" expects {}, got {} (bound expression \"{}\")",
-                    attribute.name,
-                    type_text,
-                    truncate(got, MAX_EXPRESSION_TEXT),
-                    truncate(expr_text, MAX_EXPRESSION_TEXT),
-                );
-                self.publish(tag, &attribute.name, expr_range, &message);
             }
         }
     }
@@ -542,204 +511,6 @@ where
             attribute_name_range(attribute),
             &message,
         );
-    }
-
-    fn check_attribute(
-        &mut self,
-        tag: &str,
-        attribute: &ComponentAttribute,
-        declared: &DeclaredBinding,
-    ) {
-        if declared.targets.is_empty() {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return;
-        }
-        match attribute.value_kind {
-            AttributeValueKind::Literal => {
-                self.publish_literal_rejection(
-                    tag,
-                    attribute,
-                    declared,
-                    Actual::String,
-                    "string literal",
-                );
-            }
-            AttributeValueKind::Boolean => {
-                self.publish_literal_rejection(
-                    tag,
-                    attribute,
-                    declared,
-                    Actual::Boolean,
-                    "boolean literal",
-                );
-            }
-            AttributeValueKind::Mustache => self.check_mustache(tag, attribute, declared),
-            // `Mixed` needs a string conversion and a future value kind is
-            // unknown: both are coverage gaps, never errors.
-            _ => {
-                self.skip(&format!("{tag}.{}", attribute.name));
-                self.partial = true;
-            }
-        }
-    }
-
-    fn check_mustache(
-        &mut self,
-        tag: &str,
-        attribute: &ComponentAttribute,
-        declared: &DeclaredBinding,
-    ) {
-        let Some((result, expr_range)) = self.query_bound_type(tag, attribute) else {
-            return;
-        };
-        let actual = classify_type(&result);
-        match compare(&declared.targets, &actual) {
-            Verdict::Accept => {}
-            Verdict::Unknown => {
-                self.partial = true;
-                self.skip(&format!("{tag}.{}", attribute.name));
-            }
-            Verdict::Reject => {
-                let got = result
-                    .info
-                    .as_ref()
-                    .map(|info| info.text.trim())
-                    .filter(|text| !text.is_empty())
-                    .unwrap_or("unknown");
-                let expr_text = attribute.expr_text.as_deref().unwrap_or_default();
-                let message = format!(
-                    "component property \"{}\" expects {}, got {} (bound expression \"{}\")",
-                    attribute.name,
-                    declared.text,
-                    truncate(got, MAX_EXPRESSION_TEXT),
-                    truncate(expr_text, MAX_EXPRESSION_TEXT),
-                );
-                self.publish(tag, &attribute.name, expr_range, &message);
-            }
-        }
-    }
-
-    /// Queries the type of the single bound expression of one attribute.
-    ///
-    /// Every unprovable step records a coverage gap and returns `None`, so the
-    /// caller never fabricates a diagnostic from a missing answer.
-    #[allow(clippy::too_many_lines, reason = "one linear bound expression query")]
-    fn query_bound_type(
-        &mut self,
-        tag: &str,
-        attribute: &ComponentAttribute,
-    ) -> Option<(TypeResult, SourceRange)> {
-        let (Some(expr_text), Some(expr_range)) =
-            (attribute.expr_text.as_deref(), attribute.expr_range)
-        else {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return None;
-        };
-        if !self.expr_matches(expr_range, expr_text) {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return None;
-        }
-        if self.layout.mount_for_range(expr_range).is_none() {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return None;
-        }
-        let parsed = parse_expression(expr_text, expr_range.start());
-        if !parsed.errors.is_empty() {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return None;
-        }
-        let Some(target) = chain_target(&parsed.expr) else {
-            // Only a free-root identifier or a member chain can be queried at
-            // one position. Calls, operators, indexes and conditionals would
-            // make the queried token's type differ from the expression type.
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return None;
-        };
-        if target.start() < expr_range.start() || target.end() > expr_range.end() {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return None;
-        }
-        let Ok(derived) = self.layout.derived_offset(target.start(), false) else {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return None;
-        };
-        let Some(mount) = self.layout.mount_for_range(expr_range) else {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return None;
-        };
-        let Some(mount_end) = mount.start_utf16.checked_add(utf16_len(&mount.text)) else {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return None;
-        };
-        if derived < mount.start_utf16 || derived >= mount_end {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return None;
-        }
-        let Ok(position) = offset_to_position(self.layout.derived(), Utf16Offset::new(derived))
-        else {
-            self.skip(&format!("{tag}.{}", attribute.name));
-            self.partial = true;
-            return None;
-        };
-        if self.queries >= MAX_QUERIES {
-            self.partial = true;
-            self.stopped = true;
-            self.skip(&format!("{tag}.{}", attribute.name));
-            return None;
-        }
-        self.queries += 1;
-        let raw = match (self.query)(self.script_path, position) {
-            Ok(raw) => raw,
-            Err(NativeError::Unsupported { .. }) => {
-                self.partial = true;
-                self.stopped = true;
-                self.skip(&format!("{tag}.{}", attribute.name));
-                return None;
-            }
-            Err(_) => {
-                // A hard query failure keeps the already-mapped backend
-                // diagnostics and is a coverage gap, never a fake error.
-                self.partial = true;
-                self.skip(&format!("{tag}.{}", attribute.name));
-                return None;
-            }
-        };
-        Some((map_type_query(&raw), expr_range))
-    }
-
-    fn publish_literal_rejection(
-        &mut self,
-        tag: &str,
-        attribute: &ComponentAttribute,
-        declared: &DeclaredBinding,
-        actual: Actual,
-        got: &str,
-    ) {
-        match compare(&declared.targets, &[actual]) {
-            Verdict::Accept => {}
-            Verdict::Unknown => {
-                self.partial = true;
-                self.skip(&format!("{tag}.{}", attribute.name));
-            }
-            Verdict::Reject => {
-                let message = format!(
-                    "component property \"{}\" expects {}, got {got}",
-                    attribute.name, declared.text,
-                );
-                self.publish(tag, &attribute.name, attribute.attribute_range, &message);
-            }
-        }
     }
 
     fn publish(&mut self, tag: &str, attribute: &str, range: SourceRange, message: &str) {
@@ -765,14 +536,6 @@ where
         {
             self.details.push(detail.to_owned());
         }
-    }
-
-    fn expr_matches(&self, range: SourceRange, text: &str) -> bool {
-        let (Ok(start), Ok(end)) = (usize::try_from(range.start()), usize::try_from(range.end()))
-        else {
-            return false;
-        };
-        self.layout.original_wxml().get(start..end) == Some(text)
     }
 
     fn finish(mut self) -> ComponentBindingDiagnostics {
@@ -812,67 +575,6 @@ where
     }
 }
 
-/// Builds the pure-Rust analysis input for component scripts.
-fn component_input(view: &PreparedView) -> Option<AnalysisInput> {
-    let root = view
-        .project_root
-        .to_str()
-        .and_then(|root| ProjectRoot::new(root).ok())?;
-    let mut files = Vec::with_capacity(view.files.len());
-    for prepared in view.files.iter() {
-        if let Ok(file) = SourceFile::new(
-            prepared.path.as_str(),
-            prepared.text.to_string(),
-            DocumentRevision::new(prepared.source_revision),
-        ) {
-            files.push(file);
-        }
-    }
-    AnalysisInput::new(
-        ProjectKey::new("wxml-lsp-component-bindings"),
-        root,
-        SnapshotRevision::new(1),
-        files,
-    )
-    .ok()
-}
-
-/// Analyzes one component script and extracts its declared property contract.
-///
-/// `view` supplies the tsconfig `paths` resolver: a behavior imported through an
-/// alias would otherwise read as unresolved and hide every property it
-/// contributes.
-fn analyze_component(
-    input: &AnalysisInput,
-    view: &PreparedView,
-    path: &str,
-) -> Option<ComponentDeclarations> {
-    let resolver = TsconfigPaths::from_view(view);
-    let request = ScriptRequest::new(input, path, RegistrationKind::Component);
-    let request = resolver
-        .as_ref()
-        .map_or(request, |resolver| request.with_resolver(resolver));
-    let analysis = analyze_script(&request).ok()?;
-    if !analysis.registration.complete {
-        return None;
-    }
-    // behaviors 不可读但自身 properties 已完整枚举时，仍可用自身声明做校验；
-    // 未声明的属性可能由 behavior 贡献，调用方不得报错。
-    if !analysis.properties.complete && !analysis.properties.own_complete {
-        return None;
-    }
-    let properties = analysis
-        .properties
-        .properties
-        .iter()
-        .map(|fact| (fact.name.clone(), declared_binding(fact)))
-        .collect();
-    Some(ComponentDeclarations {
-        properties,
-        complete: analysis.properties.complete,
-    })
-}
-
 /// 生成 behavior 不可解析时的 `Partial` 说明。
 ///
 /// tag 列表与既有 skip 明细同风格：最多引用 [`MAX_SKIPPED_DETAILS`] 个类名。
@@ -893,443 +595,36 @@ fn behavior_partial_reason(tags: &BTreeSet<String>) -> String {
     )
 }
 
-/// Parses one `PropertyFact` into a checkable contract.
+/// Parses one `PropertyFact` into a checkable literal binding.
 fn declared_binding(fact: &PropertyFact) -> Option<DeclaredBinding> {
     if !fact.type_complete {
         return None;
     }
-    let targets = declared_targets(&fact.type_text)?;
-    if targets.is_empty() {
-        return None;
-    }
     Some(DeclaredBinding {
         text: fact.type_text.clone(),
-        targets,
+        contract: LiteralContract::from_script_text(&fact.type_text)?,
     })
-}
-
-/// Splits a declaration into its allowed targets.
-///
-/// `any`, `Function` and every unknown constructor return `None`: the whole
-/// property is unproven rather than checked against a guessed target.
-fn declared_targets(text: &str) -> Option<Vec<Target>> {
-    let parts = split_union(text);
-    if parts.is_empty() {
-        return None;
-    }
-    let mut targets = Vec::with_capacity(parts.len());
-    for part in parts {
-        let target = match part.trim() {
-            "string" => Target::String,
-            "number" => Target::Number,
-            "boolean" => Target::Boolean,
-            "any[]" => Target::Array,
-            "Record<string, any>" => Target::Object,
-            _ => return None,
-        };
-        if !targets.contains(&target) {
-            targets.push(target);
-        }
-    }
-    Some(targets)
 }
 
 /// Returns the declaration for `attribute` using the shared kebab/camel rule.
 ///
 /// The lookup distinguishes an undeclared attribute (ignore it) from a
 /// declared but unproven one (skip it and report partial coverage).
-fn declared_property<'a>(
-    declarations: &'a ComponentDeclarations,
-    attribute: &str,
-) -> DeclaredLookup<'a> {
-    if let Some(found) = declarations.properties.get(attribute) {
-        return lookup(found.as_ref());
-    }
-    declarations
-        .properties
-        .iter()
-        .find(|(name, _)| wxml_project::component_name_eq(name, attribute))
-        .map_or(DeclaredLookup::Undeclared, |(_, found)| {
-            lookup(found.as_ref())
-        })
+fn declared_property(properties: &ScriptPropertyFacts, attribute: &str) -> DeclaredLookup {
+    let Some(fact) = properties.member(attribute) else {
+        return DeclaredLookup::Undeclared;
+    };
+    declared_binding(fact).map_or(DeclaredLookup::Unproven, DeclaredLookup::Checkable)
 }
 
 /// Result of one component attribute name lookup.
-enum DeclaredLookup<'a> {
+enum DeclaredLookup {
     /// The attribute is not a declared property; ignore it.
     Undeclared,
     /// The property is declared but its type could not be proven.
     Unproven,
-    /// The property has a checkable contract.
-    Checkable(&'a DeclaredBinding),
-}
-
-const fn lookup(found: Option<&DeclaredBinding>) -> DeclaredLookup<'_> {
-    match found {
-        Some(binding) => DeclaredLookup::Checkable(binding),
-        None => DeclaredLookup::Unproven,
-    }
-}
-
-/// What one declared component attribute accepts.
-///
-/// The contract keeps only what the pinned engine can prove through
-/// `getTypeAtPosition`: a primitive or structural target, or a finite literal
-/// set. Every other type expression stays [`PropertyContract::Unknown`] and is
-/// never diagnosed.
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum PropertyContract {
-    /// The member type is unproven or cannot be represented exactly.
-    Unknown,
-    /// `any` accepts every bound value.
-    Any,
-    /// One primitive or structural target.
-    Kind(Target),
-    /// A union of string literals; only the listed values are accepted.
-    StringLiterals(Vec<String>),
-    /// A union of numeric literals; only the listed values are accepted.
-    NumberLiterals(Vec<String>),
-}
-
-impl PropertyContract {
-    /// Maps one declared member to a checkable contract.
-    ///
-    /// `proven == false` always yields [`PropertyContract::Unknown`]: the
-    /// declaration parser did not understand the whole expression.
-    fn from_property(property: &TypingProperty) -> Self {
-        if !property.proven {
-            return Self::Unknown;
-        }
-        Self::from_type(&property.ty)
-    }
-
-    /// Maps one parsed type expression to a contract.
-    fn from_type(ty: &TypeText) -> Self {
-        match ty {
-            TypeText::Primitive(primitive) => Self::from_primitive(*primitive),
-            TypeText::StringLiteral(value) => Self::StringLiterals(vec![value.clone()]),
-            TypeText::NumberLiteral(value) => Self::NumberLiterals(vec![value.clone()]),
-            // Boolean literals have no literal contract variant; a plain
-            // boolean target accepts every boolean without a false positive.
-            TypeText::BooleanLiteral(_) => Self::Kind(Target::Boolean),
-            TypeText::Array(_) => Self::Kind(Target::Array),
-            TypeText::Record(_) | TypeText::Object(_) => Self::Kind(Target::Object),
-            TypeText::Union(parts) => Self::from_union(parts),
-            TypeText::Unproven => Self::Unknown,
-        }
-    }
-
-    /// Maps one primitive type to a contract.
-    const fn from_primitive(primitive: PrimitiveType) -> Self {
-        match primitive {
-            PrimitiveType::String => Self::Kind(Target::String),
-            PrimitiveType::Number => Self::Kind(Target::Number),
-            PrimitiveType::Boolean => Self::Kind(Target::Boolean),
-            PrimitiveType::Object => Self::Kind(Target::Object),
-            PrimitiveType::Any => Self::Any,
-            // `null`/`undefined`/`void` alone admit no bound value, and
-            // `unknown`/`never` cannot be narrowed into a target.
-            _ => Self::Unknown,
-        }
-    }
-
-    /// Maps a union to a contract, treating nullish alternatives as absence.
-    fn from_union(parts: &[TypeText]) -> Self {
-        let mut alternatives = Vec::new();
-        for part in parts {
-            flatten_union(part, &mut alternatives);
-        }
-        let mut targets = Vec::new();
-        let mut strings: Vec<String> = Vec::new();
-        let mut numbers: Vec<String> = Vec::new();
-        for part in alternatives {
-            match part {
-                // Nullish alternatives only widen optionality; `never`
-                // contributes no value.
-                TypeText::Primitive(
-                    PrimitiveType::Null
-                    | PrimitiveType::Undefined
-                    | PrimitiveType::Void
-                    | PrimitiveType::Never,
-                ) => {}
-                TypeText::Primitive(PrimitiveType::String) => {
-                    push_target(&mut targets, Target::String);
-                }
-                TypeText::Primitive(PrimitiveType::Number) => {
-                    push_target(&mut targets, Target::Number);
-                }
-                TypeText::Primitive(PrimitiveType::Boolean) | TypeText::BooleanLiteral(_) => {
-                    push_target(&mut targets, Target::Boolean);
-                }
-                TypeText::Primitive(PrimitiveType::Any) => return Self::Any,
-                TypeText::StringLiteral(value) => push_unique(&mut strings, value),
-                TypeText::NumberLiteral(value) => push_unique(&mut numbers, value),
-                TypeText::Array(_) => push_target(&mut targets, Target::Array),
-                TypeText::Primitive(PrimitiveType::Object)
-                | TypeText::Record(_)
-                | TypeText::Object(_) => push_target(&mut targets, Target::Object),
-                // An empty nested union, an unsupported primitive or an
-                // unproven part cannot be narrowed into a contract.
-                TypeText::Primitive(_) | TypeText::Union(_) | TypeText::Unproven => {
-                    return Self::Unknown;
-                }
-            }
-        }
-        match targets.as_slice() {
-            // `string | 'a' | 'b'` still accepts the whole string domain.
-            [Target::String] if numbers.is_empty() => Self::Kind(Target::String),
-            [Target::Number] if strings.is_empty() => Self::Kind(Target::Number),
-            [target] if strings.is_empty() && numbers.is_empty() => Self::Kind(*target),
-            [] if !strings.is_empty() && numbers.is_empty() => Self::StringLiterals(strings),
-            [] if strings.is_empty() && !numbers.is_empty() => Self::NumberLiterals(numbers),
-            // Mixed primitive kinds or literals of several kinds cannot be
-            // expressed as one contract.
-            _ => Self::Unknown,
-        }
-    }
-
-    /// Judges one proven literal attribute value.
-    fn judge_literal(&self, value: LiteralValue<'_>) -> Verdict {
-        match self {
-            Self::Unknown => Verdict::Unknown,
-            Self::Any => Verdict::Accept,
-            Self::Kind(target) => {
-                let actual = match value {
-                    LiteralValue::String(_) => Actual::String,
-                    LiteralValue::Boolean => Actual::Boolean,
-                };
-                if target.accepts(actual) {
-                    Verdict::Accept
-                } else {
-                    Verdict::Reject
-                }
-            }
-            Self::StringLiterals(allowed) => match value {
-                LiteralValue::String(text) => {
-                    if allowed.iter().any(|allowed| allowed == text) {
-                        Verdict::Accept
-                    } else {
-                        Verdict::Reject
-                    }
-                }
-                LiteralValue::Boolean => Verdict::Reject,
-            },
-            // A WXML literal attribute is always a string, never a number.
-            Self::NumberLiterals(_) => Verdict::Reject,
-        }
-    }
-
-    /// Judges one classified constituent of a queried bound type.
-    fn judge(&self, part: Constituent<'_>) -> Verdict {
-        match self {
-            Self::Unknown => Verdict::Unknown,
-            Self::Any => Verdict::Accept,
-            Self::Kind(target) => {
-                let actual = part.actual();
-                if target.accepts(actual) {
-                    return Verdict::Accept;
-                }
-                // An object that is not textually an array may still be
-                // array-like. The pinned API has no `isArrayLikeType`, so an
-                // `Array` declaration cannot prove a rejection here.
-                if matches!(actual, Actual::Object) && *target == Target::Array {
-                    return Verdict::Unknown;
-                }
-                Verdict::Reject
-            }
-            Self::StringLiterals(allowed) => match part {
-                Constituent::String(Some(value)) => {
-                    if allowed.iter().any(|allowed| allowed == value) {
-                        Verdict::Accept
-                    } else {
-                        Verdict::Reject
-                    }
-                }
-                // A plain `string` may hold any value: unprovable, not clean.
-                Constituent::String(None) => Verdict::Unknown,
-                _ => Verdict::Reject,
-            },
-            Self::NumberLiterals(allowed) => match part {
-                Constituent::Number(Some(value)) => {
-                    if allowed.iter().any(|allowed| number_eq(allowed, value)) {
-                        Verdict::Accept
-                    } else {
-                        Verdict::Reject
-                    }
-                }
-                Constituent::Number(None) => Verdict::Unknown,
-                _ => Verdict::Reject,
-            },
-        }
-    }
-}
-
-/// One proven literal attribute value.
-#[derive(Clone, Copy, Debug)]
-enum LiteralValue<'a> {
-    /// A quoted attribute value, for example `type="primary"`.
-    String(&'a str),
-    /// A valueless attribute, for example `disabled`.
-    Boolean,
-}
-
-/// One classified constituent of a queried bound type.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Constituent<'a> {
-    /// A string value; the inner text is present for a literal type.
-    String(Option<&'a str>),
-    /// A number value; the inner text is present for a literal type.
-    Number(Option<&'a str>),
-    /// A boolean value.
-    Boolean,
-    /// An array value.
-    Array,
-    /// An object value.
-    Object,
-    /// `undefined`/`void`; allowed only when the declaration says so.
-    Undefined,
-    /// `null` is rendered as empty, like the script-derived path.
-    Null,
-    /// `never` is assignable to every declared target.
-    Never,
-    /// `any`, `unknown` or an unsupported shape.
-    Unknown,
-}
-
-impl Constituent<'_> {
-    /// Maps the constituent to the script path's coarse classification.
-    const fn actual(self) -> Actual {
-        match self {
-            Self::String(_) => Actual::String,
-            Self::Number(_) => Actual::Number,
-            Self::Boolean => Actual::Boolean,
-            Self::Array => Actual::Array,
-            Self::Object => Actual::Object,
-            Self::Undefined | Self::Null => Actual::Unset,
-            Self::Never => Actual::Never,
-            Self::Unknown => Actual::Unknown,
-        }
-    }
-}
-
-/// Compares one queried bound type with a declared contract.
-///
-/// `allows_undefined` is `true` for optional members and for types that already
-/// include `undefined`/`void`; every other `undefined` constituent is a proven
-/// mismatch.
-fn compare_contract(
-    contract: &PropertyContract,
-    allows_undefined: bool,
-    result: &TypeResult,
-) -> Verdict {
-    if matches!(contract, PropertyContract::Unknown) {
-        return Verdict::Unknown;
-    }
-    if matches!(contract, PropertyContract::Any) {
-        return Verdict::Accept;
-    }
-    let Some(parts) = constituents(result) else {
-        return Verdict::Unknown;
-    };
-    let mut unknown = false;
-    for part in parts {
-        match part {
-            Constituent::Never | Constituent::Null => {}
-            Constituent::Undefined if allows_undefined => {}
-            Constituent::Undefined => return Verdict::Reject,
-            Constituent::Unknown => unknown = true,
-            defined => match contract.judge(defined) {
-                Verdict::Accept => {}
-                Verdict::Reject => return Verdict::Reject,
-                Verdict::Unknown => unknown = true,
-            },
-        }
-    }
-    if unknown {
-        Verdict::Unknown
-    } else {
-        Verdict::Accept
-    }
-}
-
-/// Classifies every constituent of a queried bound type.
-///
-/// Returns `None` when the answer is not known, so the caller can report a
-/// coverage gap instead of a type.
-fn constituents(result: &TypeResult) -> Option<Vec<Constituent<'_>>> {
-    if result.quality != TypeQuality::Known {
-        return None;
-    }
-    let info = result.info.as_ref()?;
-    let parts = split_union(&info.text);
-    if parts.len() > 1 {
-        return Some(parts.iter().map(|part| constituent(part, 0)).collect());
-    }
-    Some(vec![constituent(info.text.trim(), info.flags)])
-}
-
-/// Classifies one type text with optional pinned-engine flags.
-fn constituent(text: &str, flags: u64) -> Constituent<'_> {
-    let text = text.trim();
-    if text.is_empty() {
-        return Constituent::Unknown;
-    }
-    match text {
-        "any" | "unknown" => return Constituent::Unknown,
-        "undefined" | "void" => return Constituent::Undefined,
-        "null" => return Constituent::Null,
-        "never" => return Constituent::Never,
-        "string" => return Constituent::String(None),
-        "number" => return Constituent::Number(None),
-        "boolean" => return Constituent::Boolean,
-        _ => {}
-    }
-    if flags & (type_flags::ANY | type_flags::UNKNOWN) != 0 {
-        return Constituent::Unknown;
-    }
-    if flags & type_flags::UNDEFINED != 0 {
-        return Constituent::Undefined;
-    }
-    if flags & type_flags::NULL != 0 {
-        return Constituent::Null;
-    }
-    if flags & type_flags::NEVER != 0 {
-        return Constituent::Never;
-    }
-    if is_quoted(text) {
-        return Constituent::String(string_literal(text));
-    }
-    if text == "true" || text == "false" {
-        return Constituent::Boolean;
-    }
-    if is_number_literal(text) {
-        return Constituent::Number(Some(text));
-    }
-    if is_array_text(text) {
-        return Constituent::Array;
-    }
-    if text.starts_with('{') || text.starts_with("Record<") {
-        return Constituent::Object;
-    }
-    if flags & type_flags::STRING_LITERAL != 0 {
-        return Constituent::String(string_literal(text));
-    }
-    if flags & type_flags::STRING != 0 {
-        return Constituent::String(None);
-    }
-    if flags & type_flags::NUMBER_LITERAL != 0 {
-        return Constituent::Number(Some(text));
-    }
-    if flags & type_flags::NUMBER != 0 {
-        return Constituent::Number(None);
-    }
-    if flags & (type_flags::BOOLEAN | type_flags::BOOLEAN_LITERAL) != 0 {
-        return Constituent::Boolean;
-    }
-    if flags & type_flags::OBJECT != 0 {
-        return Constituent::Object;
-    }
-    Constituent::Unknown
+    /// The property has a checkable literal contract.
+    Checkable(DeclaredBinding),
 }
 
 /// Returns one declared member, honouring the `WeChat` kebab/camel mapping.
@@ -1338,17 +633,6 @@ fn declared_typing_property<'a>(
     attribute: &str,
 ) -> Option<&'a TypingProperty> {
     typing.prop_named(attribute)
-}
-
-/// Returns whether a declared type already admits `undefined`.
-fn contains_undefined(ty: &TypeText) -> bool {
-    match ty {
-        TypeText::Primitive(primitive) => {
-            matches!(primitive, PrimitiveType::Undefined | PrimitiveType::Void)
-        }
-        TypeText::Union(parts) => parts.iter().any(contains_undefined),
-        _ => false,
-    }
 }
 
 /// Flattens a possibly nested union into its alternatives.
@@ -1363,10 +647,10 @@ fn flatten_union<'a>(ty: &'a TypeText, out: &mut Vec<&'a TypeText>) {
     }
 }
 
-/// Pushes a target once, preserving declaration order.
-fn push_target(targets: &mut Vec<Target>, target: Target) {
-    if !targets.contains(&target) {
-        targets.push(target);
+/// Pushes a shape once, preserving declaration order.
+fn push_shape(shapes: &mut Vec<LiteralKind>, shape: LiteralKind) {
+    if !shapes.contains(&shape) {
+        shapes.push(shape);
     }
 }
 
@@ -1375,22 +659,6 @@ fn push_unique(values: &mut Vec<String>, value: &str) {
     if !values.iter().any(|kept| kept == value) {
         values.push(value.to_owned());
     }
-}
-
-/// Compares two numeric literal spellings by value when both parse.
-fn number_eq(expected: &str, actual: &str) -> bool {
-    match (expected.trim().parse::<f64>(), actual.trim().parse::<f64>()) {
-        (Ok(expected), Ok(actual)) => expected == actual,
-        _ => expected.trim() == actual.trim(),
-    }
-}
-
-/// Returns the inner text of a quoted string literal type.
-fn string_literal(text: &str) -> Option<&str> {
-    if !is_quoted(text) {
-        return None;
-    }
-    text.get(1..text.len().checked_sub(1)?)
 }
 
 /// Returns the literal value of one `name="value"` attribute.
@@ -1432,123 +700,6 @@ fn is_reserved_attribute(name: &str) -> bool {
         || name.starts_with("wx:")
 }
 
-/// Classifies every constituent of a bound type.
-fn classify_type(result: &TypeResult) -> Vec<Actual> {
-    if result.quality != TypeQuality::Known {
-        return vec![Actual::Unknown];
-    }
-    let Some(info) = result.info.as_ref() else {
-        return vec![Actual::Unknown];
-    };
-    let parts = split_union(&info.text);
-    if parts.len() > 1 {
-        return parts.iter().map(|part| classify_part(part, 0)).collect();
-    }
-    vec![classify_part(info.text.trim(), info.flags)]
-}
-
-/// Classifies one type text with optional pinned-engine flags.
-fn classify_part(text: &str, flags: u64) -> Actual {
-    let text = text.trim();
-    if text.is_empty() {
-        return Actual::Unknown;
-    }
-    match text {
-        "any" | "unknown" => return Actual::Unknown,
-        "undefined" | "null" | "void" => return Actual::Unset,
-        "never" => return Actual::Never,
-        "string" => return Actual::String,
-        "number" => return Actual::Number,
-        "boolean" => return Actual::Boolean,
-        _ => {}
-    }
-    if flags & type_flags::ANY != 0 || flags & type_flags::UNKNOWN != 0 {
-        return Actual::Unknown;
-    }
-    if flags & (type_flags::UNDEFINED | type_flags::NULL) != 0 {
-        return Actual::Unset;
-    }
-    if flags & type_flags::NEVER != 0 {
-        return Actual::Never;
-    }
-    if is_quoted(text) {
-        return Actual::String;
-    }
-    if text == "true" || text == "false" {
-        return Actual::Boolean;
-    }
-    if is_number_literal(text) {
-        return Actual::Number;
-    }
-    if is_array_text(text) {
-        return Actual::Array;
-    }
-    if text.starts_with('{') || text.starts_with("Record<") {
-        return Actual::Object;
-    }
-    if flags & (type_flags::STRING | type_flags::STRING_LITERAL) != 0 {
-        return Actual::String;
-    }
-    if flags & (type_flags::NUMBER | type_flags::NUMBER_LITERAL) != 0 {
-        return Actual::Number;
-    }
-    if flags & (type_flags::BOOLEAN | type_flags::BOOLEAN_LITERAL) != 0 {
-        return Actual::Boolean;
-    }
-    if flags & type_flags::OBJECT != 0 {
-        return Actual::Object;
-    }
-    Actual::Unknown
-}
-
-/// Compares the defined constituents with the declared targets.
-fn compare(targets: &[Target], actual: &[Actual]) -> Verdict {
-    let mut unknown = false;
-    for part in actual {
-        match part {
-            Actual::Unset | Actual::Never => {}
-            Actual::Unknown => unknown = true,
-            _ => {
-                if targets.iter().any(|target| target.accepts(*part)) {
-                    continue;
-                }
-                // An object that is not textually an array may still be
-                // array-like. The pinned API has no `isArrayLikeType`, so an
-                // `Array` declaration cannot prove a rejection here.
-                if *part == Actual::Object && targets.contains(&Target::Array) {
-                    unknown = true;
-                    continue;
-                }
-                return Verdict::Reject;
-            }
-        }
-    }
-    if unknown {
-        Verdict::Unknown
-    } else {
-        Verdict::Accept
-    }
-}
-
-/// Returns the final identifier of a free-root chain.
-fn chain_target(expr: &Expr) -> Option<TextRange> {
-    match expr.kind() {
-        ExprKind::Identifier { name } => Some(*name),
-        ExprKind::Member {
-            object, property, ..
-        } => {
-            if !matches!(
-                object.kind(),
-                ExprKind::Identifier { .. } | ExprKind::Member { .. }
-            ) {
-                return None;
-            }
-            chain_target(property)
-        }
-        _ => None,
-    }
-}
-
 /// Splits a top-level union on `|`, respecting nesting and quoted strings.
 fn split_union(text: &str) -> Vec<&str> {
     let trimmed = text.trim();
@@ -1582,37 +733,6 @@ fn split_union(text: &str) -> Vec<&str> {
     parts
 }
 
-fn is_quoted(text: &str) -> bool {
-    let mut characters = text.chars();
-    let Some(first) = characters.next() else {
-        return false;
-    };
-    if !matches!(first, '"' | '\'' | '`') {
-        return false;
-    }
-    text.len() >= 2 && text.ends_with(first)
-}
-
-fn is_number_literal(text: &str) -> bool {
-    let mut digits = 0_usize;
-    let valid = text.chars().all(|character| {
-        if character.is_ascii_digit() {
-            digits += 1;
-            true
-        } else {
-            matches!(character, '.' | '-' | '+' | 'e' | 'E')
-        }
-    });
-    valid && digits > 0
-}
-
-fn is_array_text(text: &str) -> bool {
-    text.ends_with("[]")
-        || text.starts_with("Array<")
-        || text.starts_with("ReadonlyArray<")
-        || (text.starts_with('[') && text.ends_with(']'))
-}
-
 /// Truncates to a UTF-8-safe prefix of at most `limit` bytes.
 fn truncate(text: &str, limit: usize) -> &str {
     if text.len() <= limit {
@@ -1634,28 +754,20 @@ fn truncate(text: &str, limit: usize) -> &str {
     clippy::too_many_lines
 )]
 mod tests {
-    use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::sync::Arc;
 
-    use wxml_backend_tsrs::config::PinnedEngine;
-    use wxml_backend_tsrs::native::strings::position_to_offset;
-    use wxml_backend_tsrs::native::wire::RawType;
-    use wxml_backend_tsrs::shadow::mapping::{
-        MountRecord, ShadowMap, SourceRange as ShadowSourceRange,
-    };
-    use wxml_backend_tsrs::shadow::rewrite::{Assembled, MountedSegment};
+    use wxml_backend_tsrs::shadow::mapping::ShadowMap;
+    use wxml_backend_tsrs::shadow::rewrite::Assembled;
+    use wxml_project::ComponentTypingFacts;
     use wxml_project::ProjectPath;
     use wxml_types::{
-        Backend, CheckFragment, ComponentUsage, DiagnosticsRequest, FileId, ProjectId,
-        ProjectRevision, RequestContext, RootKind, SnapshotId, SourceRevision, SourceSnapshot,
+        ComponentUsage, FileId, ProjectId, RootKind, SnapshotId, SourceRevision, SourceSnapshot,
         ViewRevision,
     };
 
     use super::*;
-    use crate::backend_tsrs::TsrsBackendAdapter;
-    use crate::backend_tsrs::input::{ScriptViewError, ViewProvider};
-    use crate::project_host::{HostError, PreparedFile, ProjectHost, ProjectState, ViewTarget};
+    use crate::project_host::{PreparedFile, ProjectHost, ProjectState, ViewTarget};
 
     const SCRIPT_PATH: &str = "pages/index/index.ts";
     const CARD_PATH: &str = "components/card/card.ts";
@@ -1672,7 +784,6 @@ mod tests {
     const DECLARATION_PATH: &str = "components.d.ts";
     const PAGE_SCRIPT: &str =
         "Page({\n  data: { pageTitle: '首页', total: 3, user: { name: 'Ada' } },\n});\n";
-    const BEHAVIOR_PAGE_SCRIPT: &str = "Page({\n  data: { pageTitle: 'hello', total: 3, flag: true, list: [] as string[] },\n});\n";
     const BEHAVIOR_CARD_SCRIPT: &str = "Component({\n  behaviors: [Behavior({\n    properties: {\n      cardTitle: { type: String },\n      score: { type: String, optionalTypes: [Number], required: true, value: 1, observer() {} },\n      loose: { type: null },\n      items: { type: Array },\n      defaulted: { type: Number, value: \"not-a-number\" },\n    },\n  })],\n});\n";
     const CARD_SCRIPT: &str = "Component({\n  properties: {\n    title: { type: String },\n    count: { type: Number },\n  },\n});\n";
     const MATRIX_CARD_SCRIPT: &str = "Component({\n  properties: {\n    title: { type: String },\n    count: { type: Number },\n    active: { type: Boolean },\n    score: { type: String, optionalTypes: [Number] },\n    loose: { type: null },\n    items: { type: Array },\n    meta: { type: Object },\n    handler: { type: Function },\n  },\n});\n";
@@ -1681,8 +792,6 @@ mod tests {
     const ALIAS_CARD_SCRIPT: &str = "import platform from \"@/behaviors/platform\";\nComponent({\n  behaviors: [platform],\n  properties: {\n    title: { type: String },\n  },\n});\n";
     const ALIAS_BEHAVIOR_SCRIPT: &str =
         "export default Behavior({\n  properties: {\n    score: { type: Number },\n  },\n});\n";
-
-    type Answers = Vec<Option<(&'static str, u64)>>;
 
     fn source_range(start: usize, end: usize) -> SourceRange {
         SourceRange::from_bounds(
@@ -1722,13 +831,13 @@ mod tests {
     }
 
     /// Builds one proven declared property from its type text.
-    fn typing_property(name: &str, type_text: &str, optional: bool) -> TypingProperty {
+    fn typing_property(name: &str, type_text: &str) -> TypingProperty {
         let ty = TypeText::parse(type_text);
         TypingProperty {
             name: name.to_owned(),
             documentation: None,
             type_text: type_text.to_owned(),
-            optional,
+            optional: false,
             proven: ty.is_proven(),
             ty,
         }
@@ -1787,9 +896,6 @@ mod tests {
     }
 
     /// Attaches declaration facts parsed from one declaration text.
-    ///
-    /// Production fills `PreparedView::typing` from the project host; this
-    /// helper keeps the unit tests focused on the binding comparison.
     fn typing_facts(declaration: &str) -> Arc<ComponentTypingFacts> {
         let source = wxml_project::SourceFile {
             path: ProjectPath::new(DECLARATION_PATH).expect("declaration path"),
@@ -1835,34 +941,18 @@ mod tests {
     }
 
     fn mustache_attr(wxml: &str, name: &str, source: &str, expression: &str) -> ComponentAttribute {
-        mustache_attr_at(wxml, name, source, expression, 0).0
-    }
-
-    /// Builds one mustache attribute starting the search at `from` and returns
-    /// the exclusive end of the attribute text so repeated attributes can be
-    /// disambiguated.
-    fn mustache_attr_at(
-        wxml: &str,
-        name: &str,
-        source: &str,
-        expression: &str,
-        from: usize,
-    ) -> (ComponentAttribute, usize) {
-        let start = from + wxml[from..].find(source).expect("attribute text");
+        let start = wxml.find(source).expect("attribute text");
         let expression_start = start + source.find(expression).expect("expression text");
-        (
-            ComponentAttribute {
-                name: name.to_owned(),
-                value_kind: AttributeValueKind::Mustache,
-                expr_text: Some(expression.to_owned()),
-                expr_range: Some(source_range(
-                    expression_start,
-                    expression_start + expression.len(),
-                )),
-                attribute_range: source_range(start, start + source.len()),
-            },
-            start + source.len(),
-        )
+        ComponentAttribute {
+            name: name.to_owned(),
+            value_kind: AttributeValueKind::Mustache,
+            expr_text: Some(expression.to_owned()),
+            expr_range: Some(source_range(
+                expression_start,
+                expression_start + expression.len(),
+            )),
+            attribute_range: source_range(start, start + source.len()),
+        }
     }
 
     fn literal_attr(wxml: &str, name: &str, source: &str) -> ComponentAttribute {
@@ -1898,81 +988,24 @@ mod tests {
         }
     }
 
-    /// Builds a layout with one verbatim mount per expression range.
-    fn shadow(wxml: &str, expressions: &[SourceRange]) -> ShadowLayout {
-        const PREFIX: &str = "__wxml_root.";
-        let mut derived = String::from("let __wxml_root = {};\n");
-        let mut fragments = Vec::new();
-        for (index, range) in expressions.iter().enumerate() {
-            let text = wxml
-                .get(
-                    usize::try_from(range.start()).expect("start")
-                        ..usize::try_from(range.end()).expect("end"),
-                )
-                .expect("expression bytes");
-            let start = utf16_len(&derived);
-            let prefix = utf16_len(PREFIX);
-            let length = utf16_len(text);
-            let mount_text = format!("{PREFIX}{text}");
-            derived.push_str(&mount_text);
-            derived.push(';');
-            let mount = MountRecord {
-                mount_id: format!("fragment#{index}"),
-                fragment_id: format!("f{index}"),
-                insertion_id: "probe".to_owned(),
-                text: mount_text,
-                start_utf16: start,
-                target_start_utf16: start + prefix,
-                target_length_utf16: length,
-                segments: vec![MountedSegment {
-                    start_utf16: start + prefix,
-                    length_utf16: length,
-                    source: Some(ShadowSourceRange::new(range.start(), range.end())),
-                }],
-            };
-            fragments.push(crate::backend_tsrs::mapping::FragmentMap {
-                wxml_range: *range,
-                mount,
-            });
-        }
+    /// Builds the layout this pass reads: the original template and a shadow
+    /// without mounts, because no expression type is queried any more.
+    fn shadow(wxml: &str) -> ShadowLayout {
+        let derived = "let __wxml_root = {};\n";
         let assembled = Assembled {
-            text: derived.clone(),
+            text: derived.to_owned(),
             edits: Vec::new(),
         };
         ShadowLayout::new(
             wxml.to_owned(),
-            derived.clone(),
-            ShadowMap::new(&derived, &assembled),
-            fragments,
+            derived.to_owned(),
+            ShadowMap::new(derived, &assembled),
+            Vec::new(),
         )
     }
 
-    fn run(
-        layout: &ShadowLayout,
-        view: &PreparedView,
-        answers: Answers,
-    ) -> (ComponentBindingDiagnostics, Vec<(String, Utf16Position)>) {
-        let mut answers = VecDeque::from(answers);
-        let mut calls = Vec::new();
-        let result = diagnostics_with(layout, view, SCRIPT_PATH, |path, position| {
-            calls.push((path.to_owned(), position));
-            let answer = answers.pop_front().expect("unexpected type query");
-            match answer {
-                Some((text, flags)) => Ok(TypeQuery {
-                    info: Some(RawType {
-                        id: 1,
-                        flags,
-                        intrinsic_name: None,
-                    }),
-                    text: Some(text.to_owned()),
-                }),
-                None => Ok(TypeQuery {
-                    info: None,
-                    text: None,
-                }),
-            }
-        });
-        (result, calls)
+    fn run(layout: &ShadowLayout, view: &PreparedView) -> ComponentBindingDiagnostics {
+        diagnostics(layout, view)
     }
 
     fn page_and_card() -> Vec<PreparedFile> {
@@ -1993,12 +1026,10 @@ mod tests {
         );
     }
 
-    /// One attribute in the wave-6 `componentBindings.test.ts` matrix.
+    /// One attribute in the static-value matrix.
     #[derive(Clone, Copy)]
     enum MatrixValue {
         Mustache(&'static str),
-        /// A mustache whose recorded range is deliberately not mounted.
-        UnmountedMustache(&'static str, usize, usize),
         Literal(&'static str),
         Boolean,
         Mixed(&'static str),
@@ -2019,34 +1050,14 @@ mod tests {
     struct MatrixFixture {
         wxml: String,
         usages: Vec<ComponentUsage>,
-        ranges: Vec<SourceRange>,
     }
 
     fn matrix_attribute(name: &'static str, value: MatrixValue) -> MatrixAttribute {
         MatrixAttribute { name, value }
     }
 
-    /// Builds the same usage set as the TS per-tag component-binding case.
-    ///
-    /// The WXML text is generated together with the byte ranges so every
-    /// `ComponentAttribute` is a real slice of the template, exactly as the
-    /// template analyzer would publish it.
-    fn matrix_fixture() -> MatrixFixture {
-        matrix_fixture_from(matrix_specs())
-    }
-
     fn matrix_specs() -> Vec<MatrixUsage> {
         vec![
-            MatrixUsage {
-                tag: "valid",
-                component: Some(CARD_PATH),
-                attributes: vec![
-                    matrix_attribute("title", MatrixValue::Mustache("pageTitle")),
-                    matrix_attribute("count", MatrixValue::Mustache("total")),
-                    matrix_attribute("active", MatrixValue::Mustache("flag")),
-                    matrix_attribute("score", MatrixValue::Mustache("pageTitle")),
-                ],
-            },
             MatrixUsage {
                 tag: "valid-literal",
                 component: Some(CARD_PATH),
@@ -2056,16 +1067,6 @@ mod tests {
                 tag: "valid-boolean",
                 component: Some(CARD_PATH),
                 attributes: vec![matrix_attribute("active", MatrixValue::Boolean)],
-            },
-            MatrixUsage {
-                tag: "bad-mustache",
-                component: Some(CARD_PATH),
-                attributes: vec![matrix_attribute("title", MatrixValue::Mustache("total"))],
-            },
-            MatrixUsage {
-                tag: "bad-union",
-                component: Some(CARD_PATH),
-                attributes: vec![matrix_attribute("score", MatrixValue::Mustache("flag"))],
             },
             MatrixUsage {
                 tag: "bad-literal",
@@ -2078,49 +1079,43 @@ mod tests {
                 attributes: vec![matrix_attribute("count", MatrixValue::Boolean)],
             },
             MatrixUsage {
-                tag: "any-prop",
+                tag: "array-prop",
                 component: Some(CARD_PATH),
-                attributes: vec![matrix_attribute("loose", MatrixValue::Mustache("total"))],
+                attributes: vec![matrix_attribute("items", MatrixValue::Literal("x"))],
             },
             MatrixUsage {
-                tag: "function-prop",
+                tag: "object-prop",
                 component: Some(CARD_PATH),
-                attributes: vec![matrix_attribute(
-                    "handler",
-                    MatrixValue::Mustache("pageTitle"),
-                )],
+                attributes: vec![matrix_attribute("meta", MatrixValue::Literal("x"))],
             },
             MatrixUsage {
-                tag: "array-ok",
+                tag: "union-literal-ok",
                 component: Some(CARD_PATH),
-                attributes: vec![matrix_attribute("items", MatrixValue::Mustache("list"))],
+                attributes: vec![matrix_attribute("score", MatrixValue::Literal("7"))],
             },
             MatrixUsage {
-                tag: "array-bad",
+                tag: "union-boolean-bad",
                 component: Some(CARD_PATH),
-                attributes: vec![matrix_attribute(
-                    "items",
-                    MatrixValue::Mustache("pageTitle"),
-                )],
-            },
-            MatrixUsage {
-                tag: "object-ok",
-                component: Some(CARD_PATH),
-                attributes: vec![matrix_attribute("meta", MatrixValue::Mustache("meta"))],
-            },
-            MatrixUsage {
-                tag: "object-bad",
-                component: Some(CARD_PATH),
-                attributes: vec![matrix_attribute("meta", MatrixValue::Mustache("total"))],
+                attributes: vec![matrix_attribute("score", MatrixValue::Boolean)],
             },
             MatrixUsage {
                 tag: "undeclared",
                 component: Some(CARD_PATH),
                 attributes: vec![
-                    matrix_attribute("title", MatrixValue::Mustache("pageTitle")),
+                    matrix_attribute("title", MatrixValue::Literal("hello")),
                     matrix_attribute("class", MatrixValue::Literal("x")),
-                    matrix_attribute("unknown", MatrixValue::Mustache("total")),
+                    matrix_attribute("unknown", MatrixValue::Literal("x")),
                 ],
+            },
+            MatrixUsage {
+                tag: "any-prop",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute("loose", MatrixValue::Literal("x"))],
+            },
+            MatrixUsage {
+                tag: "function-prop",
+                component: Some(CARD_PATH),
+                attributes: vec![matrix_attribute("handler", MatrixValue::Literal("x"))],
             },
             MatrixUsage {
                 tag: "mixed",
@@ -2130,59 +1125,47 @@ mod tests {
                     MatrixValue::Mixed("Hi {{ total }}"),
                 )],
             },
+            // A pure mustache is the engine probe's job: this pass stays silent.
             MatrixUsage {
-                tag: "missing-component",
-                component: Some("missing.ts"),
+                tag: "mustache",
+                component: Some(CARD_PATH),
                 attributes: vec![matrix_attribute(
                     "title",
                     MatrixValue::Mustache("pageTitle"),
                 )],
+            },
+            MatrixUsage {
+                tag: "missing-component",
+                component: Some("missing.ts"),
+                attributes: vec![matrix_attribute("title", MatrixValue::Literal("hello"))],
             },
             MatrixUsage {
                 tag: "no-properties",
                 component: Some(PLAIN_PATH),
-                attributes: vec![matrix_attribute(
-                    "title",
-                    MatrixValue::Mustache("pageTitle"),
-                )],
+                attributes: vec![matrix_attribute("title", MatrixValue::Literal("hello"))],
             },
             MatrixUsage {
                 tag: "incomplete-properties",
                 component: Some(SPREAD_PATH),
-                attributes: vec![matrix_attribute(
-                    "title",
-                    MatrixValue::Mustache("pageTitle"),
-                )],
+                attributes: vec![matrix_attribute("title", MatrixValue::Literal("hello"))],
             },
             MatrixUsage {
                 tag: "no-file-id",
                 component: None,
-                attributes: vec![matrix_attribute(
-                    "title",
-                    MatrixValue::Mustache("pageTitle"),
-                )],
-            },
-            MatrixUsage {
-                tag: "no-match",
-                component: Some(CARD_PATH),
-                attributes: vec![matrix_attribute(
-                    "title",
-                    MatrixValue::UnmountedMustache("total", 9999, 10_005),
-                )],
+                attributes: vec![matrix_attribute("title", MatrixValue::Literal("hello"))],
             },
         ]
     }
 
-    /// Builds the WXML text, real byte ranges and usages for a spec set.
+    /// Builds the WXML text and usages for a spec set.
     ///
     /// The WXML text is generated together with the byte ranges so every
     /// `ComponentAttribute` is a real slice of the template, exactly as the
     /// template analyzer would publish it.
-    fn matrix_fixture_from(specs: Vec<MatrixUsage>) -> MatrixFixture {
+    fn matrix_fixture() -> MatrixFixture {
         let mut wxml = String::from("<view>");
         let mut usages = Vec::new();
-        let mut ranges = Vec::new();
-        for spec in specs {
+        for spec in matrix_specs() {
             wxml.push('<');
             wxml.push_str(spec.tag);
             let mut attributes = Vec::new();
@@ -2198,21 +1181,10 @@ mod tests {
                         let end = wxml.len();
                         wxml.push_str(" }}\"");
                         let range = source_range(start, end);
-                        ranges.push(range);
                         (
                             AttributeValueKind::Mustache,
                             Some(expr.to_owned()),
                             Some(range),
-                        )
-                    }
-                    MatrixValue::UnmountedMustache(expr, start, end) => {
-                        wxml.push_str("=\"{{ ");
-                        wxml.push_str(expr);
-                        wxml.push_str(" }}\"");
-                        (
-                            AttributeValueKind::Mustache,
-                            Some(expr.to_owned()),
-                            Some(source_range(start, end)),
                         )
                     }
                     MatrixValue::Literal(value) => {
@@ -2241,64 +1213,7 @@ mod tests {
             usages.push(usage(spec.tag, spec.component, attributes));
         }
         wxml.push_str("</view>");
-        MatrixFixture {
-            wxml,
-            usages,
-            ranges,
-        }
-    }
-
-    /// Builds the `TS-COMPONENT-0292` usage set from the Node oracle.
-    ///
-    /// The component declares its properties inside an inline `Behavior`, so
-    /// the pass can only see them through the behavior overlay.
-    fn behavior_binding_specs() -> Vec<MatrixUsage> {
-        vec![
-            MatrixUsage {
-                tag: "behavior-ok",
-                component: Some(BEHAVIOR_CARD_PATH),
-                attributes: vec![
-                    matrix_attribute("card-title", MatrixValue::Mustache("pageTitle")),
-                    matrix_attribute("score", MatrixValue::Mustache("total")),
-                    matrix_attribute("items", MatrixValue::Mustache("list")),
-                    matrix_attribute("defaulted", MatrixValue::Mustache("total")),
-                    // Undeclared: never a property and never queried.
-                    matrix_attribute("unknown", MatrixValue::Mustache("total")),
-                ],
-            },
-            MatrixUsage {
-                tag: "behavior-bad",
-                component: Some(BEHAVIOR_CARD_PATH),
-                attributes: vec![
-                    matrix_attribute("card-title", MatrixValue::Mustache("total")),
-                    matrix_attribute("score", MatrixValue::Mustache("flag")),
-                    // A string literal is accepted by `string | number`.
-                    matrix_attribute("score", MatrixValue::Literal("literal")),
-                    matrix_attribute("defaulted", MatrixValue::Literal("literal")),
-                ],
-            },
-            MatrixUsage {
-                tag: "behavior-loose",
-                component: Some(BEHAVIOR_CARD_PATH),
-                attributes: vec![matrix_attribute("loose", MatrixValue::Mustache("total"))],
-            },
-            MatrixUsage {
-                tag: "behavior-missing-required",
-                component: Some(BEHAVIOR_CARD_PATH),
-                attributes: Vec::new(),
-            },
-        ]
-    }
-
-    fn behavior_binding_fixture() -> MatrixFixture {
-        matrix_fixture_from(behavior_binding_specs())
-    }
-
-    fn behavior_binding_files() -> Vec<PreparedFile> {
-        vec![
-            prepared_file(SCRIPT_PATH, BEHAVIOR_PAGE_SCRIPT),
-            prepared_file(BEHAVIOR_CARD_PATH, BEHAVIOR_CARD_SCRIPT),
-        ]
+        MatrixFixture { wxml, usages }
     }
 
     fn matrix_files() -> Vec<PreparedFile> {
@@ -2310,57 +1225,27 @@ mod tests {
         ]
     }
 
-    fn matrix_answers() -> Answers {
-        vec![
-            Some(("string", 0)),
-            Some(("number", 0)),
-            Some(("boolean", 0)),
-            Some(("string", 0)),
-            Some(("number", 0)),
-            Some(("boolean", 0)),
-            Some(("string[]", 0)),
-            Some(("string", 0)),
-            Some(("{ a: string }", 0)),
-            Some(("number", 0)),
-            Some(("string", 0)),
-        ]
-    }
-
-    fn run_matrix(
-        fixture: &MatrixFixture,
-    ) -> (ComponentBindingDiagnostics, Vec<(String, Utf16Position)>) {
-        let layout = shadow(&fixture.wxml, &fixture.ranges);
+    fn run_matrix(fixture: &MatrixFixture) -> ComponentBindingDiagnostics {
+        let layout = shadow(&fixture.wxml);
         let view = build_view(matrix_files(), fixture.usages.clone());
-        run(&layout, &view, matrix_answers())
-    }
-
-    fn run_matrix_usage(
-        fixture: &MatrixFixture,
-        tag: &str,
-        answers: Answers,
-    ) -> (ComponentBindingDiagnostics, Vec<(String, Utf16Position)>) {
-        run_usage_with_files(fixture, matrix_files(), tag, answers)
+        run(&layout, &view)
     }
 
     /// Runs one usage of `fixture` against an explicit file set.
-    ///
-    /// Native has no per-tag response array, so each usage is pinned
-    /// separately, exactly like the `TS-COMPONENT-0147` precedent.
     fn run_usage_with_files(
         fixture: &MatrixFixture,
         files: Vec<PreparedFile>,
         tag: &str,
-        answers: Answers,
-    ) -> (ComponentBindingDiagnostics, Vec<(String, Utf16Position)>) {
+    ) -> ComponentBindingDiagnostics {
         let usage = fixture
             .usages
             .iter()
             .find(|usage| usage.tag == tag)
             .expect("matrix usage")
             .clone();
-        let layout = shadow(&fixture.wxml, &fixture.ranges);
+        let layout = shadow(&fixture.wxml);
         let view = build_view(files, vec![usage]);
-        run(&layout, &view, answers)
+        run(&layout, &view)
     }
 
     fn matrix_attribute_of<'a>(
@@ -2381,49 +1266,95 @@ mod tests {
             .expect("matrix attribute")
     }
 
+    /// One declared property value pair in the static matrix.
+    fn binding_error(result: &ComponentBindingDiagnostics, range: SourceRange) -> &Diagnostic {
+        result
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.range == range)
+            .unwrap_or_else(|| panic!("missing diagnostic at {range:?}: {:?}", result.diagnostics))
+    }
+
     #[test]
-    fn matching_root_binding_is_clean() {
-        let wxml = r#"<view><card title="{{ pageTitle }}" count="{{ total }}" /></view>"#;
-        let title = mustache_attr(wxml, "title", r#"title="{{ pageTitle }}""#, "pageTitle");
-        let count = mustache_attr(wxml, "count", r#"count="{{ total }}""#, "total");
-        let layout = shadow(
-            wxml,
-            &[
-                title.expr_range.expect("title expr"),
-                count.expr_range.expect("count expr"),
-            ],
+    fn literal_and_boolean_values_use_the_attribute_range() {
+        let wxml = r#"<view><card count="3" title disabled /></view>"#;
+        let count = literal_attr(wxml, "count", r#"count="3""#);
+        let title = boolean_attr(wxml, "title", "title");
+        let disabled = boolean_attr(wxml, "disabled", "disabled");
+        let layout = shadow(wxml);
+        let view = build_view(
+            page_and_card(),
+            vec![usage(
+                "card",
+                Some(CARD_PATH),
+                vec![count.clone(), title.clone(), disabled],
+            )],
         );
+        let result = run(&layout, &view);
+        assert_eq!(result.diagnostics.len(), 2, "{:?}", result.diagnostics);
+        let count_error = binding_error(&result, count.attribute_range);
+        assert_eq!(
+            count_error.message,
+            "component property \"count\" expects number, got string literal"
+        );
+        let title_error = binding_error(&result, title.attribute_range);
+        assert_eq!(
+            title_error.message,
+            "component property \"title\" expects string, got boolean literal"
+        );
+        assert!(result.status.is_none(), "{:?}", result.status);
+    }
+
+    #[test]
+    fn mustache_bindings_are_not_checked_by_this_pass() {
+        let wxml = r#"<view><card title="{{ total }}" count="{{ pageTitle }}" /></view>"#;
+        let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
+        let count = mustache_attr(wxml, "count", r#"count="{{ pageTitle }}""#, "pageTitle");
+        let layout = shadow(wxml);
         let view = build_view(
             page_and_card(),
             vec![usage("card", Some(CARD_PATH), vec![title, count])],
         );
-        let (result, calls) = run(
-            &layout,
-            &view,
-            vec![Some(("string", 0)), Some(("number", 0))],
+        let result = run(&layout, &view);
+        assert!(
+            result.diagnostics.is_empty(),
+            "a mustache mismatch belongs to the engine contract probe: {:?}",
+            result.diagnostics
         );
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert!(result.status.is_none(), "{:?}", result.status);
-        assert_eq!(calls.len(), 2);
-        assert!(calls.iter().all(|(path, _)| path == SCRIPT_PATH));
+        assert!(
+            result.status.is_none(),
+            "nothing was skipped, so the status must stay clean: {:?}",
+            result.status
+        );
     }
 
-    /// 别名导入的 behavior 需经 tsconfig `paths` 解析后才贡献属性。
-    ///
-    /// 未挂 resolver 时 behavior 解析失败、整个组件被 skip；这里断言 behavior
-    /// 声明与自身声明都参与校验，且没有 Partial。
     #[test]
-    fn aliased_behavior_properties_are_checked() {
-        let wxml = r#"<view><alias-card title="{{ total }}" score="{{ pageTitle }}" /></view>"#;
+    fn mustache_on_an_unproven_script_property_stays_a_coverage_gap() {
+        // `loose` is script `any`, which this pass cannot represent. The value
+        // itself is delegated to the probe, but the fact gap is still a
+        // coverage reason instead of a clean result.
+        let wxml = r#"<view><card loose="{{ total }}" /></view>"#;
+        let loose = mustache_attr(wxml, "loose", r#"loose="{{ total }}""#, "total");
+        let layout = shadow(wxml);
+        let files = vec![
+            prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+            prepared_file(CARD_PATH, MATRIX_CARD_SCRIPT),
+        ];
+        let view = build_view(files, vec![usage("card", Some(CARD_PATH), vec![loose])]);
+        let result = run(&layout, &view);
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        let CapabilityStatus::Partial { reason } = result.status.as_ref().expect("partial") else {
+            panic!("expected Partial, got {:?}", result.status);
+        };
+        assert_eq!(reason, &format!("{SKIPPED_PREFIX} (card.loose)"));
+    }
+
+    #[test]
+    fn aliased_behavior_facts_keep_literals_checkable() {
+        let wxml = r#"<view><alias-card title="{{ total }}" score="7" /></view>"#;
         let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
-        let score = mustache_attr(wxml, "score", r#"score="{{ pageTitle }}""#, "pageTitle");
-        let layout = shadow(
-            wxml,
-            &[
-                title.expr_range.expect("title expr"),
-                score.expr_range.expect("score expr"),
-            ],
-        );
+        let score = literal_attr(wxml, "score", r#"score="7""#);
+        let layout = shadow(wxml);
         let mut view = build_view(
             vec![
                 prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
@@ -2433,53 +1364,30 @@ mod tests {
             vec![usage(
                 "alias-card",
                 Some(ALIAS_CARD_PATH),
-                vec![title.clone(), score.clone()],
+                vec![title, score.clone()],
             )],
         );
         view.compiler_options = alias_options();
-        let (result, calls) = run(
-            &layout,
-            &view,
-            vec![Some(("number", 0)), Some(("string", 0))],
-        );
-        assert_eq!(calls.len(), 2, "{calls:?}");
+        let result = run(&layout, &view);
+        // A clean status proves the aliased behavior resolved completely: an
+        // unreadable behavior would add the behavior `Partial` reason.
         assert!(result.status.is_none(), "{:?}", result.status);
-        let actual = result
-            .diagnostics
-            .iter()
-            .map(|diagnostic| {
-                assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
-                (diagnostic.range, diagnostic.message.as_str())
-            })
-            .collect::<Vec<_>>();
+        let diagnostic = binding_error(&result, score.attribute_range);
+        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
         assert_eq!(
-            actual,
-            vec![
-                (
-                    title.expr_range.expect("title expr"),
-                    "component property \"title\" expects string, got number (bound expression \"total\")",
-                ),
-                (
-                    score.expr_range.expect("score expr"),
-                    "component property \"score\" expects number, got string (bound expression \"pageTitle\")",
-                ),
-            ]
+            diagnostic.message,
+            "component property \"score\" expects number, got string literal"
         );
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
     }
 
     /// 别名目标缺失时回退到组件自身声明，未声明属性不得报错。
     #[test]
     fn unresolved_aliased_behavior_falls_back_to_own_properties() {
-        let wxml = r#"<view><alias-card title="{{ total }}" score="{{ pageTitle }}" /></view>"#;
+        let wxml = r#"<view><alias-card title="{{ total }}" score="7" /></view>"#;
         let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
-        let score = mustache_attr(wxml, "score", r#"score="{{ pageTitle }}""#, "pageTitle");
-        let layout = shadow(
-            wxml,
-            &[
-                title.expr_range.expect("title expr"),
-                score.expr_range.expect("score expr"),
-            ],
-        );
+        let score = literal_attr(wxml, "score", r#"score="7""#);
+        let layout = shadow(wxml);
         let mut view = build_view(
             vec![
                 prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
@@ -2488,19 +1396,13 @@ mod tests {
             vec![usage(
                 "alias-card",
                 Some(ALIAS_CARD_PATH),
-                vec![title.clone(), score],
+                vec![title, score],
             )],
         );
         view.compiler_options = alias_options();
-        let (result, calls) = run(&layout, &view, vec![Some(("number", 0))]);
-        // 只有自身声明的 `title` 被查询；`score` 可能来自 behavior，直接忽略。
-        assert_eq!(calls.len(), 1, "{calls:?}");
-        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
-        assert_eq!(result.diagnostics[0].range, title.expr_range.expect("expr"));
-        assert_eq!(
-            result.diagnostics[0].message,
-            "component property \"title\" expects string, got number (bound expression \"total\")"
-        );
+        let result = run(&layout, &view);
+        // `score` may come from the unreadable behavior, so it is ignored.
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         let CapabilityStatus::Partial { reason } = result.status.as_ref().expect("partial") else {
             panic!("expected Partial, got {:?}", result.status);
         };
@@ -2516,139 +1418,24 @@ mod tests {
     fn paths_options_without_behaviors_stay_complete() {
         let wxml = r#"<view><card title="{{ total }}" /></view>"#;
         let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
-        let layout = shadow(wxml, &[title.expr_range.expect("expr")]);
+        let layout = shadow(wxml);
         let mut view = build_view(
             page_and_card(),
-            vec![usage("card", Some(CARD_PATH), vec![title.clone()])],
+            vec![usage("card", Some(CARD_PATH), vec![title])],
         );
         view.compiler_options = alias_options();
-        let (result, calls) = run(&layout, &view, vec![Some(("number", 0))]);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
-        assert_eq!(result.diagnostics[0].range, title.expr_range.expect("expr"));
-        assert!(
-            result.diagnostics[0].message.contains("expects string"),
-            "{}",
-            result.diagnostics[0].message
-        );
+        let result = run(&layout, &view);
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(result.status.is_none(), "{:?}", result.status);
     }
 
     #[test]
-    fn mismatched_root_binding_is_an_error_at_the_expression() {
-        let wxml = r#"<view><card title="{{ total }}" /></view>"#;
-        let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
-        let layout = shadow(wxml, &[title.expr_range.expect("expr")]);
-        let view = build_view(
-            page_and_card(),
-            vec![usage("card", Some(CARD_PATH), vec![title.clone()])],
-        );
-        let (result, _) = run(&layout, &view, vec![Some(("number", 0))]);
-        assert!(result.status.is_none(), "{:?}", result.status);
-        assert_eq!(result.diagnostics.len(), 1);
-        let diagnostic = &result.diagnostics[0];
-        assert_eq!(diagnostic.range, title.expr_range.expect("expr"));
-        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
-        assert!(diagnostic.message.contains("component property \"title\""));
-        assert!(diagnostic.message.contains("expects string"));
-        assert!(diagnostic.message.contains("got number"));
-        assert!(diagnostic.message.contains("bound expression \"total\""));
-    }
-
-    #[test]
-    fn declared_union_accepts_each_member() {
-        let script = "Component({\n  properties: {\n    title: { type: String, optionalTypes: [Number] },\n  },\n});\n";
-        let wxml = r#"<view><card title="{{ total }}" /></view>"#;
-        let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
-        let layout = shadow(wxml, &[title.expr_range.expect("expr")]);
-        let files = vec![
-            prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
-            prepared_file(CARD_PATH, script),
-        ];
-        for (actual, clean) in [("string", true), ("number", true), ("boolean", false)] {
-            let view = build_view(
-                files.clone(),
-                vec![usage("card", Some(CARD_PATH), vec![title.clone()])],
-            );
-            let (result, _) = run(&layout, &view, vec![Some((actual, 0))]);
-            if clean {
-                assert!(
-                    result.diagnostics.is_empty(),
-                    "{actual}: {:?}",
-                    result.diagnostics
-                );
-            } else {
-                assert_eq!(result.diagnostics.len(), 1, "{actual}");
-                assert!(
-                    result.diagnostics[0]
-                        .message
-                        .contains("expects string | number"),
-                    "{}",
-                    result.diagnostics[0].message
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn literal_and_boolean_checks_use_the_attribute_range() {
-        let wxml = r#"<view><card count="3" title disabled /></view>"#;
-        let count = literal_attr(wxml, "count", r#"count="3""#);
-        let title = boolean_attr(wxml, "title", "title");
-        let disabled = boolean_attr(wxml, "disabled", "disabled");
-        let layout = shadow(wxml, &[]);
-        let view = build_view(
-            page_and_card(),
-            vec![usage(
-                "card",
-                Some(CARD_PATH),
-                vec![count.clone(), title.clone(), disabled],
-            )],
-        );
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(calls.is_empty());
-        assert_eq!(result.diagnostics.len(), 2);
-        let count_error = result
-            .diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.range == count.attribute_range)
-            .expect("literal diagnostic");
-        assert!(
-            count_error.message.contains("got string literal"),
-            "{}",
-            count_error.message
-        );
-        let title_error = result
-            .diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.range == title.attribute_range)
-            .expect("boolean diagnostic");
-        assert!(
-            title_error.message.contains("got boolean literal"),
-            "{}",
-            title_error.message
-        );
-        assert!(result.status.is_none(), "{:?}", result.status);
-    }
-
-    #[test]
-    fn component_binding_matrix_matches_the_typescript_oracle() {
+    fn static_value_matrix_covers_literals_undeclared_and_degradation() {
         let fixture = matrix_fixture();
-        let (result, calls) = run_matrix(&fixture);
-        assert_eq!(calls.len(), 11, "{calls:?}");
-        assert_eq!(result.diagnostics.len(), 6, "{:?}", result.diagnostics);
+        let result = run_matrix(&fixture);
+        assert!(result.diagnostics.len() == 5, "{:?}", result.diagnostics);
 
         let expected = [
-            (
-                "bad-mustache",
-                "title",
-                "component property \"title\" expects string, got number (bound expression \"total\")",
-            ),
-            (
-                "bad-union",
-                "score",
-                "component property \"score\" expects string | number, got boolean (bound expression \"flag\")",
-            ),
             (
                 "bad-literal",
                 "count",
@@ -2660,24 +1447,24 @@ mod tests {
                 "component property \"count\" expects number, got boolean literal",
             ),
             (
-                "array-bad",
+                "array-prop",
                 "items",
-                "component property \"items\" expects any[], got string (bound expression \"pageTitle\")",
+                "component property \"items\" expects any[], got string literal",
             ),
             (
-                "object-bad",
+                "object-prop",
                 "meta",
-                "component property \"meta\" expects Record<string, any>, got number (bound expression \"total\")",
+                "component property \"meta\" expects Record<string, any>, got string literal",
+            ),
+            (
+                "union-boolean-bad",
+                "score",
+                "component property \"score\" expects string | number, got boolean literal",
             ),
         ];
         for (tag, name, message) in expected {
             let attribute = matrix_attribute_of(&fixture, tag, name);
-            let range = attribute.expr_range.unwrap_or(attribute.attribute_range);
-            let diagnostic = result
-                .diagnostics
-                .iter()
-                .find(|diagnostic| diagnostic.range == range)
-                .unwrap_or_else(|| panic!("{tag}.{name}: {:?}", result.diagnostics));
+            let diagnostic = binding_error(&result, attribute.attribute_range);
             assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
             assert_eq!(diagnostic.message, message, "{tag}.{name}");
         }
@@ -2690,45 +1477,25 @@ mod tests {
             "some component bindings could not be resolved and were not checked (any-prop.loose, function-prop.handler, mixed.title)"
         );
 
-        // Every tag that TS reports with an empty diagnostic list is checked
-        // and clean; a native skip would turn the status Partial, so a None
-        // status proves the usage was not silently dropped.
-        let clean: Vec<(&str, Answers, usize)> = vec![
-            (
-                "valid",
-                vec![
-                    Some(("string", 0)),
-                    Some(("number", 0)),
-                    Some(("boolean", 0)),
-                    Some(("string", 0)),
-                ],
-                4,
-            ),
-            ("valid-literal", Vec::new(), 0),
-            ("valid-boolean", Vec::new(), 0),
-            ("undeclared", vec![Some(("string", 0))], 1),
-            ("array-ok", vec![Some(("string[]", 0))], 1),
-            ("object-ok", vec![Some(("{ a: string }", 0))], 1),
-        ];
-        for (tag, answers, queries) in clean {
-            let (clean_result, clean_calls) = run_matrix_usage(&fixture, tag, answers);
+        // Tags whose static values match are checked and clean.
+        for tag in [
+            "valid-literal",
+            "valid-boolean",
+            "union-literal-ok",
+            "undeclared",
+            "mustache",
+        ] {
+            let clean = run_usage_with_files(&fixture, matrix_files(), tag);
             assert!(
-                clean_result.diagnostics.is_empty(),
+                clean.diagnostics.is_empty(),
                 "{tag}: {:?}",
-                clean_result.diagnostics
+                clean.diagnostics
             );
-            assert!(
-                clean_result.status.is_none(),
-                "{tag}: {:?}",
-                clean_result.status
-            );
-            assert_eq!(clean_calls.len(), queries, "{tag}");
+            assert!(clean.status.is_none(), "{tag}: {:?}", clean.status);
         }
 
-        // The eight skipped usages must not become clean results. Native has
-        // no per-tag response array, so the exact coverage gap is pinned for
-        // each usage separately.
-        let skipped = vec![
+        // The degraded usages must not become clean results.
+        let skipped = [
             ("any-prop", "any-prop.loose"),
             ("function-prop", "function-prop.handler"),
             ("mixed", "mixed.title"),
@@ -2736,11 +1503,9 @@ mod tests {
             ("no-properties", "no-properties"),
             ("incomplete-properties", "incomplete-properties"),
             ("no-file-id", "no-file-id"),
-            ("no-match", "no-match.title"),
         ];
         for (tag, detail) in skipped {
-            let (skipped_result, skipped_calls) = run_matrix_usage(&fixture, tag, Vec::new());
-            assert!(skipped_calls.is_empty(), "{tag}");
+            let skipped_result = run_usage_with_files(&fixture, matrix_files(), tag);
             assert!(
                 skipped_result.diagnostics.is_empty(),
                 "{tag}: {:?}",
@@ -2756,164 +1521,20 @@ mod tests {
     }
 
     #[test]
-    fn fully_checkable_component_request_stays_supported() {
-        // Oracle: TS-COMPONENT-0193. The adapter overall status and the Node
-        // `probeProblems` array have no native counterpart; this pins the
-        // binding pass: Supported (status None), zero diagnostics, three real
-        // queries at the three mounted expression ranges, no skipped check.
-        let wxml = r#"<view><valid title="{{ pageTitle }}" count="{{ total }}" items="{{ list }}" /></view>"#;
-        let title = mustache_attr(wxml, "title", r#"title="{{ pageTitle }}""#, "pageTitle");
-        let count = mustache_attr(wxml, "count", r#"count="{{ total }}""#, "total");
-        let items = mustache_attr(wxml, "items", r#"items="{{ list }}""#, "list");
-        let ranges = [
-            title.expr_range.expect("title"),
-            count.expr_range.expect("count"),
-            items.expr_range.expect("items"),
-        ];
-        let layout = shadow(wxml, &ranges);
-        assert_eq!(layout.fragment_count(), 3);
-        let files = vec![
-            prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
-            prepared_file(CARD_PATH, MATRIX_CARD_SCRIPT),
-        ];
-        let view = build_view(
-            files,
-            vec![usage("valid", Some(CARD_PATH), vec![title, count, items])],
-        );
-        let (result, calls) = run(
-            &layout,
-            &view,
-            vec![
-                Some(("string", 0)),
-                Some(("number", 0)),
-                Some(("string[]", 0)),
-            ],
-        );
-        assert_eq!(calls.len(), 3);
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert!(result.status.is_none(), "{:?}", result.status);
-
-        // Every query goes to the owning script at the exact mount target, in
-        // template order: the clean result is not a skipped usage.
-        let expected = ranges
-            .iter()
-            .map(|range| {
-                let mount = layout.mount_for_range(*range).expect("mount");
-                offset_to_position(layout.derived(), Utf16Offset::new(mount.target_start_utf16))
-                    .expect("position")
-            })
-            .collect::<Vec<_>>();
-        let positions = calls
-            .iter()
-            .map(|(path, position)| {
-                assert_eq!(path, SCRIPT_PATH);
-                *position
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(positions, expected);
-    }
-
-    /// Oracle: TS-COMPONENT-0292.
-    ///
-    /// The component declares its properties inside an inline `Behavior`.
-    /// Production merges them into the property overlay, and this pins every
-    /// TS assertion per usage: the clean usage, the three exact mismatch
-    /// messages at the expression/attribute ranges, the single
-    /// `behavior-loose.loose` skip and the zero-attribute usage. Native has no
-    /// per-tag response array, so the per-usage form follows the exact
-    /// `TS-COMPONENT-0147` precedent.
-    #[test]
-    fn case_component_0292_behavior_properties_and_kebab_camel_bindings_are_checked() {
-        let fixture = behavior_binding_fixture();
-        let files = behavior_binding_files();
-
-        let (ok, ok_calls) = run_usage_with_files(
-            &fixture,
-            files.clone(),
-            "behavior-ok",
-            vec![
-                Some(("string", 0)),
-                Some(("number", 0)),
-                Some(("string[]", 0)),
-                Some(("number", 0)),
-            ],
-        );
-        assert!(ok.diagnostics.is_empty(), "{:?}", ok.diagnostics);
-        assert!(ok.status.is_none(), "{:?}", ok.status);
-        assert_eq!(ok_calls.len(), 4, "{ok_calls:?}");
-        assert!(ok_calls.iter().all(|(path, _)| path == SCRIPT_PATH));
-        // The undeclared `unknown` attribute is not a property and is never
-        // queried; the four declared attributes are checked.
-        assert_eq!(
-            fixture
-                .usages
-                .iter()
-                .find(|usage| usage.tag == "behavior-ok")
-                .expect("usage")
-                .attributes
-                .len(),
-            5
-        );
-
-        let (bad, bad_calls) = run_usage_with_files(
-            &fixture,
-            files.clone(),
-            "behavior-bad",
-            vec![Some(("number", 0)), Some(("boolean", 0))],
-        );
-        assert!(bad.status.is_none(), "{:?}", bad.status);
-        assert_eq!(bad_calls.len(), 2, "{bad_calls:?}");
-        let card_title = matrix_attribute_of(&fixture, "behavior-bad", "card-title");
-        let score = matrix_attribute_of(&fixture, "behavior-bad", "score");
-        let defaulted = matrix_attribute_of(&fixture, "behavior-bad", "defaulted");
-        let mut expected = vec![
-            (
-                card_title.expr_range.expect("card-title expression"),
-                "component property \"card-title\" expects string, got number (bound expression \"total\")",
-            ),
-            (
-                score.expr_range.expect("score expression"),
-                "component property \"score\" expects string | number, got boolean (bound expression \"flag\")",
-            ),
-            (
-                defaulted.attribute_range,
-                "component property \"defaulted\" expects number, got string literal",
-            ),
-        ];
-        expected.sort_by_key(|(range, _)| range.start());
-        let actual = bad
-            .diagnostics
-            .iter()
-            .map(|diagnostic| {
-                assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
-                (diagnostic.range, diagnostic.message.as_str())
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(actual, expected);
-
-        let (loose, loose_calls) =
-            run_usage_with_files(&fixture, files.clone(), "behavior-loose", Vec::new());
-        assert!(loose_calls.is_empty(), "{loose_calls:?}");
-        assert!(loose.diagnostics.is_empty(), "{:?}", loose.diagnostics);
-        let CapabilityStatus::Partial { reason } = loose
-            .status
-            .as_ref()
-            .expect("behavior-loose must be Partial")
-        else {
-            panic!("expected Partial");
-        };
-        // `skipped == 1` and `skippedDetails == ["behavior-loose.loose"]`.
-        assert_eq!(reason, &format!("{SKIPPED_PREFIX} (behavior-loose.loose)"));
-
-        let (missing, missing_calls) =
-            run_usage_with_files(&fixture, files, "behavior-missing-required", Vec::new());
-        assert!(missing_calls.is_empty(), "{missing_calls:?}");
-        assert!(missing.diagnostics.is_empty(), "{:?}", missing.diagnostics);
-        assert!(
-            missing.status.is_none(),
-            "a zero-attribute usage is checked and clean: {:?}",
-            missing.status
-        );
+    fn component_diagnostics_never_leak_a_path() {
+        let fixture = matrix_fixture();
+        let result = run_matrix(&fixture);
+        assert!(!result.diagnostics.is_empty());
+        for diagnostic in &result.diagnostics {
+            assert!(
+                !diagnostic.message.contains('/'),
+                "path-free message: {}",
+                diagnostic.message
+            );
+        }
+        if let Some(CapabilityStatus::Partial { reason }) = &result.status {
+            assert!(!reason.contains('/'), "{reason}");
+        }
     }
 
     #[test]
@@ -2928,8 +1549,7 @@ mod tests {
             Some(r#"count="oops""#),
             "the diagnostic range must be the attribute slice"
         );
-        let layout = shadow(wxml, &[]);
-        assert_eq!(layout.fragment_count(), 0);
+        let layout = shadow(wxml);
         let view = build_view(
             vec![
                 prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
@@ -2940,8 +1560,7 @@ mod tests {
             ],
             vec![usage("badge", Some(BADGE_PATH), vec![count.clone()])],
         );
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(calls.is_empty());
+        let result = run(&layout, &view);
         assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
         let diagnostic = &result.diagnostics[0];
         assert_eq!(diagnostic.range, count.attribute_range);
@@ -2954,86 +1573,10 @@ mod tests {
     }
 
     #[test]
-    fn optional_named_union_members_remain_partial_not_guessed() {
-        let wxml = r#"<view><card meta="{{ maybeUser }}" /><card items="{{ maybeList }}" /><card count="{{ nothing }}" /><card title="{{ maybeUser }}" /></view>"#;
-        let (object, next) = mustache_attr_at(
-            wxml,
-            "meta",
-            r#"<card meta="{{ maybeUser }}" />"#,
-            "maybeUser",
-            0,
-        );
-        let (array, next) = mustache_attr_at(
-            wxml,
-            "items",
-            r#"<card items="{{ maybeList }}" />"#,
-            "maybeList",
-            next,
-        );
-        let (absent, next) = mustache_attr_at(
-            wxml,
-            "count",
-            r#"<card count="{{ nothing }}" />"#,
-            "nothing",
-            next,
-        );
-        let (mismatch, _) = mustache_attr_at(
-            wxml,
-            "title",
-            r#"<card title="{{ maybeUser }}" />"#,
-            "maybeUser",
-            next,
-        );
-        let ranges = [
-            object.expr_range.expect("object"),
-            array.expr_range.expect("array"),
-            absent.expr_range.expect("absent"),
-            mismatch.expr_range.expect("mismatch"),
-        ];
-        let layout = shadow(wxml, &ranges);
-        let files = vec![
-            prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
-            prepared_file(CARD_PATH, MATRIX_CARD_SCRIPT),
-        ];
-        let view = build_view(
-            files,
-            vec![
-                usage("optional-object", Some(CARD_PATH), vec![object]),
-                usage("optional-array", Some(CARD_PATH), vec![array]),
-                usage("absent", Some(CARD_PATH), vec![absent]),
-                usage("optional-mismatch", Some(CARD_PATH), vec![mismatch]),
-            ],
-        );
-        let (result, calls) = run(
-            &layout,
-            &view,
-            vec![
-                Some(("User | undefined", 0)),
-                Some(("Item[] | undefined", 0)),
-                Some(("undefined", 0)),
-                Some(("User | undefined", 0)),
-            ],
-        );
-        assert_eq!(calls.len(), 4);
-        // `Item[] | undefined` and pure `undefined` are proven clean, but a
-        // named `User` constituent carries no structural flag on the pinned
-        // wire. TS expects it to satisfy Object and to reject String; native
-        // must stay Partial instead of guessing.
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        let CapabilityStatus::Partial { reason } = result.status.as_ref().expect("partial") else {
-            panic!("expected Partial");
-        };
-        assert_eq!(
-            reason,
-            "some component bindings could not be resolved and were not checked (optional-object.meta, optional-mismatch.title)"
-        );
-    }
-
-    #[test]
     fn component_without_properties_member_is_skipped_not_guessed() {
-        let wxml = r#"<view><bare title="{{ pageTitle }}" /></view>"#;
-        let title = mustache_attr(wxml, "title", r#"title="{{ pageTitle }}""#, "pageTitle");
-        let layout = shadow(wxml, &[title.expr_range.expect("expr")]);
+        let wxml = r#"<view><bare title="hello" /></view>"#;
+        let title = literal_attr(wxml, "title", r#"title="hello""#);
+        let layout = shadow(wxml);
         let view = build_view(
             vec![
                 prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
@@ -3041,31 +1584,13 @@ mod tests {
             ],
             vec![usage("bare", Some(BARE_PATH), vec![title])],
         );
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(calls.is_empty());
+        let result = run(&layout, &view);
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         let CapabilityStatus::Partial { reason } = result.status.as_ref().expect("partial") else {
             panic!("expected Partial");
         };
         assert_eq!(reason, &format!("{SKIPPED_PREFIX} (bare)"));
         assert!(!reason.contains('/'), "{reason}");
-    }
-
-    #[test]
-    fn component_diagnostics_never_leak_a_path() {
-        let fixture = matrix_fixture();
-        let (result, _) = run_matrix(&fixture);
-        assert_eq!(result.diagnostics.len(), 6, "{:?}", result.diagnostics);
-        for diagnostic in &result.diagnostics {
-            assert!(
-                !diagnostic.message.contains('/'),
-                "path-free message: {}",
-                diagnostic.message
-            );
-        }
-        if let Some(CapabilityStatus::Partial { reason }) = &result.status {
-            assert!(!reason.contains('/'), "{reason}");
-        }
     }
 
     #[test]
@@ -3077,13 +1602,12 @@ mod tests {
             literal_attr(wxml, "bind:tap", r#"bind:tap="onTap""#),
             literal_attr(wxml, "bindtap", r#"bindtap="onTap""#),
         ];
-        let layout = shadow(wxml, &[]);
+        let layout = shadow(wxml);
         let view = build_view(
             page_and_card(),
             vec![usage("card", Some(CARD_PATH), attributes)],
         );
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(calls.is_empty());
+        let result = run(&layout, &view);
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(result.status.is_none(), "{:?}", result.status);
     }
@@ -3092,30 +1616,27 @@ mod tests {
     fn mixed_binding_is_partial_not_an_error() {
         let wxml = r#"<view><card title="Hi {{ total }}" /></view>"#;
         let title = mixed_attr(wxml, "title", r#"title="Hi {{ total }}""#);
-        let layout = shadow(wxml, &[]);
+        let layout = shadow(wxml);
         let view = build_view(
             page_and_card(),
             vec![usage("card", Some(CARD_PATH), vec![title])],
         );
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(calls.is_empty());
+        let result = run(&layout, &view);
         assert!(result.diagnostics.is_empty());
         assert_partial(&result);
     }
 
     #[test]
     fn missing_component_or_incomplete_properties_is_partial() {
-        let wxml = r#"<view><card title="{{ total }}" /></view>"#;
-        let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
-        let layout = shadow(wxml, &[title.expr_range.expect("expr")]);
+        let wxml = r#"<view><card title="hello" /></view>"#;
+        let title = literal_attr(wxml, "title", r#"title="hello""#);
+        let layout = shadow(wxml);
 
-        let mut missing = build_view(
+        let missing = build_view(
             page_and_card(),
             vec![usage("card", None, vec![title.clone()])],
         );
-        missing.components = Arc::from(vec![usage("card", None, vec![title.clone()])]);
-        let (result, calls) = run(&layout, &missing, Vec::new());
-        assert!(calls.is_empty());
+        let result = run(&layout, &missing);
         assert!(result.diagnostics.is_empty());
         assert_partial(&result);
 
@@ -3128,8 +1649,7 @@ mod tests {
             files,
             vec![usage("card", Some(CARD_PATH), vec![title.clone()])],
         );
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(calls.is_empty());
+        let result = run(&layout, &view);
         assert!(result.diagnostics.is_empty());
         assert_partial(&result);
 
@@ -3140,42 +1660,18 @@ mod tests {
             prepared_file(CARD_PATH, nonliteral),
         ];
         let view = build_view(files, vec![usage("card", Some(CARD_PATH), vec![title])]);
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(calls.is_empty());
+        let result = run(&layout, &view);
         assert!(result.diagnostics.is_empty());
         assert_partial(&result);
     }
 
     #[test]
-    fn any_unknown_and_missing_types_are_partial() {
-        let wxml = r#"<view><card title="{{ total }}" /></view>"#;
-        let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
-        let layout = shadow(wxml, &[title.expr_range.expect("expr")]);
-        for answer in [Some(("any", 0)), Some(("unknown", 0)), None] {
-            let view = build_view(
-                page_and_card(),
-                vec![usage("card", Some(CARD_PATH), vec![title.clone()])],
-            );
-            let (result, calls) = run(&layout, &view, vec![answer]);
-            assert_eq!(calls.len(), 1);
-            assert!(result.diagnostics.is_empty());
-            assert_partial(&result);
-        }
-    }
-
-    #[test]
     fn two_components_with_the_same_property_keep_their_own_types() {
         let badge_script = "Component({ properties: { title: { type: Number } } });\n";
-        let wxml = r#"<view><card title="{{ total }}" /><badge title="{{ total }}" /></view>"#;
-        let card = mustache_attr(wxml, "title", r#"<card title="{{ total }}" />"#, "total");
-        let badge = mustache_attr(wxml, "title", r#"<badge title="{{ total }}" />"#, "total");
-        let layout = shadow(
-            wxml,
-            &[
-                card.expr_range.expect("card expr"),
-                badge.expr_range.expect("badge expr"),
-            ],
-        );
+        let wxml = r#"<view><card title="x" /><badge title="x" /></view>"#;
+        let card = literal_attr(wxml, "title", r#"<card title="x" />"#);
+        let badge = literal_attr(wxml, "title", r#"<badge title="x" />"#);
+        let layout = shadow(wxml);
         let files = vec![
             prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
             prepared_file(CARD_PATH, CARD_SCRIPT),
@@ -3184,103 +1680,70 @@ mod tests {
         let view = build_view(
             files,
             vec![
-                usage("card", Some(CARD_PATH), vec![card.clone()]),
-                usage("badge", Some(BADGE_PATH), vec![badge]),
+                usage("card", Some(CARD_PATH), vec![card]),
+                usage("badge", Some(BADGE_PATH), vec![badge.clone()]),
             ],
         );
-        let (result, calls) = run(
-            &layout,
-            &view,
-            vec![Some(("number", 0)), Some(("number", 0))],
-        );
-        assert_eq!(calls.len(), 2);
-        assert_eq!(result.diagnostics.len(), 1);
+        let result = run(&layout, &view);
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        assert_eq!(result.diagnostics[0].range, badge.attribute_range);
         assert_eq!(
-            result.diagnostics[0].range,
-            card.expr_range.expect("card expr")
+            result.diagnostics[0].message,
+            "component property \"title\" expects number, got string literal"
         );
-        assert!(result.diagnostics[0].message.contains("expects string"));
     }
 
     #[test]
-    fn cjk_crlf_expression_range_is_exact() {
-        let wxml = "<view>标题😀\r\n<card title=\"{{ total }}\" /></view>";
-        let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
-        let range = title.expr_range.expect("expr");
+    fn cjk_crlf_attribute_range_is_exact() {
+        let wxml = "<view>标题😀\r\n<card count=\"3\" /></view>";
+        let count = literal_attr(wxml, "count", r#"count="3""#);
+        let range = count.attribute_range;
         assert_eq!(
             wxml.get(range.start() as usize..range.end() as usize),
-            Some("total")
+            Some(r#"count="3""#)
         );
-        let layout = shadow(wxml, &[range]);
+        let layout = shadow(wxml);
         let view = build_view(
             page_and_card(),
-            vec![usage("card", Some(CARD_PATH), vec![title])],
+            vec![usage("card", Some(CARD_PATH), vec![count])],
         );
-        let (result, _) = run(&layout, &view, vec![Some(("number", 0))]);
-        assert_eq!(result.diagnostics.len(), 1);
+        let result = run(&layout, &view);
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
         assert_eq!(result.diagnostics[0].range, range);
     }
 
     #[test]
-    fn duplicate_expression_uses_the_exact_expression_range() {
-        let wxml = r#"<view><card title="{{ total }}" /><card title="{{ total }}" /></view>"#;
-        let source = r#"<card title="{{ total }}" />"#;
-        let (first, next) = mustache_attr_at(wxml, "title", source, "total", 0);
-        let (second, _) = mustache_attr_at(wxml, "title", source, "total", next);
-        assert_ne!(first.expr_range, second.expr_range);
-        let layout = shadow(
-            wxml,
-            &[
-                first.expr_range.expect("first expr"),
-                second.expr_range.expect("second expr"),
-            ],
-        );
-        let view = build_view(
-            page_and_card(),
-            vec![
-                usage("card", Some(CARD_PATH), vec![first]),
-                usage("card", Some(CARD_PATH), vec![second.clone()]),
-            ],
-        );
-        let (result, calls) = run(
-            &layout,
-            &view,
-            vec![Some(("string", 0)), Some(("boolean", 0))],
-        );
-        assert_eq!(calls.len(), 2);
-        assert_ne!(calls[0].1, calls[1].1);
-        assert_eq!(result.diagnostics.len(), 1);
-        assert_eq!(
-            result.diagnostics[0].range,
-            second.expr_range.expect("second expr")
-        );
-        assert!(result.diagnostics[0].message.contains("got boolean"));
-    }
-
-    #[test]
     fn caps_and_dedup() {
-        let wxml = r#"<view><card title="{{ total }}" /><card title="{{ total }}" /><card title="{{ total }}" /><card title="{{ total }}" /><card title="{{ total }}" /><card title="{{ total }}" /><card title="{{ total }}" /><card title="{{ total }}" /><card title="{{ total }}" /><card title="{{ total }}" /></view>"#;
+        let mut wxml = String::from("<view>");
         let mut usages = Vec::new();
-        let mut ranges = Vec::new();
-        let source = r#"<card title="{{ total }}" />"#;
-        let mut search_from = 0;
         for _ in 0..10 {
-            let (attribute, next) = mustache_attr_at(wxml, "title", source, "total", search_from);
-            ranges.push(attribute.expr_range.expect("expr"));
-            usages.push(usage("card", Some(CARD_PATH), vec![attribute]));
-            search_from = next;
+            let attribute_start = wxml.len() + "<card ".len();
+            wxml.push_str(r#"<card count="3" />"#);
+            usages.push(usage(
+                "card",
+                Some(CARD_PATH),
+                vec![ComponentAttribute {
+                    name: "count".to_owned(),
+                    value_kind: AttributeValueKind::Literal,
+                    expr_text: None,
+                    expr_range: None,
+                    attribute_range: source_range(
+                        attribute_start,
+                        attribute_start + r#"count="3""#.len(),
+                    ),
+                }],
+            ));
         }
-        let layout = shadow(wxml, &ranges);
+        wxml.push_str("</view>");
+        let layout = shadow(&wxml);
         let view = build_view(page_and_card(), usages);
-        let answers = (0..10).map(|_| Some(("number", 0))).collect();
-        let (result, calls) = run(&layout, &view, answers);
-        assert_eq!(calls.len(), 10);
+        let result = run(&layout, &view);
         assert_eq!(result.diagnostics.len(), MAX_DIAGNOSTICS_PER_TAG);
         assert_partial(&result);
 
-        let wxml = r#"<view><card title="{{ total }}" /></view>"#;
-        let attribute = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
-        let layout = shadow(wxml, &[attribute.expr_range.expect("expr")]);
+        let wxml = r#"<view><card count="3" /></view>"#;
+        let attribute = literal_attr(wxml, "count", r#"count="3""#);
+        let layout = shadow(wxml);
         let view = build_view(
             page_and_card(),
             vec![usage(
@@ -3289,120 +1752,16 @@ mod tests {
                 vec![attribute.clone(), attribute],
             )],
         );
-        let (result, _) = run(
-            &layout,
-            &view,
-            vec![Some(("number", 0)), Some(("number", 0))],
-        );
+        let result = run(&layout, &view);
         assert_eq!(result.diagnostics.len(), 1);
         assert!(result.status.is_none(), "{:?}", result.status);
-    }
-
-    #[test]
-    fn complex_expressions_degrade_to_partial() {
-        for (wxml, source, expression) in [
-            (
-                r#"<view><card title="{{ total + 1 }}" /></view>"#,
-                r#"title="{{ total + 1 }}""#,
-                "total + 1",
-            ),
-            (
-                r#"<view><card title="{{ format(total) }}" /></view>"#,
-                r#"title="{{ format(total) }}""#,
-                "format(total)",
-            ),
-        ] {
-            let attribute = mustache_attr(wxml, "title", source, expression);
-            let layout = shadow(wxml, &[attribute.expr_range.expect("expr")]);
-            let view = build_view(
-                page_and_card(),
-                vec![usage("card", Some(CARD_PATH), vec![attribute])],
-            );
-            let (result, calls) = run(&layout, &view, Vec::new());
-            assert!(calls.is_empty(), "{expression}");
-            assert!(result.diagnostics.is_empty(), "{expression}");
-            assert_partial(&result);
-        }
-    }
-
-    #[test]
-    fn a_member_chain_queries_the_final_identifier() {
-        let wxml = r#"<view><card title="{{ user.name }}" /></view>"#;
-        let title = mustache_attr(wxml, "title", r#"title="{{ user.name }}""#, "user.name");
-        let range = title.expr_range.expect("expr");
-        let layout = shadow(wxml, &[range]);
-        let expected = layout
-            .derived_offset(
-                range.start() + u32::try_from("user.".len()).expect("offset"),
-                false,
-            )
-            .expect("final identifier");
-        let expected =
-            offset_to_position(layout.derived(), Utf16Offset::new(expected)).expect("position");
-        let view = build_view(
-            page_and_card(),
-            vec![usage("card", Some(CARD_PATH), vec![title])],
-        );
-        let (result, calls) = run(&layout, &view, vec![Some(("string", 0))]);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].1, expected);
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert!(result.status.is_none(), "{:?}", result.status);
-    }
-
-    #[test]
-    fn array_and_object_targets_are_conservative() {
-        let script =
-            "Component({ properties: { items: { type: Array }, options: { type: Object } } });\n";
-        let wxml = r#"<view><card items="{{ state }}" /></view>"#;
-        let items = mustache_attr(wxml, "items", r#"items="{{ state }}""#, "state");
-        let layout = shadow(wxml, &[items.expr_range.expect("expr")]);
-        let files = vec![
-            prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
-            prepared_file(CARD_PATH, script),
-        ];
-        // An object is not provably non-array: Partial, not an error.
-        let view = build_view(
-            files.clone(),
-            vec![usage("card", Some(CARD_PATH), vec![items.clone()])],
-        );
-        let (result, _) = run(&layout, &view, vec![Some(("{ a: 1 }", 0))]);
-        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert_partial(&result);
-        // A textual array is provable.
-        let view = build_view(
-            files.clone(),
-            vec![usage("card", Some(CARD_PATH), vec![items])],
-        );
-        let (result, _) = run(&layout, &view, vec![Some(("number[]", 0))]);
-        assert!(result.diagnostics.is_empty());
-        assert!(result.status.is_none(), "{:?}", result.status);
-
-        let wxml = r#"<view><card options="{{ total }}" /></view>"#;
-        let options = mustache_attr(wxml, "options", r#"options="{{ total }}""#, "total");
-        let layout = shadow(wxml, &[options.expr_range.expect("expr")]);
-        let view = build_view(
-            files,
-            vec![usage("card", Some(CARD_PATH), vec![options.clone()])],
-        );
-        let (result, _) = run(&layout, &view, vec![Some(("number", 0))]);
-        assert_eq!(result.diagnostics.len(), 1);
-        assert_eq!(
-            result.diagnostics[0].range,
-            options.expr_range.expect("expr")
-        );
-        assert!(
-            result.diagnostics[0]
-                .message
-                .contains("expects Record<string, any>")
-        );
     }
 
     /// End-to-end pass over the real `component-bindings` fixture: the real
-    /// host prepares `ComponentUsage`/fragments, and the pass publishes exactly
-    /// the second card's `title="{{ total }}"` error.
+    /// host prepares `ComponentUsage`/fragments, and every binding is a pure
+    /// mustache, so this pass publishes nothing and leaves it to the probe.
     #[test]
-    fn fixture_component_usages_publish_one_property_error() {
+    fn fixture_component_usages_publish_no_property_error() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join("tests/fixtures/component-bindings")
@@ -3441,62 +1800,14 @@ mod tests {
                 .all(|usage| usage.component_file.is_some())
         );
 
-        let ranges: Vec<SourceRange> = view.fragments.iter().map(|item| item.wxml_range).collect();
-        let layout = shadow(&text, &ranges);
-        let mut calls = 0_usize;
-        let result = diagnostics_with(&layout, &view, SCRIPT_PATH, |path, position| {
-            assert_eq!(path, SCRIPT_PATH);
-            calls += 1;
-            let offset = position_to_offset(layout.derived(), position).expect("derived offset");
-            let range = match layout
-                .map_native_range(offset.get(), offset.get() + 1)
-                .expect("identifier range")
-            {
-                crate::backend_tsrs::mapping::NativeRange::Template { range, .. } => range,
-                crate::backend_tsrs::mapping::NativeRange::Script { .. } => {
-                    panic!("component query position is not in a mount")
-                }
-            };
-            let name_start = usize::try_from(range.start()).expect("name start");
-            let mut name_end = name_start;
-            while let Some(character) = text[name_end..].chars().next() {
-                if character.is_alphanumeric() || matches!(character, '_' | '$') {
-                    name_end += character.len_utf8();
-                } else {
-                    break;
-                }
-            }
-            let name = text.get(name_start..name_end).expect("identifier bytes");
-            let answer = match name {
-                "pageTitle" => "string",
-                "total" => "number",
-                other => panic!("unexpected component query for {other}"),
-            };
-            Ok(TypeQuery {
-                info: Some(RawType {
-                    id: 1,
-                    flags: 0,
-                    intrinsic_name: None,
-                }),
-                text: Some(answer.to_owned()),
-            })
-        });
-        assert_eq!(
-            calls, 3,
-            "two first-card attributes and the mismatched title"
+        let layout = shadow(&text);
+        let result = run(&layout, &view);
+        assert!(
+            result.diagnostics.is_empty(),
+            "pure mustache bindings are engine probe work: {:?}",
+            result.diagnostics
         );
         assert!(result.status.is_none(), "{:?}", result.status);
-        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
-        let diagnostic = &result.diagnostics[0];
-        let second_total = text.rfind(r#"title="{{ total }}""#).expect("second title");
-        let expr_start = second_total + r#"title="{{ "#.len();
-        assert_eq!(
-            diagnostic.range,
-            source_range(expr_start, expr_start + "total".len())
-        );
-        assert!(diagnostic.message.contains("component property \"title\""));
-        assert!(diagnostic.message.contains("expects string, got number"));
-        assert!(diagnostic.message.contains("bound expression \"total\""));
     }
 
     // -----------------------------------------------------------------------
@@ -3603,10 +1914,8 @@ mod tests {
             "the nested declaration must not add members"
         );
 
-        let ranges: Vec<SourceRange> = view.fragments.iter().map(|item| item.wxml_range).collect();
-        let layout = shadow(&text, &ranges);
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(calls.is_empty());
+        let layout = shadow(&text);
+        let result = run(&layout, &view);
         assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
         let size_start = text.find(r#"size="small""#).expect("size attribute");
         assert_eq!(
@@ -3631,10 +1940,8 @@ mod tests {
             "only the tsconfig-sibling file may supply facts"
         );
 
-        let ranges: Vec<SourceRange> = view.fragments.iter().map(|item| item.wxml_range).collect();
-        let layout = shadow(&text, &ranges);
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(calls.is_empty());
+        let layout = shadow(&text);
+        let result = run(&layout, &view);
         // Script fallback: `type` matches `String` and an undeclared `size` is
         // ignored exactly as before declarations existed.
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
@@ -3642,41 +1949,50 @@ mod tests {
     }
 
     #[test]
-    fn declared_property_contract_maps_each_type_expression() {
+    fn declared_literal_contract_maps_each_type_expression() {
         let cases = [
-            ("string", PropertyContract::Kind(Target::String)),
-            ("number", PropertyContract::Kind(Target::Number)),
-            ("boolean", PropertyContract::Kind(Target::Boolean)),
-            ("string[]", PropertyContract::Kind(Target::Array)),
+            ("string", LiteralContract::Shapes(vec![LiteralKind::String])),
+            ("number", LiteralContract::Shapes(vec![LiteralKind::Number])),
+            (
+                "boolean",
+                LiteralContract::Shapes(vec![LiteralKind::Boolean]),
+            ),
+            (
+                "string[]",
+                LiteralContract::Shapes(vec![LiteralKind::Array]),
+            ),
             (
                 "Record<string, string>",
-                PropertyContract::Kind(Target::Object),
+                LiteralContract::Shapes(vec![LiteralKind::Object]),
             ),
-            ("{ a: string }", PropertyContract::Kind(Target::Object)),
-            ("any", PropertyContract::Any),
-            ("unknown", PropertyContract::Unknown),
+            (
+                "{ a: string }",
+                LiteralContract::Shapes(vec![LiteralKind::Object]),
+            ),
+            ("any", LiteralContract::Any),
+            ("unknown", LiteralContract::Unknown),
             (
                 "'primary' | 'default'",
-                PropertyContract::StringLiterals(vec!["primary".to_owned(), "default".to_owned()]),
+                LiteralContract::StringLiterals(vec!["primary".to_owned(), "default".to_owned()]),
             ),
-            (
-                "1 | 2",
-                PropertyContract::NumberLiterals(vec!["1".to_owned(), "2".to_owned()]),
-            ),
+            ("1 | 2", LiteralContract::NumberLiterals),
             // Nullish alternatives only widen optionality.
             (
                 "boolean | undefined",
-                PropertyContract::Kind(Target::Boolean),
+                LiteralContract::Shapes(vec![LiteralKind::Boolean]),
             ),
-            ("string | 'a'", PropertyContract::Kind(Target::String)),
-            // Mixed primitive kinds have no single contract.
-            ("string | number", PropertyContract::Unknown),
-            ("'a' | 1", PropertyContract::Unknown),
+            (
+                "string | 'a'",
+                LiteralContract::Shapes(vec![LiteralKind::String]),
+            ),
+            // Mixed primitive kinds have no single literal contract.
+            ("string | number", LiteralContract::Unknown),
+            ("'a' | 1", LiteralContract::Unknown),
         ];
         for (text, expected) in cases {
-            let property = typing_property("value", text, false);
+            let property = typing_property("value", text);
             assert_eq!(
-                PropertyContract::from_property(&property),
+                LiteralContract::from_property(&property),
                 expected,
                 "type = {text:?}"
             );
@@ -3685,13 +2001,42 @@ mod tests {
         // An unproven member is always `Unknown`, even when the text parses.
         let unproven = unproven_property("value", "'a'");
         assert_eq!(
-            PropertyContract::from_property(&unproven),
-            PropertyContract::Unknown
+            LiteralContract::from_property(&unproven),
+            LiteralContract::Unknown
         );
 
-        assert!(contains_undefined(&TypeText::parse("string | undefined")));
-        assert!(contains_undefined(&TypeText::parse("void")));
-        assert!(!contains_undefined(&TypeText::parse("string")));
+        // The script text whitelist treats `any`/`Function` as unrepresented.
+        assert_eq!(
+            LiteralContract::from_script_text("number"),
+            Some(LiteralContract::Shapes(vec![LiteralKind::Number]))
+        );
+        assert_eq!(
+            LiteralContract::from_script_text("string | number"),
+            Some(LiteralContract::Shapes(vec![
+                LiteralKind::String,
+                LiteralKind::Number
+            ]))
+        );
+        assert_eq!(LiteralContract::from_script_text("any"), None);
+        assert_eq!(
+            LiteralContract::from_script_text("(...args: any[]) => any"),
+            None
+        );
+    }
+
+    #[test]
+    fn declared_literal_contract_judges_only_static_values() {
+        let string = LiteralContract::Shapes(vec![LiteralKind::String]);
+        assert_eq!(string.judge_literal(LiteralValue::String("x")), Some(true));
+        assert_eq!(string.judge_literal(LiteralValue::Boolean), Some(false));
+        assert_eq!(
+            LiteralContract::NumberLiterals.judge_literal(LiteralValue::String("1")),
+            Some(false)
+        );
+        assert_eq!(
+            LiteralContract::Unknown.judge_literal(LiteralValue::String("x")),
+            None
+        );
     }
 
     #[test]
@@ -3701,7 +2046,7 @@ mod tests {
         let class_attribute = literal_attr(wxml, "class", r#"class="x""#);
         let data_attribute = literal_attr(wxml, "data-id", r#"data-id="1""#);
         let aria_attribute = literal_attr(wxml, "aria-label", r#"aria-label="l""#);
-        let layout = shadow(wxml, &[]);
+        let layout = shadow(wxml);
         let view = declared_view(vec![usage(
             "card",
             Some(CARD_PATH),
@@ -3712,26 +2057,14 @@ mod tests {
                 aria_attribute,
             ],
         )]);
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(
-            calls.is_empty(),
-            "declarations must skip the script inference"
-        );
+        let result = run(&layout, &view);
         assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
         let diagnostic = &result.diagnostics[0];
         assert_eq!(diagnostic.range, type_attribute.attribute_range);
         assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
-        assert!(
-            diagnostic
-                .message
-                .contains("expects 'primary' | 'default' | 'warning'"),
-            "{}",
-            diagnostic.message
-        );
-        assert!(
-            diagnostic.message.contains("got string literal"),
-            "{}",
-            diagnostic.message
+        assert_eq!(
+            diagnostic.message,
+            "component property \"type\" expects 'primary' | 'default' | 'warning', got string literal"
         );
         assert!(result.status.is_none(), "{:?}", result.status);
     }
@@ -3740,162 +2073,63 @@ mod tests {
     fn declared_component_reports_undeclared_attributes_on_the_name() {
         let wxml = r#"<view><card round="{{ total }}" /></view>"#;
         let round = mustache_attr(wxml, "round", r#"round="{{ total }}""#, "total");
-        let layout = shadow(wxml, &[round.expr_range.expect("expr")]);
+        let layout = shadow(wxml);
         let view = declared_view(
             // The component script is absent on purpose: declarations alone are
-            // enough to check bindings.
+            // enough to check attribute names.
             vec![usage("card", None, vec![round.clone()])],
         );
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(calls.is_empty());
+        let result = run(&layout, &view);
         assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
         let diagnostic = &result.diagnostics[0];
         assert_eq!(diagnostic.range, name_range(&round));
         assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
-        assert!(
-            diagnostic.message.contains("component property \"round\""),
-            "{}",
-            diagnostic.message
-        );
-        assert!(
-            diagnostic.message.contains("not declared"),
-            "{}",
-            diagnostic.message
+        assert_eq!(
+            diagnostic.message,
+            "component property \"round\" is not declared by the component declaration"
         );
         assert!(result.status.is_none(), "{:?}", result.status);
     }
 
     #[test]
-    fn declared_mustache_mismatch_lands_on_the_bound_expression() {
-        let wxml = r#"<view><card text="{{ loading }}" /></view>"#;
-        let text = mustache_attr(wxml, "text", r#"text="{{ loading }}""#, "loading");
-        let layout = shadow(wxml, &[text.expr_range.expect("expr")]);
-        let view = declared_view(vec![usage("card", None, vec![text.clone()])]);
-        let (result, calls) = run(&layout, &view, vec![Some(("boolean", 0))]);
-        assert_eq!(calls.len(), 1);
+    fn declared_number_literals_reject_the_wxml_string_literal() {
+        // A WXML literal attribute is a string and cannot satisfy `1 | 2`.
+        let wxml = r#"<view><card size="1" /></view>"#;
+        let literal = literal_attr(wxml, "size", r#"size="1""#);
+        let layout = shadow(wxml);
+        let view = declared_view(vec![usage("card", None, vec![literal.clone()])]);
+        let result = run(&layout, &view);
         assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
         let diagnostic = &result.diagnostics[0];
-        assert_eq!(diagnostic.range, text.expr_range.expect("expr"));
-        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
-        assert!(diagnostic.message.contains("expects string"));
-        assert!(diagnostic.message.contains("got boolean"));
-        assert!(
-            diagnostic.message.contains("bound expression \"loading\""),
-            "{}",
-            diagnostic.message
-        );
-        assert!(result.status.is_none(), "{:?}", result.status);
-    }
-
-    #[test]
-    fn declared_number_literals_check_the_bound_literal_value() {
-        let wxml = r#"<view><card size="{{ total }}" /></view>"#;
-        let size = mustache_attr(wxml, "size", r#"size="{{ total }}""#, "total");
-        let layout = shadow(wxml, &[size.expr_range.expect("expr")]);
-        for (answer, clean) in [("3", false), ("2", true), ("1.0", true)] {
-            let view = declared_view(vec![usage("card", None, vec![size.clone()])]);
-            let (result, _) = run(
-                &layout,
-                &view,
-                vec![Some((answer, type_flags::NUMBER_LITERAL))],
-            );
-            if clean {
-                assert!(
-                    result.diagnostics.is_empty(),
-                    "{answer}: {:?}",
-                    result.diagnostics
-                );
-                assert!(result.status.is_none(), "{answer}: {:?}", result.status);
-            } else {
-                assert_eq!(result.diagnostics.len(), 1, "{answer}");
-                assert_eq!(
-                    result.diagnostics[0].range,
-                    size.expr_range.expect("expr"),
-                    "{answer}"
-                );
-                assert!(
-                    result.diagnostics[0].message.contains("expects 1 | 2"),
-                    "{}",
-                    result.diagnostics[0].message
-                );
-            }
-        }
-
-        // A WXML literal attribute is a string and cannot satisfy `1 | 2`.
-        let literal_wxml = r#"<view><card size="1" /></view>"#;
-        let literal = literal_attr(literal_wxml, "size", r#"size="1""#);
-        let layout = shadow(literal_wxml, &[]);
-        let view = declared_view(vec![usage("card", None, vec![literal.clone()])]);
-        let (result, _) = run(&layout, &view, Vec::new());
-        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
-        assert_eq!(result.diagnostics[0].range, literal.attribute_range);
-        assert!(
-            result.diagnostics[0].message.contains("got string literal"),
-            "{}",
-            result.diagnostics[0].message
+        assert_eq!(diagnostic.range, literal.attribute_range);
+        assert_eq!(
+            diagnostic.message,
+            "component property \"size\" expects 1 | 2, got string literal"
         );
     }
 
     #[test]
-    fn declared_optional_members_allow_absence() {
-        let wxml = r#"<view><card type="primary" /></view>"#;
+    fn declared_optional_members_accept_matching_literals() {
+        let wxml = r#"<view><card type="primary" loading /></view>"#;
         let type_attribute = literal_attr(wxml, "type", r#"type="primary""#);
-        let layout = shadow(wxml, &[]);
-        let view = declared_view(vec![usage("card", None, vec![type_attribute])]);
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(calls.is_empty());
+        let loading = boolean_attr(wxml, "loading", "loading");
+        let layout = shadow(wxml);
+        let view = declared_view(vec![usage("card", None, vec![type_attribute, loading])]);
+        let result = run(&layout, &view);
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert!(result.status.is_none(), "{:?}", result.status);
     }
 
     #[test]
-    fn declared_optional_and_undefined_members_accept_undefined() {
-        for (name, clean) in [("type", true), ("plain", true), ("text", false)] {
-            let wxml = format!(r#"<view><card {name}="{{{{ nothing }}}}" /></view>"#);
-            let attribute = mustache_attr(
-                &wxml,
-                name,
-                &format!(r#"{name}="{{{{ nothing }}}}""#),
-                "nothing",
-            );
-            let layout = shadow(&wxml, &[attribute.expr_range.expect("expr")]);
-            let view = declared_view(vec![usage("card", None, vec![attribute])]);
-            let (result, _) = run(&layout, &view, vec![Some(("undefined", 0))]);
-            if clean {
-                assert!(
-                    result.diagnostics.is_empty(),
-                    "{name}: {:?}",
-                    result.diagnostics
-                );
-            } else {
-                assert_eq!(result.diagnostics.len(), 1, "{name}");
-                assert!(
-                    result.diagnostics[0].message.contains("got undefined"),
-                    "{}",
-                    result.diagnostics[0].message
-                );
-            }
-        }
-    }
-
-    #[test]
     fn declared_unproven_member_is_skipped_while_others_are_checked() {
-        let wxml = r#"<view><card ref="{{ total }}" text="{{ loading }}" /></view>"#;
-        let reference = mustache_attr(wxml, "ref", r#"ref="{{ total }}""#, "total");
-        let text = mustache_attr(wxml, "text", r#"text="{{ loading }}""#, "loading");
-        let layout = shadow(
-            wxml,
-            &[
-                reference.expr_range.expect("ref"),
-                text.expr_range.expect("text"),
-            ],
-        );
-        let view = declared_view(vec![usage("card", None, vec![reference, text.clone()])]);
-        let (result, calls) = run(&layout, &view, vec![Some(("boolean", 0))]);
-        // The unproven `ref` member is not queried; the proven `text` member is.
-        assert_eq!(calls.len(), 1);
-        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
-        assert_eq!(result.diagnostics[0].range, text.expr_range.expect("text"));
+        let wxml = r#"<view><card ref="x" text="hello" /></view>"#;
+        let reference = literal_attr(wxml, "ref", r#"ref="x""#);
+        let text = literal_attr(wxml, "text", r#"text="hello""#);
+        let layout = shadow(wxml);
+        let view = declared_view(vec![usage("card", None, vec![reference, text])]);
+        let result = run(&layout, &view);
+        // The unproven `ref` member is a coverage gap; `text` still matches.
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         let CapabilityStatus::Partial { reason } = result.status.as_ref().expect("partial") else {
             panic!("expected Partial, got {:?}", result.status);
         };
@@ -3903,32 +2137,13 @@ mod tests {
     }
 
     #[test]
-    fn declared_any_member_accepts_every_binding_without_a_query() {
-        let wxml = r#"<view><card loose="{{ total }}" /></view>"#;
-        let loose = mustache_attr(wxml, "loose", r#"loose="{{ total }}""#, "total");
-        let layout = shadow(wxml, &[loose.expr_range.expect("expr")]);
+    fn declared_any_member_accepts_every_literal() {
+        let wxml = r#"<view><card loose="anything" /></view>"#;
+        let loose = literal_attr(wxml, "loose", r#"loose="anything""#);
+        let layout = shadow(wxml);
         let view = declared_view(vec![usage("card", None, vec![loose])]);
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(calls.is_empty());
+        let result = run(&layout, &view);
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-        assert!(result.status.is_none(), "{:?}", result.status);
-    }
-
-    #[test]
-    fn components_without_declarations_keep_the_script_behaviour() {
-        let wxml = r#"<view><card title="{{ total }}" /></view>"#;
-        let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
-        let layout = shadow(wxml, &[title.expr_range.expect("expr")]);
-        let view = build_view(
-            page_and_card(),
-            vec![usage("card", Some(CARD_PATH), vec![title.clone()])],
-        );
-        let (result, calls) = run(&layout, &view, vec![Some(("number", 0))]);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
-        let diagnostic = &result.diagnostics[0];
-        assert_eq!(diagnostic.range, title.expr_range.expect("expr"));
-        assert!(diagnostic.message.contains("expects string, got number"));
         assert!(result.status.is_none(), "{:?}", result.status);
     }
 
@@ -3937,22 +2152,18 @@ mod tests {
         let declaration = "declare global {\n  interface WxmlComponentMap {\n    item: ItemDeclaration;\n  }\n\n  interface ItemDeclaration {\n    props: {\n      cardTitle?: 'small' | 'large';\n    };\n  }\n}\n\nexport {};\n";
         let wxml = r#"<view><item card-title="medium" /></view>"#;
         let card_title = literal_attr(wxml, "card-title", r#"card-title="medium""#);
-        let layout = shadow(wxml, &[]);
+        let layout = shadow(wxml);
         let view = typed_view(
             vec![prepared_declaration(DECLARATION_PATH, declaration)],
             vec![usage("item", None, vec![card_title.clone()])],
             declaration,
         );
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(calls.is_empty());
+        let result = run(&layout, &view);
         assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
         assert_eq!(result.diagnostics[0].range, card_title.attribute_range);
-        assert!(
-            result.diagnostics[0]
-                .message
-                .contains("expects 'small' | 'large'"),
-            "{}",
-            result.diagnostics[0].message
+        assert_eq!(
+            result.diagnostics[0].message,
+            "component property \"card-title\" expects 'small' | 'large', got string literal"
         );
     }
 
@@ -3961,22 +2172,18 @@ mod tests {
         let declaration = "declare global {\n  interface WxmlComponentMap {\n    item: ItemDeclaration;\n  }\n\n  interface ItemDeclaration {\n    props: {\n      'card-title'?: 'small' | 'large';\n    };\n  }\n}\n\nexport {};\n";
         let wxml = r#"<view><item cardTitle="medium" /></view>"#;
         let card_title = literal_attr(wxml, "cardTitle", r#"cardTitle="medium""#);
-        let layout = shadow(wxml, &[]);
+        let layout = shadow(wxml);
         let view = typed_view(
             vec![prepared_declaration(DECLARATION_PATH, declaration)],
             vec![usage("item", None, vec![card_title.clone()])],
             declaration,
         );
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(calls.is_empty());
+        let result = run(&layout, &view);
         assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
         assert_eq!(result.diagnostics[0].range, card_title.attribute_range);
-        assert!(
-            result.diagnostics[0]
-                .message
-                .contains("expects 'small' | 'large'"),
-            "{}",
-            result.diagnostics[0].message
+        assert_eq!(
+            result.diagnostics[0].message,
+            "component property \"cardTitle\" expects 'small' | 'large', got string literal"
         );
     }
 
@@ -3985,23 +2192,19 @@ mod tests {
         let declaration = "declare global {\n  interface WxmlComponentMap {\n    item: ItemDeclaration;\n  }\n\n  interface ItemDeclaration {\n    props: {\n      someProp?: 'small' | 'large';\n    };\n  }\n}\n\nexport {};\n";
         let wxml = r#"<view><item someprop="medium" /></view>"#;
         let written = literal_attr(wxml, "someprop", r#"someprop="medium""#);
-        let layout = shadow(wxml, &[]);
+        let layout = shadow(wxml);
         let view = typed_view(
             vec![prepared_declaration(DECLARATION_PATH, declaration)],
             vec![usage("item", None, vec![written.clone()])],
             declaration,
         );
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(calls.is_empty());
+        let result = run(&layout, &view);
         assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
         let diagnostic = &result.diagnostics[0];
         assert_eq!(diagnostic.range, name_range(&written));
-        assert!(
-            diagnostic
-                .message
-                .contains("component property \"someprop\" is not declared"),
-            "{}",
-            diagnostic.message
+        assert_eq!(
+            diagnostic.message,
+            "component property \"someprop\" is not declared by the component declaration"
         );
     }
 
@@ -4009,9 +2212,9 @@ mod tests {
     fn script_declared_camel_members_accept_the_kebab_spelling() {
         const KEBAB_DECLARATION_SCRIPT: &str =
             "Component({\n  properties: {\n    cardTitle: { type: String },\n  },\n});\n";
-        let wxml = r#"<view><card card-title="{{ total }}" /></view>"#;
-        let card_title = mustache_attr(wxml, "card-title", r#"card-title="{{ total }}""#, "total");
-        let layout = shadow(wxml, &[card_title.expr_range.expect("expr")]);
+        let wxml = "<view><card card-title /></view>";
+        let card_title = boolean_attr(wxml, "card-title", "card-title");
+        let layout = shadow(wxml);
         let files = vec![
             prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
             prepared_file(CARD_PATH, KEBAB_DECLARATION_SCRIPT),
@@ -4020,18 +2223,14 @@ mod tests {
             files,
             vec![usage("card", Some(CARD_PATH), vec![card_title.clone()])],
         );
-        let (result, calls) = run(&layout, &view, vec![Some(("number", 0))]);
-        assert_eq!(calls.len(), 1, "{calls:?}");
+        let result = run(&layout, &view);
+        // The camel declaration is found through the kebab spelling, so the
+        // boolean value is judged against `string`.
         assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        assert_eq!(result.diagnostics[0].range, card_title.attribute_range);
         assert_eq!(
-            result.diagnostics[0].range,
-            card_title.expr_range.expect("expr")
-        );
-        assert!(
-            result.diagnostics[0].message.contains("expects string")
-                && result.diagnostics[0].message.contains("got number"),
-            "{}",
-            result.diagnostics[0].message
+            result.diagnostics[0].message,
+            "component property \"card-title\" expects string, got boolean literal"
         );
     }
 
@@ -4039,23 +2238,167 @@ mod tests {
     fn script_declared_members_stay_resolved_only_for_equivalent_spelling() {
         const KEBAB_DECLARATION_SCRIPT: &str =
             "Component({\n  properties: {\n    someProp: { type: String },\n  },\n});\n";
-        let wxml = r#"<view><card someprop="{{ total }}" /></view>"#;
-        let written = mustache_attr(wxml, "someprop", r#"someprop="{{ total }}""#, "total");
-        let layout = shadow(wxml, &[written.expr_range.expect("expr")]);
+        let wxml = "<view><card someprop /></view>";
+        let written = boolean_attr(wxml, "someprop", "someprop");
+        let layout = shadow(wxml);
         let files = vec![
             prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
             prepared_file(CARD_PATH, KEBAB_DECLARATION_SCRIPT),
         ];
         let view = build_view(files, vec![usage("card", Some(CARD_PATH), vec![written])]);
-        let (result, calls) = run(&layout, &view, Vec::new());
-        assert!(
-            calls.is_empty(),
-            "a case-only variant must not be looked up as the declared property: {calls:?}"
-        );
+        let result = run(&layout, &view);
         assert!(
             result.diagnostics.is_empty(),
             "undeclared script attributes stay ignored: {:?}",
             result.diagnostics
+        );
+        assert!(result.status.is_none(), "{:?}", result.status);
+    }
+
+    #[test]
+    fn declared_components_with_a_structurally_incomplete_map_fall_back_to_scripts() {
+        // The mapped interface is missing, so the tag cannot be declared and
+        // the script facts must keep driving the check.
+        let declaration = "declare global {\n  interface WxmlComponentMap {\n    card: MissingDeclaration;\n  }\n}\n\nexport {};\n";
+        let wxml = r#"<view><card count="3" /></view>"#;
+        let count = literal_attr(wxml, "count", r#"count="3""#);
+        let layout = shadow(wxml);
+        let view = typed_view(
+            vec![
+                prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+                prepared_file(CARD_PATH, CARD_SCRIPT),
+                prepared_declaration(DECLARATION_PATH, declaration),
+            ],
+            vec![usage("card", Some(CARD_PATH), vec![count.clone()])],
+            declaration,
+        );
+        let result = run(&layout, &view);
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        assert_eq!(result.diagnostics[0].range, count.attribute_range);
+        assert_eq!(
+            result.diagnostics[0].message,
+            "component property \"count\" expects number, got string literal"
+        );
+    }
+
+    /// Oracle: TS-COMPONENT-0292, literal form.
+    ///
+    /// The component declares its properties inside an inline `Behavior`, so
+    /// the pass can only see them through the behavior overlay. Kebab/camel
+    /// lookup, the `string | number` union and the unrepresented `any` member
+    /// stay covered without any expression query.
+    #[test]
+    fn case_component_0292_behavior_properties_and_kebab_camel_bindings_are_checked() {
+        let wxml = r#"<view><behavior-ok card-title="hello" score="7" /></view>"#;
+        let card_title = literal_attr(wxml, "card-title", r#"card-title="hello""#);
+        let score = literal_attr(wxml, "score", r#"score="7""#);
+        let layout = shadow(wxml);
+        let files = vec![
+            prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
+            prepared_file(BEHAVIOR_CARD_PATH, BEHAVIOR_CARD_SCRIPT),
+        ];
+        let ok = run(
+            &layout,
+            &build_view(
+                files.clone(),
+                vec![usage(
+                    "behavior-ok",
+                    Some(BEHAVIOR_CARD_PATH),
+                    vec![card_title, score],
+                )],
+            ),
+        );
+        assert!(ok.diagnostics.is_empty(), "{:?}", ok.diagnostics);
+        assert!(ok.status.is_none(), "{:?}", ok.status);
+
+        let wxml = r#"<view><behavior-bad card-title defaulted="nope" score /></view>"#;
+        let card_title = boolean_attr(wxml, "card-title", "card-title");
+        let defaulted = literal_attr(wxml, "defaulted", r#"defaulted="nope""#);
+        let score = boolean_attr(wxml, "score", "score");
+        let layout = shadow(wxml);
+        let bad = run(
+            &layout,
+            &build_view(
+                files.clone(),
+                vec![usage(
+                    "behavior-bad",
+                    Some(BEHAVIOR_CARD_PATH),
+                    vec![card_title.clone(), defaulted.clone(), score.clone()],
+                )],
+            ),
+        );
+        assert!(bad.status.is_none(), "{:?}", bad.status);
+        let expected = [
+            (
+                card_title.attribute_range,
+                "component property \"card-title\" expects string, got boolean literal",
+            ),
+            (
+                defaulted.attribute_range,
+                "component property \"defaulted\" expects number, got string literal",
+            ),
+            (
+                score.attribute_range,
+                "component property \"score\" expects string | number, got boolean literal",
+            ),
+        ];
+        let actual = bad
+            .diagnostics
+            .iter()
+            .map(|diagnostic| {
+                assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
+                (diagnostic.range, diagnostic.message.as_str())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
+
+        // `loose` is script `any`, which the literal path cannot represent.
+        let wxml = r#"<view><behavior-loose loose="x" /></view>"#;
+        let loose = literal_attr(wxml, "loose", r#"loose="x""#);
+        let layout = shadow(wxml);
+        let loose_result = run(
+            &layout,
+            &build_view(
+                files.clone(),
+                vec![usage(
+                    "behavior-loose",
+                    Some(BEHAVIOR_CARD_PATH),
+                    vec![loose],
+                )],
+            ),
+        );
+        assert!(
+            loose_result.diagnostics.is_empty(),
+            "{:?}",
+            loose_result.diagnostics
+        );
+        let CapabilityStatus::Partial { reason } = loose_result
+            .status
+            .as_ref()
+            .expect("behavior-loose must be Partial")
+        else {
+            panic!("expected Partial");
+        };
+        assert_eq!(reason, &format!("{SKIPPED_PREFIX} (behavior-loose.loose)"));
+
+        let wxml = "<view><behavior-missing-required /></view>";
+        let layout = shadow(wxml);
+        let missing = run(
+            &layout,
+            &build_view(
+                files,
+                vec![usage(
+                    "behavior-missing-required",
+                    Some(BEHAVIOR_CARD_PATH),
+                    Vec::new(),
+                )],
+            ),
+        );
+        assert!(missing.diagnostics.is_empty(), "{:?}", missing.diagnostics);
+        assert!(
+            missing.status.is_none(),
+            "a zero-attribute usage is checked and clean: {:?}",
+            missing.status
         );
     }
 
@@ -4099,7 +2442,7 @@ mod tests {
     }
 
     #[test]
-    fn fixture_declared_bindings_publish_diagnostics_without_an_engine() {
+    fn fixture_declared_bindings_publish_only_the_undeclared_attribute() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../..")
             .join("tests/fixtures/components-typings")
@@ -4121,205 +2464,23 @@ mod tests {
         let view = host.analysis(&snapshot).expect("prepared view");
         assert_eq!(view.components.len(), 4, "{:?}", view.components);
 
-        let ranges: Vec<SourceRange> = view.fragments.iter().map(|item| item.wxml_range).collect();
-        let layout = shadow(&text, &ranges);
-        let mut calls = 0_usize;
-        let result = diagnostics_with(&layout, &view, SCRIPT_PATH, |path, position| {
-            assert_eq!(path, SCRIPT_PATH);
-            calls += 1;
-            let offset = position_to_offset(layout.derived(), position).expect("derived offset");
-            let range = match layout
-                .map_native_range(offset.get(), offset.get() + 1)
-                .expect("identifier range")
-            {
-                crate::backend_tsrs::mapping::NativeRange::Template { range, .. } => range,
-                crate::backend_tsrs::mapping::NativeRange::Script { .. } => {
-                    panic!("component query position is not in a mount")
-                }
-            };
-            let start = usize::try_from(range.start()).expect("start");
-            let mut end = start;
-            while let Some(character) = text[end..].chars().next() {
-                if character.is_alphanumeric() || matches!(character, '_' | '$') {
-                    end += character.len_utf8();
-                } else {
-                    break;
-                }
-            }
-            let answer = match text.get(start..end).expect("identifier bytes") {
-                "buttonText" => "string",
-                "loading" => "boolean",
-                other => panic!("unexpected component query for {other}"),
-            };
-            Ok(TypeQuery {
-                info: Some(RawType {
-                    id: 1,
-                    flags: 0,
-                    intrinsic_name: None,
-                }),
-                text: Some(answer.to_owned()),
-            })
-        });
-        assert_eq!(calls, 5, "one query per proven mustache binding");
-
-        let mismatch_start =
-            text.find(r#"text="{{ loading }}""#).expect("mismatch") + r#"text="{{ "#.len();
-        let mismatch_range = source_range(mismatch_start, mismatch_start + "loading".len());
+        let layout = shadow(&text);
+        let result = run(&layout, &view);
         let round_start = text
             .find(r#"round="{{ true }}""#)
             .expect("undeclared attribute");
         let round_range = source_range(round_start, round_start + "round".len());
 
-        assert_eq!(result.diagnostics.len(), 2, "{:?}", result.diagnostics);
-        let mismatch = result
-            .diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.range == mismatch_range)
-            .unwrap_or_else(|| panic!("missing mismatch: {:?}", result.diagnostics));
-        assert_eq!(mismatch.severity, DiagnosticSeverity::Error);
-        assert!(
-            mismatch.message.contains("expects string, got boolean"),
-            "{}",
-            mismatch.message
-        );
-        let undeclared = result
-            .diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.range == round_range)
-            .unwrap_or_else(|| panic!("missing undeclared: {:?}", result.diagnostics));
+        // `text="{{ loading }}"` is a type mismatch for the engine probe; this
+        // pass only reports the undeclared `round` attribute name.
+        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+        let undeclared = &result.diagnostics[0];
+        assert_eq!(undeclared.range, round_range);
         assert_eq!(undeclared.severity, DiagnosticSeverity::Error);
-        assert!(
-            undeclared
-                .message
-                .contains("component property \"round\" is not declared"),
-            "{}",
-            undeclared.message
+        assert_eq!(
+            undeclared.message,
+            "component property \"round\" is not declared by the component declaration"
         );
         assert!(result.status.is_none(), "{:?}", result.status);
-    }
-
-    #[test]
-    fn declared_components_with_a_structurally_incomplete_map_fall_back_to_scripts() {
-        // The mapped interface is missing, so the tag cannot be declared and
-        // the script facts must keep driving the check.
-        let declaration = "declare global {\n  interface WxmlComponentMap {\n    card: MissingDeclaration;\n  }\n}\n\nexport {};\n";
-        let wxml = r#"<view><card title="{{ total }}" /></view>"#;
-        let title = mustache_attr(wxml, "title", r#"title="{{ total }}""#, "total");
-        let layout = shadow(wxml, &[title.expr_range.expect("expr")]);
-        let view = typed_view(
-            vec![
-                prepared_file(SCRIPT_PATH, PAGE_SCRIPT),
-                prepared_file(CARD_PATH, CARD_SCRIPT),
-                prepared_declaration(DECLARATION_PATH, declaration),
-            ],
-            vec![usage("card", Some(CARD_PATH), vec![title.clone()])],
-            declaration,
-        );
-        let (result, calls) = run(&layout, &view, vec![Some(("number", 0))]);
-        assert_eq!(calls.len(), 1);
-        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
-        assert_eq!(result.diagnostics[0].range, title.expr_range.expect("expr"));
-        assert!(result.diagnostics[0].message.contains("expects string"));
-    }
-
-    // -----------------------------------------------------------------------
-    // Real type engine (opt-in through `WXML_REQUIRE_REAL_ENGINE=1`)
-    // -----------------------------------------------------------------------
-
-    /// View provider backed by one prepared view.
-    struct DeclaredViews {
-        view: PreparedView,
-    }
-
-    impl ViewProvider for DeclaredViews {
-        fn prepare(&self, _snapshot: &SourceSnapshot) -> Result<PreparedView, HostError> {
-            Ok(self.view.clone())
-        }
-
-        fn prepare_script(&self, _file: &FileId) -> Result<PreparedView, ScriptViewError> {
-            Ok(self.view.clone())
-        }
-    }
-
-    #[test]
-    fn optional_real_engine_declared_property_mismatch() {
-        const REAL_WXML: &str = r#"<view><card type="primary" text="{{ loading }}" /></view>"#;
-        const REAL_SCRIPT: &str = "Page({\n  data: { buttonText: 'ok', loading: true },\n});\n";
-        const REAL_GLOBALS: &str = "declare namespace WechatMiniprogram {\n  interface CustomEvent<T> {\n    detail: T;\n  }\n}\n\ndeclare function Page(options: {\n  data: { buttonText: string; loading: boolean };\n  __wxml_check_0(this: { data: { buttonText: string; loading: boolean } }): void;\n}): void;\n";
-        const REAL_DECLARATION: &str = "declare global {\n  interface WxmlComponentMap {\n    card: CardDeclaration;\n  }\n\n  interface CardDeclaration {\n    props: {\n      type?: 'primary' | 'default';\n      text: string;\n    };\n  }\n}\n\nexport {};\n";
-
-        if crate::backend_tsrs::runtime::skip_unless_real_engine("component bindings") {
-            return;
-        }
-
-        let text = mustache_attr(REAL_WXML, "text", r#"text="{{ loading }}""#, "loading");
-        let expr_range = text.expr_range.expect("expression range");
-        let fragment = CheckFragment {
-            fragment_id: "f0".to_owned(),
-            expr_text: "loading".to_owned(),
-            target: None,
-            bindings: Vec::new(),
-            guards: Vec::new(),
-            wxml_range: expr_range,
-            fragment_revision: 1,
-            root: RootKind::Page,
-        };
-        let mut view = typed_view(
-            vec![
-                prepared_file(SCRIPT_PATH, REAL_SCRIPT),
-                prepared_file("globals.d.ts", REAL_GLOBALS),
-                prepared_declaration(DECLARATION_PATH, REAL_DECLARATION),
-            ],
-            vec![usage("card", None, vec![text])],
-            REAL_DECLARATION,
-        );
-        view.fragments = Arc::from(vec![fragment]);
-
-        let adapter = TsrsBackendAdapter::new(
-            PinnedEngine::pinned(),
-            Arc::new(DeclaredViews { view }),
-            Arc::new(crate::backend_tsrs::runtime::VirtualSessionFactory::new()),
-        );
-        let context = RequestContext::new(
-            ProjectRevision::new(project(), 1),
-            ViewRevision::new(1),
-            adapter.epoch(),
-            Arc::new(SourceSnapshot::new(
-                file_id("pages/index/index.wxml"),
-                SourceRevision::new(1),
-                SnapshotId::new(1),
-                REAL_WXML,
-            )),
-        )
-        .expect("context");
-        let result = adapter
-            .diagnostics(DiagnosticsRequest { context })
-            .expect("declared property diagnostics");
-        let diagnostic = result
-            .diagnostics
-            .iter()
-            .find(|diagnostic| diagnostic.range == expr_range)
-            .unwrap_or_else(|| {
-                panic!(
-                    "missing declared property diagnostic: {:?}",
-                    result.diagnostics
-                )
-            });
-        assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
-        assert!(
-            diagnostic.message.contains("expects string"),
-            "{}",
-            diagnostic.message
-        );
-        assert!(
-            diagnostic.message.contains("got boolean"),
-            "{}",
-            diagnostic.message
-        );
-        assert!(
-            diagnostic.message.contains("bound expression \"loading\""),
-            "{}",
-            diagnostic.message
-        );
     }
 }

@@ -98,6 +98,8 @@
 
 pub(crate) mod completion;
 pub(crate) mod component_bindings;
+pub(crate) mod component_facts;
+pub(crate) mod contracts;
 pub(crate) mod definition;
 pub(crate) mod diagnostics;
 pub(crate) mod document_symbol;

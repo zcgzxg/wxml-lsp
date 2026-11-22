@@ -140,11 +140,35 @@ struct MappedPiece {
 /// `target` is an explicit whole identifier; `None` selects the rightmost value
 /// identifier, matching the TypeScript oracle. Targets that only occur inside
 /// strings/comments are rejected.
-#[allow(clippy::too_many_lines)] // linear emitter; splitting would duplicate piece bookkeeping
 pub fn rewrite_expression(
     expr: &str,
     target: Option<&str>,
     options: &RewriteOptions,
+) -> Result<RewrittenExpression, ShadowError> {
+    rewrite_expression_with(expr, target, options, false)
+}
+
+/// Rewrites one fragment expression for a contract probe.
+///
+/// A contract probe assigns the expression to an explicitly typed variable, so
+/// an expression without a free data root (`{{ 1 }}`, `{{ Math.max(1, 2) }}`)
+/// is still mountable: it is copied verbatim with one source segment instead of
+/// being rejected for having no root. Syntax errors and an explicit target
+/// outside the expression remain errors.
+pub fn rewrite_contract_expression(
+    expr: &str,
+    target: Option<&str>,
+    options: &RewriteOptions,
+) -> Result<RewrittenExpression, ShadowError> {
+    rewrite_expression_with(expr, target, options, true)
+}
+
+#[allow(clippy::too_many_lines)] // linear emitter; splitting would duplicate piece bookkeeping
+fn rewrite_expression_with(
+    expr: &str,
+    target: Option<&str>,
+    options: &RewriteOptions,
+    allow_verbatim: bool,
 ) -> Result<RewrittenExpression, ShadowError> {
     let collected = expression::collect_value_identifiers(expr)?;
 
@@ -165,6 +189,9 @@ pub fn rewrite_expression(
         }
     }
     if occurrences.is_empty() {
+        if allow_verbatim {
+            return verbatim_expression(expr, target, &collected.values, &collected.all);
+        }
         return Err(ShadowError::BadExpression {
             detail: format!(
                 "expression has no free root identifier: {}",
@@ -327,6 +354,45 @@ pub fn rewrite_expression(
         hover_targets,
         roots,
         local_root,
+    })
+}
+
+/// Mounts an expression that has no free data root verbatim.
+///
+/// The whole expression is one source segment, so a diagnostic inside it still
+/// maps to the template bytes; only the contextually typed assignment around it
+/// is synthetic. The target is the explicit identifier when present, otherwise
+/// the rightmost value identifier, or offset `0` for a literal-only expression.
+fn verbatim_expression(
+    expr: &str,
+    target: Option<&str>,
+    values: &[ValueIdentifier],
+    all: &[ValueIdentifier],
+) -> Result<RewrittenExpression, ShadowError> {
+    let target_offset_utf16 = match target {
+        Some(name) => {
+            let identifier = resolve_target(expr, Some(name), values, all)?;
+            utf16_len(&expr[..identifier.start])
+        }
+        None => resolve_target(expr, None, values, all)
+            .map_or(0, |identifier| utf16_len(&expr[..identifier.start])),
+    };
+    let mapped = [MappedPiece {
+        source: (0, expr.len()),
+        mounted_start_utf16: 0,
+    }];
+    let hover_targets = build_hover_targets(expr, all, &mapped)?;
+    Ok(RewrittenExpression {
+        text: expr.to_owned(),
+        segments: vec![MountedSegment {
+            start_utf16: 0,
+            length_utf16: utf16_len(expr),
+            source: Some(byte_range(0, expr.len())?),
+        }],
+        target_offset_utf16,
+        hover_targets,
+        roots: Vec::new(),
+        local_root: false,
     })
 }
 

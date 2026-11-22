@@ -4351,6 +4351,62 @@ fn host_only_serves_static_facts_and_reports_type_queries_unavailable() {
     );
 }
 
+/// Declared component contracts are engine-owned: `HostOnly` must keep a
+/// declaration-backed template quiet instead of publishing the contract
+/// diagnostics a live engine would produce.
+///
+/// `tests/fixtures/components-typings` binds `text` (declared `string`) to a
+/// boolean `data` field and also carries an undeclared `round` attribute. A
+/// live engine reports the mismatch through the property probe, but an
+/// unavailable engine must publish neither the contract diagnostic nor a
+/// fallback comparison, and must not claim a completed check.
+#[test]
+fn host_only_publishes_no_component_contract_diagnostics() {
+    use crate::project_host::ProjectHost;
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("tests/fixtures/components-typings")
+        .canonicalize()
+        .expect("components-typings fixture root");
+    let host = Arc::new(ProjectState::new());
+    host.open_root(Some(&format!("file://{}", root.display())))
+        .expect("open the components-typings fixture");
+    let adapter = TsrsBackendAdapter::without_engine(host.clone());
+
+    let relative = "pages/index/index.wxml";
+    let path = project_path(relative);
+    let file = ProjectHost::file_id(host.as_ref(), &path).expect("fixture file id");
+    let target = ProjectHost::view_for(host.as_ref(), &path).expect("fixture view");
+    let template = std::fs::read_to_string(root.join(relative)).expect("fixture template");
+    let context = RequestContext::new(
+        ProjectHost::project_revision(host.as_ref()),
+        target.view_revision,
+        adapter.epoch(),
+        Arc::new(SourceSnapshot::new(
+            file,
+            SourceRevision::new(1),
+            SnapshotId::new(1),
+            template,
+        )),
+    )
+    .expect("request context");
+
+    let result = adapter
+        .diagnostics(DiagnosticsRequest { context })
+        .expect("diagnostics never return Err");
+    assert!(
+        matches!(result.status, CapabilityStatus::Unavailable { .. }),
+        "HostOnly must not claim a completed contract check: {:?}",
+        result.status
+    );
+    assert!(
+        result.diagnostics.is_empty(),
+        "no contract or fallback property diagnostic may be published without an engine: {:?}",
+        result.diagnostics
+    );
+}
+
 #[test]
 fn an_unsupported_native_type_query_is_explicitly_unsupported() {
     let behavior = FakeBehavior {
@@ -7116,7 +7172,7 @@ const COMPONENT_PATH: &str = "components/card/card.ts";
 const COMPONENT_SCRIPT: &str = "Page({\n  data: { total: 3 },\n});\n";
 
 #[test]
-fn component_binding_diagnostics_are_published_with_shadow_ranges() {
+fn component_binding_pass_never_queries_an_expression_type() {
     let wxml = r#"<view><card title="{{ total }}" /></view>"#;
     let view = prepared_component_view(
         wxml,
@@ -7136,59 +7192,16 @@ fn component_binding_diagnostics_are_published_with_shadow_ranges() {
             context: context(&adapter, wxml),
         })
         .expect("diagnostics");
+    // The mustache compatibility check belongs to the engine contract probe, so
+    // the property pass itself never asks for an expression type.
     assert_eq!(result.status, CapabilityStatus::Supported);
-    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
-    let diagnostic = &result.diagnostics[0];
-    assert_eq!(diagnostic.range.start(), offset_of(wxml, "total"));
-    assert_eq!(
-        diagnostic.range.end(),
-        offset_of(wxml, "total") + u32::try_from("total".len()).expect("length")
-    );
-    assert_eq!(diagnostic.severity, DiagnosticSeverity::Error);
-    assert!(diagnostic.message.contains("component property \"title\""));
-    assert!(diagnostic.message.contains("expects string, got number"));
-    let log = log.lock().expect("log");
-    assert_eq!(log.type_calls.len(), 1);
-    assert_eq!(log.type_calls[0].0, SCRIPT_PATH);
-}
-
-#[test]
-fn component_binding_any_type_degrades_to_partial() {
-    let wxml = r#"<view><card title="{{ total }}" /></view>"#;
-    let view = prepared_component_view(
-        wxml,
-        COMPONENT_SCRIPT,
-        "total",
-        COMPONENT_PATH,
-        COMPONENT_CARD,
-        vec![component_attribute(wxml, "title", "total")],
-    );
-    let behavior = FakeBehavior {
-        type_outcome: FakeTypeOutcome::Any("any".to_owned()),
-        ..FakeBehavior::default()
-    };
-    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
-    let result = adapter
-        .diagnostics(DiagnosticsRequest {
-            context: context(&adapter, wxml),
-        })
-        .expect("diagnostics");
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    let CapabilityStatus::Partial { reason } = &result.status else {
-        panic!("expected Partial, got {:?}", result.status);
-    };
-    assert!(
-        reason.starts_with("some component bindings could not be resolved and were not checked"),
-        "{reason}"
-    );
-    assert!(
-        !reason.contains('/'),
-        "the reason must stay path-free: {reason}"
-    );
+    let log = log.lock().expect("log");
+    assert!(log.type_calls.is_empty(), "{:?}", log.type_calls);
 }
 
 #[test]
-fn component_binding_type_query_failure_keeps_backend_diagnostics() {
+fn component_binding_keeps_backend_diagnostics_when_type_queries_are_unavailable() {
     let wxml = r#"<view><card title="{{ total }}" /></view>"#;
     let view = prepared_component_view(
         wxml,
@@ -7217,8 +7230,296 @@ fn component_binding_type_query_failure_keeps_backend_diagnostics() {
         .expect("diagnostics must not return Err");
     assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
     assert_eq!(result.diagnostics[0].code.as_deref(), Some("2339"));
-    assert!(matches!(result.status, CapabilityStatus::Partial { .. }));
     assert_eq!(log.lock().expect("log").shutdowns, 0);
+}
+
+#[test]
+fn a_contract_probe_assignment_diagnostic_is_published_at_the_binding() {
+    let wxml = r#"<view><card title="{{ total }}" /></view>"#;
+    let view = prepared_component_view(
+        wxml,
+        COMPONENT_SCRIPT,
+        "total",
+        COMPONENT_PATH,
+        COMPONENT_CARD,
+        vec![component_attribute(wxml, "title", "total")],
+    );
+    let behavior = FakeBehavior {
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![FakeDiagnostic {
+            needle: "__wxml_bind_f0",
+            code: 2322,
+            category: 1,
+            message: "Type 'number' is not assignable to type 'string'.",
+            file_name: None,
+        }]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, wxml),
+        })
+        .expect("diagnostics");
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    let diagnostic = &result.diagnostics[0];
+    assert_eq!(diagnostic.code.as_deref(), Some("2322"));
+    assert_eq!(
+        diagnostic.message,
+        "Type 'number' is not assignable to type 'string'."
+    );
+    let start = offset_of(wxml, "total");
+    assert_eq!(diagnostic.range.start(), start);
+    assert_eq!(
+        diagnostic.range.end(),
+        start + u32::try_from("total".len()).expect("anchor length")
+    );
+}
+
+#[test]
+fn a_missing_required_property_is_published_at_the_binding() {
+    let wxml = r#"<view><card title="{{ total }}" /></view>"#;
+    let view = prepared_component_view(
+        wxml,
+        COMPONENT_SCRIPT,
+        "total",
+        COMPONENT_PATH,
+        COMPONENT_CARD,
+        vec![component_attribute(wxml, "title", "total")],
+    );
+    let behavior = FakeBehavior {
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![FakeDiagnostic {
+            needle: "__wxml_bind_f0",
+            code: 2739,
+            category: 1,
+            message: "Property 'id' is missing in type '{}' but required in type 'Card'.",
+            file_name: None,
+        }]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, wxml),
+        })
+        .expect("diagnostics");
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    let diagnostic = &result.diagnostics[0];
+    assert_eq!(diagnostic.code.as_deref(), Some("2739"));
+    let start = offset_of(wxml, "total");
+    assert_eq!(diagnostic.range.start(), start);
+    assert_eq!(
+        diagnostic.range.end(),
+        start + u32::try_from("total".len()).expect("anchor length")
+    );
+}
+
+#[test]
+fn contract_excess_property_and_synthetic_noise_are_dropped() {
+    let wxml = r#"<view><card title="{{ total }}" /></view>"#;
+    let view = prepared_component_view(
+        wxml,
+        COMPONENT_SCRIPT,
+        "total",
+        COMPONENT_PATH,
+        COMPONENT_CARD,
+        vec![component_attribute(wxml, "title", "total")],
+    );
+    let behavior = FakeBehavior {
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![
+            FakeDiagnostic {
+                needle: "total",
+                code: 2353,
+                category: 1,
+                message: "Object literal may only specify known properties.",
+                file_name: None,
+            },
+            FakeDiagnostic {
+                needle: "__wxml_bind_f0",
+                code: 6133,
+                category: 0,
+                message: "'__wxml_bind_f0' is declared but its value is never read.",
+                file_name: None,
+            },
+            FakeDiagnostic {
+                needle: "__wxml_bind_f0",
+                code: 6196,
+                category: 0,
+                message: "All destructured elements are unused.",
+                file_name: None,
+            },
+        ]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, wxml),
+        })
+        .expect("diagnostics");
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+}
+
+#[test]
+fn an_unresolved_contract_expected_type_is_partial_and_not_published() {
+    let wxml = r#"<view><card title="{{ total }}" /></view>"#;
+    let view = prepared_component_view(
+        wxml,
+        COMPONENT_SCRIPT,
+        "total",
+        COMPONENT_PATH,
+        COMPONENT_CARD,
+        vec![component_attribute(wxml, "title", "total")],
+    );
+    let behavior = FakeBehavior {
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![
+            FakeDiagnostic {
+                needle: "const __wxml_bind_f0: string",
+                code: 2503,
+                category: 1,
+                message: "Cannot find namespace 'WxmlComponentMap'.",
+                file_name: None,
+            },
+            FakeDiagnostic {
+                needle: "void __wxml_bind_f0",
+                code: 2304,
+                category: 1,
+                message: "Cannot find name 'string'.",
+                file_name: None,
+            },
+        ]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, wxml),
+        })
+        .expect("diagnostics");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let CapabilityStatus::Partial { reason } = result.status else {
+        panic!("an unresolved expected type must not be a clean result");
+    };
+    assert!(reason.contains("expected type"), "{reason}");
+}
+
+#[test]
+fn a_source_expression_diagnostic_inside_a_contract_still_publishes() {
+    let wxml = r#"<view><card title="{{ total }}" /></view>"#;
+    let view = prepared_component_view(
+        wxml,
+        COMPONENT_SCRIPT,
+        "total",
+        COMPONENT_PATH,
+        COMPONENT_CARD,
+        vec![component_attribute(wxml, "title", "total")],
+    );
+    let behavior = FakeBehavior {
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![FakeDiagnostic {
+            needle: "total",
+            code: 2339,
+            message: "Property 'total' does not exist on type '{}'.",
+            category: 1,
+            file_name: None,
+        }]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, wxml),
+        })
+        .expect("diagnostics");
+    assert_eq!(result.status, CapabilityStatus::Supported);
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    let diagnostic = &result.diagnostics[0];
+    assert_eq!(diagnostic.code.as_deref(), Some("2339"));
+    let start = offset_of(wxml, "total");
+    assert_eq!(diagnostic.range.start(), start);
+    assert_eq!(
+        diagnostic.range.end(),
+        start + u32::try_from("total".len()).expect("expression length")
+    );
+}
+
+#[test]
+fn an_assignment_error_inside_the_bound_expression_keeps_its_mapped_range() {
+    let wxml = r#"<view><card title="{{ total + 1 }}" /></view>"#;
+    let view = prepared_component_view(
+        wxml,
+        COMPONENT_SCRIPT,
+        "total + 1",
+        COMPONENT_PATH,
+        COMPONENT_CARD,
+        vec![component_attribute(wxml, "title", "total + 1")],
+    );
+    let behavior = FakeBehavior {
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![FakeDiagnostic {
+            needle: "total",
+            code: 2322,
+            category: 1,
+            message: "Type 'number' is not assignable to type 'string'.",
+            file_name: None,
+        }]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, wxml),
+        })
+        .expect("diagnostics");
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    let diagnostic = &result.diagnostics[0];
+    let start = offset_of(wxml, "total");
+    assert_eq!(diagnostic.range.start(), start);
+    assert_eq!(
+        diagnostic.range.end(),
+        start + u32::try_from("total".len()).expect("expression length"),
+        "a diagnostic inside the expression must keep its precise range"
+    );
+}
+
+#[test]
+fn one_contract_binding_publishes_only_one_diagnostic() {
+    let wxml = r#"<view><card title="{{ total }}" /></view>"#;
+    let view = prepared_component_view(
+        wxml,
+        COMPONENT_SCRIPT,
+        "total",
+        COMPONENT_PATH,
+        COMPONENT_CARD,
+        vec![component_attribute(wxml, "title", "total")],
+    );
+    let behavior = FakeBehavior {
+        semantic: FakeDiagnosticOutcome::Diagnostics(vec![
+            FakeDiagnostic {
+                needle: "__wxml_bind_f0",
+                code: 2322,
+                category: 1,
+                message: "first assignment error",
+                file_name: None,
+            },
+            FakeDiagnostic {
+                needle: "__wxml_bind_f0",
+                code: 2345,
+                category: 1,
+                message: "second assignment error",
+                file_name: None,
+            },
+        ]),
+        ..FakeBehavior::default()
+    };
+    let (adapter, _log) = adapter_with(Arc::new(FakeViews::new(view)), behavior);
+    let result = adapter
+        .diagnostics(DiagnosticsRequest {
+            context: context(&adapter, wxml),
+        })
+        .expect("diagnostics");
+    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    assert_eq!(result.diagnostics[0].message, "first assignment error");
 }
 
 #[test]
