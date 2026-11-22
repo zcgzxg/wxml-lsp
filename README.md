@@ -17,7 +17,7 @@ Zed 扩展（editors/zed，Rust/WASM）
   ▼
 wxml-lsp            传输、多项目宿主、请求路由、调度与降级
   ├─ wxml-backend-tsrs   进程内类型会话适配：只读 VFS、shadow、查询、源码映射
-  ├─ wxml-types          C0 契约、模板语义、WXS/静态摘要、后端接口
+  ├─ wxml-types          基础契约、模板语义、WXS/静态摘要、后端接口
   ├─ wxml-project        URI/路径、overlay、多 app/惰性发现、tsconfig、样式/资源索引
   ├─ wxml-syntax         容错 lexer/parser、Mustache、WXS rawtext
   └─ wxml-text           UTF-8 字节偏移 ↔ LSP UTF-16 位置、行索引
@@ -87,7 +87,7 @@ scripts/install-native.sh --root "$root"
 # 其他选项（--binary、--assets）见 scripts/install-native.sh --help
 ```
 
-运行时发现规则：`wxml-lsp` 只从自身可执行文件（canonical 后的 `current_exe`）出发，要求可执行文件位于 `<package>/bin/wxml-lsp`，且同根下存在 `typings/miniprogram-api-typings`；不读 `PATH`、不读工作目录，也不再识别 `TSRS_BIN`/`TSRS_ASSET_ROOT` 等引擎覆盖变量。typings 摘要必须与内建 pin 一致，否则在 LSP 握手前 fail closed。安装发现阶段唯一的降级是 `NotInstalled`：从 `target/release/` 直接运行或布局不完整时退化为 `HostOnly`（静态能力可用，类型查询返回 `Unavailable`）。运行期类型会话初始化失败或中毒时，类型能力降级为 `Unavailable`/`SessionPoisoned`，语言服务器其余功能继续工作。
+运行时发现规则：`wxml-lsp` 只从自身可执行文件（canonical 后的 `current_exe`）出发，要求可执行文件位于 `<package>/bin/wxml-lsp`，且同根下存在 `typings/miniprogram-api-typings`；不读 `PATH`、不读工作目录，也不再识别 `TSRS_BIN`/`TSRS_ASSET_ROOT` 等引擎覆盖变量。typings 摘要必须与内建 pin 一致，否则在 LSP 握手前 fail closed。发现阶段唯一的降级是 `NotInstalled`：从 `target/release/` 直接运行、或根本没有 `<package>/bin/wxml-lsp` 安装布局时退化为 `HostOnly`（静态能力可用，类型查询返回 `Unavailable`）。如果已经识别到安装根但 typings 缺失、损坏或摘要不匹配，则属于损坏安装，直接失败而不会退化为 HostOnly。运行期类型会话初始化失败或中毒时，类型能力降级为 `Unavailable`/`SessionPoisoned`，语言服务器其余功能继续工作。
 
 ## 在 Zed 中使用
 
@@ -143,7 +143,7 @@ scripts/install-native.sh --root "$root"
 
 工作区包源码从根 `package.json#workspaces` 或 `pnpm-workspace.yaml` 发现，只挂载当前小程序包 `dependencies` / `devDependencies` / `peerDependencies` 中列出的同名工作区包；只读取包清单和源码，不读取 `node_modules`，也不推断第三方包图。显式 `dependencies` 配置仍可用于固定边界。详见 [ADR-0010](docs/adr/0010-zero-config-lazy-discovery.md)、[ADR-0006](docs/adr/0006-explicit-mini-program-roots.md) 和 [Zed 扩展说明](editors/zed/README.md)。
 
-配置只在启动时消费，修改后需重启 LSP。当前最近 `tsconfig.json` 选择不展开 solution-style `references`；复杂项目建议使用显式 `apps`。
+初始化选项只在启动时消费；修改显式 `apps`、`projectRoot` 或根发现选择策略后需重启 LSP。已加载的 `app.json`、`tsconfig.json` 和 workspace 清单内容会经 overlay/watched-file 重新发现，不需要为每次内容修改重启。当前最近 `tsconfig.json` 选择不展开 solution-style `references`；复杂项目建议使用显式 `apps`。
 
 ## 能力摘要
 
@@ -153,7 +153,7 @@ scripts/install-native.sh --root "$root"
 | 静态语言功能 | 标签/属性/属性值/`wx:` 指令补全，组件与属性事实，class 与资源路径补全/导航/诊断，documentSymbol/outline，folding、selection range、linked editing。 |
 | 格式化 | 全量与 range 保真格式化：只规范开始标签内部空白，解析失败时零编辑。 |
 | 语义工具 | references、prepareRename/rename（安全 `EditPlan`）、codeAction（quickfix）、semanticTokens、workspaceSymbol、inlayHint、signatureHelp、codeLens。 |
-| 编辑一致性 | overlay 优先于磁盘；诊断 debounce（默认 120 ms，可配 0–5000）、同文档合并、有界队列、排队取消、timeout 丢弃迟到结果；类型会话不可恢复时显式降级，不重启进程。 |
+| 编辑一致性 | overlay 优先于磁盘；诊断 debounce（默认 120 ms，可配 0–5000）、同文档合并、有界队列、排队取消、timeout 丢弃迟到结果；类型会话不可恢复时显式降级，不重启服务器进程。 |
 
 rename 只接受 `documentChanges`，打开文件带客户端 version、关闭文件重读后以 `version: null` 返回，失败零编辑，服务端不写盘。自定义组件 tag rename、动态访问、跨视图冲突等场景保守拒绝。诊断策略见 [类型诊断策略](docs/reference/type-diagnostics.md)，通用行为见 [WXML 语言功能基线](docs/reference/wxml-language-feature-baseline.md)。
 
@@ -165,7 +165,7 @@ crates/
 ├── wxml-text              # 字节偏移 ↔ UTF-16、行索引
 ├── wxml-syntax            # lexer/parser、Mustache、源码映射
 ├── wxml-project           # 项目/页面/组件、usingComponents、tsconfig、样式/资源索引
-├── wxml-types             # C0 契约、模板语义、WXS/静态摘要、后端接口与 mock
+├── wxml-types             # 基础契约、模板语义、WXS/静态摘要、后端接口与 mock
 ├── wxml-backend-tsrs      # 进程内类型会话适配（native/script/shadow/query）
 └── wxml-lsp               # LSP 二进制
 editors/zed/               # Zed Dev Extension（独立 workspace）
@@ -212,19 +212,19 @@ cargo test --workspace --all-features
 
 ## 已知限制
 
-- 默认零配置惰性发现，也支持单个 LSP workspace 内的显式多 app；不支持完整多 workspace，`apps`/`projectRoot` 或 tsconfig 变更后需重启。最近 `tsconfig.json` 选择暂不展开 solution-style `references`。
-- 惰性视图只对已经打开或查询过的 WXML 建立；`view_templates` 和部分语义工具不会枚举尚未打开的模板。
+- 默认零配置惰性发现，也支持单个 LSP workspace 内的显式多 app；不支持完整多 workspace。显式 `apps`/`projectRoot` 或根选择策略变化后需重启；`app.json`、`tsconfig.json` 的内容变化会重新发现。最近 `tsconfig.json` 选择暂不展开 solution-style `references`。
+- discovery 已发现的模板可以出现在 `view_templates` 等枚举中；未被 discovery 发现、也尚未打开或查询的模板不会建立惰性视图，部分语义工具因此看不到它们。
 - 模板体不做逐次实例化的完整类型检查；WXS 仅支持静态子集且从不执行。
 - 插件/远程组件缺少本地可信元数据时降级，不伪造属性；动态 template/`is`、动态 WXS 导出不猜测。
 - 性能与稳定性只在单个小 fixture 上验证，没有大项目语料；真实主桌面 Wayland 与连续键入延迟未验收。
-- 类型引擎在语言服务器进程内运行：单请求 panic 以该请求失败返回，但会使类型会话中毒、类型能力降级；OOM、abort、栈溢出会终止整个进程；运行中的类型计算不可取消，超时只是放弃等待。
-- 会话中毒后类型能力持续不可用，必须重启语言服务器才能恢复；不自动重建会话。
+- 类型引擎在语言服务器进程内运行：单请求 panic 以该请求失败返回，但会使类型会话中毒、类型能力降级；OOM、abort、栈溢出会终止整个进程；运行中的类型计算不可取消，deadline 只在调用前检查，不构成等待上限。
+- 致命错误使会话死亡时，适配器会关闭旧会话、重建并只对当前请求重试一次；第二次仍失败则当前请求返回 `Unavailable`/`SessionPoisoned` 并丢弃会话。后续请求仍可重建，但每个请求最多重试一次；项目根、环境或更新失败导致的重建不属于请求重试；没有通用重试、取消或退避机制。
 - 没有发布者签名、自动更新或跨平台安装器；信任模型见 [ADR-0007](docs/adr/0007-local-delivery-trust-model.md)。
 
 ## 文档
 
 - [文档索引](docs/README.md)
-- [ADR 索引](docs/adr/README.md)：0001 分层、0002 类型检查与源码映射、0003 文档同步、0004 交付闸门、0005 文档自包含、0006 显式根、0007 交付信任、0009 瘦身、0010 零配置惰性发现、0011 组件类型声明、0012 进程内类型会话、0013 组件属性与事件的引擎判定
-- [C0 基础契约](docs/reference/contracts.md)、[模板类型诊断策略](docs/reference/type-diagnostics.md)
+- [ADR 索引](docs/adr/README.md)：0001 分层、0002 类型检查与源码映射、0003 文档同步、0004 Node 交付期历史（deprecated）、0005 文档自包含、0006 显式根、0007 本地安装与信任、0009 瘦身、0010 零配置惰性发现、0011 组件类型声明、0012 进程内类型会话、0013 组件属性与事件的引擎判定
+- [基础契约](docs/reference/contracts.md)、[模板类型诊断策略](docs/reference/type-diagnostics.md)
 - [原生类型后端合同](docs/reference/tsrs-native-contract.md)（tsrs 进程内会话口径）
-- 变更流程：[`openspec/`](openspec/)（活跃变更在 `changes/`，归档在 `changes/archive/`；`specs/` 尚未沉淀能力规格）
+- 变更流程：[`openspec/`](openspec/)（活跃变更在 `changes/`，归档在 `changes/archive/`，已稳定的能力规格在 `specs/`）

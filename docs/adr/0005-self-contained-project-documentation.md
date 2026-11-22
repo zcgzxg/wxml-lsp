@@ -79,4 +79,4 @@
 - [文档索引](../README.md)
 - [WXML 语言功能基线](../reference/wxml-language-feature-baseline.md)
 - [ADR-0009 项目瘦身](0009-project-slimming.md)（历史证据见 tag `pre-slim-20261120`）
-- [ADR-0004](0004-parallel-delivery-and-validation-gates.md)：临时实验与交付证据规则
+- [项目 AGENTS 约定](../../AGENTS.md)：当前验证、临时文件与文档规则（本记录不再依赖已废弃的 ADR-0004）

@@ -2,7 +2,7 @@
 
 更新日期：2026-11-22。
 
-本文件规定 WXML 模板在什么情况下产生诊断、什么情况下必须降级、hover 的类型与说明如何取舍，以及诊断落在哪个 token 上。它是实现目标，不代表功能已实现；实际进度与证据仍由[项目 README](../../README.md) 维护。契约定义见 [C0 基础契约](contracts.md)。
+本文件规定 WXML 模板在什么情况下产生诊断、什么情况下必须降级、hover 的类型与说明如何取舍，以及诊断落在哪个 token 上。它是实现目标，不代表功能已实现；实际进度与证据仍由[项目 README](../../README.md) 维护。契约定义见[基础契约](contracts.md)。
 
 ## 1. 原则
 
@@ -36,7 +36,7 @@
 
 - `DiagnosticsResult.diagnostics` 为空**只有**在 `status == Supported` 时才表示“干净”；其他状态必须显示降级。
 - `HoverResult.quality` 为 `Any`/`Unknown`/`Missing` 时，`contents` 不得出现具体类型文本。
-- 请求失败用 `BackendError`，检查质量用 `CapabilityStatus`；不要把超时/退出包装成空诊断。
+- 请求失败用 `BackendError`，检查质量用 `CapabilityStatus`；不要把超时/会话失败包装成空诊断。
 
 ## 3. 诊断发布与清理
 
@@ -44,19 +44,19 @@
 | --- | --- |
 | 检查完成、无错误 | 发布空诊断集合，清除该文件旧诊断 |
 | 检查完成、存在模板可归因错误 | 只发布精确映射成功的诊断 |
-| 后端超时、退出或未就绪 | 返回 `BackendError` / `Unavailable`，不发布空集合 |
+| 后端超时、会话死亡或未就绪 | 返回 `BackendError` / `Unavailable`，不发布空集合 |
 | 诊断落在契约探针的明确锚点 | 按锚点发布到属性表达式或 handler token；同一绑定只保留一条 |
 | 诊断落在 helper 或契约探针之外的生成代码 | 视为桥接失败或覆盖不足，不发布猜测位置 |
 | 表达式跨 helper 与原标识符 | 归入覆盖不足，不整体平移 |
 | 文档关闭或项目移除 | 清理该文档诊断 |
-| 后端重启（新 `BackendEpoch`） | 旧请求、ACK、诊断全部失效；重放快照后重新计算 |
-| JS/TS 主服务报告脚本错误 | 不由 WXML 服务重复发布 |
+| 会话重建且世代推进（新 `BackendEpoch`） | 旧请求和诊断全部失效；重放快照后重新计算 |
+| 与项目绑定的脚本诊断 | WXML 服务可以发布独立脚本诊断；与项目无关的脚本错误不转发、不重复发布 |
 
 发布前校验：文件 + `SourceRevision` + `SnapshotId` + `ProjectRevision` + `ViewRevision` + `BackendEpoch` 均有效。
 
 ## 4. 诊断 target 规则
 
-fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是整段表达式；运行器断言 `Diagnostic.range` **精确等于** target 的字节范围，不能用 `contains` 放宽：
+`tests/fixtures/` 中记录的 `target` 是类型检查器应当报错/查询的 token，不是整段表达式；验收要求 `Diagnostic.range` **精确等于** target 的字节范围，不能用 `contains` 放宽。`manifest.json` 与 `expected/` 目前是人工维护的样本记录，没有代码加载它们，见[共享验收样本](../../tests/fixtures/README.md)：
 
 | 错误种类 | 级别 | target |
 | --- | --- | --- |
@@ -72,7 +72,7 @@ fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是
 
 组件声明引入的诊断只有“事件名未声明”是 `Warning`，其余模板可归因诊断均为 `Error`；`Warning` 仅在组件 `events` 声明完整时发布。
 
-如果实现只能返回更宽的范围，必须调整 fixture 并明确记录；不能通过放宽运行器断言掩盖。
+如果实现只能返回更宽的范围，必须调整样本记录并明确记录；不能通过放宽精确范围断言掩盖。
 
 ## 5. 严格空值
 
@@ -84,14 +84,14 @@ fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是
 | `{{ maybeUser.name }}`，位于守卫外 | 同上 | 仍诊断 `maybeUser` |
 | `{{ user.profile.name }}`，`profile?: Profile` | 可选属性 | 按实际选项诊断；未支持时 `Partial` |
 | `{{ list[0].name }}` | `list: Item[]` | `list[0]` 视为 `Item`；不做越界诊断 |
-| `wx:for` 的 `item.name` | 元素类型 | 元素类型非空；默认 `index` 为 `number`（`loop-scope` 已验证） |
+| `wx:for` 的 `item.name` | 元素类型 | 元素类型非空；默认 `index` 为 `number`（样本 `loop-scope`） |
 
 规则：
 
 - 窄化只在支持的 `wx:if`/`wx:elif`/`wx:else` 链内生效，且条件与正文使用同一访问路径。
 - 复杂布尔组合、赋值表达式、函数调用等未支持守卫返回 `Partial`，不产生猜测性错误。
 - `wx:for` 变量在循环结束后不可见；泄漏访问报“未声明名字”。
-- 对象遍历（`Record<string, T>`）时 `index` 为 `string`、`item` 为 `T`（`loop-scope` 已验证）。
+- 对象遍历（`Record<string, T>`）时 `index` 为 `string`、`item` 为 `T`（样本 `loop-scope`）。
 
 ## 6. 模板运行时转换
 
@@ -116,13 +116,13 @@ fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是
 
 | 优先级 | 来源 | 生效条件 |
 | --- | --- | --- |
-| 1 | 组件类型声明 | 项目 `tsconfig.json` 同级的 `components.d.ts`（见 [§7.4](#74-组件类型声明)）把该标签映射到组件接口，且该属性类型能被影子脚本中的类型级引用解析 |
+| 1 | 组件类型声明 | 项目 `tsconfig.json` 同级的 `components.d.ts`（见 [§7.4](#74-组件类型声明)）把该标签映射到组件接口，且声明结构完整（映射、`props`/`events` 段可读） |
 | 2 | 脚本 `properties` | 标签没有声明映射，或声明整体结构无法理解（组件声明不完整） |
 
 - 声明覆盖脚本：同一标签同时有声明与脚本 `properties` 时，属性检查与 hover 使用声明；两份事实不合并，冲突按声明处理。
 - 未保存改动不改变声明来源：组件已使用声明事实时，脚本 `properties` 的 overlay 改动不影响组件事实；只有声明文件自身的 overlay 改动会触发重算。
-- 声明缺失或不完整时回落到脚本 `properties`，行为与本次改动前一致。两条来源的未知属性处理不同：声明映射生效时，组件的 `props` 就是完整属性面，声明未包含的属性报未声明属性（`class`/`style`/`id`/`hidden`/`slot`/`data-*`/`aria-*`/`wx:*` 等通用属性豁免）；只有脚本 `properties` 时沿用既有行为，不把未知属性当作错误（保留 `custom-class` 一类透传写法）。
-- 声明成员的类型在影子中不可解析时，该成员不参与类型诊断，状态 `Partial` 并给出原因，其他成员照常生效；不回退到手写的类型比较。
+- 声明来源取决于声明结构完整性：声明缺失、映射不可读或 `props`/`events` 段结构不完整时回落到脚本 `properties`，行为与本次改动前一致。单个成员的类型在影子中不可解析不会让整个组件回落到脚本，只使该成员 `Partial`。两条来源的未知属性处理不同：声明映射生效时，组件的 `props` 就是完整属性面，声明未包含的属性报未声明属性（`class`/`style`/`id`/`hidden`/`slot`/`data-*`/`aria-*`/`wx:*` 等通用属性豁免）；只有脚本 `properties` 时沿用既有行为，不把未知属性当作错误（保留 `custom-class` 一类透传写法）。
+- 声明成员的类型在影子中不可解析时，该成员不参与类型诊断，状态 `Partial` 并给出原因，其他成员照常生效；不回退到脚本 `properties`，也不回退到手写的类型比较。
 - 可选属性（`?` 或类型含 `undefined`）允许缺省和 `undefined`；期望类型追加 `| undefined`。hover 展示声明中的类型原文，不重排 union 顺序。
 - 脚本来源下，`type` 与 `optionalTypes` 共同构成允许类型；期望类型使用已有的规范化 `type_text`，不读取 `this.properties` 的实例推导（当前 typings 会漏掉 `optionalTypes`）。
 - 脚本来源的组件带 `behaviors` 时，behavior 模块按 tsconfig `paths` 解析后并入属性面。behavior 无法解析（别名失配、文件缺失、behavior 自身写法超出静态可读范围）时不再让整个组件失效：仍校验组件自身 `properties` 声明的属性；其余属性可能由 behavior 提供，按脚本来源惯例不报错，状态 `Partial`，原因形如 `组件 behaviors 未能完全解析，仅校验了组件自身 properties 声明的属性（card）`。
@@ -170,13 +170,13 @@ fixtures 中的 `target` 是类型检查器实际报错/查询的 token，不是
 - 检查遵循项目编译选项，不强制 `strict` 或 `strictFunctionTypes`。关闭 `strictFunctionTypes` 时，`unknown`/更窄参数等函数参数检查会按项目的宽松规则放行；文档不得宣称所有配置都同样严格。
 - TypeScript 对方法简写（如 `onChange(event: E) {}`）的参数检查是双变的：即使 `strictFunctionTypes` 为 true，也不会因 `detail` 的 `unknown` 字段而报错。更严格的函数参数检查适用于 `onChange: function (...) {}` 或箭头函数属性；这是 TypeScript 自身规则，不是本项目的降级。
 - JS 文件只有在 `checkJs: true` 或文件带 `@ts-check` 时才生成属性/事件契约探针；否则状态 `Partial`，不把“未检查”当作兼容。
-- 参数未标注导致的 `Partial` 原因固定形如 `组件 'card' 的事件处理函数参数未标注类型，事件参数类型未校验`；与其他降级原因（声明不可读、声明不完整、类型不可解析）共存时保留先到者，不叠加展示。
+- 参数未标注导致的 `Partial` 原因来自契约计划的分类计数，形如 `1 component contract(s) were not checked: an event handler parameter has no explicit type annotation`；声明不可读、声明不完整、期望类型不可解析等降级各有独立分类，按分类分别计数，同类不重复叠加。
 - 契约探针的赋值错误由探针归属重锚到 handler token；落在期望类型注解、无法归属的生成声明或其它合成文本上的错误不发布，状态 `Partial`。
 - 事件名补全与事件属性值补全互不替代：属性名候选来自声明（仅完整声明），属性值候选仍来自脚本方法。
 
 hover：悬停在 handler token 上返回后端提供的脚本方法签名，范围精确到 handler token。
 
-补全：事件属性值（`bindtap="on"`）返回当前 Page 顶层方法或 Component `methods`，由 native 后端脚本查询提供事件处理函数候选（对应原 Node `complete` 的 `eventHandler` kind）；事件属性名补全见上表，不在该链路重复。
+补全：事件属性值（`bindtap="on"`）返回当前 Page 顶层方法或 Component `methods`，由 native 后端的脚本事实通道提供事件处理函数候选；事件属性名补全见上表，不在该链路重复。
 
 ### 7.3 特殊属性
 
@@ -184,7 +184,7 @@ hover：悬停在 handler token 上返回后端提供的脚本方法签名，范
 
 ### 7.4 组件类型声明
 
-组件声明是可选的事实来源，入口只有一个文件：项目 `tsconfig.json` 同级的 `components.d.ts`；完整决策见 [ADR-0011](../adr/0011-component-type-declarations.md)。
+组件声明是可选的事实来源，入口只有一个文件：项目 `tsconfig.json` 同级的 `components.d.ts`；发现与格式决策见 [ADR-0011](../adr/0011-component-type-declarations.md)，属性/事件绑定由引擎判定的决策见 [ADR-0013](../adr/0013-engine-checked-component-bindings.md)。
 
 #### 7.4.1 发现规则
 
@@ -196,7 +196,6 @@ hover：悬停在 handler token 上返回后端提供的脚本方法签名，范
 | 项目没有 `tsconfig.json` | 不寻找声明文件，行为与本次改动前一致 |
 | 声明放在更深层目录（如 `types/components.d.ts`） | 不生效，只读取与 `tsconfig.json` 同级的那一个文件 |
 | 声明文件是目录、逃逸项目根、不可读或超出单文件大小预算 | 记录一条可读的降级说明，能力状态 `Partial`；不产生组件事实，不崩溃 |
-| 声明组件数或成员数超出上限 | 按声明顺序截断，记录降级说明，状态 `Partial` |
 
 - 不读 tsconfig 的 `files`/`include`/`exclude`/`paths`，不做 glob，不扫描 `node_modules`。
 - 一个 tsconfig 目录只对应一份声明；需要不同声明时，把声明放到各自 app 的 tsconfig 目录。
@@ -235,7 +234,7 @@ export {};
 
 - `events` 的事件值用 `{ detail: T }` 声明 detail；`T` 直接决定 hover 签名中的 `CustomEvent<T>`。
 - `props` 与 `events` 成员上方的 `/** ... */` 说明会进入 hover：属性说明追加在类型与声明位置之后，事件说明追加在签名之后。多行说明折叠为单行，超过 512 字符截断；`//` 与 `/* */` 不算说明；没有说明时不生成空行，也不伪造描述。说明只用于展示，不参与类型证明、可空性或绑定检查。
-- 映射表内重复映射同一标签时取第一个，并记录冲突说明；只影响重复项与截断项，其他组件照常生效。
+- 映射表内重复映射同一标签时取第一个，并记录冲突说明；只影响重复项，其他组件照常生效。
 - 真实样例见 [`components-typings` 样本](../../tests/fixtures/README.md)：`round` 未声明、`text="{{ loading }}"` 类型不匹配、`bind:chaneg` 未声明事件名。
 
 #### 7.4.3 声明类型的检查边界
@@ -265,7 +264,7 @@ hover 的类型原文和“未证明”标注仍按既有声明解析展示，�
 - `DefinitionResult.locations` 为空 + `Supported`：已检查，确实没有定义。
 - 空 + `Unsupported`/`Disabled`/`Unavailable`/`Unknown`：没有能力查，必须显示降级，不能显示成“无定义”。
 - 只有能安全映射回原文的目标才返回；无法映射时不返回，不贴到最近字符。
-- 反向编辑/重命名至今未实现；AC-012 的 `coverage.edits` 记录为 `deferred-to-C1`（字段名保留为历史）。
+- 重命名已实现，但不是通用重构：请求目标只接受已打开的 WXML；可重命名 data 路径、脚本组件属性、静态 handler、循环绑定、class 和静态 template。普通标签与自定义组件标签保守拒绝；覆盖不完整、跨脚本引用或跨视图冲突时整份拒绝。结果只返回 `documentChanges`，服务端不写盘。安全编辑边界见[功能基线 §3.9](wxml-language-feature-baseline.md#39-语义工具与安全编辑)；AC-012 的 `coverage.edits = "deferred-to-C1"` 只是旧验收记录，不代表当前能力。
 
 ## 9. `any`、`unknown` 与缺少类型
 
@@ -293,12 +292,13 @@ hover 的类型原文和“未证明”标注仍按既有声明解析展示，�
 
 | 形式 | 初始状态 | 行为 |
 | --- | --- | --- |
-| WXS 模块与 `<wxs>` | `Unsupported` | 不把 WXS 名字当数据字段 |
-| `template` / `import` / `include` | `Partial`/`Unsupported` | 调用上下文未解析时不发布猜测诊断 |
+| WXS 静态导出（`<wxs>` 或 `src`） | `Supported`/`Partial` | 静态导出成员可 hover/definition，`{{ m. }}` 返回静态导出成员与签名，`signatureHelp` 使用静态签名，打开 `.wxs` 内的声明、导出键与文件内引用可 hover；不把 WXS 名字当页面/组件数据字段 |
+| WXS 动态导出或不可证明形式 | `Partial`/`Unsupported` | 只保留可证明的静态事实，不执行 WXS、不推断动态导出；shadow 把静态模块根作为隔离的局部值（当前影子文本可出现 `const m1: any = null as any;`），不能据此宣称 WXS 参数被严格检查 |
+| `template` / `import` / `include` | `Partial` | 调用上下文未解析时不发布猜测诊断；模板体不保证逐调用实例化检查 |
 | Behavior / 封装注册 / 闭包内注册 | `Partial` | 识别失败报告原因，不静默取第一个候选 |
 | 多候选注册或类型来源不明 | `Partial` + 候选计数 | 使用首个注册、不合并；reason 必须包含候选数，见 [ADR-0012](../adr/0012-in-process-tsrs-session.md) 与[原生合同](tsrs-native-contract.md) |
 | 组件声明文件不可读（目录、越界、超限） | `Partial` | 不产生组件事实，不发布猜测诊断，原因不含绝对路径 |
-| 组件声明不完整（截断、重复映射、解析失败） | `Partial` | 受影响的组件或成员不参与检查，其他组件照常生效 |
+| 组件声明不完整（重复映射、解析失败） | `Partial` | 受影响的组件或成员不参与检查，其他组件照常生效 |
 | handler 参数未标注（或标注不可解析） | `Partial` | 不发布签名诊断，原因可读 |
 | 事件 `detail` 不可解析 | `Partial` | 不发布签名诊断；hover 标注未证明 |
 | 组件属性/事件期望类型在影子中无法解析（`2304`/`2503`） | `Partial` | 不发布模板诊断，生成文本错误不外溢 |
@@ -334,26 +334,18 @@ hover 的类型原文和“未证明”标注仍按既有声明解析展示，�
 | 多视图与组件隔离 | `multi-view` | `card.title` 为 string、`badge.title` 为 number，两个 WXML 各自解析 |
 | any/unknown | `any-unknown` | `any` 不伪造说明；`external.anything` 的 target 为 `external` |
 | interface 根 | `interface-root` | `Page({ data: User })` 返回 `Unknown`，不伪造 string |
-| 未支持形式 | `unsupported-forms` | WXS/import/include/动态事件返回 `Unsupported`，不伪造 `Supported` |
+| 未支持形式 | `unsupported-forms` | 未解析的 WXS 名字、import/include 调用上下文和动态事件只保留可证明事实；不伪造 `Supported`，也不把整个样本状态当作干净检查 |
 | 未保存修改 | `unsaved-overlay`（runtime） | 不保存即更新类型与说明 |
 | 旧结果与重启 | `stale-request`（runtime） | 旧结果不发布，重启后恢复 |
 | Zed 多文档 | `zed-multi-doc`（runtime） | 事件进入正确实例，不重复诊断 |
 
-WT-B 验证（2026-11-16；**历史**）：
-
-> `backends/typescript` 与 `wave5_acceptance` 已随 P7 删除，以下命令当前不可执行，仅保留为历史证据。
-> 当前 native 覆盖见 `crates/wxml-lsp/tests/native_lsp_document_symbols.rs` 与
-> `crates/wxml-backend-tsrs/tests/real_engine.rs`；`native_parity` 已随 ADR-0009 删除，历史版本见
-> tag `pre-slim-20261120`。
+上表是规则与样本目标的对应关系，不是当前测试执行清单。当前 opt-in 入口：
 
 ```bash
-(cd backends/typescript && npm ci && npm run build)
-WXML_TEST_NODE=1 cargo test -p wxml-lsp --test wave5_acceptance -- --ignored
+cargo test -p wxml-lsp --all-features
 ```
 
-上表中与 WT-B 相关的 `loop-scope`、`conditional-union`、`multi-view`、`alias-project`、`component-bindings` 已由该 runner 执行：`wx:for` locals 按元素/索引类型解析（嵌套、遮蔽、`wx:for-item`/`wx:for-index`、退出循环后不可见、`Record` 键为 `string`），`wx:if/elif/else` 分支窄化生效，不同页面/组件脚本的视图在交错请求下互不污染（发现模型为 1 WXML ↔ 1 脚本，同一脚本多视图不在模型内），`@models/*` hover 与 definition 可解析，组件属性绑定不匹配精确落在绑定表达式。该 runner 被 `#[ignore]` 保护（常规门禁只编译不执行），并且不覆盖属性名补全、重命名及其他未列出的 AC。
-
-WT-C 验证（2026-11-16）：同一 runner 当时执行 `component-bindings` 的事件缺失诊断与正反 definition，以及 `events-basic` 的 Page/Component 方法、7 种绑定形式、缺失 handler 精确范围、动态/空/非标识符静默、多注册 `Partial`、非字面量根 `Unsupported`、事件值补全（`eventHandler` kind）。`real_node` 另有真实 Node 冒烟覆盖同一链路的诊断、definition 与补全（历史，P7 删除）；当前 native 冒烟见 `crates/wxml-lsp/tests/native_lsp_document_symbols.rs`（opt-in）；`stdio_type_loop` 已随 ADR-0009 删除，历史版本见 tag `pre-slim-20261120`。
+默认路径不执行真实类型用例；需要真实引擎时，按 [`real_engine.rs`](../../crates/wxml-backend-tsrs/tests/real_engine.rs) 的说明设置 `TSRS_TYPINGS_ROOT`（必要时设 `WXML_REQUIRE_REAL_ENGINE=1`），并先按 README 安装 typings 布局。`manifest.json` 与 `expected/` 当前没有代码加载；仓库中存在测试入口，不等于本次已经运行或通过。
 
 ## 12. 变更规则
 

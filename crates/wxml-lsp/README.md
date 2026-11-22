@@ -58,8 +58,9 @@ serving.
   symbol facts keep working; session-backed type queries answer `Unavailable`
   with a path-free reason. This is not a Node fallback.
 - **Degraded**: an uninitialised or poisoned type session answers type queries
-  `Unavailable`; no type result is fabricated and no session is silently
-  restarted.
+  `Unavailable`; no type result is fabricated. A dead session may be rebuilt
+  once for the current request; a second failure fails that request and drops
+  the session, and a later request may rebuild again.
 - **Static limits** (for example a non-literal `Page(options)` registration)
   answer `Unsupported` with a path-free reason; they are never reported as an
   empty successful type result.
@@ -129,8 +130,9 @@ suites were removed by ADR-0009; their historical versions are available at tag
   layout. Only Linux x86-64 with POSIX absolute roots is supported.
 - The type engine runs in-process: a single-request panic is returned as that
   request's failure and poisons the session; OOM, abort or stack overflow ends
-  the whole process. Running type work cannot be cancelled, and a poisoned
-  session is not restarted automatically.
+  the whole process. Running type work cannot be cancelled. A dead session may
+  be rebuilt once for the current request; if it fails again, that request is
+  lost and the session is dropped, while a later request may rebuild again.
 - Definition is limited to expression-member targets the native referenced
   symbol path can decode and map back to original text.
 - Template bodies are not fully type-checked per call instance; WXS is a static

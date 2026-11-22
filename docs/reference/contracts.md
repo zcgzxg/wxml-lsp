@@ -1,21 +1,21 @@
-# C0 基础契约
+# 基础契约
 
-更新日期：2026-11-16。
+更新日期：2026-11-22。
 
-本文件记录第一轮实现（P0/C0）修订后的公共契约：坐标与范围类型、项目/文件/版本身份、请求上下文、能力状态、后端错误与接口、mock 行为、共享样本 schema，以及哪些内容**尚未**冻结。C0 之外的片段布局和线协议曾由 C1 类型桥冻结；native 后端（[ADR-0012](../adr/0012-in-process-tsrs-session.md)）不实现 C1，该契约已删除，历史版本见 tag `pre-slim-20261120`，背景见 [ADR-0002](../adr/0002-template-type-checking-and-source-maps.md) 与 [ADR-0004](../adr/0004-parallel-delivery-and-validation-gates.md)。
+本文固定跨模块共享的基础契约边界：坐标与范围类型、项目/文件/版本身份、请求上下文、能力状态、后端错误与接口、mock 行为、共享样本的维护方式，以及重命名的安全边界。
 
-**状态（2026-11-16，C1 删除后更新）**：C0 契约仍有效；原 C1 类型桥增量已随 native 后端删除，历史版本见 tag `pre-slim-20261120`。本文第 12 节“未冻结（C1 及后续）”保留为 C0 时点的边界记录。Wave 4 模板作用域、补全和事件链路已在 Wave 5 完成；反向编辑、组件内 `usingComponents` 和多根工作区仍按本文的限制处理。
+**历史边界**：早期称 C0（P0 是首轮实现标签）；C1 类型桥与 Node 后端已随 native 进程内后端删除，Wave 4/5 的模板作用域、补全与事件链路已经落地。本文不再记录迁移批次或冻结清单，历史版本见 tag `pre-slim-20261120`。当前权威顺序与过程证据边界以[文档索引](../README.md#3-权威顺序)为准；组件内 `usingComponents`、属性/事件等 WXML 功能限制归[功能基线](wxml-language-feature-baseline.md)，本文只在需要时链接，不重复维护。
 
 ## 1. 权威顺序
 
 发生冲突时按以下顺序判断：
 
-1. 有效 ADR（架构边界）。
-2. 本文件与[类型诊断策略](type-diagnostics.md)（契约与策略）。
-3. 项目 README 与功能基线（需求与进度）。
-4. 证据记录（历史结论及限制）。
+1. 当前代码与默认运行的测试。
+2. 已接受的 ADR（架构边界）。
+3. 本文件与[类型诊断策略](type-diagnostics.md)。
+4. 项目 README 与[功能基线](wxml-language-feature-baseline.md)。
 
-代码事实优先于任何文档；发现不一致时更新对应文档，不保留两套说法。
+代码事实优先于任何文档；发现不一致时更新对应文档，不保留两套说法。过程性证据、迁移计划、旧 Node 时代的验收记录和已删除的 C1 类型桥不作为现行事实来源；追溯方式见[文档索引](../README.md#3-权威顺序)。
 
 ## 2. 坐标与范围类型
 
@@ -29,7 +29,7 @@
 
 约定：
 
-- 所有范围上限为 4 GiB（`u32`），超过的表达不在 C0 范围内。
+- 所有范围上限为 4 GiB（`u32`），超过的表达不在基础契约范围内。
 - `TextRange` 不校验字符边界或文本长度；`SourceSnapshot::source_range` 负责校验。
 - `SourceRange`/`FragmentRange` 在类型层面隔离，不能互相替换。把片段范围直接发布为诊断或 hover 范围属于错误。
 - `LineIndex::new` 拥有 `Arc<str>` 文本；`position(offset)` 与 `offset(position)` 不再接受外部文本，因此旧索引无法套用到新文本。
@@ -37,7 +37,7 @@
 - 落在 `\r\n` 或 `\n` 内部的 offset 映射到该行内容末尾的位置；行起点映射到下一行第 0 列。
 - 列等于行内容长度时映射到 `\r` 或行尾；列超出内容长度或落在代理对中间返回 `None`。
 - 转换必须使用产生范围时的同一文本快照；范围自身不携带版本。
-- LSP 层负责 UTF-16 ↔ 字节转换；后端请求使用字节 offset，后端可用 `context.source().line_index().position(offset)` 校验。
+- LSP 层负责 UTF-16 ↔ 字节转换；查询类后端请求（hover、definition、completion）使用 UTF-8 字节 `offset`，后端可用 `context.source().line_index().position(offset)` 校验。
 
 ## 3. 身份
 
@@ -73,7 +73,7 @@
 - 简单 newtype 提供 `new`/`get`/`next`；`next` 饱和到 `u64::MAX`。达到上限后必须停止接受新编辑/变更，而不是复用最大值。
 - `ProjectRevision`/`BackendEpoch` 的 `next` 保留各自的 project/backend。
 - 所有版本实现 `Display`；简单 newtype 序列化为数字，组合版本序列化为 `{ "project": …, "value": … }` / `{ "backend": …, "value": … }`。
-- `ClientVersion` 的单调性由 LSP 协调器执行：收到不大于当前值的版本时拒绝应用，并记录协议错误。
+- `ClientVersion` 的单调性由 LSP 层执行：收到不大于当前值的版本时拒绝应用，并记录协议错误。
 
 ## 5. 源码快照与请求上下文
 
@@ -87,8 +87,8 @@
 
 - 字段：`ProjectRevision`、`ViewRevision`、`BackendEpoch`、`Arc<SourceSnapshot>`。
 - 构造时校验 `project_revision.project() == source.file().project()`，不一致返回 `ContextError::ProjectMismatch`。
-- 所有 Backend 请求都携带 `context` 与字节 `offset`，不再有裸 `FileId`。
-- offset 必须是 UTF-8 字符边界；后端可用行索引校验。
+- 每个后端查询请求都携带 `context`，不存在脱离快照的查询；`hover`/`definition`/`completion` 另带字节 `offset`，`diagnostics`/`script_diagnostics` 只带 `context`，`symbols`/`document_symbols` 另带 `subject`。
+- 偏移必须是 UTF-8 字符边界；后端可用行索引校验。`subject` 必须是当前已准备视图内的文件，后端不自行解析路径。
 
 ## 6. 能力状态
 
@@ -99,11 +99,11 @@
 | `Supported` | `true` | `None` | 样本覆盖的范围内已完成检查 |
 | `Partial { reason }` | `false` | `Some` | 部分输入可用，`reason` 说明限制 |
 | `Unsupported { reason }` | `false` | `Some` | 语言形式不支持 |
-| `Disabled { reason }` | `false` | `Some` | 策略关闭（如 `templateCheckPolicy`） |
-| `Unavailable { reason }` | `false` | `Some` | 运行时不可用（后端退出、超时、未启动） |
+| `Disabled { reason }` | `false` | `Some` | 策略关闭了该检查 |
+| `Unavailable { reason }` | `false` | `Some` | 运行时不可用（会话未就绪、已失效、未启动） |
 | `Unknown { reason }` | `false` | `Some` / `None` | 尚未确认支持程度 |
 
-JSON 使用自描述标签，例如 `{"status":"partial","reason":"…"}`；`Unknown` 无 reason 时省略字段。`Partial` 有意不算支持，调用方不能把部分覆盖当成完整检查。
+JSON 使用自描述标签，例如 `{"status":"partial","reason":"…"}`；`Unknown` 无 reason 时省略字段。`Partial` 有意不算支持，调用方不能把部分覆盖当成完整检查。`Disabled` 只表示“策略关闭”，不表示语言形式不支持；没有实际策略时不得凭空产出该状态。
 
 ## 7. 失败与状态的区别
 
@@ -114,48 +114,66 @@ JSON 使用自描述标签，例如 `{"status":"partial","reason":"…"}`；`Unk
 | `Unavailable(String)` | `type backend unavailable: …` | 未启动、未就绪 |
 | `Protocol(String)` | `type backend protocol error: …` | 私有协议不兼容或消息非法 |
 | `Timeout` | `type backend request timed out` | 超过请求期限 |
-| `Cancelled` | `type backend request cancelled` | 请求被取消 |
+| `Cancelled` | `type backend request cancelled` | 请求被取消或结果已过期 |
 | `Internal(String)` | `type backend internal error: …` | 后端内部失败 |
 
-`BackendError` 表示“请求失败”；`CapabilityStatus` 表示“检查质量/可用性”。两者不能互相替代。`Protocol`/`Internal` 的文本只用于日志和诊断，不直接展示给最终用户。`BackendError` 不实现 serde；跨进程错误码在 native 后端协议中定义，见[原生合同](tsrs-native-contract.md)。
+`BackendError` 表示“请求失败”；`CapabilityStatus` 表示“检查质量/可用性”。两者不能互相替代。`Protocol`/`Internal` 的文本只用于日志和诊断，不直接展示给最终用户。`BackendError` 不实现 serde。
+
+native 后端在进程内把引擎错误类别映射成 `NativeError`，再由适配层映射到上述变体；没有跨进程错误码表。映射入口是 [`native/inproc.rs`](../../crates/wxml-backend-tsrs/src/native/inproc.rs) 的 `map_engine_failure` 与 [`backend_tsrs/mod.rs`](../../crates/wxml-lsp/src/backend_tsrs/mod.rs) 的 `map_native_error`，具体类别见[原生合同](tsrs-native-contract.md)。
 
 ## 8. 后端接口与 DTO
 
-[`Backend`](../../crates/wxml-types/src/backend.rs) 是 `Send + Sync` 的同步阻塞边界：
+[`Backend`](../../crates/wxml-types/src/backend.rs) 是 `Send + Sync` 的同步阻塞边界。下表按职责列出方法及默认行为，不复制完整 trait：
 
-```rust
-pub trait Backend: Send + Sync {
-    fn epoch(&self) -> BackendEpoch;
-    fn hover(&self, request: HoverRequest) -> Result<HoverResult, BackendError>;
-    fn diagnostics(&self, request: DiagnosticsRequest) -> Result<DiagnosticsResult, BackendError>;
-    fn definition(&self, request: DefinitionRequest) -> Result<DefinitionResult, BackendError>;
-    fn capabilities(&self) -> BackendCapabilities;
-}
-```
+| 方法 | 职责 | 默认行为或约束 |
+| --- | --- | --- |
+| `epoch` | 返回当前后端世代 | 必须实现 |
+| `hover` | 单模板位置 hover | 必须实现 |
+| `diagnostics` | 单模板语义/语法诊断 | 必须实现 |
+| `script_diagnostics` | 独立项目脚本诊断；无模板 shadow/语法/WXML facts，range 在脚本自身字节中 | 默认空 `Unsupported`，LSP 不发布任何诊断；与“检查过且干净”不同 |
+| `definition` | 单模板位置定义 | 默认空 `Unsupported`，不是“检查通过且没有定义” |
+| `completion` | 表达式成员/事件处理函数补全 | 默认空 `Unsupported`；静态模板补全不经此方法 |
+| `symbols` | 脚本符号事实（数据路径/引用/事件） | 默认 `Unsupported`；空 `Supported` 必须证明没有声明/引用 |
+| `document_symbols` | 脚本文档大纲 | 默认 `Unsupported`；空 `Supported` 必须证明文档没有声明 |
+| `invalidate` | 项目/工作区标识变化后丢弃缓存 | 默认 no-op，仅适用于无状态后端；缓存型后端必须覆盖、使旧分析不可达并推进 epoch，迟到结果由发布屏障丢弃 |
+| `capabilities` | 广告各功能支持程度 | 默认 `BackendCapabilities::none()`（四项 `Unsupported`） |
 
-- 调用方必须在专用线程或 `spawn_blocking` 中调用，并设置读超时；后端不得无限阻塞。
-- `definition` 默认返回 `Unsupported` 与空 locations，而不是“检查通过且没有定义”。
-- `capabilities()` 默认返回四项 `Unsupported { reason: "not implemented" }`；`completion` 字段先于方法存在，方法随后端实现接入。
+约束：
+
+- 调用方必须在专用 worker 中调用；当前 native 后端同步执行且不可中断，没有读超时或取消，单次调用可能超过配置的 deadline。
+- `symbols`、`document_symbols`、`script_diagnostics`、`completion` 等新增方法不存在“先有字段后有方法”的过渡态；未实现时统一由 trait 默认返回 `Unsupported`。
+- `capabilities()` 仍只有 hover/diagnostics/definition/completion 四项，且都是 `CapabilityStatus`，不是 bool；脚本符号与文档大纲按请求状态表达，不进入这四个广告位。
+- native 适配器当前对四项都报告 `Partial`（并给出具体原因），因为类型路径只覆盖 shadow 能表达的模板/脚本子集；不得把它说成 `Supported`。
+
+主要 DTO：
 
 | 类型 | 关键字段 |
 | --- | --- |
-| `HoverRequest` | `context: RequestContext`、`offset: u32` |
+| `HoverRequest` | `context`、`offset: u32`（UTF-8 字节） |
 | `HoverResult` | `contents`、`markup: MarkupKind`、`range: Option<SourceRange>`、`status`、`quality` |
 | `MarkupKind` | `Markdown`（默认）/ `PlainText` |
 | `TypeQuality` | `Known` / `Any` / `Unknown` / `Missing`，`#[non_exhaustive]` |
 | `DiagnosticsRequest` | `context` |
-| `Diagnostic` | `range: SourceRange`、`severity`、`message` |
+| `Diagnostic` | `range: SourceRange`、`severity`、`message`、`code: Option<String>` |
 | `DiagnosticsResult` | `diagnostics: Vec<Diagnostic>`、`status` |
-| `DefinitionRequest` | `context`、`offset` |
+| `DefinitionRequest` | `context`、`offset: u32` |
 | `SourceLocation` | `file: FileId`、`range: SourceRange` |
 | `DefinitionResult` | `locations: Vec<SourceLocation>`、`status` |
-| `BackendCapabilities` | 四项 `CapabilityStatus`（不再使用 bool） |
+| `CompletionRequest` | `context`、`offset`、`kind: CompletionKind` |
+| `CompletionItem` | `label`、`kind`、`detail`、`documentation`、`insert_text`、`insert_text_format`、`replace`、`sort_text`、`filter_text` |
+| `CompletionResult` | `items`、`status`、`truncated` |
+| `SymbolRequest` / `SymbolResult` | `context`、`subject`、`query` / 脚本符号事实与 `status` |
+| `DocumentSymbolsRequest` / `DocumentSymbolsResult` | `context`、`subject` / 大纲树、`status`、`truncated`、`skipped`、`gaps` |
+| `BackendCapabilities` | 四项 `CapabilityStatus` |
 
 关键语义：
 
 - `DiagnosticsResult` 的空 `diagnostics` **只有**在 `status == Supported` 时表示“干净”；`Partial`/`Unsupported`/`Disabled`/`Unavailable`/`Unknown` 必须显示降级，不能当作通过。
-- `DefinitionResult` 的空 `locations` + `Supported` 表示“已检查，确实没有定义”；`Unsupported`/`Unavailable` 表示“没有能力查”，不得显示成“无定义”。
-- `HoverResult::status` 描述检查状态，`quality` 描述类型质量；`Any`/`Unknown`/`Missing` 不得显示成具体类型文本。
+- `Diagnostic.code` 是可选的稳定机器码：没有可靠来源时为 `None`，不得伪造；native 诊断保留引擎十进制 code，宿主样式/资源诊断使用 `style.*` 一类稳定前缀。
+- `DefinitionResult` 的空 `locations` + `Supported` 表示“已检查，确实没有定义”；其余状态表示“没有能力查”，不得显示成“无定义”。
+- `CompletionResult` 的空 `items` + `Supported` 表示“已检查，没有候选”；`truncated` 为 `true` 时已到达 `MAX_COMPLETION_ITEMS`（256），不得把截断结果当成完整列表。
+- `HoverResult::status` 描述检查状态，`quality` 描述类型质量；`Any` 可以显示字面 `any`，但不得当作已知成员类型，`Unknown`/`Missing` 不得包装成具体类型文本。
+- `SymbolResult`/`DocumentSymbolsResult` 的空结果只有在 `Supported` 时才表示“确实没有”；`Partial` 必须保留 `reason`/`gaps`。
 
 ## 9. Mock 行为
 
@@ -164,22 +182,21 @@ pub trait Backend: Send + Sync {
 - 默认 capabilities：hover/diagnostics `Supported`，definition/completion `Unsupported`；默认 epoch 为 `BackendEpoch::new(BackendId::new("mock"), 1)`。
 - 默认结果：diagnostics 为干净且 `Supported`；definition 为 `Unsupported`；未预置 hover 时返回 `Unavailable`。
 - `set_hover`/`set_diagnostics`/`set_definition` 可在调用之间替换结果（AC-009）。
-- `fail_hover`/`fail_diagnostics`/`fail_definition` 分别注入错误；`clear_errors` 清除全部；`with_error` 让三个方法都失败。
+- `fail_hover`/`fail_diagnostics`/`fail_definition` 分别注入错误；`clear_errors` 清除全部；`with_error` 让三个方法都失败。错误路径也记录调用。
 - `set_capabilities`/`set_epoch` 覆盖广告状态。
-- `calls()` 按顺序返回 `BackendCall::Hover`/`Diagnostics`/`Definition`；错误路径也记录调用。
+- `calls()` 按顺序返回 `BackendCall::Hover`/`Diagnostics`/`Definition` 三类记录。
+- 新方法（`script_diagnostics`、`completion`、`symbols`、`document_symbols`）不扩展 mock：它们走 trait 默认的 `Unsupported`，不会被记录为上述三类调用；`invalidate` 仍是 no-op。
 - 内部 `Mutex` 被毒化时通过 `PoisonError::into_inner` 恢复数据，不 panic。
 - 不模拟延迟、取消或进程退出；时序测试使用可控延迟的集成后端（AC-009）。
 
 ## 10. 共享样本清单
 
-`tests/fixtures/manifest.json` 为 schema v2，完整规则见[共享验收样本](../../tests/fixtures/README.md)。C0 冻结：
+完整 schema、marker/target 规则、目录结构和各 AC 的对应关系见[共享验收样本](../../tests/fixtures/README.md)。
 
-- `version = 2`。
-- `id` 唯一；`kind` 为 `fixture`/`runtime`；`acs` 只使用 AC-001..AC-013 且全覆盖。
-- fixture 必须给出 `root`、`positive`、`negative`、`expected.hover`、`expected.diagnostics`；可选 `expectClean`、`expected.definition`、`coverage`。
-- runtime 必须有 `scenario` 与至少两个 `steps`。
-- marker 唯一；`target` 是 marker 内唯一的 token；`position` 由 `wxml_text::LineIndex` 计算并精确匹配；`positive`/`negative` 按 marker 出现次数比较（跨文件重复需重复列出），`requirePositions` 强制每条 hover 带 `position`。
-- 校验入口：fixtures 由测试直接读取；原 `wxml-fixtures` crate 已随 ADR-0009 删除，`manifest.json` 保留为样本清单。
+- `tests/fixtures/manifest.json` 与各样本的 `expected/*.json` 是**人工维护的样本记录**：manifest 记录样本与 AC 对应关系，expected 记录 hover/diagnostics/definition 锚点。
+- 原 `wxml-fixtures` crate 与 `wave5_acceptance` Node runner 已随 ADR-0009 删除；当前没有 runner 或校验器加载 manifest，crate 测试直接打开样本工程目录。
+- 修改样本时必须人工同步 manifest 与 expected；`coverage` 只记录目标，不代表断言已被执行。
+- 样本的换行约定（普通 `.wxml` 为 LF，`*-crlf.wxml` 为字节精确 CRLF）由仓库 `.gitattributes` 与样本字节维持，没有独立校验器。
 
 ## 11. 发布校验
 
@@ -192,25 +209,39 @@ pub trait Backend: Send + Sync {
 5. `BackendEpoch` 等于当前后端世代；
 6. 目标模板没有被新分析替代。
 
-任一不满足时丢弃结果并调度当前快照；不能把旧范围套到新文本上。
+[`AnalysisStamp`](../../crates/wxml-lsp/src/workspace.rs) 已存在，汇集 `file`、`revision`、`snapshot`、`view_revision`、`project_revision`、`epoch`。`Workspace::is_current` 检查文件、`SourceRevision`、`SnapshotId`、`ViewRevision` 与 `ProjectRevision`；LSP 的发布路径同时比较 `stamp.epoch` 与当前 `BackendEpoch`。任一不满足时丢弃结果并调度当前快照；不能把旧范围套到新文本上。
 
-## 12. C0 冻结范围
+## 12. 当前边界
 
-已冻结：
+### 12.1 现行公共项
 
 - `TextRange`/`SourceRange`/`FragmentRange`、`LineIndex`（拥有文本）、`Position`。
 - `ProjectId`、`BackendId`、`FileId` 及 canonical 规则、`FileIdError`。
 - `SourceRevision`、`SnapshotId`、`ViewRevision`、`ClientVersion`、`ProjectRevision`、`BackendEpoch`。
 - `SourceSnapshot`、`RequestContext`、`ContextError`。
 - `CapabilityStatus` 六态、`BackendError`、`Backend` trait、全部结果 DTO、`MockBackend`。
-- 共享 fixtures schema v2 与校验器。
+- 共享样本的记录方式（schema 细节归 `tests/fixtures/README.md`）。
 - 本文件与[类型诊断策略](type-diagnostics.md)。
 
-未冻结（C1 及后续）：
+### 12.2 重命名（已实现，范围有限）
 
-- `CheckFragment` 的 JS/TS 方言、helper ABI、shadow 布局和片段身份，以及 Rust–Node 私有协议帧、消息集合、请求 ID/ACK/超时与错误码：随 C1 契约删除；native 侧以[原生合同](tsrs-native-contract.md)为准。
-- `AnalysisStamp`、`BackendFileVersion` 的具体结构与组合方式。
-- LSP 调度、防抖、发布屏障实现和编辑替换范围。
-- AC-012 的反向编辑/重命名结果：manifest 以 `coverage.edits = "deferred-to-C1"` 记录；反向编辑至今未实现。
+WXML 的 `textDocument/rename` 已经接入，只接受能证明安全的目标：
 
-新增或修改 C0 项时：先更新契约测试与本文，再让依赖方接入；影响多个工作包的变更需要协调者确认。
+- 光标位于已打开的 WXML 模板；目标必须是数据路径、脚本组件属性、静态事件处理函数、`wx:for` 的 item/index、`class` 值或静态 `template` 名称之一。
+- 普通标签名与自定义组件标签名不重命名：标签名缺少 owning `usingComponents` 别名和全部项目用法的证明，直接拒绝。
+- 组件属性重命名会同时处理声明、脚本引用、调用方属性名（含 kebab/camel 拼写）和组件模板内引用；不能证明模板作用域无冲突时拒绝整次编辑。
+- 所有目标都必须有完整的符号/引用或静态出现证据；别名与目标必须唯一；新名称与现有字段、循环局部、WXS 模块或类名冲突时拒绝。
+- 编辑由 `EditPlan` 统一校验：路径可编辑、范围在字符边界、`expected_text` 匹配、编辑互不重叠、UTF-16 序列化有效。任一项失败返回错误与零编辑，不做部分修改，也不降级为文本查找替换。
+- `.d.ts`/`.d.mts`/`.d.cts` 永远不可编辑。`components.d.ts` 可以作为组件属性事实来源，但不能被重命名。
+- 只返回 `WorkspaceEdit.documentChanges`，不写磁盘；客户端不支持 `documentChanges` 时服务端拒绝请求。
+- 该能力不等于“覆盖所有组件声明/所有跨视图引用”；未通过上述证明的目标没有编辑。
+
+相关实现与测试：[`semantics/handlers.rs`](../../crates/wxml-lsp/src/semantics/handlers.rs)、[`semantics/edit_plan.rs`](../../crates/wxml-lsp/src/semantics/edit_plan.rs)、[`tests/semantic_surface.rs`](../../crates/wxml-lsp/tests/semantic_surface.rs)。
+
+### 12.3 不属于本合同
+
+- C1 类型桥与旧 Rust–Node 私有协议已删除；native 侧以[原生合同](tsrs-native-contract.md)为准。
+- LSP 调度、防抖、队列和发布屏障的具体实现、编辑替换范围：属于实现细节，不属于基础契约公共 DTO。
+- `AnalysisStamp` 已存在并携带发布校验所需的版本字段；不再维护单独的冻结清单或协调者工作流。
+
+新增或修改基础契约项时：先更新契约测试与本文，再让依赖方接入；跨模块变更按[文档索引](../README.md#1-文档角色)的角色归属评审。

@@ -10,7 +10,7 @@
 
 ## Context
 
-此前的方案采用的是 **Rust 语义适配器 + 独立 tsgo 子进程**：安装包分发约 28 MB 的 `engine/lib/tsc` 与标准库，启动时校验可执行文件/`package.json` 的摘要、执行 `--version`、跑 `initialize` 与能力探针，运行期维护 Content-Length 帧、服务端回调泵、stdout/stderr 排空、超时和重启退避。
+此前的方案采用的是 **Rust 语义适配器 + 独立 tsgo 子进程**（历史形态）：安装包分发约 28 MB 的 `engine/lib/tsc` 与标准库，启动时校验可执行文件/`package.json` 的摘要、执行 `--version`、跑 `initialize` 与能力探针，运行期维护 Content-Length 帧、服务端回调泵、stdout/stderr 排空、超时和重启退避。
 
 `tsrs` 提供了与 tsgo 同协议、同 AST schema 的 `tsrs_api::Session`：查询方法、`initialize` 形状、AST protocol v9/header 64/node stride 28 与现有实现一致，并且通过 `tsrs_vfs` 内嵌 TypeScript 标准库。把 `Session` 直接嵌入语言服务器进程，可以在保留全部查询语义的同时删除整个子进程传输层和引擎资产分发。
 
@@ -50,14 +50,16 @@
 - `tsrs_api`、`tsrs_core`、`tsrs_vfs` 使用精确 pin `=7.1.0-beta.tsrs4`；升级必须作为独立变更，重跑能力探针与字段级差分。
 - 启动时校验 `tsrs_core::version()` 等于 `7.1.0-beta`，AST protocol 为 v9、header 64 字节、node stride 28，且 `initialize` 返回大小写敏感与 `currentDirectory`；能力探针全部通过后才标记类型能力可用。任一不一致使类型能力不可用，不做“尽力兼容”。
 - `Session::new` 不返回 `Result`，构造用 `catch_unwind` 包围；失败映射为 `Unavailable`，不得带着半初始化状态继续服务。
-- CI 必须断言未设置编译期 `TSRS_TS_VERSION`，防止版本字符串被构建环境静默改写。
+- crate 在编译期断言未设置 `TSRS_TS_VERSION`，防止版本字符串被构建环境静默改写。
 
-### 5. 失败模型：单请求隔离，不重启进程
+### 5. 失败模型：单请求隔离与有界重启
 
 - `Session::handle_request` 自带 panic 捕获，单次 panic 转为该请求的错误并返回；语言服务器继续处理其它请求。
-- 若错误表明会话中毒或语言服务器状态不可恢复，`is_alive` 置 false，类型能力标记为 `SessionPoisoned`，LSP 继续提供非类型功能；不做静默重试，也不假装恢复。
-- 进程内没有可靠的强制终止手段，因此**不实现超时取消、SIGKILL、进程重启与退避**。调用方 `Deadline` 只用于停止等待并返回 `Timeout`，底层计算不会被取消，迟到响应一律丢弃。
-- LSP 适配层继续限制并发请求数；`Session` 自身是 `Send + Sync`，但一个语言服务器进程只创建一个会话，避免反复重建全局 worker/arena。
+- fatal/dead session（`Unavailable`/`Protocol`/`Timeout` 且 `is_alive() == false`）只关闭当前会话，并为当前请求重建一次后重试；重试成功不推进 adapter epoch。
+- 第二次仍 fatal 时返回对应错误（通常为 `Unavailable`）并丢弃会话；该请求失败。后续请求可以按同一规则重新建立会话，但没有通用重试、退避或无限重启。
+- 非 fatal 错误、`Unsupported`、`Ok(None)` 不重试；查询期间发生外部失效（epoch 变化）返回 `Cancelled`，也不重试。
+- 项目、根、编译选项或类型环境变化允许关闭旧会话并按新输入重建；同一时刻仍只有一个活动 `Session`。
+- 不实现超时取消、SIGKILL 或独立 helper 进程；`Deadline` 只在请求送入引擎前检查是否过期，过期返回 `Timeout`；调用一旦开始，无法停止等待或取消计算，迟到响应一律丢弃。
 - OOM、abort、栈溢出属于进程级故障，无法隔离；用长会话 soak、RSS/线程数记录和 fixture 差分测试观察，未来若确需硬隔离再单独决策 helper 进程。
 
 ### 6. MSRV 与供应链
@@ -110,8 +112,8 @@
 ### Negative
 
 - 失去进程级隔离：panic 可以按请求捕获，但 OOM、abort、栈溢出会带走整个语言服务器。
-- 无法取消正在运行的类型计算；超时只是放弃等待，计算仍占用 checker。
-- 会话中毒后只能降级为“类型能力不可用”，恢复需要用户重启语言服务器。
+- 无法取消正在运行的类型计算；`Deadline` 只在送入引擎前检查，过期后直接返回 `Timeout`，已开始的计算无法停止或放弃等待，只能等它返回后丢弃结果。
+- 会话死亡时只有一次请求内重建；连续失败返回 `Unavailable`，不会无限重试，也不回退到手写类型比较。
 - 依赖树从单个 tarball 变成约二十个 crate 加 ICU，`Cargo.lock`、`cargo deny` 和 NOTICE 的维护成本上升；MSRV 提升到 1.100。
 - `tsrs` 仍是 prerelease：精确 pin 意味着升级必须成组进行并重跑探针。
 
@@ -120,23 +122,27 @@
 - **栈深度**：重型解析/checker 在 tsrs 的 512 MiB 栈后台 worker 上运行，`createSnapshot` 仍在调用线程；需在真实项目 fixture 上验证，必要时把 open/update 放到专用大栈线程。
 - **FS 语义漂移**：旧回调故意回答“缺失/空目录”，进程内必须返回真实 `stat`/目录项；用差分测试覆盖模块解析、typings、路径穿越和写拒绝。
 - **Checker 结果差异**：hover/补全/引用/文档格式化在 `Partial` 方法上可能与 tsgo 有字段级差异；差异必须记录为已知差异，不能静默改变用户可见行为。
-- **Mutex 中毒与全局状态**：持锁 panic 后会话可能持续失败，映射为 `SessionPoisoned` 并停止使用；全局 worker/arena 不回收，因此不频繁重建会话，需测量 RSS。
+- **Mutex 中毒与全局状态**：持锁 panic 后会话可能持续失败，映射为 `SessionPoisoned` 并按第 5 节做一次有界重建；仍失败则丢弃当前会话，后续请求仍可按同一规则重建；需测量 RSS 与重建成本。
 - **二进制体积与构建时间**：内嵌标准库与 ICU 增大 release 体积和干净构建时间，需要实测并与删除的 28 MB 引擎对比。
-- **回滚**：不保留运行时双后端；本次变更以单个提交/revert 回退到子进程实现。
 
 ## Validation
 
-验收口径（实现完成后按此核对，本文不声称已通过）：
+验收口径按当前实现核对；未列出的项目不声称已通过：
 
-- `cargo fmt`、`cargo clippy -D warnings`、`cargo test --workspace --all-features`、`cargo doc`、`cargo deny --offline check` 一次通过。
-- 进程内引擎单测覆盖：正常请求、版本不匹配、构造 panic、关闭幂等、`SessionPoisoned` 降级、stale snapshot/handle、unsupported 方法与内部错误映射。
-- VFS 单测覆盖：命中、缺失、路径穿越、写/追加/删除/chtimes 拒绝、目录枚举、真实 `stat`、`realpath` 不回退宿主。
-- 真实类型门禁：设置 `TSRS_TYPINGS_ROOT` 与 `WXML_REQUIRE_REAL_ENGINE=1` 时运行端到端类型用例；未设置时跳过且不得据此声称类型行为已验证。
-- 差分测试：类型字符串、hover 文档、JSDoc、引用、补全、诊断与 tsgo 历史结果对比，差异为零或记录为已知差异。
-- 长会话 soak：重复 open-update-close，记录 RSS、线程数和失败请求，确认没有持续增长或不可恢复的中毒状态。
-- 按文档从零安装后 `wxml-lsp --stdio` 可启动并返回类型查询，安装根只需 `bin/wxml-lsp` 与 `typings/miniprogram-api-typings`。
+- 已完成迁移检查（由代码/测试提供证据）：
+  - 进程内会话的正常请求、版本不匹配、构造 panic、关闭幂等、`SessionPoisoned` 降级、stale snapshot/handle、`Unsupported` 与内部错误映射；
+  - `VfsHandle` 的命中、缺失、路径穿越、写/追加/删除/chtimes 拒绝、目录枚举、真实 `stat`、`realpath` 不回退宿主文件系统；
+  - HostOnly/`NotInstalled` 降级与“类型能力不可用但 LSP 继续服务”；
+  - fatal/dead session 只重试一次、非 fatal/`Unsupported` 不重试、epoch 失效返回 `Cancelled`；
+  - 安装根只需 `bin/wxml-lsp` 与 `typings/miniprogram-api-typings`，缺布局时 fail closed 或 `HostOnly`。
+- 未完成或未验证：
+  - 与 tsgo 的 live 双引擎字段级差分矩阵尚未得出“零差异”结论；已有差异只能按已知差异记录，不能宣称全部通过。
+  - 长会话 RSS、线程数与失败请求的 soak 采样尚未完成；栈深度与重型 checker 在真实大项目上的表现仍需实测。
+  - OOM、abort、栈溢出没有进程级隔离，也没有 helper 进程兜底。
+- 真实类型门禁：设置 `TSRS_TYPINGS_ROOT` 与 `WXML_REQUIRE_REAL_ENGINE=1` 时运行端到端类型用例；未设置时跳过，且不得据此声称类型行为已验证。
+- 统一门禁：`cargo fmt`、`cargo clippy -D warnings`、`cargo test --workspace --all-features`、`cargo doc`、`cargo deny --offline check`。
 
-实现与任务拆分见 `openspec/changes/archive/2026-11-21-replace-tsgo-with-tsrs-session/`（归档后见 `openspec/changes/archive/`）。
+实现与任务拆分见 `openspec/changes/archive/2026-11-21-replace-tsgo-with-tsrs-session/`。
 
 ## References
 

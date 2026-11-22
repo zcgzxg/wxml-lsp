@@ -6,7 +6,7 @@
 
 **Deciders**: 项目维护者
 
-**局部补充**：[ADR-0002](0002-template-type-checking-and-source-maps.md) 的「组件属性」检查边界与 [ADR-0011](0011-component-type-declarations.md) 第 4 节的事件签名校验。本文只改变兼容性判断由谁执行：模板解析、事实来源、发现规则、只读边界、类型后端与映射原则均不变。ADR-0001 的模块依赖方向仍是硬约束。
+**局部补充**：[ADR-0002](0002-template-type-checking-and-source-maps.md) 的「组件属性」检查边界与 [ADR-0011](0011-component-type-declarations.md) 第 4 节的事件签名校验。本文同时替代 ADR-0011 中“Rust 类型子集决定是否检查”的边界：模板解析、事实来源、发现规则、只读边界、类型后端与映射原则均不变，兼容性判断改由引擎执行。ADR-0001 的模块依赖方向仍是硬约束。
 
 ## Context
 
@@ -68,13 +68,14 @@ void __wxml_bind_<id>;
 - 索引使用声明的成员名（归一化后），不使用模板拼写。
 - 声明路径始终引用原声明，保留泛型、类型别名、导入类型与私有名的真实身份；不把 `TypeText` 重新打印成期望类型。
 - 声明文件必须进入 shadow 的 `AnalysisInput`；模块顶层映射通过类型级引用指向该声明文件，仍不扫描 `node_modules`。引用无法解析时标 `Partial`，不猜测类型。
+- 现状缺口：当 source root 覆盖 `components.d.ts` 所在目录（例如 `include_project_root` 为真）时该要求成立；但在显式分层根（例如 `root`/source root 为 `apps/a/src`、`projectRoot` 为 `apps/a`、`components.d.ts` 位于 `apps/a`）下，预备输入只从 source roots 收集文件，声明文件没有独立挂载路径，存在漏挂载。该路径尚未完整验证，列为待后续实现，不宣称已普遍落实。
 
 ### 4. 诊断锚点显式归属于契约
 
 合成赋值产生的错误通常落在生成变量名 `__wxml_bind_<id>` 上，现有 source map 无法反向映射。shadow 因此为每条探针输出锚点（生成文本中的变量名范围、原 WXML 范围、种类、期望类型展示文本），诊断层按以下顺序处理：
 
-1. 命中锚点且 code 为 `2322`/`2345`：发布到 WXML 锚点，使用引擎消息并做有界截断；同一绑定只保留一条。
-2. 契约探针上的 `2353`（对象字面量多余属性）：丢弃。WXML 语义允许结构兼容的额外字段，其余属性/值错误仍由 `2322`/`2345` 报告。
+1. 命中锚点且 code 为 `2322`/`2345`/`2739`/`2741`：发布到 WXML 锚点，使用引擎消息并做有界截断；同一绑定只保留一条。`2739`/`2741` 是缺少必需属性的赋值错误，与 `2322`/`2345` 同样归属到绑定表达式。
+2. 契约探针上的 `2353`（对象字面量多余属性）：丢弃。WXML 语义允许结构兼容的额外字段，其余属性/值错误仍由 `2322`/`2345`/`2739`/`2741` 报告。
 3. `6133`/`6196` 等未使用或合成声明噪音：丢弃。
 4. 落在源表达式段内的其他诊断：沿用现有映射，例如属性不存在、表达式内部类型错误。
 5. 落在声明、类型注解等纯生成文本，或期望类型解析失败（如 `2304`/`2503`）：不发布模板诊断，把该组件/事件标为 `Partial` 并给出原因。
@@ -101,6 +102,7 @@ void __wxml_bind_<id>;
 
 - 探针不修改项目编译选项，结果按项目实际 `strict`/`strictFunctionTypes` 判定；关闭 `strictFunctionTypes` 时不额外施加严格函数参数检查。
 - JS 只有在项目 `checkJs` 为真或文件已有 `@ts-check` 时才生成探针；否则不生成并标 `Partial`，不声称已检查。
+- 方法简写（`onChange(event: E) {}`）与函数属性/箭头函数的参数双变差异属于 TypeScript 自身规则；本 ADR 不复制矩阵，按[类型诊断参考 §7.2](../reference/type-diagnostics.md#72-事件绑定)执行。
 - 生成代码自身的错误（声明解析、期望类型无法解析、合成变量上无法归属的诊断）一律不外溢为模板诊断。
 
 ### 6. 被删除的手写比较
@@ -129,7 +131,7 @@ void __wxml_bind_<id>;
 ## 与 ADR-0011 的关系
 
 - 发现规则、声明优先、`components.d.ts` 固定入口、事件名 `Warning` 与 hover 形态不变。
-- 第 4 节的「静态标注 + `TypeText` 结构比较」由本文替代为「静态标注 + 引擎函数赋值」；「不注入形参、不改写脚本、只读工作区」的约束保留，因此未标注参数仍为 `Partial`。
+- 第 4 节的「静态标注 + `TypeText` 结构比较」由本文替代为「静态标注 + 引擎函数赋值」；「Rust 类型子集决定是否检查」的边界也由本文替代：`TypeText` 只负责声明结构与 hover，不再决定可赋值性。「不注入形参、不改写脚本、只读工作区」的约束保留，因此未标注参数仍为 `Partial`。
 - ADR-0011 的非目标「不实现完整 TypeScript 类型检查器」仍然成立：Rust 不新增类型系统，只把判断交给已有引擎。
 
 ## Alternatives Considered
@@ -190,8 +192,9 @@ void __wxml_bind_<id>;
 
 ### Risks
 
-- **生成代码诊断外溢**：`2353`、`6133`、`6196` 或期望类型解析错误若被当作模板诊断，会出现在用户没写过的位置 → 只发布命中锚点且 code 在 `{2322, 2345}` 的诊断，其余按第 4 节丢弃或降级，并用正反例固定。
-- **声明文件未进入 shadow**：期望类型引用无法解析，只剩生成代码错误 → 在 input 收集阶段补入声明文件，不扫描 `node_modules`；用例断言该文件可见。
+- **生成代码诊断外溢**：`2353`、`6133`、`6196` 或期望类型解析错误若被当作模板诊断，会出现在用户没写过的位置 → 只发布命中锚点且 code 在 `{2322, 2345, 2739, 2741}` 的诊断，其余按第 4 节丢弃或降级，并用正反例固定。
+- **声明文件未进入 shadow**：期望类型引用无法解析，只剩生成代码错误 → source root 覆盖声明目录时由 input 收集阶段补入，不扫描 `node_modules`；显式分层根（`root` 与 `projectRoot` 不同，声明位于 `projectRoot` 而非 source root）仍有漏挂载缺口，标为待后续实现，不作为已完成能力。
+- **方法简写双变**：`onChange(event: E) {}` 在 `strictFunctionTypes` 下仍按方法双变处理，比函数属性/箭头宽松 → 这是 TypeScript 规则，按[类型诊断参考 §7.2](../reference/type-diagnostics.md#72-事件绑定)记录预期，不在本 ADR 另立一套判定。
 - **编译选项差异**：`strictFunctionTypes` 开关会改变事件判定结果 → 以项目实际选项为准，双开关各有样本，不强行统一。
 - **降级被误读为通过**：`any`、未标注参数、不可解析声明都返回 `Partial`/`Any` → 状态与原因必须随结果返回，文档不得把 `Partial` 描述成已支持。
 - **回归**：删除手写比较可能改变未声明属性、事件名、handler 存在性或 hover → 无声明项目与 HostOnly 的诊断集合必须与改动前一致，并由测试断言。
@@ -204,11 +207,12 @@ void __wxml_bind_<id>;
 - 事件矩阵：参数宽化、对象额外字段、必填到可选、字面量到基础类型、`unknown` detail、额外必填参数、无参数处理函数、未标注 `Partial`、缺失处理函数优先，以及 `strictFunctionTypes` 开关两侧。
 - JS：`checkJs: false` 不生成探针并 `Partial`；`checkJs: true` 与 `@ts-check` 产生正确诊断。
 - 范围：CJK、CRLF、多行 mustache 的锚点与现有映射一致；生成变量名上的错误映射到表达式或处理函数名 token。
+- 声明可见性：source root 覆盖声明目录时断言声明文件进入 `AnalysisInput`；显式分层根（source root 与 `projectRoot` 不同）暂按待实现缺口记录，不能在验收中宣称已完整通过。
 - 去重：同一绑定只出现一条兼容性诊断；旧路径删除后不残留手工比较结果。
 - 无声明项目与 HostOnly：诊断集合与改动前一致；引擎不可用时不发布契约诊断。
 - 统一门禁：`cargo fmt`、`cargo clippy -D warnings`、`cargo test --workspace --all-features`、`cargo doc`、`cargo deny --offline check`；真实引擎矩阵按[原生合同](../reference/tsrs-native-contract.md)的 opt-in 门禁串行运行。
 
-任务拆分与规格增量见 [openspec 变更](../../openspec/changes/engine-checked-component-bindings/proposal.md)。
+任务拆分与规格增量见 [openspec 变更](../../openspec/changes/archive/2026-11-22-engine-checked-component-bindings/proposal.md)。
 
 ## References
 
@@ -219,4 +223,4 @@ void __wxml_bind_<id>;
 - [模板类型诊断策略](../reference/type-diagnostics.md)
 - [原生类型后端合同](../reference/tsrs-native-contract.md)
 - [共享验收样本说明](../../tests/fixtures/README.md)
-- [openspec 变更：engine-checked-component-bindings](../../openspec/changes/engine-checked-component-bindings/proposal.md)
+- [openspec 变更：engine-checked-component-bindings](../../openspec/changes/archive/2026-11-22-engine-checked-component-bindings/proposal.md)

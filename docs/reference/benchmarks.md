@@ -1,6 +1,6 @@
 # 查询基准
 
-更新日期：2026-11-20。
+更新日期：2026-11-22。
 
 本文件说明 `wxml-lsp` 的查询基准（Criterion `queries` bench）测什么、如何运行、结果如何解读。它是**本地基线工具**，不是验收门禁，也不定义延迟预算。查询语义和协议契约仍以[基础契约](contracts.md)、[原生类型后端合同](tsrs-native-contract.md)和[模板类型诊断策略](type-diagnostics.md)为准；样本约定见[共享验收样本](../../tests/fixtures/README.md)。
 
@@ -40,14 +40,14 @@ cargo bench -p wxml-lsp --bench queries --features bench-support
 按组过滤（`--` 之后的参数传给 Criterion）：
 
 ```bash
-cargo bench -p wxml-lsp --bench queries -- "query/class"
-cargo bench -p wxml-lsp --bench queries -- "query/type"
-cargo bench -p wxml-lsp --bench queries -- "first-query"
+cargo bench -p wxml-lsp --bench queries --features bench-support -- "query/class"
+cargo bench -p wxml-lsp --bench queries --features bench-support -- "query/type"
+cargo bench -p wxml-lsp --bench queries --features bench-support -- "first-query"
 ```
 
 Criterion 的采样产物写入 `target/criterion/`；对比同一台机器上的改动时使用它的 baseline 参数（如 `--save-baseline` / `--baseline`），不要在项目目录另建结果目录。
 
-`cargo bench` 使用 `bench` profile，它继承 `release`（含 thin LTO、`strip`、依赖 16 CGU、`x86-64-v3`），因此基准数字反映交付二进制的形态。改动根 `Cargo.toml` 的 profile 或 `.cargo/config.toml` 的 `rustflags` 后，旧 baseline 不再可比：先重建 baseline 再对比，并且一次只改一项（`codegen-units` 与 `target-cpu` 分别归因），否则无法区分来源。
+`cargo bench` 使用 `bench` profile，它继承 `release`（thin LTO、`strip`、依赖 16 CGU），因此基准数字反映交付二进制的形态。根 `Cargo.toml` 没有设置 `target-cpu`，默认不启用 `x86-64-v3`；[README 的构建 profile](../../README.md#构建-profile)记录的 `target-cpu` A/B 差异落在运行间噪声内，结论是暂不写入仓库默认配置。改动根 `Cargo.toml` 的 profile 或 `.cargo/config.toml` 的 `rustflags` 后，旧 baseline 不再可比：先重建 baseline 再对比，并且一次只改一项，否则无法区分来源。
 
 ## 4. 类型组与 typings 要求
 
@@ -85,13 +85,13 @@ Criterion 的采样产物写入 `target/criterion/`；对比同一台机器上�
 
 ## 7. 结果解读
 
-按 [ADR-0004](../adr/0004-parallel-delivery-and-validation-gates.md) 的要求，记录或引用基准数字时必须同时说明：
+记录或引用基准数字时必须同时说明以下信息（这是本工具的测量披露要求）：
 
 - **硬件**：CPU 型号与运行环境（共享 CI 机器上的数字不作基线）。
 - **样本规模**：fixture 的 WXML/WXSS/TS 行数、样式类数量与查询位置；bench 输出会打印这些规模信息。
 - **冷热状态**：该数字来自 `query/*` 还是 `first-query/*`。
 
-比较时只看同一台机器、同一 fixture、同一模式下的相对变化（Criterion 报告的中位数与区间），不在机器之间搬运绝对值。本基准**不设固定延迟预算**，也不加入 CI 耗时门禁：ADR-0009 已删除迁移期的性能门禁，本工具不恢复它，只提供手工运行的本地基线与回归参考。
+比较时只看同一台机器、同一 fixture、同一模式下的相对变化（Criterion 报告的中位数与区间），不在机器之间搬运绝对值。本基准**不设固定延迟预算**，也不加入 CI 耗时门禁：迁移期的性能门禁已删除，本工具不恢复它，只提供手工运行的本地基线与回归参考。
 
 ## 8. 样本工程
 

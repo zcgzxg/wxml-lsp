@@ -2,7 +2,7 @@
 
 **Date**: 2026-11-20
 
-**Status**: accepted（2026-11-20 已实现并通过真实工作区探针）
+**Status**: accepted（2026-11-20 已实现并通过真实工作区探针；2026-11-22 校准预算、身份与枚举边界）
 
 **Deciders**: 项目维护者
 
@@ -45,6 +45,8 @@ ADR-0006 要求通过 `initializationOptions.apps` 显式声明小程序根和�
 4. `projectRoot` 固定为 workspace root；`app.json` 与 `tsconfig.json` 保存为 workspace 相对路径。若向上没有找到 `app.json`，再尝试身份目录下的 `app.json` 和 `身份目录/src/app.json`；仍未找到时保留默认路径，由 discovery/tsconfig 加载报告缺失，不阻止视图降级。
 5. 若 `app.json` 缺失，不把它当作“不是页面”的判据；hover 只要求存在相邻的 owner script。
 
+项目身份（`projectId`）由**身份目录 + `app.json` 的 workspace 相对路径**共同决定，而不是只由目录决定；同一目录下不同 `app.json` 不会共享项目槽位，不同目录也不会因为路由表相同而被合并。
+
 `app.json` 仍是页面路由、全局 `usingComponents` 和页面配置的来源，但降级为**可选增强**：存在时参与发现，不存在时不影响相邻脚本驱动的 hover。
 
 ### 惰性视图
@@ -74,14 +76,16 @@ ADR-0006 要求通过 `initializationOptions.apps` 显式声明小程序根和�
 
 ### 源码预算
 
-源码预算按项目边界选择：`projectRoot` 等于 workspace root 时使用 `SourceLimits::workspace()`：
+源码预算按项目边界选择，而不是按“lazy/显式”这个名字选择：
 
-- 最多 8192 个源码文件；
-- 总字节上限 64 MiB；
-- 单文件上限 16 MiB；
-- 仍排除 `node_modules`、`dist`、构建产物等目录，不跟随 symlink 目录。
+- `workspace_root == app.project_root` 时使用 `SourceLimits::workspace()`：
+  - 最多 8192 个源码文件；
+  - 总字节上限 32 MiB；
+  - 单文件上限 16 MiB；
+  - 仍排除 `node_modules`、`dist`、构建产物等目录，不跟随 symlink 目录。
+- 其余情况使用默认预算：2048 个文件 / 16 MiB 总字节，单文件同样受 16 MiB 限制。
 
-`projectRoot` 不是 workspace root 时使用 2048 文件 / 16 MiB 的默认预算。lazy mode 以及显式指定 `projectRoot: "."` 都属于前一种情况。
+lazy 发现的 `projectRoot` 就是 workspace root，因此走 workspace 预算；显式模式只有把 `projectRoot` 指到 workspace root（例如 `projectRoot: "."`）时才走 workspace 预算，其余显式小程序包使用默认预算。`source_roots` 只影响扫描范围，不改变预算选择。
 
 ## Alternatives Considered
 
@@ -107,17 +111,19 @@ ADR-0006 要求通过 `initializationOptions.apps` 显式声明小程序根和�
 - 首次打开 WXML 时才建立项目，首查询承担项目打开和源码收集成本；
 - workspace 预算高于单 app，内存和扫描范围更大；
 - 最近 `tsconfig.json` 选择暂不展开 solution-style `references`；复杂项目仍建议使用显式 `apps`；
-- 多个项目共享 workspace root 时，`projectId` 由身份目录区分，`mark_shared_config_stale` 需按 tsconfig 路径判断，而不是按 project root；
-- `view_templates` / 语义工具只能看到已经惰性建立的视图，未打开的 WXML 不在枚举结果中。
+- 多个项目共享 workspace root 时，`projectId` 由身份目录加 `app.json` 路径区分，`mark_shared_config_stale` 按 tsconfig 路径判断，而不是按 project root；
+- `view_templates` / 语义工具只能看到当前项目已建立的视图：discovery 发现的页面/组件，以及已经打开或查询过、因相邻脚本建立并保留的 lazy 视图；既未被 discovery 发现、也未被打开或查询的 WXML 不在枚举结果中。
 
 ## Migration
 
 1. 删除 `.zed/settings.json` 中的 `lsp.wxml-lsp.initialization_options` 即可进入 lazy mode；
 2. 需要固定边界或使用 solution-style tsconfig 的项目继续保留显式 `apps`；
 3. 显式模式的 `tsconfig` / `dependencies` 配置保持不变；
-4. 修改根或 tsconfig 后仍需重启 LSP；lazy mode 没有根热更新。
+4. 初始化根、显式 `apps` 或 tsconfig 选择策略的变化需要重启 LSP，lazy mode 没有根热更新；已加载 tsconfig 的内容变化不要求重启，会通过 overlay、`workspace/didChangeWatchedFiles` 或 rediscover 重新加载。
 
 ## Validation
+
+以下为 2026-11-20 的验收范围与探针记录，保留为历史；当前行为以代码、测试和 README 为准。
 
 验收覆盖：
 
@@ -126,7 +132,7 @@ ADR-0006 要求通过 `initializationOptions.apps` 显式声明小程序根和�
 - 无相邻脚本时返回 syntax-only，并给出 `template has no adjacent page or component script`；
 - 工作区包源码进入 source roots，`exports` 生成别名，`jl-api` 枚举可 hover；
 - 显式 `apps` 的既有行为、路径包含校验和错误码不变；
-- workspace 源码预算与排除目录生效；
+- workspace 预算（8192 文件 / 32 MiB）与显式默认预算（2048 文件 / 16 MiB）生效，排除目录不进入扫描；
 - 真实 jielong4 主 checkout 和 worktree 在无 `.zed/settings.json` 时通过 `QuestionTypeEnum`、`feedback-detail`、`right-fx-input` hover 探针。
 
 ## 实现与真实工作区验证（2026-11-20）
@@ -134,7 +140,7 @@ ADR-0006 要求通过 `initializationOptions.apps` 显式声明小程序根和�
 本决策已落地到 `wxml-lsp` 的 lazy workspace mode，并用真实 jielong4 工作区验证：
 
 - `cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets --all-features -- -D warnings` 通过；
-- `cargo test --workspace --all-features` 为 2168 passed / 3 ignored；
+- `cargo test --workspace --all-features` 当时通过；不在此记录会过期的用例计数；
 - `cargo doc --workspace --no-deps` 与 `cargo deny --offline check` 通过；
 - 主 checkout 与 `placid-strand` worktree 都使用**不含 `initializationOptions`** 的 `initialize`：
   - `apps/miniprogram/src/exam-online/pages/edit-question/index.wxml` 的 `QuestionTypeEnum` 返回 `typeof QuestionTypeEnum`；

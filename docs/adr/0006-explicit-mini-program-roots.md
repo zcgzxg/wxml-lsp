@@ -6,15 +6,13 @@
 
 **Deciders**: 项目维护者
 
-**2026-11-17 后续**：[ADR-0012](0012-in-process-tsrs-session.md)（2026-11-21 accepted；native 默认、生产路径无 Node 运行时、进程内类型会话）调整后端资产路径配置；本文的小程序根与类型项目根边界继续有效。
+**2026-11-21 后续**：[ADR-0012](0012-in-process-tsrs-session.md)（2026-11-21 accepted；进程内类型会话、生产路径无 Node 运行时）替代原后端进程与资产路径假设；本文的小程序根与类型项目根边界继续有效。
 
-**2026-11-20 后续**：新增 `apps[].tsconfig`（显式 tsconfig 文件，默认 `projectRoot/tsconfig.json`）与 `apps[].dependencies`（显式工作区包目录）。依赖源码进入类型快照，`package.json#exports` 转为 TypeScript `paths`；仍不读取 `node_modules`、不推断包图。依赖目录与 tsconfig 文件必须留在 `projectRoot` 内，每 app 最多 64 个依赖，`package.json` 最多 256 KiB / 512 个 exports 项。
-
-**2026-11-20 后续（默认模式）**：[ADR-0010](0010-zero-config-lazy-discovery.md) 将**省略 `apps` 时**的默认行为改为零配置惰性发现：从当前 WXML 向上找最近 `app.json` 和独立最近的 `tsconfig.json`，并自动挂载工作区包。本文的显式 `apps` 配置仍是覆盖模式，其路径校验、隔离和“不扫描子目录”约束在该模式下继续有效；下文“取消扫描”仅指显式模式，不再约束默认模式。
+**2026-11-20 后续**：新增 `apps[].tsconfig`（显式 tsconfig 文件，默认 `projectRoot/tsconfig.json`）与 `apps[].dependencies`（显式工作区包目录）。依赖源码进入类型快照，`package.json#exports` 转为 TypeScript `paths`；仍不读取 `node_modules`、不推断包图。依赖目录与 tsconfig 文件必须留在 `projectRoot` 内，每 app 最多 64 个依赖，`package.json` 最多 256 KiB / 512 个 exports 项。省略 `apps` 时的默认行为由 [ADR-0010](0010-zero-config-lazy-discovery.md) 定义；本文以下规则只约束显式模式。
 
 ## Context
 
-工作区根、小程序 `app.json` 目录和类型项目 `tsconfig.json` 目录可能分层，同一仓库也可能包含多个小程序。自动扫描子 `app.json`、向上寻找最近 tsconfig，以及按生成目录名称忽略候选，会让项目归属依赖目录布局和扫描规则，难以解释或复现。需要由用户明确 app 与类型项目边界，同时保留工作区根就是单个小程序的零配置用法。本记录补充/替代 [ADR-0001](0001-layered-language-service-architecture.md) 与 [ADR-0003](0003-versioned-document-synchronization.md) 中的根发现、配置选择及生效时机，不废弃它们的历史背景、分层或同步原则。
+工作区根、小程序 `app.json` 目录和类型项目 `tsconfig.json` 目录可能分层，同一仓库也可能包含多个小程序。自动扫描子 `app.json`、向上寻找最近 tsconfig，以及按生成目录名称忽略候选，会让项目归属依赖目录布局和扫描规则，难以解释或复现。显式模式要求由用户明确 app 与类型项目边界；省略 `apps` 时的零配置用法由 ADR-0010 承接。本记录补充/替代 [ADR-0001](0001-layered-language-service-architecture.md) 与 [ADR-0003](0003-versioned-document-synchronization.md) 中的根发现、配置选择及生效时机，不废弃它们的历史背景、分层或同步原则。
 
 ## Decision
 
@@ -33,7 +31,7 @@
 
 每项 `root: string` 必填，指向 `app.json` 所在目录；`projectRoot?: string` 是类型后端项目目录，默认等于 `root`；`tsconfig?: string` 显式指定配置，默认 `projectRoot/tsconfig.json`；`dependencies?: string[]` 列出加入类型快照的工作区包。这些路径都相对 **LSP workspace root**：`rootUri`，或首个 `workspaceFolders` 根；不相对进程当前目录或 `.zed/`。`projectRoot` 是类型后端的项目目录基准。Rust 使用显式 tsconfig 与相对 app 路径构造项目事实，向类型后端提供快照和有效编译选项。
 
-本文以下 Decision 描述**显式 `apps` 模式**。省略 `initializationOptions`、使用 `null`、`{}` 或 `{ "apps": [] }` 时，不再等价于 `{ "apps": [{ "root": "." }] }`，而是进入 [ADR-0010](0010-zero-config-lazy-discovery.md) 的零配置惰性发现模式；只有显式给出 `apps` 时，才应用本文的根边界与“不扫描子目录”规则。
+本文以下 Decision 只描述**显式 `apps` 模式**。省略 `initializationOptions`、使用 `null`、`{}` 或 `{ "apps": [] }` 时，进入 [ADR-0010](0010-zero-config-lazy-discovery.md) 的零配置惰性发现模式，不再等价于 `{ "apps": [{ "root": "." }] }`；只有显式给出 `apps` 时，才应用本文的根边界与“不扫描子目录”规则。
 
 初始化校验必须满足：
 
@@ -42,7 +40,7 @@
 - canonical app root 不得重复；最多 64 个 app、每 app 最多 64 个 dependencies，每个路径最多 4096 UTF-8 bytes。
 - 非法配置使 `initialize` 返回 `-32602`，不截取有效子集或静默 fallback。合法目录内的 `app.json` 缺失或内容错误，仍由现有 project issues 报告，不混为初始化配置错误。
 
-显式模式下取消扫描子 `app.json` 和向上寻找最近 tsconfig；生成目录不再按名称自动忽略，也不会自动发现为 app。需要使用的源码或生成小程序目录必须由配置选中。
+显式模式下取消扫描子 `app.json` 和向上寻找最近 tsconfig；生成目录不再按名称自动忽略，也不会自动发现为 app。需要使用的源码或生成小程序目录必须由配置选中。默认模式的独立向上发现规则不适用于本文，见 [ADR-0010](0010-zero-config-lazy-discovery.md)。
 
 ### 路由、隔离与共享文件
 
@@ -92,7 +90,7 @@ Zed 在工作区 `.zed/settings.json` 的 `lsp.wxml-lsp.initialization_options` 
 
 ## Validation
 
-验收应覆盖四种默认输入、分层/双 app 配置、最长目录匹配与稳定隔离、共享文件 active/唯一/歧义归属、非法路径与 symlink/重复/数量/字节上限，以及错误配置不 fallback、修改后重启生效。文档和 Schema 示例检查不等同这些服务行为测试，更不等同真实 Zed 多 app 验收；本记录不新增已执行的运行证据。
+显式模式验收应覆盖分层/双 app 配置、最长目录匹配与稳定隔离、共享文件 active/唯一/歧义归属、非法路径与 symlink/重复/数量/字节上限，以及错误配置不 fallback、修改后重启生效；省略 `apps` 的默认输入由 [ADR-0010](0010-zero-config-lazy-discovery.md) 单独验收。文档和 Schema 示例检查不等同这些服务行为测试，更不等同真实 Zed 多 app 验收；本记录不新增已执行的运行证据。
 
 ## References
 

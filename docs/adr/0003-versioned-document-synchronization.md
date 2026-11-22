@@ -1,155 +1,118 @@
 # ADR-0003: 版本化文档同步、后端协议与 Zed 接入
 
 **Date**: 2026-11-15  
-**Status**: accepted  
+**Status**: accepted（同步与发布屏障；Rust–Node 后端协议由 ADR-0012 替代）
 **Deciders**: 项目维护者、规划协作 agent
 
-**2026-11-17 后续**：[ADR-0012](0012-in-process-tsrs-session.md)（2026-11-21 accepted；native 默认、生产路径无 Node 运行时、进程内类型会话）替代 Rust–Node NDJSON 协议；本文的版本化同步、快照一致性和发布屏障继续有效。
+**2026-11-21 后续**：[ADR-0012](0012-in-process-tsrs-session.md)（2026-11-21 accepted）用进程内 `tsrs_api::Session` 替代 Rust–Node NDJSON 帧协议、ACK、消息集和跨进程取消。本文的版本化同步、快照一致性、发布屏障和失败降级原则继续有效；标题中的“后端协议”保留用于既有链接，但不再指 Node 消息集。
 
-**2026-11-16 补充**：根配置来源、项目选择和配置生效时机以 [ADR-0006](0006-explicit-mini-program-roots.md) 为准；本记录的历史背景与版本化同步原则继续有效。
+**2026-11-16 / 2026-11-20 补充**：显式 `apps` 的根选择与配置生效时机以 [ADR-0006](0006-explicit-mini-program-roots.md) 为准；省略 `apps` 时的默认零配置模式以 [ADR-0010](0010-zero-config-lazy-discovery.md) 为准。
 
 ## Context
 
-未保存的 WXML、页面/组件脚本、`data`/`properties` 字段引用的跨文件类型声明和字段说明都必须影响模板结果，只监听磁盘不足以满足要求。跨进程查询、编辑器事件、配置变化和后端重启可能让旧结果覆盖新结果，单个 WXML 的编辑器版本无法表示完整依赖状态。Zed 的多语言注册与辅助服务配置提供接入方向，但同一实例归属、更新顺序和多服务并存仍需本项目早期实测。项目层和 TS 宿主还必须避免各自解释一套不一致的项目与文件语义。
+未保存的 WXML、页面/组件脚本、`data`/`properties` 字段引用的跨文件类型声明和字段说明都必须影响模板结果，只监听磁盘不足以满足要求。查询、编辑器事件、配置变化和后端世代变化可能让旧结果覆盖新结果，单个 WXML 的客户端版本无法表示完整依赖状态。
+
+项目层和类型后端还必须避免各自解释一套不一致的项目与文件语义。当前类型引擎在语言服务器进程内运行，没有外部进程握手，但“结果是否仍对应当前输入”的问题不变，发布前仍须校验完整依赖身份。
 
 ## Decision
 
-采用 LSP 协调器唯一写入口、内存覆盖层优先、不可变分析快照和带版本 ACK 的 Rust–Node 协议。只有依赖、映射和后端世代仍有效的结果可以发布；类型后端失败应暴露不可用状态并恢复快照。Zed 辅助语言同步作为早期验收任务，与原 JS/TS 主服务并存。
+采用 LSP 协调器唯一写入口、内存覆盖层优先、不可变分析快照和发布屏障。只有依赖、映射和后端世代仍有效的结果可以发布；类型后端失败必须暴露不可用状态，不能包装成空诊断。
 
 ### 文档与项目权威
 
-- project 拥有文件身份、overlay、磁盘回退、配置候选与依赖图的数据结构；LSP 协调器顺序应用修改，分析任务不直接修改数据库。
+- project 拥有文件身份、overlay、磁盘回退、配置候选与源码依赖路径的数据结构；LSP 协调器顺序应用修改，分析任务不直接修改数据库。
 - 已打开文档以内存内容为准；磁盘变化更新其磁盘基线，不覆盖尚未保存内容；关闭后回退磁盘并产生新的内部版本。
-- Rust 发现小程序根、页面/组件和 TS 配置候选；Node 使用 TS 规则确定实际配置归属、选项、文件集合、路径别名、模块解析和项目引用，并反馈项目身份及依据。（根发现与配置选择部分由 [ADR-0006](0006-explicit-mini-program-roots.md) 收敛；省略 `apps` 时的默认模式后由 [ADR-0010](0010-zero-config-lazy-discovery.md) 替代，见下文补充。）
-- 多配置归属必须有确定策略，不能仅凭“最近 tsconfig”猜测。无适用配置时显式标记 inferred project 及生效选项。
-- Node 反馈实际读取的依赖。先保守刷新相关 TS 项目的活跃模板，再按证据优化依赖粒度。
-- Node 的文件缓存与查询依赖必须绑定版本；发现快照外依赖时登记其内容版本，扩充并验证快照，必要时重跑，不能用实时磁盘读取绕过一致性校验。
-
-上述根发现与配置归属是最初的职责规划；[ADR-0006](0006-explicit-mini-program-roots.md) 将其收敛为 Rust 校验并消费 `initialize.initializationOptions.apps[]` 的显式 `root`/`projectRoot`，不扫描子 `app.json`、向上推断最近 tsconfig，或按生成目录名称自动忽略/发现 app。Node 消费 Rust 提供的项目快照与有效编译选项，不另行发现 app/tsconfig。根配置只在启动时消费，修改后重启 LSP，没有根热更新；配置非法以 `initialize -32602` 失败，合法目录中的 `app.json` 问题仍走 project issues。
-
-同一 workspace 的多 app 按文档 URI 最长 app 目录匹配，以稳定 `projectId` 隔离；app 外而 `projectRoot` 内的共享文件保留 active 或唯一 owner，多个 owner 且无 active 时不猜测。`projectRoot` 是后端相对文件路径的基准。这一边界补充不把下文多 worktree/多配置验收目标改写成已支持的完整多 workspace 或跨 app 依赖图。
+- 根选择分两种模式：显式 `apps` 由 ADR-0006 定义，不扫描子 `app.json`、不向上寻找 tsconfig；省略 `apps` 时由 ADR-0010 从当前 WXML 向上发现最近的 `app.json` 和独立最近的 `tsconfig.json`。根配置只在启动时消费；默认模式在首次遇到文档时惰性建立项目。修改根配置后重启 LSP。
+- 同一 workspace 的多 app 按文档 URI 最长 app 目录匹配，以稳定 `projectId` 隔离；app 外而 `projectRoot` 内的共享文件保留 active 或唯一 owner，多个 owner 且无 active 时不猜测。`projectRoot` 是后端相对文件路径的基准。
+- LSP 从 project 构造 `PreparedView` 与不可变快照，把虚拟文件、脚本内容和有效编译选项交给 `wxml-backend-tsrs`；类型后端不另行发现 app/tsconfig，也不读取宿主文件系统。
+- 脚本诊断走独立通道：`crates/wxml-lsp/src/handlers/diagnostics.rs` 把项目内 `.ts`/`.js`/`.mts`/`.cts`/`.mjs`/`.cjs` 文档路由到 `script_diagnostics`，发布到该脚本自己的 URI，不混入 WXML、样式或事件诊断。`Unsupported`/`Unavailable`/`Disabled`/`Unknown` 不发布空集合，以免看起来像“已检查且干净”。
 
 ### 版本契约
 
-以下为待实现的协议概念，不是现有公开 API。
+以下类型是当前实现中的公共身份，不是待实现协议概念。`AnalysisStamp` 已存在于 `crates/wxml-lsp/src/workspace.rs`，用于把一次结果绑定到它依赖的版本。
 
 | 身份 | 含义 |
 | --- | --- |
-| `ClientVersion` | 编辑器会话内的单文档版本，仅用于适用的文档事件校验 |
+| `ClientVersion` | 编辑器会话内的单文档版本；`didChange` 拒绝更旧或重复版本 |
 | `SourceRevision` | 内部文档内容版本；编辑、关闭回退和磁盘变化均可能产生新值 |
 | `ProjectRevision` | 项目归属、配置、依赖环境或分析设置变化的版本 |
-| `SnapshotId` | 一次分析的不可变输入集合，覆盖模板、脚本、导入依赖、配置、策略及 helper ABI |
-| `ViewRevision` | 检查片段文本与映射的版本，生成规则或上下文改变也会更新 |
-| `BackendFileVersion` | 后端实际安装文件的版本，包含注入变化，不能直接等同原脚本版本 |
-| `BackendEpoch` | 后端进程/状态世代，重启或完整重建后变化 |
+| `SnapshotId` | 一次分析的不可变输入集合，覆盖模板、脚本、导入依赖、配置和策略 |
+| `ViewRevision` | 检查片段文本与映射的版本；生成规则或上下文改变也会更新 |
+| `BackendEpoch` | 后端状态世代；显式失效或不可恢复失败后推进 |
+| `AnalysisStamp` | 汇总文件、内容、快照、视图、项目和世代；结果必须匹配当前 stamp 才能发布 |
 
-`AnalysisStamp` 汇集快照、项目、视图和后端世代信息，并关联依赖版本清单；每个请求、ACK、结果和缓存键均可校验所依赖的身份。片段、脚本和共享模板调用身份按 ADR-0002 隔离，不只用 URI 作为视图键。
+版本必须单调：同一文档的 `ClientVersion` 不接受旧值；接受的编辑推进 `SourceRevision` 和 `ViewRevision`；项目配置/依赖变化推进 `ProjectRevision`。片段、脚本和共享模板调用身份按 ADR-0002 隔离，不只用 URI 作为视图键。
 
-### 公共交接数据
+### 发布屏障
 
-| 契约 | 提供方 | 内容与消费方式 |
-| --- | --- | --- |
-| `SyntaxSnapshot` | syntax | 文本、语法树、表达式 AST、源码版本；types 直接消费，不复制树 |
-| `AnalysisContext` | types 定义，LSP 从 project 适配 | 所属脚本、注册候选、配置候选、组件目标及检查策略；不暴露可变项目数据库 |
-| `CheckFragment` | types | 片段身份、JS/TS 方言、文本、模板映射、helper ABI；Node 原样插入 |
-| `BackendResult` | Node | 实际项目身份、类型/文档/声明/诊断、后端范围及检查状态 |
-| `MappedResult` | types | 原文范围、类型结果和覆盖状态；LSP 只转换协议并执行发布屏障 |
+发布与缓存至少校验：后端世代有效、文档内容与快照仍是当前版本、项目/视图版本有效、检查视图与映射一致、目标模板未被新分析替代。不能把旧范围套在新文本上；过时结果丢弃并调度当前快照。
 
-### 后端协议与发布屏障
-
-Rust–Node 使用带长度边界的 stdio JSON 消息。stdout 只传协议，日志进入 stderr；消息大小、等待队列、超时和解析深度应有边界，不使用 shell 拼接启动命令，不自动执行工作区脚本或插件。
-
-最小消息集合：
-
-```text
-initialize / capabilities
-applySnapshot → ack
-analyze
-hover / completion / definition
-cancel
-disposeProject / shutdown
-```
-
-消息携带协议版本、请求 ID 和 `AnalysisStamp`，错误区分不支持、检查关闭、协议错误、后端失败等。取消、能力位和数据结构由 P0 冻结；协议不兼容应清晰失败，不静默解释未知消息。
-
-典型查询流程：
-
-```text
-编辑事件 → 协调器更新 overlay 和依赖
-         → 创建快照与检查片段
-         → Node 安装快照并 ACK
-         → 在已安装版本上查询
-         → types 组合映射
-         → LSP 校验发布屏障
-         → 发布当前结果或调度新快照
-```
-
-发布与缓存至少校验：后端世代有效、所需快照已 ACK、依赖和项目版本有效、检查视图与映射一致、目标模板未被新分析替代。不能把旧范围套在新文本上；过时结果丢弃并调度当前快照。
+- 成功检查且错误修复后，发布空诊断集合清除旧结果；空集合只有在 `Supported` 且 stamp 当前时才算干净。
+- `Partial` 发布真实诊断并附带状态原因；`Unsupported`/`Unavailable`/`Disabled`/`Unknown` 不得表现为 `Supported` 的空结果。
+- 关闭文档、项目移除或能力失效时按生命周期清理；不能继续把旧结果当作当前检查结果。
+- 脚本诊断有独立 stamp 和发布通道，不能因为 WXML 结果更新而错误清除或覆盖脚本结果。
 
 ### 调度、取消与恢复
 
-- 主动 hover/补全优先于后台诊断，诊断适用防抖；等待后端时不持有阻塞数据库写入的锁。
-- 首版可实现取消发布与超时处理；不能假定 Node 同线程同步检查能立即响应新取消消息。
-- 需要更强取消能力时再评估 worker 或中断机制，不将协议中存在 `cancel` 当作已经可抢占。
-- 后端超时/退出时报告类型能力不可用，保留可用的语法和静态语言功能；不将失败包装为空错误集合。
-- 重启时递增 `BackendEpoch`，旧请求、ACK、缓存均失效；重放当前有效项目与 overlay，再恢复查询。
-- 成功检查且错误修复后发布空诊断集合清除旧结果。关闭、项目移除等按生命周期清理；能力失效时不得继续把旧结果当作当前检查结果。
+- 主动 hover/补全优先于后台诊断，诊断按配置防抖；等待后端时不持有阻塞状态写入的锁。
+- 排队中的任务可直接取消并从队列移除；运行中的查询不能被强制抢占，取消标志只能在调用前后观察。类型计算在进程内同步运行；`Deadline` 只在送入引擎前检查是否过期，调用开始后不能停止等待或中断 checker，只能丢弃返回后的结果。
+- 会话死亡只对当前请求做一次有界重试：首次致命结果若表明会话已死，丢弃旧会话并在同一请求上重建一次；重试成功不推进 `BackendEpoch`，因为请求 stamp 仍有效且旧会话已被移除。第二次失败仍为致命，推进 `BackendEpoch`、丢弃会话，当前请求返回不可用；不按每次重试推进 epoch，也不做退避循环。
+- 项目、根或环境变化允许重建会话（`ensure_open` 停止旧会话并从新输入打开）；显式 `invalidate` 推进 `BackendEpoch`，旧请求、缓存和迟到结果随之失效。第二次失败后没有持久终态：后续请求仍可按同一规则重建，只是每个请求最多重试一次；没有服务器进程重启、取消或自动退避。
+- 恢复时重放当前有效的项目、overlay 和快照，再恢复查询；用户源文件始终不被改写。
 
-### Zed 接入验证
+### Zed 接入
 
-扩展负责语言注册、grammar/查询和本地启动，WXML 服务作为相关 JS/TS 文档的辅助接收者，不替代其主服务，不重复发布无关脚本诊断和补全。相关 JSON/JSONC 及后续样式未保存同步按能力接入，启用范围清晰可配置。
+扩展负责语言注册、grammar/查询和本地启动，通过 `WXML_LSP_BIN` 指向安装好的二进制。WXML 服务作为相关 JS/TS 文档的辅助接收者，不替代其主服务，不重复发布无关脚本诊断和补全。扩展注册 WXML、JavaScript、TypeScript、TSX、JSON（不含 JSX），同一进程接收关联文档的打开、修改和保存。
 
-根配置写在 `.zed/settings.json` 的 `lsp.wxml-lsp.initialization_options` 内；两个路径均相对 LSP workspace root，不相对 `.zed`。配置示例及仅覆盖内层值的 Schema 见 [Zed 指南](../../editors/zed/README.md#mini-program-roots-initialization-options)。[Zed 官方文档](https://zed.dev/docs/configuring-languages#possible-configuration-options) 说明初始化选项修改后须重启服务；本补充不新增真实 Zed 运行验收结论。
+根配置写在 `.zed/settings.json` 的 `lsp.wxml-lsp.initialization_options` 内；路径相对 LSP workspace root，不相对 `.zed`。配置只在启动时消费，修改后重启 LSP；示例见 [Zed 指南](../../editors/zed/README.md#mini-program-roots-initialization-options)。
 
-在最小 LSP 存在后立即验证：
-
-1. WXML、JS、TS、导入类型是否进入预期服务实例，记录 worktree/根目录和实例身份。
-2. 打开、修改、关闭与查询的实际顺序；同一快照是否包含当前未保存内容。
-3. 原 JS/TS 主服务是否继续工作，辅助服务是否避免重复结果。
-4. 多 worktree、多小程序根、多 tsconfig 及重启后的归属是否隔离。
-5. 类型和纯 JSDoc 修改是否无需保存或刷新 WXML 即可更新，修复后旧诊断是否清除。
-
-验证日志以实例、事件和版本为依据，不默认记录业务源码。若未复用同一实例，先检查服务注册和根目录判定；仍不能满足时评估单一后台状态服务加多个前端连接，另行记录协议与生命周期调整。磁盘监听不能作为未保存同步的替代验收。
+Zed 同步仍应按以下场景验证：同一快照是否包含未保存内容；原 JS/TS 主服务是否继续工作且无重复诊断；多 worktree、多小程序根、多 tsconfig 及重启后的归属是否隔离；类型和纯 JSDoc 修改是否无需保存或刷新 WXML 即可更新，修复后旧诊断是否清除。
 
 ## Alternatives Considered
 
 | 方案 | Pros | Cons | Why not |
 | --- | --- | --- | --- |
 | 只监听磁盘 | 实现简单 | 丢失未保存脚本、`data`/`properties` 类型声明和说明变化 | 不满足编辑一致性需求 |
-| 每种语言独立状态且不共享 | 进程边界直观 | overlay 分裂，跨语言查询读取旧内容 | 先验证同实例，必要时使用共享状态服务 |
-| 只校验 WXML 的客户端版本 | 成本较低 | `data`/`properties` 类型声明、配置、注入和后端重启无法表示 | 使用完整依赖快照和世代 |
+| 每种语言独立状态且不共享 | 进程边界直观 | overlay 分裂，跨语言查询读取旧内容 | 使用同一协调器和快照 |
+| 只校验 WXML 的客户端版本 | 成本较低 | `data`/`properties` 类型声明、配置、映射和后端世代无法表示 | 使用完整依赖快照和世代 |
 | 多任务直接修改共享数据库 | 局部处理方便 | 读到混合版本，难以保证映射一致 | 单写入口加不可变读快照 |
 | 无条件接收后端最新返回值 | 路由简单 | 完成顺序不等于输入新旧顺序 | 必须执行发布屏障 |
+| 保留 Rust–Node ACK 协议 | 可显式确认安装版本 | 引入外部进程、帧协议和跨进程取消复杂度 | 已由进程内会话替代，见 ADR-0012 |
 
 ## Consequences
 
 ### Positive
 
-- 可以复现并测试跨文件、跨语言和跨进程的一致性。
-- 关闭回退、依赖变化及重启都通过显式版本处理。
+- 可以复现并测试跨文件、跨语言和跨请求的一致性。
+- 关闭回退、依赖变化和会话重建都通过显式版本处理。
+- 脚本诊断和 WXML 诊断各有发布通道，不会互相伪装成干净结果。
 - Zed 平台风险早暴露，避免服务完成后才发现未保存同步不可达。
 
 ### Negative
 
-- ACK、版本清单、恢复和发布屏障增加实现与测试成本。
+- 版本清单、恢复和发布屏障增加实现与测试成本。
 - 保守项目级失效可能触发较多分析，后续需要性能数据优化。
-- 如果编辑器实例行为不符合预期，可能需要额外共享状态服务。
+- 进程内运行中没有可抢占的取消，长查询会占用 worker 直到返回。
 
 ### Risks
 
-- 未登记依赖造成假快照：以依赖读取反馈、版本确认及必要重跑处理。
-- 同步 TS 检查阻塞取消：明确首版语义，设置超时，不承诺即时抢占。
-- 多项目或共享脚本串扰：项目、所有者、视图及世代共同标识后端状态。
+- **未登记依赖造成假快照**：以依赖读取反馈、版本确认及必要重跑处理。
+- **同步检查阻塞取消**：明确运行中不可抢占；`Deadline` 只在送入引擎前检查，开始后不能停止等待，也不承诺即时中断 checker。
+- **多项目或共享脚本串扰**：项目、所有者、视图及世代共同标识后端状态。
+- **会话重建语义漂移**：一次重试成功不推进 epoch、第二次失败推进 epoch；测试必须固定这两条路径。
 
 ## Validation
 
-使用可控延迟的 mock 和 stdio 集成测试覆盖乱序结果、过时 ACK、依赖变更、关闭回退、诊断清除、超时、重启及多项目隔离。真实 Zed 测试覆盖上述五组同步场景；只证明服务启动或收到 hover 请求不足以通过验收。相关验证均待实施。
+使用可控延迟的 mock 和 stdio 集成测试覆盖乱序结果、过时 stamp、依赖变更、关闭回退、诊断清除、超时、会话重建及多项目隔离。真实 Zed 测试覆盖上述同步场景；只证明服务启动或收到 hover 请求不足以通过验收。相关验证按当前测试与门禁执行，本记录不声称新增运行结果。
 
 ## References
 
-- [未保存文档需求](../../README.md#53-未保存文档同步)
+- [当前能力摘要与编辑一致性](../../README.md#能力摘要)
+- [当前已知限制](../../README.md#已知限制)
 - [ADR-0009 项目瘦身](0009-project-slimming.md)（历史证据见 tag `pre-slim-20261120`）
 - [ADR-0001：运行时与模块边界](0001-layered-language-service-architecture.md)
 - [ADR-0002：片段、映射与检查状态](0002-template-type-checking-and-source-maps.md)
-- [ADR-0004：验证工作包和闸门](0004-parallel-delivery-and-validation-gates.md)
+- [ADR-0005：项目文档自包含](0005-self-contained-project-documentation.md)
 - [ADR-0006：显式根配置、归属与重启生效](0006-explicit-mini-program-roots.md)
+- [ADR-0010：零配置惰性发现](0010-zero-config-lazy-discovery.md)
+- [ADR-0012：进程内 tsrs 类型引擎会话](0012-in-process-tsrs-session.md)

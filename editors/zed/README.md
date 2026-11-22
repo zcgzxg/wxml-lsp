@@ -277,7 +277,9 @@ Rules and failure modes:
   list the intended roots and dependencies explicitly.
 - Lazy mode scans only the discovered app package and its declared workspace
   dependencies, excluding `node_modules`, `dist`, and build outputs. The
-  workspace source budget is 8192 files / 64 MiB total / 16 MiB per file.
+  workspace source budget is 8192 files / 32 MiB total / 16 MiB per file.
+  Explicit mode uses the single-app default 2048 files / 16 MiB total; when
+  `projectRoot` equals the LSP workspace root, the workspace budget applies.
 - A document URI selects the longest matching app directory. Stable
   `projectId` values isolate app state, and backend relative paths are based on
   the selected app's `projectRoot`.
@@ -302,15 +304,11 @@ mode decision and trade-offs.
 
 ## Coexistence with the JavaScript/TypeScript language server
 
-The extension registers only the `WXML` language and the `wxml-lsp` server. It
-does not attach to JavaScript/TypeScript buffers and does not replace or
-configure the existing JS/TS language server.
-
-Spike S1 conclusion for Zed 1.28.1: Zed registers only WXML buffers with
-`wxml-lsp`; JavaScript/TypeScript/JSON `didOpen`/`didChange` notifications are
-not forwarded to it. As a result, unsaved JS edits are not reflected in WXML
-analysis. After saving, the next analysis re-collects the script from disk and
-sees the saved content.
+The extension registers the `WXML`, `JavaScript`, `TypeScript`, `TSX`, and
+`JSON` languages with the `wxml-lsp` server. It does not replace or configure
+the existing JS/TS language server; both servers coexist. Associated script and
+JSON buffers are sent to the same `wxml-lsp` process, so unsaved script edits
+are available to template analysis without waiting for a save.
 
 To disable this server for WXML:
 
@@ -352,10 +350,6 @@ To disable this server for WXML:
   an implementation detail verified in Zed 1.28.1. If a future Zed changes that
   behavior, the extension may fail to start; it never falls back to another
   location.
-- Spike S1 was not re-run as a runtime experiment in this task; the conclusion
-  above is based on Zed 1.28.1's language-buffer registration behavior and
-  should be rechecked after Zed upgrades. Historical P8 evidence is available
-  at tag `pre-slim-20261120`.
 - Not confirmed: the standard `zed: install dev extension` UI flow, the contents
   of hover/definition results, real grammar query quality, Windows/macOS hosts,
   multi-worktree or remote projects, and long-running server lifecycle.

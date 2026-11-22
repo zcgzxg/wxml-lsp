@@ -87,13 +87,16 @@ This needs the `wasm32-wasip2` target; grammar builds may need `wasi-sdk` or
 
 - Startup validates `tsrs_core::version()`, AST protocol v9/header 64/stride 28
   and the capability probes before enabling types. Compile-time
-  `TSRS_TS_VERSION` must stay unset (CI asserts this).
+  `TSRS_TS_VERSION` must stay unset (the crate asserts this at compile time).
 
-- Failure model: a single request panic fails that request; an unrecoverable
-  session becomes `SessionPoisoned` and type features are unavailable while the
-  rest of the LSP keeps serving. There is no timeout cancellation, no process
-  restart and no backoff. `TSRS_BIN`/`TSRS_ASSET_ROOT` are removed; do not
-  reintroduce an external engine override.
+- Failure model: a single request panic fails that request; a fatal session
+  error makes it `SessionPoisoned` and type features are unavailable while the
+  rest of the LSP keeps serving. A dead session may be rebuilt once for the
+  current request; a second failure fails that request and drops the session,
+  and a later request may rebuild again. There is no timeout cancellation, no
+  server-process restart and no backoff.
+  `TSRS_BIN`/`TSRS_ASSET_ROOT` are removed; do not reintroduce an external
+  engine override.
 
 - The Node backend is gone. `--backend node` and `WXML_NODE`,
   `WXML_TYPE_BACKEND`, `WXML_BACKEND_DIR`, `WXML_ANALYZE_TIMEOUT_MS`,
@@ -151,7 +154,8 @@ This needs the `wasm32-wasip2` target; grammar builds may need `wasi-sdk` or
   `docs/adr/NNNN-*.md` and `docs/adr/README.md`; accepted does not mean
   implemented.
 - Run experiments outside the repository; do not add temp files or evidence
-  directories (ADR-0004/0005).
+  directories (ADR-0005 and `docs/README.md`). ADR-0004 is a deprecated
+  historical delivery plan, not a current rule source.
 - Do not restore the ADR-0009 deletions (`wxml-delivery`, `wxml-fixtures`,
   parity/ledger/Q2 gates, `docs/evidence`, `docs/plans`); history is at tag
   `pre-slim-20261120`.

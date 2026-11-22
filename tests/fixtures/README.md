@@ -29,7 +29,7 @@ tests/fixtures/
 
 ## 2. manifest v2
 
-以下 schema 是 C0 冻结的清单约定，保留为样本记录格式。原校验器已随 ADR-0009 删除，字段不再被机器强制；修改样本时仍按下表更新，保证清单与 `expected/` 可回溯。
+以下 schema 是早期冻结的清单约定（原 C0），保留为样本记录格式。原校验器已随 ADR-0009 删除，字段不再被机器强制；修改样本时仍按下表更新，保证清单与 `expected/` 可回溯。
 
 ```json
 {
@@ -203,7 +203,7 @@ query、expect、diagnostic 对象只应出现文档列出的字段；未知字�
 - `file` 可为 `.wxml`/`.ts`/`.js`；marker 唯一。
 - `expect == null` 表示“没有定义/不能安全映射时不得返回位置”。
 - 正例的 `expect.file` 必须在 root 内、可读，`expect.target` 在目标文件中唯一出现。
-- 只要求 definition；反向编辑/重命名至今未实现，AC-012 用 `coverage.edits = "deferred-to-C1"` 记录（字段名保留为历史）。
+- 本样本 schema 只要求 definition；rename 由独立的 `EditPlan` 能力覆盖，不在本样本中验证。AC-012 的 `coverage.edits = "deferred-to-C1"` 字段仅保留为历史记录，不代表当前产品能力。
 
 ## 7. 验收编号对应
 
